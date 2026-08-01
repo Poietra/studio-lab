@@ -25,9 +25,11 @@ import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
+import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
 import {
   assertProjectPngReceiptV1,
   inspectProjectPngBytesV1,
+  type ProjectPngBlobReceiptV1,
   type ProjectPngBlobStoreV1,
   type ProjectPngHeadV1,
   type ProjectPngRepositoryV1,
@@ -36,6 +38,7 @@ import {
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
   SourceContentBlobStoreV1,
+  SourceBlobReceiptV1,
   WorkspaceSourceHeadV1,
   WorkspaceSourceProjectV1,
   WorkspaceSourceRepositoryV1,
@@ -64,8 +67,8 @@ export type DurableManimRuntimeOptionsV1 = Readonly<{
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
   projectIdFactory?: () => string;
-  projectPngRepository?: Pick<ProjectPngRepositoryV1, "readHead">;
-  projectPngs?: Pick<ProjectPngBlobStoreV1, "close" | "read">;
+  projectPngRepository?: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead">;
+  projectPngs?: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read">;
   renders?: DurableManimRenderServiceV1;
   repository: WorkspaceSourceRepositoryV1;
   snapshots?: DurableFastManimSnapshotServiceV1;
@@ -128,8 +131,8 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
-  readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "readHead"> | undefined;
-  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "read"> | undefined;
+  readonly #projectPngRepository: Pick<ProjectPngRepositoryV1, "queueDeletion" | "readHead"> | undefined;
+  readonly #projectPngs: Pick<ProjectPngBlobStoreV1, "close" | "put" | "read"> | undefined;
   readonly #renders: DurableManimRenderServiceV1 | undefined;
   readonly #repository: WorkspaceSourceRepositoryV1;
   readonly #snapshots: DurableFastManimSnapshotServiceV1 | undefined;
@@ -265,16 +268,25 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async importBrowserProject(request: BrowserManimProjectImportRequestV1, signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const { request: validated } = validateBrowserManimProjectImportV1(request, this.#frame);
+    const { projectPng, request: validated } = validateBrowserManimProjectImportV1(request, this.#frame);
+    if (projectPng && (!this.#projectPngRepository || !this.#projectPngs)) {
+      throw new HttpError("Browser image.png import is not configured.", 503);
+    }
 
     const projectId = this.#projectIdFactory();
-    const candidate = await this.#blobs.putSource(this.tenantId, validated.source, signal);
+    let candidate: SourceBlobReceiptV1 | null = null;
+    let projectPngCandidate: ProjectPngBlobReceiptV1 | null = null;
     let created: WorkspaceSourceProjectV1;
     try {
+      candidate = await this.#blobs.putSource(this.tenantId, validated.source, signal);
+      if (projectPng && this.#projectPngs) {
+        projectPngCandidate = await this.#projectPngs.put(this.tenantId, projectId, projectPng.bytes, signal);
+      }
       signal?.throwIfAborted();
       created = await this.#repository.createManagedProject(
         {
           name: validated.name,
+          ...(projectPngCandidate ? { projectPng: projectPngCandidate } : {}),
           projectId,
           source: { blob: candidate, path: validated.sourceName },
           tenantId: this.tenantId,
@@ -282,10 +294,20 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
         signal,
       );
     } catch (error) {
-      try {
-        await this.#repository.queueBlobDeletion(this.tenantId, candidate);
-      } catch (cleanupError) {
-        throw new AggregateError([error, cleanupError], "Project import and orphan cleanup both failed.");
+      const cleanup = await Promise.allSettled([
+        candidate ? this.#repository.queueBlobDeletion(this.tenantId, candidate) : Promise.resolve(null),
+        projectPngCandidate && this.#projectPngRepository
+          ? this.#projectPngRepository.queueDeletion(
+              this.tenantId,
+              projectId,
+              projectPngCandidate,
+              MIN_DURABLE_GC_GRACE_MS_V1,
+            )
+          : Promise.resolve(null),
+      ]);
+      const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+      if (cleanupErrors.length > 0) {
+        throw new AggregateError([error, ...cleanupErrors], "Project import and orphan cleanup both failed.");
       }
       throw error;
     }

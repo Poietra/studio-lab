@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
-import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
+import { immutableProjectPngObjectKeyV1, immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
+import type { ProjectPngBlobReceiptV1 } from "../project-png-storage";
 import type { SourceBlobReceiptV1 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
@@ -18,6 +19,8 @@ const ORPHANED_AT = new Date("2026-01-01T00:00:00.000Z");
 const GRACE_MS = 60_000;
 const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
 const FRESH_OBJECT_GENERATION = "223e4567-e89b-42d3-a456-426614174001";
+const PNG_DIGEST = "b".repeat(64);
+const PNG_OBJECT_GENERATION = "323e4567-e89b-42d3-a456-426614174002";
 
 function receipt(): SourceBlobReceiptV1 {
   return {
@@ -49,6 +52,31 @@ function blobRow(overrides: Record<string, unknown> = {}, blob: SourceBlobReceip
     tenant_id: TENANT,
     version_id: "versionId" in blob ? blob.versionId : null,
     ...overrides,
+  };
+}
+
+function pngReceipt(): ProjectPngBlobReceiptV1 {
+  return {
+    byteSize: 96,
+    digest: PNG_DIGEST,
+    etag: '"png-etag"',
+    objectGeneration: PNG_OBJECT_GENERATION,
+    objectKey: immutableProjectPngObjectKeyV1(TENANT, "project-png", PNG_DIGEST, PNG_OBJECT_GENERATION),
+  };
+}
+
+function pngRow() {
+  const png = pngReceipt();
+  return {
+    byte_size: png.byteSize,
+    digest: png.digest,
+    etag: png.etag,
+    generation: "1",
+    object_generation: PNG_OBJECT_GENERATION,
+    object_key: png.objectKey,
+    project_id: "project-png",
+    tenant_id: TENANT,
+    version_id: null,
   };
 }
 
@@ -224,6 +252,122 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
       tenantId: TENANT,
     });
     expect(updates).toHaveLength(1);
+  });
+
+  it("publishes project, source head, and initial image.png head in one transaction", async () => {
+    const png = pngReceipt();
+    const writes: string[] = [];
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) return { rowCount: 1, rows: [{}] };
+      if (text.startsWith("SELECT count(*)")) return { rowCount: 1, rows: [{ count: "0" }] };
+      if (text.startsWith("SELECT 1 FROM public.source_blob_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.source_blob_objects")) return { rowCount: 1, rows: [blobRow()] };
+      if (text.includes("FROM public.source_blob_objects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [blobRow({ orphaned_at: null })] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        writes.push("project");
+        const now = new Date();
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              created_at: now,
+              display_name: "PNG workspace",
+              project_id: "project-png",
+              tenant_id: TENANT,
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_source_heads")) {
+        writes.push("source-head");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("SELECT 1 FROM public.project_png_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.project_png_objects")) {
+        writes.push("png-object");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) {
+        writes.push("png-generation");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_heads")) {
+        expect(text).not.toContain("ON CONFLICT");
+        writes.push("png-head");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_heads h")) return { rowCount: 1, rows: [pngRow()] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.createManagedProject({
+        name: "PNG workspace",
+        projectId: "project-png",
+        projectPng: png,
+        source: { blob: receipt(), path: "scene.py" },
+        tenantId: TENANT,
+      }),
+    ).resolves.toMatchObject({ projectId: "project-png" });
+    expect(writes).toEqual(["project", "source-head", "png-object", "png-generation", "png-head"]);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
+  it("rolls the project and source head back when initial image.png publication fails", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) return { rowCount: 1, rows: [{}] };
+      if (text.startsWith("SELECT count(*)")) return { rowCount: 1, rows: [{ count: "0" }] };
+      if (text.startsWith("SELECT 1 FROM public.source_blob_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.source_blob_objects")) return { rowCount: 1, rows: [blobRow()] };
+      if (text.includes("FROM public.source_blob_objects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [blobRow({ orphaned_at: null })] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        const now = new Date();
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              created_at: now,
+              display_name: "PNG workspace",
+              project_id: "project-png",
+              tenant_id: TENANT,
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_source_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT 1 FROM public.project_png_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.project_png_objects")) return { rowCount: 1, rows: [] };
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) throw new Error("png head fault");
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.createManagedProject({
+        name: "PNG workspace",
+        projectId: "project-png",
+        projectPng: pngReceipt(),
+        source: { blob: receipt(), path: "scene.py" },
+        tenantId: TENANT,
+      }),
+    ).rejects.toThrow("png head fault");
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+    expect(fixture.query.mock.calls.some(([text]) => text === "COMMIT")).toBe(false);
   });
 
   it("reuses and resurrects the canonical receipt when the same digest arrives under a fresh generation", async () => {
