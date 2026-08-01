@@ -24,6 +24,7 @@ function environment() {
       HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
       POIETRA_PUBLIC_ORIGIN: origin,
       POIETRA_STRIPE_EXPECTED_MODE: "test",
+      POIETRA_STRIPE_PORTAL_CONFIGURATION_ID: "bpc_poietra_portal",
       POIETRA_STRIPE_PRO_PRICE_ID: "price_poietra_pro",
       POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT: "1000",
       POIETRA_STRIPE_SECRET_KEY: `sk_test_${"A".repeat(24)}`,
@@ -35,7 +36,7 @@ function environment() {
 
 function request(pathname: string, method = "GET", ip?: string) {
   const headers = new Headers(ip ? { "cf-connecting-ip": ip } : undefined);
-  if (pathname === "/api/billing/checkout" && method === "POST") {
+  if ((pathname === "/api/billing/checkout" || pathname === "/api/billing/portal") && method === "POST") {
     headers.set("content-type", "application/json");
     headers.set("origin", origin);
     headers.set("sec-fetch-site", "same-origin");
@@ -62,7 +63,7 @@ function harness(fetch = vi.fn(async () => new Response(null, { status: 204 })))
 }
 
 describe("Cloudflare billing control-plane Worker", () => {
-  it("rejects requests outside the three exact routes before rate limiting or database scope creation", async () => {
+  it("rejects requests outside the four exact routes before rate limiting or database scope creation", async () => {
     const env = environment();
     const { createRequestScope, worker } = harness();
     const requests = [
@@ -82,19 +83,22 @@ describe("Cloudflare billing control-plane Worker", () => {
     expect(createRequestScope).not.toHaveBeenCalled();
   });
 
-  it("rate-limits Checkout and webhook independently before opening a request scope", async () => {
+  it("rate-limits Checkout, Portal, and webhook with distinct keys before opening a request scope", async () => {
     const env = environment();
     const { close, createRequestScope, worker } = harness();
     const checkout = request("/api/billing/checkout", "POST", "203.0.113.8");
+    const portal = request("/api/billing/portal", "POST", "203.0.113.8");
     const webhook = request("/api/billing/stripe/webhook", "POST", "2001:db8::8");
 
     await expect(worker.fetch(checkout, env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(portal, env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(webhook, env.value)).resolves.toMatchObject({ status: 204 });
 
     expect(env.checkout.limit).toHaveBeenCalledWith({ key: "billing:checkout:203.0.113.8" });
+    expect(env.checkout.limit).toHaveBeenCalledWith({ key: "billing:portal:203.0.113.8" });
     expect(env.webhook.limit).toHaveBeenCalledWith({ key: "billing:webhook:2001:db8::8" });
-    expect(createRequestScope).toHaveBeenCalledTimes(2);
-    expect(close).toHaveBeenCalledTimes(2);
+    expect(createRequestScope).toHaveBeenCalledTimes(3);
+    expect(close).toHaveBeenCalledTimes(3);
   });
 
   it("does not apply the mutation limits to an authenticated status read", async () => {
@@ -146,6 +150,21 @@ describe("Cloudflare billing control-plane Worker", () => {
     const { createRequestScope, worker } = harness();
 
     const response = await worker.fetch(request("/api/billing/checkout", "POST", "203.0.113.8"), invalidEnvironment);
+
+    expect(response.status).toBe(503);
+    expect(env.checkout.limit).not.toHaveBeenCalled();
+    expect(createRequestScope).not.toHaveBeenCalled();
+  });
+
+  it("fails closed before rate limiting when the fixed Portal configuration is missing", async () => {
+    const env = environment();
+    const invalidEnvironment = {
+      ...env.value,
+      POIETRA_STRIPE_PORTAL_CONFIGURATION_ID: "",
+    };
+    const { createRequestScope, worker } = harness();
+
+    const response = await worker.fetch(request("/api/billing/portal", "POST", "203.0.113.8"), invalidEnvironment);
 
     expect(response.status).toBe(503);
     expect(env.checkout.limit).not.toHaveBeenCalled();

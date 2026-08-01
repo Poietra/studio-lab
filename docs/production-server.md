@@ -117,7 +117,9 @@ The Stripe billing edge is a separate deployment at
 secrets to the OIDC Worker. Copy `wrangler.billing-control-plane.example.jsonc`
 to the ignored `wrangler.billing-control-plane.jsonc`, replace its route, zone,
 Hyperdrive ID, rate-limit namespace IDs, Pro price ID, render limit, and
-expected `test` or `live` mode, then store both secrets without printing them:
+expected `test` or `live` mode. Set `POIETRA_STRIPE_PORTAL_CONFIGURATION_ID`
+to one fixed Customer Portal configuration from the same Stripe mode, then
+store both secrets without printing them:
 
 ```sh
 pnpm exec wrangler secret put POIETRA_STRIPE_SECRET_KEY --config wrangler.billing-control-plane.jsonc
@@ -130,13 +132,18 @@ Apply bundled durable-storage migration v16 before deploying the Worker. Every
 request scope verifies the exact v16 checksum and returns unavailable rather
 than serving against an older or modified schema.
 Use a dedicated Hyperdrive configuration with caching disabled. The Worker
-accepts only the exact `/api/billing/status`, `/api/billing/checkout`, and
-`/api/billing/stripe/webhook` routes. Checkout uses Stripe's `hosted_page` UI.
-Checkout and webhook traffic have separate edge rate limits before
-request-scoped PostgreSQL adapters are opened. Status requires `billing:read`;
-Checkout requires `billing:manage`. The webhook intentionally bypasses browser
-session admission and instead verifies the Stripe signature against the
-unmodified raw request bytes.
+accepts only the exact `/api/billing/status`, `/api/billing/checkout`,
+`/api/billing/portal`, and `/api/billing/stripe/webhook` routes. Checkout uses
+Stripe's `hosted_page` UI. Portal Session URLs are created on demand from the
+durably bound Customer and must never be persisted or logged. Configure that
+Portal configuration with subscription plan switching and quantity changes
+disabled; the local entitlement model supports exactly one fixed Price with a
+quantity of one. Checkout and Portal share one edge rate-limit binding but use
+distinct per-route keys; webhook traffic has a separate binding. All mutation
+limits run before request-scoped PostgreSQL adapters are opened. Status
+requires `billing:read`; Checkout and Portal require `billing:manage`. The
+webhook intentionally bypasses browser session admission and instead verifies
+the Stripe signature against the unmodified raw request bytes.
 
 Configure the Stripe webhook endpoint as
 `https://<public-origin>/api/billing/stripe/webhook` with endpoint API version

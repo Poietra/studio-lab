@@ -3,9 +3,12 @@ import { z } from "zod";
 import {
   type CanonicalStripeSubscriptionV1,
   type CreateStripeCheckoutInputV1,
+  type CreateStripePortalSessionInputV1,
   parseCanonicalStripeSubscriptionV1,
   parseCreateStripeCheckoutInputV1,
+  parseCreateStripePortalSessionInputV1,
   parseStripeCheckoutSessionV1,
+  parseStripePortalSessionV1,
   parseStripeSubscriptionIdV1,
   STRIPE_API_VERSION_V1,
   type StripeBillingGatewayV1,
@@ -42,6 +45,18 @@ const checkoutResponseSchemaV1 = z
     livemode: z.boolean(),
     object: z.literal("checkout.session"),
     url: z.string().nullable(),
+  })
+  .passthrough();
+
+const portalResponseSchemaV1 = z
+  .object({
+    configuration: z.string(),
+    customer: z.string(),
+    id: z.string(),
+    livemode: z.boolean(),
+    object: z.literal("billing_portal.session"),
+    return_url: z.string(),
+    url: z.string(),
   })
   .passthrough();
 
@@ -138,6 +153,14 @@ function checkoutParameters(input: CreateStripeCheckoutInputV1) {
   return parameters;
 }
 
+function portalParameters(input: CreateStripePortalSessionInputV1) {
+  return new URLSearchParams({
+    configuration: input.configurationId,
+    customer: input.customerId,
+    return_url: input.returnUrl,
+  });
+}
+
 function canonicalSubscription(value: unknown): CanonicalStripeSubscriptionV1 {
   const parsed = subscriptionResponseSchemaV1.safeParse(value);
   if (!parsed.success) {
@@ -230,6 +253,43 @@ export function createStripeHttpBillingGatewayV1(options: StripeHttpGatewayOptio
         });
       } catch {
         throw new StripeGatewayErrorV1("Stripe returned an invalid Checkout Session.", { retryable: true });
+      }
+    },
+    async createPortalSession(inputValue: CreateStripePortalSessionInputV1, signal?: AbortSignal) {
+      const input = parseCreateStripePortalSessionInputV1(inputValue);
+      const body = await request(
+        "/v1/billing_portal/sessions",
+        {
+          body: portalParameters(input),
+          headers: requestHeaders(secretKey, `portal-${input.requestId}`),
+          method: "POST",
+        },
+        signal,
+      );
+      const parsedResponse = portalResponseSchemaV1.safeParse(body);
+      if (!parsedResponse.success) {
+        throw new StripeGatewayErrorV1("Stripe returned an invalid Customer Portal Session.", { retryable: true });
+      }
+      const response = parsedResponse.data;
+      try {
+        const session = parseStripePortalSessionV1({
+          configurationId: response.configuration,
+          customerId: response.customer,
+          id: response.id,
+          livemode: response.livemode,
+          returnUrl: response.return_url,
+          url: response.url,
+        });
+        if (
+          session.configurationId !== input.configurationId ||
+          session.customerId !== input.customerId ||
+          session.returnUrl !== input.returnUrl
+        ) {
+          throw new TypeError("Stripe Customer Portal Session does not match the request.");
+        }
+        return session;
+      } catch {
+        throw new StripeGatewayErrorV1("Stripe returned an invalid Customer Portal Session.", { retryable: true });
       }
     },
     async retrieveSubscription(subscriptionIdValue: string, signal?: AbortSignal) {

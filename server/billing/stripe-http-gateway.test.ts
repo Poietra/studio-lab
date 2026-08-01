@@ -20,6 +20,13 @@ const checkoutInput = {
   tenantId: "tenant-one",
 } as const;
 
+const portalInput = {
+  configurationId: "bpc_1234567890",
+  customerId: "cus_1234567890",
+  requestId: "00000000-0000-4000-8000-000000000327",
+  returnUrl: "https://studio.example/?billing=portal-return",
+} as const;
+
 function subscriptionResponse(overrides: Record<string, unknown> = {}) {
   return {
     cancel_at_period_end: false,
@@ -101,6 +108,62 @@ describe("Stripe HTTP billing gateway", () => {
       "https://api.stripe.com/v1/subscriptions/sub_1234567890",
       expect.objectContaining({ method: "GET", redirect: "error" }),
     );
+  });
+
+  it("creates a correlated Customer Portal Session with only server-selected parameters", async () => {
+    let requestedInit: RequestInit | undefined;
+    let requestedUrl: RequestInfo | URL | undefined;
+    const fetchRequest = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = url;
+      requestedInit = init;
+      return Response.json({
+        configuration: portalInput.configurationId,
+        customer: portalInput.customerId,
+        id: "bps_1234567890",
+        livemode: false,
+        object: "billing_portal.session",
+        return_url: portalInput.returnUrl,
+        url: "https://billing.stripe.com/p/session/bps_1234567890",
+      });
+    });
+    const gateway = createStripeHttpBillingGatewayV1({ fetch: fetchRequest, secretKey });
+
+    await expect(gateway.createPortalSession(portalInput)).resolves.toEqual({
+      configurationId: portalInput.configurationId,
+      customerId: portalInput.customerId,
+      id: "bps_1234567890",
+      livemode: false,
+      returnUrl: portalInput.returnUrl,
+      url: "https://billing.stripe.com/p/session/bps_1234567890",
+    });
+    expect(requestedUrl).toBe("https://api.stripe.com/v1/billing_portal/sessions");
+    expect(requestedInit?.method).toBe("POST");
+    const headers = new Headers(requestedInit?.headers);
+    expect(headers.get("idempotency-key")).toBe(`portal-${portalInput.requestId}`);
+    expect(Object.fromEntries(new URLSearchParams(requestedInit?.body as URLSearchParams))).toEqual({
+      configuration: portalInput.configurationId,
+      customer: portalInput.customerId,
+      return_url: portalInput.returnUrl,
+    });
+  });
+
+  it("rejects a Customer Portal Session that does not match the requested binding", async () => {
+    const gateway = createStripeHttpBillingGatewayV1({
+      fetch: vi.fn(async () =>
+        Response.json({
+          configuration: portalInput.configurationId,
+          customer: "cus_other_customer",
+          id: "bps_1234567890",
+          livemode: false,
+          object: "billing_portal.session",
+          return_url: portalInput.returnUrl,
+          url: "https://billing.stripe.com/p/session/bps_1234567890",
+        }),
+      ),
+      secretKey,
+    });
+
+    await expect(gateway.createPortalSession(portalInput)).rejects.toBeInstanceOf(StripeGatewayErrorV1);
   });
 
   it("fails closed for multiple items and unknown subscription statuses", async () => {

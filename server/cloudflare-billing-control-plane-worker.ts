@@ -1,16 +1,16 @@
 import { Pool } from "pg";
-
-import {
-  BILLING_CHECKOUT_ROUTE_V1,
-  createBillingControlPlaneV1,
-  STRIPE_BILLING_WEBHOOK_ROUTE_V1,
-  BILLING_STATUS_ROUTE_V1,
-} from "./billing-control-plane";
+import { createAccountSessionIdentityAuthenticatorV1 } from "./accounts/account-session-authenticator";
+import { createOrganizationMembershipProductionAdmissionV1 } from "./accounts/organization-membership-admission";
 import { createStripeCheckoutPlanCatalogV1 } from "./billing/plan-catalog";
 import { createStripeBillingServiceV1 } from "./billing/stripe-billing-service";
 import { createStripeHttpBillingGatewayV1 } from "./billing/stripe-http-gateway";
-import { createAccountSessionIdentityAuthenticatorV1 } from "./accounts/account-session-authenticator";
-import { createOrganizationMembershipProductionAdmissionV1 } from "./accounts/organization-membership-admission";
+import {
+  BILLING_CHECKOUT_ROUTE_V1,
+  BILLING_PORTAL_ROUTE_V1,
+  BILLING_STATUS_ROUTE_V1,
+  createBillingControlPlaneV1,
+  STRIPE_BILLING_WEBHOOK_ROUTE_V1,
+} from "./billing-control-plane";
 import { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 import { PostgresOrganizationMembershipRepositoryV1 } from "./storage/postgres/postgres-organization-membership-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./storage/postgres/postgres-repository-connection";
@@ -30,6 +30,7 @@ export type CloudflareBillingControlPlaneEnvironmentV1 = Readonly<{
   HYPERDRIVE: CloudflareBillingHyperdriveBindingV1;
   POIETRA_PUBLIC_ORIGIN: string;
   POIETRA_STRIPE_EXPECTED_MODE: "live" | "test";
+  POIETRA_STRIPE_PORTAL_CONFIGURATION_ID: string;
   POIETRA_STRIPE_PRO_PRICE_ID: string;
   POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT: string;
   POIETRA_STRIPE_SECRET_KEY: string;
@@ -158,6 +159,14 @@ function configuredEnvironment(environment: CloudflareBillingControlPlaneEnviron
       stripePriceId: boundedString(environment.POIETRA_STRIPE_PRO_PRICE_ID, "Stripe Pro price ID", 255),
     },
   });
+  const portalConfigurationId = boundedString(
+    environment.POIETRA_STRIPE_PORTAL_CONFIGURATION_ID,
+    "Stripe Customer Portal configuration ID",
+    255,
+  );
+  if (!/^bpc_[A-Za-z0-9_]{1,247}$/u.test(portalConfigurationId)) {
+    throw new TypeError("Stripe Customer Portal configuration ID is invalid.");
+  }
   const webhookSigningSecret = boundedString(environment.POIETRA_STRIPE_WEBHOOK_SECRET, "Stripe webhook secret", 512);
   if (!/^whsec_[A-Za-z0-9_]+$/u.test(webhookSigningSecret)) {
     throw new TypeError("Stripe webhook secret is invalid.");
@@ -167,6 +176,7 @@ function configuredEnvironment(environment: CloudflareBillingControlPlaneEnviron
     checkoutLimiter: rateLimitBinding(environment.BILLING_CHECKOUT_RATE_LIMITER, "Checkout rate limiter"),
     connectionString: postgresConnectionString(environment),
     livemode: expectedMode === "live",
+    portalConfigurationId,
     publicOrigin,
     secretKey,
     webhookLimiter: rateLimitBinding(environment.BILLING_WEBHOOK_RATE_LIMITER, "Webhook rate limiter"),
@@ -204,6 +214,16 @@ function rejectAtEdge(request: Request, publicOrigin: string) {
     }
     if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
       return jsonResponse(415, { error: "Checkout requires an application/json request." });
+    }
+    return null;
+  }
+  if (url.pathname === BILLING_PORTAL_ROUTE_V1) {
+    if (request.method !== "POST") return jsonResponse(405, { error: "Method not allowed." }, "POST");
+    if (request.headers.get("origin") !== publicOrigin || request.headers.get("sec-fetch-site") !== "same-origin") {
+      return jsonResponse(403, { error: "Customer Portal requires a same-origin request." });
+    }
+    if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+      return jsonResponse(415, { error: "Customer Portal requires an application/json request." });
     }
     return null;
   }
@@ -278,6 +298,7 @@ export async function createCloudflareBillingRequestScopeV1(
       catalog: configured.catalog,
       gateway: createStripeHttpBillingGatewayV1({ secretKey: configured.secretKey }),
       livemode: configured.livemode,
+      portalConfigurationId: configured.portalConfigurationId,
       publicOrigin: configured.publicOrigin,
       repository,
       webhookSigningSecret: configured.webhookSigningSecret,
@@ -313,10 +334,19 @@ export function createCloudflareBillingControlPlaneWorkerV1(
         if (rejected) return rejected;
 
         const pathname = new URL(request.url).pathname;
-        if (pathname === BILLING_CHECKOUT_ROUTE_V1 || pathname === STRIPE_BILLING_WEBHOOK_ROUTE_V1) {
-          const route = pathname === BILLING_CHECKOUT_ROUTE_V1 ? "checkout" : "webhook";
+        if (
+          pathname === BILLING_CHECKOUT_ROUTE_V1 ||
+          pathname === BILLING_PORTAL_ROUTE_V1 ||
+          pathname === STRIPE_BILLING_WEBHOOK_ROUTE_V1
+        ) {
+          const route =
+            pathname === BILLING_CHECKOUT_ROUTE_V1
+              ? "checkout"
+              : pathname === BILLING_PORTAL_ROUTE_V1
+                ? "portal"
+                : "webhook";
           const limiter =
-            pathname === BILLING_CHECKOUT_ROUTE_V1 ? configured.checkoutLimiter : configured.webhookLimiter;
+            pathname === STRIPE_BILLING_WEBHOOK_ROUTE_V1 ? configured.webhookLimiter : configured.checkoutLimiter;
           if (!(await isAllowed(limiter, `billing:${route}:${connectingIp(request)}`))) {
             return unavailableResponse(429);
           }

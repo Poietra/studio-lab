@@ -25,5 +25,24 @@ describe("AccountSessionBadge", () => {
     expect(markup).toContain('value="organization-a"');
     expect(markup).toContain('value="organization-b" selected=""');
     expect(markup).toContain(">Sign out</button>");
+    expect(markup).not.toContain(">Billing</button>");
+  });
+
+  it("offers billing settings to an owner without putting provider identifiers in the UI", () => {
+    const markup = renderToStaticMarkup(
+      <AccountSessionBadge
+        actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
+        session={{
+          activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" },
+          organizations: [{ displayName: "Poietra", id: "organization-a", role: "owner" }],
+          user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
+          version: 1,
+        }}
+      />,
+    );
+
+    expect(markup).toContain(">Billing</button>");
+    expect(markup).toContain("Billing settings");
+    expect(markup).not.toMatch(/customerId|priceId|configurationId|returnUrl/);
   });
 });

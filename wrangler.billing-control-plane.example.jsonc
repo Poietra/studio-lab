@@ -25,6 +25,7 @@
   "vars": {
     "POIETRA_PUBLIC_ORIGIN": "https://studio.example.com",
     "POIETRA_STRIPE_EXPECTED_MODE": "test",
+    "POIETRA_STRIPE_PORTAL_CONFIGURATION_ID": "bpc_replace_with_fixed_portal_configuration",
     "POIETRA_STRIPE_PRO_PRICE_ID": "price_replace_with_test_mode_pro_price",
     "POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT": "1000"
   },

@@ -13,6 +13,9 @@ const stripeObjectId = (prefix: string) => z.string().regex(new RegExp(`^${prefi
 const checkoutAttemptIdSchemaV1 = z.uuid();
 const checkoutSessionIdSchemaV1 = stripeObjectId("cs");
 const customerIdSchemaV1 = stripeObjectId("cus");
+const portalConfigurationIdSchemaV1 = stripeObjectId("bpc");
+const portalRequestIdSchemaV1 = z.uuid();
+const portalSessionIdSchemaV1 = stripeObjectId("bps");
 const subscriptionIdSchemaV1 = stripeObjectId("sub");
 const safeHttpsUrlSchemaV1 = z
   .string()
@@ -60,6 +63,26 @@ const checkoutSessionSchemaV1 = z
   })
   .strict();
 
+const createPortalSessionInputSchemaV1 = z
+  .object({
+    configurationId: portalConfigurationIdSchemaV1,
+    customerId: customerIdSchemaV1,
+    requestId: portalRequestIdSchemaV1,
+    returnUrl: safeHttpsUrlSchemaV1,
+  })
+  .strict();
+
+const portalSessionSchemaV1 = z
+  .object({
+    configurationId: portalConfigurationIdSchemaV1,
+    customerId: customerIdSchemaV1,
+    id: portalSessionIdSchemaV1,
+    livemode: z.boolean(),
+    returnUrl: safeHttpsUrlSchemaV1,
+    url: safeHttpsUrlSchemaV1,
+  })
+  .strict();
+
 export const stripeSubscriptionStatusSchemaV1 = z.enum([
   "active",
   "canceled",
@@ -97,7 +120,9 @@ const canonicalSubscriptionSchemaV1 = z
   });
 
 export type CreateStripeCheckoutInputV1 = Readonly<z.infer<typeof createCheckoutInputSchemaV1>>;
+export type CreateStripePortalSessionInputV1 = Readonly<z.infer<typeof createPortalSessionInputSchemaV1>>;
 export type StripeCheckoutSessionV1 = Readonly<z.infer<typeof checkoutSessionSchemaV1>>;
+export type StripePortalSessionV1 = Readonly<z.infer<typeof portalSessionSchemaV1>>;
 export type StripeSubscriptionStatusV1 = z.infer<typeof stripeSubscriptionStatusSchemaV1>;
 export type CanonicalStripeSubscriptionV1 = Readonly<z.infer<typeof canonicalSubscriptionSchemaV1>>;
 
@@ -107,6 +132,14 @@ export function parseCreateStripeCheckoutInputV1(value: unknown): CreateStripeCh
 
 export function parseStripeCheckoutSessionV1(value: unknown): StripeCheckoutSessionV1 {
   return checkoutSessionSchemaV1.parse(value);
+}
+
+export function parseCreateStripePortalSessionInputV1(value: unknown): CreateStripePortalSessionInputV1 {
+  return createPortalSessionInputSchemaV1.parse(value);
+}
+
+export function parseStripePortalSessionV1(value: unknown): StripePortalSessionV1 {
+  return portalSessionSchemaV1.parse(value);
 }
 
 export function parseCanonicalStripeSubscriptionV1(value: unknown): CanonicalStripeSubscriptionV1 {
@@ -136,6 +169,7 @@ export function parseStripeSubscriptionIdV1(value: unknown): string {
 
 export interface StripeBillingGatewayV1 {
   createCheckoutSession(input: CreateStripeCheckoutInputV1, signal?: AbortSignal): Promise<StripeCheckoutSessionV1>;
+  createPortalSession(input: CreateStripePortalSessionInputV1, signal?: AbortSignal): Promise<StripePortalSessionV1>;
   retrieveSubscription(subscriptionId: string, signal?: AbortSignal): Promise<CanonicalStripeSubscriptionV1>;
 }
 
