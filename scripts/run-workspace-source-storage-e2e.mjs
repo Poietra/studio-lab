@@ -79,6 +79,13 @@ const STORAGE_SUITES = [
     ],
   },
   {
+    database: "poietra_editor_document",
+    file: "server/storage/editor-document-storage.real.test.ts",
+    id: "editor-document",
+    objectStorage: false,
+    title: "serializes edits, replays mutations, rotates source epochs, and isolates tenants",
+  },
+  {
     database: "poietra_workspace_source",
     file: "server/storage/workspace-source-storage.real.test.ts",
     id: "workspace-source",
