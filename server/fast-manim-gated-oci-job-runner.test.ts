@@ -53,6 +53,7 @@ import {
 
 const realImage = process.env.POIETRA_FAST_MANIM_GATED_OCI_IMAGE;
 const realLane = /^sha256:[a-f0-9]{64}$/.test(realImage ?? "");
+const pythonInterpreter = process.env.PYTHON?.trim() || "python3";
 const MAGIC = Buffer.from("POIETR1\0", "ascii");
 const seccompPath = fileURLToPath(new URL("../sandbox/fast-manim-gated-oci/seccomp.v1.json", import.meta.url));
 const affineScene = readFileSync(
@@ -559,7 +560,7 @@ describe("gated OCI fixed profile", () => {
       new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.test.py", import.meta.url),
     );
     const pngPath = fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url));
-    const result = spawnSync("/usr/bin/python3", [testPath, entrypointPath, pngPath], { encoding: "utf8" });
+    const result = spawnSync(pythonInterpreter, [testPath, entrypointPath, pngPath], { encoding: "utf8" });
     expect({ stderr: result.stderr, status: result.status }).toEqual({
       stderr: expect.stringContaining("Ran 4 tests"),
       status: 0,
@@ -597,7 +598,7 @@ except RuntimeError:
 else:
     raise AssertionError("unexpected socket errors must remain fail-closed")
 `;
-    const result = spawnSync("/usr/bin/python3", ["-c", probe, entrypointPath], { encoding: "utf8" });
+    const result = spawnSync(pythonInterpreter, ["-c", probe, entrypointPath], { encoding: "utf8" });
     expect({ stderr: result.stderr, status: result.status }).toEqual({ stderr: "", status: 0 });
   });
 });
