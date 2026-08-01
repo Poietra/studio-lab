@@ -136,7 +136,7 @@ function pngReceipt(generation: string = GENERATIONS[0], overrides: Partial<Immu
 }
 
 describe("ImmutableS3SourceBlobStoreV1", () => {
-  it("conditionally creates, HEAD-pins, reads, lists, and exactly deletes a generated source object", async () => {
+  it("conditionally creates, GET-verifies, reads, lists, and exactly deletes a generated source object", async () => {
     const receipt = sourceReceipt();
     const modified = new Date("2026-08-01T00:00:00.000Z");
     const { send, transport } = mockTransport(async (command) => {
@@ -200,13 +200,11 @@ describe("ImmutableS3SourceBlobStoreV1", () => {
     });
     expect(commands.filter(({ name }) => name === "HeadObjectCommand").map(({ input }) => input)).toEqual([
       { Bucket: BUCKET, IfMatch: ETAG, Key: receipt.objectKey },
+    ]);
+    expect(commands.filter(({ name }) => name === "GetObjectCommand").map(({ input }) => input)).toEqual([
+      { Bucket: BUCKET, IfMatch: ETAG, Key: receipt.objectKey },
       { Bucket: BUCKET, IfMatch: ETAG, Key: receipt.objectKey },
     ]);
-    expect(commands.find(({ name }) => name === "GetObjectCommand")?.input).toEqual({
-      Bucket: BUCKET,
-      IfMatch: ETAG,
-      Key: receipt.objectKey,
-    });
     expect(commands.find(({ name }) => name === "ListObjectsV2Command")?.input).toEqual({
       Bucket: BUCKET,
       ContinuationToken: "source-page",
@@ -230,7 +228,10 @@ describe("ImmutableS3SourceBlobStoreV1", () => {
         if (puts < 3) throw Object.assign(new Error("collision"), { name: "PreconditionFailed" });
         return { ETag: ETAG };
       }
+      expect(command.constructor.name).toBe("GetObjectCommand");
+      expect(command.input.Key).toBe(expected.objectKey);
       return {
+        Body: stream(SOURCE_BYTES),
         ContentLength: expected.byteSize,
         ContentType: "text/x-python",
         ETag: ETAG,
@@ -246,6 +247,42 @@ describe("ImmutableS3SourceBlobStoreV1", () => {
         .filter(([command]) => command.constructor.name === "PutObjectCommand")
         .map(([command]) => command.input.Key),
     ).toEqual(GENERATIONS.slice(0, 3).map((generation) => sourceReceipt(generation).objectKey));
+    expect(send.mock.calls.filter(([command]) => command.constructor.name === "GetObjectCommand")).toHaveLength(1);
+    await store.close();
+  });
+
+  it("refuses a receipt when the newly created source object fails full-byte verification", async () => {
+    const receipt = sourceReceipt();
+    const changed = new TextEncoder().encode("from manim import X\n");
+    const responseBody = stream(changed);
+    const { send, transport } = mockTransport(async (command) => {
+      if (command.constructor.name === "PutObjectCommand") return { ETag: ETAG };
+      expect(command.constructor.name).toBe("GetObjectCommand");
+      return {
+        Body: responseBody,
+        ContentLength: receipt.byteSize,
+        ContentType: "text/x-python",
+        ETag: ETAG,
+        Metadata: sourceMetadata(receipt.objectGeneration),
+      };
+    });
+    const store = new ImmutableS3SourceBlobStoreV1(
+      { transport },
+      { createObjectGeneration: generationFactory([receipt.objectGeneration]) },
+    );
+
+    await expect(store.putSource(TENANT, SOURCE)).rejects.toThrow(/bytes/i);
+    expect(send.mock.calls.map(([command]) => ({ input: command.input, name: command.constructor.name }))).toEqual([
+      {
+        input: expect.objectContaining({ IfNoneMatch: "*", Key: receipt.objectKey }),
+        name: "PutObjectCommand",
+      },
+      {
+        input: { Bucket: BUCKET, IfMatch: ETAG, Key: receipt.objectKey },
+        name: "GetObjectCommand",
+      },
+    ]);
+    expect(responseBody.destroy).toHaveBeenCalledOnce();
     await store.close();
   });
 
@@ -410,6 +447,43 @@ describe("ImmutableS3ProjectPngStoreV1", () => {
     await expect(store.deleteObject("tenant-b", PROJECT, pngReceipt())).rejects.toThrow(/locator/i);
     await expect(store.listOrphanCandidates(TENANT, 257)).rejects.toThrow(/maximum/i);
     expect(send).not.toHaveBeenCalled();
+    await store.close();
+  });
+
+  it("refuses a receipt when the newly created PNG fails the full PNG validator", async () => {
+    const receipt = pngReceipt();
+    const corrupt = Uint8Array.from(PNG_BYTES);
+    const finalByte = corrupt.byteLength - 1;
+    corrupt[finalByte] = corrupt[finalByte]! ^ 1;
+    const responseBody = stream(corrupt);
+    const { send, transport } = mockTransport(async (command) => {
+      if (command.constructor.name === "PutObjectCommand") return { ETag: ETAG };
+      expect(command.constructor.name).toBe("GetObjectCommand");
+      return {
+        Body: responseBody,
+        ContentLength: receipt.byteSize,
+        ContentType: "image/png",
+        ETag: ETAG,
+        Metadata: pngMetadata(receipt.objectGeneration),
+      };
+    });
+    const store = new ImmutableS3ProjectPngStoreV1(
+      { transport },
+      { createObjectGeneration: generationFactory([receipt.objectGeneration]) },
+    );
+
+    await expect(store.put(TENANT, PROJECT, PNG_BYTES)).rejects.toThrow(/PNG|CRC|chunk/i);
+    expect(send.mock.calls.map(([command]) => ({ input: command.input, name: command.constructor.name }))).toEqual([
+      {
+        input: expect.objectContaining({ IfNoneMatch: "*", Key: receipt.objectKey }),
+        name: "PutObjectCommand",
+      },
+      {
+        input: { Bucket: BUCKET, IfMatch: ETAG, Key: receipt.objectKey },
+        name: "GetObjectCommand",
+      },
+    ]);
+    expect(responseBody.destroy).toHaveBeenCalledOnce();
     await store.close();
   });
 

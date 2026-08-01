@@ -92,9 +92,8 @@ async function collectBody(body: unknown, maximum: number, signal: AbortSignal, 
       chunks.push(Uint8Array.from(chunk));
     }
     signal.throwIfAborted();
-  } catch (error) {
+  } finally {
     destroyBody(body);
-    throw error;
   }
   const bytes = new Uint8Array(byteLength);
   let offset = 0;
@@ -207,6 +206,30 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
     return receipt;
   }
 
+  async #read(
+    tenantId: string,
+    receiptValue: ImmutableSourceBlobReceiptV1,
+    operation: PrivateImmutableS3BucketOperationV1,
+  ) {
+    const receipt = parseImmutableSourceBlobReceiptV1(tenantId, receiptValue);
+    const response = await operation.getObject({
+      byteSize: receipt.byteSize,
+      etag: receipt.etag,
+      objectKey: receipt.objectKey,
+    });
+    try {
+      assertProperties(responseProperties(response), SOURCE_CONTENT_TYPE_V1, sourceMetadata(receipt), "source");
+    } catch (error) {
+      destroyBody(response.body);
+      throw error;
+    }
+    const bytes = await collectBody(response.body, MAX_MANIM_SOURCE_BYTES_V1, operation.signal, "source");
+    if (bytes.byteLength !== receipt.byteSize || digest(bytes) !== receipt.digest) {
+      throw new Error("The immutable source bytes do not match their receipt.");
+    }
+    return decodeExactSource(bytes);
+  }
+
   async putSource(tenantId: string, source: string, signal?: AbortSignal) {
     const bytes = exactSourceBytes(source);
     const contentDigest = digest(bytes);
@@ -226,30 +249,12 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
       digest: contentDigest,
       ...created,
     });
-    await this.#head(tenantId, receipt, operation);
+    await this.#read(tenantId, receipt, operation);
     return receipt;
   }
 
   async readSource(tenantId: string, receiptValue: ImmutableSourceBlobReceiptV1, signal?: AbortSignal) {
-    const receipt = parseImmutableSourceBlobReceiptV1(tenantId, receiptValue);
-    const operation = this.#transport.operation(signal);
-    const response = await operation.getObject({
-      byteSize: receipt.byteSize,
-      etag: receipt.etag,
-      objectKey: receipt.objectKey,
-    });
-    try {
-      assertProperties(responseProperties(response), SOURCE_CONTENT_TYPE_V1, sourceMetadata(receipt), "source");
-    } catch (error) {
-      destroyBody(response.body);
-      throw error;
-    }
-    const bytes = await collectBody(response.body, MAX_MANIM_SOURCE_BYTES_V1, operation.signal, "source");
-    if (bytes.byteLength !== receipt.byteSize || digest(bytes) !== receipt.digest) {
-      destroyBody(response.body);
-      throw new Error("The immutable source bytes do not match their receipt.");
-    }
-    return decodeExactSource(bytes);
+    return this.#read(tenantId, receiptValue, this.#transport.operation(signal));
   }
 
   async headSource(tenantId: string, receipt: ImmutableSourceBlobReceiptV1, signal?: AbortSignal) {
@@ -327,6 +332,37 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
     return receipt;
   }
 
+  async #read(
+    tenantId: string,
+    projectId: string,
+    receiptValue: ImmutableProjectPngReceiptV1,
+    operation: PrivateImmutableS3BucketOperationV1,
+  ) {
+    const receipt = parseImmutableProjectPngReceiptV1(tenantId, projectId, receiptValue);
+    const response = await operation.getObject({
+      byteSize: receipt.byteSize,
+      etag: receipt.etag,
+      objectKey: receipt.objectKey,
+    });
+    try {
+      assertProperties(
+        responseProperties(response),
+        PROJECT_PNG_CONTENT_TYPE_V1,
+        projectPngMetadata(projectId, receipt),
+        "image.png",
+      );
+    } catch (error) {
+      destroyBody(response.body);
+      throw error;
+    }
+    const bytes = await collectBody(response.body, receipt.byteSize, operation.signal, "image.png");
+    const inspected = inspectProjectPngBytesV1(bytes);
+    if (inspected.byteSize !== receipt.byteSize || inspected.digest !== receipt.digest) {
+      throw new Error("The immutable image.png bytes do not match their receipt.");
+    }
+    return inspected.bytes;
+  }
+
   async put(tenantId: string, projectId: string, bytes: Uint8Array, signal?: AbortSignal) {
     const inspected = inspectProjectPngBytesV1(bytes);
     projectPngObjectKeyV1(tenantId, projectId, inspected.digest);
@@ -345,42 +381,12 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
       digest: inspected.digest,
       ...created,
     });
-    await this.#head(tenantId, projectId, receipt, operation);
+    await this.#read(tenantId, projectId, receipt, operation);
     return receipt;
   }
 
   async read(tenantId: string, projectId: string, receiptValue: ImmutableProjectPngReceiptV1, signal?: AbortSignal) {
-    const receipt = parseImmutableProjectPngReceiptV1(tenantId, projectId, receiptValue);
-    const operation = this.#transport.operation(signal);
-    const response = await operation.getObject({
-      byteSize: receipt.byteSize,
-      etag: receipt.etag,
-      objectKey: receipt.objectKey,
-    });
-    try {
-      assertProperties(
-        responseProperties(response),
-        PROJECT_PNG_CONTENT_TYPE_V1,
-        projectPngMetadata(projectId, receipt),
-        "image.png",
-      );
-    } catch (error) {
-      destroyBody(response.body);
-      throw error;
-    }
-    const bytes = await collectBody(response.body, receipt.byteSize, operation.signal, "image.png");
-    let inspected: ReturnType<typeof inspectProjectPngBytesV1>;
-    try {
-      inspected = inspectProjectPngBytesV1(bytes);
-    } catch (error) {
-      destroyBody(response.body);
-      throw error;
-    }
-    if (inspected.byteSize !== receipt.byteSize || inspected.digest !== receipt.digest) {
-      destroyBody(response.body);
-      throw new Error("The immutable image.png bytes do not match their receipt.");
-    }
-    return inspected.bytes;
+    return this.#read(tenantId, projectId, receiptValue, this.#transport.operation(signal));
   }
 
   async head(tenantId: string, projectId: string, receipt: ImmutableProjectPngReceiptV1, signal?: AbortSignal) {
