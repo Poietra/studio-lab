@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { fetchOrganizationScopedManimApiV1 } from "../accounts/organization-scoped-manim-fetch";
 import { desktopBridge } from "../shell/desktop-bridge";
 import type {
+  BrowserManimProjectImportRequestV1,
   ManimApiError,
   ManimProjectCreateRequest,
   ManimSourceExport,
@@ -12,7 +13,9 @@ import type {
   RenderSourceActionRequest,
 } from "./contracts";
 import {
+  browserManimProjectImportRequestV1Schema,
   createManimProjectRequestSchema,
+  MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   manimProjectIdSchema,
   manimProjectListViewSchema,
   manimProjectMutationViewSchema,
@@ -34,7 +37,16 @@ import {
   renderSourceActionRequestSchema,
 } from "./contracts";
 
-export type ManimProjectCreationInput = ManimProjectCreateRequest | Readonly<{ kind: "native-existing"; name: string }>;
+export type BrowserManimProjectImportFileV1 = Readonly<{
+  arrayBuffer: () => Promise<ArrayBuffer>;
+  name: string;
+  size: number;
+}>;
+
+export type ManimProjectCreationInput =
+  | ManimProjectCreateRequest
+  | Readonly<{ file: BrowserManimProjectImportFileV1; kind: "browser-import"; name: string }>
+  | Readonly<{ kind: "native-existing"; name: string }>;
 
 const renderSessionHeaders = {
   [RENDER_SESSION_CONTRACT_VERSION_HEADER]: RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
@@ -111,6 +123,45 @@ export async function loadManimProjects(signal?: AbortSignal) {
 }
 
 export async function createManimProject(input: ManimProjectCreationInput, signal?: AbortSignal) {
+  if (input.kind === "browser-import") {
+    signal?.throwIfAborted();
+    if (
+      !Number.isSafeInteger(input.file.size) ||
+      input.file.size < 1 ||
+      input.file.size > MAX_BROWSER_MANIM_SOURCE_BYTES_V1
+    ) {
+      throw new Error(`Select a non-empty Python file up to ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1} bytes.`);
+    }
+    const bytes = new Uint8Array(await input.file.arrayBuffer());
+    signal?.throwIfAborted();
+    if (bytes.byteLength !== input.file.size || bytes.byteLength > MAX_BROWSER_MANIM_SOURCE_BYTES_V1) {
+      throw new Error("The selected Python file changed while Studio was reading it.");
+    }
+    let source: string;
+    try {
+      // Preserve a valid UTF-8 BOM so the immutable bytes reconstructed by the
+      // server are byte-for-byte identical to the browser-selected file.
+      source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new Error("The selected Python file must use valid UTF-8 encoding.");
+    }
+    const request: BrowserManimProjectImportRequestV1 = { name: input.name, source, sourceName: input.file.name };
+    const parsed = browserManimProjectImportRequestV1Schema.safeParse(request);
+    if (!parsed.success) throw new Error(parsed.error.issues[0]?.message ?? "The Python project import is invalid.");
+    const imported = await readJson(
+      await fetchOrganizationScopedManimApiV1("/api/manim/project-imports", {
+        body: JSON.stringify(parsed.data),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+        signal,
+      }),
+      manimProjectMutationViewSchema,
+    );
+    if (!imported.project || imported.project.kind !== "managed") {
+      throw new Error("The server returned an imported workspace with the wrong ownership kind.");
+    }
+    return imported;
+  }
   if (input.kind === "native-existing") {
     const name = manimProjectNameSchema.safeParse(input.name);
     if (!name.success) throw new Error(name.error.issues[0]?.message ?? "The workspace name is invalid.");

@@ -18,6 +18,7 @@ import {
   unregisterManimProject,
 } from "./client";
 import {
+  MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
   RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
@@ -239,6 +240,73 @@ describe("Manim API client contracts", () => {
       method: "DELETE",
       signal: undefined,
     });
+  });
+
+  it("imports one bounded browser-selected Python file without sending a host path", async () => {
+    const imported = {
+      catalog: {
+        defaultProjectId: "project-a",
+        projects: [{ id: "project-a", kind: "managed", name: "Imported demo" }],
+      },
+      project: { id: "project-a", kind: "managed", name: "Imported demo" },
+    };
+    const source =
+      "\ufefffrom manim import *\n\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const bytes = new TextEncoder().encode(source);
+    const fetch = vi.fn(async () => new Response(JSON.stringify(imported), { status: 201 }));
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => bytes.slice().buffer, name: "scene.py", size: bytes.byteLength },
+        kind: "browser-import",
+        name: " Imported demo ",
+      }),
+    ).resolves.toEqual(imported);
+
+    expect(fetch).toHaveBeenCalledWith("/api/manim/project-imports", {
+      body: JSON.stringify({ name: "Imported demo", source, sourceName: "scene.py" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+      signal: undefined,
+    });
+  });
+
+  it("rejects oversized browser files before reading or uploading them", async () => {
+    const arrayBuffer = vi.fn(async () => new ArrayBuffer(0));
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer, name: "scene.py", size: MAX_BROWSER_MANIM_SOURCE_BYTES_V1 + 1 },
+        kind: "browser-import",
+        name: "Imported demo",
+      }),
+    ).rejects.toThrow(/non-empty Python file/i);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects unstable or non-UTF-8 browser file bytes before upload", async () => {
+    const fetch = vi.fn();
+    vi.stubGlobal("fetch", fetch);
+
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => new Uint8Array([0x61]).buffer, name: "scene.py", size: 2 },
+        kind: "browser-import",
+        name: "Changed file",
+      }),
+    ).rejects.toThrow(/changed while Studio was reading/i);
+    await expect(
+      createManimProject({
+        file: { arrayBuffer: async () => new Uint8Array([0xc3, 0x28]).buffer, name: "scene.py", size: 2 },
+        kind: "browser-import",
+        name: "Invalid encoding",
+      }),
+    ).rejects.toThrow(/valid UTF-8/i);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("registers a native-picked workspace without exposing its filesystem path", async () => {
