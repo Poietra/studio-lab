@@ -27,6 +27,7 @@ import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlemen
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import { settleRenderUsageWithClientV1 } from "./postgres-entitlement-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM } from "./render-artifact-tombstone-schema";
 import { RENDER_CANCELLATION_MIGRATION_V7_CHECKSUM } from "./render-cancellation-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
 
@@ -70,6 +71,10 @@ type DeletionRow = QueryResultRow & {
   artifact_tenant_id: string;
   artifact_version_id: string | null;
   deletion_id: string;
+};
+
+type DeletionStateRow = DeletionRow & {
+  deleted_at: Date | null;
 };
 
 type SessionFenceRow = QueryResultRow & {
@@ -250,12 +255,12 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
   async ready(signal?: AbortSignal) {
     signal?.throwIfAborted();
     const result = await this.#connection.query<{ checksum: string; version: number }>(
-      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7, 14, 15, 20) ORDER BY version",
+      "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (4, 7, 14, 15, 20, 21) ORDER BY version",
       [],
       signal,
     );
     return (
-      result.rows.length === 5 &&
+      result.rows.length === 6 &&
       result.rows[0]?.version === 4 &&
       result.rows[0]?.checksum === RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM &&
       result.rows[1]?.version === 7 &&
@@ -265,7 +270,9 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
       result.rows[3]?.version === 15 &&
       result.rows[3]?.checksum === RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM &&
       result.rows[4]?.version === 20 &&
-      result.rows[4]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
+      result.rows[4]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM &&
+      result.rows[5]?.version === 21 &&
+      result.rows[5]?.checksum === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_CHECKSUM
     );
   }
 
@@ -649,20 +656,26 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
     const graceMs = boundedRenderArtifactIntegerV1(graceValue, "artifact GC graceMs", MAX_GC_GRACE_MS);
     return this.#connection.transaction(async (client) => {
       await this.#lockArtifact(client, tenant, receipt);
-      const existing = await client.query<DeletionRow>(
+      const existing = await client.query<DeletionStateRow>(
         `SELECT tenant_id AS artifact_tenant_id, deletion_id::text AS deletion_id,
                 artifact_kind, media_type AS artifact_media_type, artifact_digest,
                 source_digest AS artifact_source_digest, runtime_digest AS artifact_runtime_digest,
                 profile_digest AS artifact_profile_digest, request_digest AS artifact_request_digest,
                 object_key AS artifact_object_key, version_id AS artifact_version_id,
                 object_generation::text AS artifact_object_generation,
-                etag AS artifact_etag, byte_size AS artifact_byte_size
+                etag AS artifact_etag, byte_size AS artifact_byte_size, deleted_at
            FROM public.render_artifact_deletions
           WHERE tenant_id = $1 AND ${exactLocatorPredicateV1("render_artifact_deletions", 2)}
           FOR UPDATE`,
         [tenant, ...locatorValues(locator)],
       );
-      if (existing.rows[0]) return deletionFromRow(existing.rows[0], tenant);
+      const existingRow = existing.rows[0];
+      if (existingRow) {
+        const deletion = deletionFromRow(existingRow, tenant);
+        if (existingRow.deleted_at === null) return deletion;
+        date(existingRow.deleted_at, "Stored render artifact deletion acknowledgement");
+        return null;
+      }
 
       const stored = await client.query<ArtifactRow>(
         `SELECT ${ARTIFACT_COLUMNS}, artifact.expires_at
@@ -736,7 +749,7 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
               object_generation::text AS artifact_object_generation,
               etag AS artifact_etag, byte_size AS artifact_byte_size
          FROM public.render_artifact_deletions
-        WHERE tenant_id = $1
+        WHERE tenant_id = $1 AND deleted_at IS NULL
         ORDER BY queued_at, deletion_id
         LIMIT $2`,
       [tenant, maximum],
@@ -749,7 +762,9 @@ export class PostgresArtifactRepositoryV1 implements RenderArtifactRepositoryV1 
     const tenant = tenantId(tenantValue);
     const deletion = uuid(deletionValue, "Render artifact deletion ID");
     await this.#connection.query(
-      "DELETE FROM public.render_artifact_deletions WHERE tenant_id = $1 AND deletion_id = $2::uuid",
+      `UPDATE public.render_artifact_deletions
+          SET deleted_at = COALESCE(deleted_at, clock_timestamp())
+        WHERE tenant_id = $1 AND deletion_id = $2::uuid`,
       [tenant, deletion],
       signal,
     );
