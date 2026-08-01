@@ -44,6 +44,7 @@ import {
   RenderArtifactReadErrorV1,
   type RenderArtifactReceiptV1,
   type RenderArtifactStoreV1,
+  renderArtifactLocatorV1,
 } from "./render-artifact-repository";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { S3ArtifactReaderV1 } from "./s3/s3-artifact-reader";
@@ -522,7 +523,8 @@ async function waitForAdvisoryLock(pool: Pool, key: string) {
 }
 
 function lockKey(tenantId: string, receipt: RenderArtifactReceiptV1) {
-  return `render-artifact:${tenantId}:${receipt.objectKey}:${receipt.versionId}`;
+  const locator = renderArtifactLocatorV1(receipt);
+  return `render-artifact:${tenantId}:${locator.objectKey}:${locator.advisoryIdentity}`;
 }
 
 async function publishThroughRealOci(
