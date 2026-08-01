@@ -128,9 +128,14 @@ pnpm exec wrangler secret put POIETRA_STRIPE_WEBHOOK_SECRET --config wrangler.bi
 
 `pnpm build:billing-worker` bundles the committed example without deploying;
 `pnpm deploy:billing-worker` requires the ignored production configuration.
-Apply bundled durable-storage migration v17 before deploying the Worker. Every
+Apply bundled durable-storage migration v18 before deploying the Worker. Every
 request scope verifies the exact billing migration v16 checksum and returns
 unavailable rather than serving against an older or modified schema.
+Migration v18 is a coordinated editor cutover, not a rolling mixed-version
+upgrade. Drain every process that reads or writes the v17 editor event ledger,
+keep editor traffic unavailable while applying v18, and then start only
+v18-aware processes. A v17 process cannot interpret replace/remove events and
+its legacy inserts intentionally fail once v18 removes the append default.
 Use a dedicated Hyperdrive configuration with caching disabled. The Worker
 accepts only the exact `/api/billing/status`, `/api/billing/checkout`,
 `/api/billing/portal`, and `/api/billing/stripe/webhook` routes. Checkout uses

@@ -9,9 +9,11 @@ import {
   applyAccountOrganizationMigrationV11,
   applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
+  applyBundledDurableStorageMigrationsThrough,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
   applyEditorDocumentMigrationV17,
+  applyEditorMutationMigrationV18,
   applyOidcLoginMigrationV13,
   applyProjectPngMigrationV5,
   applyRenderArtifactMigrationV4,
@@ -28,6 +30,8 @@ import {
   durableStorageMigrationChecksum,
   EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM,
   EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
+  EDITOR_MUTATION_MIGRATION_V18_CHECKSUM,
+  EDITOR_MUTATION_MIGRATION_V18_SOURCE,
   OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
   OIDC_LOGIN_MIGRATION_V13_SOURCE,
   PROJECT_PNG_MIGRATION_V5_SOURCE,
@@ -87,10 +91,10 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 17 });
-    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 18 });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 17 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 18 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -108,7 +112,36 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === STRIPE_BILLING_MIGRATION_V16_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === EDITOR_DOCUMENT_MIGRATION_V17_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(34);
+    expect(db.queries.filter(({ text }) => text === EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(36);
+  });
+
+  it("applies an exact bundled prefix before a later cutover", async () => {
+    const db = database();
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 17)).resolves.toEqual({
+      applied: true,
+      version: 17,
+    });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17]);
+    expect(db.queries.some(({ text }) => text === EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toBe(false);
+
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 17)).resolves.toEqual({
+      applied: false,
+      version: 17,
+    });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 18)).resolves.toEqual({
+      applied: true,
+      version: 18,
+    });
+    expect([...db.installed.keys()]).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
+  });
+
+  it("rejects an unknown bundled target before acquiring a connection", async () => {
+    const db = database();
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 19)).rejects.toThrow(
+      /migration v19 is not bundled/i,
+    );
+    expect(db.connect).not.toHaveBeenCalled();
   });
 
   it("rejects a missing prerequisite under the same advisory lock", async () => {
@@ -392,6 +425,55 @@ describe("durable storage migrations", () => {
     );
     expect(EDITOR_DOCUMENT_MIGRATION_V17_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
     expect(EDITOR_DOCUMENT_MIGRATION_V17_SOURCE).toContain("document.revision >= NEW.revision");
+  });
+
+  it("requires all seventeen durable-storage prerequisites before applying editor mutation semantics v18", async () => {
+    const db = database();
+    await expect(applyEditorMutationMigrationV18(db.pool, EDITOR_MUTATION_MIGRATION_V18_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v17/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("cuts compatible v17 ledgers over to strict append, replace, and remove semantics", () => {
+    expect(durableStorageMigrationChecksum(EDITOR_MUTATION_MIGRATION_V18_SOURCE)).toBe(
+      EDITOR_MUTATION_MIGRATION_V18_CHECKSUM,
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("ADD COLUMN mutation_kind text NOT NULL DEFAULT 'append'");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("ADD COLUMN target_transaction_id text DEFAULT NULL");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("ALTER COLUMN canonical_program SET NOT NULL");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("mutation_kind IN ('append', 'replace', 'remove')");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain(
+      "mutation_kind = 'append' AND target_transaction_id IS NULL",
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("mutation_kind IN ('replace', 'remove')");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("char_length(target_transaction_id) BETWEEN 1 AND 160");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain(
+      "jsonb_typeof(event.canonical_program -> 'transactionId') IS DISTINCT FROM 'string'",
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain(
+      "jsonb_typeof(event.canonical_program #> '{anchor,resolvedSeconds}') IS DISTINCT FROM 'number'",
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("HAVING count(*) > 32");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("event.canonical_program ->> 'transactionId'");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("ORDER BY event.revision");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("::double precision AS resolved_seconds");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain(
+      "ordered.resolved_seconds < ordered.previous_resolved_seconds - 0.0005::double precision",
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("ALTER COLUMN mutation_kind DROP DEFAULT");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("CREATE TABLE public.editor_document_projections");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("PRIMARY KEY (tenant_id, project_id, document_key, epoch)");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain(
+      "REFERENCES public.editor_documents (tenant_id, project_id, document_key, epoch)",
+    );
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("jsonb_typeof(canonical_programs) = 'array'");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("jsonb_array_length(canonical_programs) <= 32");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).toContain("octet_length(canonical_programs::text) <= 9437184");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).not.toContain("INSERT INTO public.editor_document_projections");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).not.toContain("UPDATE public.editor_edit_events");
+    expect(EDITOR_MUTATION_MIGRATION_V18_SOURCE).not.toContain("DROP TRIGGER");
+    expect(EDITOR_DOCUMENT_MIGRATION_V17_SOURCE).toContain("Editor edit events are append-only.");
   });
 
   it("defines bounded identities, memberships, and a deferred last-owner invariant in v11", () => {

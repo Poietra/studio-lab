@@ -1,7 +1,6 @@
 import type { ProgramRecord, WorkingState } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
-
-const SOURCE_ORDER_EPSILON = 0.0005;
+import { APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1 } from "./operations";
 
 export type AppliedProgramReplacementResult<TRecord extends ProgramRecord = ProgramRecord> =
   | Readonly<{
@@ -32,7 +31,7 @@ export function appendAppliedProgram<TRecord extends ProgramRecord>(
 ): AppliedProgramAppendResult<TRecord> {
   const previousAnchor = programs.at(-1)?.program.anchor.resolvedSeconds;
   const valueAnchor = value.program.anchor.resolvedSeconds;
-  if (previousAnchor !== undefined && valueAnchor < previousAnchor - SOURCE_ORDER_EPSILON) {
+  if (previousAnchor !== undefined && valueAnchor < previousAnchor - APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1) {
     return {
       kind: "rejected",
       reason: `The new source anchor ${valueAnchor.toFixed(3)} is earlier than the latest applied Program at ${previousAnchor.toFixed(3)}. Apply Programs in source order or edit the existing transaction in place.`,
@@ -68,14 +67,14 @@ export function replaceAppliedProgram<TRecord extends ProgramRecord>(
   const index = matchingIndexes[0];
   const replacementAnchor = replacement.program.anchor.resolvedSeconds;
   const previousAnchor = programs[index - 1]?.program.anchor.resolvedSeconds;
-  if (previousAnchor !== undefined && replacementAnchor < previousAnchor - SOURCE_ORDER_EPSILON) {
+  if (previousAnchor !== undefined && replacementAnchor < previousAnchor - APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1) {
     return {
       kind: "rejected",
       reason: `The replacement source anchor ${replacementAnchor.toFixed(3)} would cross the previous applied Program at ${previousAnchor.toFixed(3)}. Applied Program source order must remain stable.`,
     };
   }
   const nextAnchor = programs[index + 1]?.program.anchor.resolvedSeconds;
-  if (nextAnchor !== undefined && replacementAnchor > nextAnchor + SOURCE_ORDER_EPSILON) {
+  if (nextAnchor !== undefined && replacementAnchor > nextAnchor + APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1) {
     return {
       kind: "rejected",
       reason: `The replacement source anchor ${replacementAnchor.toFixed(3)} would cross the next applied Program at ${nextAnchor.toFixed(3)}. Applied Program source order must remain stable.`,

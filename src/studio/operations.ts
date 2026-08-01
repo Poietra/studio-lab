@@ -219,6 +219,9 @@ export type CanonicalEditProgram = Readonly<{
   version: typeof EDIT_OPERATION_VERSION;
 }>;
 
+/** Shared tolerance for preserving applied Program source order. */
+export const APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1 = 0.0005;
+
 export function provisionalEntityId(transactionId: string, localName: string) {
   return `tx:${transactionId}/entity:${localName}`;
 }

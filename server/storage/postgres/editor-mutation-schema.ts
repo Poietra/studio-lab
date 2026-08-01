@@ -1,0 +1,2 @@
+export const EDITOR_MUTATION_MIGRATION_V18_CHECKSUM =
+  "17f588500a3abceb3d02e38104dbffc20b4cc50e61061b2bfe63bb68ebbdaca4";
