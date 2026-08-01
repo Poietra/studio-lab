@@ -48,6 +48,7 @@ import {
 } from "./render-artifact-repository";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { S3ArtifactReaderV1 } from "./s3/s3-artifact-reader";
+import { S3ImmutableRenderArtifactStoreV1 } from "./s3/s3-immutable-render-artifact-store";
 import { VerifiedArtifactPublisherV1 } from "./verified-artifact-publisher";
 import type { SourceBlobReceiptV1, WorkspaceSourceHeadV1 } from "./workspace-source-repository";
 
@@ -119,6 +120,15 @@ function s3Config(environment: StorageEnvironment) {
 function artifactStore() {
   const environment = storageEnvironment();
   return new S3ArtifactReaderV1({
+    bucket: environment.bucket,
+    clientConfig: s3Config(environment),
+    deployment: "test",
+  });
+}
+
+function immutableArtifactStore() {
+  const environment = storageEnvironment();
+  return new S3ImmutableRenderArtifactStoreV1({
     bucket: environment.bucket,
     clientConfig: s3Config(environment),
     deployment: "test",
@@ -457,21 +467,27 @@ async function putBundle(
 }
 
 async function setVideoExpiry(pool: Pool, receipt: RenderArtifactReceiptV1, live: boolean) {
+  const locator = renderArtifactLocatorV1(receipt);
+  const values = [receipt.objectKey.split("/")[1], locator.objectKey, locator.versionId, locator.objectGeneration];
   if (live) {
     await pool.query(
       `UPDATE public.render_artifact_objects
           SET expires_at = clock_timestamp() + interval '1 hour'
-        WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-      [receipt.objectKey.split("/")[1], receipt.objectKey, receipt.versionId],
+        WHERE tenant_id = $1 AND object_key = $2
+          AND version_id IS NOT DISTINCT FROM $3::text
+          AND object_generation IS NOT DISTINCT FROM $4::uuid`,
+      values,
     );
     await pool.query(
       `UPDATE public.render_session_artifacts
           SET expires_at = clock_timestamp() + interval '1 hour'
         WHERE tenant_id = $1 AND artifact_id = (
           SELECT artifact_id FROM public.render_artifact_objects
-           WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3
+           WHERE tenant_id = $1 AND object_key = $2
+             AND version_id IS NOT DISTINCT FROM $3::text
+             AND object_generation IS NOT DISTINCT FROM $4::uuid
         )`,
-      [receipt.objectKey.split("/")[1], receipt.objectKey, receipt.versionId],
+      values,
     );
     return;
   }
@@ -479,8 +495,10 @@ async function setVideoExpiry(pool: Pool, receipt: RenderArtifactReceiptV1, live
     `UPDATE public.render_artifact_objects
         SET created_at = clock_timestamp() - interval '2 hours',
             expires_at = clock_timestamp() - interval '1 hour'
-      WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-    [receipt.objectKey.split("/")[1], receipt.objectKey, receipt.versionId],
+      WHERE tenant_id = $1 AND object_key = $2
+        AND version_id IS NOT DISTINCT FROM $3::text
+        AND object_generation IS NOT DISTINCT FROM $4::uuid`,
+    values,
   );
   await pool.query(
     `UPDATE public.render_session_artifacts
@@ -488,19 +506,24 @@ async function setVideoExpiry(pool: Pool, receipt: RenderArtifactReceiptV1, live
             expires_at = clock_timestamp() - interval '1 hour'
       WHERE tenant_id = $1 AND artifact_id = (
         SELECT artifact_id FROM public.render_artifact_objects
-         WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3
+         WHERE tenant_id = $1 AND object_key = $2
+           AND version_id IS NOT DISTINCT FROM $3::text
+           AND object_generation IS NOT DISTINCT FROM $4::uuid
       )`,
-    [receipt.objectKey.split("/")[1], receipt.objectKey, receipt.versionId],
+    values,
   );
 }
 
 async function lockArtifactRow(client: PoolClient, tenantId: string, receipt: RenderArtifactReceiptV1) {
+  const locator = renderArtifactLocatorV1(receipt);
   await client.query("BEGIN");
   await client.query(
     `SELECT 1 FROM public.render_artifact_objects
-      WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3
+      WHERE tenant_id = $1 AND object_key = $2
+        AND version_id IS NOT DISTINCT FROM $3::text
+        AND object_generation IS NOT DISTINCT FROM $4::uuid
       FOR UPDATE`,
-    [tenantId, receipt.objectKey, receipt.versionId],
+    [tenantId, locator.objectKey, locator.versionId, locator.objectGeneration],
   );
 }
 
@@ -1050,4 +1073,57 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       await Promise.allSettled([repository.close(), artifacts.close(), renders.close(), sources.close(), pool.end()]);
     }
   }, 120_000);
+
+  it("publishes, reads, and deletes an immutable media generation", async () => {
+    const environment = storageEnvironment();
+    await prepareStorage(environment);
+    const suffix = randomUUID().replaceAll("-", "");
+    const tenantId = `immutable-media-${suffix}`;
+    const projectId = `project-${suffix}`;
+    const videoBytes = Buffer.from("000000186674797069736f6d00000000", "hex");
+    const thumbnailBytes = Buffer.alloc(24);
+    thumbnailBytes.set(Buffer.from("89504e470d0a1a0a", "hex"));
+    thumbnailBytes.writeUInt32BE(854, 16);
+    thumbnailBytes.writeUInt32BE(480, 20);
+
+    const pool = new Pool({ connectionString: environment.databaseUrl, max: 4 });
+    const sources = sourceRepository();
+    const renders = renderRepository();
+    const artifacts = immutableArtifactStore();
+    const repository = artifactRepository();
+    try {
+      const source =
+        "from manim import Scene\n\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+      const head = await createProject(sources, tenantId, projectId, source);
+      await seedActiveRenderEntitlementFixtureV1(pool, tenantId);
+      const session = await createClaimedSession(renders, head, `immutable-${suffix}`);
+      const bundle = await putBundle(artifacts, session, videoBytes, thumbnailBytes);
+      expect(renderArtifactLocatorV1(bundle.video)).toMatchObject({ kind: "immutable", versionId: null });
+      expect(renderArtifactLocatorV1(bundle.thumbnail)).toMatchObject({ kind: "immutable", versionId: null });
+
+      await repository.publishSessionArtifacts(publicationInput(session, bundle));
+      const reader = new AuthorizedArtifactReaderV1({
+        repository: artifactRepository(),
+        store: immutableArtifactStore(),
+        tenantId,
+      });
+      try {
+        await expect(readSessionVideo(reader, session.id)).resolves.toEqual(videoBytes);
+        await expect(readSessionVideo(reader, session.id, 4, 7)).resolves.toEqual(videoBytes.subarray(4, 8));
+        await expect(reader.projectThumbnailBytes(projectId)).resolves.toEqual(thumbnailBytes);
+      } finally {
+        await reader.close();
+      }
+
+      await setVideoExpiry(pool, bundle.video, false);
+      const deletion = await repository.queueDeletion(tenantId, bundle.video, 1);
+      if (!deletion) throw new Error("The immutable media generation did not become deletable.");
+      expect(renderArtifactLocatorV1(deletion.receipt)).toMatchObject({ kind: "immutable", versionId: null });
+      await artifacts.deleteObject(tenantId, deletion.receipt);
+      await repository.acknowledgeDeletion(tenantId, deletion.deletionId);
+      await expect(artifacts.head(tenantId, bundle.video)).rejects.toMatchObject({ code: "missing" });
+    } finally {
+      await Promise.allSettled([repository.close(), artifacts.close(), renders.close(), sources.close(), pool.end()]);
+    }
+  }, 60_000);
 });
