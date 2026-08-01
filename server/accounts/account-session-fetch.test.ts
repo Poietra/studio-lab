@@ -15,6 +15,7 @@ const account = {
     { displayName: "Organization B", id: "organization-b", role: "owner" as const },
   ],
   user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+  version: 7,
 };
 
 function fixture(resolved: unknown = account) {
@@ -46,6 +47,7 @@ describe("account session Fetch handler", () => {
       activeOrganization: { displayName: "Organization B", id: "organization-b", role: "owner" },
       organizations: account.organizations,
       user: account.user,
+      version: account.version,
     });
     expect(resolveAccountSession).toHaveBeenCalledWith(
       createHash("sha256").update(tokenBytes).digest(),
@@ -110,6 +112,7 @@ describe("account session Fetch handler", () => {
     const responses = await Promise.all(requests.map((value) => handler.fetch(value)));
 
     expect(responses.map(({ status }) => status)).toEqual([404, 403, 400, 400, 405]);
+    expect(responses[4]?.headers.get("allow")).toBe("GET");
     expect(resolveAccountSession).not.toHaveBeenCalled();
     for (const response of responses) {
       expect(response.headers.get("cache-control")).toBe("private, no-store");

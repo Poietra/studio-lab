@@ -8,6 +8,13 @@ export const accountOrganizationIdSchemaV1 = z
 
 export const accountOrganizationRoleSchemaV1 = z.enum(["owner", "admin", "member", "billing"]);
 
+export const accountOrganizationSwitchRequestSchemaV1 = z
+  .object({
+    organizationId: accountOrganizationIdSchemaV1,
+    expectedVersion: z.number().int().safe().positive(),
+  })
+  .strict();
+
 export const accountDisplayNameSchemaV1 = z
   .string()
   .refine(
@@ -48,6 +55,7 @@ export const accountSessionViewSchemaV1 = z
         id: z.uuid(),
       })
       .strict(),
+    version: z.number().int().safe().positive(),
   })
   .strict()
   .superRefine((session, context) => {

@@ -1,17 +1,32 @@
-import { type ReactNode, useEffect, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { PoietraBrand } from "../studio/poietra-brand";
-import { AccountSessionRequestError, loadAccountSessionV1 } from "./account-session-client";
+import { AccountSessionBadge } from "./account-session-badge";
+import {
+  AccountSessionRequestError,
+  loadAccountSessionV1,
+  logoutAccountSessionV1,
+  switchAccountOrganizationV1,
+} from "./account-session-client";
 import type { AccountSessionViewV1 } from "./account-session-contract";
+import { setManimOrganizationScopeV1 } from "./organization-scoped-manim-fetch";
+
+const ACCOUNT_SESSION_INVALIDATION_CHANNEL_V1 = "poietra:account-session:v1";
 
 type AccountBootstrapState =
   | Readonly<{ phase: "error"; status: number | null }>
   | Readonly<{ phase: "loading" }>
-  | Readonly<{ phase: "ready"; session: AccountSessionViewV1 | null }>
-  | Readonly<{ phase: "signed-out" }>;
+  | Readonly<{ actionError: string | null; phase: "ready"; session: AccountSessionViewV1 | null }>
+  | Readonly<{ actionError: string | null; phase: "signed-out" }>;
+
+export type AccountSessionActionsV1 = Readonly<{
+  actionError: string | null;
+  logout: () => void;
+  switchOrganization: (organizationId: string) => void;
+}>;
 
 type AccountSessionBootstrapProps = Readonly<{
-  children: (session: AccountSessionViewV1 | null) => ReactNode;
+  children: (session: AccountSessionViewV1 | null, actions: AccountSessionActionsV1 | null) => ReactNode;
   enabled: boolean;
 }>;
 
@@ -44,59 +59,196 @@ function AccountBootstrapFrame({ children }: Readonly<{ children: ReactNode }>) 
   );
 }
 
+function accountRequestStatus(error: unknown) {
+  return error instanceof AccountSessionRequestError ? error.status : null;
+}
+
 export function AccountSessionBootstrap({ children, enabled }: AccountSessionBootstrapProps) {
-  const [attempt, setAttempt] = useState(0);
   const [state, setState] = useState<AccountBootstrapState>(() =>
-    enabled ? { phase: "loading" } : { phase: "ready", session: null },
+    enabled ? { phase: "loading" } : { actionError: null, phase: "ready", session: null },
   );
+  const readRequest = useRef<AbortController | null>(null);
+  const mutationRequest = useRef<AbortController | null>(null);
+  const pendingInvalidation = useRef(false);
+  const requestGeneration = useRef(0);
+  const invalidationChannel = useRef<BroadcastChannel | null>(null);
+
+  const beginReadTransition = useCallback(() => {
+    if (mutationRequest.current) {
+      pendingInvalidation.current = true;
+      return null;
+    }
+    setManimOrganizationScopeV1(null);
+    readRequest.current?.abort();
+    const controller = new AbortController();
+    readRequest.current = controller;
+    requestGeneration.current += 1;
+    setState({ phase: "loading" });
+    return { controller, generation: requestGeneration.current };
+  }, []);
+
+  const beginMutationTransition = useCallback(() => {
+    if (mutationRequest.current) return null;
+    setManimOrganizationScopeV1(null);
+    readRequest.current?.abort();
+    readRequest.current = null;
+    const controller = new AbortController();
+    mutationRequest.current = controller;
+    requestGeneration.current += 1;
+    setState({ phase: "loading" });
+    return { controller, generation: requestGeneration.current };
+  }, []);
+
+  const isCurrentRead = useCallback((controller: AbortController, generation: number) => {
+    return !controller.signal.aborted && readRequest.current === controller && requestGeneration.current === generation;
+  }, []);
+
+  const finishMutation = useCallback((controller: AbortController, generation: number) => {
+    if (
+      controller.signal.aborted ||
+      mutationRequest.current !== controller ||
+      requestGeneration.current !== generation
+    ) {
+      return null;
+    }
+    mutationRequest.current = null;
+    const shouldRefresh = pendingInvalidation.current;
+    pendingInvalidation.current = false;
+    return shouldRefresh;
+  }, []);
+
+  const loadAuthoritativeSession = useCallback(
+    (actionError: string | null = null) => {
+      if (!enabled) return;
+      const transition = beginReadTransition();
+      if (!transition) return;
+      const { controller, generation } = transition;
+      void loadAccountSessionV1(controller.signal)
+        .then((session) => {
+          if (!isCurrentRead(controller, generation)) return;
+          setManimOrganizationScopeV1(session.activeOrganization.id);
+          setState({ actionError, phase: "ready", session });
+        })
+        .catch((error: unknown) => {
+          if (!isCurrentRead(controller, generation)) return;
+          if (error instanceof AccountSessionRequestError && error.status === 401) {
+            setState({ actionError, phase: "signed-out" });
+            return;
+          }
+          setState({ phase: "error", status: accountRequestStatus(error) });
+        });
+    },
+    [beginReadTransition, enabled, isCurrentRead],
+  );
+
+  const broadcastInvalidation = useCallback(() => {
+    invalidationChannel.current?.postMessage(null);
+  }, []);
+
+  const switchOrganization = useCallback(
+    (organizationId: string) => {
+      if (state.phase !== "ready" || !state.session) return;
+      const expectedVersion = state.session.version;
+      const transition = beginMutationTransition();
+      if (!transition) return;
+      const { controller, generation } = transition;
+      void switchAccountOrganizationV1(organizationId, expectedVersion, controller.signal)
+        .then((session) => {
+          const shouldRefresh = finishMutation(controller, generation);
+          if (shouldRefresh === null) return;
+          broadcastInvalidation();
+          if (shouldRefresh) {
+            loadAuthoritativeSession();
+            return;
+          }
+          setManimOrganizationScopeV1(session.activeOrganization.id);
+          setState({ actionError: null, phase: "ready", session });
+        })
+        .catch((error: unknown) => {
+          if (finishMutation(controller, generation) === null) return;
+          if (error instanceof AccountSessionRequestError && error.status === 401) {
+            setState({ actionError: null, phase: "signed-out" });
+            broadcastInvalidation();
+            return;
+          }
+          loadAuthoritativeSession("The organization could not be changed. Your account was refreshed.");
+        });
+    },
+    [beginMutationTransition, broadcastInvalidation, finishMutation, loadAuthoritativeSession, state],
+  );
+
+  const logout = useCallback(() => {
+    const transition = beginMutationTransition();
+    if (!transition) return;
+    const { controller, generation } = transition;
+    void logoutAccountSessionV1(controller.signal)
+      .then(() => {
+        if (finishMutation(controller, generation) === null) return;
+        setState({ actionError: null, phase: "signed-out" });
+        broadcastInvalidation();
+      })
+      .catch((error: unknown) => {
+        if (finishMutation(controller, generation) === null) return;
+        if (error instanceof AccountSessionRequestError && error.status === 401) {
+          setState({ actionError: null, phase: "signed-out" });
+          broadcastInvalidation();
+          return;
+        }
+        loadAuthoritativeSession("Sign out could not be confirmed. Your account was refreshed.");
+      });
+  }, [beginMutationTransition, broadcastInvalidation, finishMutation, loadAuthoritativeSession]);
 
   useEffect(() => {
     if (!enabled) {
-      setState({ phase: "ready", session: null });
+      setManimOrganizationScopeV1(undefined);
+      queueMicrotask(() => setState({ actionError: null, phase: "ready", session: null }));
       return;
     }
-    const controller = new AbortController();
-    let scheduled = true;
+    const scheduled = { active: true };
     queueMicrotask(() => {
-      if (!scheduled) return;
-      setState({ phase: "loading" });
-      void loadAccountSessionV1(controller.signal)
-        .then((session) => setState({ phase: "ready", session }))
-        .catch((error: unknown) => {
-          if (controller.signal.aborted) return;
-          if (error instanceof AccountSessionRequestError && error.status === 401) {
-            setState({ phase: "signed-out" });
-            return;
-          }
-          setState({
-            phase: "error",
-            status: error instanceof AccountSessionRequestError ? error.status : null,
-          });
-        });
+      if (scheduled.active) loadAuthoritativeSession();
     });
     return () => {
-      scheduled = false;
-      controller.abort();
+      scheduled.active = false;
+      readRequest.current?.abort();
+      mutationRequest.current?.abort();
     };
-  }, [attempt, enabled]);
+  }, [enabled, loadAuthoritativeSession]);
+
+  useEffect(() => {
+    if (!enabled || typeof BroadcastChannel === "undefined") return;
+    const channel = new BroadcastChannel(ACCOUNT_SESSION_INVALIDATION_CHANNEL_V1);
+    invalidationChannel.current = channel;
+    const handleInvalidation = () => loadAuthoritativeSession();
+    channel.addEventListener("message", handleInvalidation);
+    return () => {
+      channel.removeEventListener("message", handleInvalidation);
+      channel.close();
+      if (invalidationChannel.current === channel) invalidationChannel.current = null;
+    };
+  }, [enabled, loadAuthoritativeSession]);
 
   if (state.phase === "ready") {
+    const actions: AccountSessionActionsV1 | null = state.session
+      ? { actionError: state.actionError, logout, switchOrganization }
+      : null;
     if (state.session && !accountSessionAllowsStudioV1(state.session)) {
       return (
         <AccountBootstrapFrame>
-          <section aria-labelledby="billing-account-title" className="w-full max-w-sm border border-zinc-800 p-6">
+          <section aria-labelledby="billing-account-title" className="w-full max-w-md border border-zinc-800 p-6">
             <h2 className="text-balance text-lg font-semibold" id="billing-account-title">
               Billing account
             </h2>
             <p className="mt-3 text-pretty text-sm leading-6 text-zinc-400">
-              {state.session.activeOrganization.displayName} gives this account billing access, but not Studio workspace
-              access. Billing tools are coming next.
+              This membership can manage billing for {state.session.activeOrganization.displayName}, but cannot open its
+              Studio workspaces.
             </p>
+            <AccountSessionBadge className="mt-6 flex-wrap" actions={actions!} session={state.session} />
           </section>
         </AccountBootstrapFrame>
       );
     }
-    return children(state.session);
+    return children(state.session, actions);
   }
   if (state.phase === "loading") {
     return (
@@ -119,6 +271,11 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
           <p className="mt-3 text-pretty text-sm leading-6 text-zinc-400">
             Continue with your organization account to open its workspaces.
           </p>
+          {state.actionError ? (
+            <p className="mt-3 text-pretty text-sm text-amber-300" role="alert">
+              {state.actionError}
+            </p>
+          ) : null}
           <a
             className="mt-6 inline-flex min-h-10 items-center border border-sky-700 bg-sky-950 px-4 text-sm font-medium text-sky-100 hover:bg-sky-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
             href="/auth/oidc/start"
@@ -140,13 +297,24 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
             ? "Your active organization is no longer available. Contact an organization administrator."
             : "Poietra could not verify your account. Try again in a moment."}
         </p>
-        <button
-          className="mt-6 min-h-10 border border-red-800 px-4 text-sm font-medium text-red-100 hover:bg-red-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
-          onClick={() => setAttempt((current) => current + 1)}
-          type="button"
-        >
-          Retry
-        </button>
+        <div className="mt-6 flex flex-wrap gap-2">
+          <button
+            className="min-h-10 border border-red-800 px-4 text-sm font-medium text-red-100 hover:bg-red-950 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-500"
+            onClick={() => loadAuthoritativeSession()}
+            type="button"
+          >
+            Retry
+          </button>
+          {state.status === 403 ? (
+            <button
+              className="min-h-10 border border-zinc-700 px-4 text-sm font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-400"
+              onClick={logout}
+              type="button"
+            >
+              Sign out
+            </button>
+          ) : null}
+        </div>
       </section>
     </AccountBootstrapFrame>
   );

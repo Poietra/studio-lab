@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { fetchOrganizationScopedManimApiV1 } from "../accounts/organization-scoped-manim-fetch";
 import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import {
   opaqueIdV1Schema,
@@ -302,7 +303,7 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
 export function createServerPreviewSnapshotProviderV1(
   options: ServerPreviewSnapshotProviderOptionsV1 = {},
 ): StudioPreviewSnapshotProviderV1 {
-  const fetcher = options.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = options.fetcher ?? fetchOrganizationScopedManimApiV1;
   const requestIdFactory = options.requestIdFactory ?? (() => `studio-preview:${globalThis.crypto.randomUUID()}`);
   return {
     id: "server-scene-snapshot",

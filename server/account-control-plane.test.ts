@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOidcAccountControlPlaneV1 } from "./account-control-plane";
-import type { AccountSessionViewRepositoryV1 } from "./accounts/account-session-repository";
+import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 
 function repository() {
@@ -17,13 +17,17 @@ function repository() {
 
 function sessionRepository() {
   const close = vi.fn(async () => undefined);
-  const value: AccountSessionViewRepositoryV1 = {
+  const account = {
+    activeOrganizationId: "organization-a",
+    organizations: [{ displayName: "Organization A", id: "organization-a", role: "billing" as const }],
+    user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+    version: 4,
+  };
+  const value: AccountSessionControlRepositoryV1 = {
     close,
-    resolveAccountSession: vi.fn(async () => ({
-      activeOrganizationId: "organization-a",
-      organizations: [{ displayName: "Organization A", id: "organization-a", role: "billing" as const }],
-      user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
-    })),
+    revokeAccountSession: vi.fn(async () => undefined),
+    resolveAccountSession: vi.fn(async () => account),
+    switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const })),
   };
   return { close, value };
 }
@@ -81,13 +85,36 @@ describe("OIDC account control-plane composition", () => {
         environment,
       ),
     ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      controlPlane.fetch(
+        new Request("https://studio.example/api/account/session", {
+          body: JSON.stringify({ expectedVersion: 4, organizationId: "organization-a" }),
+          headers: {
+            "content-type": "application/json",
+            cookie: `__Host-poietra_session=${token}`,
+            origin: "https://studio.example",
+          },
+          method: "PATCH",
+        }),
+        environment,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      controlPlane.fetch(
+        new Request("https://studio.example/api/account/logout", {
+          headers: { cookie: `__Host-poietra_session=${token}`, origin: "https://studio.example" },
+          method: "POST",
+        }),
+        environment,
+      ),
+    ).resolves.toMatchObject({ status: 204 });
 
     expect(created).toHaveLength(2);
-    expect(sessionCreated).toHaveLength(1);
+    expect(sessionCreated).toHaveLength(3);
     expect(created[0]?.value.ready).toHaveBeenCalledOnce();
     expect(created[1]?.value.consumeLoginAttempt).toHaveBeenCalledOnce();
     expect(created.map(({ close }) => close.mock.calls.length)).toEqual([1, 1]);
-    expect(sessionCreated[0]?.close).toHaveBeenCalledOnce();
+    expect(sessionCreated.map(({ close }) => close.mock.calls.length)).toEqual([1, 1, 1]);
   });
 
   it("does not initialize OIDC configuration for an existing account session", async () => {

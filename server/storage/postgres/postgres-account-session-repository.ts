@@ -3,10 +3,11 @@ import type { Pool, PoolConfig, QueryResultRow } from "pg";
 import { accountDisplayNameSchemaV1 } from "../../../src/accounts/account-session-contract";
 import { accountUserIdSchemaV1, organizationIdSchemaV1, organizationRoleSchemaV1 } from "../../accounts/account-domain";
 import type {
+  AccountSessionControlRepositoryV1,
   AccountSessionRepositoryV1,
-  AccountSessionViewRepositoryV1,
   ResolvedAccountSessionAccountV1,
   ResolvedAccountSessionV1,
+  SwitchActiveOrganizationResultV1,
 } from "../../accounts/account-session-repository";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
@@ -24,6 +25,11 @@ type AccountSessionAccountRow = QueryResultRow & {
   organization_role: string | null;
   user_display_name: string;
   user_id: string;
+  session_version: string;
+};
+
+type AccountSessionSwitchRow = AccountSessionAccountRow & {
+  mutation_status: string;
 };
 
 const MAX_ACCOUNT_ORGANIZATIONS_V1 = 256;
@@ -77,6 +83,17 @@ function exactDisplayName(value: unknown, name: string) {
   return parsed.data;
 }
 
+function exactSessionVersion(value: unknown) {
+  if (typeof value !== "string" || !/^[1-9][0-9]*$/u.test(value)) {
+    throw new TypeError("PostgreSQL returned an invalid account session version.");
+  }
+  const version = Number(value);
+  if (!Number.isSafeInteger(version)) {
+    throw new TypeError("PostgreSQL returned an account session version outside the API range.");
+  }
+  return version;
+}
+
 function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAccountSessionAccountV1 | null {
   const first = rows[0];
   if (!first) return null;
@@ -89,12 +106,14 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
     displayName: exactDisplayName(first.user_display_name, "account display name"),
     id: userId.data,
   };
+  const version = exactSessionVersion(first.session_version);
   const organizations: ResolvedAccountSessionAccountV1["organizations"] = [];
   for (const row of rows) {
     if (
       row.user_id !== user.id ||
       row.user_display_name !== user.displayName ||
-      row.active_organization_id !== activeOrganizationId.data
+      row.active_organization_id !== activeOrganizationId.data ||
+      row.session_version !== first.session_version
     ) {
       throw new TypeError("PostgreSQL returned inconsistent account session rows.");
     }
@@ -128,10 +147,37 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
       throw new TypeError("PostgreSQL returned non-canonical organization memberships.");
     }
   }
-  return { activeOrganizationId: activeOrganizationId.data, organizations, user };
+  return { activeOrganizationId: activeOrganizationId.data, organizations, user, version };
 }
 
-export class PostgresAccountSessionRepositoryV1 implements AccountSessionRepositoryV1, AccountSessionViewRepositoryV1 {
+function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchActiveOrganizationResultV1 {
+  const first = rows[0];
+  if (!first || rows.some((row) => row.mutation_status !== first.mutation_status)) {
+    throw new TypeError("PostgreSQL returned an invalid account organization switch.");
+  }
+  if (first.mutation_status === "invalid-session") {
+    if (rows.length !== 1) throw new TypeError("PostgreSQL returned duplicate invalid account sessions.");
+    return { kind: "invalid-session" };
+  }
+  if (first.mutation_status === "organization-unavailable") {
+    if (rows.length !== 1) throw new TypeError("PostgreSQL returned duplicate unavailable organizations.");
+    return { kind: "organization-unavailable" };
+  }
+  if (first.mutation_status === "conflict") {
+    if (rows.length !== 1) throw new TypeError("PostgreSQL returned duplicate account session conflicts.");
+    return { kind: "conflict" };
+  }
+  if (first.mutation_status !== "updated") {
+    throw new TypeError("PostgreSQL returned an unknown account organization switch status.");
+  }
+  const account = accountFromRows(rows);
+  if (!account) throw new TypeError("PostgreSQL omitted the updated account session.");
+  return { account, kind: "updated" };
+}
+
+export class PostgresAccountSessionRepositoryV1
+  implements AccountSessionRepositoryV1, AccountSessionControlRepositoryV1
+{
   readonly #connection: PostgresRepositoryConnectionV1;
 
   constructor(options: Readonly<{ pool?: Pool; poolConfig?: PoolConfig; statementTimeoutMs?: number }>) {
@@ -187,7 +233,8 @@ export class PostgresAccountSessionRepositoryV1 implements AccountSessionReposit
       `WITH selected_session AS MATERIALIZED (
          SELECT session.user_id AS user_id,
                 account.display_name AS user_display_name,
-                session.active_tenant_id AS active_organization_id
+                session.active_tenant_id AS active_organization_id,
+                session.version::text AS session_version
            FROM public.account_sessions session
            JOIN public.users account ON account.user_id = session.user_id
           WHERE session.session_token_hash = $1
@@ -210,6 +257,7 @@ export class PostgresAccountSessionRepositoryV1 implements AccountSessionReposit
        SELECT selected.user_id,
               selected.user_display_name,
               selected.active_organization_id,
+              selected.session_version,
               organization.organization_id,
               organization.organization_display_name,
               organization.organization_role
@@ -222,6 +270,113 @@ export class PostgresAccountSessionRepositoryV1 implements AccountSessionReposit
     throwIfAborted(signal);
     const account = accountFromRows(result.rows);
     return account;
+  }
+
+  async switchActiveOrganization(
+    sessionTokenHashValue: Uint8Array,
+    organizationIdValue: string,
+    expectedVersionValue: number,
+    signal?: AbortSignal,
+  ) {
+    const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
+    const organizationId = organizationIdSchemaV1.parse(organizationIdValue);
+    if (!Number.isSafeInteger(expectedVersionValue) || expectedVersionValue < 1) {
+      throw new TypeError("The expected account session version is invalid.");
+    }
+    throwIfAborted(signal);
+    const result = await this.#connection.query<AccountSessionSwitchRow>(
+      `WITH selected_session AS MATERIALIZED (
+         SELECT session.user_id,
+                account.display_name AS user_display_name,
+                session.active_tenant_id AS active_organization_id,
+                session.version AS session_version
+           FROM public.account_sessions session
+           JOIN public.users account ON account.user_id = session.user_id
+          WHERE session.session_token_hash = $1
+            AND session.revoked_at IS NULL
+            AND session.expires_at > clock_timestamp()
+            AND account.status = 'active'
+          LIMIT 1
+          FOR UPDATE OF session
+       ), target_access AS MATERIALIZED (
+         SELECT selected.user_id,
+                membership.tenant_id AS organization_id
+           FROM selected_session selected
+           JOIN public.organization_memberships membership ON membership.user_id = selected.user_id
+           JOIN public.organizations organization ON organization.tenant_id = membership.tenant_id
+          WHERE membership.tenant_id = $2
+            AND membership.status = 'active'
+            AND organization.status = 'active'
+          FOR SHARE OF membership, organization
+       ), updated_session AS (
+         UPDATE public.account_sessions session
+            SET active_tenant_id = target.organization_id
+           FROM target_access target
+          WHERE session.session_token_hash = $1
+            AND session.user_id = target.user_id
+            AND session.version = $3::bigint
+            AND session.active_tenant_id IS DISTINCT FROM target.organization_id
+          RETURNING session.active_tenant_id AS active_organization_id,
+                    session.user_id,
+                    session.version AS session_version
+       ), active_organizations AS MATERIALIZED (
+         SELECT membership.tenant_id AS organization_id,
+                organization.display_name AS organization_display_name,
+                membership.role AS organization_role
+           FROM selected_session selected
+           JOIN public.organization_memberships membership ON membership.user_id = selected.user_id
+           JOIN public.organizations organization ON organization.tenant_id = membership.tenant_id
+          WHERE membership.status = 'active'
+            AND organization.status = 'active'
+          ORDER BY membership.tenant_id COLLATE "C"
+          LIMIT ${MAX_ACCOUNT_ORGANIZATIONS_V1 + 1}
+       )
+       SELECT CASE
+                WHEN selected.user_id IS NULL THEN 'invalid-session'
+                WHEN target.user_id IS NULL THEN 'organization-unavailable'
+                WHEN selected.active_organization_id = target.organization_id THEN 'updated'
+                WHEN selected.session_version <> $3::bigint THEN 'conflict'
+                WHEN updated.user_id IS NULL THEN 'conflict'
+                ELSE 'updated'
+              END AS mutation_status,
+              COALESCE(updated.active_organization_id, selected.active_organization_id) AS active_organization_id,
+              organization.organization_display_name,
+              organization.organization_id,
+              organization.organization_role,
+              selected.user_display_name,
+              selected.user_id,
+              COALESCE(updated.session_version, selected.session_version)::text AS session_version
+         FROM (VALUES (1)) AS request_anchor(value)
+         LEFT JOIN selected_session selected ON true
+         LEFT JOIN target_access target ON target.user_id = selected.user_id
+         LEFT JOIN updated_session updated ON updated.user_id = selected.user_id
+         LEFT JOIN active_organizations organization
+           ON target.user_id IS NOT NULL
+          AND (selected.active_organization_id = target.organization_id OR updated.user_id IS NOT NULL)
+        ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
+      [sessionTokenHash, organizationId, expectedVersionValue],
+      signal,
+    );
+    throwIfAborted(signal);
+    return switchResultFromRows(result.rows);
+  }
+
+  async revokeAccountSession(sessionTokenHashValue: Uint8Array, signal?: AbortSignal) {
+    const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
+    throwIfAborted(signal);
+    const result = await this.#connection.query<{ revoked: number }>(
+      `UPDATE public.account_sessions
+          SET revoked_at = clock_timestamp()
+        WHERE session_token_hash = $1
+          AND revoked_at IS NULL
+      RETURNING 1 AS revoked`,
+      [sessionTokenHash],
+      signal,
+    );
+    throwIfAborted(signal);
+    if (result.rows.length > 1 || (result.rows[0] !== undefined && result.rows[0].revoked !== 1)) {
+      throw new TypeError("PostgreSQL returned an invalid account logout result.");
+    }
   }
 
   close() {

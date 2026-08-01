@@ -39,7 +39,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         await setup.query(
           `INSERT INTO public.workspace_tenants (tenant_id)
            VALUES ('organization-active'), ('organization-user-suspended'),
-                  ('organization-suspended'), ('organization-membership-suspended')`,
+                  ('organization-suspended'), ('organization-membership-suspended'),
+                  ('organization-secondary')`,
         );
         await setup.query(
           `INSERT INTO public.users (user_id, oidc_issuer, oidc_subject, display_name, status)
@@ -55,7 +56,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
            VALUES ('organization-active', 'Active organization', 'active'),
                   ('organization-user-suspended', 'Suspended user organization', 'active'),
                   ('organization-suspended', 'Suspended organization', 'suspended'),
-                  ('organization-membership-suspended', 'Suspended membership organization', 'active')`,
+                  ('organization-membership-suspended', 'Suspended membership organization', 'active'),
+                  ('organization-secondary', 'Secondary organization', 'active')`,
         );
         await setup.query(
           `INSERT INTO public.organization_memberships (tenant_id, user_id, role, status)
@@ -65,7 +67,8 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
                   ('organization-suspended', $2, 'owner', 'active'),
                   ('organization-suspended', $4, 'member', 'active'),
                   ('organization-membership-suspended', $2, 'owner', 'active'),
-                  ('organization-membership-suspended', $5, 'member', 'suspended')`,
+                  ('organization-membership-suspended', $5, 'member', 'suspended'),
+                  ('organization-secondary', $1, 'member', 'active')`,
           Object.values(users),
         );
         await setup.query("COMMIT");
@@ -120,8 +123,34 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       });
       await expect(sessions.resolveAccountSession(activeHash)).resolves.toEqual({
         activeOrganizationId: "organization-active",
-        organizations: [{ displayName: "Active organization", id: "organization-active", role: "owner" }],
+        organizations: [
+          { displayName: "Active organization", id: "organization-active", role: "owner" },
+          { displayName: "Secondary organization", id: "organization-secondary", role: "member" },
+        ],
         user: { displayName: "Active owner", id: users.activeOwner },
+        version: 1,
+      });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toMatchObject({
+        account: { activeOrganizationId: "organization-secondary", version: 2 },
+        kind: "updated",
+      });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toMatchObject({
+        account: { activeOrganizationId: "organization-secondary", version: 2 },
+        kind: "updated",
+      });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 1)).resolves.toEqual({
+        kind: "conflict",
+      });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 2)).resolves.toMatchObject({
+        account: { activeOrganizationId: "organization-active", version: 3 },
+        kind: "updated",
+      });
+      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toEqual({
+        kind: "conflict",
+      });
+      await expect(sessions.resolveAccountSession(activeHash)).resolves.toMatchObject({
+        activeOrganizationId: "organization-active",
+        version: 3,
       });
       await expect(sessions.resolveActiveSession(expiredHash)).resolves.toBeNull();
       await expect(sessions.resolveActiveSession(revokedHash)).resolves.toBeNull();

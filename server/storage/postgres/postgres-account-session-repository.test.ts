@@ -79,6 +79,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
       expect(text).toContain("membership.status = 'active'");
       expect(text).toContain("organization.status = 'active'");
       expect(text).toContain('ORDER BY membership.tenant_id COLLATE "C"');
+      expect(text).toContain("session.version::text AS session_version");
       expect(text).toContain("LIMIT 257");
       expect(values).toHaveLength(1);
       expect(Buffer.compare(values[0] as Buffer, hash)).toBe(0);
@@ -92,6 +93,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
             organization_role: "billing",
             user_display_name: "Ada Lovelace",
             user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+            session_version: "7",
           },
           {
             active_organization_id: "organization-b",
@@ -100,6 +102,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
             organization_role: "owner",
             user_display_name: "Ada Lovelace",
             user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+            session_version: "7",
           },
         ],
       };
@@ -113,6 +116,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
         { displayName: "Organization B", id: "organization-b", role: "owner" },
       ],
       user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+      version: 7,
     });
   });
 
@@ -127,6 +131,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
           organization_role: "member",
           user_display_name: "Ada Lovelace",
           user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          session_version: "8",
         },
       ],
     }));
@@ -136,6 +141,107 @@ describe("PostgresAccountSessionRepositoryV1", () => {
       activeOrganizationId: "organization-b",
       organizations: [{ id: "organization-a" }],
     });
+  });
+
+  it("switches the active organization and returns one bounded account snapshot", async () => {
+    const hash = Buffer.alloc(32, 12);
+    const fixture = fakePool((text, values) => {
+      expect(text).toContain("FOR UPDATE OF session");
+      expect(text).toContain("membership.tenant_id = $2");
+      expect(text).toContain("membership.status = 'active'");
+      expect(text).toContain("organization.status = 'active'");
+      expect(text).toContain("SET active_tenant_id = target.organization_id");
+      expect(text).toContain("session.version = $3::bigint");
+      expect(text).toContain("selected.active_organization_id = target.organization_id THEN 'updated'");
+      expect(text).toContain("selected.session_version <> $3::bigint THEN 'conflict'");
+      expect(text).toContain("LIMIT 257");
+      expect(values).toHaveLength(3);
+      expect(Buffer.compare(values[0] as Buffer, hash)).toBe(0);
+      expect(values[1]).toBe("organization-b");
+      expect(values[2]).toBe(7);
+      return {
+        rowCount: 2,
+        rows: [
+          {
+            active_organization_id: "organization-b",
+            mutation_status: "updated",
+            organization_display_name: "Organization A",
+            organization_id: "organization-a",
+            organization_role: "member",
+            user_display_name: "Ada Lovelace",
+            user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+            session_version: "8",
+          },
+          {
+            active_organization_id: "organization-b",
+            mutation_status: "updated",
+            organization_display_name: "Organization B",
+            organization_id: "organization-b",
+            organization_role: "owner",
+            user_display_name: "Ada Lovelace",
+            user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+            session_version: "8",
+          },
+        ],
+      };
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.switchActiveOrganization(hash, "organization-b", 7)).resolves.toEqual({
+      account: {
+        activeOrganizationId: "organization-b",
+        organizations: [
+          { displayName: "Organization A", id: "organization-a", role: "member" },
+          { displayName: "Organization B", id: "organization-b", role: "owner" },
+        ],
+        user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+        version: 8,
+      },
+      kind: "updated",
+    });
+  });
+
+  it("distinguishes invalid sessions from unavailable organization memberships", async () => {
+    for (const mutationStatus of ["invalid-session", "organization-unavailable", "conflict"] as const) {
+      const repository = new PostgresAccountSessionRepositoryV1({
+        pool: fakePool(() => ({
+          rowCount: 1,
+          rows: [
+            {
+              active_organization_id: null,
+              mutation_status: mutationStatus,
+              organization_display_name: null,
+              organization_id: null,
+              organization_role: null,
+              user_display_name: mutationStatus === "invalid-session" ? null : "Ada Lovelace",
+              user_id: mutationStatus === "invalid-session" ? null : "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+              session_version: mutationStatus === "invalid-session" ? null : "7",
+            },
+          ],
+        })).pool,
+      });
+
+      await expect(repository.switchActiveOrganization(Buffer.alloc(32), "organization-b", 7)).resolves.toEqual({
+        kind: mutationStatus,
+      });
+    }
+  });
+
+  it("revokes only the selected session and treats an absent row as idempotent", async () => {
+    const hash = Buffer.alloc(32, 13);
+    let invocation = 0;
+    const fixture = fakePool((text, values) => {
+      expect(text).toContain("WHERE session_token_hash = $1");
+      expect(text).toContain("AND revoked_at IS NULL");
+      expect(values).toHaveLength(1);
+      expect(Buffer.compare(values[0] as Buffer, hash)).toBe(0);
+      invocation += 1;
+      return invocation === 1 ? { rowCount: 1, rows: [{ revoked: 1 }] } : { rowCount: 0, rows: [] };
+    });
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.revokeAccountSession(hash)).resolves.toBeUndefined();
+    await expect(repository.revokeAccountSession(hash)).resolves.toBeUndefined();
   });
 
   it("returns null for an invalid session and rejects malformed bootstrap rows", async () => {
@@ -153,6 +259,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
           organization_role: "owner",
           user_display_name: "Ada Lovelace",
           user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          session_version: "1",
         },
       ],
       [
@@ -163,6 +270,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
           organization_role: "future-role",
           user_display_name: "Ada Lovelace",
           user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          session_version: "1",
         },
       ],
     ]) {
@@ -183,6 +291,7 @@ describe("PostgresAccountSessionRepositoryV1", () => {
         organization_role: "member",
         user_display_name: "Ada Lovelace",
         user_id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+        session_version: "1",
       };
     });
     const repository = new PostgresAccountSessionRepositoryV1({
@@ -215,6 +324,20 @@ describe("PostgresAccountSessionRepositoryV1", () => {
 
     await expect(repository.resolveActiveSession(Buffer.alloc(31))).rejects.toThrow(/exactly 32 bytes/i);
     await expect(repository.resolveAccountSession(Buffer.alloc(31))).rejects.toThrow(/exactly 32 bytes/i);
+    await expect(repository.switchActiveOrganization(Buffer.alloc(31), "organization-a", 1)).rejects.toThrow(
+      /exactly 32 bytes/i,
+    );
+    await expect(repository.revokeAccountSession(Buffer.alloc(31))).rejects.toThrow(/exactly 32 bytes/i);
+    expect(fixture.pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid expected session version before acquiring a connection", async () => {
+    const fixture = fakePool(() => ({ rowCount: 0, rows: [] }));
+    const repository = new PostgresAccountSessionRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.switchActiveOrganization(Buffer.alloc(32), "organization-a", 0)).rejects.toThrow(
+      /version/i,
+    );
     expect(fixture.pool.connect).not.toHaveBeenCalled();
   });
 });
