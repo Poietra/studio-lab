@@ -66,7 +66,10 @@ const STORAGE_SUITES = [
     file: "server/storage/account-organization-storage.real.test.ts",
     id: "account-organization",
     objectStorage: false,
-    title: "resolves only active membership boundaries and preserves the last active owner",
+    titles: [
+      "resolves only active membership boundaries and preserves the last active owner",
+      "onboards invited members atomically through fake OIDC and real PostgreSQL",
+    ],
   },
   {
     database: "poietra_billing_entitlement",
