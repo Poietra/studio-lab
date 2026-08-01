@@ -12,6 +12,7 @@ const UTF8_ENCODER = new TextEncoder();
 export type ImmutableObjectLocatorV1 = Readonly<{
   objectGeneration: string;
   objectKey: string;
+  versionId?: never;
 }>;
 
 export type ImmutableObjectKeyInputV1 = Readonly<{

@@ -111,12 +111,13 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     const head = pngHead();
     const readHead = vi.fn(async () => head);
     const read = vi.fn(async () => pngBytes);
+    const closeProjectPngs = vi.fn(async () => undefined);
     const runtime = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
       execution: { ready: async () => true },
       namespace: "snapshot-png-test",
       projectPngRepository: partial<ProjectPngRepositoryV1>({ readHead }),
-      projectPngs: partial<ProjectPngBlobStoreV1>({ read }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({ close: closeProjectPngs, read }),
       repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
       tenantId: "tenant-a",
     });
@@ -128,6 +129,8 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     expect(read).toHaveBeenCalledWith("tenant-a", "project-a", head.receipt, undefined);
     await expect(runtime.sceneSnapshotAsset("project-a", "f".repeat(64))).rejects.toMatchObject({ status: 404 });
     await runtime.close();
+    await runtime.close();
+    expect(closeProjectPngs).toHaveBeenCalledOnce();
   });
 
   it("refuses PNG delivery when the project head changes during the read", async () => {
@@ -140,7 +143,10 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       projectPngRepository: partial<ProjectPngRepositoryV1>({
         readHead: vi.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(after),
       }),
-      projectPngs: partial<ProjectPngBlobStoreV1>({ read: async () => pngBytes }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({
+        close: async () => undefined,
+        read: async () => pngBytes,
+      }),
       repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
       tenantId: "tenant-a",
     });

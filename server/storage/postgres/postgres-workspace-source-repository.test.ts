@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
+import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
 import type { SourceBlobReceiptV1 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
@@ -14,6 +15,7 @@ const DIGEST = "a".repeat(64);
 const DELETION_ID = "87654321-4321-4321-8321-cba987654321";
 const ORPHANED_AT = new Date("2026-01-01T00:00:00.000Z");
 const GRACE_MS = 60_000;
+const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
 
 function receipt(): SourceBlobReceiptV1 {
   return {
@@ -25,15 +27,25 @@ function receipt(): SourceBlobReceiptV1 {
   };
 }
 
-function blobRow(overrides: Record<string, unknown> = {}) {
-  const blob = receipt();
+function immutableReceipt(): SourceBlobReceiptV1 {
+  return {
+    byteSize: 128,
+    digest: DIGEST,
+    etag: '"etag-immutable"',
+    objectGeneration: OBJECT_GENERATION,
+    objectKey: immutableSourceBlobObjectKeyV1(TENANT, DIGEST, OBJECT_GENERATION),
+  };
+}
+
+function blobRow(overrides: Record<string, unknown> = {}, blob: SourceBlobReceiptV1 = receipt()) {
   return {
     byte_size: blob.byteSize,
     digest: blob.digest,
     etag: blob.etag,
     object_key: blob.objectKey,
+    object_generation: "objectGeneration" in blob ? blob.objectGeneration : null,
     tenant_id: TENANT,
-    version_id: blob.versionId,
+    version_id: "versionId" in blob ? blob.versionId : null,
     ...overrides,
   };
 }
@@ -156,6 +168,7 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
           blob.digest,
           blob.objectKey,
           blob.versionId,
+          null,
           blob.etag,
           blob.byteSize,
         ]);
@@ -208,5 +221,38 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
       tenantId: TENANT,
     });
     expect(updates).toHaveLength(1);
+  });
+
+  it("queues an immutable upload with its exact application generation", async () => {
+    const blob = immutableReceipt();
+    const fixture = fakePool((text, values) => {
+      if (text.startsWith("SELECT 1 FROM public.source_blob_objects")) {
+        expect(values).toEqual([TENANT, DIGEST, blob.objectKey, null, OBJECT_GENERATION]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.source_blob_deletions")) {
+        expect(values.slice(1)).toEqual([
+          TENANT,
+          DIGEST,
+          blob.objectKey,
+          null,
+          OBJECT_GENERATION,
+          blob.etag,
+          blob.byteSize,
+        ]);
+        return {
+          rowCount: 1,
+          rows: [blobRow({ deleted_at: null, deletion_id: DELETION_ID }, blob)],
+        };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.queueBlobDeletion(TENANT, blob)).resolves.toEqual({
+      blob,
+      deletionId: DELETION_ID,
+      tenantId: TENANT,
+    });
   });
 });

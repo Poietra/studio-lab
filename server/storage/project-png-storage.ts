@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
 import { inflateSync } from "node:zlib";
+import { immutableObjectKeyV1 } from "./immutable-object-contract";
+import {
+  type ApplicationImmutableObjectLocatorV1,
+  isApplicationImmutableLocatorV1,
+  type ProviderVersionedObjectLocatorV1,
+  sameStorageObjectLocatorV1,
+  storageObjectLocatorIdentityV1,
+  storageObjectLocatorV1,
+} from "./storage-object-locator";
 
 export const PROJECT_PNG_LOGICAL_PATH_V1 = "image.png";
 export const MAX_PROJECT_PNG_BYTES_V1 = 512 * 1024;
@@ -8,13 +17,16 @@ export const MAX_PROJECT_PNG_PIXELS_V1 = 4_194_304;
 
 const PNG_SIGNATURE = Uint8Array.of(137, 80, 78, 71, 13, 10, 26, 10);
 
-export type ProjectPngBlobReceiptV1 = Readonly<{
+type ProjectPngBlobReceiptFieldsV1 = Readonly<{
   byteSize: number;
   digest: string;
   etag: string;
   objectKey: string;
-  versionId: string;
 }>;
+
+export type VersionedProjectPngBlobReceiptV1 = ProjectPngBlobReceiptFieldsV1 & ProviderVersionedObjectLocatorV1;
+export type ImmutableProjectPngBlobReceiptLikeV1 = ProjectPngBlobReceiptFieldsV1 & ApplicationImmutableObjectLocatorV1;
+export type ProjectPngBlobReceiptV1 = VersionedProjectPngBlobReceiptV1 | ImmutableProjectPngBlobReceiptLikeV1;
 
 export type ProjectPngHeadV1 = Readonly<{
   generation: bigint;
@@ -102,23 +114,71 @@ export function projectPngObjectKeyV1(tenantId: string, projectId: string, diges
   return `tenants/${tenantId}/projects/${projectId}/assets/${PROJECT_PNG_LOGICAL_PATH_V1}/${digest}`;
 }
 
-export function assertProjectPngReceiptV1(tenantId: string, projectId: string, value: ProjectPngBlobReceiptV1) {
+export function assertProjectPngReceiptV1(
+  tenantId: string,
+  projectId: string,
+  value: ProjectPngBlobReceiptV1,
+): ProjectPngBlobReceiptV1 {
+  let locator;
+  try {
+    locator = storageObjectLocatorV1(value);
+  } catch {
+    throw new TypeError("Project image.png receipt is invalid.");
+  }
+  const contentAddressedKey = projectPngObjectKeyV1(tenantId, projectId, value.digest);
+  const expectedKey = isApplicationImmutableLocatorV1(locator)
+    ? immutableObjectKeyV1({
+        contentAddressedKey,
+        contentDigest: value.digest,
+        objectGeneration: locator.objectGeneration,
+        tenantId,
+      })
+    : contentAddressedKey;
   if (
-    !/^[0-9a-f]{64}$/.test(value.digest) ||
-    value.objectKey !== projectPngObjectKeyV1(tenantId, projectId, value.digest) ||
+    !/^[0-9a-f]{64}$/u.test(value.digest) ||
+    value.objectKey !== expectedKey ||
     !Number.isSafeInteger(value.byteSize) ||
     value.byteSize < 1 ||
     value.byteSize > MAX_PROJECT_PNG_BYTES_V1 ||
-    typeof value.versionId !== "string" ||
-    value.versionId.length < 1 ||
-    value.versionId.length > 1_024 ||
     typeof value.etag !== "string" ||
     value.etag.length < 1 ||
-    value.etag.length > 512
+    Buffer.byteLength(value.etag, "utf8") > 512
   ) {
     throw new TypeError("Project image.png receipt is invalid.");
   }
-  return value;
+  const fields = {
+    byteSize: value.byteSize,
+    digest: value.digest,
+    etag: value.etag,
+    objectKey: expectedKey,
+  };
+  return isApplicationImmutableLocatorV1(locator)
+    ? { ...fields, objectGeneration: locator.objectGeneration }
+    : { ...fields, versionId: locator.versionId };
+}
+
+export function assertVersionedProjectPngReceiptV1(
+  tenantId: string,
+  projectId: string,
+  value: ProjectPngBlobReceiptV1,
+): VersionedProjectPngBlobReceiptV1 {
+  const receipt = assertProjectPngReceiptV1(tenantId, projectId, value);
+  if ("objectGeneration" in receipt) throw new TypeError("A provider-versioned project image.png receipt is required.");
+  return receipt;
+}
+
+export function sameProjectPngReceiptV1(left: ProjectPngBlobReceiptV1, right: ProjectPngBlobReceiptV1) {
+  return (
+    left.byteSize === right.byteSize &&
+    left.digest === right.digest &&
+    left.etag === right.etag &&
+    left.objectKey === right.objectKey &&
+    sameStorageObjectLocatorV1(left, right)
+  );
+}
+
+export function projectPngLocatorIdentityV1(value: ProjectPngBlobReceiptV1) {
+  return storageObjectLocatorIdentityV1(value);
 }
 
 function readUint32(bytes: Uint8Array, offset: number) {

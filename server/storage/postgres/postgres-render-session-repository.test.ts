@@ -1,6 +1,7 @@
 import type { Pool } from "pg";
 import { describe, expect, it, vi } from "vitest";
 import { renderSessionTransitionSources } from "../../manim-render-session-policy";
+import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -14,6 +15,8 @@ import {
 } from "./postgres-render-session-repository";
 import { WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1 } from "./postgres-workspace-source-repository";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+
+const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
 
 function renderSessionInput(sceneName: string) {
   const originalDigest = "1".repeat(64);
@@ -146,6 +149,7 @@ describe("Postgres render-session transitions", () => {
               etag: '"original"',
               generation: "1",
               object_key: `tenants/tenant-a/sources/${originalDigest}`,
+              object_generation: null,
               version_id: "original-version",
             },
           ],
@@ -213,6 +217,105 @@ describe("Postgres render-session transitions", () => {
       ),
     ).toBe(false);
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("pins an exact immutable source locator without converting it to a provider version", async () => {
+    const input = renderSessionInput("MainScene");
+    const digest = input.originalHead.blob.digest;
+    const original = {
+      byteSize: input.originalHead.blob.byteSize,
+      digest,
+      etag: input.originalHead.blob.etag,
+      objectGeneration: OBJECT_GENERATION,
+      objectKey: immutableSourceBlobObjectKeyV1("tenant-a", digest, OBJECT_GENERATION),
+    };
+    const statements: string[] = [];
+    const query = vi.fn(async (text: string) => {
+      statements.push(text);
+      if (text.includes("FROM public.workspace_source_heads")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              byte_size: original.byteSize,
+              digest,
+              etag: original.etag,
+              generation: "1",
+              object_generation: OBJECT_GENERATION,
+              object_key: original.objectKey,
+              version_id: null,
+            },
+          ],
+        };
+      }
+      if (text.includes("FROM public.project_png_heads")) return { rowCount: 0, rows: [] };
+      if (text.includes("FROM public.billing_accounts account")) return { rowCount: 0, rows: [] };
+      return { rowCount: null, rows: [] };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() })),
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(
+      repository.createSession({
+        ...input,
+        originalHead: { ...input.originalHead, blob: original },
+      }),
+    ).rejects.toMatchObject({ status: 402 });
+    expect(statements.some((statement) => statement.includes("INSERT INTO public.render_sessions"))).toBe(false);
+  });
+
+  it("rejects an immutable pin when the database still points at the legacy version", async () => {
+    const input = renderSessionInput("MainScene");
+    const digest = input.originalHead.blob.digest;
+    const original = {
+      byteSize: input.originalHead.blob.byteSize,
+      digest,
+      etag: input.originalHead.blob.etag,
+      objectGeneration: OBJECT_GENERATION,
+      objectKey: immutableSourceBlobObjectKeyV1("tenant-a", digest, OBJECT_GENERATION),
+    };
+    const query = vi.fn(async (text: string) => {
+      if (text.includes("FROM public.workspace_source_heads")) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              byte_size: original.byteSize,
+              digest,
+              etag: original.etag,
+              generation: "1",
+              object_generation: null,
+              object_key: `tenants/tenant-a/sources/${digest}`,
+              version_id: "original-version",
+            },
+          ],
+        };
+      }
+      return { rowCount: null, rows: [] };
+    });
+    const pool = {
+      connect: vi.fn(async () => ({ query, release: vi.fn() })),
+      options: {
+        connectionTimeoutMillis: 1_000,
+        options: WORKSPACE_SOURCE_POSTGRES_OPTIONS_V1,
+        query_timeout: 1_000,
+        statement_timeout: 1_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresRenderSessionRepositoryV1({ pool, statementTimeoutMs: 1_000 });
+
+    await expect(
+      repository.createSession({ ...input, originalHead: { ...input.originalHead, blob: original } }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(query.mock.calls.some(([text]) => text.includes("FROM public.billing_accounts account"))).toBe(false);
   });
 
   it.each([128, 129, 240])("accepts a %i-character Scene name before acquiring durable storage", async (length) => {

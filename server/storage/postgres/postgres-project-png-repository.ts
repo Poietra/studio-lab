@@ -10,21 +10,30 @@ import {
   type ProjectPngDeletionV1,
   type ProjectPngHeadV1,
   type ProjectPngRepositoryV1,
+  projectPngLocatorIdentityV1,
+  sameProjectPngReceiptV1,
 } from "../project-png-storage";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import {
+  type PostgresStorageObjectLocatorRowV1,
+  storageObjectLocatorFromRowV1,
+  storageObjectLocatorJoinSqlV1,
+  storageObjectLocatorPredicateSqlV1,
+  storageObjectLocatorSqlValuesV1,
+} from "./postgres-storage-object-locator";
 
 export const PROJECT_PNG_MIGRATION_V5_CHECKSUM = "5366292bd9f2ef2a575e2de9573c5d76b7e8e2f17510966265861ad673a608a0";
 
 const MAX_GENERATION = 9_223_372_036_854_775_807n;
 
-type ReceiptRow = QueryResultRow & {
-  byte_size: number;
-  digest: string;
-  etag: string;
-  object_key: string;
-  version_id: string;
-};
+type ReceiptRow = QueryResultRow &
+  PostgresStorageObjectLocatorRowV1 & {
+    byte_size: number;
+    digest: string;
+    etag: string;
+    object_key: string;
+  };
 
 type HeadRow = ReceiptRow & {
   generation: string;
@@ -45,7 +54,7 @@ type GenerationRetentionRow = QueryResultRow & {
   retained: boolean;
 };
 
-const RECEIPT_COLUMNS = "digest, object_key, version_id, etag, byte_size";
+const RECEIPT_COLUMNS = "digest, object_key, version_id, object_generation, etag, byte_size";
 
 function tenantId(value: string) {
   const parsed = manimTenantIdSchema.safeParse(value);
@@ -86,7 +95,7 @@ function receiptFromRow(tenant: string, project: string, row: ReceiptRow) {
     digest: row.digest,
     etag: row.etag,
     objectKey: row.object_key,
-    versionId: row.version_id,
+    ...storageObjectLocatorFromRowV1(row),
   });
 }
 
@@ -117,13 +126,7 @@ function deletionFromRow(row: DeletionRow, expectedTenant: string): ProjectPngDe
 }
 
 function sameReceipt(left: ProjectPngBlobReceiptV1, right: ProjectPngBlobReceiptV1) {
-  return (
-    left.byteSize === right.byteSize &&
-    left.digest === right.digest &&
-    left.etag === right.etag &&
-    left.objectKey === right.objectKey &&
-    left.versionId === right.versionId
-  );
+  return sameProjectPngReceiptV1(left, right);
 }
 
 /** PostgreSQL authority for project image.png replacement, render pinning, and deletion claims. */
@@ -152,14 +155,15 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
   async #readHead(client: PoolClient, tenant: string, project: string, lock = false) {
     const result = await client.query<HeadRow>(
       `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
-              o.digest, o.object_key, o.version_id, o.etag, o.byte_size
+              o.digest, o.object_key, o.version_id, o.object_generation, o.etag, o.byte_size
          FROM public.project_png_heads h
          JOIN public.project_png_generations g
            ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
           AND g.generation = h.generation AND g.digest = h.digest
          JOIN public.project_png_objects o
            ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
-          AND o.digest = g.digest AND o.object_key = g.object_key AND o.version_id = g.version_id
+          AND o.digest = g.digest AND o.object_key = g.object_key
+          AND ${storageObjectLocatorJoinSqlV1("o", "g")}
         WHERE h.tenant_id = $1 AND h.project_id = $2
         ${lock ? "FOR UPDATE OF h" : ""}`,
       [tenant, project],
@@ -179,6 +183,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     const tenant = tenantId(input.tenantId);
     const project = projectId(input.projectId);
     const candidate = assertProjectPngReceiptV1(tenant, project, input.candidate);
+    const [candidateVersionId, candidateObjectGeneration] = storageObjectLocatorSqlValuesV1(candidate);
     const expected = input.expected
       ? { digest: input.expected.digest, generation: generation(input.expected.generation) }
       : null;
@@ -206,37 +211,40 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       }
       if (current && sameReceipt(current.receipt, candidate)) return current;
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-        `project-png-object:${tenant}:${candidate.objectKey}:${candidate.versionId}`,
+        `project-png-object:${tenant}:${candidate.objectKey}:${projectPngLocatorIdentityV1(candidate)}`,
       ]);
       const deleting = await client.query(
-        `SELECT 1 FROM public.project_png_deletions
-          WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3`,
-        [tenant, candidate.objectKey, candidate.versionId],
+        `SELECT 1 FROM public.project_png_deletions deletion
+          WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+            AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}`,
+        [tenant, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
       );
       if (deleting.rowCount !== 0) throw new HttpError("Project image.png candidate is queued for deletion.", 409);
       const nextGeneration = current ? current.generation + 1n : 1n;
       generation(nextGeneration);
       await client.query(
         `INSERT INTO public.project_png_objects
-           (tenant_id, project_id, digest, object_key, version_id, etag, byte_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (tenant_id, object_key, version_id) DO NOTHING`,
+           (tenant_id, project_id, digest, object_key, version_id, object_generation, etag, byte_size)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT DO NOTHING`,
         [
           tenant,
           project,
           candidate.digest,
           candidate.objectKey,
-          candidate.versionId,
+          candidateVersionId,
+          candidateObjectGeneration,
           candidate.etag,
           candidate.byteSize,
         ],
       );
       const storedObject = await client.query<ReceiptRow>(
         `SELECT ${RECEIPT_COLUMNS}
-           FROM public.project_png_objects
-          WHERE tenant_id = $1 AND project_id = $2 AND object_key = $3 AND version_id = $4
+           FROM public.project_png_objects stored
+          WHERE stored.tenant_id = $1 AND stored.project_id = $2 AND stored.object_key = $3
+            AND ${storageObjectLocatorPredicateSqlV1("stored", 4, 5)}
           FOR KEY SHARE`,
-        [tenant, project, candidate.objectKey, candidate.versionId],
+        [tenant, project, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
       );
       const registered = storedObject.rows[0];
       if (!registered || !sameReceipt(receiptFromRow(tenant, project, registered), candidate)) {
@@ -244,9 +252,17 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       }
       await client.query(
         `INSERT INTO public.project_png_generations
-           (tenant_id, project_id, generation, digest, object_key, version_id, orphaned_at)
-         VALUES ($1, $2, $3::bigint, $4, $5, $6, NULL)`,
-        [tenant, project, nextGeneration.toString(), candidate.digest, candidate.objectKey, candidate.versionId],
+           (tenant_id, project_id, generation, digest, object_key, version_id, object_generation, orphaned_at)
+         VALUES ($1, $2, $3::bigint, $4, $5, $6, $7, NULL)`,
+        [
+          tenant,
+          project,
+          nextGeneration.toString(),
+          candidate.digest,
+          candidate.objectKey,
+          candidateVersionId,
+          candidateObjectGeneration,
+        ],
       );
       await client.query(
         `INSERT INTO public.project_png_heads (tenant_id, project_id, generation, digest)
@@ -257,7 +273,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       );
       if (current) {
         await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-          `project-png-object:${tenant}:${current.receipt.objectKey}:${current.receipt.versionId}`,
+          `project-png-object:${tenant}:${current.receipt.objectKey}:${projectPngLocatorIdentityV1(current.receipt)}`,
         ]);
         await client.query(
           `UPDATE public.project_png_generations g
@@ -300,15 +316,18 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     const tenant = tenantId(tenantValue);
     const project = projectId(projectValue);
     const receipt = assertProjectPngReceiptV1(tenant, project, receiptValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(receipt);
     const result = await this.#connection.query(
       `SELECT 1
          FROM public.project_png_objects o
          JOIN public.project_png_generations g
            ON g.tenant_id = o.tenant_id AND g.project_id = o.project_id
-          AND g.digest = o.digest AND g.object_key = o.object_key AND g.version_id = o.version_id
+          AND g.digest = o.digest AND g.object_key = o.object_key
+          AND ${storageObjectLocatorJoinSqlV1("g", "o")}
         WHERE o.tenant_id = $1 AND o.project_id = $2
-          AND o.digest = $3 AND o.object_key = $4 AND o.version_id = $5
-          AND o.etag = $6 AND o.byte_size = $7
+          AND o.digest = $3 AND o.object_key = $4
+          AND ${storageObjectLocatorPredicateSqlV1("o", 5, 6)}
+          AND o.etag = $7 AND o.byte_size = $8
           AND (
             EXISTS (
               SELECT 1 FROM public.project_png_heads h
@@ -321,7 +340,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
             )
           )
         LIMIT 1`,
-      [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, receipt.etag, receipt.byteSize],
+      [tenant, project, receipt.digest, receipt.objectKey, versionId, objectGeneration, receipt.etag, receipt.byteSize],
       signal,
     );
     return result.rowCount !== 0;
@@ -337,17 +356,19 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     const tenant = tenantId(tenantValue);
     const project = projectId(projectValue);
     const receipt = assertProjectPngReceiptV1(tenant, project, receiptValue);
+    const [versionId, objectGeneration] = storageObjectLocatorSqlValuesV1(receipt);
     const grace = deletionGraceMs(graceValue);
     return this.#connection.transaction(async (client) => {
       await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-        `project-png-object:${tenant}:${receipt.objectKey}:${receipt.versionId}`,
+        `project-png-object:${tenant}:${receipt.objectKey}:${projectPngLocatorIdentityV1(receipt)}`,
       ]);
       const storedObject = await client.query<ReceiptRow>(
         `SELECT ${RECEIPT_COLUMNS}
-           FROM public.project_png_objects
-          WHERE tenant_id = $1 AND project_id = $2 AND object_key = $3 AND version_id = $4
+           FROM public.project_png_objects stored
+          WHERE stored.tenant_id = $1 AND stored.project_id = $2 AND stored.object_key = $3
+            AND ${storageObjectLocatorPredicateSqlV1("stored", 4, 5)}
           FOR UPDATE`,
-        [tenant, project, receipt.objectKey, receipt.versionId],
+        [tenant, project, receipt.objectKey, versionId, objectGeneration],
       );
       const registered = storedObject.rows[0];
       if (registered && !sameReceipt(receiptFromRow(tenant, project, registered), receipt)) {
@@ -358,7 +379,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
           `SELECT g.generation::text AS generation, g.orphaned_at,
                   (
                     g.orphaned_at IS NOT NULL
-                    AND g.orphaned_at <= clock_timestamp() - ($6::double precision * interval '1 millisecond')
+                    AND g.orphaned_at <= clock_timestamp() - ($7::double precision * interval '1 millisecond')
                   ) AS mature,
                   (
                     EXISTS (
@@ -373,10 +394,11 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
                   ) AS retained
              FROM public.project_png_generations g
             WHERE g.tenant_id = $1 AND g.project_id = $2
-              AND g.digest = $3 AND g.object_key = $4 AND g.version_id = $5
+              AND g.digest = $3 AND g.object_key = $4
+              AND ${storageObjectLocatorPredicateSqlV1("g", 5, 6)}
             ORDER BY g.generation
             FOR UPDATE OF g`,
-          [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, grace],
+          [tenant, project, receipt.digest, receipt.objectKey, versionId, objectGeneration, grace],
         );
         if (generations.rowCount === 0) {
           throw new Error("The registered image.png object version has no generation evidence.");
@@ -388,7 +410,8 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
             `UPDATE public.project_png_generations g
                 SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
               WHERE g.tenant_id = $1 AND g.project_id = $2
-                AND g.digest = $3 AND g.object_key = $4 AND g.version_id = $5
+                AND g.digest = $3 AND g.object_key = $4
+                AND ${storageObjectLocatorPredicateSqlV1("g", 5, 6)}
                 AND g.orphaned_at IS NULL
                 AND NOT EXISTS (
                   SELECT 1 FROM public.project_png_heads h
@@ -400,7 +423,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
                    WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
                      AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
                 )`,
-            [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId],
+            [tenant, project, receipt.digest, receipt.objectKey, versionId, objectGeneration],
           );
           return null;
         }
@@ -414,10 +437,11 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
         const removed = await client.query(
           `DELETE FROM public.project_png_generations
             WHERE tenant_id = $1 AND project_id = $2
-              AND digest = $3 AND object_key = $4 AND version_id = $5
+              AND digest = $3 AND object_key = $4
+              AND ${storageObjectLocatorPredicateSqlV1("project_png_generations", 5, 6)}
               AND orphaned_at IS NOT NULL
-              AND orphaned_at <= clock_timestamp() - ($6::double precision * interval '1 millisecond')`,
-          [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, grace],
+              AND orphaned_at <= clock_timestamp() - ($7::double precision * interval '1 millisecond')`,
+          [tenant, project, receipt.digest, receipt.objectKey, versionId, objectGeneration, grace],
         );
         if (removed.rowCount !== generations.rowCount) {
           throw new Error("The image.png orphan generations changed before deletion was queued.");
@@ -426,25 +450,46 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
       const removedObject = await client.query(
         `DELETE FROM public.project_png_objects
           WHERE tenant_id = $1 AND project_id = $2
-            AND digest = $3 AND object_key = $4 AND version_id = $5 AND etag = $6 AND byte_size = $7`,
-        [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, receipt.etag, receipt.byteSize],
+            AND digest = $3 AND object_key = $4
+            AND ${storageObjectLocatorPredicateSqlV1("project_png_objects", 5, 6)}
+            AND etag = $7 AND byte_size = $8`,
+        [
+          tenant,
+          project,
+          receipt.digest,
+          receipt.objectKey,
+          versionId,
+          objectGeneration,
+          receipt.etag,
+          receipt.byteSize,
+        ],
       );
       if (registered && removedObject.rowCount !== 1) {
         throw new Error("The image.png object changed before deletion was queued.");
       }
       await client.query(
         `INSERT INTO public.project_png_deletions
-           (tenant_id, deletion_id, project_id, digest, object_key, version_id, etag, byte_size)
-         VALUES ($1, gen_random_uuid(), $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (tenant_id, object_key, version_id) DO NOTHING`,
-        [tenant, project, receipt.digest, receipt.objectKey, receipt.versionId, receipt.etag, receipt.byteSize],
+           (tenant_id, deletion_id, project_id, digest, object_key, version_id, object_generation, etag, byte_size)
+         VALUES ($1, gen_random_uuid(), $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT DO NOTHING`,
+        [
+          tenant,
+          project,
+          receipt.digest,
+          receipt.objectKey,
+          versionId,
+          objectGeneration,
+          receipt.etag,
+          receipt.byteSize,
+        ],
       );
       const stored = await client.query<DeletionRow>(
         `SELECT tenant_id, deletion_id::text AS deletion_id, project_id, ${RECEIPT_COLUMNS}
-           FROM public.project_png_deletions
-          WHERE tenant_id = $1 AND object_key = $2 AND version_id = $3
+           FROM public.project_png_deletions deletion
+          WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+            AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}
           FOR UPDATE`,
-        [tenant, receipt.objectKey, receipt.versionId],
+        [tenant, receipt.objectKey, versionId, objectGeneration],
       );
       const deletion = stored.rows[0] ? deletionFromRow(stored.rows[0], tenant) : null;
       if (!deletion || !sameReceipt(deletion.receipt, receipt) || deletion.projectId !== project) {
