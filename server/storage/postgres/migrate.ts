@@ -8,6 +8,7 @@ import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlemen
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
@@ -31,6 +32,7 @@ import renderSessionSceneNameSqlV19 from "./migrations/0019_render_session_scene
 import immutableObjectGenerationSqlV20 from "./migrations/0020_immutable_object_generations.sql?raw";
 import renderArtifactTombstoneSqlV21 from "./migrations/0021_render_artifact_tombstones.sql?raw";
 import accountInvitationSqlV22 from "./migrations/0022_account_invitations.sql?raw";
+import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapshots.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -46,12 +48,13 @@ import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-us
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
-export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
+export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+export { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
 export { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
@@ -109,6 +112,7 @@ export const RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE = renderSessionScene
 export const IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE = immutableObjectGenerationSqlV20;
 export const RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE = renderArtifactTombstoneSqlV21;
 export const ACCOUNT_INVITATION_MIGRATION_V22_SOURCE = accountInvitationSqlV22;
+export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapshotSqlV23;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -334,6 +338,17 @@ const accountInvitationMigrationV22: DurableStorageMigration<22> = Object.freeze
   version: 22,
 });
 
+const editorSessionSnapshotMigrationV23: DurableStorageMigration<23> = Object.freeze({
+  checksum: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM,
+  checksumMismatch: "The editor-session snapshot migration checksum is invalid.",
+  installedMismatch: "The installed editor-session snapshot schema does not match migration v23.",
+  missingPrerequisite: "Editor-session snapshot migration v23 requires durable storage migrations v1 through v22.",
+  prerequisiteMismatch:
+    "Editor-session snapshot migration v23 requires exact durable storage migrations v1 through v22.",
+  source: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE,
+  version: 23,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -357,6 +372,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   immutableObjectGenerationMigrationV20,
   renderArtifactTombstoneMigrationV21,
   accountInvitationMigrationV22,
+  editorSessionSnapshotMigrationV23,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -597,6 +613,10 @@ export function applyRenderArtifactTombstoneMigrationV21(pool: Pool, source: str
 
 export function applyAccountInvitationMigrationV22(pool: Pool, source: string) {
   return applyMigration(pool, { ...accountInvitationMigrationV22, source }, bundledMigrationsBefore(22));
+}
+
+export function applyEditorSessionSnapshotMigrationV23(pool: Pool, source: string) {
+  return applyMigration(pool, { ...editorSessionSnapshotMigrationV23, source }, bundledMigrationsBefore(23));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */
