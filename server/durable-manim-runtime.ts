@@ -23,6 +23,7 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
   assertProjectPngReceiptV1,
   inspectProjectPngBytesV1,
@@ -55,6 +56,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 export type DurableManimRuntimeOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
+  editorDocuments?: EditorDocumentRepositoryV1;
   execution?: DurableManimExecutionReadinessV1;
   frame?: Readonly<{ height: number; width: number }>;
   namespace: string;
@@ -123,6 +125,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
     | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly editorDocuments: EditorDocumentRepositoryV1 | undefined;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #projectIdFactory: () => string;
@@ -146,6 +149,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#repository = options.repository;
     this.#artifactReader = options.artifactReader;
     this.#blobs = options.blobs;
+    this.editorDocuments = options.editorDocuments;
     this.#execution = options.execution;
     this.#renders = options.renders;
     this.#snapshots = options.snapshots;
@@ -188,6 +192,14 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     ]);
     signal?.throwIfAborted();
     return repositoryReady && blobsReady;
+  }
+
+  async editorReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!this.editorDocuments) return false;
+    const editorDocumentsReady = await this.editorDocuments.ready(signal);
+    signal?.throwIfAborted();
+    return editorDocumentsReady;
   }
 
   /** Production attestation additionally requires the durable render service. */
@@ -498,6 +510,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       const results = await Promise.allSettled([
         this.#renders?.close() ?? Promise.resolve(),
         this.#artifactReader?.close() ?? Promise.resolve(),
+        this.editorDocuments?.close() ?? Promise.resolve(),
         this.#blobs.close(),
         this.#repository.close(),
       ]);
@@ -523,9 +536,12 @@ export function createDurableProductionManimRuntimeAdapterV1(
   runtime: DurableManimRuntimeV1,
   maintenance: Pick<DurableSourceBlobGcWorkerV1, "close" | "ready">,
 ): ProductionManimRuntimeAdapterV1 {
+  const editorDocuments = runtime.editorDocuments;
+  if (!editorDocuments) throw new TypeError("The durable production runtime requires editor document storage.");
   let closeRequest: Promise<void> | undefined;
   return {
     api: runtime,
+    editorDocuments,
     close() {
       closeRequest ??= (async () => {
         const errors: unknown[] = [];
@@ -545,6 +561,9 @@ export function createDurableProductionManimRuntimeAdapterV1(
         storageBoundary: "shared-durable",
         tenantBoundary: "server-owned-tenant-key",
       };
+    },
+    editorReady(signal) {
+      return runtime.editorReady(signal);
     },
     async workspaceReady(signal) {
       return maintenance.ready() && (await runtime.workspaceReady(signal));

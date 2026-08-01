@@ -4,6 +4,7 @@ import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-sna
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
+import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
   inspectProjectPngBytesV1,
   type ProjectPngBlobStoreV1,
@@ -151,17 +152,26 @@ describe("DurableManimRuntimeV1 production readiness", () => {
   it("does not attest production readiness without the durable render service", async () => {
     const repositoryClose = vi.fn(async () => undefined);
     const blobsClose = vi.fn(async () => undefined);
+    const repositoryReady = vi.fn(async () => true);
+    const blobsReady = vi.fn(async () => true);
+    const editorDocumentsClose = vi.fn(async () => undefined);
+    const editorDocumentsReady = vi.fn(async () => false);
+    const editorDocuments = partial<EditorDocumentRepositoryV1>({
+      close: editorDocumentsClose,
+      ready: editorDocumentsReady,
+    });
     const maintenanceClose = vi.fn(async () => undefined);
     const runtime = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({
         close: blobsClose,
-        ready: async () => true,
+        ready: blobsReady,
       }),
+      editorDocuments,
       execution: { ready: async () => true },
       namespace: "production-readiness-test",
       repository: partial<WorkspaceSourceRepositoryV1>({
         close: repositoryClose,
-        ready: async () => true,
+        ready: repositoryReady,
       }),
       tenantId: "tenant-a",
     });
@@ -172,14 +182,21 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     const adapter = createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
 
     await expect(runtime.ready()).resolves.toBe(true);
+    expect(editorDocumentsReady).not.toHaveBeenCalled();
     await expect(runtime.workspaceReady()).resolves.toBe(true);
     await expect(runtime.productionReady()).resolves.toBe(false);
+    expect(adapter.editorDocuments).toBe(editorDocuments);
+    if (!adapter.editorReady) throw new Error("The durable adapter did not expose editor readiness.");
+    const workspaceProbeCounts = [repositoryReady.mock.calls.length, blobsReady.mock.calls.length];
+    await expect(adapter.editorReady(new AbortController().signal)).resolves.toBe(false);
+    expect([repositoryReady.mock.calls.length, blobsReady.mock.calls.length]).toEqual(workspaceProbeCounts);
     await expect(adapter.workspaceReady(new AbortController().signal)).resolves.toBe(true);
     await expect(adapter.ready(new AbortController().signal)).resolves.toEqual({ ready: false });
 
     await Promise.all([adapter.close(), adapter.close()]);
     expect(maintenanceClose).toHaveBeenCalledOnce();
     expect(blobsClose).toHaveBeenCalledOnce();
+    expect(editorDocumentsClose).toHaveBeenCalledOnce();
     expect(repositoryClose).toHaveBeenCalledOnce();
   });
 

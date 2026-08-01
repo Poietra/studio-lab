@@ -7,6 +7,7 @@ import { z } from "zod";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
+import { handleEditorDocumentRequest, isEditorDocumentRequest } from "./editor-document-http";
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
@@ -18,6 +19,7 @@ import {
 } from "./manim-render-http";
 import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
+import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 
 export {
   ACCOUNT_SESSION_COOKIE_NAME_V1,
@@ -197,6 +199,8 @@ export type ProductionRuntimeReadinessV1 =
 export type ProductionManimRuntimeAdapterV1 = Readonly<{
   api: ManimApi;
   close: () => Promise<void>;
+  editorDocuments?: EditorDocumentRepositoryV1;
+  editorReady?: (signal: AbortSignal) => Promise<boolean>;
   /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
   ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
   /** Covers the durable source workspace required to serve the editor shell. */
@@ -398,6 +402,18 @@ export async function startProductionManimServer(
     throw new TypeError("Production Manim runtime adapter is incomplete.");
   }
   if (
+    (options.runtime.editorDocuments === undefined) !== (options.runtime.editorReady === undefined) ||
+    (options.runtime.editorDocuments !== undefined &&
+      (typeof options.runtime.editorDocuments !== "object" ||
+        options.runtime.editorDocuments === null ||
+        typeof options.runtime.editorDocuments.openDocument !== "function" ||
+        typeof options.runtime.editorDocuments.commitMutation !== "function" ||
+        typeof options.runtime.editorDocuments.readEventTail !== "function" ||
+        typeof options.runtime.editorReady !== "function"))
+  ) {
+    throw new TypeError("Production editor document adapter is incomplete.");
+  }
+  if (
     typeof options.admission !== "object" ||
     options.admission === null ||
     typeof options.admission.authenticate !== "function" ||
@@ -517,12 +533,29 @@ export async function startProductionManimServer(
     }
   };
 
+  const runtimeEditorIsReady = async (signal: AbortSignal) => {
+    if (!options.runtime.editorReady) return false;
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => options.runtime.editorReady!(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.editor_readiness_probe_failed");
+      return false;
+    }
+  };
+
   const dependenciesReady = async (signal: AbortSignal) => {
-    const [admissionReady, runtimeReady] = await Promise.all([
+    const [admissionReady, workspaceReady, editorReady] = await Promise.all([
       admissionIsReady(signal),
       runtimeWorkspaceIsReady(signal),
+      options.runtime.editorReady ? runtimeEditorIsReady(signal) : Promise.resolve(true),
     ]);
-    return admissionReady && runtimeReady;
+    return admissionReady && workspaceReady && editorReady;
   };
 
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
@@ -567,7 +600,12 @@ export async function startProductionManimServer(
         return;
       }
       const isEditSuggestionRequest = pathname === EDIT_SUGGESTION_ROUTE;
-      if ((!isEditSuggestionRequest || !editSuggestionHandler) && !pathname.startsWith("/api/manim/")) {
+      const isEditorRequest = isEditorDocumentRequest(pathname);
+      if (
+        (!isEditSuggestionRequest || !editSuggestionHandler) &&
+        !isEditorRequest &&
+        !pathname.startsWith("/api/manim/")
+      ) {
         throw new TransportError("Endpoint not found.", 404);
       }
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
@@ -621,6 +659,32 @@ export async function startProductionManimServer(
           principal: context.principal,
           requestSignal: controller.signal,
         });
+        return;
+      }
+      if (isEditorRequest) {
+        if (!options.runtime.editorDocuments || !options.runtime.editorReady) {
+          throw new TransportError("Production editor storage is not configured.", 503);
+        }
+        const [workspaceReady, editorReady] = await Promise.all([
+          runtimeWorkspaceIsReady(controller.signal),
+          runtimeEditorIsReady(controller.signal),
+        ]);
+        if (!workspaceReady || !editorReady) {
+          throw new TransportError("Production editor storage is not ready.", 503);
+        }
+        if (controller.signal.aborted) return;
+        if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
+        await raceWithSignal(
+          () =>
+            trackRuntimeTask(() =>
+              handleEditorDocumentRequest(options.runtime.editorDocuments!, context.principal, request, response, {
+                expectedMutationOrigin: config.publicOrigin,
+                maxJsonBodyBytes: config.limits.maxBodyBytes,
+                requestSignal: controller.signal,
+              }),
+            ),
+          controller.signal,
+        );
         return;
       }
       // Project/workspace bootstrap requires only its durable source storage so

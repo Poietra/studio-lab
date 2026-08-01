@@ -10,7 +10,7 @@
   },
   "scripts": {
     "test": "vitest run",
-    "test:unit": "vitest run src/accounts src/ai src/billing src/engine src/studio e2e/benchmark-support.test.ts e2e/visual-parity.test.ts --exclude src/studio/workspace-projection.test.ts",
+    "test:unit": "vitest run src/accounts src/ai src/billing src/collaboration src/engine src/studio e2e/benchmark-support.test.ts e2e/visual-parity.test.ts --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/derive-mathtex-artifact.test.ts scripts/rollout-billing-entitlement.test.ts",
     "test:storage:e2e": "node scripts/run-workspace-source-storage-e2e.mjs",
     "test:engine:wasm-smoke": "node scripts/smoke-engine-wasm.mjs",
