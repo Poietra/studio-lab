@@ -374,6 +374,12 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       expect(projection.rows).toMatchObject([
         { canonical_programs: [{ transactionId: "second-edit" }], revision: "4" },
       ]);
+      await expect(editorA.openDocument(openInput)).resolves.toMatchObject({
+        created: false,
+        document: { epoch: EPOCH_A, revision: 4n },
+        kind: "opened",
+        projection: { programs: [{ transactionId: "second-edit" }], revision: 4n },
+      });
       await expect(
         editorA.readEventTail({
           afterRevision: 0n,

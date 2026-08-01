@@ -435,6 +435,7 @@ describe("standalone production Manim HTTP adapter", () => {
         updatedAt: openedAt,
       },
       kind: "opened",
+      projection: { programs: [], revision: 0n },
     }));
     const editorDocuments: EditorDocumentRepositoryV1 = {
       close: async () => undefined,
@@ -495,7 +496,11 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(openDocument).not.toHaveBeenCalled();
     const opened = await request("Bearer tenant-a");
     expect(opened).toMatchObject({ status: 201 });
-    expect(JSON.parse(opened.body)).toMatchObject({ document: { revision: "0" }, kind: "opened" });
+    expect(JSON.parse(opened.body)).toMatchObject({
+      document: { revision: "0" },
+      kind: "opened",
+      projection: { programs: [], revision: "0" },
+    });
     expect(openDocument).toHaveBeenCalledWith(
       {
         projectId: "project-a",

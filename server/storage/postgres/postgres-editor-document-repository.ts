@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import type { Pool, PoolConfig, QueryResultRow } from "pg";
+import type { Pool, PoolClient, PoolConfig, QueryResultRow } from "pg";
 
 import {
   applyEditorEditMutationV1,
@@ -10,6 +10,7 @@ import {
 import {
   canonicalEditorProgramV1,
   createEditorDocumentKeyV1,
+  type EditorDocumentProjectionV1,
   type EditorDocumentRepositoryV1,
   type EditorDocumentV1,
   type EditorEditEventV1,
@@ -204,8 +205,112 @@ function foldAuthoritativeEventsV1(
   return programs;
 }
 
+function authoritativeProjectionProgramsV1(value: unknown) {
+  const programs = parseAuthoritativeEditorProgramsV1(value).map(
+    (program) => canonicalEditorProgramV1(program).program,
+  );
+  return Object.freeze(parseAuthoritativeEditorProgramsV1(programs));
+}
+
 function projectionProgramsJsonV1(programs: readonly EditorEditEventV1["mutation"]["program"][]) {
-  return JSON.stringify(parseAuthoritativeEditorProgramsV1(programs));
+  return JSON.stringify(authoritativeProjectionProgramsV1(programs));
+}
+
+function assertProjectionProgramCountV1(programs: EditorDocumentProjectionV1["programs"], revision: bigint) {
+  if (BigInt(programs.length) > revision) {
+    throw new TypeError("PostgreSQL editor projection contains more Programs than its revision.");
+  }
+}
+
+async function alignedEditorProjectionV1(
+  client: PoolClient,
+  document: EditorDocumentV1,
+): Promise<EditorDocumentProjectionV1> {
+  const projectionResult = await client.query<ProjectionRow>(
+    `SELECT projection.revision::text AS revision, projection.canonical_programs
+       FROM public.editor_document_projections projection
+      WHERE projection.tenant_id = $1 AND projection.project_id = $2
+        AND projection.document_key = $3 AND projection.epoch = $4::uuid
+      FOR UPDATE OF projection`,
+    [document.tenantId, document.projectId, digestBytesV1(document.documentKey), document.epoch],
+  );
+  if (projectionResult.rows.length > 1) {
+    throw new TypeError("PostgreSQL returned duplicate editor document projections.");
+  }
+  const projectionRow = projectionResult.rows[0];
+  const storedRevision = projectionRow
+    ? revisionFromPostgresV1(projectionRow.revision, "editor projection revision")
+    : 0n;
+  if (storedRevision > document.revision) {
+    throw new TypeError("PostgreSQL returned an editor projection ahead of its document revision.");
+  }
+  let programs = projectionRow
+    ? authoritativeProjectionProgramsV1(projectionRow.canonical_programs)
+    : Object.freeze([]);
+  assertProjectionProgramCountV1(programs, storedRevision);
+  if (storedRevision < document.revision) {
+    const history = await client.query<EventRow>(
+      `SELECT ${EVENT_COLUMNS_V1}
+         FROM public.editor_edit_events event
+        WHERE event.tenant_id = $1 AND event.project_id = $2
+          AND event.document_key = $3 AND event.epoch = $4::uuid
+          AND event.revision > $5::bigint AND event.revision <= $6::bigint
+        ORDER BY event.revision
+        LIMIT ${MAX_APPLIED_EDITOR_PROGRAMS_V1 + 1}`,
+      [
+        document.tenantId,
+        document.projectId,
+        digestBytesV1(document.documentKey),
+        document.epoch,
+        storedRevision.toString(),
+        document.revision.toString(),
+      ],
+    );
+    if (history.rows.length > MAX_APPLIED_EDITOR_PROGRAMS_V1) {
+      throw new TypeError("PostgreSQL editor projection recovery exceeds its bounded cutover window.");
+    }
+    programs = Object.freeze(
+      foldAuthoritativeEventsV1(programs, storedRevision, history.rows.map(eventFromRowV1), document.revision),
+    );
+    assertProjectionProgramCountV1(programs, document.revision);
+  }
+  if (!projectionRow) {
+    const insertedProjection = await client.query(
+      `INSERT INTO public.editor_document_projections
+         (tenant_id, project_id, document_key, epoch, revision, canonical_programs)
+       VALUES ($1, $2, $3, $4::uuid, $5::bigint, $6::jsonb)`,
+      [
+        document.tenantId,
+        document.projectId,
+        digestBytesV1(document.documentKey),
+        document.epoch,
+        document.revision.toString(),
+        projectionProgramsJsonV1(programs),
+      ],
+    );
+    if (insertedProjection.rowCount !== 1) {
+      throw new TypeError("PostgreSQL did not initialize the derived editor projection.");
+    }
+  } else if (storedRevision < document.revision) {
+    const caughtUp = await client.query(
+      `UPDATE public.editor_document_projections projection
+          SET revision = $5::bigint, canonical_programs = $6::jsonb, updated_at = clock_timestamp()
+        WHERE projection.tenant_id = $1 AND projection.project_id = $2
+          AND projection.document_key = $3 AND projection.epoch = $4::uuid
+          AND projection.revision = $7::bigint`,
+      [
+        document.tenantId,
+        document.projectId,
+        digestBytesV1(document.documentKey),
+        document.epoch,
+        document.revision.toString(),
+        projectionProgramsJsonV1(programs),
+        storedRevision.toString(),
+      ],
+    );
+    if (caughtUp.rowCount !== 1) throw new TypeError("PostgreSQL did not catch up the editor projection.");
+  }
+  return Object.freeze({ programs, revision: document.revision });
 }
 
 export type PostgresEditorDocumentRepositoryOptionsV1 = Readonly<{
@@ -290,8 +395,11 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         [input.tenantId, input.projectId, digestBytesV1(documentKey)],
       );
       if (current.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate open editor documents.");
-      if (current.rows[0])
-        return { created: false, document: documentFromRowV1(current.rows[0]), kind: "opened" } as const;
+      if (current.rows[0]) {
+        const document = documentFromRowV1(current.rows[0]);
+        const projection = await alignedEditorProjectionV1(client, document);
+        return { created: false, document, kind: "opened", projection } as const;
+      }
 
       const epoch = this.#randomUuid();
       const inserted = await client.query<DocumentRow>(
@@ -310,6 +418,8 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
       );
       const row = inserted.rows[0];
       if (inserted.rowCount !== 1 || !row) throw new TypeError("PostgreSQL did not open the editor document.");
+      const document = documentFromRowV1(row);
+      if (document.revision !== 0n) throw new TypeError("PostgreSQL opened a non-zero editor document revision.");
       const projection = await client.query(
         `INSERT INTO public.editor_document_projections
            (tenant_id, project_id, document_key, epoch, revision, canonical_programs)
@@ -317,7 +427,12 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         [input.tenantId, input.projectId, digestBytesV1(documentKey), epoch],
       );
       if (projection.rowCount !== 1) throw new TypeError("PostgreSQL did not initialize the editor projection.");
-      return { created: true, document: documentFromRowV1(row), kind: "opened" } as const;
+      return {
+        created: true,
+        document,
+        kind: "opened",
+        projection: Object.freeze({ programs: Object.freeze([]), revision: 0n }),
+      } as const;
     }, signal);
   }
 
@@ -436,93 +551,8 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         return { currentRevision: document.revision, kind: "conflict", reason: "revision-mismatch" } as const;
       }
 
-      const projectionResult = await client.query<ProjectionRow>(
-        `SELECT projection.revision::text AS revision, projection.canonical_programs
-           FROM public.editor_document_projections projection
-          WHERE projection.tenant_id = $1 AND projection.project_id = $2
-            AND projection.document_key = $3 AND projection.epoch = $4::uuid
-          FOR UPDATE OF projection`,
-        [input.tenantId, input.projectId, digestBytesV1(input.documentKey), input.epoch],
-      );
-      if (projectionResult.rows.length > 1) {
-        throw new TypeError("PostgreSQL returned duplicate editor document projections.");
-      }
-      const projectionRow = projectionResult.rows[0];
-      let projectionRevision = projectionRow
-        ? revisionFromPostgresV1(projectionRow.revision, "editor projection revision")
-        : 0n;
-      if (projectionRevision > document.revision) {
-        throw new TypeError("PostgreSQL returned an editor projection ahead of its document revision.");
-      }
-      let currentPrograms = projectionRow
-        ? parseAuthoritativeEditorProgramsV1(projectionRow.canonical_programs)
-        : parseAuthoritativeEditorProgramsV1([]);
-      if (projectionRevision < document.revision) {
-        const history = await client.query<EventRow>(
-          `SELECT ${EVENT_COLUMNS_V1}
-             FROM public.editor_edit_events event
-            WHERE event.tenant_id = $1 AND event.project_id = $2
-              AND event.document_key = $3 AND event.epoch = $4::uuid
-              AND event.revision > $5::bigint AND event.revision <= $6::bigint
-            ORDER BY event.revision
-            LIMIT ${MAX_APPLIED_EDITOR_PROGRAMS_V1 + 1}`,
-          [
-            input.tenantId,
-            input.projectId,
-            digestBytesV1(input.documentKey),
-            input.epoch,
-            projectionRevision.toString(),
-            document.revision.toString(),
-          ],
-        );
-        if (history.rows.length > MAX_APPLIED_EDITOR_PROGRAMS_V1) {
-          throw new TypeError("PostgreSQL editor projection recovery exceeds its bounded cutover window.");
-        }
-        currentPrograms = foldAuthoritativeEventsV1(
-          currentPrograms,
-          projectionRevision,
-          history.rows.map(eventFromRowV1),
-          document.revision,
-        );
-      }
-      if (!projectionRow) {
-        const insertedProjection = await client.query(
-          `INSERT INTO public.editor_document_projections
-             (tenant_id, project_id, document_key, epoch, revision, canonical_programs)
-           VALUES ($1, $2, $3, $4::uuid, $5::bigint, $6::jsonb)`,
-          [
-            input.tenantId,
-            input.projectId,
-            digestBytesV1(input.documentKey),
-            input.epoch,
-            document.revision.toString(),
-            projectionProgramsJsonV1(currentPrograms),
-          ],
-        );
-        if (insertedProjection.rowCount !== 1) {
-          throw new TypeError("PostgreSQL did not initialize the derived editor projection.");
-        }
-      } else if (projectionRevision < document.revision) {
-        const caughtUp = await client.query(
-          `UPDATE public.editor_document_projections projection
-              SET revision = $5::bigint, canonical_programs = $6::jsonb, updated_at = clock_timestamp()
-            WHERE projection.tenant_id = $1 AND projection.project_id = $2
-              AND projection.document_key = $3 AND projection.epoch = $4::uuid
-              AND projection.revision = $7::bigint`,
-          [
-            input.tenantId,
-            input.projectId,
-            digestBytesV1(input.documentKey),
-            input.epoch,
-            document.revision.toString(),
-            projectionProgramsJsonV1(currentPrograms),
-            projectionRevision.toString(),
-          ],
-        );
-        if (caughtUp.rowCount !== 1) throw new TypeError("PostgreSQL did not catch up the editor projection.");
-      }
-      projectionRevision = document.revision;
-      const applied = applyEditorEditMutationV1(currentPrograms, input.mutation);
+      const currentProjection = await alignedEditorProjectionV1(client, document);
+      const applied = applyEditorEditMutationV1(currentProjection.programs, input.mutation);
       if (applied.kind !== "applied") {
         return { currentRevision: document.revision, kind: "conflict", reason: "invalid-mutation" } as const;
       }
@@ -587,7 +617,7 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
           input.epoch,
           nextRevision.toString(),
           projectionProgramsJsonV1(applied.programs),
-          projectionRevision.toString(),
+          currentProjection.revision.toString(),
         ],
       );
       if (projected.rowCount !== 1) throw new TypeError("PostgreSQL did not advance the editor projection.");

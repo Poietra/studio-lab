@@ -211,6 +211,9 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
         expect(text).toContain("FOR UPDATE OF document");
         return currentReads === 2 ? { rowCount: 1, rows: [documentRow()] } : { rowCount: 0, rows: [] };
       }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
       if (text.startsWith("INSERT INTO public.editor_documents")) {
         documentInserts += 1;
         return {
@@ -264,12 +267,14 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
       created: true,
       document: { documentKey: DOCUMENT_KEY, epoch: EPOCH_A, revision: 0n, sourceHash: SOURCE_A },
       kind: "opened",
+      projection: { programs: [], revision: 0n },
     });
     expect(same).toEqual({ ...(first as Extract<typeof first, { kind: "opened" }>), created: false });
     expect(changed).toMatchObject({
       created: true,
       document: { documentKey: DOCUMENT_KEY, epoch: EPOCH_B, revision: 0n, sourceHash: SOURCE_B },
       kind: "opened",
+      projection: { programs: [], revision: 0n },
     });
     expect(staleTexts.some((text) => text.startsWith("UPDATE public.editor_documents"))).toBe(false);
     expect(staleTexts.some((text) => text.startsWith("INSERT INTO public.editor_documents"))).toBe(false);
@@ -290,6 +295,143 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     const ordered = [projectLock, sourceLock, seal, current, insert];
     expect(ordered).toEqual(ordered.toSorted((a, b) => a - b));
     expect(projectLock).toBeGreaterThanOrEqual(0);
+  });
+
+  it("atomically rebuilds and returns a revision-aligned legacy projection when opening", async () => {
+    const projectionWrites: Readonly<{ text: string; values: readonly unknown[] }>[] = [];
+    const fixture = fakePool((text, values) => {
+      if (text.includes("FROM public.workspace_projects project")) {
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.includes("FROM public.workspace_source_heads source")) {
+        return { rowCount: 1, rows: [{ source_hash: Buffer.from(SOURCE_A, "hex") }] };
+      }
+      if (text.startsWith("UPDATE public.editor_documents") && text.includes("source_path = $3")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.editor_documents document") && text.includes("sealed_at IS NULL")) {
+        expect(text).toContain("FOR UPDATE OF document");
+        return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+      }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        expect(text).toContain("FOR UPDATE OF projection");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.includes("FROM public.editor_edit_events event") && text.includes("event.revision > $5::bigint")) {
+        expect(text).toContain("LIMIT 33");
+        expect(values).toEqual([TENANT_A, PROJECT, Buffer.from(DOCUMENT_KEY, "hex"), EPOCH_A, "0", "1"]);
+        return { rowCount: 1, rows: [eventRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_document_projections")) {
+        projectionWrites.push({ text, values });
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+
+    const result = await repository.openDocument({
+      projectId: PROJECT,
+      sceneId: SCENE_ID,
+      sourceHash: SOURCE_A,
+      sourcePath: SOURCE_PATH,
+      tenantId: TENANT_A,
+    });
+
+    expect(result).toMatchObject({
+      created: false,
+      document: { documentKey: DOCUMENT_KEY, epoch: EPOCH_A, revision: 1n },
+      kind: "opened",
+      projection: { programs: [PROGRAM_A], revision: 1n },
+    });
+    if (result.kind !== "opened") throw new Error("The legacy editor document did not open.");
+    expect(Object.isFrozen(result.projection)).toBe(true);
+    expect(Object.isFrozen(result.projection.programs)).toBe(true);
+    expect(projectionWrites).toHaveLength(1);
+    expect(projectionWrites[0]?.values[4]).toBe("1");
+    expect(JSON.parse(String(projectionWrites[0]?.values[5]))).toEqual([PROGRAM_A]);
+  });
+
+  it("fails closed when an open projection is duplicate, ahead, oversized, or cannot replay to the document", async () => {
+    const oversizedOperations = Array.from({ length: 64 }, (_, index) => ({
+      ...PROGRAM_A.operations[0]!,
+      id: `oversized/operation:${index}`,
+      provenance: {
+        ...PROGRAM_A.operations[0]!.provenance,
+        evidence: Array(32).fill("x".repeat(500)),
+      },
+    }));
+    const oversizedProgram: CanonicalEditProgram = {
+      ...PROGRAM_A,
+      operations: oversizedOperations,
+      schedule: { edges: [], mode: "sequence", order: oversizedOperations.map(({ id }) => id) },
+    };
+    const cases = [
+      {
+        expected: /duplicate editor document projections/i,
+        history: [] as ReturnType<typeof eventRow>[],
+        projectionRows: [
+          { canonical_programs: [], revision: "1" },
+          { canonical_programs: [], revision: "1" },
+        ],
+      },
+      {
+        expected: /projection ahead/i,
+        history: [] as ReturnType<typeof eventRow>[],
+        projectionRows: [{ canonical_programs: [], revision: "2" }],
+      },
+      {
+        expected: /at most 262144 UTF-8 bytes/i,
+        history: [] as ReturnType<typeof eventRow>[],
+        projectionRows: [{ canonical_programs: [oversizedProgram], revision: "1" }],
+      },
+      {
+        expected: /more Programs than its revision/i,
+        history: [] as ReturnType<typeof eventRow>[],
+        projectionRows: [{ canonical_programs: [PROGRAM_A], revision: "0" }],
+      },
+      {
+        expected: /history behind/i,
+        history: [] as ReturnType<typeof eventRow>[],
+        projectionRows: [] as { canonical_programs: unknown; revision: string }[],
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const fixture = fakePool((text) => {
+        if (text.includes("FROM public.workspace_projects project")) {
+          return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+        }
+        if (text.includes("FROM public.workspace_source_heads source")) {
+          return { rowCount: 1, rows: [{ source_hash: Buffer.from(SOURCE_A, "hex") }] };
+        }
+        if (text.startsWith("UPDATE public.editor_documents") && text.includes("source_path = $3")) {
+          return { rowCount: 0, rows: [] };
+        }
+        if (text.includes("FROM public.editor_documents document") && text.includes("sealed_at IS NULL")) {
+          return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+        }
+        if (text.includes("FROM public.editor_document_projections projection")) {
+          return { rowCount: testCase.projectionRows.length, rows: testCase.projectionRows };
+        }
+        if (text.includes("FROM public.editor_edit_events event") && text.includes("event.revision > $5::bigint")) {
+          return { rowCount: testCase.history.length, rows: testCase.history };
+        }
+        throw new Error(`Unexpected query: ${text}`);
+      });
+      const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+
+      await expect(
+        repository.openDocument({
+          projectId: PROJECT,
+          sceneId: SCENE_ID,
+          sourceHash: SOURCE_A,
+          sourcePath: SOURCE_PATH,
+          tenantId: TENANT_A,
+        }),
+      ).rejects.toThrow(testCase.expected);
+      expect(queryTexts(fixture.query).at(-1)).toBe("ROLLBACK");
+    }
   });
 
   it("appends once, replays the exact mutation before CAS, and rejects mutation-key payload reuse", async () => {
