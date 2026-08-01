@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
+import { EditorSessionStore } from "./editor-session-store";
 import type { ProgramRecord } from "./model";
 import {
   applyEditorDraft,
@@ -9,6 +10,7 @@ import {
   editEditorAppliedProgram,
   editorProgramRecord,
   initializeEditorScene,
+  installAuthoritativeEditorPrograms,
   LatestRequestController,
   redoEditorProgram,
   restoreEditorSession,
@@ -16,7 +18,6 @@ import {
   stageEditorDraft,
   undoEditorProgram,
 } from "./use-editor-controller";
-import { EditorSessionStore } from "./editor-session-store";
 
 function record(transactionId: string, resolvedSeconds = 5): ProgramRecord {
   return {
@@ -126,6 +127,38 @@ describe("editor session lifecycle", () => {
 });
 
 describe("editor draft history", () => {
+  it("installs an authoritative projection and invalidates stale local authoring history", () => {
+    const local = editorProgramRecord(record("local"), motionOperation, ["equation"]);
+    const remote = record("remote");
+    const reconciled = installAuthoritativeEditorPrograms(
+      {
+        ...createInitialEditorState(),
+        appliedPrograms: [local],
+        draftOperation: motionOperation,
+        draftProgram: record("draft"),
+        editingAppliedProgram: { index: 0, original: local },
+        isPlaying: true,
+        programUndoEntries: [{ index: 0, kind: "append", value: local }],
+        redoPrograms: [{ kind: "mutation", mutation: { index: 0, kind: "append", value: local } }],
+        selectedObjectIds: ["equation"],
+      },
+      [remote],
+      "Remote history changed.",
+    );
+
+    expect(reconciled).toMatchObject({
+      appliedPrograms: [remote],
+      draftError: "Remote history changed.",
+      draftOperation: null,
+      draftProgram: null,
+      editingAppliedProgram: null,
+      isPlaying: false,
+      programUndoEntries: [],
+      redoPrograms: [],
+      selectedObjectIds: [],
+    });
+  });
+
   it("stages and applies a validated draft atomically", () => {
     const draft = record("draft", 5);
     const staged = stageEditorDraft(
