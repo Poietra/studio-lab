@@ -112,6 +112,33 @@ before it opens PostgreSQL storage; missing bindings, invalid configuration,
 rate-limit errors, and missing Cloudflare client IPs fail closed with a generic
 503.
 
+Realtime Editor head notification is a third, separately deployed edge at
+`server/cloudflare-editor-collaboration-worker.ts`. Copy
+`wrangler.editor-collaboration.example.jsonc` to the ignored
+`wrangler.editor-collaboration.jsonc`, then replace its route, zone, Hyperdrive
+ID, and the two account-unique rate-limit namespace IDs. Run
+`pnpm build:collaboration-worker` for a local dry-run bundle
+and `pnpm deploy:collaboration-worker` only with the reviewed deployment file.
+The route must remain limited to same-origin `/api/collaboration/*`; Worker
+preview URLs, invocation logs, and traces stay disabled.
+
+The collaboration Worker accepts only an exact WebSocket upgrade carrying the
+server-issued HttpOnly session cookie. It resolves the session's active
+Organization, revalidates the PostgreSQL membership and project, then routes
+the exact Organization/project/document/epoch tuple to one hibernatable Durable
+Object. Use a caching-disabled Hyperdrive configuration: revoked sessions,
+memberships, and deleted projects must not be admitted from a stale cache. The
+connect limiter is checked before PostgreSQL and again against the authenticated
+member; a separate head limiter bounds notification-to-tail-read amplification.
+Missing or malformed limiter bindings fail closed. The
+Durable Object persists no Program, event, or revision. Its strict head message
+is only a lossy wake-up; every browser applies changes exclusively by reading
+the authenticated PostgreSQL event tail. Consequently a duplicate, stale, or
+forged-ahead head cannot install state. Reconnect always wakes the same tail
+reconciler so DO eviction and missed broadcasts converge from PostgreSQL.
+Actual append/replace/remove mutations continue through the production Editor
+HTTP endpoint, which revalidates membership and performs the revision CAS.
+
 The Stripe billing edge is a separate deployment at
 `server/cloudflare-billing-control-plane-worker.ts`; do not add its routes or
 secrets to the OIDC Worker. Copy `wrangler.billing-control-plane.example.jsonc`

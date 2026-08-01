@@ -6,6 +6,7 @@ dist-sandbox-broker/
 dist-render-sandbox-broker/
 dist-account-worker/
 dist-billing-worker/
+dist-collaboration-worker/
 release/
 .vite/
 playwright-report/
@@ -18,6 +19,7 @@ dist-benchmark/
 !.dev.vars.example
 wrangler.account-control-plane.jsonc
 wrangler.billing-control-plane.jsonc
+wrangler.editor-collaboration.jsonc
 .openai-key
 .studio-logs/
 .poietra/

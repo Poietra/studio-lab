@@ -194,6 +194,7 @@ describe("Editor document authority", () => {
       code: "conflict",
     });
     await expect(authority.retry()).resolves.toMatchObject({
+      accepted: true,
       kind: "reconciled",
       snapshot: { programs: [first, second], revision: "2" },
     });
@@ -254,6 +255,7 @@ describe("Editor document authority", () => {
     await authority.open();
 
     await expect(authority.commit(firstMutation)).resolves.toMatchObject({
+      accepted: true,
       kind: "reconciled",
       snapshot: { programs: [first, second], revision: "2" },
     });
@@ -279,6 +281,7 @@ describe("Editor document authority", () => {
     await authority.open();
 
     await expect(authority.commit({ kind: "append", program: local })).resolves.toMatchObject({
+      accepted: false,
       kind: "reconciled",
       snapshot: { programs: [remote], revision: "1" },
     });
@@ -322,6 +325,24 @@ describe("Editor document authority", () => {
     await authority.open();
 
     await expect(authority.reconcile()).rejects.toMatchObject({ code: "corrupt-response" });
+  });
+
+  it("does not report a retried remote-tail recovery as an accepted local commit", async () => {
+    const remoteMutation = { kind: "append", program: program("remote", 1) } as const;
+    const tail = vi
+      .fn<EditorDocumentClientV1["tail"]>()
+      .mockResolvedValueOnce({ document: document(0), events: [] })
+      .mockRejectedValueOnce(new Error("tail connection reset"))
+      .mockResolvedValueOnce({ document: document(1), events: [event(1, remoteMutation)] });
+    const authority = new EditorDocumentAuthorityV1(client({ tail }), identity);
+    await authority.open();
+
+    await expect(authority.reconcile()).rejects.toThrow("tail connection reset");
+    await expect(authority.retry()).resolves.toMatchObject({
+      accepted: false,
+      kind: "reconciled",
+      snapshot: { programs: [remoteMutation.program], revision: "1" },
+    });
   });
 
   it("fails closed on a wrong-epoch event instead of advancing the replica", async () => {

@@ -38,7 +38,7 @@ export type EditorDocumentAuthoritySnapshotV1 = Readonly<{
 
 export type EditorDocumentAuthorityCommitOutcomeV1 =
   | Readonly<{ kind: "committed"; snapshot: EditorDocumentAuthoritySnapshotV1 }>
-  | Readonly<{ kind: "reconciled"; snapshot: EditorDocumentAuthoritySnapshotV1 }>;
+  | Readonly<{ accepted: boolean; kind: "reconciled"; snapshot: EditorDocumentAuthoritySnapshotV1 }>;
 
 export type EditorDocumentAuthorityRecoveryKindV1 = "commit" | "tail";
 
@@ -144,6 +144,7 @@ export class EditorDocumentAuthorityV1 {
   #programs: readonly CanonicalEditProgram[] = [];
   #recovery: "tail" | null = null;
   #revision = 0n;
+  #tailRecoveryAccepted = false;
 
   constructor(
     private readonly client: EditorDocumentClientV1,
@@ -187,6 +188,7 @@ export class EditorDocumentAuthorityV1 {
       this.#programs = parseAuthoritativeEditorProgramsV1(result.projection.programs);
       this.#pending = null;
       this.#recovery = "tail";
+      this.#tailRecoveryAccepted = false;
       return (await this.#recoverTailV1(signal)).snapshot;
     } finally {
       this.#inFlight = false;
@@ -246,8 +248,9 @@ export class EditorDocumentAuthorityV1 {
     this.#inFlight = true;
     try {
       if (pending) return await this.#submitPendingV1(pending, signal);
+      const accepted = this.#tailRecoveryAccepted;
       const reconciled = await this.#recoverTailV1(signal);
-      return { kind: "reconciled", snapshot: reconciled.snapshot };
+      return { accepted, kind: "reconciled", snapshot: reconciled.snapshot };
     } finally {
       this.#inFlight = false;
     }
@@ -258,6 +261,7 @@ export class EditorDocumentAuthorityV1 {
     if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
     this.#inFlight = true;
     this.#recovery = "tail";
+    this.#tailRecoveryAccepted = false;
     try {
       return await this.#recoverTailV1(signal);
     } finally {
@@ -289,8 +293,9 @@ export class EditorDocumentAuthorityV1 {
         authorityErrorV1(`The Editor mutation was rejected (${result.reason}).`, "conflict");
       }
       this.#recovery = "tail";
+      this.#tailRecoveryAccepted = false;
       const reconciled = await this.#recoverTailV1(signal);
-      return { kind: "reconciled", snapshot: reconciled.snapshot };
+      return { accepted: false, kind: "reconciled", snapshot: reconciled.snapshot };
     }
 
     try {
@@ -320,10 +325,12 @@ export class EditorDocumentAuthorityV1 {
     this.#pending = null;
     if (revisionV1(result.document.revision) > this.#revision) {
       this.#recovery = "tail";
+      this.#tailRecoveryAccepted = true;
       const reconciled = await this.#recoverTailV1(signal);
-      return { kind: "reconciled", snapshot: reconciled.snapshot };
+      return { accepted: true, kind: "reconciled", snapshot: reconciled.snapshot };
     }
     this.#recovery = null;
+    this.#tailRecoveryAccepted = false;
     return { kind: "committed", snapshot: snapshotV1(this.#document, this.#revision, this.#programs) };
   }
 
@@ -331,10 +338,12 @@ export class EditorDocumentAuthorityV1 {
     try {
       const reconciled = await this.#reconcileV1(signal);
       this.#recovery = null;
+      this.#tailRecoveryAccepted = false;
       return reconciled;
     } catch (error) {
       if (error instanceof EditorDocumentAuthorityErrorV1 || !editorCommitOutcomeMayBeUnknownV1(error)) {
         this.#recovery = null;
+        this.#tailRecoveryAccepted = false;
       }
       throw error;
     }
