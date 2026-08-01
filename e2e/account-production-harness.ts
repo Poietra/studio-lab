@@ -417,6 +417,7 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
             storageBoundary: "shared-durable",
             tenantBoundary: "server-owned-tenant-key",
           }),
+          renderReady: async () => true,
           workspaceReady: async () => true,
         },
       });

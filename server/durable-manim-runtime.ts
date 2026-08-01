@@ -134,6 +134,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   readonly storageBoundary: Readonly<{ kind: "shared-durable"; namespace: string }>;
   readonly tenantId: string;
   #closeRequest: Promise<void> | null = null;
+  #productionRenderOperationalReadiness: (() => boolean) | null = null;
 
   constructor(options: DurableManimRuntimeOptionsV1) {
     const parsedTenant = manimTenantIdSchema.safeParse(options.tenantId);
@@ -197,6 +198,35 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     const editorDocumentsReady = await this.editorDocuments.ready(signal);
     signal?.throwIfAborted();
     return editorDocumentsReady;
+  }
+
+  /** Exact source, execution, and artifact-delivery boundary used to admit final renders. */
+  async renderReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!this.#execution || !this.#renders || this.#productionRenderOperationalReadiness?.() === false) return false;
+    const [repositoryReady, blobsReady, executionReady, deliveryReady] = await Promise.all([
+      this.#repository.ready(signal),
+      this.#blobs.ready(signal),
+      this.#execution.ready(signal),
+      this.#renders.deliveryReady(signal),
+    ]);
+    signal?.throwIfAborted();
+    return (
+      this.#productionRenderOperationalReadiness?.() !== false &&
+      repositoryReady &&
+      blobsReady &&
+      executionReady &&
+      deliveryReady
+    );
+  }
+
+  /** Bind the production GC/retention admission gate exactly once before exposing the runtime. */
+  bindProductionRenderOperationalReadiness(ready: () => boolean) {
+    if (typeof ready !== "function") throw new TypeError("Production render operational readiness is invalid.");
+    if (this.#productionRenderOperationalReadiness) {
+      throw new Error("Production render operational readiness is already bound.");
+    }
+    this.#productionRenderOperationalReadiness = ready;
   }
 
   /** Production attestation additionally requires the durable render service. */
@@ -270,12 +300,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       };
     }
     try {
-      const [executionReady, rendersReady] = await Promise.all([
-        this.#execution.ready(signal),
-        this.#renders.deliveryReady(signal),
-      ]);
-      signal?.throwIfAborted();
-      return executionReady && rendersReady
+      return (await this.renderReady(signal))
         ? { available: true, kind: "durable-sandbox", unavailableReason: null }
         : { available: false, kind: "durable-sandbox", unavailableReason: "durable-render-unavailable" };
     } catch {
@@ -448,7 +473,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
   async start(request: ProgramRenderRequest, signal?: AbortSignal) {
     signal?.throwIfAborted();
     if (!this.#renders) throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
-    if (!(await this.#execution?.ready(signal))) {
+    if (!(await this.renderReady(signal))) {
       throw new HttpError("Durable rendering requires the external sandbox runtime.", 503);
     }
     return this.#renders.start(request, signal);
@@ -536,6 +561,7 @@ export function createDurableProductionManimRuntimeAdapterV1(
 ): ProductionManimRuntimeAdapterV1 {
   const editorDocuments = runtime.editorDocuments;
   if (!editorDocuments) throw new TypeError("The durable production runtime requires editor document storage.");
+  runtime.bindProductionRenderOperationalReadiness(() => maintenance.ready());
   let closeRequest: Promise<void> | undefined;
   return {
     api: runtime,
@@ -562,6 +588,9 @@ export function createDurableProductionManimRuntimeAdapterV1(
     },
     editorReady(signal) {
       return runtime.editorReady(signal);
+    },
+    renderReady(signal) {
+      return runtime.renderReady(signal);
     },
     async workspaceReady(signal) {
       return maintenance.ready() && (await runtime.workspaceReady(signal));

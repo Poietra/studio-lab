@@ -99,6 +99,11 @@ export function isManimVideoRequest(method: string | undefined, pathname: string
   return (method === "GET" || method === "HEAD") && match?.[2] === "video";
 }
 
+export function isManimRenderStartRequest(method: string | undefined, pathname: string) {
+  if (method === "POST" && pathname === "/api/manim/renders") return true;
+  return method === "POST" && PROJECT_ROUTE.exec(pathname)?.[2] === "renders";
+}
+
 function mediaStreamIdleTimeout(value: number | undefined) {
   const timeout = value ?? DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS;
   if (!Number.isSafeInteger(timeout) || timeout < 1_000 || timeout > MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS) {

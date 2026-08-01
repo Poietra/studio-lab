@@ -19,6 +19,7 @@ function runtimeAdapter(close: () => Promise<void>): ProductionManimRuntimeAdapt
     api: {} as never,
     close,
     ready: async () => ({ ready: false }),
+    renderReady: async () => true,
     workspaceReady: async () => true,
   };
 }

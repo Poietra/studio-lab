@@ -134,6 +134,7 @@ const STORAGE_SUITES = [
       "upgrades a nonempty media deletion queue and retains its acknowledgement",
       "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
       "publishes, reads, and deletes an immutable media generation",
+      "serves an authenticated production export, render, and downloadable MP4 lifecycle",
     ],
   },
   {
