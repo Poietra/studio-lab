@@ -34,7 +34,7 @@ import {
 } from "../manim-render-sandbox-contract";
 import { AuthorizedArtifactReaderV1 } from "./authorized-artifact-reader";
 import { seedActiveRenderEntitlementFixtureV1 } from "./billing-entitlement-real-test-fixture";
-import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
+import { applyBundledDurableStorageMigrations, applyBundledDurableStorageMigrationsThrough } from "./postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./postgres/postgres-artifact-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./postgres/postgres-render-session-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
@@ -45,6 +45,7 @@ import {
   type RenderArtifactReceiptV1,
   type RenderArtifactStoreV1,
   renderArtifactLocatorV1,
+  renderArtifactObjectKeyV1,
 } from "./render-artifact-repository";
 import type { DurableRenderSessionV1 } from "./render-session-repository";
 import { S3ArtifactReaderV1 } from "./s3/s3-artifact-reader";
@@ -712,6 +713,73 @@ async function publishThroughRealOci(
 }
 
 describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + MinIO render artifacts", () => {
+  it("upgrades a nonempty media deletion queue and retains its acknowledgement", async () => {
+    const environment = storageEnvironment();
+    const pool = new Pool({ connectionString: environment.databaseUrl, max: 2 });
+    const repository = artifactRepository();
+    const tenantId = `media-tombstone-upgrade-${randomUUID().replaceAll("-", "")}`;
+    const deletionId = randomUUID();
+    const identity = {
+      artifactDigest: digest("v21-upgrade-video"),
+      kind: "video" as const,
+      profileDigest: PROFILE_DIGEST,
+      requestDigest: digest("v21-upgrade-request"),
+      runtimeDigest: RUNTIME_DIGEST,
+      sourceDigest: digest("v21-upgrade-source"),
+    };
+    const upgradedReceipt = {
+      ...identity,
+      byteSize: 1,
+      etag: '"v21-upgrade"',
+      mediaType: "video/mp4" as const,
+      objectKey: renderArtifactObjectKeyV1(tenantId, identity),
+      versionId: "provider-version-before-v21",
+    };
+    try {
+      await expect(applyBundledDurableStorageMigrationsThrough(pool, 20)).resolves.toEqual({
+        applied: true,
+        version: 20,
+      });
+      await pool.query(
+        `INSERT INTO public.render_artifact_deletions
+           (tenant_id, deletion_id, artifact_kind, media_type, artifact_digest, source_digest,
+            runtime_digest, profile_digest, request_digest, object_key, version_id, etag, byte_size)
+         VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        [
+          tenantId,
+          deletionId,
+          upgradedReceipt.kind,
+          upgradedReceipt.mediaType,
+          upgradedReceipt.artifactDigest,
+          upgradedReceipt.sourceDigest,
+          upgradedReceipt.runtimeDigest,
+          upgradedReceipt.profileDigest,
+          upgradedReceipt.requestDigest,
+          upgradedReceipt.objectKey,
+          upgradedReceipt.versionId,
+          upgradedReceipt.etag,
+          upgradedReceipt.byteSize,
+        ],
+      );
+
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 21 });
+      await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([
+        { deletionId, receipt: upgradedReceipt, tenantId },
+      ]);
+      await repository.acknowledgeDeletion(tenantId, deletionId);
+      await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([]);
+      await expect(repository.queueDeletion(tenantId, upgradedReceipt, 1)).resolves.toBeNull();
+      await expect(
+        pool.query<{ deleted_at: Date | null }>(
+          "SELECT deleted_at FROM public.render_artifact_deletions WHERE tenant_id = $1 AND deletion_id = $2::uuid",
+          [tenantId, deletionId],
+        ),
+      ).resolves.toMatchObject({ rowCount: 1, rows: [{ deleted_at: expect.any(Date) }] });
+    } finally {
+      await Promise.allSettled([repository.close(), pool.end()]);
+    }
+  }, 30_000);
+
   it("survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans", async () => {
     const environment = storageEnvironment();
     await prepareStorage(environment);
@@ -1121,6 +1189,23 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       expect(renderArtifactLocatorV1(deletion.receipt)).toMatchObject({ kind: "immutable", versionId: null });
       await artifacts.deleteObject(tenantId, deletion.receipt);
       await repository.acknowledgeDeletion(tenantId, deletion.deletionId);
+      await expect(artifacts.head(tenantId, bundle.video)).rejects.toMatchObject({ code: "missing" });
+      await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([]);
+      await expect(repository.queueDeletion(tenantId, bundle.video, 1)).resolves.toBeNull();
+      const tombstone = await pool.query<{ deleted_at: Date | null }>(
+        `SELECT deleted_at
+           FROM public.render_artifact_deletions
+          WHERE tenant_id = $1 AND object_key = $2
+            AND version_id IS NOT DISTINCT FROM $3::text
+            AND object_generation IS NOT DISTINCT FROM $4::uuid`,
+        [tenantId, bundle.video.objectKey, null, bundle.video.objectGeneration],
+      );
+      expect(tombstone.rows).toEqual([{ deleted_at: expect.any(Date) }]);
+
+      const delayed = await createClaimedSession(renders, head, `immutable-delayed-${suffix}`);
+      await expect(repository.publishSessionArtifacts(publicationInput(delayed, bundle))).rejects.toMatchObject({
+        status: 409,
+      });
       await expect(artifacts.head(tenantId, bundle.video)).rejects.toMatchObject({ code: "missing" });
     } finally {
       await Promise.allSettled([repository.close(), artifacts.close(), renders.close(), sources.close(), pool.end()]);

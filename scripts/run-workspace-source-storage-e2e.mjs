@@ -130,7 +130,11 @@ const STORAGE_SUITES = [
     database: "poietra_render_artifact",
     file: "server/storage/render-artifact-storage.real.test.ts",
     id: "render-artifact",
-    title: "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
+    titles: [
+      "upgrades a nonempty media deletion queue and retains its acknowledgement",
+      "survives SIGKILL, atomically publishes versioned media, fences races, expires reads, and collects orphans",
+      "publishes, reads, and deletes an immutable media generation",
+    ],
   },
   {
     database: "poietra_project_png",
