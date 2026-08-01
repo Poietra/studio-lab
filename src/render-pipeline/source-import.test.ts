@@ -203,6 +203,53 @@ class Added(Scene):
     expect(imported?.initialVisibleSourceVariables).toEqual(["visible"]);
   });
 
+  it("ignores presence variable names inside add/remove strings and comments", () => {
+    const lexicalSource = `from manim import *
+
+class LexicalPresence(Scene):
+    def construct(self):
+        string_add = Circle()
+        comment_add = Square()
+        string_remove = Dot()
+        visible = Text("Visible")
+        self.add(
+            Text("press string_add to continue"),
+            visible,  # comment_add is not an argument
+            string_remove,
+        )
+        self.wait(1)
+        self.remove(Text("do not remove string_remove"))
+        self.wait(1)
+`;
+    const imported = importManimScene(lexicalSource, "scene.py", "LexicalPresence");
+    const entities = imported?.runtimeSceneState.objectGraph.entities;
+
+    expect(entities?.["source:scene.py#LexicalPresence:string_add"]?.lifetime).toEqual([]);
+    expect(entities?.["source:scene.py#LexicalPresence:comment_add"]?.lifetime).toEqual([]);
+    expect(entities?.["source:scene.py#LexicalPresence:string_remove"]?.lifetime).toEqual([{ end: 2, start: 0 }]);
+    expect(entities?.["source:scene.py#LexicalPresence:visible"]?.lifetime).toEqual([{ end: 2, start: 0 }]);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["string_remove", "visible"]);
+  });
+
+  it("preserves nested and static globals presence references", () => {
+    const referencedSource = `from manim import *
+
+class ReferencedPresence(Scene):
+    def construct(self):
+        c = Circle()
+        group = VGroup(c)
+        global_lookup = Square()
+        self.add(VGroup(c, group[0]), globals()["global_lookup"])
+        self.wait(1)
+`;
+    const imported = importManimScene(referencedSource, "scene.py", "ReferencedPresence");
+    const entities = imported?.runtimeSceneState.objectGraph.entities;
+
+    expect(entities?.["source:scene.py#ReferencedPresence:c"]?.lifetime).toEqual([{ end: 1, start: 0 }]);
+    expect(entities?.["source:scene.py#ReferencedPresence:group"]?.lifetime).toEqual([{ end: 1, start: 0 }]);
+    expect(entities?.["source:scene.py#ReferencedPresence:global_lookup"]?.lifetime).toEqual([{ end: 1, start: 0 }]);
+  });
+
   it("records replacement lineage as non-overlapping source and target lifetimes", () => {
     const transformed = `from manim import *
 
