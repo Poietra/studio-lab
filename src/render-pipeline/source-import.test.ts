@@ -91,6 +91,21 @@ ${body}
       unsupportedReferences: 1,
     });
     expect(
+      analyzeDirectImageMobjectReferences(scene('        detail = f"""{f\'{ImageMobject("other.png")}\'}"""')),
+    ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
+    expect(
+      analyzeDirectImageMobjectReferences(
+        scene(`        detail = f"""{
+            # }
+            ImageMobject("other.png")
+        }"""`),
+      ),
+    ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
+    expect(analyzeDirectImageMobjectReferences(scene("        detail = tr\"{ImageMobject('other.png')}\""))).toEqual({
+      exactImagePngReferences: 0,
+      unsupportedReferences: 1,
+    });
+    expect(
       analyzeDirectImageMobjectReferences(scene('        image = ImageMobject \\\n            ("other.png")')),
     ).toEqual({ exactImagePngReferences: 0, unsupportedReferences: 1 });
   });

@@ -576,7 +576,7 @@ function isExactImagePngStringLiteral(expression: string) {
   return /^(?:[rRuU])?(?:"image[.]png"|'image[.]png')$/.test(expression.trim());
 }
 
-const PYTHON_IMAGE_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "u"]);
+const PYTHON_IMAGE_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "rt", "t", "tr", "u"]);
 
 function stringPrefixAt(source: string, quoteIndex: number) {
   for (const length of [2, 1]) {
@@ -596,7 +596,7 @@ function escapedAt(source: string, index: number) {
   return backslashes % 2 === 1;
 }
 
-function imageMobjectReferencesInFStringFields(content: string) {
+function imageMobjectReferencesInInterpolatedStringFields(content: string) {
   let references = 0;
   let fieldDepth = 0;
   let fieldStart = 0;
@@ -616,12 +616,28 @@ function imageMobjectReferencesInFStringFields(content: string) {
       continue;
     }
     if (character === '"' || character === "'") {
+      const prefix = stringPrefixAt(content, index);
       const delimiter = content.slice(index, index + 3) === character.repeat(3) ? character.repeat(3) : character;
-      index += delimiter.length;
-      while (index < content.length && !(content.startsWith(delimiter, index) && !escapedAt(content, index))) {
-        index += 1;
+      const nestedContentStart = index + delimiter.length;
+      let nestedContentEnd = nestedContentStart;
+      while (
+        nestedContentEnd < content.length &&
+        !(content.startsWith(delimiter, nestedContentEnd) && !escapedAt(content, nestedContentEnd))
+      ) {
+        nestedContentEnd += 1;
       }
-      index += delimiter.length;
+      if (prefix.includes("f") || prefix.includes("t")) {
+        references += imageMobjectReferencesInInterpolatedStringFields(
+          content.slice(nestedContentStart, nestedContentEnd),
+        );
+      }
+      index = nestedContentEnd + delimiter.length;
+      continue;
+    }
+    if (character === "#") {
+      const lineEnd = content.indexOf("\n", index);
+      if (lineEnd < 0) break;
+      index = lineEnd + 1;
       continue;
     }
     if (character === "{") fieldDepth += 1;
@@ -640,7 +656,7 @@ function imageMobjectReferencesInFStringFields(content: string) {
   return references;
 }
 
-function imageMobjectReferencesInFStrings(source: string) {
+function imageMobjectReferencesInInterpolatedStrings(source: string) {
   let references = 0;
   let index = 0;
   while (index < source.length) {
@@ -664,8 +680,8 @@ function imageMobjectReferencesInFStrings(source: string) {
     ) {
       contentEnd += 1;
     }
-    if (prefix.includes("f"))
-      references += imageMobjectReferencesInFStringFields(source.slice(contentStart, contentEnd));
+    if (prefix.includes("f") || prefix.includes("t"))
+      references += imageMobjectReferencesInInterpolatedStringFields(source.slice(contentStart, contentEnd));
     index = contentEnd < source.length ? contentEnd + delimiter.length : source.length;
   }
   return references;
@@ -708,7 +724,10 @@ export function analyzeDirectImageMobjectReferences(source: string): DirectImage
   return {
     exactImagePngReferences,
     unsupportedReferences:
-      lexicalCalls - exactImagePngReferences + indirectIdentifiers + imageMobjectReferencesInFStrings(source),
+      lexicalCalls -
+      exactImagePngReferences +
+      indirectIdentifiers +
+      imageMobjectReferencesInInterpolatedStrings(source),
   };
 }
 
