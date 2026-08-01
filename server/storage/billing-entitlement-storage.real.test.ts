@@ -1,14 +1,25 @@
+import { createHmac } from "node:crypto";
+
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
 import { MAX_USAGE_RESERVATION_LIFETIME_MS_V1 } from "../billing/entitlement-repository";
+import { FakeStripeBillingGatewayV1 } from "../billing/fake-stripe-gateway";
+import { createStripeCheckoutPlanCatalogV1 } from "../billing/plan-catalog";
+import { createStripeBillingServiceV1 } from "../billing/stripe-billing-service";
+import { STRIPE_API_VERSION_V1 } from "../billing/stripe-gateway";
+import { authenticateManimPrincipal } from "../manim-request-principal";
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
 import { PostgresBillingEntitlementRepositoryV1 } from "./postgres/postgres-entitlement-repository";
+import { PostgresStripeBillingRepositoryV1 } from "./postgres/postgres-stripe-billing-repository";
 
 const DATABASE_URL = process.env.POIETRA_STORAGE_E2E_DATABASE_URL;
 const TENANT_A = "billing-tenant-a";
 const TENANT_B = "billing-tenant-b";
+const TENANT_C = "billing-stripe-tenant";
 const OWNER_ID = "00000000-0000-4000-8000-000000000321";
+const STRIPE_OWNER_ID = "00000000-0000-4000-8000-000000000322";
+const STRIPE_WEBHOOK_SECRET = "whsec_storage_vertical_secret";
 
 async function createOrganizations(pool: Pool) {
   const client = await pool.connect();
@@ -39,6 +50,34 @@ async function createOrganizations(pool: Pool) {
   }
 }
 
+async function createStripeOrganization(pool: Pool) {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1)", [TENANT_C]);
+    await client.query(
+      `INSERT INTO public.users (user_id, oidc_issuer, oidc_subject, display_name)
+       VALUES ($1::uuid, 'https://identity.example/', 'stripe-billing-owner', 'Stripe billing owner')`,
+      [STRIPE_OWNER_ID],
+    );
+    await client.query("INSERT INTO public.organizations (tenant_id, display_name) VALUES ($1, $2)", [
+      TENANT_C,
+      "Stripe billing tenant",
+    ]);
+    await client.query(
+      `INSERT INTO public.organization_memberships (tenant_id, user_id, role)
+       VALUES ($1, $2::uuid, 'owner')`,
+      [TENANT_C, STRIPE_OWNER_ID],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => undefined);
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
   it("atomically reserves one render quota, replays safely, preserves period usage, and isolates tenants", async () => {
     const pool = new Pool({ connectionString: DATABASE_URL, max: 4 });
@@ -49,7 +88,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
       poolConfig: { connectionString: DATABASE_URL, max: 4 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 15 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 16 });
       await createOrganizations(pool);
       await expect(repositoryA.ready()).resolves.toBe(true);
       await expect(repositoryB.ready()).resolves.toBe(true);
@@ -287,6 +326,120 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL billing entitlements", () => {
     } finally {
       await repositoryB.close();
       await repositoryA.close();
+      await pool.end();
+    }
+  });
+
+  it("reconciles Stripe state into render admission atomically and replays duplicate delivery", async () => {
+    const now = Date.now();
+    const periodStart = new Date(now - 60_000);
+    const periodEnd = new Date(now + 60 * 60_000);
+    const stripeCustomerId = "cus_storage_vertical";
+    const stripeEventId = "evt_storage_vertical";
+    const stripeSubscriptionId = "sub_storage_vertical";
+    const pool = new Pool({ connectionString: DATABASE_URL, max: 4 });
+    const entitlementRepository = new PostgresBillingEntitlementRepositoryV1({
+      poolConfig: { connectionString: DATABASE_URL, max: 4 },
+    });
+    const stripeRepository = new PostgresStripeBillingRepositoryV1({
+      poolConfig: { connectionString: DATABASE_URL, max: 4 },
+    });
+    const gateway = new FakeStripeBillingGatewayV1({
+      subscriptions: [
+        {
+          cancelAtPeriodEnd: false,
+          customerId: stripeCustomerId,
+          id: stripeSubscriptionId,
+          livemode: false,
+          periodEnd,
+          periodStart,
+          priceId: "price_storage_vertical",
+          status: "active",
+        },
+      ],
+    });
+    const service = createStripeBillingServiceV1({
+      catalog: createStripeCheckoutPlanCatalogV1({
+        pro: { renderJobLimit: 2, stripePriceId: "price_storage_vertical" },
+      }),
+      clock: () => new Date(now),
+      gateway,
+      livemode: false,
+      publicOrigin: "https://studio.poietra.example",
+      repository: stripeRepository,
+      webhookSigningSecret: STRIPE_WEBHOOK_SECRET,
+    });
+    try {
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 16 });
+      await createStripeOrganization(pool);
+      await expect(stripeRepository.ready()).resolves.toBe(true);
+
+      const principal = await authenticateManimPrincipal(
+        { authenticate: async () => ({ subjectId: STRIPE_OWNER_ID, tenantId: TENANT_C }) },
+        {},
+        new AbortController().signal,
+      );
+      await expect(service.startCheckout({ planKey: "pro", principal })).resolves.toMatchObject({
+        checkoutUrl: expect.stringMatching(/^https:\/\/checkout\.stripe\.test\//u),
+      });
+      await expect(service.readStatus({ principal })).resolves.toMatchObject({
+        configured: false,
+        entitlement: null,
+      });
+
+      const checkoutRequest = gateway.checkoutRequests()[0];
+      if (!checkoutRequest) throw new TypeError("The fake Stripe gateway did not receive Checkout.");
+      const payloadBytes = Buffer.from(
+        JSON.stringify({
+          api_version: STRIPE_API_VERSION_V1,
+          created: Math.floor(now / 1_000),
+          data: {
+            object: {
+              customer: stripeCustomerId,
+              id: stripeSubscriptionId,
+              metadata: { poietra_checkout_attempt_id: checkoutRequest.attemptId },
+              object: "subscription",
+            },
+          },
+          id: stripeEventId,
+          livemode: false,
+          object: "event",
+          type: "customer.subscription.created",
+        }),
+      );
+      const timestamp = Math.floor(now / 1_000);
+      const stripeSignature = `t=${timestamp},v1=${createHmac("sha256", STRIPE_WEBHOOK_SECRET)
+        .update(`${timestamp}.`)
+        .update(payloadBytes)
+        .digest("hex")}`;
+      const webhook = { rawBody: new Uint8Array(payloadBytes), stripeSignature };
+      await service.acceptWebhook(webhook);
+
+      await expect(service.readStatus({ principal })).resolves.toMatchObject({
+        configured: true,
+        entitlement: { renderEnabled: true, renderJobLimit: 2, sourceGeneration: "1" },
+        subscription: { planKey: "pro", status: "active" },
+      });
+      await expect(
+        entitlementRepository.reserveRender({
+          lifetimeMs: 60_000,
+          operationId: "00000000-0000-4000-8000-000000000503",
+          tenantId: TENANT_C,
+        }),
+      ).resolves.toMatchObject({ kind: "reserved", replayed: false });
+
+      await service.acceptWebhook(webhook);
+      await expect(stripeRepository.readAccount(TENANT_C)).resolves.toMatchObject({
+        entitlementGeneration: 1n,
+        reconcileGeneration: 1n,
+      });
+      await expect(stripeRepository.readCurrentEntitlement(TENANT_C)).resolves.toMatchObject({
+        renderEnabled: true,
+        sourceGeneration: 1n,
+      });
+    } finally {
+      await service.close();
+      await entitlementRepository.close();
       await pool.end();
     }
   });

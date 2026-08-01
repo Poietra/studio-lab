@@ -63,6 +63,8 @@
     "build:server": "pnpm test:third-party-notices && vite build --config vite.server.config.ts && node scripts/smoke-third-party-notices.mjs --server",
     "build:account-worker": "wrangler deploy --dry-run --config wrangler.account-control-plane.example.jsonc --outdir dist-account-worker",
     "deploy:account-worker": "wrangler deploy --config wrangler.account-control-plane.jsonc",
+    "build:billing-worker": "wrangler deploy --dry-run --config wrangler.billing-control-plane.example.jsonc --outdir dist-billing-worker",
+    "deploy:billing-worker": "wrangler deploy --config wrangler.billing-control-plane.jsonc",
     "build:sandbox-broker": "vite build --config vite.sandbox-broker.config.ts",
     "build:render-sandbox-broker": "vite build --config vite.render-sandbox-broker.config.ts",
     "start:sandbox-broker": "node dist-sandbox-broker/fast-manim-sandbox-broker.mjs",

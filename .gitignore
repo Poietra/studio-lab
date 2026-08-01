@@ -5,6 +5,7 @@ dist-server/
 dist-sandbox-broker/
 dist-render-sandbox-broker/
 dist-account-worker/
+dist-billing-worker/
 release/
 .vite/
 playwright-report/
@@ -16,6 +17,7 @@ dist-benchmark/
 .dev.vars*
 !.dev.vars.example
 wrangler.account-control-plane.jsonc
+wrangler.billing-control-plane.jsonc
 .openai-key
 .studio-logs/
 .poietra/

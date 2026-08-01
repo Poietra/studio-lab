@@ -1,0 +1,58 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "poietra-billing-control-plane",
+  "main": "server/cloudflare-billing-control-plane-worker.ts",
+  "compatibility_date": "2026-07-31",
+  "compatibility_flags": ["nodejs_compat", "disallow_importable_env"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    {
+      "pattern": "https://studio.example.com/api/billing/*",
+      "zone_name": "example.com"
+    }
+  ],
+  "observability": {
+    "enabled": false,
+    "logs": {
+      "enabled": false,
+      "invocation_logs": false
+    },
+    "traces": {
+      "enabled": false
+    }
+  },
+  "vars": {
+    "POIETRA_PUBLIC_ORIGIN": "https://studio.example.com",
+    "POIETRA_STRIPE_EXPECTED_MODE": "test",
+    "POIETRA_STRIPE_PRO_PRICE_ID": "price_replace_with_test_mode_pro_price",
+    "POIETRA_STRIPE_PRO_RENDER_JOB_LIMIT": "1000"
+  },
+  "secrets": {
+    "required": ["POIETRA_STRIPE_SECRET_KEY", "POIETRA_STRIPE_WEBHOOK_SECRET"]
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "00000000000000000000000000000000"
+    }
+  ],
+  "ratelimits": [
+    {
+      "name": "BILLING_CHECKOUT_RATE_LIMITER",
+      "namespace_id": "32501",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    },
+    {
+      "name": "BILLING_WEBHOOK_RATE_LIMITER",
+      "namespace_id": "32502",
+      "simple": {
+        "limit": 300,
+        "period": 60
+      }
+    }
+  ]
+}

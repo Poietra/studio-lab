@@ -100,6 +100,42 @@ before it opens PostgreSQL storage; missing bindings, invalid configuration,
 rate-limit errors, and missing Cloudflare client IPs fail closed with a generic
 503.
 
+The Stripe billing edge is a separate deployment at
+`server/cloudflare-billing-control-plane-worker.ts`; do not add its routes or
+secrets to the OIDC Worker. Copy `wrangler.billing-control-plane.example.jsonc`
+to the ignored `wrangler.billing-control-plane.jsonc`, replace its route, zone,
+Hyperdrive ID, rate-limit namespace IDs, Pro price ID, render limit, and
+expected `test` or `live` mode, then store both secrets without printing them:
+
+```sh
+pnpm exec wrangler secret put POIETRA_STRIPE_SECRET_KEY --config wrangler.billing-control-plane.jsonc
+pnpm exec wrangler secret put POIETRA_STRIPE_WEBHOOK_SECRET --config wrangler.billing-control-plane.jsonc
+```
+
+`pnpm build:billing-worker` bundles the committed example without deploying;
+`pnpm deploy:billing-worker` requires the ignored production configuration.
+Apply bundled durable-storage migration v16 before deploying the Worker. Every
+request scope verifies the exact v16 checksum and returns unavailable rather
+than serving against an older or modified schema.
+Use a dedicated Hyperdrive configuration with caching disabled. The Worker
+accepts only the exact `/api/billing/status`, `/api/billing/checkout`, and
+`/api/billing/stripe/webhook` routes. Checkout uses Stripe's `hosted_page` UI.
+Checkout and webhook traffic have separate edge rate limits before
+request-scoped PostgreSQL adapters are opened. Status requires `billing:read`;
+Checkout requires `billing:manage`. The webhook intentionally bypasses browser
+session admission and instead verifies the Stripe signature against the
+unmodified raw request bytes.
+
+Configure the Stripe webhook endpoint as
+`https://<public-origin>/api/billing/stripe/webhook` with endpoint API version
+`2026-03-25.dahlia`. Subscribe only to the Checkout completion and customer
+subscription create, update, and delete events used by the service. Stripe
+events are wake-ups: access is granted only after the service retrieves and
+persists the canonical Subscription. Keep Workers preview URLs, invocation
+logs, traces, request-body logging, and raw Tail/Logpush disabled for this
+deployment. The Stripe key, webhook secret, signature header, and webhook body
+must never enter application logs or error responses.
+
 Each server instance remains a single-tenant cell: its runtime API declares one
 server-owned tenant ID and at least one bounded absolute storage root. A
 verified principal must resolve to that same tenant. Foreign tenants receive a
