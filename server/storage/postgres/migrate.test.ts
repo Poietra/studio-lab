@@ -516,9 +516,7 @@ describe("durable storage migrations", () => {
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
       "ADD COLUMN object_generation public.immutable_object_generation_v1",
     );
-    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
-      "[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}",
-    );
+    expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain("[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}");
     expect(IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE).toContain(
       "num_nonnulls(version_id, object_generation) = 1",
     );
