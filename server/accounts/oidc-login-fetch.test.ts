@@ -40,7 +40,7 @@ describe("OIDC login Fetch handler", () => {
       `${OIDC_LOGIN_BINDING_COOKIE_NAME_V1}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
     ]);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(service.start).toHaveBeenCalledOnce();
+    expect(service.start).toHaveBeenCalledWith({}, expect.any(AbortSignal));
   });
 
   it("starts an invitation with 303 and never forwards the raw token to the provider URL", async () => {
@@ -62,6 +62,26 @@ describe("OIDC login Fetch handler", () => {
     expect(response.headers.get("location")).toBe("https://identity.example/authorize?request=fixed");
     expect(response.headers.get("location")).not.toContain(invitationToken);
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
+  });
+
+  it("accepts an exact native form invitation without putting the token in the redirect", async () => {
+    const { handler, service } = fixture();
+    const invitationToken = Buffer.alloc(32, 10).toString("base64url");
+    const body = new URLSearchParams({ invitationToken });
+    const response = await handler.fetch(
+      new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+        body,
+        headers: { origin, "sec-fetch-site": "same-origin" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://identity.example/authorize?request=fixed");
+    expect(response.headers.get("location")).not.toContain(invitationToken);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.getSetCookie().join(";")).not.toContain(invitationToken);
     expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
   });
 
@@ -98,6 +118,7 @@ describe("OIDC login Fetch handler", () => {
     ]);
 
     expect(responses.map(({ status }) => status)).toEqual([404, 403, 400, 405]);
+    expect(responses[3]?.headers.get("allow")).toBe("GET, POST");
     expect(service.start).not.toHaveBeenCalled();
     expect(service.complete).not.toHaveBeenCalled();
   });
@@ -134,6 +155,54 @@ describe("OIDC login Fetch handler", () => {
     ]);
 
     expect(responses.map(({ status }) => status)).toEqual([400, 403, 400, 413]);
+    expect(service.start).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate, additional, and malformed native form invitation fields", async () => {
+    const { handler, service } = fixture();
+    const requests = [
+      `invitationToken=${token}&invitationToken=${token}`,
+      `invitationToken=${token}&next=%2Fworkspace`,
+      `invitationToken=invalid`,
+      `other=${token}`,
+    ].map(
+      (body) =>
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body,
+          headers: { "content-type": "application/x-www-form-urlencoded", origin },
+          method: "POST",
+        }),
+    );
+
+    const responses = await Promise.all(requests.map((request) => handler.fetch(request)));
+    expect(responses.map(({ status }) => status)).toEqual([400, 400, 400, 400]);
+    expect(service.start).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid UTF-8 and a declared native-form length that does not match the body", async () => {
+    const { handler, service } = fixture();
+    const responses = await Promise.all([
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: new Uint8Array([0xff]),
+          headers: { "content-type": "application/x-www-form-urlencoded", origin },
+          method: "POST",
+        }),
+      ),
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: `invitationToken=${token}`,
+          headers: {
+            "content-length": "1",
+            "content-type": "application/x-www-form-urlencoded",
+            origin,
+          },
+          method: "POST",
+        }),
+      ),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 400]);
     expect(service.start).not.toHaveBeenCalled();
   });
 

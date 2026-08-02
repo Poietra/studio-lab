@@ -1,6 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { PoietraBrand } from "../studio/poietra-brand";
+import { AccountInvitationSignInForm } from "./account-invitation-sign-in-form";
 import { AccountSessionBadge } from "./account-session-badge";
 import {
   AccountSessionRequestError,
@@ -282,6 +283,12 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
           >
             Sign in
           </a>
+          <div className="my-6 flex items-center gap-3 text-xs text-zinc-600">
+            <span className="h-px flex-1 bg-zinc-800" />
+            or use an invitation
+            <span className="h-px flex-1 bg-zinc-800" />
+          </div>
+          <AccountInvitationSignInForm />
         </section>
       </AccountBootstrapFrame>
     );

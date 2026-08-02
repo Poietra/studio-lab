@@ -124,8 +124,7 @@ async function signInAndSelectStudio(page: Page) {
   await page.goto("/");
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();
   await page.getByRole("link", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
-  await page.getByLabel("Active organization").selectOption("editor-team");
+  await page.getByRole("link", { name: "Continue as Ada Lovelace" }).click();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   return fixture;
 }
@@ -755,8 +754,7 @@ test("migrates the exact local session into an absent cloud session and retains 
 
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();
   await page.getByRole("link", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
-  await page.getByLabel("Active organization").selectOption(identity.organizationId);
+  await page.getByRole("link", { name: "Continue as Ada Lovelace" }).click();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
 
   const migrated = sessionPut(page, 200, (snapshot) => snapshot.currentTime === 5.75);

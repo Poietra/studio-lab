@@ -1,4 +1,31 @@
 import { expect, test } from "@playwright/test";
+import { Pool } from "pg";
+
+import {
+  ACCOUNT_E2E_BILLING_ORGANIZATION_ID,
+  ACCOUNT_E2E_STUDIO_ORGANIZATION_ID,
+  ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1,
+} from "./account-production-fixture";
+import {
+  cleanupAccountEditorDocumentFixtureV1,
+  prepareAccountEditorDocumentFixtureV1,
+} from "./editor-document-postgres-fixture";
+
+const databaseUrl = process.env.POIETRA_ACCOUNT_E2E_DATABASE_URL;
+if (!databaseUrl) throw new TypeError("The account session E2E requires its isolated PostgreSQL database.");
+const fixturePool = new Pool({ connectionString: databaseUrl, max: 1 });
+
+test.beforeEach(async () => {
+  await prepareAccountEditorDocumentFixtureV1(fixturePool, ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1);
+});
+
+test.afterEach(async () => {
+  await cleanupAccountEditorDocumentFixtureV1(fixturePool, ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1);
+});
+
+test.afterAll(async () => {
+  await fixturePool.end();
+});
 
 test("signs in, selects a Studio organization, loads cookie-native media, then logs out", async ({ page }) => {
   const redirectStatuses = new Map<string, number>();
@@ -19,14 +46,12 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
   expect(browserManimRequests).toEqual([]);
 
   await page.getByRole("link", { name: "Sign in" }).click();
-  await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
-  await expect(page.getByLabel("Active organization")).toHaveValue("billing-team");
+  await page.getByRole("link", { name: "Continue as Ada Lovelace" }).click();
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await expect(page.getByLabel("Active organization")).toHaveValue(ACCOUNT_E2E_STUDIO_ORGANIZATION_ID);
+  await expect(page.getByRole("button", { name: "Invite" })).toBeVisible();
   expect(redirectStatuses.get("/auth/oidc/start")).toBe(302);
   expect(redirectStatuses.get("/auth/oidc/callback")).toBe(303);
-  expect(browserManimRequests).toEqual([]);
-
-  await page.getByLabel("Active organization").selectOption("editor-team");
-  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open Production Demo workspace" })).toBeVisible();
   await expect(page.locator("[data-workspace-card='production-demo'] [data-thumbnail-status]")).toHaveAttribute(
     "data-thumbnail-status",
@@ -58,7 +83,37 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
     organizationHeader: null,
     pathname: "/api/manim/projects/production-demo/thumbnail",
   });
-  expect(evidence.manimRequests.some(({ organizationHeader }) => organizationHeader === "billing-team")).toBe(false);
+  await page.getByLabel("Active organization").selectOption(ACCOUNT_E2E_BILLING_ORGANIZATION_ID);
+  await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite", exact: true })).toHaveCount(0);
+  const billingInvitationAttempt = await page.evaluate(async () => {
+    const response = await fetch("/api/account/invitations", {
+      body: JSON.stringify({ email: "blocked@example.com", role: "member" }),
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    return { body: await response.text(), status: response.status };
+  });
+  expect(billingInvitationAttempt).toEqual({
+    body: '{"error":"Account invitation action is not available."}',
+    status: 403,
+  });
+  expect(billingInvitationAttempt.body).not.toContain("blocked@example.com");
+  await page.getByLabel("Active organization").selectOption(ACCOUNT_E2E_STUDIO_ORGANIZATION_ID);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite", exact: true })).toBeVisible();
+  const postSwitchEvidence = await page.evaluate(async () => {
+    const response = await fetch("/__e2e/account/metrics", { cache: "no-store" });
+    return (await response.json()) as {
+      manimRequests: readonly { organizationHeader: string | null }[];
+    };
+  });
+  expect(
+    postSwitchEvidence.manimRequests.some(
+      ({ organizationHeader }) => organizationHeader === ACCOUNT_E2E_BILLING_ORGANIZATION_ID,
+    ),
+  ).toBe(false);
 
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();

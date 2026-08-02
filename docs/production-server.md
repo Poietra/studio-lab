@@ -67,7 +67,12 @@ and browser session are committed in one transaction. Revocation uses an empty
 same-origin `DELETE /api/account/invitations/:id` and is scoped to the actor's
 active organization. Member and billing roles cannot issue or revoke
 invitations, owner cannot be an invited role, and IdP role or tenant claims are
-never accepted as authority.
+never accepted as authority. Signed-out browsers submit the invitation token
+through a bounded same-origin `application/x-www-form-urlencoded` POST to
+`/auth/oidc/start`; the ordinary sign-in link remains a GET. A successful POST
+returns 303 and binds only the token digest to the one-time login attempt while
+the browser receives the existing HttpOnly binding cookie. Raw invitation
+tokens must not be placed in URLs, browser storage, logs, or telemetry.
 
 OIDC discovery is lazy and caches only a successful configuration. The edge
 login routes can therefore return 503 during an IdP outage without entering a

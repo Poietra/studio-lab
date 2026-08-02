@@ -1,5 +1,6 @@
 import { accountRoleCanManageBillingV1, BillingSettingsControl } from "../billing/billing-settings";
 import { cn } from "../lib/cn";
+import { AccountInvitationControl, accountRoleCanIssueInvitationsV1 } from "./account-invitation-control";
 import type { AccountSessionActionsV1 } from "./account-session-bootstrap";
 import type { AccountSessionViewV1 } from "./account-session-contract";
 
@@ -56,6 +57,9 @@ export function AccountSessionBadge({
           key={session.activeOrganization.id}
           organization={session.activeOrganization}
         />
+      ) : null}
+      {accountRoleCanIssueInvitationsV1(session.activeOrganization.role) ? (
+        <AccountInvitationControl disabled={disabled} key={session.activeOrganization.id} />
       ) : null}
       <button
         className="min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"

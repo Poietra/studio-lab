@@ -25,6 +25,7 @@ describe("AccountSessionBadge", () => {
     expect(markup).toContain('value="organization-a"');
     expect(markup).toContain('value="organization-b" selected=""');
     expect(markup).toContain(">Sign out</button>");
+    expect(markup).not.toContain(">Invite</button>");
     expect(markup).not.toContain(">Billing</button>");
   });
 
@@ -42,6 +43,7 @@ describe("AccountSessionBadge", () => {
     );
 
     expect(markup).toContain(">Billing</button>");
+    expect(markup).toContain(">Invite</button>");
     expect(markup).toContain("Billing settings");
     expect(markup).not.toMatch(/customerId|priceId|configurationId|returnUrl/);
   });
@@ -61,6 +63,6 @@ describe("AccountSessionBadge", () => {
       />,
     );
 
-    expect(markup.match(/disabled=""/g)).toHaveLength(3);
+    expect(markup.match(/disabled=""/g)).toHaveLength(4);
   });
 });
