@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { EditorDocumentAuthorityErrorV1 } from "../collaboration/editor-document-authority";
 import {
   editorDocumentAuthorityStateAfterJournalStorageFailureV1,
   editorDocumentSessionFlushAllowsTransitionV1,
+  editorMutationJournalConflictIsDefinitiveV1,
   installEditorAuthorityBasisAfterJournalSettlementV1,
 } from "./use-editor-document-authority";
 
@@ -81,5 +83,19 @@ describe("Editor pending-session journal basis advance", () => {
       }),
     ).toBe(true);
     expect(alignedInstall).toHaveBeenCalledOnce();
+  });
+});
+
+describe("Editor pending-mutation conflict policy", () => {
+  it("exposes only definitive authority rejection while exact evidence is retained", () => {
+    const conflict = new EditorDocumentAuthorityErrorV1("conflict", "conflict");
+    const sessionConflict = new EditorDocumentAuthorityErrorV1("session conflict", "session-conflict");
+    const corrupt = new EditorDocumentAuthorityErrorV1("corrupt", "corrupt-response");
+
+    expect(editorMutationJournalConflictIsDefinitiveV1(conflict, true, null)).toBe(true);
+    expect(editorMutationJournalConflictIsDefinitiveV1(sessionConflict, true, null)).toBe(true);
+    expect(editorMutationJournalConflictIsDefinitiveV1(conflict, true, "commit")).toBe(false);
+    expect(editorMutationJournalConflictIsDefinitiveV1(conflict, false, null)).toBe(false);
+    expect(editorMutationJournalConflictIsDefinitiveV1(corrupt, true, null)).toBe(false);
   });
 });

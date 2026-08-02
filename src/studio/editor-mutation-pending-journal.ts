@@ -239,7 +239,10 @@ export class EditorMutationPendingJournalV1 {
     const stored = this.scan().find(
       (candidate) => candidate.request.clientMutationId === entry.request.clientMutationId,
     );
-    if (!stored || !sameEntryV1(stored, entry)) return false;
+    // A second tab may have already acknowledged or explicitly cleared this
+    // exact request after this caller verified the committed response.
+    if (!stored) return true;
+    if (!sameEntryV1(stored, entry)) return false;
     try {
       this.adapter.removeExact(entry.request.clientMutationId);
     } catch {
@@ -258,7 +261,7 @@ export class EditorMutationPendingJournalV1 {
         sourcePath: lookupValue.sourcePath,
       });
       const matches = this.scan().filter((entry) => matchesLookupV1(entry, lookup));
-      if (matches.length === 0) return false;
+      if (matches.length === 0) return true;
       for (const entry of matches) this.adapter.removeExact(entry.request.clientMutationId);
       return !this.scan().some((entry) => matchesLookupV1(entry, lookup));
     } catch {
@@ -370,6 +373,7 @@ export async function assertEditorMutationCommitAcknowledgementV1(
     result.event.projectId !== identity.projectId ||
     result.event.documentKey !== identity.documentKey ||
     result.event.epoch !== identity.epoch ||
+    result.event.subjectId !== scope.userId ||
     result.event.clientMutationId !== request.clientMutationId ||
     result.event.baseRevision !== request.baseRevision ||
     BigInt(result.event.revision) !== BigInt(request.baseRevision) + 1n ||

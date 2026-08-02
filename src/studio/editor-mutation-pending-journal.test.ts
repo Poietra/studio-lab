@@ -31,7 +31,7 @@ const SCOPE = {
 } as const;
 const EPOCH = "11111111-1111-4111-8111-111111111111";
 const MUTATION_ID = "22222222-2222-4222-8222-222222222222";
-const SUBJECT_ID = "33333333-3333-4333-8333-333333333333";
+const FOREIGN_SUBJECT_ID = "33333333-3333-4333-8333-333333333333";
 
 class MemoryAdapter implements EditorMutationPendingJournalStorageAdapterV1 {
   beforeNextWrite: (() => void) | null = null;
@@ -169,7 +169,7 @@ function committedResult(target: EditorMutationPendingJournalIdentityV1, exactRe
       mutation: exactRequest.mutation,
       projectId: target.projectId,
       revision: "1",
-      subjectId: SUBJECT_ID,
+      subjectId: SCOPE.userId,
       tenantId: SCOPE.organizationId,
     },
     kind: "committed",
@@ -216,6 +216,7 @@ describe("pending cloud Editor mutation journal", () => {
 
   it("retains one immutable exact request until its acknowledgement is explicit", () => {
     const { adapter, journal: pending } = journal();
+    const peer = new EditorMutationPendingJournalV1(adapter, SCOPE, () => 1_001);
     const target = identity();
     const exactRequest = request(target);
     const entry = pending.record(target, exactRequest);
@@ -223,8 +224,23 @@ describe("pending cloud Editor mutation journal", () => {
     expect(pending.record(target, exactRequest)).toEqual(entry);
     expect(pending.readExact(target)).toEqual(entry);
     expect(adapter.values).toHaveLength(1);
+    expect(peer.acknowledgeExact(entry)).toBe(true);
     expect(pending.acknowledgeExact(entry)).toBe(true);
     expect(pending.readExact(target)).toBeNull();
+  });
+
+  it("never acknowledges a reused mutation ID with different retained evidence", () => {
+    const { adapter, journal: pending } = journal();
+    const target = identity();
+    const entry = pending.record(target, request(target));
+    const conflicting = JSON.parse(adapter.values.get(MUTATION_ID)!) as {
+      identity: { sourcePath: string };
+    };
+    conflicting.identity.sourcePath = "foreign.py";
+    adapter.values.set(MUTATION_ID, JSON.stringify(conflicting));
+
+    expect(pending.acknowledgeExact(entry)).toBe(false);
+    expect(adapter.values).toHaveLength(1);
   });
 
   it("never lets another source lookup consume a retained request", () => {
@@ -238,19 +254,43 @@ describe("pending cloud Editor mutation journal", () => {
     expect(pending.readExact(target)).toEqual(entry);
   });
 
-  it("retains racing same-Scene requests and reports their ambiguity", () => {
+  it("retains racing same-Scene requests, reports ambiguity, and clears only that Scene", async () => {
     const adapter = new MemoryAdapter();
     const first = new EditorMutationPendingJournalV1(adapter, SCOPE, () => 1_000);
     const second = new EditorMutationPendingJournalV1(adapter, SCOPE, () => 1_001);
-    const target = identity();
+    const authorityIdentity = {
+      organizationId: SCOPE.organizationId,
+      projectId: "project-a",
+      sceneName: "Demo",
+      sourceHash: "a".repeat(64),
+      sourcePath: "scene-1.py",
+    } as const;
+    const target = { ...identity(), documentKey: await createBrowserEditorDocumentKeyV1(authorityIdentity) };
+    const unrelated = identity(2);
+    first.record(unrelated, request(unrelated, "77777777-7777-4777-8777-777777777777"));
     adapter.beforeNextWrite = () => {
       second.record(target, request(target, "44444444-4444-4444-8444-444444444444"));
     };
 
     expect(() => first.record(target, request(target))).toThrowError(expect.objectContaining({ code: "ambiguous" }));
-    expect(adapter.values).toHaveLength(2);
+    expect(adapter.values).toHaveLength(3);
     expect(() => first.readExact(target)).toThrowError(expect.objectContaining({ code: "ambiguous" }));
     expect(() => first.record(target, request(target))).toThrowError(expect.objectContaining({ code: "ambiguous" }));
+    const onLookup = vi.fn();
+    const commit = vi.fn();
+    await expect(
+      recoverPendingEditorMutationBeforeOpenV1({
+        client: { commit } as unknown as EditorDocumentClientV1,
+        identity: authorityIdentity,
+        journal: first,
+        onLookup,
+      }),
+    ).rejects.toMatchObject({ code: "ambiguous" });
+    expect(onLookup).toHaveBeenCalledWith(expect.objectContaining({ documentKey: target.documentKey }));
+    expect(commit).not.toHaveBeenCalled();
+    expect(first.discardExact(target)).toBe(true);
+    expect(first.readExact(target)).toBeNull();
+    expect(first.readExact(unrelated)).not.toBeNull();
   });
 
   it("fails closed instead of evicting an unacknowledged request at capacity", () => {
@@ -289,6 +329,36 @@ describe("pending cloud Editor mutation journal", () => {
       assertEditorMutationCommitAcknowledgementV1(entry, {
         ...result,
         event: { ...result.event, clientMutationId: "66666666-6666-4666-8666-666666666666" },
+      }),
+    ).rejects.toMatchObject({ code: "mismatch" });
+    await expect(
+      assertEditorMutationCommitAcknowledgementV1(entry, {
+        ...result,
+        event: { ...result.event, subjectId: FOREIGN_SUBJECT_ID },
+      }),
+    ).rejects.toMatchObject({ code: "mismatch" });
+    await expect(
+      assertEditorMutationCommitAcknowledgementV1(entry, {
+        ...result,
+        document: { ...result.document, tenantId: "organization-b" },
+      }),
+    ).rejects.toMatchObject({ code: "mismatch" });
+    await expect(
+      assertEditorMutationCommitAcknowledgementV1(entry, {
+        ...result,
+        document: { ...result.document, sourcePath: "foreign.py" },
+      }),
+    ).rejects.toMatchObject({ code: "mismatch" });
+    await expect(
+      assertEditorMutationCommitAcknowledgementV1(entry, {
+        ...result,
+        document: { ...result.document, epoch: "88888888-8888-4888-8888-888888888888" },
+      }),
+    ).rejects.toMatchObject({ code: "mismatch" });
+    await expect(
+      assertEditorMutationCommitAcknowledgementV1(entry, {
+        ...result,
+        document: { ...result.document, sealedAt: "2026-08-01T00:00:02.000Z" },
       }),
     ).rejects.toMatchObject({ code: "mismatch" });
     await expect(

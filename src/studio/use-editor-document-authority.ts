@@ -6,6 +6,7 @@ import {
   EditorDocumentAuthorityErrorV1,
   type EditorDocumentAuthorityIdentityV1,
   type EditorDocumentAuthorityOpenOutcomeV1,
+  type EditorDocumentAuthorityRecoveryKindV1,
   type EditorDocumentAuthoritySnapshotV1,
   EditorDocumentAuthorityV1,
 } from "../collaboration/editor-document-authority";
@@ -269,11 +270,25 @@ function journalConflictKindV1(error: unknown): "mutation" | "session" | null {
   return null;
 }
 
+export function editorMutationJournalConflictIsDefinitiveV1(
+  error: unknown,
+  retainedMutation: boolean,
+  recoveryKind: EditorDocumentAuthorityRecoveryKindV1 | null,
+) {
+  return (
+    retainedMutation &&
+    recoveryKind !== "commit" &&
+    error instanceof EditorDocumentAuthorityErrorV1 &&
+    (error.code === "conflict" || error.code === "session-conflict")
+  );
+}
+
 export async function recoverPendingEditorMutationBeforeOpenV1(
   input: Readonly<{
     client: EditorDocumentClientV1;
     identity: EditorDocumentAuthorityIdentityV1;
     journal: EditorMutationPendingJournalV1 | null;
+    onLookup?: (lookup: EditorMutationPendingJournalLookupV1) => void;
     onPending?: (entry: EditorMutationPendingJournalEntryV1, lookup: EditorMutationPendingJournalLookupV1) => void;
     signal?: AbortSignal;
   }>,
@@ -283,6 +298,7 @@ export async function recoverPendingEditorMutationBeforeOpenV1(
   const documentKey = await createBrowserEditorDocumentKeyV1(input.identity);
   input.signal?.throwIfAborted();
   const lookup = pendingMutationJournalLookupV1(input.identity, documentKey);
+  input.onLookup?.(lookup);
   const entry = input.journal.readExact(lookup);
   if (!entry) return { kind: "empty" } as const;
   input.onPending?.(entry, lookup);
@@ -782,6 +798,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         client,
         identity: activeIdentity,
         journal: mutationJournal,
+        onLookup: (lookup) => {
+          mutationConflictLookup.current = lookup;
+        },
         onPending: (entry, lookup) => {
           pendingMutationRecovery.current = entry;
           mutationConflictLookup.current = lookup;
@@ -1374,8 +1393,14 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               authority.current !== activeAuthority
             )
               return { kind: "stale" };
-            const message = publicAuthorityMessageV1(error);
             const retryable = activeAuthority.sessionRecoveryPending || activeAuthority.recoveryKind !== null;
+            const retainedMutation = pendingMutationRecovery.current !== null;
+            const definitiveMutationConflict = editorMutationJournalConflictIsDefinitiveV1(
+              error,
+              retainedMutation,
+              activeAuthority.recoveryKind,
+            );
+            const message = publicAuthorityMessageV1(error);
             if (activeAuthority.recoveryKind !== "commit") pendingCommitSessionRecovery.current = null;
             if (
               pendingMutationRecovery.current === null &&
@@ -1388,10 +1413,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               const journalConflict = shouldExposeJournalDiscardV1(
                 error,
                 retryable,
-                pendingJournalRetainsCurrentBasis(),
+                pendingJournalRetainsCurrentBasis() || definitiveMutationConflict,
               );
               const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
-              const journalConflictKind = journalConflictKindV1(error);
+              const journalConflictKind = definitiveMutationConflict ? "mutation" : journalConflictKindV1(error);
               if (journalConflictAccountWide && journalConflictKind === "mutation") {
                 mutationConflictLookup.current = null;
               }
@@ -1596,12 +1621,21 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authority.current !== activeAuthority
       )
         return false;
-      const message = publicAuthorityMessageV1(error);
       const retryable = activeAuthority.recoveryKind !== null || activeAuthority.sessionRecoveryPending;
+      const definitiveMutationConflict = editorMutationJournalConflictIsDefinitiveV1(
+        error,
+        pendingMutationRecovery.current !== null,
+        activeAuthority.recoveryKind,
+      );
+      const message = publicAuthorityMessageV1(error);
       if (message) {
-        const journalConflict = shouldExposeJournalDiscardV1(error, retryable, pendingJournalRetainsCurrentBasis());
+        const journalConflict = shouldExposeJournalDiscardV1(
+          error,
+          retryable,
+          pendingJournalRetainsCurrentBasis() || definitiveMutationConflict,
+        );
         const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
-        const journalConflictKind = journalConflictKindV1(error);
+        const journalConflictKind = definitiveMutationConflict ? "mutation" : journalConflictKindV1(error);
         if (journalConflictAccountWide) {
           journalConflictIdentity.current = null;
           if (journalConflictKind === "mutation") mutationConflictLookup.current = null;
