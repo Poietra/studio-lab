@@ -35,6 +35,10 @@ export function billingAvailableActionsV1(status: BillingStatusViewV1): readonly
   return [...(status.configured ? (["portal"] as const) : []), ...(canCheckout ? (["checkout"] as const) : [])];
 }
 
+export async function billingExternalNavigationAllowedV1(beforeExternalNavigation?: () => Promise<boolean>) {
+  return beforeExternalNavigation ? await beforeExternalNavigation() : true;
+}
+
 function billingStatusLabelV1(status: NonNullable<BillingStatusViewV1["subscription"]>["status"]) {
   switch (status) {
     case "active":
@@ -111,10 +115,14 @@ export function BillingStatusDetailsV1({ status }: Readonly<{ status: BillingSta
 }
 
 export function BillingSettingsControl({
+  beforeExternalNavigation,
   className,
+  disabled = false,
   organization,
 }: Readonly<{
+  beforeExternalNavigation?: () => Promise<boolean>;
   className?: string;
+  disabled?: boolean;
   organization: AccountSessionViewV1["activeOrganization"];
 }>) {
   const dialog = useRef<HTMLDialogElement | null>(null);
@@ -145,9 +153,10 @@ export function BillingSettingsControl({
   }, [organization.id]);
 
   const open = useCallback(() => {
+    if (disabled) return;
     if (!dialog.current?.open) dialog.current?.showModal?.();
     refresh();
-  }, [refresh]);
+  }, [disabled, refresh]);
 
   const close = useCallback(() => {
     readRequest.current?.abort();
@@ -181,7 +190,7 @@ export function BillingSettingsControl({
   }, [open]);
 
   function beginBillingAction(action: BillingActionV1) {
-    if (state.phase !== "ready" || pendingAction !== null) return;
+    if (disabled || state.phase !== "ready" || pendingAction !== null) return;
     actionRequest.current?.abort();
     const controller = new AbortController();
     actionRequest.current = controller;
@@ -189,9 +198,17 @@ export function BillingSettingsControl({
     setActionError(null);
     const request = action === "portal" ? startBillingPortalV1 : startProCheckoutV1;
     void request(organization.id, controller.signal)
-      .then((response) => {
+      .then(async (response) => {
         if (actionRequest.current !== controller || controller.signal.aborted) return;
         const location = "portalUrl" in response ? response.portalUrl : response.checkoutUrl;
+        if (!(await billingExternalNavigationAllowedV1(beforeExternalNavigation))) {
+          if (actionRequest.current !== controller || controller.signal.aborted) return;
+          actionRequest.current = null;
+          setPendingAction(null);
+          setActionError("Save the current Editor session before leaving for billing.");
+          return;
+        }
+        if (actionRequest.current !== controller || controller.signal.aborted) return;
         window.location.assign(location);
       })
       .catch((error: unknown) => {
@@ -207,9 +224,10 @@ export function BillingSettingsControl({
     <>
       <button
         className={cn(
-          "min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500",
+          "min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600",
           className,
         )}
+        disabled={disabled}
         onClick={open}
         type="button"
       >
@@ -266,7 +284,7 @@ export function BillingSettingsControl({
             {actions.map((action) => (
               <button
                 className={action === "checkout" ? primaryButtonClassName : secondaryButtonClassName}
-                disabled={pendingAction !== null}
+                disabled={disabled || pendingAction !== null}
                 key={action}
                 onClick={() => beginBillingAction(action)}
                 type="button"

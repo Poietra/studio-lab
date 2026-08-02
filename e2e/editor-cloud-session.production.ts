@@ -1,10 +1,13 @@
-import { type Browser, type BrowserContext, expect, type Page, test } from "@playwright/test";
+import { type Browser, type BrowserContext, expect, type Page, type Request, test } from "@playwright/test";
 
 import type { EditorSessionSnapshotV1 } from "../src/collaboration/editor-session-contract";
+import { editorSessionPendingJournalEntryStoragePrefixV1 } from "../src/studio/editor-session-pending-journal";
 import { editorSessionIdentityKey, editorSessionStorageKey } from "../src/studio/editor-session-store";
 import { createInitialEditorState, snapshotCloudEditorSessionV1 } from "../src/studio/use-editor-controller";
 
 const WORKSPACE_NAME = "Production Demo";
+const SESSION_PUT_PATH = /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/session$/u;
+const SESSION_PUT_ROUTE = "**/api/editor/projects/production-demo/documents/*/session?*";
 
 type EditorFixtureIdentity = Readonly<{
   organizationId: string;
@@ -15,6 +18,32 @@ type EditorFixtureIdentity = Readonly<{
 }>;
 
 type SessionPutBody = Readonly<{ snapshot?: EditorSessionSnapshotV1 }>;
+type StoredSessionPutResult = Readonly<{
+  kind: "stored";
+  replayed: boolean;
+  session: Readonly<{ sessionGeneration: string }>;
+}>;
+type AvailableSessionReadResult = Readonly<{
+  kind: "available";
+  session: Readonly<{ sessionGeneration: string; snapshot: EditorSessionSnapshotV1 }>;
+}>;
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve } as const;
+}
+
+function sessionPutSnapshot(request: Request) {
+  if (request.method() !== "PUT" || !SESSION_PUT_PATH.test(new URL(request.url()).pathname)) return null;
+  try {
+    return (request.postDataJSON() as SessionPutBody).snapshot ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function sessionPut(
   page: Page,
@@ -23,11 +52,7 @@ function sessionPut(
 ) {
   return page.waitForResponse((response) => {
     const url = new URL(response.url());
-    if (
-      response.request().method() === "PUT" &&
-      /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/session$/u.test(url.pathname) &&
-      response.status() === status
-    ) {
+    if (response.request().method() === "PUT" && SESSION_PUT_PATH.test(url.pathname) && response.status() === status) {
       try {
         const snapshot = (response.request().postDataJSON() as SessionPutBody).snapshot;
         return snapshot !== undefined && matchesSnapshot(snapshot);
@@ -169,6 +194,30 @@ async function readLocalStorageFixture(page: Page, storageKey: string) {
   }, storageKey);
 }
 
+async function pendingJournalTimes(page: Page, identity: EditorFixtureIdentity) {
+  const prefix = editorSessionPendingJournalEntryStoragePrefixV1({
+    organizationId: identity.organizationId,
+    userId: identity.userId,
+  });
+  return page.evaluate((entryPrefix) => {
+    const times: number[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key === null || !key.startsWith(entryPrefix)) continue;
+      const serialized = window.localStorage.getItem(key);
+      if (serialized === null) continue;
+      const payload = JSON.parse(serialized) as {
+        entry?: { request: { snapshot: { currentTime: unknown } } };
+        kind?: unknown;
+      };
+      if (payload.kind !== "entry" || payload.entry === undefined) continue;
+      const currentTime = payload.entry.request.snapshot.currentTime;
+      if (typeof currentTime === "number") times.push(currentTime);
+    }
+    return times.length === 0 ? null : times;
+  }, prefix);
+}
+
 test("restores a private editor session after reload and in a fresh context for the same account", async ({
   browser,
   page,
@@ -188,6 +237,231 @@ test("restores a private editor session after reload and in a fresh context for 
       .toBeCloseTo(3.25, 2);
   } finally {
     await peer.context.close();
+  }
+});
+
+test("flushes a change inside the autosave window before returning to the workspace launcher", async ({ page }) => {
+  await signInAndOpenStudio(page);
+  await setPlayheadAndAwaitCloudSave(page, 1.5);
+
+  const intercepted = deferred<void>();
+  const release = deferred<void>();
+  let held = false;
+  await page.route(SESSION_PUT_ROUTE, async (route) => {
+    const snapshot = sessionPutSnapshot(route.request());
+    if (!held && snapshot?.currentTime === 4.25) {
+      held = true;
+      intercepted.resolve();
+      await release.promise;
+    }
+    await route.continue();
+  });
+
+  const stored = sessionPut(page, 200, (snapshot) => snapshot.currentTime === 4.25);
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("4.25");
+  await page.getByRole("button", { name: "Back to workspaces" }).click();
+  await intercepted.promise;
+  try {
+    await expect(page.locator("[data-studio-canvas]")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toHaveCount(0);
+  } finally {
+    release.resolve();
+  }
+  await stored;
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+
+  await openStudio(page);
+  await expect
+    .poll(async () => Number(await page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+    .toBeCloseTo(4.25, 2);
+});
+
+test("leaves for the workspace launcher after a bounded flush while the latest PUT remains blocked", async ({
+  page,
+}) => {
+  const identity = await signInAndOpenStudio(page);
+  await setPlayheadAndAwaitCloudSave(page, 1.5);
+
+  const intercepted = deferred<void>();
+  const release = deferred<void>();
+  let held = false;
+  await page.route(SESSION_PUT_ROUTE, async (route) => {
+    const snapshot = sessionPutSnapshot(route.request());
+    if (!held && snapshot?.currentTime === 5.25) {
+      held = true;
+      intercepted.resolve();
+      await Promise.all([
+        release.promise,
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, 2_250);
+        }),
+      ]);
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("5.25");
+  await page.getByRole("button", { name: "Back to workspaces" }).click();
+  await intercepted.promise;
+  try {
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible({ timeout: 3_500 });
+    await expect.poll(() => pendingJournalTimes(page, identity)).toContain(5.25);
+  } finally {
+    release.resolve();
+  }
+
+  await openStudio(page);
+  await expect
+    .poll(async () => Number(await page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+    .toBeCloseTo(5.25, 2);
+  await expect.poll(() => pendingJournalTimes(page, identity)).toBeNull();
+});
+
+test("replays the exact pending session after a pre-store request abort and reload", async ({ page }) => {
+  const identity = await signInAndOpenStudio(page);
+  await setPlayheadAndAwaitCloudSave(page, 1.5);
+
+  const aborted = deferred<void>();
+  let blockPendingSnapshot = true;
+  await page.route(SESSION_PUT_ROUTE, async (route) => {
+    const snapshot = sessionPutSnapshot(route.request());
+    if (snapshot?.currentTime === 3.75 && blockPendingSnapshot) {
+      aborted.resolve();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("3.75");
+  await aborted.promise;
+  await expect.poll(() => pendingJournalTimes(page, identity)).toContain(3.75);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await expect.poll(() => pendingJournalTimes(page, identity)).toContain(3.75);
+  blockPendingSnapshot = false;
+  await openStudio(page);
+  await expect
+    .poll(async () => Number(await page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+    .toBeCloseTo(3.75, 2);
+  await expect.poll(() => pendingJournalTimes(page, identity)).toBeNull();
+});
+
+test("observes an exact stored session after its response is lost without advancing CAS again", async ({ page }) => {
+  const identity = await signInAndOpenStudio(page);
+  await setPlayheadAndAwaitCloudSave(page, 1.5);
+
+  const storedWithoutResponse = deferred<StoredSessionPutResult>();
+  const immediateRetryAborted = deferred<void>();
+  const terminationReplays: StoredSessionPutResult[] = [];
+  let matchingPutCount = 0;
+  await page.route(SESSION_PUT_ROUTE, async (route) => {
+    const snapshot = sessionPutSnapshot(route.request());
+    if (snapshot?.currentTime !== 4.75) {
+      await route.continue();
+      return;
+    }
+    matchingPutCount += 1;
+    if (matchingPutCount === 1) {
+      const response = await route.fetch();
+      storedWithoutResponse.resolve((await response.json()) as StoredSessionPutResult);
+      await route.abort("failed");
+      return;
+    }
+    if (matchingPutCount === 2) {
+      immediateRetryAborted.resolve();
+      await route.abort("failed");
+      return;
+    }
+    const response = await route.fetch();
+    terminationReplays.push((await response.json()) as StoredSessionPutResult);
+    await route.fulfill({ response });
+  });
+
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("4.75");
+  const stored = await storedWithoutResponse.promise;
+  await immediateRetryAborted.promise;
+  expect(stored).toMatchObject({ kind: "stored", replayed: false });
+  await expect.poll(() => pendingJournalTimes(page, identity)).toContain(4.75);
+
+  const cloudRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return response.request().method() === "GET" && SESSION_PUT_PATH.test(url.pathname) && response.status() === 200;
+  });
+  await reopenStudio(page);
+  const observed = (await (await cloudRead).json()) as AvailableSessionReadResult;
+  expect(observed).toMatchObject({
+    kind: "available",
+    session: {
+      sessionGeneration: stored.session.sessionGeneration,
+      snapshot: { currentTime: 4.75 },
+    },
+  });
+  await expect
+    .poll(async () => Number(await page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+    .toBeCloseTo(4.75, 2);
+  await expect.poll(() => pendingJournalTimes(page, identity)).toBeNull();
+  for (const replayed of terminationReplays) {
+    expect(replayed).toMatchObject({
+      kind: "stored",
+      replayed: true,
+      session: { sessionGeneration: stored.session.sessionGeneration },
+    });
+  }
+});
+
+test("retains the cloud winner and exposes a pending-session conflict after a concurrent CAS advance", async ({
+  browser,
+  page,
+}) => {
+  const identity = await signInAndOpenStudio(page);
+  await setPlayheadAndAwaitCloudSave(page, 1.5);
+  const origin = new URL("/", page.url()).href;
+  const aborted = deferred<void>();
+  let abortedAttempts = 0;
+  let blockPendingLoser = true;
+  await page.route(SESSION_PUT_ROUTE, async (route) => {
+    const snapshot = sessionPutSnapshot(route.request());
+    if (blockPendingLoser && snapshot?.currentTime === 6.5) {
+      abortedAttempts += 1;
+      if (abortedAttempts === 2) aborted.resolve();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await page.getByRole("slider", { name: "Scene playhead" }).fill("6.5");
+  await aborted.promise;
+  await expect.poll(() => pendingJournalTimes(page, identity)).toContain(6.5);
+
+  const winner = await sameAccountContext(browser, page.context(), origin);
+  try {
+    await setPlayheadAndAwaitCloudSave(winner.page, 2.25);
+    blockPendingLoser = false;
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await expect.poll(() => pendingJournalTimes(page, identity)).toContain(6.5);
+    await page.getByRole("button", { name: `Open ${WORKSPACE_NAME} workspace` }).click();
+    const conflictAlert = page.getByRole("alert");
+    await expect(conflictAlert).toContainText("pending private Editor session conflicts with newer cloud state");
+    await expect(conflictAlert.getByRole("button", { name: "Clear pending session journal" })).toBeVisible();
+    await expect.poll(() => pendingJournalTimes(page, identity)).toContain(6.5);
+
+    const observer = await sameAccountContext(browser, page.context(), origin);
+    try {
+      await expect
+        .poll(async () => Number(await observer.page.getByRole("slider", { name: "Scene playhead" }).inputValue()))
+        .toBeCloseTo(2.25, 2);
+    } finally {
+      await observer.context.close();
+    }
+  } finally {
+    await winner.context.close();
   }
 });
 
