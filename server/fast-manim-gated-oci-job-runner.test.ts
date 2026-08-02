@@ -15,6 +15,7 @@ import {
   assertFastManimGatedOciImageV1,
   FAST_MANIM_GATED_OCI_PROFILE_V1,
   FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1,
+  FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1,
   FastManimGatedOciDockerClientV1,
   FastManimGatedOciError,
   FastManimGatedOciJobRunnerV1,
@@ -188,6 +189,66 @@ class GatedMathTexScene(Scene):
         equation.scale(0.5)
         self.wait(2)
 `;
+
+const V4_POST_ADD_PLAN = Object.freeze({
+  terminalWait: 2,
+  transforms: Object.freeze([
+    Object.freeze({ kind: "move-to" as const, x: 1.25, y: -0.75 }),
+    Object.freeze({ factor: 1.5, kind: "scale" as const }),
+  ]),
+});
+
+const V4_PRODUCER_OWNED_PRELUDE_CORPUS = Object.freeze([
+  Object.freeze({
+    case: "producer-admitted formatting and docstrings",
+    source: `"""module documentation"""
+from manim import (
+    ImageMobject,
+    RESAMPLING_ALGORITHMS,
+    Scene,
+)
+
+class TransformedImageScene(Scene):  # comments are producer-owned syntax
+  """class documentation"""
+
+  def construct(self):
+    """construct documentation"""
+    image = ImageMobject("image" ".png", resampling_algorithm=RESAMPLING_ALGORITHMS["near" "est"])
+    self.add(image)
+    image.move_to((1.25, -0.75, 0))
+    image.scale(1.5)
+    self.wait(2)
+`,
+  }),
+  Object.freeze({
+    case: "producer-rejected module side effect",
+    source: `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+print("producer must reject this")
+
+class TransformedImageScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png", resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"])
+        self.add(image)
+        image.move_to((1.25, -0.75, 0))
+        image.scale(1.5)
+        self.wait(2)
+`,
+  }),
+  Object.freeze({
+    case: "producer-rejected constructor",
+    source: `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class TransformedImageScene(Scene):
+    def construct(self):
+        image = ImageMobject("other.png", resampling_algorithm=RESAMPLING_ALGORITHMS["cubic"])
+        self.add(image)
+        image.move_to((1.25, -0.75, 0))
+        image.scale(1.5)
+        self.wait(2)
+`,
+  }),
+] as const);
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
   "io.poietra.fast-manim.archive-sha256": "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823",
@@ -494,6 +555,10 @@ describe("gated OCI fixed profile", () => {
     });
   });
 
+  it.each(V4_PRODUCER_OWNED_PRELUDE_CORPUS)("derives only the V4 post-add plan across $case", ({ source }) => {
+    expect(deriveHermeticPngV4TransformPlan(source, "TransformedImageScene")).toEqual(V4_POST_ADD_PLAN);
+  });
+
   it("keeps the immutable producer pin aligned across the builder, image, and admitted profile", () => {
     const buildScript = readFileSync(
       fileURLToPath(new URL("../scripts/build-fast-manim-gated-oci.mjs", import.meta.url)),
@@ -519,6 +584,18 @@ describe("gated OCI fixed profile", () => {
     );
 
     expect(FAST_MANIM_GATED_OCI_PROFILE_V1.requiredContainerLabels).toMatchObject(TRUSTED_IMAGE_LABELS);
+    expect(FAST_MANIM_GATED_OCI_PROFILE_V1.producerContracts).toEqual({
+      hermeticPngV4: FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1,
+    });
+    expect(FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1).toEqual({
+      archiveSha256: TRUSTED_IMAGE_LABELS["io.poietra.fast-manim.archive-sha256"],
+      authority: "manim.renderer._scene_snapshot.profile.hermetic_png_plan_v4",
+      commit: TRUSTED_IMAGE_LABELS["io.poietra.fast-manim.commit"],
+      snapshotVersion: 4,
+      studioResponsibility: "post-add-static-transform-plan",
+      tree: TRUSTED_IMAGE_LABELS["io.poietra.fast-manim.tree"],
+      version: 1,
+    });
     for (const [key, value] of Object.entries(TRUSTED_IMAGE_LABELS)) {
       expect(containerfile, `${key} must be emitted by the immutable image`).toContain(`${key}="${value}"`);
     }
@@ -927,6 +1004,37 @@ describe.skipIf(!realLane)("real rootful gated OCI vertical slice", () => {
       top: expect.closeTo(SANDBOX_TRANSFORMED_PNG_EXPECTED.centerY + halfExtent, 13),
     });
     expect(sourceRuntimeIdentity?.mappings).toMatchObject([{ binding: { name: "image" }, entityId: entity.id }]);
+  });
+
+  it("returns unsupported when a V4 prelude disagrees with the pinned producer contract", {
+    timeout: 60_000,
+  }, async () => {
+    const canonical = sandboxPngProducerRequest();
+    const sourceText = canonical.sourceText.replace('"image.png"', '"other.png"');
+    const source = {
+      ...canonical,
+      requestId: "snapshot-png-prelude-drift",
+      sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+      sourceText,
+    };
+    const request = new FastManimSandboxRequestBundleV1(source, { pngBytes: sandboxPngBytes() });
+    const execution = await runFastManimGatedOciJobV1({
+      deadlineEpochMs: Date.now() + 30_000,
+      image,
+      requestBytes: request.copyBytes(),
+      signal: new AbortController().signal,
+    });
+    expect(execution.cleanupVerified).toBe(true);
+    const { snapshot, sourceRuntimeIdentity } = await verifyCombinedResult(execution.resultBytes, source);
+    expect(snapshot).toMatchObject({
+      kind: "unsupported",
+      requestId: source.requestId,
+    });
+    if (snapshot.kind !== "unsupported") {
+      throw new Error("The pinned V4 producer compiled a source outside its constructor contract.");
+    }
+    expect(snapshot.issues).toEqual([expect.objectContaining({ code: "runtime-semantics-unsupported", evidence: [] })]);
+    expect(sourceRuntimeIdentity).toBeNull();
   });
 
   it("isolates, seals, and correlates real V2 opacity/lifetime evidence", { timeout: 60_000 }, async () => {
