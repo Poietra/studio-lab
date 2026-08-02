@@ -51,7 +51,7 @@ export function AccountInvitationSignInForm() {
         ref={inputRef}
         required
         spellCheck={false}
-        type="password"
+        type="text"
       />
       <button
         className="mt-3 min-h-10 w-full border border-zinc-700 px-4 text-sm font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"

@@ -128,12 +128,12 @@ export function AccountInvitationControl({ disabled = false }: Readonly<{ disabl
           {state.created ? (
             <div className="mt-4">
               <p className="text-xs leading-5 text-amber-200">Copy now. This code is shown only in this panel.</p>
-              <output
+              <code
                 aria-label="Invitation code"
                 className="mt-2 block break-all border border-zinc-800 bg-zinc-900 p-3 font-mono text-xs leading-5 text-zinc-200"
               >
                 {state.created.invitationToken}
-              </output>
+              </code>
               <button
                 className="mt-3 min-h-9 w-full border border-sky-700 bg-sky-950 px-3 text-xs font-medium text-sky-100 hover:bg-sky-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
                 onClick={copyInvitation}
