@@ -1,6 +1,7 @@
 import { Pool } from "pg";
 import { describe, expect, it } from "vitest";
 
+import type { EditorSessionSnapshotV1 } from "../../src/collaboration/editor-session-contract";
 import type { CanonicalEditProgram } from "../../src/studio/operations";
 import { canonicalEditorProgramV1, createEditorDocumentKeyV1 } from "./editor-document-repository";
 import { applyBundledDurableStorageMigrations, applyBundledDurableStorageMigrationsThrough } from "./postgres/migrate";
@@ -55,6 +56,26 @@ function program(deltaX: number, transactionId: string): CanonicalEditProgram {
 
 function appendMutation(programValue: CanonicalEditProgram) {
   return { kind: "append", program: programValue } as const;
+}
+
+function sessionSnapshot(programs: readonly CanonicalEditProgram[], currentTime = 0): EditorSessionSnapshotV1 {
+  return {
+    appliedPrograms: programs.map((programValue) => ({
+      program: programValue,
+      validation: { issues: [], status: "valid" as const },
+    })),
+    currentTime,
+    draftOperation: null,
+    draftProgram: null,
+    editingAppliedProgram: null,
+    insertTool: "select",
+    interactionMode: "position",
+    motionDuration: 1,
+    programUndoEntries: [],
+    redoPrograms: [],
+    selectedObjectIds: [],
+    verifiedSourceDurationBasis: null,
+  };
 }
 
 async function seedEditorFixture(pool: Pool) {
@@ -260,7 +281,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       expect(await applyBundledDurableStorageMigrationsThrough(setup, 17)).toEqual({ applied: true, version: 17 });
       await seedEditorFixture(setup);
       const legacy = await seedCompatibleLegacyEditorV17(setup);
-      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 22 });
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 23 });
       await expectCompatibleLegacyEditorUpgradedV18(setup, legacy);
       await expect(editorA.ready()).resolves.toBe(true);
 
@@ -280,9 +301,58 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
         kind: "opened",
       });
 
+      const emptySession = sessionSnapshot([]);
+      const sessionIdentity = {
+        documentKey: opened.document.documentKey,
+        epoch: opened.document.epoch,
+        projectId: PROJECT,
+        subjectId: USER_A,
+        tenantId: TENANT_A,
+      } as const;
+      await expect(
+        editorA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 0n,
+          expectedSessionGeneration: 0n,
+          snapshot: emptySession,
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({ kind: "stored", replayed: false, session: { sessionGeneration: 1n } });
+      const sessionRace = await Promise.all([
+        editorA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 0n,
+          expectedSessionGeneration: 1n,
+          snapshot: sessionSnapshot([], 1),
+          snapshotVersion: 1,
+        }),
+        peerA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 0n,
+          expectedSessionGeneration: 1n,
+          snapshot: sessionSnapshot([], 2),
+          snapshotVersion: 1,
+        }),
+      ]);
+      expect(sessionRace.filter((result) => result.kind === "stored")).toHaveLength(1);
+      expect(sessionRace.filter((result) => result.kind === "conflict")).toEqual([
+        {
+          currentSessionGeneration: 2n,
+          kind: "conflict",
+          reason: "session-generation-mismatch",
+        },
+      ]);
+      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toMatchObject({
+        kind: "available",
+        session: { sessionGeneration: 2n },
+      });
+
       const openedB = await editorB.openDocument({ ...openInput, tenantId: TENANT_B });
       if (openedB.kind !== "opened") throw new Error("The isolated editor document did not open.");
       expect(openedB.document).toMatchObject({ epoch: EPOCH_B, revision: 0n, tenantId: TENANT_B });
+      await expect(
+        editorB.readSessionSnapshot({ ...sessionIdentity, subjectId: USER_B, tenantId: TENANT_B }),
+      ).resolves.toEqual({ currentSessionGeneration: 0n, kind: "unavailable" });
       await expectUnpairedEventRejected(setup, opened.document.documentKey, opened.document.epoch);
 
       const firstProgram = program(64, "first-edit");
@@ -326,13 +396,83 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
         editorA.commitMutation({ ...winnerInput, mutation: appendMutation(program(65, "changed-reuse")) }),
       ).resolves.toEqual({ kind: "conflict", reason: "mutation-reused" });
 
-      const second = await editorA.commitMutation({
+      const rejectedAtomicMutationId = "7f000000-0000-4000-8000-000000000007";
+      await expect(
+        editorA.commitMutation({
+          ...winnerInput,
+          baseRevision: 1n,
+          clientMutationId: rejectedAtomicMutationId,
+          mutation: appendMutation(program(80, "rejected-atomic-edit")),
+          sessionUpdate: {
+            documentRevision: 2n,
+            expectedSessionGeneration: 1n,
+            snapshot: sessionSnapshot([firstProgram, program(80, "rejected-atomic-edit")]),
+            snapshotVersion: 1,
+          },
+        }),
+      ).resolves.toEqual({
+        currentRevision: 1n,
+        currentSessionGeneration: 2n,
+        kind: "conflict",
+        reason: "session-generation-mismatch",
+      });
+      const rejectedAtomicEvidence = await setup.query<{ event_count: string; revision: string }>(
+        `SELECT document.revision::text AS revision,
+                count(event.client_mutation_id)::text AS event_count
+           FROM public.editor_documents document
+           LEFT JOIN public.editor_edit_events event
+             ON event.tenant_id = document.tenant_id AND event.project_id = document.project_id
+            AND event.document_key = document.document_key AND event.epoch = document.epoch
+            AND event.client_mutation_id = $1::uuid
+          WHERE document.tenant_id = $2 AND document.project_id = $3
+            AND document.document_key = decode($4, 'hex') AND document.epoch = $5::uuid
+          GROUP BY document.revision`,
+        [rejectedAtomicMutationId, TENANT_A, PROJECT, opened.document.documentKey, EPOCH_A],
+      );
+      expect(rejectedAtomicEvidence.rows).toEqual([{ event_count: "0", revision: "1" }]);
+
+      const secondProgram = program(96, "second-edit");
+      const secondInput = {
         ...winnerInput,
         baseRevision: 1n,
         clientMutationId: "80000000-0000-4000-8000-000000000008",
-        mutation: appendMutation(program(96, "second-edit")),
+        mutation: appendMutation(secondProgram),
+        sessionUpdate: {
+          documentRevision: 2n,
+          expectedSessionGeneration: 2n,
+          snapshot: sessionSnapshot([firstProgram, secondProgram]),
+          snapshotVersion: 1,
+        },
+      } as const;
+      const second = await editorA.commitMutation(secondInput);
+      expect(second).toMatchObject({
+        document: { revision: 2n },
+        event: { revision: 2n },
+        kind: "committed",
+        sessionUpdate: { documentRevision: 2n, sessionGeneration: 3n },
       });
-      expect(second).toMatchObject({ document: { revision: 2n }, event: { revision: 2n }, kind: "committed" });
+      await expect(
+        peerA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 2n,
+          expectedSessionGeneration: 3n,
+          snapshot: sessionSnapshot([firstProgram, secondProgram], 3),
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({ kind: "stored", session: { sessionGeneration: 4n } });
+      await expect(editorA.commitMutation(secondInput)).resolves.toMatchObject({
+        kind: "committed",
+        replayed: true,
+        sessionUpdate: { documentRevision: 2n, sessionGeneration: 3n },
+      });
+      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toMatchObject({
+        kind: "available",
+        session: {
+          documentRevision: 2n,
+          sessionGeneration: 4n,
+          snapshot: { currentTime: 3 },
+        },
+      });
       const replacementProgram = program(72, "first-edit");
       await expect(
         editorA.commitMutation({
@@ -342,6 +482,19 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           mutation: { kind: "replace", program: replacementProgram, targetTransactionId: "first-edit" },
         }),
       ).resolves.toMatchObject({ document: { revision: 3n }, event: { mutation: { kind: "replace" }, revision: 3n } });
+      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toEqual({
+        currentSessionGeneration: 4n,
+        kind: "unavailable",
+      });
+      await expect(
+        peerA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 3n,
+          expectedSessionGeneration: 4n,
+          snapshot: sessionSnapshot([replacementProgram, secondProgram], 4),
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({ kind: "stored", session: { sessionGeneration: 5n } });
       for (const [clientMutationId, mutation] of [
         [
           "82000000-0000-4000-8000-000000000008",
@@ -472,6 +625,21 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       await expect(editorA.commitMutation(winnerInput)).resolves.toMatchObject({ kind: "committed", replayed: true });
       const reopened = await editorA.openDocument({ ...openInput, sourceHash: SOURCE_B });
       expect(reopened).toMatchObject({ created: true, document: { epoch: EPOCH_A2, revision: 0n }, kind: "opened" });
+      if (reopened.kind !== "opened") throw new Error("The replacement editor epoch did not open.");
+      await expect(
+        editorA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 0n,
+          epoch: reopened.document.epoch,
+          expectedSessionGeneration: 0n,
+          snapshot: emptySession,
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({
+        kind: "stored",
+        replayed: false,
+        session: { epoch: EPOCH_A2, sessionGeneration: 1n },
+      });
 
       await expect(
         setup.query(

@@ -8,6 +8,7 @@ import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { authenticateManimPrincipal } from "./manim-request-principal";
 import {
   canonicalEditorProgramV1,
+  canonicalEditorSessionSnapshotV1,
   createEditorDocumentKeyV1,
   type EditorDocumentRepositoryV1,
   type EditorDocumentV1,
@@ -28,32 +29,47 @@ const MUTATION_ID = "30000000-0000-4000-8000-000000000003";
 const ORIGIN = "https://studio.example";
 const servers: ReturnType<typeof createServer>[] = [];
 
-function program(): CanonicalEditProgram {
+const sessionSnapshot = {
+  appliedPrograms: [],
+  currentTime: 0,
+  draftOperation: null,
+  draftProgram: null,
+  editingAppliedProgram: null,
+  insertTool: "select",
+  interactionMode: "position",
+  motionDuration: 1,
+  programUndoEntries: [],
+  redoPrograms: [],
+  selectedObjectIds: [],
+  verifiedSourceDurationBasis: null,
+} as const;
+
+function program(transactionId = "motion", evidence: readonly string[] = []): CanonicalEditProgram {
   const operation = {
     controlOffset: { x: 0, y: 0 },
     delta: { x: 20, y: 0 },
     dependsOn: [],
     easing: "smooth" as const,
-    id: "motion/move",
+    id: `${transactionId}/move`,
     interval: { end: 2, start: 1 },
     kind: "CreateMotion" as const,
-    provenance: { evidence: [], origin: "direct-manipulation" as const },
+    provenance: { evidence, origin: "direct-manipulation" as const },
     targetEntityIds: ["equation"],
   };
   return {
     anchor: {
       capturedPlayhead: 1,
-      evidence: [],
+      evidence,
       resolvedSeconds: 1,
       source: { kind: "absolute", seconds: 1 },
     },
     intentCount: 1,
     loweringStatus: "supported",
     operations: [operation],
-    provenance: { evidence: [], origin: "direct-manipulation" },
+    provenance: { evidence, origin: "direct-manipulation" },
     requestedExecution: "sequence",
     schedule: { edges: [], mode: "sequence", order: [operation.id] },
-    transactionId: "motion",
+    transactionId,
     version: 1,
   };
 }
@@ -97,12 +113,36 @@ function event(): EditorEditEventV1 {
   };
 }
 
+function session(documentRevision = 0n, sessionGeneration = 1n) {
+  const canonical = canonicalEditorSessionSnapshotV1(sessionSnapshot);
+  return {
+    documentKey: DOCUMENT_KEY,
+    documentRevision,
+    epoch: EPOCH,
+    projectId: PROJECT,
+    sessionGeneration,
+    snapshot: sessionSnapshot,
+    snapshotByteSize: canonical.byteSize,
+    snapshotDigest: canonical.digest,
+    snapshotVersion: 1 as const,
+    subjectId: SUBJECT,
+    tenantId: TENANT,
+    updatedAt: new Date("2026-08-01T00:00:02.000Z"),
+  };
+}
+
+function availableSession(value = session()) {
+  return { kind: "available", session: value } as const;
+}
+
 function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): EditorDocumentRepositoryV1 {
   return {
     close: async () => undefined,
     commitMutation: async () => ({ document: document(1n), event: event(), kind: "committed", replayed: false }),
     openDocument: async () => ({ created: true, document: document(), kind: "opened", projection: projection() }),
+    putSessionSnapshot: async () => ({ kind: "stored", replayed: false, session: session() }),
     readEventTail: async () => ({ document: document(1n), events: [event()] }),
+    readSessionSnapshot: async () => availableSession(),
     ready: async () => true,
     ...overrides,
   };
@@ -281,6 +321,221 @@ describe("authenticated Editor document HTTP handler", () => {
     );
   });
 
+  it("reads and updates only the principal subject's epoch-scoped session", async () => {
+    const readSessionSnapshot = vi.fn(repository().readSessionSnapshot);
+    const putSessionSnapshot = vi.fn(repository().putSessionSnapshot);
+    const signal = new AbortController().signal;
+    const port = await listen(repository({ putSessionSnapshot, readSessionSnapshot }), {
+      expectedMutationOrigin: ORIGIN,
+      requestSignal: signal,
+    });
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
+
+    expect(await send(port, path)).toMatchObject({
+      body: {
+        kind: "available",
+        session: { documentRevision: "0", sessionGeneration: "1", tenantId: TENANT },
+      },
+      status: 200,
+    });
+    expect(
+      await send(port, path, {
+        body: {
+          documentRevision: "0",
+          epoch: EPOCH,
+          expectedSessionGeneration: "0",
+          snapshot: sessionSnapshot,
+          snapshotVersion: 1,
+        },
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ body: { kind: "stored", replayed: false }, status: 200 });
+    const identity = {
+      documentKey: DOCUMENT_KEY,
+      epoch: EPOCH,
+      projectId: PROJECT,
+      subjectId: SUBJECT,
+      tenantId: TENANT,
+    };
+    expect(readSessionSnapshot).toHaveBeenCalledWith(identity, signal);
+    expect(putSessionSnapshot).toHaveBeenCalledWith(
+      {
+        ...identity,
+        documentRevision: 0n,
+        expectedSessionGeneration: 0n,
+        snapshot: sessionSnapshot,
+        snapshotVersion: 1,
+      },
+      signal,
+    );
+    expect(isEditorDocumentRequest(path.split("?", 1)[0]!)).toBe(true);
+  });
+
+  it("returns a stale session generation without disclosing its snapshot", async () => {
+    const port = await listen(
+      repository({
+        readSessionSnapshot: async () => ({ currentSessionGeneration: 7n, kind: "unavailable" }),
+      }),
+    );
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
+
+    expect(await send(port, path)).toMatchObject({
+      body: { currentSessionGeneration: "7", kind: "unavailable" },
+      status: 404,
+    });
+  });
+
+  it("atomically forwards a post-event session update and returns immutable evidence", async () => {
+    const canonical = canonicalEditorSessionSnapshotV1(sessionSnapshot);
+    const commitMutation = vi.fn<EditorDocumentRepositoryV1["commitMutation"]>(async (input) => ({
+      document: document(1n),
+      event: event(),
+      kind: "committed",
+      replayed: false,
+      sessionUpdate: input.sessionUpdate
+        ? {
+            documentRevision: input.sessionUpdate.documentRevision,
+            sessionGeneration: input.sessionUpdate.expectedSessionGeneration + 1n,
+            snapshotByteSize: canonical.byteSize,
+            snapshotDigest: canonical.digest,
+            snapshotVersion: input.sessionUpdate.snapshotVersion,
+          }
+        : undefined,
+    }));
+    const port = await listen(repository({ commitMutation }), { expectedMutationOrigin: ORIGIN });
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/events`;
+    const sessionUpdate = {
+      documentRevision: "1",
+      expectedSessionGeneration: "0",
+      snapshot: sessionSnapshot,
+      snapshotVersion: 1,
+    } as const;
+
+    expect(
+      await send(port, path, {
+        body: { baseRevision: "0", clientMutationId: MUTATION_ID, epoch: EPOCH, mutation, sessionUpdate },
+        headers: mutationHeaders(),
+        method: "POST",
+      }),
+    ).toMatchObject({
+      body: {
+        event: { revision: "1" },
+        sessionUpdate: {
+          documentRevision: "1",
+          sessionGeneration: "1",
+          snapshotByteSize: canonical.byteSize,
+          snapshotDigest: canonical.digest,
+        },
+      },
+      status: 201,
+    });
+    expect(commitMutation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionUpdate: {
+          documentRevision: 1n,
+          expectedSessionGeneration: 0n,
+          snapshot: sessionSnapshot,
+          snapshotVersion: 1,
+        },
+        subjectId: SUBJECT,
+        tenantId: TENANT,
+      }),
+      undefined,
+    );
+  });
+
+  it("admits a valid session snapshot above the legacy event-only route limit", async () => {
+    const evidence = Array.from({ length: 64 }, (_, index) => `${index.toString().padStart(2, "0")}${"x".repeat(498)}`);
+    const record = {
+      program: program("large-session", evidence),
+      validation: { issues: [], status: "valid" as const },
+    };
+    const largeSnapshot = {
+      ...sessionSnapshot,
+      redoPrograms: Array.from({ length: 3 }, () => ({ edit: null, kind: "draft" as const, value: record })),
+      selectedObjectIds: Array.from(
+        { length: 8 },
+        (_, index) => `${index.toString().padStart(2, "0")}${"s".repeat(498)}`,
+      ),
+    };
+    const canonical = canonicalEditorSessionSnapshotV1(largeSnapshot);
+    expect(canonical.byteSize).toBeGreaterThan(288 * 1024);
+    const commitMutation = vi.fn<EditorDocumentRepositoryV1["commitMutation"]>(async () => ({
+      kind: "conflict",
+      reason: "projection-mismatch",
+    }));
+    const port = await listen(repository({ commitMutation }), { expectedMutationOrigin: ORIGIN });
+
+    expect(
+      await send(port, `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/events`, {
+        body: {
+          baseRevision: "0",
+          clientMutationId: MUTATION_ID,
+          epoch: EPOCH,
+          mutation,
+          sessionUpdate: {
+            documentRevision: "1",
+            expectedSessionGeneration: "0",
+            snapshot: largeSnapshot,
+            snapshotVersion: 1,
+          },
+        },
+        headers: mutationHeaders(),
+        method: "POST",
+      }),
+    ).toMatchObject({ body: { kind: "conflict", reason: "projection-mismatch" }, status: 409 });
+    expect(commitMutation).toHaveBeenCalledOnce();
+  });
+
+  it("maps session replay and conflicts to stable statuses", async () => {
+    const putSessionSnapshot = vi
+      .fn<EditorDocumentRepositoryV1["putSessionSnapshot"]>()
+      .mockResolvedValueOnce({ kind: "stored", replayed: true, session: session() })
+      .mockResolvedValueOnce({ kind: "conflict", reason: "forbidden" })
+      .mockResolvedValueOnce({ kind: "conflict", reason: "not-found" })
+      .mockResolvedValueOnce({ kind: "conflict", reason: "epoch-mismatch" })
+      .mockResolvedValueOnce({
+        currentDocumentRevision: 2n,
+        currentSessionGeneration: 3n,
+        kind: "conflict",
+        reason: "session-generation-mismatch",
+      });
+    const port = await listen(repository({ putSessionSnapshot }), { expectedMutationOrigin: ORIGIN });
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
+    const request = () =>
+      send(port, path, {
+        body: {
+          documentRevision: "0",
+          epoch: EPOCH,
+          expectedSessionGeneration: "0",
+          snapshot: sessionSnapshot,
+          snapshotVersion: 1,
+        },
+        headers: mutationHeaders(),
+        method: "PUT",
+      });
+
+    expect(await request()).toMatchObject({ body: { kind: "stored", replayed: true }, status: 200 });
+    expect(await request()).toEqual({ allow: null, body: { kind: "conflict", reason: "forbidden" }, status: 403 });
+    expect(await request()).toEqual({ allow: null, body: { kind: "conflict", reason: "not-found" }, status: 404 });
+    expect(await request()).toEqual({
+      allow: null,
+      body: { kind: "conflict", reason: "epoch-mismatch" },
+      status: 409,
+    });
+    expect(await request()).toEqual({
+      allow: null,
+      body: {
+        currentDocumentRevision: "2",
+        currentSessionGeneration: "3",
+        kind: "conflict",
+        reason: "session-generation-mismatch",
+      },
+      status: 409,
+    });
+  });
+
   it("maps replay and structured repository outcomes to stable statuses", async () => {
     const commitMutation = vi
       .fn<EditorDocumentRepositoryV1["commitMutation"]>()
@@ -346,6 +601,78 @@ describe("authenticated Editor document HTTP handler", () => {
     expect(readEventTail).not.toHaveBeenCalled();
   });
 
+  it("rejects forged, cross-origin, and non-canonical session requests before storage", async () => {
+    const putSessionSnapshot = vi.fn(repository().putSessionSnapshot);
+    const readSessionSnapshot = vi.fn(repository().readSessionSnapshot);
+    const port = await listen(repository({ putSessionSnapshot, readSessionSnapshot }), {
+      expectedMutationOrigin: ORIGIN,
+    });
+    const basePath = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session`;
+    const path = `${basePath}?epoch=${EPOCH}`;
+    const body = {
+      documentRevision: "0",
+      epoch: EPOCH,
+      expectedSessionGeneration: "0",
+      snapshot: sessionSnapshot,
+      snapshotVersion: 1,
+    };
+
+    expect(await send(port, `${path}&epoch=${EPOCH}`)).toMatchObject({ status: 400 });
+    expect(await send(port, `${path}&extra=1`)).toMatchObject({ status: 400 });
+    expect(
+      await send(port, path, { body, headers: { "content-type": "application/json" }, method: "PUT" }),
+    ).toMatchObject({ status: 403 });
+    expect(await send(port, path, { body, headers: mutationHeaders("text/plain"), method: "PUT" })).toMatchObject({
+      status: 415,
+    });
+    expect(
+      await send(port, path, {
+        body: { ...body, subjectId: SUBJECT },
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(
+      await send(port, path, {
+        body: { ...body, snapshot: { ...sessionSnapshot, tenantId: TENANT } },
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(
+      await send(port, path, {
+        body: { ...body, epoch: "20000000-0000-4000-8000-000000000099" },
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(
+      await send(port, path, {
+        body: `{"oversized":"${"x".repeat(416 * 1024)}"}`,
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ status: 413 });
+    expect(await send(port, path, { method: "POST" })).toMatchObject({ allow: "GET, PUT", status: 405 });
+    expect(putSessionSnapshot).not.toHaveBeenCalled();
+    expect(readSessionSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when storage returns another subject or corrupt session evidence", async () => {
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
+    const wrongSubjectPort = await listen(
+      repository({ readSessionSnapshot: async () => availableSession({ ...session(), subjectId: MUTATION_ID }) }),
+    );
+    expect(await send(wrongSubjectPort, path)).toMatchObject({ status: 500 });
+
+    const corruptEvidencePort = await listen(
+      repository({
+        readSessionSnapshot: async () => availableSession({ ...session(), snapshotDigest: "d".repeat(64) }),
+      }),
+    );
+    expect(await send(corruptEvidencePort, path)).toMatchObject({ status: 500 });
+  });
+
   it("rejects a canonical Program over the durable byte bound before storage", async () => {
     const commitMutation = vi.fn(repository().commitMutation);
     const port = await listen(repository({ commitMutation }), { expectedMutationOrigin: ORIGIN });
@@ -376,10 +703,11 @@ describe("authenticated Editor document HTTP handler", () => {
     expect(commitMutation).not.toHaveBeenCalled();
   });
 
-  it("rejects a verified non-account actor before committing", async () => {
+  it("rejects a verified non-account actor before committing or reading private sessions", async () => {
     const commitMutation = vi.fn(repository().commitMutation);
+    const readSessionSnapshot = vi.fn(repository().readSessionSnapshot);
     const port = await listen(
-      repository({ commitMutation }),
+      repository({ commitMutation, readSessionSnapshot }),
       { expectedMutationOrigin: ORIGIN },
       await principal("development-local-user"),
     );
@@ -391,7 +719,11 @@ describe("authenticated Editor document HTTP handler", () => {
         method: "POST",
       }),
     ).toMatchObject({ status: 403 });
+    expect(
+      await send(port, `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`),
+    ).toMatchObject({ status: 403 });
     expect(commitMutation).not.toHaveBeenCalled();
+    expect(readSessionSnapshot).not.toHaveBeenCalled();
   });
 
   it("rejects unverified claims before entering storage", async () => {

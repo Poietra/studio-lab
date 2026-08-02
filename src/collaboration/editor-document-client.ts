@@ -6,15 +6,23 @@ import {
   type EditorDocumentCommitResultViewV1,
   type EditorDocumentOpenRequestV1,
   type EditorDocumentOpenResultViewV1,
+  type EditorDocumentSessionPutRequestV1,
+  type EditorDocumentSessionPutResultViewV1,
+  type EditorDocumentSessionReadResultViewV1,
   type EditorDocumentTailResultViewV1,
   editorDocumentCommitRequestSchemaV1,
   editorDocumentCommitResultViewSchemaV1,
   editorDocumentKeySchemaV1,
   editorDocumentOpenRequestSchemaV1,
   editorDocumentOpenResultViewSchemaV1,
+  editorDocumentSessionPutRequestSchemaV1,
+  editorDocumentSessionPutResultViewSchemaV1,
+  editorDocumentSessionQuerySchemaV1,
+  editorDocumentSessionReadResultViewSchemaV1,
   editorDocumentTailResultViewSchemaV1,
   editorRevisionStringSchemaV1,
 } from "./editor-document-http-contract";
+import { canonicalEditorSessionSnapshotJsonV1 } from "./editor-session-contract";
 
 type FetchV1 = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -46,6 +54,18 @@ export interface EditorDocumentClientV1 {
     request: EditorDocumentOpenRequestV1,
     signal?: AbortSignal,
   ): Promise<EditorDocumentOpenResultViewV1>;
+  putSession(
+    identity: EditorDocumentClientIdentityV1,
+    documentKey: string,
+    request: EditorDocumentSessionPutRequestV1,
+    signal?: AbortSignal,
+  ): Promise<EditorDocumentSessionPutResultViewV1>;
+  readSession(
+    identity: EditorDocumentClientIdentityV1,
+    documentKey: string,
+    request: Readonly<{ epoch: string }>,
+    signal?: AbortSignal,
+  ): Promise<EditorDocumentSessionReadResultViewV1>;
   tail(
     identity: EditorDocumentClientIdentityV1,
     documentKey: string,
@@ -94,8 +114,31 @@ function editorPathV1(projectId: string, suffix: string) {
   return `/api/editor/projects/${encodeURIComponent(projectId)}/${suffix}`;
 }
 
+function sessionIdentityMatchesV1(
+  session: Readonly<{ documentKey: string; epoch: string; projectId: string; tenantId: string }>,
+  expected: Readonly<{ documentKey: string; epoch: string; organizationId: string; projectId: string }>,
+) {
+  return (
+    session.tenantId === expected.organizationId &&
+    session.projectId === expected.projectId &&
+    session.documentKey === expected.documentKey &&
+    session.epoch === expected.epoch
+  );
+}
+
+async function sessionSnapshotEvidenceMatchesV1(
+  snapshot: unknown,
+  evidence: Readonly<{ snapshotByteSize: number; snapshotDigest: string }>,
+) {
+  const bytes = new TextEncoder().encode(canonicalEditorSessionSnapshotJsonV1(snapshot));
+  if (bytes.byteLength !== evidence.snapshotByteSize) return false;
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  const digestHex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return digestHex === evidence.snapshotDigest;
+}
+
 export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
-  constructor(private readonly fetchImpl: FetchV1 = fetch) {}
+  constructor(private readonly fetchImpl: FetchV1 = globalThis.fetch.bind(globalThis)) {}
 
   async open(
     identityValue: EditorDocumentClientIdentityV1,
@@ -150,6 +193,108 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
         response.status ===
           (parsed.data.reason === "forbidden" ? 403 : parsed.data.reason === "not-found" ? 404 : 409));
     if (!statusMatches) return unexpectedResponseV1(response);
+    if (parsed.data.kind === "committed") {
+      if ((request.sessionUpdate === undefined) !== (parsed.data.sessionUpdate === undefined)) {
+        return unexpectedResponseV1(response);
+      }
+      if (request.sessionUpdate !== undefined && parsed.data.sessionUpdate !== undefined) {
+        if (
+          parsed.data.sessionUpdate.documentRevision !== request.sessionUpdate.documentRevision ||
+          BigInt(parsed.data.sessionUpdate.sessionGeneration) !==
+            BigInt(request.sessionUpdate.expectedSessionGeneration) + 1n ||
+          parsed.data.sessionUpdate.snapshotVersion !== request.sessionUpdate.snapshotVersion ||
+          !(await sessionSnapshotEvidenceMatchesV1(request.sessionUpdate.snapshot, parsed.data.sessionUpdate))
+        ) {
+          return unexpectedResponseV1(response);
+        }
+      }
+    }
+    return parsed.data;
+  }
+
+  async readSession(
+    identityValue: EditorDocumentClientIdentityV1,
+    documentKeyValue: string,
+    requestValue: Readonly<{ epoch: string }>,
+    signal?: AbortSignal,
+  ) {
+    const identity = parseIdentityV1(identityValue);
+    const documentKey = editorDocumentKeySchemaV1.parse(documentKeyValue);
+    const request = editorDocumentSessionQuerySchemaV1.parse(requestValue);
+    const query = new URLSearchParams(request);
+    const response = await this.fetchImpl(
+      `${editorPathV1(identity.projectId, `documents/${encodeURIComponent(documentKey)}/session`)}?${query}`,
+      {
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: requestHeadersV1(identity.organizationId, false),
+        signal,
+      },
+    );
+    const parsed = editorDocumentSessionReadResultViewSchemaV1.safeParse(await jsonBodyV1(response));
+    if (!parsed.success) return unexpectedResponseV1(response);
+    if (
+      (parsed.data.kind === "unavailable" && response.status !== 404) ||
+      (parsed.data.kind === "available" && response.status !== 200)
+    ) {
+      return unexpectedResponseV1(response);
+    }
+    if (
+      parsed.data.kind === "available" &&
+      (!sessionIdentityMatchesV1(parsed.data.session, { documentKey, epoch: request.epoch, ...identity }) ||
+        !(await sessionSnapshotEvidenceMatchesV1(parsed.data.session.snapshot, parsed.data.session)))
+    ) {
+      return unexpectedResponseV1(response);
+    }
+    return parsed.data;
+  }
+
+  async putSession(
+    identityValue: EditorDocumentClientIdentityV1,
+    documentKeyValue: string,
+    requestValue: EditorDocumentSessionPutRequestV1,
+    signal?: AbortSignal,
+  ) {
+    const identity = parseIdentityV1(identityValue);
+    const documentKey = editorDocumentKeySchemaV1.parse(documentKeyValue);
+    const request = editorDocumentSessionPutRequestSchemaV1.parse(requestValue);
+    const query = new URLSearchParams({ epoch: request.epoch });
+    const response = await this.fetchImpl(
+      `${editorPathV1(identity.projectId, `documents/${encodeURIComponent(documentKey)}/session`)}?${query}`,
+      {
+        body: JSON.stringify(request),
+        cache: "no-store",
+        credentials: "same-origin",
+        headers: requestHeadersV1(identity.organizationId, true),
+        method: "PUT",
+        signal,
+      },
+    );
+    const parsed = editorDocumentSessionPutResultViewSchemaV1.safeParse(await jsonBodyV1(response));
+    if (!parsed.success) return unexpectedResponseV1(response);
+    const statusMatches =
+      (parsed.data.kind === "stored" && response.status === 200) ||
+      (parsed.data.kind === "conflict" &&
+        response.status ===
+          (parsed.data.reason === "forbidden" ? 403 : parsed.data.reason === "not-found" ? 404 : 409));
+    if (!statusMatches) return unexpectedResponseV1(response);
+    if (parsed.data.kind === "stored") {
+      if (
+        !sessionIdentityMatchesV1(parsed.data.session, {
+          documentKey,
+          epoch: request.epoch,
+          ...identity,
+        }) ||
+        parsed.data.session.documentRevision !== request.documentRevision ||
+        BigInt(parsed.data.session.sessionGeneration) !== BigInt(request.expectedSessionGeneration) + 1n ||
+        parsed.data.session.snapshotVersion !== request.snapshotVersion ||
+        canonicalEditorSessionSnapshotJsonV1(parsed.data.session.snapshot) !==
+          canonicalEditorSessionSnapshotJsonV1(request.snapshot) ||
+        !(await sessionSnapshotEvidenceMatchesV1(parsed.data.session.snapshot, parsed.data.session))
+      ) {
+        return unexpectedResponseV1(response);
+      }
+    }
     return parsed.data;
   }
 

@@ -323,7 +323,7 @@ function validateTransportRequest(
     request.resume();
     throw new TransportError("Request body is too large.", 413);
   }
-  const bodyMethod = request.method === "POST" || request.method === "PATCH";
+  const bodyMethod = request.method === "POST" || request.method === "PUT" || request.method === "PATCH";
   if (bodyMethod && contentLength === undefined) {
     request.resume();
     throw new TransportError("A bounded Content-Length header is required.", 411);
@@ -414,7 +414,9 @@ export async function startProductionManimServer(
         options.runtime.editorDocuments === null ||
         typeof options.runtime.editorDocuments.openDocument !== "function" ||
         typeof options.runtime.editorDocuments.commitMutation !== "function" ||
+        typeof options.runtime.editorDocuments.putSessionSnapshot !== "function" ||
         typeof options.runtime.editorDocuments.readEventTail !== "function" ||
+        typeof options.runtime.editorDocuments.readSessionSnapshot !== "function" ||
         typeof options.runtime.editorReady !== "function"))
   ) {
     throw new TypeError("Production editor document adapter is incomplete.");

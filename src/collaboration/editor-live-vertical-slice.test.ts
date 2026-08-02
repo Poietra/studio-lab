@@ -102,6 +102,12 @@ function memoryAuthorityClients() {
         projection: { programs, revision: String(events.length) },
       });
     },
+    async putSession() {
+      throw new Error("putSession was not expected");
+    },
+    async readSession() {
+      return { currentSessionGeneration: "0", kind: "unavailable" };
+    },
     async tail(_identity, _documentKey, request) {
       const after = Number(request.afterRevision);
       return { document: document(), events: events.slice(after, after + Number(request.limit ?? "32")) };

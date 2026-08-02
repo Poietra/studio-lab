@@ -17,6 +17,7 @@ import {
   type applyBundledWorkspaceSourceMigrationV1,
   applyEditorDocumentMigrationV17,
   applyEditorMutationMigrationV18,
+  applyEditorSessionSnapshotMigrationV23,
   applyImmutableObjectGenerationMigrationV20,
   applyOidcLoginMigrationV13,
   applyProjectPngMigrationV5,
@@ -38,6 +39,8 @@ import {
   EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
   EDITOR_MUTATION_MIGRATION_V18_CHECKSUM,
   EDITOR_MUTATION_MIGRATION_V18_SOURCE,
+  EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM,
+  EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE,
   IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM,
   IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE,
   OIDC_LOGIN_MIGRATION_V13_CHECKSUM,
@@ -103,12 +106,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 22 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 23 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 22 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 23 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -131,7 +134,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_INVITATION_MIGRATION_V22_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(44);
+    expect(db.queries.filter(({ text }) => text === EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(46);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -171,12 +175,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 22,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 23)).resolves.toEqual({
+      applied: true,
+      version: 23,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 23)).rejects.toThrow(
-      /migration v23 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 24)).rejects.toThrow(
+      /migration v24 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -592,6 +600,38 @@ describe("durable storage migrations", () => {
     await expect(applyAccountInvitationMigrationV22(db.pool, ACCOUNT_INVITATION_MIGRATION_V22_SOURCE)).rejects.toThrow(
       /requires durable storage migrations v1 through v21/i,
     );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds bounded subject-private editor sessions and immutable event replay evidence", () => {
+    expect(durableStorageMigrationChecksum(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE)).toBe(
+      EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM,
+    );
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("CREATE TABLE public.editor_session_snapshots");
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain(
+      "PRIMARY KEY (tenant_id, project_id, document_key, subject_id)",
+    );
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("octet_length(snapshot::text) <= 393216");
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("snapshot_byte_size = octet_length(snapshot::text)");
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("snapshot json NOT NULL");
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("session_generation = session_base_generation + 1");
+    for (const column of [
+      "session_generation",
+      "session_snapshot_version",
+      "session_snapshot_digest",
+      "session_snapshot_byte_size",
+    ]) {
+      expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain(`${column} IS NOT NULL`);
+    }
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("editor_session_snapshots_recent_subject_v23");
+    expect(EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE).toContain("BEFORE INSERT OR UPDATE");
+  });
+
+  it("requires all twenty-two durable-storage prerequisites before adding editor sessions v23", async () => {
+    const db = database();
+    await expect(
+      applyEditorSessionSnapshotMigrationV23(db.pool, EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v22/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
