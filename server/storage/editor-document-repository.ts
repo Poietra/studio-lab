@@ -160,6 +160,16 @@ export type EditorSessionSnapshotRecordV1 = Readonly<{
   updatedAt: Date;
 }>;
 
+export type EditorSessionSnapshotReadResultV1 =
+  | Readonly<{
+      kind: "available";
+      session: EditorSessionSnapshotRecordV1;
+    }>
+  | Readonly<{
+      currentSessionGeneration: bigint;
+      kind: "unavailable";
+    }>;
+
 export type EditorSessionUpdateEvidenceV1 = Readonly<{
   documentRevision: bigint;
   sessionGeneration: bigint;
@@ -362,7 +372,7 @@ export interface EditorDocumentRepositoryV1 {
   readSessionSnapshot(
     input: EditorSessionSnapshotReadInputV1,
     signal?: AbortSignal,
-  ): Promise<EditorSessionSnapshotRecordV1 | null>;
+  ): Promise<EditorSessionSnapshotReadResultV1>;
   readEventTail(input: EditorDocumentTailInputV1, signal?: AbortSignal): Promise<EditorDocumentTailResultV1>;
   ready(signal?: AbortSignal): Promise<boolean>;
 }

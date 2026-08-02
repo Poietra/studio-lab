@@ -306,7 +306,20 @@ export const editorDocumentSessionPutResultViewSchemaV1 = z.discriminatedUnion("
     .strict(),
 ]);
 
-export const editorDocumentSessionReadResultViewSchemaV1 = editorDocumentSessionViewSchemaV1.nullable();
+export const editorDocumentSessionReadResultViewSchemaV1 = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("available"),
+      session: editorDocumentSessionViewSchemaV1,
+    })
+    .strict(),
+  z
+    .object({
+      currentSessionGeneration: editorRevisionStringSchemaV1,
+      kind: z.literal("unavailable"),
+    })
+    .strict(),
+]);
 
 export const editorDocumentCommittedSessionUpdateViewSchemaV1 = z
   .object({
@@ -465,6 +478,16 @@ export type EditorDocumentSessionPutResultSerializationInputV1 =
       currentSessionGeneration?: bigint;
       kind: "conflict";
       reason: z.infer<typeof editorDocumentSessionConflictReasonSchemaV1>;
+    }>;
+
+export type EditorDocumentSessionReadResultSerializationInputV1 =
+  | Readonly<{
+      kind: "available";
+      session: EditorDocumentSessionSerializationInputV1;
+    }>
+  | Readonly<{
+      currentSessionGeneration: bigint;
+      kind: "unavailable";
     }>;
 
 export type EditorDocumentTailResultSerializationInputV1 = Readonly<{
@@ -640,6 +663,21 @@ export function serializeEditorDocumentSessionPutResultV1(
       : { currentSessionGeneration: serializeEditorRevisionV1(input.currentSessionGeneration) }),
     kind: input.kind,
     reason: input.reason,
+  });
+}
+
+export function serializeEditorDocumentSessionReadResultV1(
+  input: EditorDocumentSessionReadResultSerializationInputV1,
+): EditorDocumentSessionReadResultViewV1 {
+  if (input.kind === "available") {
+    return editorDocumentSessionReadResultViewSchemaV1.parse({
+      kind: input.kind,
+      session: serializeEditorDocumentSessionViewV1(input.session),
+    });
+  }
+  return editorDocumentSessionReadResultViewSchemaV1.parse({
+    currentSessionGeneration: serializeEditorRevisionV1(input.currentSessionGeneration),
+    kind: input.kind,
   });
 }
 

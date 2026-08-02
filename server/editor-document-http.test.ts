@@ -131,6 +131,10 @@ function session(documentRevision = 0n, sessionGeneration = 1n) {
   };
 }
 
+function availableSession(value = session()) {
+  return { kind: "available", session: value } as const;
+}
+
 function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): EditorDocumentRepositoryV1 {
   return {
     close: async () => undefined,
@@ -138,7 +142,7 @@ function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): Editor
     openDocument: async () => ({ created: true, document: document(), kind: "opened", projection: projection() }),
     putSessionSnapshot: async () => ({ kind: "stored", replayed: false, session: session() }),
     readEventTail: async () => ({ document: document(1n), events: [event()] }),
-    readSessionSnapshot: async () => session(),
+    readSessionSnapshot: async () => availableSession(),
     ready: async () => true,
     ...overrides,
   };
@@ -328,7 +332,10 @@ describe("authenticated Editor document HTTP handler", () => {
     const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
 
     expect(await send(port, path)).toMatchObject({
-      body: { documentRevision: "0", sessionGeneration: "1", tenantId: TENANT },
+      body: {
+        kind: "available",
+        session: { documentRevision: "0", sessionGeneration: "1", tenantId: TENANT },
+      },
       status: 200,
     });
     expect(
@@ -363,6 +370,20 @@ describe("authenticated Editor document HTTP handler", () => {
       signal,
     );
     expect(isEditorDocumentRequest(path.split("?", 1)[0]!)).toBe(true);
+  });
+
+  it("returns a stale session generation without disclosing its snapshot", async () => {
+    const port = await listen(
+      repository({
+        readSessionSnapshot: async () => ({ currentSessionGeneration: 7n, kind: "unavailable" }),
+      }),
+    );
+    const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
+
+    expect(await send(port, path)).toMatchObject({
+      body: { currentSessionGeneration: "7", kind: "unavailable" },
+      status: 404,
+    });
   });
 
   it("atomically forwards a post-event session update and returns immutable evidence", async () => {
@@ -640,12 +661,14 @@ describe("authenticated Editor document HTTP handler", () => {
   it("fails closed when storage returns another subject or corrupt session evidence", async () => {
     const path = `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${EPOCH}`;
     const wrongSubjectPort = await listen(
-      repository({ readSessionSnapshot: async () => ({ ...session(), subjectId: MUTATION_ID }) }),
+      repository({ readSessionSnapshot: async () => availableSession({ ...session(), subjectId: MUTATION_ID }) }),
     );
     expect(await send(wrongSubjectPort, path)).toMatchObject({ status: 500 });
 
     const corruptEvidencePort = await listen(
-      repository({ readSessionSnapshot: async () => ({ ...session(), snapshotDigest: "d".repeat(64) }) }),
+      repository({
+        readSessionSnapshot: async () => availableSession({ ...session(), snapshotDigest: "d".repeat(64) }),
+      }),
     );
     expect(await send(corruptEvidencePort, path)).toMatchObject({ status: 500 });
   });

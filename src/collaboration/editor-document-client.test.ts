@@ -66,6 +66,10 @@ function session(sessionGeneration = "1") {
   };
 }
 
+function availableSession(value = session()) {
+  return { kind: "available", session: value } as const;
+}
+
 function commitRequest(baseRevision = "0") {
   return {
     baseRevision,
@@ -104,6 +108,37 @@ function commitRequest(baseRevision = "0") {
 }
 
 describe("Editor document HTTP client", () => {
+  it("calls the browser fetch default with its required global receiver", async () => {
+    const originalFetch = globalThis.fetch;
+    const browserFetch = vi.fn(function (this: unknown) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            created: true,
+            document: document(),
+            kind: "opened",
+            projection: { programs: [], revision: "0" },
+          }),
+          { headers: { "content-type": "application/json" }, status: 201 },
+        ),
+      );
+    });
+    globalThis.fetch = browserFetch;
+    try {
+      const client = new FetchEditorDocumentClientV1();
+      await expect(
+        client.open(
+          { organizationId: ORGANIZATION, projectId: PROJECT },
+          { sceneName: "Demo", sourceHash: SOURCE_HASH, sourcePath: "scene.py" },
+        ),
+      ).resolves.toMatchObject({ created: true, kind: "opened" });
+      expect(browserFetch).toHaveBeenCalledOnce();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("opens only the same-origin organization-scoped endpoint and strictly parses its projection", async () => {
     const fetchImpl = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(
       async () =>
@@ -235,19 +270,32 @@ describe("Editor document HTTP client", () => {
 
   it("reads a private session through the exact epoch-scoped same-origin endpoint", async () => {
     const fetchImpl = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () =>
-      Promise.resolve(new Response(JSON.stringify(session()), { status: 200 })),
+      Promise.resolve(new Response(JSON.stringify(availableSession()), { status: 200 })),
     );
     const client = new FetchEditorDocumentClientV1(fetchImpl);
 
     await expect(
       client.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),
-    ).resolves.toMatchObject({ sessionGeneration: "1", tenantId: ORGANIZATION });
+    ).resolves.toMatchObject({
+      kind: "available",
+      session: { sessionGeneration: "1", tenantId: ORGANIZATION },
+    });
     const [path, init] = fetchImpl.mock.calls[0]!;
     expect(path).toBe(
       `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${encodeURIComponent(EPOCH)}`,
     );
     expect(init).toMatchObject({ cache: "no-store", credentials: "same-origin" });
     expect(new Headers(init?.headers).get(POIETRA_ORGANIZATION_HEADER_V1)).toBe(ORGANIZATION);
+  });
+
+  it("retains the CAS generation when a stale private snapshot is unavailable", async () => {
+    const client = new FetchEditorDocumentClientV1(
+      async () => new Response(JSON.stringify({ currentSessionGeneration: "7", kind: "unavailable" }), { status: 404 }),
+    );
+
+    await expect(
+      client.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),
+    ).resolves.toEqual({ currentSessionGeneration: "7", kind: "unavailable" });
   });
 
   it("puts a bounded session and accepts only matching replay/conflict statuses", async () => {
@@ -292,28 +340,33 @@ describe("Editor document HTTP client", () => {
 
   it("fails closed on unknown session response fields and a body/status mismatch", async () => {
     const unknown = new FetchEditorDocumentClientV1(
-      async () => new Response(JSON.stringify({ ...session(), internal: true }), { status: 200 }),
+      async () => new Response(JSON.stringify({ ...availableSession(), internal: true }), { status: 200 }),
     );
     await expect(
       unknown.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),
     ).rejects.toMatchObject({ outcomeMayBeUnknown: true, status: 200 });
 
     const wrongIdentity = new FetchEditorDocumentClientV1(
-      async () => new Response(JSON.stringify({ ...session(), projectId: "project-b" }), { status: 200 }),
+      async () =>
+        new Response(JSON.stringify(availableSession({ ...session(), projectId: "project-b" })), { status: 200 }),
     );
     await expect(
       wrongIdentity.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),
     ).rejects.toMatchObject({ outcomeMayBeUnknown: true, status: 200 });
 
     const corruptDigest = new FetchEditorDocumentClientV1(
-      async () => new Response(JSON.stringify({ ...session(), snapshotDigest: "e".repeat(64) }), { status: 200 }),
+      async () =>
+        new Response(JSON.stringify(availableSession({ ...session(), snapshotDigest: "e".repeat(64) })), {
+          status: 200,
+        }),
     );
     await expect(
       corruptDigest.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),
     ).rejects.toMatchObject({ outcomeMayBeUnknown: true, status: 200 });
 
     const corruptByteSize = new FetchEditorDocumentClientV1(
-      async () => new Response(JSON.stringify({ ...session(), snapshotByteSize: 1 }), { status: 200 }),
+      async () =>
+        new Response(JSON.stringify(availableSession({ ...session(), snapshotByteSize: 1 })), { status: 200 }),
     );
     await expect(
       corruptByteSize.readSession({ organizationId: ORGANIZATION, projectId: PROJECT }, DOCUMENT_KEY, { epoch: EPOCH }),

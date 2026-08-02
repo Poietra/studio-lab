@@ -82,6 +82,7 @@ type SessionSnapshotRow = QueryResultRow & {
 };
 
 type SessionSnapshotReadRow = SessionSnapshotRow & {
+  current_document_revision: string;
   projection_programs: unknown;
   projection_revision: string;
 };
@@ -969,9 +970,12 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
   ) {
     const input = parseEditorSessionSnapshotReadInputV1(inputValue);
     return this.#connection.transaction(async (client) => {
-      if (!(await actorCanEditV1(client, input.tenantId, input.subjectId))) return null;
+      if (!(await actorCanEditV1(client, input.tenantId, input.subjectId))) {
+        return { currentSessionGeneration: 0n, kind: "unavailable" } as const;
+      }
       const selected = await client.query<SessionSnapshotReadRow>(
         `SELECT ${SESSION_SNAPSHOT_COLUMNS_V1},
+                document.revision::text AS current_document_revision,
                 projection.revision::text AS projection_revision,
                 projection.canonical_programs AS projection_programs
            FROM public.editor_session_snapshots snapshot
@@ -989,16 +993,26 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
           WHERE snapshot.tenant_id = $1 AND snapshot.project_id = $2
             AND snapshot.document_key = $3 AND snapshot.subject_id = $4::uuid
             AND snapshot.epoch = $5::uuid AND document.sealed_at IS NULL
-            AND snapshot.document_revision = document.revision
-            AND projection.revision = document.revision
             AND project.deleted_at IS NULL AND decode(source.digest, 'hex') = document.source_hash`,
         [input.tenantId, input.projectId, digestBytesV1(input.documentKey), input.subjectId, input.epoch],
       );
       if (selected.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate current editor sessions.");
       const row = selected.rows[0];
-      if (!row) return null;
-      const session = sessionSnapshotFromRowV1(row);
+      if (!row) return { currentSessionGeneration: 0n, kind: "unavailable" } as const;
+      const currentSessionGeneration = revisionFromPostgresV1(row.session_generation, "editor session generation");
+      const currentDocumentRevision = revisionFromPostgresV1(
+        row.current_document_revision,
+        "current editor document revision",
+      );
+      const snapshotDocumentRevision = revisionFromPostgresV1(
+        row.document_revision,
+        "editor session document revision",
+      );
       const projectionRevision = revisionFromPostgresV1(row.projection_revision, "editor projection revision");
+      if (snapshotDocumentRevision !== currentDocumentRevision || projectionRevision !== currentDocumentRevision) {
+        return { currentSessionGeneration, kind: "unavailable" } as const;
+      }
+      const session = sessionSnapshotFromRowV1(row);
       const projectionPrograms = authoritativeProjectionProgramsV1(row.projection_programs);
       if (
         projectionRevision !== session.documentRevision ||
@@ -1006,7 +1020,7 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
       ) {
         throw new TypeError("PostgreSQL returned an editor session outside its authoritative projection.");
       }
-      return session;
+      return { kind: "available", session } as const;
     }, signal);
   }
 

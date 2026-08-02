@@ -342,14 +342,17 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           reason: "session-generation-mismatch",
         },
       ]);
-      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toMatchObject({ sessionGeneration: 2n });
+      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toMatchObject({
+        kind: "available",
+        session: { sessionGeneration: 2n },
+      });
 
       const openedB = await editorB.openDocument({ ...openInput, tenantId: TENANT_B });
       if (openedB.kind !== "opened") throw new Error("The isolated editor document did not open.");
       expect(openedB.document).toMatchObject({ epoch: EPOCH_B, revision: 0n, tenantId: TENANT_B });
       await expect(
         editorB.readSessionSnapshot({ ...sessionIdentity, subjectId: USER_B, tenantId: TENANT_B }),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ currentSessionGeneration: 0n, kind: "unavailable" });
       await expectUnpairedEventRejected(setup, opened.document.documentKey, opened.document.epoch);
 
       const firstProgram = program(64, "first-edit");
@@ -463,9 +466,12 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
         sessionUpdate: { documentRevision: 2n, sessionGeneration: 3n },
       });
       await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toMatchObject({
-        documentRevision: 2n,
-        sessionGeneration: 4n,
-        snapshot: { currentTime: 3 },
+        kind: "available",
+        session: {
+          documentRevision: 2n,
+          sessionGeneration: 4n,
+          snapshot: { currentTime: 3 },
+        },
       });
       const replacementProgram = program(72, "first-edit");
       await expect(
@@ -476,6 +482,19 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
           mutation: { kind: "replace", program: replacementProgram, targetTransactionId: "first-edit" },
         }),
       ).resolves.toMatchObject({ document: { revision: 3n }, event: { mutation: { kind: "replace" }, revision: 3n } });
+      await expect(peerA.readSessionSnapshot(sessionIdentity)).resolves.toEqual({
+        currentSessionGeneration: 4n,
+        kind: "unavailable",
+      });
+      await expect(
+        peerA.putSessionSnapshot({
+          ...sessionIdentity,
+          documentRevision: 3n,
+          expectedSessionGeneration: 4n,
+          snapshot: sessionSnapshot([replacementProgram, secondProgram], 4),
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({ kind: "stored", session: { sessionGeneration: 5n } });
       for (const [clientMutationId, mutation] of [
         [
           "82000000-0000-4000-8000-000000000008",

@@ -138,7 +138,7 @@ async function sessionSnapshotEvidenceMatchesV1(
 }
 
 export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
-  constructor(private readonly fetchImpl: FetchV1 = fetch) {}
+  constructor(private readonly fetchImpl: FetchV1 = globalThis.fetch.bind(globalThis)) {}
 
   async open(
     identityValue: EditorDocumentClientIdentityV1,
@@ -233,13 +233,16 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
     );
     const parsed = editorDocumentSessionReadResultViewSchemaV1.safeParse(await jsonBodyV1(response));
     if (!parsed.success) return unexpectedResponseV1(response);
-    if ((parsed.data === null && response.status !== 404) || (parsed.data !== null && response.status !== 200)) {
+    if (
+      (parsed.data.kind === "unavailable" && response.status !== 404) ||
+      (parsed.data.kind === "available" && response.status !== 200)
+    ) {
       return unexpectedResponseV1(response);
     }
     if (
-      parsed.data !== null &&
-      (!sessionIdentityMatchesV1(parsed.data, { documentKey, epoch: request.epoch, ...identity }) ||
-        !(await sessionSnapshotEvidenceMatchesV1(parsed.data.snapshot, parsed.data)))
+      parsed.data.kind === "available" &&
+      (!sessionIdentityMatchesV1(parsed.data.session, { documentKey, epoch: request.epoch, ...identity }) ||
+        !(await sessionSnapshotEvidenceMatchesV1(parsed.data.session.snapshot, parsed.data.session)))
     ) {
       return unexpectedResponseV1(response);
     }

@@ -106,7 +106,7 @@ function memoryAuthorityClients() {
       throw new Error("putSession was not expected");
     },
     async readSession() {
-      throw new Error("readSession was not expected");
+      return { currentSessionGeneration: "0", kind: "unavailable" };
     },
     async tail(_identity, _documentKey, request) {
       const after = Number(request.afterRevision);

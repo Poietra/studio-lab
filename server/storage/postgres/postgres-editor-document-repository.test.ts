@@ -1015,6 +1015,7 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
 
   it("creates, exactly replays, advances, reads, and isolates a subject-private session snapshot", async () => {
     let stored: ReturnType<typeof sessionRow> | null = null;
+    let currentDocumentRevision = "0";
     let writes = 0;
     let prunes = 0;
     const initialSnapshot = sessionSnapshot();
@@ -1064,7 +1065,17 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
         text.includes("JOIN public.editor_documents document")
       ) {
         return stored
-          ? { rowCount: 1, rows: [{ ...stored, projection_programs: [], projection_revision: "0" }] }
+          ? {
+              rowCount: 1,
+              rows: [
+                {
+                  ...stored,
+                  current_document_revision: currentDocumentRevision,
+                  projection_programs: [],
+                  projection_revision: currentDocumentRevision,
+                },
+              ],
+            }
           : { rowCount: 0, rows: [] };
       }
       throw new Error(`Unexpected query: ${text}`);
@@ -1116,7 +1127,21 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
         subjectId: SUBJECT,
         tenantId: TENANT_A,
       }),
-    ).resolves.toMatchObject({ sessionGeneration: 2n, snapshot: advancedSnapshot, subjectId: SUBJECT });
+    ).resolves.toMatchObject({
+      kind: "available",
+      session: { sessionGeneration: 2n, snapshot: advancedSnapshot, subjectId: SUBJECT },
+    });
+    currentDocumentRevision = "1";
+    await expect(
+      repository.readSessionSnapshot({
+        documentKey: DOCUMENT_KEY,
+        epoch: EPOCH_A,
+        projectId: PROJECT,
+        subjectId: SUBJECT,
+        tenantId: TENANT_A,
+      }),
+    ).resolves.toEqual({ currentSessionGeneration: 2n, kind: "unavailable" });
+    currentDocumentRevision = "0";
     await expect(
       repository.readSessionSnapshot({
         documentKey: DOCUMENT_KEY,
@@ -1125,7 +1150,7 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
         subjectId: "00000000-0000-4000-8000-000000000102",
         tenantId: TENANT_A,
       }),
-    ).resolves.toBeNull();
+    ).resolves.toEqual({ currentSessionGeneration: 0n, kind: "unavailable" });
     await expect(
       repository.putSessionSnapshot({
         ...create,

@@ -10,7 +10,7 @@ import {
   serializeEditorDocumentCommitResultV1,
   serializeEditorDocumentOpenResultV1,
   serializeEditorDocumentSessionPutResultV1,
-  serializeEditorDocumentSessionViewV1,
+  serializeEditorDocumentSessionReadResultV1,
   serializeEditorDocumentTailResultV1,
 } from "../src/collaboration/editor-document-http-contract";
 import {
@@ -431,21 +431,17 @@ async function readSessionV1(
     { documentKey, epoch: query.epoch, projectId, subjectId, tenantId: principal.tenantId },
     signal,
   );
-  if (result !== null) {
-    sessionIdentityV1(result, {
+  if (result.kind === "available") {
+    sessionIdentityV1(result.session, {
       documentKey,
       epoch: query.epoch,
       projectId,
       subjectId,
       tenantId: principal.tenantId,
     });
-    sessionSnapshotEvidenceV1(result);
+    sessionSnapshotEvidenceV1(result.session);
   }
-  sendJson(
-    response,
-    result === null ? 404 : 200,
-    result === null ? null : serializeEditorDocumentSessionViewV1(result),
-  );
+  sendJson(response, result.kind === "unavailable" ? 404 : 200, serializeEditorDocumentSessionReadResultV1(result));
 }
 
 async function putSessionV1(

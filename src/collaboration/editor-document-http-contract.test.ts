@@ -18,6 +18,7 @@ import {
   serializeEditorDocumentOpenResultV1,
   serializeEditorDocumentProjectionViewV1,
   serializeEditorDocumentSessionPutResultV1,
+  serializeEditorDocumentSessionReadResultV1,
   serializeEditorDocumentSessionViewV1,
   serializeEditorDocumentTailResultV1,
   serializeEditorDocumentViewV1,
@@ -422,6 +423,14 @@ describe("editor document HTTP views", () => {
       kind: "stored",
       replayed: false,
       session: { sessionGeneration: "2" },
+    });
+    expect(serializeEditorDocumentSessionReadResultV1({ kind: "available", session })).toMatchObject({
+      kind: "available",
+      session: { sessionGeneration: "2" },
+    });
+    expect(serializeEditorDocumentSessionReadResultV1({ currentSessionGeneration: 2n, kind: "unavailable" })).toEqual({
+      currentSessionGeneration: "2",
+      kind: "unavailable",
     });
     expect(
       serializeEditorDocumentSessionPutResultV1({
