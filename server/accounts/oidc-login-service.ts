@@ -38,7 +38,7 @@ export interface OidcLoginServiceV1 {
     signal?: AbortSignal,
   ): Promise<OidcLoginCompletionV1>;
   ready(signal?: AbortSignal): Promise<boolean>;
-  start(signal?: AbortSignal): Promise<OidcLoginStartV1>;
+  start(input?: Readonly<{ invitationToken?: string }>, signal?: AbortSignal): Promise<OidcLoginStartV1>;
 }
 
 function boundedLifetime(value: number, maximum: number, label: string) {
@@ -85,6 +85,19 @@ function generatedToken(generator: (size: number) => Uint8Array) {
   return encodeBase64Url(bytes);
 }
 
+function generatedUserId(generator: () => string) {
+  const value = generator();
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(value)) {
+    throw new TypeError("OIDC user ID generator returned an invalid UUID.");
+  }
+  return value;
+}
+
+function invitationTokenDigest(value: string | undefined) {
+  if (value === undefined) return Promise.resolve(undefined);
+  return tokenHash(exactOpaqueToken(value));
+}
+
 const secureRandomBytes = (size: number) => crypto.getRandomValues(new Uint8Array(size));
 
 function safeAuthorizationUrl(value: URL) {
@@ -116,6 +129,7 @@ export function createOidcLoginServiceV1(
     now?: () => number;
     provider: OidcIdentityProviderV1;
     randomBytes?: (size: number) => Uint8Array;
+    randomUuid?: () => string;
     repository: OidcLoginRepositoryV1;
     sessionLifetimeMs?: number;
   }>,
@@ -126,6 +140,7 @@ export function createOidcLoginServiceV1(
     typeof options.repository?.createLoginAttempt !== "function" ||
     typeof options.repository.consumeLoginAttempt !== "function" ||
     typeof options.repository.issueAccountSession !== "function" ||
+    typeof options.repository.issueInvitedAccountSession !== "function" ||
     typeof options.repository.ready !== "function" ||
     typeof options.repository.close !== "function"
   ) {
@@ -142,6 +157,7 @@ export function createOidcLoginServiceV1(
     "Account-session lifetime",
   );
   const generate = options.randomBytes ?? secureRandomBytes;
+  const generateUuid = options.randomUuid ?? (() => crypto.randomUUID());
   const now = options.now ?? Date.now;
   let closeRequest: Promise<void> | null = null;
 
@@ -185,14 +201,27 @@ export function createOidcLoginServiceV1(
       const sessionToken = generatedToken(generate);
       let issued: Awaited<ReturnType<OidcLoginRepositoryV1["issueAccountSession"]>>;
       try {
-        issued = await options.repository.issueAccountSession(
-          {
-            identity,
-            lifetimeMs: sessionLifetimeMs,
-            sessionTokenHash: await tokenHash(decodeBase64Url(sessionToken)),
-          },
-          signal,
-        );
+        const sessionTokenHash = await tokenHash(decodeBase64Url(sessionToken));
+        issued =
+          attempt.invitationTokenDigest === null
+            ? await options.repository.issueAccountSession(
+                { identity, lifetimeMs: sessionLifetimeMs, sessionTokenHash },
+                signal,
+              )
+            : typeof identity.verifiedEmail !== "string"
+              ? null
+              : await options.repository.issueInvitedAccountSession(
+                  {
+                    identity,
+                    invitationTokenDigest: attempt.invitationTokenDigest,
+                    lifetimeMs: sessionLifetimeMs,
+                    newUserDisplayName: "New member",
+                    newUserId: generatedUserId(generateUuid),
+                    sessionTokenHash,
+                    verifiedEmail: identity.verifiedEmail,
+                  },
+                  signal,
+                );
       } catch (error) {
         signal?.throwIfAborted();
         throw new OidcLoginErrorV1("temporarily-unavailable", error);
@@ -208,8 +237,9 @@ export function createOidcLoginServiceV1(
       signal?.throwIfAborted();
       return options.repository.ready(signal);
     },
-    async start(signal) {
+    async start(input = {}, signal) {
       signal?.throwIfAborted();
+      const digest = await invitationTokenDigest(input.invitationToken);
       const state = generatedToken(generate);
       const nonce = generatedToken(generate);
       const codeVerifier = generatedToken(generate);
@@ -231,6 +261,7 @@ export function createOidcLoginServiceV1(
           {
             browserBindingHash: await tokenHash(decodeBase64Url(browserBindingToken)),
             codeVerifier,
+            ...(digest === undefined ? {} : { invitationTokenDigest: digest }),
             lifetimeMs: attemptLifetimeMs,
             nonce,
             stateHash: await tokenHash(decodeBase64Url(state)),
@@ -242,6 +273,7 @@ export function createOidcLoginServiceV1(
         throw new OidcLoginErrorV1("temporarily-unavailable", error);
       }
       signal?.throwIfAborted();
+      if (created === null) throw new OidcLoginErrorV1("access-denied");
       return Object.freeze({
         authorizationUrl,
         browserBindingToken,

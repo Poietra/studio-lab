@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { OidcLoginRepositoryV1 } from "./oidc-login-repository";
 import { createOidcLoginServiceV1, type OidcLoginErrorV1 } from "./oidc-login-service";
-import type { OidcAuthorizationRequestV1, OidcIdentityProviderV1 } from "./openid-client-provider";
+import type { OidcIdentityProviderV1 } from "./openid-client-provider";
 
 const now = Date.UTC(2026, 6, 31, 12, 0, 0);
 
@@ -18,9 +18,18 @@ function digest(byte: number) {
 }
 
 function fixture(overrides: Partial<OidcLoginRepositoryV1> = {}) {
-  const createLoginAttempt = vi.fn(async () => ({ expiresAt: new Date(now + 10 * 60_000) }));
-  const consumeLoginAttempt = vi.fn(async () => ({ codeVerifier: opaque(3), nonce: opaque(2) }));
-  const issueAccountSession = vi.fn(async () => ({
+  const createLoginAttempt = vi.fn<OidcLoginRepositoryV1["createLoginAttempt"]>(async () => ({
+    expiresAt: new Date(now + 10 * 60_000),
+  }));
+  const consumeLoginAttempt = vi.fn<OidcLoginRepositoryV1["consumeLoginAttempt"]>(async () => ({
+    codeVerifier: opaque(3),
+    invitationTokenDigest: null,
+    nonce: opaque(2),
+  }));
+  const issueAccountSession = vi.fn<OidcLoginRepositoryV1["issueAccountSession"]>(async () => ({
+    expiresAt: new Date(now + 7 * 24 * 60 * 60_000),
+  }));
+  const issueInvitedAccountSession = vi.fn<OidcLoginRepositoryV1["issueInvitedAccountSession"]>(async () => ({
     expiresAt: new Date(now + 7 * 24 * 60 * 60_000),
   }));
   const repository: OidcLoginRepositoryV1 = {
@@ -28,21 +37,26 @@ function fixture(overrides: Partial<OidcLoginRepositoryV1> = {}) {
     createLoginAttempt,
     consumeLoginAttempt,
     issueAccountSession,
+    issueInvitedAccountSession,
     ready: vi.fn(async () => true),
     ...overrides,
   };
-  const authorizationUrl = vi.fn(async (input: OidcAuthorizationRequestV1) => {
+  const authorizationUrl = vi.fn<OidcIdentityProviderV1["authorizationUrl"]>(async (input) => {
     const url = new URL("https://identity.example/authorize");
     for (const [key, value] of Object.entries(input)) url.searchParams.set(key, value);
     return url;
   });
-  const exchange = vi.fn(async () => ({ issuer: "https://identity.example", subject: "external-user" }));
+  const exchange = vi.fn<OidcIdentityProviderV1["exchange"]>(async () => ({
+    issuer: "https://identity.example",
+    subject: "external-user",
+  }));
   const provider: OidcIdentityProviderV1 = { authorizationUrl, exchange };
   let generated = 0;
   const service = createOidcLoginServiceV1({
     now: () => now,
     provider,
     randomBytes: () => Buffer.alloc(32, ++generated),
+    randomUuid: () => "00000000-0000-4000-8000-000000000001",
     repository,
   });
   return {
@@ -51,6 +65,7 @@ function fixture(overrides: Partial<OidcLoginRepositoryV1> = {}) {
     createLoginAttempt,
     exchange,
     issueAccountSession,
+    issueInvitedAccountSession,
     repository,
     service,
   };
@@ -79,6 +94,28 @@ describe("OIDC login service", () => {
       nonce: opaque(2),
       state: opaque(1),
     });
+  });
+
+  it("binds an invitation digest to the one-time login attempt without persisting the raw token", async () => {
+    const { createLoginAttempt, service } = fixture();
+
+    await service.start({ invitationToken: opaque(9) });
+
+    expect(createLoginAttempt).toHaveBeenCalledWith(
+      expect.objectContaining({ invitationTokenDigest: digest(9) }),
+      undefined,
+    );
+    expect(createLoginAttempt.mock.calls[0]?.[0]).not.toHaveProperty("invitationToken");
+  });
+
+  it("rejects malformed invitation tokens before provider or storage access", async () => {
+    const { authorizationUrl, createLoginAttempt, service } = fixture();
+
+    await expect(service.start({ invitationToken: "not-a-token" })).rejects.toMatchObject({
+      kind: "invalid-callback",
+    });
+    expect(authorizationUrl).not.toHaveBeenCalled();
+    expect(createLoginAttempt).not.toHaveBeenCalled();
   });
 
   it("consumes the browser-bound attempt before exchange and stores only the session hash", async () => {
@@ -156,6 +193,65 @@ describe("OIDC login service", () => {
         state: opaque(7),
       }),
     ).rejects.toMatchObject({ kind: "access-denied" });
+  });
+
+  it("atomically provisions an invited membership only for a verified matching email", async () => {
+    const invitationTokenDigest = digest(9);
+    const consumeLoginAttempt = vi.fn(async () => ({
+      codeVerifier: opaque(3),
+      invitationTokenDigest,
+      nonce: opaque(2),
+    }));
+    const { exchange, issueAccountSession, issueInvitedAccountSession, service } = fixture({ consumeLoginAttempt });
+    exchange.mockResolvedValue({
+      issuer: "https://identity.example",
+      subject: "new-user",
+      verifiedEmail: "invited@example.com",
+    });
+
+    await expect(
+      service.complete({
+        browserBindingToken: opaque(8),
+        callbackUrl: new URL(`https://studio.example/auth/oidc/callback?code=code&state=${opaque(7)}`),
+        state: opaque(7),
+      }),
+    ).resolves.toMatchObject({ sessionToken: opaque(1) });
+    expect(issueAccountSession).not.toHaveBeenCalled();
+    expect(issueInvitedAccountSession).toHaveBeenCalledWith(
+      {
+        identity: {
+          issuer: "https://identity.example",
+          subject: "new-user",
+          verifiedEmail: "invited@example.com",
+        },
+        invitationTokenDigest,
+        lifetimeMs: 7 * 24 * 60 * 60_000,
+        newUserDisplayName: "New member",
+        newUserId: "00000000-0000-4000-8000-000000000001",
+        sessionTokenHash: digest(1),
+        verifiedEmail: "invited@example.com",
+      },
+      undefined,
+    );
+  });
+
+  it("denies an invitation callback without a verified email", async () => {
+    const consumeLoginAttempt = vi.fn(async () => ({
+      codeVerifier: opaque(3),
+      invitationTokenDigest: digest(9),
+      nonce: opaque(2),
+    }));
+    const { issueAccountSession, issueInvitedAccountSession, service } = fixture({ consumeLoginAttempt });
+
+    await expect(
+      service.complete({
+        browserBindingToken: opaque(8),
+        callbackUrl: new URL(`https://studio.example/auth/oidc/callback?code=code&state=${opaque(7)}`),
+        state: opaque(7),
+      }),
+    ).rejects.toMatchObject({ kind: "access-denied" });
+    expect(issueAccountSession).not.toHaveBeenCalled();
+    expect(issueInvitedAccountSession).not.toHaveBeenCalled();
   });
 
   it("delegates readiness and closes storage idempotently", async () => {

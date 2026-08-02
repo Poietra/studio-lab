@@ -20,6 +20,7 @@ import type {
   ConsumedOidcLoginAttemptV1,
   CreateOidcLoginAttemptV1,
   IssueAccountSessionV1,
+  IssueInvitedAccountSessionV1,
   OidcLoginRepositoryV1,
 } from "../server/accounts/oidc-login-repository";
 import { createOidcLoginServiceV1 } from "../server/accounts/oidc-login-service";
@@ -55,6 +56,7 @@ type LoginAttempt = Readonly<{
   browserBindingHash: string;
   codeVerifier: string;
   expiresAt: Date;
+  invitationTokenDigest: Uint8Array | null;
   nonce: string;
 }>;
 
@@ -99,7 +101,11 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
     }
     this.attempts.delete(stateHash);
     if (attempt.expiresAt.getTime() <= Date.now()) return Promise.resolve(null);
-    return Promise.resolve({ codeVerifier: attempt.codeVerifier, nonce: attempt.nonce });
+    return Promise.resolve({
+      codeVerifier: attempt.codeVerifier,
+      invitationTokenDigest: attempt.invitationTokenDigest,
+      nonce: attempt.nonce,
+    });
   }
 
   createLoginAttempt(input: CreateOidcLoginAttemptV1, signal?: AbortSignal) {
@@ -109,6 +115,7 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
       browserBindingHash: digestKey(input.browserBindingHash),
       codeVerifier: input.codeVerifier,
       expiresAt,
+      invitationTokenDigest: input.invitationTokenDigest ?? null,
       nonce: input.nonce,
     });
     return Promise.resolve({ expiresAt });
@@ -125,6 +132,11 @@ class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionCon
       version: 1,
     });
     return Promise.resolve({ expiresAt });
+  }
+
+  issueInvitedAccountSession(_input: IssueInvitedAccountSessionV1, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    return Promise.resolve(null);
   }
 
   ready(signal?: AbortSignal) {

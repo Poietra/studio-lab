@@ -7,6 +7,13 @@ import {
   createAccountSessionFetchRequestGuardV1,
 } from "./accounts/account-session-fetch";
 import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
+import {
+  ACCOUNT_INVITATIONS_ROUTE_V1,
+  createAccountInvitationFetchHandlerV1,
+  createAccountInvitationFetchRequestGuardV1,
+} from "./accounts/account-invitation-fetch";
+import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
+import { createAccountInvitationServiceV1 } from "./accounts/account-invitation-service";
 import { createOidcLoginFetchHandlerV1, createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 import { createOidcLoginServiceV1 } from "./accounts/oidc-login-service";
@@ -17,6 +24,7 @@ import {
 } from "./accounts/openid-client-provider";
 
 export type OidcAccountControlPlaneOptionsV1<Environment> = Readonly<{
+  invitationRepository?: (environment: Environment) => AccountInvitationRepositoryV1;
   loginAttemptLifetimeMs?: number;
   oidc: OidcProviderConfigV1;
   /** Must create request-scoped storage; Cloudflare Hyperdrive connections cannot be held in global scope. */
@@ -36,6 +44,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   const oidcRequestGuard = createOidcLoginFetchRequestGuardV1(options.oidc.publicOrigin);
   const sessionRequestGuard = createAccountSessionFetchRequestGuardV1(options.oidc.publicOrigin);
   const sessionActionRequestGuard = createAccountSessionActionFetchRequestGuardV1(options.oidc.publicOrigin);
+  const invitationRequestGuard = createAccountInvitationFetchRequestGuardV1(options.oidc.publicOrigin);
   const withService = async <T>(
     environment: Environment,
     operation: (service: ReturnType<typeof createOidcLoginServiceV1>) => Promise<T>,
@@ -67,9 +76,31 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
       await repository.close();
     }
   };
+  const withInvitationService = async <T>(
+    environment: Environment,
+    operation: (service: ReturnType<typeof createAccountInvitationServiceV1>) => Promise<T>,
+  ) => {
+    if (!options.invitationRepository) throw new TypeError("Account invitation storage is unavailable.");
+    const repository = options.invitationRepository(environment);
+    let service: ReturnType<typeof createAccountInvitationServiceV1> | null = null;
+    try {
+      service = createAccountInvitationServiceV1(repository);
+      return await operation(service);
+    } finally {
+      if (service) await service.close();
+      else await repository.close();
+    }
+  };
   return Object.freeze({
     fetch: (request: Request, environment: Environment) => {
       const pathname = new URL(request.url).pathname;
+      if (pathname === ACCOUNT_INVITATIONS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`)) {
+        const rejected = invitationRequestGuard.reject(request);
+        if (rejected) return Promise.resolve(rejected);
+        return withInvitationService(environment, (service) =>
+          createAccountInvitationFetchHandlerV1(service, options.oidc.publicOrigin).fetch(request),
+        );
+      }
       if (pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET") {
         const rejected = sessionRequestGuard.reject(request);
         if (rejected) return Promise.resolve(rejected);
@@ -96,10 +127,12 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
 }
 
 export { ACCOUNT_LOGOUT_ROUTE_V1, ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
+export { ACCOUNT_INVITATIONS_ROUTE_V1 } from "./accounts/account-invitation-fetch";
 export {
   OIDC_LOGIN_BINDING_COOKIE_NAME_V1,
   OIDC_LOGIN_CALLBACK_ROUTE_V1,
   OIDC_LOGIN_START_ROUTE_V1,
 } from "./accounts/oidc-login-fetch";
 export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
+export { PostgresAccountInvitationRepositoryV1 } from "./storage/postgres/postgres-account-invitation-repository";
 export { PostgresOidcLoginRepositoryV1 } from "./storage/postgres/postgres-oidc-login-repository";

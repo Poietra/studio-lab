@@ -239,8 +239,8 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       );
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: true, version: 1 });
       expect(await applyWorkspaceSourceMigrationV1(setupPool, migration)).toEqual({ applied: false, version: 1 });
-      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: true, version: 21 });
-      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: false, version: 21 });
+      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: true, version: 22 });
+      expect(await applyBundledDurableStorageMigrations(setupPool)).toEqual({ applied: false, version: 22 });
       const schemaPlacement = await setupPool.query<{ misplaced: string | null; installed: string | null }>(
         `SELECT to_regclass('poietra.workspace_projects')::text AS misplaced,
                 to_regclass('public.workspace_projects')::text AS installed`,

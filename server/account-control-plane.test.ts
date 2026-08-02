@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOidcAccountControlPlaneV1 } from "./account-control-plane";
+import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
 import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 
@@ -10,6 +11,7 @@ function repository() {
     consumeLoginAttempt: vi.fn(async () => null),
     createLoginAttempt: vi.fn(async () => ({ expiresAt: new Date(Date.now() + 60_000) })),
     issueAccountSession: vi.fn(async () => null),
+    issueInvitedAccountSession: vi.fn(async () => null),
     ready: vi.fn(async () => true),
   };
   return { close, value };
@@ -32,11 +34,29 @@ function sessionRepository() {
   return { close, value };
 }
 
+function invitationRepository() {
+  const close = vi.fn(async () => undefined);
+  const value: AccountInvitationRepositoryV1 = {
+    close,
+    createInvitation: vi.fn(async () => null),
+    ready: vi.fn(async () => true),
+    revokeInvitation: vi.fn(async () => false),
+  };
+  return { close, value };
+}
+
 describe("OIDC account control-plane composition", () => {
   it("creates and closes request-scoped storage only for accepted routes", async () => {
     const created: ReturnType<typeof repository>[] = [];
+    const invitationCreated: ReturnType<typeof invitationRepository>[] = [];
     const sessionCreated: ReturnType<typeof sessionRepository>[] = [];
     const controlPlane = createOidcAccountControlPlaneV1({
+      invitationRepository: (environment: { hyperdrive: string }) => {
+        expect(environment).toEqual({ hyperdrive: "request-scoped" });
+        const next = invitationRepository();
+        invitationCreated.push(next);
+        return next.value;
+      },
       oidc: {
         clientId: "poietra",
         clientSecret: "secret",
@@ -63,7 +83,7 @@ describe("OIDC account control-plane composition", () => {
       controlPlane.fetch(new Request("https://attacker.example/auth/oidc/start"), environment),
     ).resolves.toMatchObject({ status: 404 });
     await expect(
-      controlPlane.fetch(new Request("https://studio.example/auth/oidc/start", { method: "POST" }), environment),
+      controlPlane.fetch(new Request("https://studio.example/auth/oidc/start", { method: "PUT" }), environment),
     ).resolves.toMatchObject({ status: 405 });
     await expect(
       controlPlane.fetch(new Request("https://studio.example/auth/oidc/callback?state=invalid"), environment),
@@ -108,12 +128,28 @@ describe("OIDC account control-plane composition", () => {
         environment,
       ),
     ).resolves.toMatchObject({ status: 204 });
+    await expect(
+      controlPlane.fetch(
+        new Request("https://studio.example/api/account/invitations", {
+          body: JSON.stringify({ email: "member@example.com", role: "member" }),
+          headers: {
+            "content-type": "application/json",
+            cookie: `__Host-poietra_session=${token}`,
+            origin: "https://studio.example",
+          },
+          method: "POST",
+        }),
+        environment,
+      ),
+    ).resolves.toMatchObject({ status: 403 });
 
     expect(created).toHaveLength(2);
+    expect(invitationCreated).toHaveLength(1);
     expect(sessionCreated).toHaveLength(3);
     expect(created[0]?.value.ready).toHaveBeenCalledOnce();
     expect(created[1]?.value.consumeLoginAttempt).toHaveBeenCalledOnce();
     expect(created.map(({ close }) => close.mock.calls.length)).toEqual([1, 1]);
+    expect(invitationCreated[0]?.close).toHaveBeenCalledOnce();
     expect(sessionCreated.map(({ close }) => close.mock.calls.length)).toEqual([1, 1, 1]);
   });
 

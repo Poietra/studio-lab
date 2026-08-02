@@ -29,8 +29,9 @@ durable stores, staging-root correlation, and external sandbox brokers pass the
 full runtime probe.
 
 Migration v11 adds the account control-plane records required by request
-admission: OIDC identities, organizations, and memberships. Invitations remain
-deferred until their verified-email acceptance flow lands. The exported
+admission: OIDC identities, organizations, and memberships. Migration v22 adds
+bounded organization invitations and binds their digest to the one-time OIDC
+attempt. The exported
 `createOrganizationMembershipProductionAdmissionV1` composes an injected
 external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
 `X-Poietra-Organization-Id` is only an untrusted organization selector; the
@@ -54,8 +55,18 @@ Code, PKCE S256, state, nonce, and a separate short-lived browser-binding cookie
 PostgreSQL stores only the state and binding hashes; `DELETE ... RETURNING`
 consumes the verifier and nonce exactly once. A successful callback issues a new
 opaque session only for an existing active OIDC identity with an active
-organization membership. It never provisions an account from email or accepts
-IdP role or tenant claims.
+organization membership. The sole provisioning exception is a pending,
+unexpired invitation: an owner or admin creates an `admin`, `member`, or
+`billing` invitation through same-origin `POST /api/account/invitations`, and
+the callback must carry an `email_verified: true` claim whose normalized ASCII
+email exactly matches the stored target. The raw 256-bit invitation token is
+returned only by that create response; PostgreSQL stores only its SHA-256
+digest. The invitation row, new user when needed, membership, consumed status,
+and browser session are committed in one transaction. Revocation uses an empty
+same-origin `DELETE /api/account/invitations/:id` and is scoped to the actor's
+active organization. Member and billing roles cannot issue or revoke
+invitations, owner cannot be an invited role, and IdP role or tenant claims are
+never accepted as authority.
 
 OIDC discovery is lazy and caches only a successful configuration. The edge
 login routes can therefore return 503 during an IdP outage without entering a
@@ -73,7 +84,8 @@ revalidates the active membership and organization in PostgreSQL, and returns
 the same account view. Logout revokes only the presented opaque session and
 expires its fixed HttpOnly cookie; missing, unknown, and already-revoked
 sessions remain idempotent. These account-session routes stay available during
-an IdP outage. Self-signup remains a later #309 slice. Cloudflare Worker/BFF
+an IdP outage. General self-signup remains a later #309 slice; an invitation is
+not a self-signup credential and cannot choose its tenant or role. Cloudflare Worker/BFF
 deployment must rate-limit
 both `/auth/oidc/start` and `/auth/oidc/callback` at the edge (with separate
 thresholds if needed); an in-process per-isolate limiter is not a meaningful
@@ -99,15 +111,19 @@ production configuration.
 
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
-memberships, or one-time login state. The Worker routes must remain limited to
-the same-origin `/auth/oidc/*` path and the exact `/api/account/session` and
-`/api/account/logout` paths, with `workers_dev` and preview URLs off.
+memberships, invitations, or one-time login state. Apply bundled migration v22
+before deploying this Worker; both the invitation and OIDC repositories require
+its exact checksum. The Worker routes must remain limited to the same-origin
+`/auth/oidc/*` path and the exact `/api/account/session`,
+`/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with
+`workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
 Invocation logs and traces remain disabled because callback URLs contain OIDC
-codes and state. Do not attach raw Worker Tail, Logpush, or request-URL logging
+codes and state and invitation-start bodies contain raw invitation tokens. Do
+not attach raw Worker Tail, Logpush, request-body logging, or request-URL logging
 to this Worker; zone Logpush must omit full request URIs for these routes. Use a
-sentinel callback to verify that code, state, nonce, cookies, and secrets do not
-appear in production logs. The Worker limits start and callback independently
+sentinel callback and invitation to verify that code, state, nonce, cookies,
+invitation tokens, and secrets do not appear in production logs. The Worker limits start and callback independently
 before it opens PostgreSQL storage; missing bindings, invalid configuration,
 rate-limit errors, and missing Cloudflare client IPs fail closed with a generic
 503.

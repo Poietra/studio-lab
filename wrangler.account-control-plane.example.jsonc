@@ -18,6 +18,14 @@
     {
       "pattern": "https://studio.example.com/api/account/logout",
       "zone_name": "example.com"
+    },
+    {
+      "pattern": "https://studio.example.com/api/account/invitations",
+      "zone_name": "example.com"
+    },
+    {
+      "pattern": "https://studio.example.com/api/account/invitations/*",
+      "zone_name": "example.com"
     }
   ],
   "observability": {

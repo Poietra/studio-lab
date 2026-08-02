@@ -2,10 +2,13 @@ import type { Pool } from "pg";
 import { describe, expect, expectTypeOf, it, vi } from "vitest";
 
 import {
+  ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM,
+  ACCOUNT_INVITATION_MIGRATION_V22_SOURCE,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
   ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
   ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
+  applyAccountInvitationMigrationV22,
   applyAccountOrganizationMigrationV11,
   applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
@@ -100,12 +103,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 21 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 22 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 21 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 22 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -127,7 +130,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(42);
+    expect(db.queries.filter(({ text }) => text === ACCOUNT_INVITATION_MIGRATION_V22_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(44);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -163,12 +167,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 21,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 22)).resolves.toEqual({
+      applied: true,
+      version: 22,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 22)).rejects.toThrow(
-      /migration v22 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 23)).rejects.toThrow(
+      /migration v23 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -560,6 +568,31 @@ describe("durable storage migrations", () => {
     );
     expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).toContain("WHERE deleted_at IS NULL");
     expect(RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE).not.toContain("DELETE FROM");
+  });
+
+  it("adds one-time organization invitations and binds only their digest to OIDC attempts", () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE)).toBe(
+      ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM,
+    );
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("CREATE TABLE public.organization_invitations");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("octet_length(token_digest) = 32");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("invited_role IN ('admin', 'member', 'billing')");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("status IN ('pending', 'consumed', 'revoked')");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("expires_at >= created_at + interval '5 minutes'");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("expires_at <= created_at + interval '7 days'");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain(
+      "Organization invitation audit records cannot be deleted.",
+    );
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).toContain("ADD COLUMN invitation_token_digest bytea");
+    expect(ACCOUNT_INVITATION_MIGRATION_V22_SOURCE).not.toContain("invitation_token text");
+  });
+
+  it("requires all twenty-one durable-storage prerequisites before adding invitations v22", async () => {
+    const db = database();
+    await expect(applyAccountInvitationMigrationV22(db.pool, ACCOUNT_INVITATION_MIGRATION_V22_SOURCE)).rejects.toThrow(
+      /requires durable storage migrations v1 through v21/i,
+    );
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
   it("expands only the forward render-session Scene-name constraint to the canonical 240-character boundary", () => {

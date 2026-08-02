@@ -63,7 +63,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL immutable source and project PNG loca
     const png = pngReceipt("4".repeat(64), GENERATION_A);
     const orphanPng = pngReceipt("5".repeat(64), GENERATION_B);
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 21 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 22 });
       await sourceRepository.ensureTenant(TENANT);
       await seedActiveRenderEntitlementFixtureV1(pool, TENANT);
       await sourceRepository.createManagedProject({

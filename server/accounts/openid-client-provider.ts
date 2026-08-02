@@ -7,6 +7,7 @@ import {
   discovery,
 } from "openid-client";
 import { z } from "zod";
+import { normalizeAccountEmailV1 } from "./account-domain";
 import { OIDC_LOGIN_CALLBACK_ROUTE_V1 } from "./oidc-login-fetch";
 import type { ExternalAccountIdentityV1 } from "./organization-membership-repository";
 
@@ -36,9 +37,11 @@ export type OidcAuthorizationResponseV1 = Readonly<{
   expectedState: string;
 }>;
 
+export type OidcAccountIdentityV1 = ExternalAccountIdentityV1 & Readonly<{ verifiedEmail?: string }>;
+
 export interface OidcIdentityProviderV1 {
   authorizationUrl(input: OidcAuthorizationRequestV1): Promise<URL>;
-  exchange(input: OidcAuthorizationResponseV1): Promise<ExternalAccountIdentityV1>;
+  exchange(input: OidcAuthorizationResponseV1): Promise<OidcAccountIdentityV1>;
 }
 
 function canonicalHttpsUrl(value: string, label: string) {
@@ -90,6 +93,15 @@ function verifiedIssuer(value: unknown) {
   return value;
 }
 
+function verifiedEmailClaim(claims: Readonly<Record<string, unknown>> | undefined) {
+  if (claims?.email_verified !== true) return undefined;
+  try {
+    return normalizeAccountEmailV1(claims.email);
+  } catch {
+    return undefined;
+  }
+}
+
 /** Delegates authorization-response, token, and ID-token protocol validation to openid-client. */
 export function createOpenIdClientIdentityProviderV1(
   configuration: Configuration,
@@ -108,7 +120,7 @@ export function createOpenIdClientIdentityProviderV1(
         nonce: boundedOpaqueValue(input.nonce, "OIDC nonce"),
         redirect_uri: redirectUri,
         response_type: "code",
-        scope: "openid",
+        scope: "openid email",
         state: boundedOpaqueValue(input.state, "OIDC state"),
       });
     },
@@ -126,7 +138,12 @@ export function createOpenIdClientIdentityProviderV1(
         pkceCodeVerifier: boundedOpaqueValue(input.codeVerifier, "OIDC PKCE verifier"),
       });
       const claims = tokens.claims();
-      return Object.freeze({ issuer: verifiedIssuer(claims?.iss), subject: verifiedSubject(claims?.sub) });
+      const verifiedEmail = verifiedEmailClaim(claims);
+      return Object.freeze({
+        issuer: verifiedIssuer(claims?.iss),
+        subject: verifiedSubject(claims?.sub),
+        ...(verifiedEmail === undefined ? {} : { verifiedEmail }),
+      });
     },
   } satisfies OidcIdentityProviderV1);
 }
