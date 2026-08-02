@@ -127,8 +127,8 @@ type StudioPreviewHostInstallationV1 = Readonly<{
 
 /**
  * Runtime pixels may be presented without source interaction authority. V5
- * deliberately has aggregate morph lineage, while V6 requires at least one
- * server-verified source/runtime binding. Older snapshot-only profiles retain
+ * deliberately has aggregate morph lineage, while V6 and V7 require
+ * server-verified source/runtime bindings. Older snapshot-only profiles retain
  * their semantic interaction fallback; no gesture guesses from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
@@ -139,8 +139,21 @@ export function studioPreviewInteractionAuthorityV1(
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
-  if (Number(source.snapshotVersion) !== 6) return { kind: "interactive" };
+  if (Number(source.snapshotVersion) !== 6 && Number(source.snapshotVersion) !== 7) {
+    return { kind: "interactive" };
+  }
   const identity = snapshot?.sourceRuntimeIdentity;
+  if (Number(source.snapshotVersion) === 7) {
+    const entities = snapshot?.snapshot.scene.entities;
+    const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
+    const complete =
+      identity !== null &&
+      identity !== undefined &&
+      entities !== undefined &&
+      mappedEntityIds.size === entities.length &&
+      entities.every(({ id }) => mappedEntityIds.has(id));
+    return complete ? { kind: "interactive" } : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+  }
   return identity && identity.size > 0
     ? { kind: "interactive" }
     : { kind: "display-only", reason: "source-runtime-identity-unverified" };

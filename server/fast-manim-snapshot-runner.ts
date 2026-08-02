@@ -62,6 +62,7 @@ import {
 } from "./fast-manim-snapshot-source-provider";
 import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
 import {
+  assertFastManimSnapshotIdentityAuthorityV1,
   parseServerOwnedSourceRuntimeIdentityMapV1,
   parseVerifiedSourceRuntimeIdentityMapV1,
   verifyFastManimSourceRuntimeIdentityV1,
@@ -876,6 +877,7 @@ export class FastManimSnapshotRunner {
             sourceText: before.source,
           })
         : null;
+      assertFastManimSnapshotIdentityAuthorityV1(sealed, sourceRuntimeIdentity);
     } catch (cause) {
       throwIfHalted();
       if (cause instanceof FastManimSnapshotContractError) return failed("result-rejected", cause.code);
@@ -1265,6 +1267,7 @@ export class FastManimSnapshotRunner {
         entry.sourceRuntimeIdentity === null
           ? null
           : parseVerifiedSourceRuntimeIdentityMapV1(entry.sourceRuntimeIdentity, revalidated);
+      assertFastManimSnapshotIdentityAuthorityV1(revalidated, sourceRuntimeIdentity);
     } catch {
       throwIfClosing();
       if (!entryIsCurrent()) return null;

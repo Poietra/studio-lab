@@ -302,7 +302,7 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 }
 
 #[test]
-fn imported_snapshot_source_accepts_profiles_one_through_six_only() {
+fn imported_snapshot_source_accepts_profiles_one_through_seven_only() {
     for snapshot_version in [
         SnapshotProfileVersionV1::V1,
         SnapshotProfileVersionV1::V2,
@@ -310,6 +310,7 @@ fn imported_snapshot_source_accepts_profiles_one_through_six_only() {
         SnapshotProfileVersionV1::V4,
         SnapshotProfileVersionV1::V5,
         SnapshotProfileVersionV1::V6,
+        SnapshotProfileVersionV1::V7,
     ] {
         let mut scene = empty_scene();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
@@ -336,7 +337,7 @@ fn imported_snapshot_source_accepts_profiles_one_through_six_only() {
         "kind": "imported-manim-server-snapshot",
         "runtimeConfigHash": REVISION,
         "snapshotHash": REVISION,
-        "snapshotVersion": 7.0,
+        "snapshotVersion": 8.0,
         "sourceHash": REVISION,
     });
     assert!(serde_json::from_value::<SceneIrV1>(invalid).is_err());

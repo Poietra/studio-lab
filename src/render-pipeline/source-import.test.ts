@@ -556,6 +556,57 @@ class Curved(Scene):
     });
   });
 
+  it("tracks a directly assigned CubicBezier MoveAlongPath target without inventing path geometry", () => {
+    const namedPath = `from manim import *
+
+class NamedPath(Scene):
+    def construct(self):
+        particle = Circle(radius=0.2).move_to([1, -1, 0])
+        path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
+        self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)
+        self.wait(1, frozen_frame=True)
+`;
+    const imported = importManimScene(namedPath, "scene.py", "NamedPath");
+    const particle = imported?.runtimeSceneState.objectGraph.entities["source:scene.py#NamedPath:particle"];
+    const position = imported?.runtimeSceneState.propertyChannels["source:scene.py#NamedPath:particle/position"];
+
+    expect(imported?.runtimeSceneState.duration).toBe(3);
+    expect(particle?.lifetime).toEqual([{ end: 3, start: 0 }]);
+    expect(position?.samples.at(-1)).toEqual(
+      expect.objectContaining({
+        easing: "linear",
+        interval: { end: 2, start: 0 },
+        kind: "animated",
+        knowledge: expect.objectContaining({
+          kind: "unknown",
+          reason: "Position is changed by a motion expression that Studio cannot evaluate safely.",
+        }),
+      }),
+    );
+  });
+
+  it("does not treat a rebound CubicBezier name as a verified MoveAlongPath binding", () => {
+    const reboundPath = `from manim import *
+
+class ReboundPath(Scene):
+    def construct(self):
+        particle = Circle(radius=0.2)
+        path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
+        path = make_path()
+        self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)
+`;
+    const imported = importManimScene(reboundPath, "scene.py", "ReboundPath");
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#ReboundPath:particle"]?.lifetime).toEqual(
+      [],
+    );
+    expect(
+      imported?.runtimeSceneState.propertyChannels["source:scene.py#ReboundPath:particle/position"]?.samples.filter(
+        ({ kind }) => kind === "animated",
+      ),
+    ).toEqual([]);
+  });
+
   it("separates literal geometry facts from runtime-dependent approximations", () => {
     const geometrySource = `from manim import *
 

@@ -8,7 +8,10 @@ import {
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedSourceRuntimeIdentityMapV1,
 } from "../fast-manim-snapshot-contract";
-import { parseVerifiedSourceRuntimeIdentityMapV1 } from "../fast-manim-source-runtime-identity";
+import {
+  assertFastManimSnapshotIdentityAuthorityV1,
+  parseVerifiedSourceRuntimeIdentityMapV1,
+} from "../fast-manim-source-runtime-identity";
 import {
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
   MAX_SNAPSHOT_ARTIFACT_BYTES_V1,
@@ -177,6 +180,7 @@ async function verifiedDocument(
     input.sourceRuntimeIdentity === null
       ? null
       : parseVerifiedSourceRuntimeIdentityMapV1(input.sourceRuntimeIdentity, snapshot);
+  assertFastManimSnapshotIdentityAuthorityV1(snapshot, sourceRuntimeIdentity);
   return {
     expected,
     profileDigest,

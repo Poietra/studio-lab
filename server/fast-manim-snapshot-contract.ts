@@ -60,6 +60,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(4),
   z.literal(5),
   z.literal(6),
+  z.literal(7),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -432,6 +433,11 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5 =
   "fast-manim server snapshot hermetic MathTex morph profile v5" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6 =
   "fast-manim server snapshot generic planar VMobject profile v6" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 =
+  "fast-manim server snapshot mixed dynamic 2D profile v7" as const;
+/** Distinct server-owned marker retained so sealed V7 bundles can re-prove the one static MathTex leaf. */
+export const FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7 =
+  "fast-manim server snapshot mixed dynamic 2D MathTex profile v7" as const;
 
 export const FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1: Readonly<Record<FastManimSnapshotIssueCodeV1, string>> = {
   "animation-evidence-incomplete": "The Scene animates in ways the static snapshot profile cannot capture.",
@@ -1170,18 +1176,51 @@ function assertHermeticMathTexTransformV3(
   }
 }
 
-function assertHermeticMathTexProfileProvenanceV3(scene: SceneIrBundleV1["scene"]) {
-  const evidence = scene.provenance[1]?.evidence;
+function isHermeticMathTexProducerEvidenceV3(evidence: readonly string[] | undefined) {
   const content = evidence?.at(-3);
-  if (
-    !evidence ||
-    !content ||
-    !MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3.test(content) ||
-    evidence.at(-2) !== `MathTex toolchain digest ${MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3}` ||
-    evidence.at(-1) !== `MathTex font digest ${MATHTEX_PROFILE_FONT_DIGEST_V3}`
-  ) {
+  return Boolean(
+    evidence &&
+      content &&
+      MATHTEX_PROFILE_CONTENT_DIGEST_EVIDENCE_V3.test(content) &&
+      evidence.at(-2) === `MathTex toolchain digest ${MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3}` &&
+      evidence.at(-1) === `MathTex font digest ${MATHTEX_PROFILE_FONT_DIGEST_V3}`,
+  );
+}
+
+function assertHermeticMathTexProfileProvenanceV3(scene: SceneIrBundleV1["scene"]) {
+  if (!isHermeticMathTexProducerEvidenceV3(scene.provenance[1]?.evidence)) {
     profileViolation("Hermetic MathTex provenance must attest the pinned compiler toolchain and embedded font.");
   }
+}
+
+/**
+ * Identifies the one V7 MathTex leaf without trusting geometry heuristics.
+ * Producer results must carry the same pinned compiler attestation as V3;
+ * sealed publications retain a distinct server-owned marker so durable reads
+ * can repeat the exact mixed-profile proof after producer text is discarded.
+ */
+function mixedDynamicMathTexEntityIndexV7(scene: SceneIrBundleV1["scene"], mode: "producer" | "sealed") {
+  const candidates = scene.entities.flatMap((entity, index) => {
+    const evidence = scene.provenance.find(({ id }) => id === entity.provenanceId)?.evidence;
+    const matches =
+      mode === "producer"
+        ? isHermeticMathTexProducerEvidenceV3(evidence)
+        : evidence?.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7;
+    return matches ? [{ entity, index }] : [];
+  });
+  if (candidates.length !== 1) {
+    profileViolation("Mixed dynamic profile V7 requires exactly one pinned, server-identifiable MathTex entity.");
+  }
+  const candidate = candidates[0]!;
+  assertHermeticMathTexProfileEntityV3(candidate.entity);
+  if (
+    candidate.entity.lifetimes.length !== 1 ||
+    candidate.entity.lifetimes[0]?.start !== 0 ||
+    candidate.entity.lifetimes[0]?.end !== scene.duration
+  ) {
+    profileViolation("Mixed dynamic profile V7 MathTex must remain static for the complete Scene lifetime.");
+  }
+  return candidate.index;
 }
 
 function assertHermeticMathTexMorphProfileEntityV5(entity: StaticProfileEntity) {
@@ -1615,7 +1654,10 @@ function isCanonicalDynamicTimedStepV2(start: number, end: number) {
   return Number.isInteger(producerFrames) && producerFrames / FAST_MANIM_SNAPSHOT_FRAME_RATE_V2 === duration;
 }
 
-function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
+function assertDynamicProfileV2(
+  scene: SceneIrBundleV1["scene"],
+  staticEntityIds: ReadonlySet<string> = new Set<string>(),
+) {
   if (scene.duration > MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2) {
     profileViolation(`Variable-duration snapshots accept at most ${MAX_FAST_MANIM_SNAPSHOT_DURATION_SECONDS_V2}s.`);
   }
@@ -1655,6 +1697,9 @@ function assertDynamicProfileV2(scene: SceneIrBundleV1["scene"]) {
       profileViolation(
         "Dynamic profile V2 accepts only affine-transform, motion-path, opacity, path-morph, and path-trim animation channels.",
       );
+    }
+    if (staticEntityIds.has(channel.entityId)) {
+      profileViolation("Mixed dynamic profile V7 animation channels must not target its static MathTex entity.");
     }
     const entityIndex = entityIndexes.get(channel.entityId);
     const kindOrder =
@@ -2055,6 +2100,13 @@ function assertFastManimSnapshotProfileV1(
 ) {
   const { scene } = bundle;
   const sceneId = scene.sceneId;
+  const dynamicProfile = snapshotVersion === 2 || snapshotVersion === 7;
+  const mixedDynamicMathTexIndex = snapshotVersion === 7 ? mixedDynamicMathTexEntityIndexV7(scene, mode) : null;
+  if (snapshotVersion === 7 && (scene.entities.length < 2 || scene.animationChannels.length === 0)) {
+    profileViolation(
+      "Mixed dynamic profile V7 requires one static MathTex, at least one basic vector entity, and dynamic evidence.",
+    );
+  }
   if (snapshotVersion !== 5 && scene.fidelity.kind !== "exact") {
     profileViolation("Static profile Scenes must report exact fidelity.");
   }
@@ -2092,11 +2144,28 @@ function assertFastManimSnapshotProfileV1(
         : snapshotVersion === 5
           ? hermeticMathTexMorphV5Plan?.duration
           : FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1;
-  if (snapshotVersion !== 2 && scene.duration !== expectedHermeticDuration) {
+  if (!dynamicProfile && scene.duration !== expectedHermeticDuration) {
     profileViolation("Static profile Scene duration must match its exact source-proven terminal wait.");
   }
-  if (snapshotVersion === 2) assertDynamicProfileV2(scene);
-  if (snapshotVersion !== 2 && snapshotVersion !== 5 && scene.animationChannels.length > 0) {
+  if (dynamicProfile) {
+    const staticEntityIds =
+      mixedDynamicMathTexIndex === null ? undefined : new Set([scene.entities[mixedDynamicMathTexIndex]!.id]);
+    if (snapshotVersion === 7) {
+      for (const channel of scene.animationChannels) {
+        if (channel.kind !== "path-trim" && channel.kind !== "motion-path") {
+          profileViolation("Mixed dynamic profile V7 accepts only Create and MoveAlongPath channels.");
+        }
+        if (
+          channel.kind === "path-trim" &&
+          (channel.keyframes.length !== 2 || channel.keyframes[0]?.value !== 0 || channel.keyframes[1]?.value !== 1)
+        ) {
+          profileViolation("Mixed dynamic profile V7 path-trim channels must encode one exact Create step.");
+        }
+      }
+    }
+    assertDynamicProfileV2(scene, staticEntityIds);
+  }
+  if (!dynamicProfile && snapshotVersion !== 5 && scene.animationChannels.length > 0) {
     profileViolation("Static profile Scenes must not carry animation channels.");
   }
   if (snapshotVersion === 3 && scene.entities.length !== 1) {
@@ -2136,9 +2205,11 @@ function assertFastManimSnapshotProfileV1(
     profileViolation(
       snapshotVersion === 2
         ? "Dynamic profile V2 Scenes must derive affine-transform-animation, cubic-path-geometry, motion-path-animation, opacity-animation, path-morph-animation, and path-trim-animation exactly from their contents."
-        : snapshotVersion === 4
-          ? "Hermetic PNG profile V4 must require exactly png-image."
-          : "Static vector profiles must require exactly cubic-path-geometry, or nothing when empty.",
+        : snapshotVersion === 7
+          ? "Mixed dynamic profile V7 Scenes must derive animation and cubic-path capabilities exactly from their contents."
+          : snapshotVersion === 4
+            ? "Hermetic PNG profile V4 must require exactly png-image."
+            : "Static vector profiles must require exactly cubic-path-geometry, or nothing when empty.",
     );
   }
   // Entities are the exporter's enumerate order: each sceneOrder must equal
@@ -2174,8 +2245,8 @@ function assertFastManimSnapshotProfileV1(
     if (
       entity.lifetimes.length !== 1 ||
       !lifetime ||
-      (snapshotVersion !== 2 && (lifetime.start !== 0 || lifetime.end !== scene.duration)) ||
-      (snapshotVersion === 2 &&
+      (!dynamicProfile && (lifetime.start !== 0 || lifetime.end !== scene.duration)) ||
+      (dynamicProfile &&
         ((!fullSceneLifetime &&
           (!isCanonicalSnapshotFrameTimeV2(lifetime.start) || !isCanonicalSnapshotFrameTimeV2(lifetime.end))) ||
           lifetime.start >= lifetime.end ||
@@ -2211,6 +2282,15 @@ function assertFastManimSnapshotProfileV1(
       case 6:
         assertGenericVmobjectProfileEntityV6(entity);
         break;
+      case 7:
+        if (index !== mixedDynamicMathTexIndex) {
+          assertStaticProfileEntity(
+            entity,
+            pathTrimEntityIds.has(entity.id),
+            motionPathRoundoffScaleFloorByEntityId.get(entity.id),
+          );
+        }
+        break;
     }
   });
   // The provenance array is exactly the derived scene record followed by one
@@ -2221,7 +2301,7 @@ function assertFastManimSnapshotProfileV1(
   const expectedProvenanceIds = [
     fastManimSnapshotSceneProvenanceIdV1(sceneId),
     ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
-    ...(snapshotVersion === 2 || snapshotVersion === 5
+    ...(dynamicProfile || snapshotVersion === 5
       ? scene.animationChannels.map((channel) => {
           if (
             channel.kind !== "affine-transform" &&
@@ -2262,9 +2342,11 @@ function assertFastManimSnapshotProfileV1(
     scene.provenance.some((record, index) => record.id !== expectedProvenanceIds[index])
   ) {
     profileViolation(
-      snapshotVersion !== 2
+      !dynamicProfile
         ? "Static profile provenance must be exactly the derived scene and per-entity records in order."
-        : "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order.",
+        : snapshotVersion === 2
+          ? "Dynamic profile V2 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order."
+          : "Mixed dynamic profile V7 provenance must be exactly the derived scene, per-entity, and per-animation-channel records in order.",
     );
   }
   if (snapshotVersion === 3 && mode === "producer") assertHermeticMathTexProfileProvenanceV3(scene);
@@ -2284,7 +2366,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -2298,6 +2381,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5;
     case 6:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6;
+    case 7:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7;
   }
 }
 
@@ -2403,6 +2488,10 @@ async function parseFastManimSnapshotResultV1(
     hermeticPngV4Plan,
     hermeticMathTexMorphV5Plan,
   );
+  const mixedDynamicMathTexProvenanceId =
+    expected.snapshotVersion === 7
+      ? bundle.scene.entities[mixedDynamicMathTexEntityIndexV7(bundle.scene, mode)]!.provenanceId
+      : null;
   // Structural normalization before sealing: provenance evidence is replaced
   // with server-owned text, so the sealed digest never covers producer free
   // text. Re-normalizing an already-normalized stored bundle is a no-op, which
@@ -2412,7 +2501,11 @@ async function parseFastManimSnapshotResultV1(
     scene: {
       ...bundle.scene,
       provenance: bundle.scene.provenance.map((record) => ({
-        evidence: [fastManimSnapshotProvenanceEvidence(expected.snapshotVersion)],
+        evidence: [
+          mixedDynamicMathTexProvenanceId === record.id
+            ? FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7
+            : fastManimSnapshotProvenanceEvidence(expected.snapshotVersion),
+        ],
         id: record.id,
         origin: record.origin,
       })),

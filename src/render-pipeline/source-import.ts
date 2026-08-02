@@ -512,6 +512,25 @@ function parseEntityAssignment(source: string) {
   };
 }
 
+function directCubicBezierBindings(statements: readonly SourceStatement[]) {
+  const assignmentCounts = new Map<string, number>();
+  for (const statement of statements) {
+    const assigned = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/)?.[1];
+    if (assigned) assignmentCounts.set(assigned, (assignmentCounts.get(assigned) ?? 0) + 1);
+  }
+
+  const bindings = new Set<string>();
+  for (const statement of statements) {
+    const match = statement.text.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*CubicBezier\s*\(/);
+    if (!match || assignmentCounts.get(match[1]) !== 1) continue;
+    const openingIndex = statement.text.indexOf("(", match.index ?? 0);
+    const closingIndex = matchingCallEnd(statement.text, openingIndex);
+    if (closingIndex === null || statement.text.slice(closingIndex + 1).trim() !== "") continue;
+    bindings.add(match[1]);
+  }
+  return bindings;
+}
+
 function splitTopLevelArguments(source: string) {
   const segments: string[] = [];
   let start = 0;
@@ -1063,8 +1082,38 @@ function topLevelPlayKeywordIdentifier(statement: string, keyword: string): stri
   return values.length === 1 ? values[0] : null;
 }
 
+function directPlayAnimationKeywordIdentifier(
+  statement: string,
+  animationName: string,
+  keyword: string,
+): string | null | undefined {
+  const trimmed = statement.trim();
+  const playOpening = trimmed.match(/^self\.play\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+  if (playOpening < 0) return undefined;
+  const playClosing = matchingCallEnd(trimmed, playOpening);
+  if (playClosing === null || trimmed.slice(playClosing + 1).trim() !== "") return null;
+  const playArguments = splitTopLevelArguments(trimmed.slice(playOpening + 1, playClosing));
+  const animationArguments = playArguments.filter((argument) => !/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(argument));
+  if (animationArguments.length !== 1) return undefined;
+  const animation = animationArguments[0];
+  const animationOpening = animation.match(new RegExp(`^${animationName}\\s*\\(`))?.[0].lastIndexOf("(") ?? -1;
+  if (animationOpening < 0) return undefined;
+  const animationClosing = matchingCallEnd(animation, animationOpening);
+  if (animationClosing === null || animation.slice(animationClosing + 1).trim() !== "") return null;
+  const values = splitTopLevelArguments(animation.slice(animationOpening + 1, animationClosing)).flatMap((argument) => {
+    const match = argument.match(new RegExp(`^${keyword}\\s*=\\s*([A-Za-z_][A-Za-z0-9_]*)$`));
+    return match ? [match[1]] : [];
+  });
+  if (values.length === 0) return undefined;
+  return values.length === 1 ? values[0] : null;
+}
+
 function motionEasingFrom(statement: string): MotionEasing | null {
-  const rateFunction = topLevelPlayKeywordIdentifier(statement, "rate_func");
+  const playRateFunction = topLevelPlayKeywordIdentifier(statement, "rate_func");
+  const rateFunction =
+    playRateFunction === undefined
+      ? directPlayAnimationKeywordIdentifier(statement, "MoveAlongPath", "rate_func")
+      : playRateFunction;
   if (rateFunction === undefined) return "smooth";
   if (rateFunction === "smoothstep") return "smooth";
   return rateFunction === "linear" || rateFunction === "smooth" ? rateFunction : null;
@@ -1516,6 +1565,7 @@ export function importManimScene(
   }
 
   const presenceVariables = new Set(mutableEntities.map((entity) => entity.sourceVariable));
+  const cubicBezierBindings = directCubicBezierBindings(statements);
   let cursor = 0;
   let firstPlayEnd: number | null = null;
   let insideIncomingEvents = false;
@@ -1865,11 +1915,17 @@ export function importManimScene(
         /(?:^self\.play\(\s*|\n\s*)([A-Za-z_][A-Za-z0-9_]*)\s*\.\s*animate\s*\.\s*shift\s*\(/g,
       ),
     ].map((match) => match[1]);
-    const actualPathVariables = [
+    const inlinePathVariables = [
       ...statement.text.matchAll(
         /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*CubicBezier\s*\(/g,
       ),
     ].map((match) => match[1]);
+    const namedPathVariables = [
+      ...statement.text.matchAll(
+        /(?:^self\.play\(\s*|\n\s*)MoveAlongPath\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\b/g,
+      ),
+    ].flatMap((match) => (cubicBezierBindings.has(match[2]) ? [match[1]] : []));
+    const actualPathVariables = [...new Set([...inlinePathVariables, ...namedPathVariables])];
     const actualMotionVariables = [...actualShiftVariables, ...actualPathVariables];
     const actualScaleCalls = [
       ...statement.text.matchAll(
@@ -1979,6 +2035,7 @@ export function importManimScene(
       if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
         endPresence(entity, interval.end);
       }
+      if (actualPathVariables.includes(entity.sourceVariable)) beginPresence(entity, cursor);
       const marked = markedMotions.get(entity.sourceVariable);
       const shifted =
         sourceMotionEasing === null
@@ -2016,7 +2073,7 @@ export function importManimScene(
           [statement.text.trim()],
         );
         appendChannelSample(positionSamples, entity.id, {
-          easing: "smooth",
+          easing: sourceMotionEasing ?? "smooth",
           from: entity.position,
           interval,
           kind: "animated",

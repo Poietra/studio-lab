@@ -10,15 +10,18 @@ import {
   digestFastManimSnapshotBundleV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   expectedFastManimSnapshotCorrelationV1Schema,
+  FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V2,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V3,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6,
+  FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7,
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
+  fastManimSnapshotEntityIdV1,
   fastManimSnapshotMotionPathChannelIdV2,
   fastManimSnapshotMotionPathChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
@@ -39,6 +42,7 @@ import {
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
+  mixedDynamic2dSnapshotBundleFixtureV7,
   pngSnapshotBundleFixture,
   staticSnapshotBundleFixture,
 } from "./test-fixtures/fast-manim-snapshot-bundle-fixture";
@@ -623,6 +627,13 @@ async function dynamicMotionPathBundle(): Promise<SceneIrBundleV1> {
   });
 }
 
+/** Golden mixed slice shared with the V7 producer contract: one static
+ * hermetic MathTex leaf, one Create ring, and one particle moving along one
+ * bounded cubic path. */
+async function mixedDynamic2dBundleV7(): Promise<SceneIrBundleV1> {
+  return mixedDynamic2dSnapshotBundleFixtureV7({ ...expected, snapshotVersion: 7 });
+}
+
 function compiled(bundle: SceneIrBundleV1, expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
   if (bundle.scene.source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported source.");
   const {
@@ -844,6 +855,105 @@ describe("fast-manim snapshot result v1", () => {
     await expect(parseProducer(compiled(v1, expected), expected)).rejects.toMatchObject({
       code: "profile-violation",
     });
+  });
+
+  it("seals the golden V7 mixed dynamic 2D bundle without weakening its V2 or MathTex leaves", async () => {
+    const expectedV7 = { ...expected, snapshotVersion: 7 } as const;
+    const bundle = await mixedDynamic2dBundleV7();
+    const sealed = await parseProducer(compiled(bundle, expectedV7), expectedV7);
+    if (sealed.kind !== "compiled") throw new Error("Expected a compiled mixed dynamic V7 snapshot.");
+
+    expect(sealed.bundle.scene).toMatchObject({
+      duration: 4,
+      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation", "path-trim-animation"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 7 },
+    });
+    expect(sealed.bundle.scene.entities.map(({ lifetimes }) => lifetimes)).toEqual([
+      [{ end: 4, start: 0 }],
+      [{ end: 4, start: 0 }],
+      [{ end: 4, start: 1 }],
+    ]);
+    expect(
+      sealed.bundle.scene.animationChannels.map((channel) => ({
+        entityId: "entityId" in channel ? channel.entityId : null,
+        kind: channel.kind,
+      })),
+    ).toEqual([
+      { entityId: fastManimSnapshotEntityIdV1(expected.sceneId, 1), kind: "path-trim" },
+      { entityId: fastManimSnapshotEntityIdV1(expected.sceneId, 2), kind: "motion-path" },
+    ]);
+    expect(sealed.bundle.scene.provenance[1]?.evidence).toEqual([FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7]);
+    expect(
+      sealed.bundle.scene.provenance
+        .filter((_, index) => index !== 1)
+        .every(({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7),
+    ).toBe(true);
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV7)).resolves.toEqual(sealed);
+  });
+
+  it("keeps V7 fail-closed when MathTex is dynamic, duplicated, or not accompanied by mixed dynamic evidence", async () => {
+    const expectedV7 = { ...expected, snapshotVersion: 7 } as const;
+    const bundle = await mixedDynamic2dBundleV7();
+    const mathTexEntity = bundle.scene.entities[0]!;
+    const pathTrim = bundle.scene.animationChannels[0];
+    if (pathTrim?.kind !== "path-trim") throw new Error("Expected the golden Create channel.");
+
+    const animatedMathTex = structuredClone(bundle);
+    const animatedMathTexChannel = animatedMathTex.scene.animationChannels[0];
+    if (animatedMathTexChannel?.kind !== "path-trim") throw new Error("Expected the cloned Create channel.");
+    animatedMathTexChannel.entityId = mathTexEntity.id;
+    animatedMathTexChannel.id = fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 0);
+    animatedMathTexChannel.provenanceId = fastManimSnapshotPathTrimChannelProvenanceIdV2(expected.sceneId, 0);
+    animatedMathTex.scene.provenance[4] = {
+      ...animatedMathTex.scene.provenance[4]!,
+      id: animatedMathTexChannel.provenanceId,
+    };
+
+    const duplicateMathTex = structuredClone(bundle);
+    duplicateMathTex.scene.provenance[2] = {
+      ...duplicateMathTex.scene.provenance[2]!,
+      evidence: [...bundle.scene.provenance[1]!.evidence],
+    };
+
+    const noDynamicEvidence = structuredClone(bundle);
+    noDynamicEvidence.scene.animationChannels = [];
+    noDynamicEvidence.scene.provenance = noDynamicEvidence.scene.provenance.slice(0, 4);
+    noDynamicEvidence.scene.requiredCapabilities = ["cubic-path-geometry"];
+
+    const unsupportedV2Kind = structuredClone(bundle);
+    const ringId = unsupportedV2Kind.scene.entities[1]!.id;
+    const opacityProvenanceId = fastManimSnapshotOpacityChannelProvenanceIdV2(expected.sceneId, 1);
+    unsupportedV2Kind.scene.animationChannels[0] = {
+      entityId: ringId,
+      id: fastManimSnapshotOpacityChannelIdV2(expected.sceneId, 1),
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+        { at: 1, easingToNext: null, value: 1 },
+      ],
+      kind: "opacity",
+      provenanceId: opacityProvenanceId,
+    };
+    unsupportedV2Kind.scene.provenance[4] = {
+      ...unsupportedV2Kind.scene.provenance[4]!,
+      id: opacityProvenanceId,
+    };
+    unsupportedV2Kind.scene.requiredCapabilities = [
+      "cubic-path-geometry",
+      "motion-path-animation",
+      "opacity-animation",
+    ];
+
+    const uncreate = structuredClone(bundle);
+    const uncreateChannel = uncreate.scene.animationChannels[0];
+    if (uncreateChannel?.kind !== "path-trim") throw new Error("Expected the cloned Create channel.");
+    uncreateChannel.keyframes = [
+      { at: 0, easingToNext: { kind: "linear" }, value: 1 },
+      { at: 1, easingToNext: null, value: 0 },
+    ];
+
+    for (const candidate of [animatedMathTex, duplicateMathTex, noDynamicEvidence, unsupportedV2Kind, uncreate]) {
+      await expect(parseProducer(compiled(candidate, expectedV7), expectedV7)).rejects.toThrow();
+    }
   });
 
   it("seals one bounded hermetic MathTex outline with multiple subpaths and a counter", async () => {
@@ -2316,6 +2426,9 @@ class ExampleScene(Scene):
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 6 }).snapshotVersion).toBe(
       6,
     );
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 7 }).snapshotVersion).toBe(
+      7,
+    );
     expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,
@@ -2331,17 +2444,17 @@ class ExampleScene(Scene):
         snapshotVersion: 5,
       }).hermeticMathTexMorphV5Plan,
     ).toEqual(hermeticMathTexMorphV5Plan);
-    for (const snapshotVersion of [1, 2, 3, 5, 6] as const) {
+    for (const snapshotVersion of [1, 2, 3, 5, 6, 7] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);
     }
-    for (const snapshotVersion of [1, 2, 4, 5, 6] as const) {
+    for (const snapshotVersion of [1, 2, 4, 5, 6, 7] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V3/i);
     }
-    for (const snapshotVersion of [1, 2, 3, 4, 6] as const) {
+    for (const snapshotVersion of [1, 2, 3, 4, 6, 7] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({
           ...legacy,
