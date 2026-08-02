@@ -13,8 +13,8 @@ import { createOrganizationMembershipProductionAdmissionV1 } from "../accounts/o
 import { authenticateManimPrincipal } from "../manim-request-principal";
 import { ManimTenantRegistry } from "../manim-tenant-registry";
 import { applyBundledDurableStorageMigrations } from "./postgres/migrate";
-import { PostgresAccountSessionRepositoryV1 } from "./postgres/postgres-account-session-repository";
 import { PostgresAccountInvitationRepositoryV1 } from "./postgres/postgres-account-invitation-repository";
+import { PostgresAccountSessionRepositoryV1 } from "./postgres/postgres-account-session-repository";
 import { PostgresOidcLoginRepositoryV1 } from "./postgres/postgres-oidc-login-repository";
 import { PostgresOrganizationMembershipRepositoryV1 } from "./postgres/postgres-organization-membership-repository";
 
@@ -66,7 +66,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 22 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 23 });
       const setup = await pool.connect();
       try {
         await setup.query("BEGIN");
@@ -384,7 +384,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
     const oidcHandler = createOidcLoginFetchHandlerV1(oidcService, publicOrigin);
 
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 22 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 23 });
       await pool.query(
         `INSERT INTO public.workspace_tenants (tenant_id)
          VALUES ($1), ($2)
