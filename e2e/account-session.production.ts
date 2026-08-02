@@ -1,7 +1,11 @@
 import { expect, test } from "@playwright/test";
 import { Pool } from "pg";
 
-import { ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1 } from "./account-production-fixture";
+import {
+  ACCOUNT_E2E_BILLING_ORGANIZATION_ID,
+  ACCOUNT_E2E_STUDIO_ORGANIZATION_ID,
+  ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1,
+} from "./account-production-fixture";
 import {
   cleanupAccountEditorDocumentFixtureV1,
   prepareAccountEditorDocumentFixtureV1,
@@ -44,7 +48,7 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
   await page.getByRole("link", { name: "Sign in" }).click();
   await page.getByRole("link", { name: "Continue as Ada Lovelace" }).click();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  await expect(page.getByLabel("Active organization")).toHaveValue("editor-team");
+  await expect(page.getByLabel("Active organization")).toHaveValue(ACCOUNT_E2E_STUDIO_ORGANIZATION_ID);
   await expect(page.getByRole("button", { name: "Invite" })).toBeVisible();
   expect(redirectStatuses.get("/auth/oidc/start")).toBe(302);
   expect(redirectStatuses.get("/auth/oidc/callback")).toBe(303);
@@ -79,6 +83,38 @@ test("signs in, selects a Studio organization, loads cookie-native media, then l
     organizationHeader: null,
     pathname: "/api/manim/projects/production-demo/thumbnail",
   });
+  await page.getByLabel("Active organization").selectOption(ACCOUNT_E2E_BILLING_ORGANIZATION_ID);
+  await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite", exact: true })).toHaveCount(0);
+  const billingInvitationAttempt = await page.evaluate(async () => {
+    const response = await fetch("/api/account/invitations", {
+      body: JSON.stringify({ email: "blocked@example.com", role: "member" }),
+      credentials: "same-origin",
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    return { body: await response.text(), status: response.status };
+  });
+  expect(billingInvitationAttempt).toEqual({
+    body: '{"error":"Account invitation action is not available."}',
+    status: 403,
+  });
+  expect(billingInvitationAttempt.body).not.toContain("blocked@example.com");
+  await page.getByLabel("Active organization").selectOption(ACCOUNT_E2E_STUDIO_ORGANIZATION_ID);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Invite", exact: true })).toBeVisible();
+  const postSwitchEvidence = await page.evaluate(async () => {
+    const response = await fetch("/__e2e/account/metrics", { cache: "no-store" });
+    return (await response.json()) as {
+      manimRequests: readonly { organizationHeader: string | null }[];
+    };
+  });
+  expect(
+    postSwitchEvidence.manimRequests.some(
+      ({ organizationHeader }) => organizationHeader === ACCOUNT_E2E_BILLING_ORGANIZATION_ID,
+    ),
+  ).toBe(false);
+
   await page.getByRole("button", { name: "Sign out" }).click();
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();
   await expect

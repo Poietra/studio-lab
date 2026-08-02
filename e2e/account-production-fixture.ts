@@ -3,6 +3,7 @@ import { importManimScene } from "../src/render-pipeline/source-import";
 import type { AccountEditorDocumentFixtureV1 } from "./editor-document-postgres-fixture";
 
 export const ACCOUNT_E2E_BILLING_ORGANIZATION_ID = "billing-team";
+export const ACCOUNT_E2E_BILLING_OWNER_USER_ID = "b16966d4-77fb-4a4d-8a45-6c04ea998104";
 export const ACCOUNT_E2E_STUDIO_ORGANIZATION_ID = "editor-team";
 export const ACCOUNT_E2E_USER_ID = "2f2e3ea4-88de-4f37-81f7-1860d8f942f8";
 export const ACCOUNT_E2E_INVITED_USER_ID = "7102d62f-c17f-4ec8-a811-736751a28d63";
@@ -20,6 +21,10 @@ export const ACCOUNT_E2E_MISMATCH_IDENTITY = Object.freeze({
   issuer: ACCOUNT_E2E_IDENTITY.issuer,
   subject: "account-e2e-mismatched-user",
   verifiedEmail: "mismatch@example.com",
+});
+export const ACCOUNT_E2E_BILLING_OWNER_IDENTITY = Object.freeze({
+  issuer: ACCOUNT_E2E_IDENTITY.issuer,
+  subject: "account-e2e-billing-owner",
 });
 export const ACCOUNT_E2E_PROJECT_ID = "production-demo";
 export const ACCOUNT_E2E_SOURCE_PATH = "scene.py";
@@ -45,6 +50,9 @@ if (!ACCOUNT_E2E_IMPORTED_SCENE.anchors.some((anchor) => Math.abs(anchor - 1) < 
 }
 
 export const ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1 = Object.freeze({
+  billingOrganizationId: ACCOUNT_E2E_BILLING_ORGANIZATION_ID,
+  billingOwnerOidcSubject: ACCOUNT_E2E_BILLING_OWNER_IDENTITY.subject,
+  billingOwnerUserId: ACCOUNT_E2E_BILLING_OWNER_USER_ID,
   documentSceneId: fastManimSnapshotSceneIdV1(ACCOUNT_E2E_SOURCE_PATH, ACCOUNT_E2E_SCENE_NAME),
   additionalOidcSubjects: [ACCOUNT_E2E_INVITED_IDENTITY.subject, ACCOUNT_E2E_MISMATCH_IDENTITY.subject],
   oidcIssuer: ACCOUNT_E2E_IDENTITY.issuer,
