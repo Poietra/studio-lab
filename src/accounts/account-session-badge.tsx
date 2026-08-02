@@ -5,13 +5,17 @@ import type { AccountSessionViewV1 } from "./account-session-contract";
 
 export function AccountSessionBadge({
   actions,
+  beforeExternalNavigation,
   className,
   compact = false,
+  disabled = false,
   session,
 }: Readonly<{
   actions: AccountSessionActionsV1;
+  beforeExternalNavigation?: () => Promise<boolean>;
   className?: string;
   compact?: boolean;
+  disabled?: boolean;
   session: AccountSessionViewV1;
 }>) {
   return (
@@ -24,7 +28,8 @@ export function AccountSessionBadge({
       </label>
       <select
         aria-label="Active organization"
-        className="h-8 min-w-28 max-w-48 border border-zinc-700 bg-zinc-950 px-2 text-xs font-medium text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+        className="h-8 min-w-28 max-w-48 border border-zinc-700 bg-zinc-950 px-2 text-xs font-medium text-zinc-300 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
+        disabled={disabled}
         id={`account-organization-${session.user.id}`}
         onChange={(event) => {
           const organizationId = event.currentTarget.value;
@@ -45,10 +50,16 @@ export function AccountSessionBadge({
         {session.user.displayName}
       </span>
       {accountRoleCanManageBillingV1(session.activeOrganization.role) ? (
-        <BillingSettingsControl key={session.activeOrganization.id} organization={session.activeOrganization} />
+        <BillingSettingsControl
+          beforeExternalNavigation={beforeExternalNavigation}
+          disabled={disabled}
+          key={session.activeOrganization.id}
+          organization={session.activeOrganization}
+        />
       ) : null}
       <button
-        className="min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+        className="min-h-8 shrink-0 border border-zinc-700 px-2 text-xs font-medium text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
+        disabled={disabled}
         onClick={actions.logout}
         type="button"
       >

@@ -120,7 +120,10 @@ import {
   undoEditorProgram as undoEditorProgramTransition,
   useEditorController,
 } from "./studio/use-editor-controller";
-import { useEditorDocumentAuthorityV1 } from "./studio/use-editor-document-authority";
+import {
+  editorDocumentSessionFlushAllowsTransitionV1,
+  useEditorDocumentAuthorityV1,
+} from "./studio/use-editor-document-authority";
 import { useEditorRevisionController } from "./studio/use-editor-revision-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
@@ -375,6 +378,7 @@ export function App({
   const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
+  const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
@@ -382,6 +386,7 @@ export function App({
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const previewActivationDialog = useRef<HTMLDialogElement | null>(null);
+  const sessionTransitionInFlight = useRef(false);
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
@@ -600,6 +605,48 @@ export function App({
     ownerKey: accountSession?.user.id ?? null,
     sessionSnapshot: cloudEditorSessionSnapshot,
   });
+  async function runAfterEditorSessionFlush(
+    transition: () => unknown | Promise<unknown>,
+    transitionKind: "account" | "document" = "document",
+  ) {
+    if (sessionTransitionInFlight.current) return false;
+    sessionTransitionInFlight.current = true;
+    setSessionTransitionPending(true);
+    cancelSuggestionRequest();
+    setIsPlaying(false);
+    saveEditorSession();
+    try {
+      const flushOutcome = await editorDocumentAuthority.flushSession();
+      if (!editorDocumentSessionFlushAllowsTransitionV1(flushOutcome, transitionKind)) return false;
+      await transition();
+      return true;
+    } finally {
+      sessionTransitionInFlight.current = false;
+      setSessionTransitionPending(false);
+    }
+  }
+
+  const flushedAccountActions: AccountSessionActionsV1 | null = accountActions
+    ? {
+        actionError: accountActions.actionError,
+        logout: () => {
+          void runAfterEditorSessionFlush(accountActions.logout, "account");
+        },
+        switchOrganization: (organizationId) => {
+          void runAfterEditorSessionFlush(() => accountActions.switchOrganization(organizationId), "account");
+        },
+      }
+    : null;
+
+  function reimportWorkspaceAfterSessionFlush() {
+    void runAfterEditorSessionFlush(() => {
+      void reimportWorkspace();
+    });
+  }
+
+  function discardPendingCloudSession() {
+    if (editorDocumentAuthority.discardPendingSession()) window.location.reload();
+  }
   const editorPresenceSessionAligned =
     activeScene !== null &&
     activeSessionIdentity?.projectId === activeProjectId &&
@@ -730,6 +777,7 @@ export function App({
   const { sourceLifecyclePending } = sourceLifecycle;
   const studioAuthoringLocked =
     editorDocumentAuthority.authoringBlocked ||
+    sessionTransitionPending ||
     sourceLifecycle.studioAuthoringLocked ||
     (editorRevision.selectionAligned && !editorRevision.sessionReady);
   const sourceDurationSessionKey = editorRevision.sessionKey;
@@ -2610,15 +2658,16 @@ export function App({
     workspace?.projectName ?? projects.find((project) => project.id === activeProjectId)?.name ?? "Workspace";
 
   function returnToWorkspaceLauncher() {
-    saveEditorSession();
-    suspendEditor();
-    canvasDrag.current = null;
-    canvasResize.current = null;
-    setDragPreview(null);
-    setGeometryPreview(null);
-    setScalePreview(null);
-    setInspectorReturnFocus(null);
-    leaveWorkspace();
+    void runAfterEditorSessionFlush(() => {
+      suspendEditor();
+      canvasDrag.current = null;
+      canvasResize.current = null;
+      setDragPreview(null);
+      setGeometryPreview(null);
+      setScalePreview(null);
+      setInspectorReturnFocus(null);
+      leaveWorkspace();
+    });
   }
 
   async function unregisterWorkspaceAndClearSession(workspaceId: string) {
@@ -2639,8 +2688,13 @@ export function App({
         creationMode={shell === "Browser" ? "managed" : window.poietraDesktop ? "native-existing" : "existing"}
         error={workspaceError}
         headerAccessory={
-          accountSession && accountActions ? (
-            <AccountSessionBadge actions={accountActions} session={accountSession} />
+          accountSession && flushedAccountActions ? (
+            <AccountSessionBadge
+              actions={flushedAccountActions}
+              beforeExternalNavigation={() => runAfterEditorSessionFlush(() => undefined)}
+              disabled={sessionTransitionPending}
+              session={accountSession}
+            />
           ) : null
         }
         isLoading={workspaceStatus === "loading"}
@@ -2667,7 +2721,7 @@ export function App({
             <button
               aria-label="Back to workspaces"
               className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={sourceLifecyclePending}
+              disabled={sourceLifecyclePending || sessionTransitionPending}
               onClick={returnToWorkspaceLauncher}
               type="button"
             >
@@ -2686,8 +2740,8 @@ export function App({
                 className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
                 disabled={studioAuthoringLocked}
                 onChange={(event) => {
-                  saveEditorSession();
-                  setActiveSceneId(event.currentTarget.value);
+                  const sceneId = event.currentTarget.value;
+                  void runAfterEditorSessionFlush(() => setActiveSceneId(sceneId));
                 }}
                 value={activeSceneId ?? ""}
               >
@@ -2700,13 +2754,21 @@ export function App({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2 text-xs">
-            {accountSession && accountActions ? (
-              <AccountSessionBadge actions={accountActions} compact session={accountSession} />
+            {accountSession && flushedAccountActions ? (
+              <AccountSessionBadge
+                actions={flushedAccountActions}
+                beforeExternalNavigation={() => runAfterEditorSessionFlush(() => undefined)}
+                compact
+                disabled={sessionTransitionPending}
+                session={accountSession}
+              />
             ) : null}
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId}
-              onClick={() => void reimportWorkspace()}
+              disabled={
+                sessionTransitionPending || workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId
+              }
+              onClick={reimportWorkspaceAfterSessionFlush}
               type="button"
             >
               {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
@@ -2740,7 +2802,8 @@ export function App({
             <span className="min-w-0 truncate">Reimport failed: {workspaceError}</span>
             <button
               className="shrink-0 underline underline-offset-2 hover:text-white"
-              onClick={() => void reimportWorkspace()}
+              disabled={sessionTransitionPending}
+              onClick={reimportWorkspaceAfterSessionFlush}
               type="button"
             >
               Retry
@@ -2761,6 +2824,16 @@ export function App({
                 type="button"
               >
                 Retry sync
+              </button>
+            ) : editorDocumentAuthority.pendingSessionConflict ? (
+              <button
+                className="shrink-0 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+                onClick={discardPendingCloudSession}
+                type="button"
+              >
+                {editorDocumentAuthority.pendingSessionConflictAccountWide
+                  ? "Clear all pending session journals"
+                  : "Clear pending session journal"}
               </button>
             ) : null}
           </div>
@@ -2856,6 +2929,16 @@ export function App({
                 >
                   Retry sync
                 </button>
+              ) : editorDocumentAuthority.pendingSessionConflict ? (
+                <button
+                  className="mt-4 border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-950/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
+                  onClick={discardPendingCloudSession}
+                  type="button"
+                >
+                  {editorDocumentAuthority.pendingSessionConflictAccountWide
+                    ? "Clear all pending session journals"
+                    : "Clear pending session journal"}
+                </button>
               ) : null}
             </div>
           </div>
@@ -2868,7 +2951,8 @@ export function App({
               </p>
               <button
                 className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
-                onClick={() => void reimportWorkspace()}
+                disabled={sessionTransitionPending}
+                onClick={reimportWorkspaceAfterSessionFlush}
                 type="button"
               >
                 Inspect workspace again

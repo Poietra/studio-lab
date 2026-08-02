@@ -26,6 +26,8 @@ import { canonicalEditorSessionSnapshotJsonV1 } from "./editor-session-contract"
 
 type FetchV1 = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
+export const MAX_EDITOR_SESSION_KEEPALIVE_BODY_BYTES_V1 = 64 * 1024;
+
 export class EditorDocumentHttpClientErrorV1 extends Error {
   constructor(
     message: string,
@@ -112,6 +114,55 @@ function unexpectedResponseV1(response: Response): never {
 
 function editorPathV1(projectId: string, suffix: string) {
   return `/api/editor/projects/${encodeURIComponent(projectId)}/${suffix}`;
+}
+
+function prepareSessionPutV1(
+  identityValue: EditorDocumentClientIdentityV1,
+  documentKeyValue: string,
+  requestValue: EditorDocumentSessionPutRequestV1,
+) {
+  const identity = parseIdentityV1(identityValue);
+  const documentKey = editorDocumentKeySchemaV1.parse(documentKeyValue);
+  const request = editorDocumentSessionPutRequestSchemaV1.parse(requestValue);
+  const query = new URLSearchParams({ epoch: request.epoch });
+  return {
+    body: JSON.stringify(request),
+    documentKey,
+    identity,
+    path: `${editorPathV1(identity.projectId, `documents/${encodeURIComponent(documentKey)}/session`)}?${query}`,
+    request,
+  } as const;
+}
+
+/**
+ * Starts one bounded session PUT that may outlive the current page. A true
+ * return value means only that fetch was invoked; it is never an
+ * acknowledgement, so the exact local journal entry must remain retained.
+ */
+export function attemptEditorDocumentSessionKeepaliveV1(
+  identityValue: EditorDocumentClientIdentityV1,
+  documentKeyValue: string,
+  requestValue: EditorDocumentSessionPutRequestV1,
+  fetchImpl: FetchV1 = globalThis.fetch.bind(globalThis),
+) {
+  const prepared = prepareSessionPutV1(identityValue, documentKeyValue, requestValue);
+  if (new TextEncoder().encode(prepared.body).byteLength > MAX_EDITOR_SESSION_KEEPALIVE_BODY_BYTES_V1) {
+    return false;
+  }
+  try {
+    const response = fetchImpl(prepared.path, {
+      body: prepared.body,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: requestHeadersV1(prepared.identity.organizationId, true),
+      keepalive: true,
+      method: "PUT",
+    });
+    void response.catch(() => undefined);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function sessionIdentityMatchesV1(
@@ -255,21 +306,15 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
     requestValue: EditorDocumentSessionPutRequestV1,
     signal?: AbortSignal,
   ) {
-    const identity = parseIdentityV1(identityValue);
-    const documentKey = editorDocumentKeySchemaV1.parse(documentKeyValue);
-    const request = editorDocumentSessionPutRequestSchemaV1.parse(requestValue);
-    const query = new URLSearchParams({ epoch: request.epoch });
-    const response = await this.fetchImpl(
-      `${editorPathV1(identity.projectId, `documents/${encodeURIComponent(documentKey)}/session`)}?${query}`,
-      {
-        body: JSON.stringify(request),
-        cache: "no-store",
-        credentials: "same-origin",
-        headers: requestHeadersV1(identity.organizationId, true),
-        method: "PUT",
-        signal,
-      },
-    );
+    const prepared = prepareSessionPutV1(identityValue, documentKeyValue, requestValue);
+    const response = await this.fetchImpl(prepared.path, {
+      body: prepared.body,
+      cache: "no-store",
+      credentials: "same-origin",
+      headers: requestHeadersV1(prepared.identity.organizationId, true),
+      method: "PUT",
+      signal,
+    });
     const parsed = editorDocumentSessionPutResultViewSchemaV1.safeParse(await jsonBodyV1(response));
     if (!parsed.success) return unexpectedResponseV1(response);
     const statusMatches =
@@ -281,15 +326,15 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
     if (parsed.data.kind === "stored") {
       if (
         !sessionIdentityMatchesV1(parsed.data.session, {
-          documentKey,
-          epoch: request.epoch,
-          ...identity,
+          documentKey: prepared.documentKey,
+          epoch: prepared.request.epoch,
+          ...prepared.identity,
         }) ||
-        parsed.data.session.documentRevision !== request.documentRevision ||
-        BigInt(parsed.data.session.sessionGeneration) !== BigInt(request.expectedSessionGeneration) + 1n ||
-        parsed.data.session.snapshotVersion !== request.snapshotVersion ||
+        parsed.data.session.documentRevision !== prepared.request.documentRevision ||
+        BigInt(parsed.data.session.sessionGeneration) !== BigInt(prepared.request.expectedSessionGeneration) + 1n ||
+        parsed.data.session.snapshotVersion !== prepared.request.snapshotVersion ||
         canonicalEditorSessionSnapshotJsonV1(parsed.data.session.snapshot) !==
-          canonicalEditorSessionSnapshotJsonV1(request.snapshot) ||
+          canonicalEditorSessionSnapshotJsonV1(prepared.request.snapshot) ||
         !(await sessionSnapshotEvidenceMatchesV1(parsed.data.session.snapshot, parsed.data.session))
       ) {
         return unexpectedResponseV1(response);
@@ -331,6 +376,5 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
 }
 
 export function editorCommitOutcomeMayBeUnknownV1(error: unknown) {
-  if (error instanceof DOMException && error.name === "AbortError") return false;
   return !(error instanceof EditorDocumentHttpClientErrorV1) || error.outcomeMayBeUnknown;
 }
