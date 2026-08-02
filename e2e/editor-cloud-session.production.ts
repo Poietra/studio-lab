@@ -1,9 +1,15 @@
 import { type Browser, type BrowserContext, expect, type Page, type Request, test } from "@playwright/test";
+import { Pool } from "pg";
 
 import type { EditorSessionSnapshotV1 } from "../src/collaboration/editor-session-contract";
 import { editorSessionPendingJournalEntryStoragePrefixV1 } from "../src/studio/editor-session-pending-journal";
 import { editorSessionIdentityKey, editorSessionStorageKey } from "../src/studio/editor-session-store";
 import { createInitialEditorState, snapshotCloudEditorSessionV1 } from "../src/studio/use-editor-controller";
+import { ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1 } from "./account-production-fixture";
+import {
+  cleanupAccountEditorDocumentFixtureV1,
+  prepareAccountEditorDocumentFixtureV1,
+} from "./editor-document-postgres-fixture";
 
 const WORKSPACE_NAME = "Production Demo";
 const SESSION_PUT_PATH = /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/session$/u;
@@ -16,6 +22,18 @@ type EditorFixtureIdentity = Readonly<{
   sourceHash: string;
   userId: string;
 }>;
+
+const databaseUrl = process.env.POIETRA_ACCOUNT_E2E_DATABASE_URL;
+if (!databaseUrl) throw new TypeError("The account Editor E2E requires its isolated PostgreSQL database.");
+const fixturePool = new Pool({ connectionString: databaseUrl, max: 1 });
+
+test.afterEach(async () => {
+  await cleanupAccountEditorDocumentFixtureV1(fixturePool, ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1);
+});
+
+test.afterAll(async () => {
+  await fixturePool.end();
+});
 
 type SessionPutBody = Readonly<{ snapshot?: EditorSessionSnapshotV1 }>;
 type StoredSessionPutResult = Readonly<{
@@ -75,17 +93,13 @@ function mutationPost(page: Page, status = 201) {
   });
 }
 
-async function resetEditorAuthority(page: Page) {
-  return page.evaluate(async () => {
-    const response = await fetch("/__e2e/editor/reset", { method: "POST" });
-    if (!response.ok) throw new TypeError(`Editor E2E reset failed (${response.status}).`);
-    return (await response.json()) as EditorFixtureIdentity;
-  });
+async function prepareEditorAuthority() {
+  return prepareAccountEditorDocumentFixtureV1(fixturePool, ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1);
 }
 
 async function signInAndSelectStudio(page: Page) {
+  const fixture = await prepareEditorAuthority();
   await page.goto("/");
-  const fixture = await resetEditorAuthority(page);
   await expect(page.getByRole("heading", { name: "Sign in to Poietra" })).toBeVisible();
   await page.getByRole("link", { name: "Sign in" }).click();
   await expect(page.getByRole("heading", { name: "Billing account" })).toBeVisible();
@@ -542,8 +556,8 @@ test("a session CAS loser keeps its local UI and cannot silently overwrite the w
 test("migrates the exact local session into an absent cloud session and retains unrelated local state", async ({
   page,
 }) => {
+  const identity = await prepareEditorAuthority();
   await page.goto("/");
-  const identity = await resetEditorAuthority(page);
   const local = localStorageFixture(identity, 5.75);
   await writeLocalStorageFixture(page, local);
 
