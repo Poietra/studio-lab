@@ -155,13 +155,20 @@ function contentLength(request: Request) {
   return Number(value);
 }
 
+type InvitationStartMediaTypeV1 = "application/json" | "application/x-www-form-urlencoded";
+
+function invitationStartMediaType(request: Request): InvitationStartMediaTypeV1 | null {
+  const value = request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  return value === "application/json" || value === "application/x-www-form-urlencoded" ? value : null;
+}
+
 function validInvitationStartRequest(request: Request, publicOrigin: string) {
   const fetchSite = request.headers.get("sec-fetch-site")?.toLowerCase();
   const length = contentLength(request);
   return (
     request.headers.get("origin") === publicOrigin &&
     (fetchSite === undefined || fetchSite === "same-origin") &&
-    request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() === "application/json" &&
+    invitationStartMediaType(request) !== null &&
     request.body !== null &&
     !request.headers.has("transfer-encoding") &&
     (length === null || (Number.isSafeInteger(length) && length > 0 && length <= MAX_INVITATION_START_BODY_BYTES_V1))
@@ -173,8 +180,11 @@ function invalidInvitationStartResponse(request: Request) {
   if (Number.isFinite(length) && (length as number) > MAX_INVITATION_START_BODY_BYTES_V1) {
     return errorResponse(413, "Authentication request is too large.");
   }
-  if (request.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
-    return errorResponse(415, "Authentication request content type must be application/json.");
+  if (invitationStartMediaType(request) === null) {
+    return errorResponse(
+      415,
+      "Authentication request content type must be application/json or application/x-www-form-urlencoded.",
+    );
   }
   if (request.headers.get("origin") === null || request.headers.get("origin") !== new URL(request.url).origin) {
     return errorResponse(403, "Authentication could not be started.");
@@ -224,7 +234,13 @@ async function readInvitationStart(request: Request) {
     offset += chunk.byteLength;
   }
   try {
-    const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (invitationStartMediaType(request) === "application/x-www-form-urlencoded") {
+      const parameters = new URLSearchParams(decoded);
+      if ([...parameters.keys()].length !== 1 || parameters.getAll("invitationToken").length !== 1) return null;
+      return canonicalInvitationToken(parameters.get("invitationToken"));
+    }
+    const parsed = JSON.parse(decoded);
     if (typeof parsed !== "object" || parsed === null || Object.keys(parsed).length !== 1) return null;
     return canonicalInvitationToken((parsed as { invitationToken?: unknown }).invitationToken);
   } catch {

@@ -282,6 +282,34 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
           >
             Sign in
           </a>
+          <div className="my-6 flex items-center gap-3 text-xs text-zinc-600">
+            <span className="h-px flex-1 bg-zinc-800" />
+            or use an invitation
+            <span className="h-px flex-1 bg-zinc-800" />
+          </div>
+          <form action="/auth/oidc/start" method="post">
+            <label className="block text-sm font-medium text-zinc-300" htmlFor="account-invitation-token">
+              Invitation code
+            </label>
+            <input
+              autoComplete="off"
+              className="mt-2 h-10 w-full border border-zinc-700 bg-zinc-900 px-3 font-mono text-sm text-zinc-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+              id="account-invitation-token"
+              maxLength={43}
+              minLength={43}
+              name="invitationToken"
+              pattern="[A-Za-z0-9_-]{43}"
+              required
+              spellCheck={false}
+              type="password"
+            />
+            <button
+              className="mt-3 min-h-10 w-full border border-zinc-700 px-4 text-sm font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+              type="submit"
+            >
+              Accept invitation
+            </button>
+          </form>
         </section>
       </AccountBootstrapFrame>
     );

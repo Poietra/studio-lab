@@ -65,6 +65,24 @@ describe("OIDC login Fetch handler", () => {
     expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
   });
 
+  it("accepts an exact native form invitation without putting the token in the redirect", async () => {
+    const { handler, service } = fixture();
+    const invitationToken = Buffer.alloc(32, 10).toString("base64url");
+    const body = new URLSearchParams({ invitationToken });
+    const response = await handler.fetch(
+      new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+        body,
+        headers: { origin, "sec-fetch-site": "same-origin" },
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://identity.example/authorize?request=fixed");
+    expect(response.headers.get("location")).not.toContain(invitationToken);
+    expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
+  });
+
   it("completes the callback with a new session and clears the binding", async () => {
     const { handler, service } = fixture();
     const callback = `${OIDC_LOGIN_CALLBACK_ROUTE_V1}?code=provider-code&state=${state}`;
@@ -134,6 +152,27 @@ describe("OIDC login Fetch handler", () => {
     ]);
 
     expect(responses.map(({ status }) => status)).toEqual([400, 403, 400, 413]);
+    expect(service.start).not.toHaveBeenCalled();
+  });
+
+  it("rejects duplicate, additional, and malformed native form invitation fields", async () => {
+    const { handler, service } = fixture();
+    const requests = [
+      `invitationToken=${token}&invitationToken=${token}`,
+      `invitationToken=${token}&next=%2Fworkspace`,
+      `invitationToken=invalid`,
+      `other=${token}`,
+    ].map(
+      (body) =>
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body,
+          headers: { "content-type": "application/x-www-form-urlencoded", origin },
+          method: "POST",
+        }),
+    );
+
+    const responses = await Promise.all(requests.map((request) => handler.fetch(request)));
+    expect(responses.map(({ status }) => status)).toEqual([400, 400, 400, 400]);
     expect(service.start).not.toHaveBeenCalled();
   });
 

@@ -1,6 +1,7 @@
-import { accountSessionTokenHashV1 } from "./account-session-authenticator";
-import type { AccountInvitationServiceV1 } from "./account-invitation-service";
+import { accountInvitationCreateResponseSchemaV1 } from "../../src/accounts/account-invitation-contract";
 import { normalizeAccountEmailV1, organizationInvitationRoleSchemaV1 } from "./account-domain";
+import type { AccountInvitationServiceV1 } from "./account-invitation-service";
+import { accountSessionTokenHashV1 } from "./account-session-authenticator";
 
 export const ACCOUNT_INVITATIONS_ROUTE_V1 = "/api/account/invitations";
 
@@ -196,7 +197,7 @@ export function createAccountInvitationFetchHandlerV1(service: AccountInvitation
           const created = await service.create({ ...parsed.input, sessionTokenHash }, request.signal);
           request.signal.throwIfAborted();
           return created
-            ? jsonResponse(201, created)
+            ? jsonResponse(201, accountInvitationCreateResponseSchemaV1.parse(created))
             : errorResponse(403, "Account invitation action is not available.");
         } catch {
           request.signal.throwIfAborted();
