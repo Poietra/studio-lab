@@ -87,10 +87,30 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sys",
   "/proc/sysrq-trigger",
 ] as const);
+const FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1 = "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823";
+const FAST_MANIM_GATED_OCI_COMMIT_V1 = "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3";
+const FAST_MANIM_GATED_OCI_TREE_V1 = "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a";
+
+/**
+ * Versioned dependency on fast-manim's complete V4 Python-AST admission
+ * contract. Studio derives only the ordered post-add transform plan; changing
+ * the producer grammar requires advancing this identity and the OCI profile
+ * digest together.
+ */
+export const FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1 = Object.freeze({
+  archiveSha256: FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1,
+  authority: "manim.renderer._scene_snapshot.profile.hermetic_png_plan_v4",
+  commit: FAST_MANIM_GATED_OCI_COMMIT_V1,
+  snapshotVersion: 4,
+  studioResponsibility: "post-add-static-transform-plan",
+  tree: FAST_MANIM_GATED_OCI_TREE_V1,
+  version: 1,
+} as const);
+
 const LOCKED_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823",
-  "io.poietra.fast-manim.commit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
-  "io.poietra.fast-manim.tree": "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a",
+  "io.poietra.fast-manim.archive-sha256": FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1,
+  "io.poietra.fast-manim.commit": FAST_MANIM_GATED_OCI_COMMIT_V1,
+  "io.poietra.fast-manim.tree": FAST_MANIM_GATED_OCI_TREE_V1,
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -151,6 +171,9 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
   pidNamespace: "private",
   pidsLimit: PIDS_LIMIT,
   privileged: false,
+  producerContracts: Object.freeze({
+    hermeticPngV4: FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1,
+  }),
   readOnlyRootfs: true,
   requestEnvelopeVersions: Object.freeze([1, 2]),
   requiredContainerLabels: Object.freeze({ ...LOCKED_LABELS, [JOB_LABEL_KEY]: JOB_LABEL_VALUE }),

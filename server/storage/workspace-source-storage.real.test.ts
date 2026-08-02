@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
@@ -9,8 +10,10 @@ import { describe, expect, it } from "vitest";
 import { createDurableManimRuntimeV1, type DurableManimRuntimeV1 } from "../durable-manim-runtime";
 import { HttpError } from "../http/json";
 import { applyBundledDurableStorageMigrations, applyWorkspaceSourceMigrationV1 } from "./postgres/migrate";
+import { PostgresProjectPngRepositoryV1 } from "./postgres/postgres-project-png-repository";
 import { PostgresWorkspaceSourceRepositoryV1 } from "./postgres/postgres-workspace-source-repository";
 import { S3ContentBlobStoreV1 } from "./s3/s3-content-blob-store";
+import { ImmutableS3ProjectPngStoreV1, ImmutableS3SourceBlobStoreV1 } from "./s3/s3-immutable-source-png-store";
 import { runSourceBlobGcV1 } from "./source-blob-gc";
 
 const PROCESS_ROLE = process.env.POIETRA_STORAGE_E2E_PROCESS_ROLE;
@@ -22,6 +25,10 @@ const E2E_CONFIGURED = [
   "POIETRA_STORAGE_E2E_S3_SECRET_KEY",
 ].every((key) => Boolean(process.env[key]));
 const PROCESS_MARKER = "POIETRA_STORAGE_E2E_RESULT=";
+const BROWSER_PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+  "base64",
+);
 
 type StorageEnvironment = Readonly<{
   accessKeyId: string;
@@ -70,6 +77,51 @@ async function createRuntime(tenantId: string, projectIdFactory?: () => string):
     }),
     tenantId,
   });
+}
+
+function immutableBucket(environment: StorageEnvironment) {
+  return `${environment.bucket}-immutable`;
+}
+
+async function createImmutableRuntime(
+  tenantId: string,
+  projectIdFactory?: () => string,
+): Promise<
+  Readonly<{
+    projectPngRepository: PostgresProjectPngRepositoryV1;
+    runtime: DurableManimRuntimeV1;
+  }>
+> {
+  const environment = storageEnvironment();
+  const projectPngRepository = new PostgresProjectPngRepositoryV1({
+    poolConfig: { connectionString: environment.databaseUrl, max: 4 },
+  });
+  try {
+    const runtime = await createDurableManimRuntimeV1({
+      blobs: new ImmutableS3SourceBlobStoreV1({
+        bucket: immutableBucket(environment),
+        clientConfig: s3Config(environment),
+        deployment: "test",
+      }),
+      execution: { ready: async () => true },
+      namespace: "storage-e2e-immutable-import",
+      projectIdFactory,
+      projectPngRepository,
+      projectPngs: new ImmutableS3ProjectPngStoreV1({
+        bucket: immutableBucket(environment),
+        clientConfig: s3Config(environment),
+        deployment: "test",
+      }),
+      repository: new PostgresWorkspaceSourceRepositoryV1({
+        poolConfig: { connectionString: environment.databaseUrl, max: 4 },
+      }),
+      tenantId,
+    });
+    return { projectPngRepository, runtime };
+  } catch (error) {
+    await projectPngRepository.close().catch(() => undefined);
+    throw error;
+  }
 }
 
 function emitProcessResult(result: Readonly<Record<string, unknown>>) {
@@ -195,6 +247,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       );
       expect(schemaPlacement.rows[0]).toEqual({ installed: "workspace_projects", misplaced: null });
       await setupS3.send(new CreateBucketCommand({ Bucket: environment.bucket }));
+      await setupS3.send(new CreateBucketCommand({ Bucket: immutableBucket(environment) }));
       await setupS3.send(
         new PutBucketVersioningCommand({
           Bucket: environment.bucket,
@@ -205,6 +258,145 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       setupS3.destroy();
       await setupPool.end();
     }
+
+    const browserProjectId = "project-browser-import";
+    const browserSource = `from manim import *
+
+class BrowserImportedScene(Scene):
+    def construct(self):
+        image = ImageMobject("image.png")
+        self.add(image)
+`;
+    const browserFixture = await createImmutableRuntime("tenant-browser", () => browserProjectId);
+    const browserRuntime = browserFixture.runtime;
+    const browserImport = await browserRuntime.importBrowserProject({
+      imagePngBase64: BROWSER_PNG_BYTES.toString("base64"),
+      name: "Browser imported workspace",
+      source: browserSource,
+      sourceName: "lesson.py",
+    });
+    expect(browserImport.project).toEqual({
+      id: browserProjectId,
+      kind: "managed",
+      name: "Browser imported workspace",
+    });
+    await browserRuntime.close();
+    await browserFixture.projectPngRepository.close();
+
+    const reopenedBrowserFixture = await createImmutableRuntime("tenant-browser");
+    const reopenedBrowserRuntime = reopenedBrowserFixture.runtime;
+    const reopenedBrowserWorkspace = await reopenedBrowserRuntime.workspace(browserProjectId);
+    expect(reopenedBrowserWorkspace).toMatchObject({
+      projectId: browserProjectId,
+      sources: [{ path: "lesson.py", scenes: [{ name: "BrowserImportedScene" }] }],
+    });
+    const reopenedBrowserSource = await reopenedBrowserRuntime.exportOriginalSource({
+      projectId: browserProjectId,
+      sourceHash: reopenedBrowserWorkspace.sources[0]!.scenes[0]!.sourceHash,
+      sourcePath: "lesson.py",
+    });
+    expect(reopenedBrowserSource.source).toBe(browserSource);
+    const reopenedBrowserPngHead = await reopenedBrowserFixture.projectPngRepository.readHead(
+      "tenant-browser",
+      browserProjectId,
+    );
+    expect(reopenedBrowserPngHead).toMatchObject({ generation: 1n, projectId: browserProjectId });
+    const reopenedBrowserPng = await reopenedBrowserRuntime.sceneSnapshotAsset(
+      browserProjectId,
+      reopenedBrowserPngHead!.receipt.digest,
+    );
+    expect(Buffer.from(reopenedBrowserPng.body)).toEqual(BROWSER_PNG_BYTES);
+    await reopenedBrowserRuntime.close();
+    await reopenedBrowserFixture.projectPngRepository.close();
+
+    const failedCandidateSource = `from manim import *
+
+class RejectedCollision(Scene):
+    def construct(self):
+        image = ImageMobject("image.png")
+        self.add(image)
+`;
+    const failedImportFixture = await createImmutableRuntime("tenant-browser", () => browserProjectId);
+    const failedImportRuntime = failedImportFixture.runtime;
+    await expect(
+      failedImportRuntime.importBrowserProject({
+        imagePngBase64: BROWSER_PNG_BYTES.toString("base64"),
+        name: "Project ID collision",
+        source: failedCandidateSource,
+        sourceName: "collision.py",
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    await failedImportRuntime.close();
+    await failedImportFixture.projectPngRepository.close();
+
+    const browserRepository = new PostgresWorkspaceSourceRepositoryV1({
+      poolConfig: { connectionString: environment.databaseUrl, max: 2 },
+    });
+    const browserBlobs = new ImmutableS3SourceBlobStoreV1({
+      bucket: immutableBucket(environment),
+      clientConfig: s3Config(environment),
+      deployment: "test",
+    });
+    const browserPngRepository = new PostgresProjectPngRepositoryV1({
+      poolConfig: { connectionString: environment.databaseUrl, max: 2 },
+    });
+    const browserHead = await browserRepository.readSourceHead("tenant-browser", browserProjectId, "lesson.py");
+    expect("objectGeneration" in browserHead.blob).toBe(true);
+    expect(await browserBlobs.readSource("tenant-browser", browserHead.blob)).toBe(browserSource);
+    const pendingBrowserDeletions = await browserRepository.pendingBlobDeletions("tenant-browser", 16);
+    expect(pendingBrowserDeletions).toHaveLength(1);
+    expect(pendingBrowserDeletions[0]).toMatchObject({
+      blob: { digest: createHash("sha256").update(failedCandidateSource).digest("hex") },
+      tenantId: "tenant-browser",
+    });
+    expect(pendingBrowserDeletions[0]!.blob).toHaveProperty("objectGeneration");
+    expect(pendingBrowserDeletions[0]!.blob.digest).not.toBe(browserHead.blob.digest);
+    const pendingBrowserPngDeletions = await browserPngRepository.pendingDeletions("tenant-browser", 16);
+    expect(pendingBrowserPngDeletions).toHaveLength(1);
+    expect(pendingBrowserPngDeletions[0]).toMatchObject({
+      projectId: browserProjectId,
+      receipt: { digest: reopenedBrowserPngHead!.receipt.digest },
+      tenantId: "tenant-browser",
+    });
+    expect(pendingBrowserPngDeletions[0]!.receipt).toHaveProperty("objectGeneration");
+    expect(pendingBrowserPngDeletions[0]!.receipt).not.toEqual(reopenedBrowserPngHead!.receipt);
+    await expect(browserPngRepository.readHead("tenant-other", browserProjectId)).resolves.toBeNull();
+
+    const deletionFixture = await createImmutableRuntime("tenant-browser");
+    try {
+      await expect(deletionFixture.runtime.unregisterProject(browserProjectId)).resolves.toMatchObject({
+        project: null,
+      });
+      await expect(browserPngRepository.readHead("tenant-browser", browserProjectId)).resolves.toBeNull();
+      await expect(
+        deletionFixture.runtime.sceneSnapshotAsset(browserProjectId, reopenedBrowserPngHead!.receipt.digest),
+      ).rejects.toMatchObject({ status: 404 });
+      const deletionAuditPool = new Pool({ connectionString: environment.databaseUrl, max: 1 });
+      try {
+        const detached = await deletionAuditPool.query<{ head_count: string; orphaned: boolean }>(
+          `SELECT
+           (SELECT count(*)::text
+              FROM public.project_png_heads
+             WHERE tenant_id = $1 AND project_id = $2) AS head_count,
+           COALESCE((
+             SELECT orphaned_at IS NOT NULL
+               FROM public.project_png_generations
+              WHERE tenant_id = $1 AND project_id = $2
+                AND generation = $3::bigint AND digest = $4
+            ), false) AS orphaned`,
+          ["tenant-browser", browserProjectId, "1", reopenedBrowserPngHead!.receipt.digest],
+        );
+        expect(detached.rows[0]).toEqual({ head_count: "0", orphaned: true });
+      } finally {
+        await deletionAuditPool.end();
+      }
+    } finally {
+      await deletionFixture.runtime.close();
+      await deletionFixture.projectPngRepository.close();
+    }
+    await browserBlobs.close();
+    await browserPngRepository.close();
+    await browserRepository.close();
 
     const projectId = "project-kill-proof";
     const childEnvironment = {

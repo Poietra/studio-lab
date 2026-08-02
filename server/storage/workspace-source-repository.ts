@@ -1,5 +1,6 @@
 import type { ManimProjectListView } from "../../src/render-pipeline/contracts";
 import { immutableObjectKeyV1 } from "./immutable-object-contract";
+import type { ProjectPngBlobReceiptV1 } from "./project-png-storage";
 import {
   type ApplicationImmutableObjectLocatorV1,
   isApplicationImmutableLocatorV1,
@@ -77,6 +78,7 @@ export interface WorkspaceSourceRepositoryV1 {
   createManagedProject(
     input: Readonly<{
       name: string;
+      projectPng?: ProjectPngBlobReceiptV1;
       projectId: string;
       source: Readonly<{ blob: SourceBlobReceiptV1; path: string }>;
       tenantId: string;

@@ -363,6 +363,38 @@ export type ManimProjectMutationView = Readonly<{
   project: ManimProjectSummary | null;
 }>;
 
+export const MAX_BROWSER_MANIM_SOURCE_BYTES_V1 = 192 * 1024;
+export const MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1 = 512 * 1024;
+// One valid source byte can occupy six JSON bytes when an ASCII control
+// character is escaped as `\u00xx`, while the optional PNG expands by 4/3 in
+// base64. Keep the transport ceiling above both worst cases plus the bounded
+// project-name and source-name envelope.
+export const MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 = 2 * 1024 * 1024;
+
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const MAX_BROWSER_MANIM_IMAGE_PNG_BASE64_LENGTH_V1 = 4 * Math.ceil(MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1 / 3);
+
+function canonicalBase64DecodedByteLength(value: string) {
+  if (
+    value.length === 0 ||
+    value.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(value)
+  ) {
+    return null;
+  }
+  const padding = value.endsWith("==") ? 2 : value.endsWith("=") ? 1 : 0;
+  if (padding === 2 && (BASE64_ALPHABET.indexOf(value.at(-3) ?? "") & 0x0f) !== 0) return null;
+  if (padding === 1 && (BASE64_ALPHABET.indexOf(value.at(-2) ?? "") & 0x03) !== 0) return null;
+  return (value.length / 4) * 3 - padding;
+}
+
+export type BrowserManimProjectImportRequestV1 = Readonly<{
+  imagePngBase64: string | null;
+  name: string;
+  source: string;
+  sourceName: string;
+}>;
+
 export type ManimThumbnailState = "current" | "failed" | "generating" | "missing" | "stale" | "unavailable";
 
 export type ManimThumbnailStatus = Readonly<{
@@ -594,6 +626,37 @@ export const createManimProjectRequestSchema: z.ZodType<ManimProjectCreateReques
     })
     .strict(),
 ]);
+
+export const browserManimProjectImportRequestV1Schema: z.ZodType<BrowserManimProjectImportRequestV1> = z
+  .object({
+    imagePngBase64: z
+      .string()
+      .max(MAX_BROWSER_MANIM_IMAGE_PNG_BASE64_LENGTH_V1)
+      .refine((value) => {
+        const decodedLength = canonicalBase64DecodedByteLength(value);
+        return decodedLength !== null && decodedLength <= MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1;
+      }, "Project image.png must use non-empty canonical base64 within the 512 KiB byte limit.")
+      .nullable(),
+    name: manimProjectNameSchema,
+    source: z
+      .string()
+      .min(1, "The selected Python file is empty.")
+      .refine(
+        (source) => new TextEncoder().encode(source).byteLength <= MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
+        `Browser imports accept at most ${MAX_BROWSER_MANIM_SOURCE_BYTES_V1} UTF-8 bytes.`,
+      )
+      .refine((source) => !source.includes("\0"), "Python source cannot contain NUL bytes."),
+    sourceName: z
+      .string()
+      .min(1)
+      .max(240)
+      .regex(/^[^/\\\u0000-\u001f\u007f]+[.]py$/u, "Select one Python .py file without a directory path.")
+      .refine(
+        (sourceName) => manimSourcePathSchema.safeParse(sourceName).success,
+        "Select one normalized Python .py file without a directory path.",
+      ),
+  })
+  .strict();
 
 export const renameManimProjectRequestSchema = z
   .object({

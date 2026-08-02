@@ -259,6 +259,14 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("ManimSourceStore.readVe
     await expect(store.readVerified("scene.py")).rejects.toMatchObject({ status: 400 });
   });
 
+  it("preserves a leading UTF-8 BOM in source text and hashes", async () => {
+    const source = "\ufefffrom manim import *\n";
+    const { store } = await fixture(source);
+
+    await expect(store.read("scene.py")).resolves.toMatchObject({ hash: sourceHash(source), source });
+    await expect(store.readVerified("scene.py")).resolves.toMatchObject({ hash: sourceHash(source), source });
+  });
+
   it("keeps a near-cap multibyte source under the byte budget without decode expansion", async () => {
     const { projectRoot, sourcePath } = await fixture();
     const store = new ManimSourceStore(projectRoot);

@@ -14,6 +14,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
 
 import {
+  type BrowserManimProjectImportRequestV1,
+  browserManimProjectImportRequestV1Schema,
   manimProjectIdSchema,
   manimProjectNameSchema,
 } from "../src/render-pipeline/contracts";
@@ -35,25 +37,33 @@ export type ResolvedManimProject = Readonly<{
   projectName: string;
 }>;
 
-const storedProjectV1Schema = z.object({
-  id: manimProjectIdSchema,
-  name: manimProjectNameSchema,
-  root: z.string().trim().min(1),
-}).strict();
+const storedProjectV1Schema = z
+  .object({
+    id: manimProjectIdSchema,
+    name: manimProjectNameSchema,
+    root: z.string().trim().min(1),
+  })
+  .strict();
 
-const storedProjectSchema = storedProjectV1Schema.extend({
-  kind: z.enum(["existing", "managed"]),
-}).strict();
+const storedProjectSchema = storedProjectV1Schema
+  .extend({
+    kind: z.enum(["existing", "managed"]),
+  })
+  .strict();
 
 const storedCatalogSchema = z.discriminatedUnion("version", [
-  z.object({
-    projects: z.array(storedProjectV1Schema).max(64),
-    version: z.literal(1),
-  }).strict(),
-  z.object({
-    projects: z.array(storedProjectSchema).max(64),
-    version: z.literal(2),
-  }).strict(),
+  z
+    .object({
+      projects: z.array(storedProjectV1Schema).max(64),
+      version: z.literal(1),
+    })
+    .strict(),
+  z
+    .object({
+      projects: z.array(storedProjectSchema).max(64),
+      version: z.literal(2),
+    })
+    .strict(),
 ]);
 
 const MANAGED_WORKSPACE_STARTER = `from manim import *
@@ -74,9 +84,7 @@ function projectName(value: string | undefined, canonicalRoot: string) {
   return parsed.data;
 }
 
-export function resolveManimProjects(
-  projects: readonly ManimProjectSeed[],
-): readonly ResolvedManimProject[] {
+export function resolveManimProjects(projects: readonly ManimProjectSeed[]): readonly ResolvedManimProject[] {
   if (projects.length > 64) throw new TypeError("The Manim project registry accepts at most 64 projects.");
   const canonicalRoots = new Set<string>();
   const projectIds = new Set<string>();
@@ -113,11 +121,13 @@ export class PersistentManimProjectCatalog {
   private readonly statePath: string;
   private readonly trashRoot: string;
 
-  constructor(options: Readonly<{
-    dataRoot: string;
-    projectIdFactory?: () => string;
-    seedProjects: readonly ManimProjectSeed[];
-  }>) {
+  constructor(
+    options: Readonly<{
+      dataRoot: string;
+      projectIdFactory?: () => string;
+      seedProjects: readonly ManimProjectSeed[];
+    }>,
+  ) {
     mkdirSync(resolve(options.dataRoot), { mode: 0o700, recursive: true });
     const dataRoot = realpathSync(resolve(options.dataRoot));
     const requestedManagedRoot = join(dataRoot, ".workspaces");
@@ -128,8 +138,7 @@ export class PersistentManimProjectCatalog {
     mkdirSync(requestedTrashRoot, { mode: 0o700, recursive: true });
     this.trashRoot = realpathSync(requestedTrashRoot);
     this.assertPrivateDirectory(this.trashRoot, "Studio Trash");
-    this.projectIdFactory = options.projectIdFactory
-      ?? (() => `project-${randomUUID().replaceAll("-", "")}`);
+    this.projectIdFactory = options.projectIdFactory ?? (() => `project-${randomUUID().replaceAll("-", "")}`);
     this.statePath = join(dataRoot, "workspace-catalog.json");
     if (existsSync(this.statePath)) {
       let stored: z.infer<typeof storedCatalogSchema>;
@@ -138,9 +147,10 @@ export class PersistentManimProjectCatalog {
       } catch {
         throw new TypeError("The persisted Manim workspace catalog is invalid.");
       }
-      const normalizedProjects: readonly z.infer<typeof storedProjectSchema>[] = stored.version === 1
-        ? stored.projects.map((project) => ({ ...project, kind: "existing" as const }))
-        : stored.projects;
+      const normalizedProjects: readonly z.infer<typeof storedProjectSchema>[] =
+        stored.version === 1
+          ? stored.projects.map((project) => ({ ...project, kind: "existing" as const }))
+          : stored.projects;
       const availableProjects: ResolvedManimProject[] = [];
       const quarantinedProjects: z.infer<typeof storedProjectSchema>[] = [];
       normalizedProjects.forEach((project) => {
@@ -150,10 +160,11 @@ export class PersistentManimProjectCatalog {
             quarantinedProjects.push(project);
             return;
           }
-          const conflictsWithAvailableProject = availableProjects.some((availableProject) => (
-            availableProject.projectId === resolvedProject.projectId
-            || availableProject.canonicalRoot === resolvedProject.canonicalRoot
-          ));
+          const conflictsWithAvailableProject = availableProjects.some(
+            (availableProject) =>
+              availableProject.projectId === resolvedProject.projectId ||
+              availableProject.canonicalRoot === resolvedProject.canonicalRoot,
+          );
           if (conflictsWithAvailableProject) {
             quarantinedProjects.push(project);
           } else {
@@ -179,11 +190,13 @@ export class PersistentManimProjectCatalog {
     const parsedName = this.validateNewProject(name);
     let created: ResolvedManimProject;
     try {
-      created = resolveManimProjects([{
-        kind: "existing",
-        name: parsedName.data,
-        root,
-      }])[0]!;
+      created = resolveManimProjects([
+        {
+          kind: "existing",
+          name: parsedName.data,
+          root,
+        },
+      ])[0]!;
     } catch {
       throw new HttpError("The selected workspace folder is not an accessible directory.", 400);
     }
@@ -191,6 +204,23 @@ export class PersistentManimProjectCatalog {
   }
 
   createManaged(name: string) {
+    return this.createManagedWorkspace(name, "main.py", MANAGED_WORKSPACE_STARTER);
+  }
+
+  createManagedFromSource(request: BrowserManimProjectImportRequestV1, projectPngBytes: Uint8Array | null) {
+    const parsed = browserManimProjectImportRequestV1Schema.safeParse(request);
+    if (!parsed.success) {
+      throw new HttpError(parsed.error.issues[0]?.message ?? "The Python project import is invalid.", 400);
+    }
+    return this.createManagedWorkspace(parsed.data.name, parsed.data.sourceName, parsed.data.source, projectPngBytes);
+  }
+
+  private createManagedWorkspace(
+    name: string,
+    sourceName: string,
+    source: string,
+    projectPngBytes: Uint8Array | null = null,
+  ) {
     const parsedName = this.validateNewProject(name);
     this.assertManagedRoot();
     const projectId = this.projectIdFactory();
@@ -202,17 +232,25 @@ export class PersistentManimProjectCatalog {
     try {
       mkdirSync(workspaceRoot, { mode: 0o700 });
       workspaceCreated = true;
-      writeFileSync(join(workspaceRoot, "main.py"), MANAGED_WORKSPACE_STARTER, {
+      writeFileSync(join(workspaceRoot, sourceName), source, {
         encoding: "utf8",
         flag: "wx",
         mode: 0o600,
       });
-      const created = resolveManimProjects([{
-        id: projectId,
-        kind: "managed",
-        name: parsedName.data,
-        root: workspaceRoot,
-      }])[0]!;
+      if (projectPngBytes) {
+        writeFileSync(join(workspaceRoot, "image.png"), projectPngBytes, {
+          flag: "wx",
+          mode: 0o600,
+        });
+      }
+      const created = resolveManimProjects([
+        {
+          id: projectId,
+          kind: "managed",
+          name: parsedName.data,
+          root: workspaceRoot,
+        },
+      ])[0]!;
       return this.register(created);
     } catch (error) {
       if (workspaceCreated) rmSync(workspaceRoot, { force: true, recursive: true });
@@ -223,10 +261,10 @@ export class PersistentManimProjectCatalog {
   rollbackManagedCreation(projectId: string) {
     const project = this.entries.find((entry) => entry.projectId === projectId);
     if (
-      !project
-      || project.kind !== "managed"
-      || dirname(project.canonicalRoot) !== this.managedRoot
-      || basename(project.canonicalRoot) !== project.projectId
+      !project ||
+      project.kind !== "managed" ||
+      dirname(project.canonicalRoot) !== this.managedRoot ||
+      basename(project.canonicalRoot) !== project.projectId
     ) {
       throw new TypeError("Only a newly managed workspace can be rolled back.");
     }
@@ -277,7 +315,10 @@ export class PersistentManimProjectCatalog {
       }
     });
     if (conflictsWithQuarantinedProject) {
-      throw new HttpError("That workspace is already registered but its folder was unavailable when Studio started.", 409);
+      throw new HttpError(
+        "That workspace is already registered but its folder was unavailable when Studio started.",
+        409,
+      );
     }
     const next = [...this.entries, created];
     this.persist(next);
@@ -304,10 +345,12 @@ export class PersistentManimProjectCatalog {
   private isManagedProjectRoot(project: ResolvedManimProject) {
     try {
       const metadata = lstatSync(project.canonicalRoot);
-      return !metadata.isSymbolicLink()
-        && metadata.isDirectory()
-        && dirname(project.canonicalRoot) === this.managedRoot
-        && basename(project.canonicalRoot) === project.projectId;
+      return (
+        !metadata.isSymbolicLink() &&
+        metadata.isDirectory() &&
+        dirname(project.canonicalRoot) === this.managedRoot &&
+        basename(project.canonicalRoot) === project.projectId
+      );
     } catch {
       return false;
     }
@@ -329,7 +372,7 @@ export class PersistentManimProjectCatalog {
     if (index < 0) throw new HttpError("Configured Manim project not found.", 404);
     const current = this.entries[index]!;
     const renamed = { ...current, projectName: parsedName.data };
-    const next = this.entries.map((project, projectIndex) => projectIndex === index ? renamed : project);
+    const next = this.entries.map((project, projectIndex) => (projectIndex === index ? renamed : project));
     this.persist(next);
     this.entries = next;
     return renamed;
@@ -346,15 +389,21 @@ export class PersistentManimProjectCatalog {
 
   private persist(projects: readonly ResolvedManimProject[]) {
     const temporaryPath = join(dirname(this.statePath), `.catalog-${randomUUID()}.tmp`);
-    const payload = `${JSON.stringify({
-      projects: projects.map((project) => ({
-        id: project.projectId,
-        kind: project.kind,
-        name: project.projectName,
-        root: project.canonicalRoot,
-      })).concat(this.quarantined),
-      version: 2,
-    }, null, 2)}\n`;
+    const payload = `${JSON.stringify(
+      {
+        projects: projects
+          .map((project) => ({
+            id: project.projectId,
+            kind: project.kind,
+            name: project.projectName,
+            root: project.canonicalRoot,
+          }))
+          .concat(this.quarantined),
+        version: 2,
+      },
+      null,
+      2,
+    )}\n`;
     try {
       writeFileSync(temporaryPath, payload, { encoding: "utf8", flag: "wx", mode: 0o600 });
       renameSync(temporaryPath, this.statePath);

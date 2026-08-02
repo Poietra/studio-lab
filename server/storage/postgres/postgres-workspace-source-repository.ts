@@ -11,6 +11,7 @@ import {
 import { HttpError } from "../../http/json";
 import { manimTenantIdSchema } from "../../manim-request-principal";
 import { MAX_DURABLE_GC_GRACE_MS_V1, MIN_DURABLE_GC_GRACE_MS_V1 } from "../durable-gc-core";
+import { assertProjectPngReceiptV1 } from "../project-png-storage";
 import {
   assertSourceBlobReceiptV1,
   type BlobDeletionV1,
@@ -24,6 +25,11 @@ import {
 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import {
+  detachProjectPngHeadInTransactionV1,
+  PROJECT_PNG_MIGRATION_V5_CHECKSUM,
+  publishProjectPngHeadInTransactionV1,
+} from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1, PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 import {
   type PostgresStorageObjectLocatorRowV1,
@@ -258,19 +264,21 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     try {
       throwIfAborted(signal);
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 6, 20) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (1, 5, 6, 20) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
-        result.rowCount === 3 &&
+        result.rowCount === 4 &&
         result.rows[0]?.version === 1 &&
         result.rows[0]?.checksum === WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM &&
-        result.rows[1]?.version === 6 &&
-        result.rows[1]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
-        result.rows[2]?.version === 20 &&
-        result.rows[2]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
+        result.rows[1]?.version === 5 &&
+        result.rows[1]?.checksum === PROJECT_PNG_MIGRATION_V5_CHECKSUM &&
+        result.rows[2]?.version === 6 &&
+        result.rows[2]?.checksum === DURABLE_RETENTION_MIGRATION_V6_CHECKSUM &&
+        result.rows[3]?.version === 20 &&
+        result.rows[3]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -528,6 +536,7 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
     const name = projectName(input.name);
     const path = sourcePath(input.source.path);
     const candidate = blobReceipt(tenant, input.source.blob);
+    const projectPng = input.projectPng ? assertProjectPngReceiptV1(tenant, id, input.projectPng) : null;
     try {
       return await this.#connection.transaction(async (client) => {
         await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [
@@ -554,6 +563,14 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
            VALUES ($1, $2, $3, 1, $4)`,
           [tenant, id, path, candidate.digest],
         );
+        if (projectPng) {
+          await publishProjectPngHeadInTransactionV1(client, {
+            candidate: projectPng,
+            current: null,
+            projectId: id,
+            tenantId: tenant,
+          });
+        }
         return projectFromRow(created.rows[0]!);
       }, signal);
     } catch (error) {
@@ -616,12 +633,16 @@ export class PostgresWorkspaceSourceRepositoryV1 implements WorkspaceSourceRepos
       if (references.rowCount !== 0) {
         throw new HttpError("Wait for active workspace work before removing it from Studio.", 409);
       }
-      await client.query(
+      await detachProjectPngHeadInTransactionV1(client, { projectId: id, tenantId: tenant });
+      const deleted = await client.query(
         `UPDATE public.workspace_projects
             SET deleted_at = clock_timestamp(), updated_at = clock_timestamp()
-          WHERE tenant_id = $1 AND project_id = $2`,
+          WHERE tenant_id = $1 AND project_id = $2 AND deleted_at IS NULL`,
         [tenant, id],
       );
+      if (deleted.rowCount !== 1) {
+        throw new Error("The workspace changed before it could be removed from Studio.");
+      }
     }, signal);
   }
 

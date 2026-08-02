@@ -1,16 +1,25 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { digestAssetManifestV1, sceneIrBundleV1Schema } from "../../src/engine/contracts";
+import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import {
+  deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   fastManimSnapshotSceneIdV1,
   parseAndSealFastManimSnapshotProducerJsonV1,
+  parseVerifiedFastManimSnapshotResultV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
   ZERO_SHA256,
 } from "../fast-manim-snapshot-contract";
+import {
+  pngSnapshotBundleFixture,
+  staticSnapshotBundleFixture,
+} from "../test-fixtures/fast-manim-snapshot-bundle-fixture";
+import {
+  immutableSnapshotArtifactObjectKeyV1,
+  parseImmutableSnapshotArtifactReceiptV1,
+} from "./immutable-snapshot-artifact-store";
 import { SnapshotArtifactPublisherV1 } from "./snapshot-artifact-publisher";
 import {
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
@@ -54,56 +63,22 @@ const expected = {
   sourcePath: identity.sourcePath,
 } satisfies ExpectedFastManimSnapshotCorrelationV1;
 
-type FixtureEntity = Record<string, unknown> & { id: string };
+const TRANSFORMED_PNG_SOURCE = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        image = ImageMobject(
+            "image.png",
+            resampling_algorithm=RESAMPLING_ALGORITHMS["nearest"],
+        )
+        self.add(image)
+        image.scale(1.5)
+        image.move_to((1, -2, 0))
+        self.wait(2)
+`;
 
 async function sealedSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {
-  const fixtureUrl = new URL("../test-fixtures/fast-manim-static-bundle.json", import.meta.url);
-  const fixture = JSON.parse(await readFile(fixtureUrl, "utf8")) as {
-    scene: Record<string, unknown> & { entities: FixtureEntity[] };
-  };
-  const namespace = (suffix: string) => `${expectedValue.sceneId}/${suffix}`;
-  const manifestId = namespace("manifest");
-  const manifestDigest = await digestAssetManifestV1({
-    assets: [],
-    manifestDigest: ZERO_SHA256,
-    manifestId,
-    schema: "poietra.asset-manifest",
-    version: 1,
-  });
-  const bundle = sceneIrBundleV1Schema.parse({
-    assets: { assets: [], manifestDigest, manifestId, schema: "poietra.asset-manifest", version: 1 },
-    scene: {
-      ...fixture.scene,
-      animationChannels: [],
-      assetManifest: { manifestDigest, manifestId },
-      entities: fixture.scene.entities.map((entity, index) => ({
-        ...entity,
-        id: namespace(`entity:${index}`),
-        parentId: null,
-        provenanceId: namespace(`provenance:entity:${index}`),
-      })),
-      provenance: [
-        {
-          evidence: ["fast-manim static snapshot"],
-          id: namespace("provenance:scene"),
-          origin: "fast-manim-server-snapshot",
-        },
-        ...fixture.scene.entities.map((_, index) => ({
-          evidence: ["fast-manim static snapshot"],
-          id: namespace(`provenance:entity:${index}`),
-          origin: "fast-manim-server-snapshot",
-        })),
-      ],
-      sceneId: expectedValue.sceneId,
-      source: {
-        kind: "imported-manim-server-snapshot",
-        runtimeConfigHash: expectedValue.runtimeConfigHash,
-        snapshotHash: ZERO_SHA256,
-        snapshotVersion: expectedValue.snapshotVersion,
-        sourceHash: expectedValue.sourceHash,
-      },
-    },
-  });
+  const bundle = await staticSnapshotBundleFixture(expectedValue);
   const { frame: _frame, snapshotVersion: _snapshotVersion, ...wire } = expectedValue;
   const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
     JSON.stringify({
@@ -117,6 +92,32 @@ async function sealedSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelatio
     expectedValue,
   );
   if (sealed.kind !== "compiled") throw new Error("Expected a compiled test snapshot.");
+  return sealed;
+}
+
+async function sealedTransformedPngSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelationV1) {
+  const plan = expectedValue.hermeticPngV4Plan;
+  if (expectedValue.snapshotVersion !== 4 || !plan) throw new Error("Expected one V4 transform plan.");
+  const bundle = await pngSnapshotBundleFixture(expectedValue, { plan });
+  const {
+    frame: _frame,
+    hermeticPngV4Plan: _hermeticPngV4Plan,
+    snapshotVersion: _snapshotVersion,
+    ...wire
+  } = expectedValue;
+  const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
+    JSON.stringify({
+      ...wire,
+      bundle,
+      kind: "compiled",
+      schema: "poietra.fast-manim-snapshot-result",
+      snapshotHash: ZERO_SHA256,
+      version: 1,
+    }),
+    expectedValue,
+    TRANSFORMED_PNG_SOURCE,
+  );
+  if (sealed.kind !== "compiled") throw new Error("Expected a compiled V4 PNG snapshot.");
   return sealed;
 }
 
@@ -374,6 +375,67 @@ describe("SnapshotArtifactPublisherV1", () => {
     const read = await publisher.readCurrent(identity);
     expect(read.kind).toBe("published");
     if (read.kind === "published") expect(read.document.expected.snapshotVersion).toBe(2);
+  });
+
+  it("round-trips a non-empty V4 transform plan and rejects canonical plan tampering during sealed read", async () => {
+    const hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(TRANSFORMED_PNG_SOURCE, expected.sceneName);
+    const expectedV4 = {
+      ...expected,
+      hermeticPngV4Plan,
+      requestId: "snapshot-request-v4",
+      snapshotVersion: 4,
+      sourceHash: createHash("sha256").update(TRANSFORMED_PNG_SOURCE, "utf8").digest("hex"),
+    } as const;
+    expect(hermeticPngV4Plan.transforms.length).toBeGreaterThan(0);
+    artifacts = new MemoryArtifactStore(events, "immutable");
+    publisher = new SnapshotArtifactPublisherV1({ artifacts, publications });
+    const result = await publish({ expected: expectedV4, snapshot: await sealedTransformedPngSnapshot(expectedV4) });
+    if (result.kind !== "published") throw new Error("Expected V4 publication.");
+    const artifact = result.publication.artifact;
+    if (!("identity" in artifact)) throw new Error("Expected an immutable V4 artifact.");
+    const stored = artifacts.bytes.get(artifact.objectGeneration)!;
+    const wire = JSON.parse(Buffer.from(stored).toString("utf8")) as {
+      expected: {
+        hermeticPngV4Plan: {
+          terminalWait: number | null;
+          transforms: Array<{ factor: number; kind: "scale" } | { kind: "move-to"; x: number; y: number }>;
+        };
+      };
+    } & Record<string, unknown>;
+
+    expect(wire.expected.hermeticPngV4Plan).toEqual(hermeticPngV4Plan);
+    expect(Buffer.from(canonicalJsonV1(wire), "utf8").equals(Buffer.from(stored))).toBe(true);
+    await expect(publisher.readCurrent(identity)).resolves.toMatchObject({
+      document: { expected: { hermeticPngV4Plan } },
+      kind: "published",
+    });
+
+    wire.expected.hermeticPngV4Plan.transforms[0] = { factor: 2, kind: "scale" };
+    const tampered = Buffer.from(canonicalJsonV1(wire), "utf8");
+    artifacts.bytes.set(artifact.objectGeneration, tampered);
+    const tamperedIdentity = {
+      ...artifact.identity,
+      resultDigest: createHash("sha256").update(tampered).digest("hex"),
+    };
+    const tamperedArtifact = parseImmutableSnapshotArtifactReceiptV1(TENANT, {
+      ...artifact,
+      byteSize: tampered.byteLength,
+      identity: tamperedIdentity,
+      objectKey: immutableSnapshotArtifactObjectKeyV1(TENANT, tamperedIdentity, artifact.objectGeneration),
+    });
+    publications.head = {
+      kind: "published",
+      publication: { ...result.publication, artifact: tamperedArtifact },
+    };
+
+    await expect(
+      parseVerifiedFastManimSnapshotResultV1(wire.snapshot, wire.expected as ExpectedFastManimSnapshotCorrelationV1),
+    ).rejects.toMatchObject({ code: "profile-violation" });
+    await expect(publisher.readCurrent(identity)).resolves.toEqual({
+      generation: result.publication.generation,
+      kind: "stale",
+      reason: "artifact-corrupt",
+    });
   });
 
   it("keeps a stale-source upload orphan invisible to the caller", async () => {

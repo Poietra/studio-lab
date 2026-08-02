@@ -24,7 +24,7 @@ export type PythonSourceAnalysis = Readonly<{
 
 type StringDelimiter = '"' | "'" | '"""' | "'''";
 
-const PYTHON_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "u"]);
+const PYTHON_STRING_PREFIXES = new Set(["b", "br", "f", "fr", "r", "rb", "rf", "rt", "t", "tr", "u"]);
 
 function indentationWidth(line: string) {
   let width = 0;

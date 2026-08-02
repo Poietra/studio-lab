@@ -2,7 +2,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { cleanupFixtureWorkspace, openWorkspace } from "./workspace";
 
@@ -25,6 +25,16 @@ async function exportedSource(page: Page) {
   const path = await download.path();
   if (!path) throw new Error("The exported source was not persisted by Playwright.");
   return readFile(path, "utf8");
+}
+
+async function exportedSourceBytes(page: Page) {
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export .py" }).click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toMatch(/\.py$/);
+  const path = await download.path();
+  if (!path) throw new Error("The exported source was not persisted by Playwright.");
+  return readFile(path);
 }
 
 async function applyCurrentDraft(page: Page) {
@@ -405,6 +415,102 @@ test("allows a pending workspace mutation dialog to be cancelled", async ({ page
   releaseRequest?.();
   await page.unrouteAll({ behavior: "wait" });
   await expect(page.getByRole("button", { name: "Open Studio Lab workspace" })).toBeVisible();
+});
+
+test("submits one browser-selected Python file with optional image.png and keeps diagnostics beside both pickers", async ({
+  page,
+}) => {
+  const source = "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+  const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  let importBody: Record<string, unknown> | null = null;
+  await page.route("**/api/manim/project-imports", async (route) => {
+    importBody = route.request().postDataJSON() as Record<string, unknown>;
+    await route.fulfill({
+      body: JSON.stringify({ error: "The fixture import was refused." }),
+      contentType: "application/json",
+      status: 422,
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "Add workspace" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add workspace" });
+  await dialog.getByRole("radio", { name: /Import Python/ }).check();
+  const filePicker = dialog.getByLabel("Manim Python file");
+  const imagePicker = dialog.getByLabel("Project image.png (optional)");
+  await expect(filePicker).toHaveAttribute("aria-describedby", "workspace-import-help");
+  await expect(filePicker).toHaveAttribute("aria-invalid", "false");
+  await expect(imagePicker).toHaveAttribute("aria-describedby", "workspace-import-image-help");
+  await expect(imagePicker).toHaveAttribute("aria-invalid", "false");
+  await expect(dialog.getByText(/filename must be exactly image[.]png/)).toBeVisible();
+  await expect(dialog.getByText(/Archives, folders, symlinks, and additional assets/)).toBeVisible();
+  await dialog.getByRole("textbox", { name: "Workspace name" }).fill("Imported fixture");
+  await filePicker.setInputFiles({ buffer: Buffer.from(source), mimeType: "text/x-python", name: "lesson.py" });
+  await imagePicker.setInputFiles({ buffer: imageBytes, mimeType: "image/png", name: "diagram.png" });
+  await dialog.getByRole("button", { name: "Import workspace" }).click();
+  await expect(dialog.getByRole("alert")).toContainText("exact filename image.png");
+  await expect(filePicker).toHaveAttribute("aria-invalid", "false");
+  await expect(imagePicker).toHaveAttribute("aria-invalid", "true");
+  await imagePicker.setInputFiles({ buffer: imageBytes, mimeType: "image/png", name: "image.png" });
+  await expect(dialog.getByRole("alert")).toHaveCount(0);
+  await expect(imagePicker).toHaveAttribute("aria-invalid", "false");
+  const importResponse = page.waitForResponse(
+    (response) => new URL(response.url()).pathname === "/api/manim/project-imports",
+  );
+  await dialog.getByRole("button", { name: "Import workspace" }).click();
+  await importResponse;
+
+  expect(importBody).toEqual({
+    imagePngBase64: imageBytes.toString("base64"),
+    name: "Imported fixture",
+    source,
+    sourceName: "lesson.py",
+  });
+  expect(importBody).not.toHaveProperty("tenantId");
+  expect(importBody).not.toHaveProperty("objectKey");
+  expect(importBody).not.toHaveProperty("imageName");
+  expect(importBody).not.toHaveProperty("imagePath");
+  await expect(dialog.getByRole("alert")).toContainText("fixture import was refused");
+  await expect(filePicker).toHaveAttribute("aria-describedby", "workspace-import-help");
+  await expect(filePicker).toHaveAttribute("aria-invalid", "false");
+  await expect(imagePicker).toHaveAttribute("aria-describedby", "workspace-import-image-help");
+  await expect(imagePicker).toHaveAttribute("aria-invalid", "false");
+});
+
+test("opens and byte-preserves a browser-imported Python file through export", async ({ page }) => {
+  const sourceBytes = Buffer.from(
+    "\ufefffrom manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+    "utf8",
+  );
+  let projectId: string | null = null;
+  try {
+    await page.goto("/");
+    await page.getByRole("button", { name: "Add workspace" }).click();
+    const dialog = page.getByRole("dialog", { name: "Add workspace" });
+    await dialog.getByRole("radio", { name: /Import Python/ }).check();
+    await dialog.getByRole("textbox", { name: "Workspace name" }).fill("Imported byte fixture");
+    await dialog.getByLabel("Manim Python file").setInputFiles({
+      buffer: sourceBytes,
+      mimeType: "text/x-python",
+      name: "lesson.py",
+    });
+    const importResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" && new URL(response.url()).pathname === "/api/manim/project-imports",
+    );
+    await dialog.getByRole("button", { name: "Import workspace" }).click();
+    const importResponse = await importResponsePromise;
+    const imported = (await importResponse.json()) as { project: { id: string } };
+    projectId = imported.project.id;
+
+    await expect(page.getByLabel("Current workspace")).toHaveText("Imported byte fixture");
+    await expect(page.getByRole("combobox", { name: "Active imported Scene" })).toContainText(
+      "lesson.py · ImportedScene",
+    );
+    await expect(exportedSourceBytes(page)).resolves.toEqual(sourceBytes);
+  } finally {
+    if (projectId) await cleanupFixtureWorkspace(page.request, { projectId });
+  }
 });
 
 test("creates, persists, renames, and deletes a browser-managed workspace", async ({ page }) => {

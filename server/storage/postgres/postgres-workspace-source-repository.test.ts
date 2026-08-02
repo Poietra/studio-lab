@@ -1,10 +1,12 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
-import { immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
+import { immutableProjectPngObjectKeyV1, immutableSourceBlobObjectKeyV1 } from "../immutable-source-png-storage";
+import type { ProjectPngBlobReceiptV1 } from "../project-png-storage";
 import type { SourceBlobReceiptV1 } from "../workspace-source-repository";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
+import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 import {
   PostgresWorkspaceSourceRepositoryV1,
@@ -18,6 +20,8 @@ const ORPHANED_AT = new Date("2026-01-01T00:00:00.000Z");
 const GRACE_MS = 60_000;
 const OBJECT_GENERATION = "123e4567-e89b-42d3-a456-426614174000";
 const FRESH_OBJECT_GENERATION = "223e4567-e89b-42d3-a456-426614174001";
+const PNG_DIGEST = "b".repeat(64);
+const PNG_OBJECT_GENERATION = "323e4567-e89b-42d3-a456-426614174002";
 
 function receipt(): SourceBlobReceiptV1 {
   return {
@@ -52,6 +56,31 @@ function blobRow(overrides: Record<string, unknown> = {}, blob: SourceBlobReceip
   };
 }
 
+function pngReceipt(): ProjectPngBlobReceiptV1 {
+  return {
+    byteSize: 96,
+    digest: PNG_DIGEST,
+    etag: '"png-etag"',
+    objectGeneration: PNG_OBJECT_GENERATION,
+    objectKey: immutableProjectPngObjectKeyV1(TENANT, "project-png", PNG_DIGEST, PNG_OBJECT_GENERATION),
+  };
+}
+
+function pngRow() {
+  const png = pngReceipt();
+  return {
+    byte_size: png.byteSize,
+    digest: png.digest,
+    etag: png.etag,
+    generation: "1",
+    object_generation: PNG_OBJECT_GENERATION,
+    object_key: png.objectKey,
+    project_id: "project-png",
+    tenant_id: TENANT,
+    version_id: null,
+  };
+}
+
 type QueryResult = Readonly<{ rowCount: number | null; rows: readonly unknown[] }>;
 
 function fakePool(handle: (text: string, values: readonly unknown[]) => QueryResult | Promise<QueryResult>) {
@@ -77,13 +106,14 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => QueryRes
 }
 
 describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
-  it("requires workspace, retention, and immutable-locator schema migrations", async () => {
+  it("requires workspace, project PNG, retention, and immutable-locator schema migrations", async () => {
     const fixture = fakePool((text) => {
-      expect(text).toContain("version IN (1, 6, 20)");
+      expect(text).toContain("version IN (1, 5, 6, 20)");
       return {
-        rowCount: 3,
+        rowCount: 4,
         rows: [
           { checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM, version: 1 },
+          { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
           { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
           { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
         ],
@@ -226,6 +256,122 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
     expect(updates).toHaveLength(1);
   });
 
+  it("publishes project, source head, and initial image.png head in one transaction", async () => {
+    const png = pngReceipt();
+    const writes: string[] = [];
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) return { rowCount: 1, rows: [{}] };
+      if (text.startsWith("SELECT count(*)")) return { rowCount: 1, rows: [{ count: "0" }] };
+      if (text.startsWith("SELECT 1 FROM public.source_blob_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.source_blob_objects")) return { rowCount: 1, rows: [blobRow()] };
+      if (text.includes("FROM public.source_blob_objects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [blobRow({ orphaned_at: null })] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        writes.push("project");
+        const now = new Date();
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              created_at: now,
+              display_name: "PNG workspace",
+              project_id: "project-png",
+              tenant_id: TENANT,
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_source_heads")) {
+        writes.push("source-head");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("SELECT 1 FROM public.project_png_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.project_png_objects")) {
+        writes.push("png-object");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) {
+        writes.push("png-generation");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_heads")) {
+        expect(text).not.toContain("ON CONFLICT");
+        writes.push("png-head");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.project_png_heads h")) return { rowCount: 1, rows: [pngRow()] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.createManagedProject({
+        name: "PNG workspace",
+        projectId: "project-png",
+        projectPng: png,
+        source: { blob: receipt(), path: "scene.py" },
+        tenantId: TENANT,
+      }),
+    ).resolves.toMatchObject({ projectId: "project-png" });
+    expect(writes).toEqual(["project", "source-head", "png-object", "png-generation", "png-head"]);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
+  it("rolls the project and source head back when initial image.png publication fails", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) return { rowCount: 1, rows: [{}] };
+      if (text.startsWith("SELECT count(*)")) return { rowCount: 1, rows: [{ count: "0" }] };
+      if (text.startsWith("SELECT 1 FROM public.source_blob_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.source_blob_objects")) return { rowCount: 1, rows: [blobRow()] };
+      if (text.includes("FROM public.source_blob_objects") && text.includes("FOR UPDATE")) {
+        return { rowCount: 1, rows: [blobRow({ orphaned_at: null })] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        const now = new Date();
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              created_at: now,
+              display_name: "PNG workspace",
+              project_id: "project-png",
+              tenant_id: TENANT,
+              updated_at: now,
+            },
+          ],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_source_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("SELECT 1 FROM public.project_png_deletions")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("INSERT INTO public.project_png_objects")) return { rowCount: 1, rows: [] };
+      if (text.includes("FROM public.project_png_objects") && text.includes("FOR KEY SHARE")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("INSERT INTO public.project_png_generations")) throw new Error("png head fault");
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.createManagedProject({
+        name: "PNG workspace",
+        projectId: "project-png",
+        projectPng: pngReceipt(),
+        source: { blob: receipt(), path: "scene.py" },
+        tenantId: TENANT,
+      }),
+    ).rejects.toThrow("png head fault");
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+    expect(fixture.query.mock.calls.some(([text]) => text === "COMMIT")).toBe(false);
+  });
+
   it("reuses and resurrects the canonical receipt when the same digest arrives under a fresh generation", async () => {
     const canonical = immutableReceipt(OBJECT_GENERATION, '"canonical"');
     const candidate = immutableReceipt(FRESH_OBJECT_GENERATION, '"fresh"');
@@ -302,6 +448,92 @@ describe("PostgresWorkspaceSourceRepositoryV1 source retention", () => {
         tenantId: TENANT,
       }),
     ).rejects.toThrow("The stored source blob metadata conflicts with its digest.");
+  });
+
+  it("detaches an image.png head before soft-deleting its locked workspace", async () => {
+    const actions: string[] = [];
+    const fixture = fakePool((text, values) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        actions.push("project-lock");
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) {
+        actions.push("reference-check");
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        expect(text).toContain("FOR UPDATE OF h");
+        actions.push("png-head-lock");
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) {
+        expect(values).toEqual([TENANT, "project-png", "1", PNG_DIGEST]);
+        actions.push("png-head-detach");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.project_png_generations g")) {
+        expect(text).toContain("FROM public.render_sessions s");
+        actions.push("png-orphan");
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.startsWith("UPDATE public.workspace_projects")) {
+        expect(text).toContain("deleted_at IS NULL");
+        actions.push("project-delete");
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).resolves.toBeUndefined();
+    expect(actions).toEqual([
+      "project-lock",
+      "reference-check",
+      "png-head-lock",
+      "png-head-detach",
+      "png-orphan",
+      "project-delete",
+    ]);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["COMMIT"]);
+  });
+
+  it("does not inspect or mutate image.png state when workspace references block deletion", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) return { rowCount: 1, rows: [{}] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).rejects.toMatchObject({ status: 409 });
+    expect(fixture.query.mock.calls.some(([text]) => text.includes("project_png_heads"))).toBe(false);
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+  });
+
+  it("rolls image.png detachment back when the final workspace delete loses its row", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("SELECT project_id FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ project_id: "project-png" }] };
+      }
+      if (text.includes("FROM public.workspace_project_references")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT h.tenant_id") && text.includes("FROM public.project_png_heads h")) {
+        return { rowCount: 1, rows: [pngRow()] };
+      }
+      if (text.startsWith("DELETE FROM public.project_png_heads")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("UPDATE public.project_png_generations g")) return { rowCount: 1, rows: [] };
+      if (text.startsWith("UPDATE public.workspace_projects")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresWorkspaceSourceRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.softDeleteProject(TENANT, "project-png")).rejects.toThrow("workspace changed");
+    expect(fixture.query.mock.calls.some(([text]) => text.startsWith("DELETE FROM public.project_png_heads"))).toBe(
+      true,
+    );
+    expect(fixture.query.mock.calls.at(-1)).toEqual(["ROLLBACK"]);
+    expect(fixture.query.mock.calls.some(([text]) => text === "COMMIT")).toBe(false);
   });
 
   it("queues an immutable upload with its exact application generation", async () => {
