@@ -9,7 +9,7 @@ export default defineConfig({
   projects: [{ name: "account-production-chromium", use: { browserName: "chromium" } }],
   reporter: "line",
   testDir: "./e2e",
-  testMatch: "account-session.production.ts",
+  testMatch: ["account-session.production.ts", "editor-cloud-session.production.ts"],
   use: {
     baseURL,
     ignoreHTTPSErrors: true,
