@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { Readable } from "node:stream";
 
 import { calculatePKCECodeChallenge } from "openid-client";
+import { Pool } from "pg";
 import type { Plugin } from "vite";
 import { createAccountSessionIdentityAuthenticatorV1 } from "../server/accounts/account-session-authenticator";
 import {
@@ -36,31 +37,22 @@ import type {
 } from "../server/accounts/organization-membership-repository";
 import type { ManimApi } from "../server/manim-api";
 import { type ProductionManimServer, startProductionManimServer } from "../server/manim-production-server";
-import { importManimScene } from "../src/render-pipeline/source-import";
-import { AccountEditorDocumentMemoryRepositoryV1 } from "./editor-document-memory-repository";
+import { applyBundledDurableStorageMigrations } from "../server/storage/postgres/migrate";
+import { PostgresEditorDocumentRepositoryV1 } from "../server/storage/postgres/postgres-editor-document-repository";
+import {
+  ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1,
+  ACCOUNT_E2E_BILLING_ORGANIZATION_ID as BILLING_ORGANIZATION_ID,
+  ACCOUNT_E2E_IDENTITY as IDENTITY,
+  ACCOUNT_E2E_IMPORTED_SCENE as IMPORTED_SCENE,
+  ACCOUNT_E2E_PROJECT_ID as PROJECT_ID,
+  ACCOUNT_E2E_SCENE_NAME as SCENE_NAME,
+  ACCOUNT_E2E_SOURCE as SOURCE,
+  ACCOUNT_E2E_SOURCE_PATH as SOURCE_PATH,
+  ACCOUNT_E2E_STUDIO_ORGANIZATION_ID as STUDIO_ORGANIZATION_ID,
+  ACCOUNT_E2E_USER_ID as USER_ID,
+} from "./account-production-fixture";
 
-const BILLING_ORGANIZATION_ID = "billing-team";
-const STUDIO_ORGANIZATION_ID = "editor-team";
-const USER_ID = "2f2e3ea4-88de-4f37-81f7-1860d8f942f8";
-const IDENTITY = Object.freeze({ issuer: "https://identity.e2e.invalid", subject: "account-e2e-user" });
-const PROJECT_ID = "production-demo";
-const SOURCE_PATH = "scene.py";
-const SCENE_NAME = "ProductionScene";
-const SOURCE = `from manim import *
-
-class ProductionScene(Scene):
-    def construct(self):
-        equation = MathTex("E", "=", "m", "c^2")
-        self.play(Write(equation), run_time=1)
-        # poietra:anchor 1.000
-        self.wait(7)
-`;
-const IMPORTED_SCENE = importManimScene(SOURCE, SOURCE_PATH, SCENE_NAME);
-if (!IMPORTED_SCENE) throw new TypeError("The account E2E Scene fixture could not be imported.");
-if (!IMPORTED_SCENE.anchors.some((anchor) => Math.abs(anchor - 1) < 0.0005)) {
-  throw new TypeError("The account E2E Scene fixture must expose its one-second authoring anchor.");
-}
-const SOURCE_HASH = IMPORTED_SCENE.sourceHash;
+const SOURCE_HASH = ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1.sourceHash;
 const ORGANIZATIONS = Object.freeze([
   Object.freeze({ displayName: "Billing Team", id: BILLING_ORGANIZATION_ID, role: "billing" as const }),
   Object.freeze({ displayName: "Studio Team", id: STUDIO_ORGANIZATION_ID, role: "member" as const }),
@@ -443,11 +435,17 @@ function proxyManimRequest(
   request.pipe(proxy);
 }
 
-export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
+export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl: string): Plugin {
   return {
     name: "poietra-account-production-e2e",
     apply: "serve",
     async configurePreviewServer(preview) {
+      const migrationPool = new Pool({ connectionString: databaseUrl, max: 1 });
+      try {
+        await applyBundledDurableStorageMigrations(migrationPool);
+      } finally {
+        await migrationPool.end();
+      }
       const authority = new AccountMemoryAuthority();
       const provider = new FakeOidcProvider(publicOrigin);
       const loginService = createOidcLoginServiceV1({
@@ -460,12 +458,8 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
       const loginHandler = createOidcLoginFetchHandlerV1(loginService, publicOrigin);
       const sessionHandler = createAccountSessionFetchHandlerV1(authority, publicOrigin);
       const actionHandler = createAccountSessionActionFetchHandlerV1(authority, publicOrigin);
-      const editorDocuments = new AccountEditorDocumentMemoryRepositoryV1({
-        projectId: PROJECT_ID,
-        sourceHash: SOURCE_HASH,
-        sourcePath: SOURCE_PATH,
-        subjectId: USER_ID,
-        tenantId: STUDIO_ORGANIZATION_ID,
+      const editorDocuments = new PostgresEditorDocumentRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
       });
       const productionServer = await startProductionManimServer({
         admission: createOrganizationMembershipProductionAdmissionV1({
@@ -513,24 +507,6 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
           if (url.pathname === "/__e2e/account/metrics") {
             response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" });
             response.end(JSON.stringify({ activeSessionCount: authority.sessions.size, manimRequests: manimEvidence }));
-            return;
-          }
-          if (url.pathname === "/__e2e/editor/reset") {
-            if (request.method !== "POST") {
-              response.writeHead(405, { allow: "POST" }).end();
-              return;
-            }
-            editorDocuments.reset();
-            response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" });
-            response.end(
-              JSON.stringify({
-                organizationId: STUDIO_ORGANIZATION_ID,
-                projectId: PROJECT_ID,
-                sceneId: IMPORTED_SCENE.sceneId,
-                sourceHash: SOURCE_HASH,
-                userId: USER_ID,
-              }),
-            );
             return;
           }
           if (url.pathname.startsWith("/auth/oidc/")) {
