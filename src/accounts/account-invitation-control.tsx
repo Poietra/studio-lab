@@ -1,4 +1,5 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import { createAccountInvitationV1 } from "./account-invitation-client";
 import type { AccountInvitationCreateResponseV1, AccountInvitationRoleV1 } from "./account-invitation-contract";
@@ -29,12 +30,24 @@ export function AccountInvitationControl({ disabled = false }: Readonly<{ disabl
   const [state, setState] = useState<InvitationControlStateV1>(INITIAL_STATE_V1);
   const request = useRef<AbortController | null>(null);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    const clearForPageHide = () => {
       request.current?.abort();
-    },
-    [],
-  );
+      request.current = null;
+      flushSync(() => {
+        setEmail("");
+        setRole("member");
+        setState(INITIAL_STATE_V1);
+        setOpen(false);
+      });
+    };
+    window.addEventListener("pagehide", clearForPageHide);
+    return () => {
+      window.removeEventListener("pagehide", clearForPageHide);
+      request.current?.abort();
+      request.current = null;
+    };
+  }, []);
 
   const close = () => {
     request.current?.abort();

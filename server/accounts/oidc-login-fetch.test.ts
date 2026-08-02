@@ -40,7 +40,7 @@ describe("OIDC login Fetch handler", () => {
       `${OIDC_LOGIN_BINDING_COOKIE_NAME_V1}=${token}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=600`,
     ]);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(service.start).toHaveBeenCalledOnce();
+    expect(service.start).toHaveBeenCalledWith({}, expect.any(AbortSignal));
   });
 
   it("starts an invitation with 303 and never forwards the raw token to the provider URL", async () => {
@@ -118,6 +118,7 @@ describe("OIDC login Fetch handler", () => {
     ]);
 
     expect(responses.map(({ status }) => status)).toEqual([404, 403, 400, 405]);
+    expect(responses[3]?.headers.get("allow")).toBe("GET, POST");
     expect(service.start).not.toHaveBeenCalled();
     expect(service.complete).not.toHaveBeenCalled();
   });
@@ -175,6 +176,33 @@ describe("OIDC login Fetch handler", () => {
 
     const responses = await Promise.all(requests.map((request) => handler.fetch(request)));
     expect(responses.map(({ status }) => status)).toEqual([400, 400, 400, 400]);
+    expect(service.start).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid UTF-8 and a declared native-form length that does not match the body", async () => {
+    const { handler, service } = fixture();
+    const responses = await Promise.all([
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: new Uint8Array([0xff]),
+          headers: { "content-type": "application/x-www-form-urlencoded", origin },
+          method: "POST",
+        }),
+      ),
+      handler.fetch(
+        new Request(`${origin}${OIDC_LOGIN_START_ROUTE_V1}`, {
+          body: `invitationToken=${token}`,
+          headers: {
+            "content-length": "1",
+            "content-type": "application/x-www-form-urlencoded",
+            origin,
+          },
+          method: "POST",
+        }),
+      ),
+    ]);
+
+    expect(responses.map(({ status }) => status)).toEqual([400, 400]);
     expect(service.start).not.toHaveBeenCalled();
   });
 

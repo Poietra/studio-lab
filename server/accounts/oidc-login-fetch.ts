@@ -103,7 +103,7 @@ export function createOidcLoginFetchRequestGuardV1(publicOriginValue: string): O
         if (request.method !== "GET" && request.method !== "POST") {
           return errorResponse(405, "Method not allowed.", false, "GET, POST");
         }
-        if ([...url.searchParams].length > 0) return errorResponse(400, "Authentication request is invalid.");
+        if (url.search || url.hash) return errorResponse(400, "Authentication request is invalid.");
         if (request.method === "POST" && !validInvitationStartRequest(request, publicOrigin)) {
           return invalidInvitationStartResponse(request);
         }
@@ -210,6 +210,7 @@ function canonicalInvitationToken(value: unknown) {
 async function readInvitationStart(request: Request) {
   const reader = request.body?.getReader();
   if (!reader) return null;
+  const declaredLength = contentLength(request);
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
@@ -227,6 +228,7 @@ async function readInvitationStart(request: Request) {
   } finally {
     reader.releaseLock();
   }
+  if (declaredLength !== null && total !== declaredLength) return null;
   const bytes = new Uint8Array(total);
   let offset = 0;
   for (const chunk of chunks) {
@@ -265,7 +267,7 @@ export function createOidcLoginFetchHandlerV1(
       const url = new URL(request.url);
 
       if (url.pathname === OIDC_LOGIN_START_ROUTE_V1) {
-        if ([...url.searchParams].length > 0) return errorResponse(400, "Authentication request is invalid.");
+        if (url.search || url.hash) return errorResponse(400, "Authentication request is invalid.");
         if (!sameOriginStart(request, publicOrigin)) {
           return errorResponse(403, "Authentication could not be started.");
         }

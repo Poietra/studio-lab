@@ -14,9 +14,11 @@ export function AccountInvitationSignInForm() {
     // request body. Clear only the DOM copy, leaving the submitted FormData
     // intact and preventing BFCache/history restoration of the raw token.
     form.addEventListener("formdata", clearSecret);
+    window.addEventListener("pagehide", clearSecret);
     window.addEventListener("pageshow", clearSecret);
     return () => {
       form.removeEventListener("formdata", clearSecret);
+      window.removeEventListener("pagehide", clearSecret);
       window.removeEventListener("pageshow", clearSecret);
       clearSecret();
     };
