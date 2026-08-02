@@ -20,6 +20,7 @@ import { EDIT_OPERATION_VERSION } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
+  type StudioPreviewSourceRuntimeIdentityV1,
   type StudioPreviewSourceRuntimeMappingV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
@@ -489,7 +490,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     ).toEqual([]);
   });
 
-  it("makes unverified V6 identity display-only and admits only mapped runtime hit targets", async () => {
+  it("keeps V6 partially interactive but requires complete V7 identity authority", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;
     if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
@@ -530,6 +531,20 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       expect(authority).toEqual(expectedAuthority);
       expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
     }
+
+    const v7 = (identity: StudioPreviewSourceRuntimeIdentityV1 | null) =>
+      ({
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 7 } },
+        },
+        sourceRuntimeIdentity: identity,
+      }) as StudioVerifiedPreviewSnapshotV1;
+    expect(studioPreviewInteractionAuthorityV1(v7(null))).toEqual(displayOnly);
+    expect(studioPreviewInteractionAuthorityV1(v7(new Map()))).toEqual(displayOnly);
+    expect(studioPreviewInteractionAuthorityV1(v7(partialIdentity))).toEqual({ kind: "interactive" });
+    expect(studioPreviewInteractionAuthorityV1(v7(fullIdentity))).toEqual(displayOnly);
   });
 });
 

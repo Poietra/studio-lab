@@ -84,6 +84,31 @@ class ImageScene(Scene):
         self.add(image)
 `;
 
+const mixedDynamicSceneSource = `from manim import BLUE, YELLOW, Circle, Create, CubicBezier, MathTex, MoveAlongPath, Scene, linear
+
+class MixedMathDemo(Scene):
+    def construct(self):
+        equation = MathTex(r"E = mc^2")
+        ring = (
+            Circle(radius=1.2)
+            .set_fill(opacity=0)
+            .set_stroke(BLUE, width=24)
+            .shift([-3, 0, 0])
+        )
+        particle = (
+            Circle(radius=0.2)
+            .set_fill(YELLOW, opacity=1)
+            .set_stroke(width=0)
+            .move_to([1, -1, 0])
+        )
+        path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
+
+        self.add(equation)
+        self.play(Create(ring, rate_func=linear), run_time=1)
+        self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)
+        self.wait(1, frozen_frame=True)
+`;
+
 const imagePngBytes = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAEUlEQVR4nGP4z8Dwn4HhvwMADzoDPsGQfWoAAAAASUVORK5CYII=",
   "base64",
@@ -111,7 +136,7 @@ async function temporaryProject(fileName: string, source: string) {
 
 function createRealRunner(
   projectRoot: string,
-  snapshotVersion: 1 | 2 | 4 = 1,
+  snapshotVersion: 1 | 2 | 4 | 7 = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
 ) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
@@ -141,6 +166,61 @@ function createRealRunner(
 const realSeamEnabled = Boolean(producerCommand) && ManimSourceStore.supportsVerifiedRead;
 
 describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration", () => {
+  it("seals and republishes the real V7 mixed MathTex/Create/MoveAlongPath Scene with complete identity", {
+    timeout: 300_000,
+  }, async () => {
+    const sourcePath = "mixed-dynamic.py";
+    const sceneName = "MixedMathDemo";
+    const projectRoot = await temporaryProject(sourcePath, mixedDynamicSceneSource);
+    const runner = createRealRunner(projectRoot, 7);
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-request-v7",
+        sceneName,
+        sourcePath,
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified V7 mixed snapshot, got ${JSON.stringify(view)}`);
+    }
+
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    expect(bundle.scene).toMatchObject({
+      duration: 4,
+      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation", "path-trim-animation"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 7 },
+    });
+    expect(bundle.scene.entities).toHaveLength(3);
+    expect(bundle.scene.animationChannels).toHaveLength(2);
+    expect(bundle.scene.animationChannels[0]).toMatchObject({
+      entityId: `${view.snapshot.sceneId}/entity:1`,
+      keyframes: [
+        { at: 0, value: 0 },
+        { at: 1, value: 1 },
+      ],
+      kind: "path-trim",
+    });
+    expect(bundle.scene.animationChannels[1]).toMatchObject({
+      entityId: `${view.snapshot.sceneId}/entity:2`,
+      keyframes: [{ at: 1 }, { at: 3 }],
+      kind: "motion-path",
+    });
+    expect(
+      view.sourceRuntimeIdentity?.mappings.map(({ binding, entityId }) => ({ entityId, name: binding.name })),
+    ).toEqual([
+      { entityId: `${view.snapshot.sceneId}/entity:0`, name: "equation" },
+      { entityId: `${view.snapshot.sceneId}/entity:1`, name: "ring" },
+      { entityId: `${view.snapshot.sceneId}/entity:2`, name: "particle" },
+    ]);
+    expect(view.sourceRuntimeIdentity?.mappings.some(({ binding }) => binding.name === "path")).toBe(false);
+
+    const fetched = await runner.snapshot({ sceneName, sourcePath });
+    expect(fetched.status).toBe("verified");
+    if (fetched.status !== "verified") throw new Error("Expected the published V7 snapshot to re-verify.");
+    expect(fetched.sourceRuntimeIdentity).toEqual(view.sourceRuntimeIdentity);
+  });
+
   it("seals one real ImageMobject against the exact PNG bytes sent to its private sandbox", {
     timeout: 300_000,
   }, async () => {

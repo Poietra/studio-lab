@@ -12,6 +12,7 @@ import { analyzePythonSource, isPythonStatementStart } from "../src/render-pipel
 import { findSourceSceneBlock } from "../src/render-pipeline/source-import";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
+  FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7,
   FastManimSnapshotContractError,
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedFastManimSnapshotResultV1,
@@ -138,6 +139,7 @@ function bindingIdentifier(
 }
 
 type SourceBindingLookup = Readonly<{
+  constructors: ReadonlyMap<string, string>;
   studioSites: ReadonlySet<string>;
   tokens: ReadonlySet<string>;
 }>;
@@ -168,6 +170,24 @@ const STUDIO_SUPPORTED_CONSTRUCTORS_V6 = new Set([
   "Triangle",
 ]);
 
+const STUDIO_SUPPORTED_CONSTRUCTORS_V7 = new Set(["Circle", "Line", "MathTex", "Rectangle"]);
+
+/**
+ * Exact producer-owned runtime classes admitted by mixed dynamic V7.
+ *
+ * Constructor spelling alone is not runtime identity: without this binding a
+ * producer could pair a lexical Rectangle claim with a Circle record (or a
+ * normal, non-hermetic MathTex) while still satisfying the broad V7 role
+ * check. Keep this table closed and fully qualified so subclasses, aliases,
+ * and cross-vector substitutions fail closed.
+ */
+const STUDIO_RUNTIME_TYPES_BY_CONSTRUCTOR_V7: ReadonlyMap<string, string> = new Map([
+  ["Circle", "manim.mobject.geometry.arc.Circle"],
+  ["Line", "manim.mobject.geometry.line.Line"],
+  ["MathTex", "manim.renderer._scene_snapshot.mathtex.HermeticMathTexSnapshotMobject"],
+  ["Rectangle", "manim.mobject.geometry.polygram.Rectangle"],
+] as const);
+
 function studioSupportsConstructor(
   constructor: string,
   snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
@@ -178,6 +198,7 @@ function studioSupportsConstructor(
   if (snapshotVersion === 5) return false;
   if (snapshotVersion === 4) return constructor === "ImageMobject";
   if (snapshotVersion === 6) return STUDIO_SUPPORTED_CONSTRUCTORS_V6.has(constructor);
+  if (snapshotVersion === 7) return STUDIO_SUPPORTED_CONSTRUCTORS_V7.has(constructor);
   return STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor);
 }
 
@@ -207,6 +228,36 @@ function topLevelAssignmentOperators(code: string) {
     }
   }
   return count;
+}
+
+function unwrapDirectParenthesizedExpression(source: string) {
+  let expression = source.trim();
+  while (expression.startsWith("(")) {
+    const stack: string[] = [];
+    let closesAt = -1;
+    for (let index = 0; index < expression.length; index += 1) {
+      const character = expression[index]!;
+      if (character === "(" || character === "[" || character === "{") {
+        stack.push(character);
+        continue;
+      }
+      if (character !== ")" && character !== "]" && character !== "}") continue;
+      const expected = character === ")" ? "(" : character === "]" ? "[" : "{";
+      if (stack.pop() !== expected) return null;
+      if (stack.length === 0) {
+        closesAt = index;
+        break;
+      }
+    }
+    if (closesAt !== expression.length - 1) break;
+    expression = expression.slice(1, -1).trim();
+  }
+  return expression;
+}
+
+function directConstructorName(source: string) {
+  const expression = unwrapDirectParenthesizedExpression(source);
+  return expression?.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
 }
 
 function bracketContinuedStatementCode(
@@ -249,6 +300,7 @@ function buildSourceBindingLookup(
   const sourceLines = sourceText.split(/\r?\n/);
   const tokens = new Set<string>();
   const studioCandidates = new Set<string>();
+  const studioConstructors = new Map<string, string>();
   const identifierPattern = /(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*/gu;
   for (const [lineIndex, line] of analysis.lines.entries()) {
     identifierPattern.lastIndex = 0;
@@ -272,7 +324,7 @@ function buildSourceBindingLookup(
     const line = analysis.lines[lineIndex];
     if (!line || !isPythonStatementStart(line)) continue;
     let code = line.code;
-    if (snapshotVersion === 6) {
+    if (snapshotVersion === 6 || snapshotVersion === 7) {
       const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
       if (continuedCode === null) {
         proofComplete = false;
@@ -296,14 +348,16 @@ function buildSourceBindingLookup(
     if (
       assignments !== 1 ||
       !direct ||
-      (snapshotVersion !== 6 && (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
+      (snapshotVersion !== 6 &&
+        snapshotVersion !== 7 &&
+        (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
     ) {
       proofComplete = false;
       continue;
     }
     bindingOrdinal += 1;
     const name = direct[1]!;
-    const constructor = code.slice(direct[0].length).match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
+    const constructor = directConstructorName(code.slice(direct[0].length));
     if (
       line.indentation !== sourceBlock.bodyIndent ||
       constructor === undefined ||
@@ -321,9 +375,15 @@ function buildSourceBindingLookup(
       startColumn,
       startLine: lineIndex + 1,
     };
-    studioCandidates.add(sourceBindingKey({ name, ordinal: bindingOrdinal, span }));
+    const key = sourceBindingKey({ name, ordinal: bindingOrdinal, span });
+    studioCandidates.add(key);
+    studioConstructors.set(key, constructor);
   }
-  return { studioSites: proofComplete ? studioCandidates : new Set<string>(), tokens } satisfies SourceBindingLookup;
+  return {
+    constructors: proofComplete ? studioConstructors : new Map<string, string>(),
+    studioSites: proofComplete ? studioCandidates : new Set<string>(),
+    tokens,
+  } satisfies SourceBindingLookup;
 }
 
 function parseBinding(
@@ -331,7 +391,7 @@ function parseBinding(
   sourceBindings: SourceBindingLookup,
   sourceHash: string,
   sceneId: string,
-): Readonly<{ binding: SourceBindingV1; studioSupported: boolean }> {
+): Readonly<{ binding: SourceBindingV1; constructor: string | null; studioSupported: boolean }> {
   requireIdentity(
     isPlainObject(value) && exactFields(value, ["id", "name", "ordinal", "span"]),
     "A source binding has unsupported fields.",
@@ -360,9 +420,11 @@ function parseBinding(
     sourceBindings.tokens.has(sourceTokenKey(binding)),
     "A source binding span is not one exact Python Name token.",
   );
+  const key = sourceBindingKey(binding);
   return {
     binding,
-    studioSupported: sourceBindings.studioSites.has(sourceBindingKey(binding)),
+    constructor: sourceBindings.constructors.get(key) ?? null,
+    studioSupported: sourceBindings.studioSites.has(key),
   };
 }
 
@@ -466,6 +528,13 @@ function validatePublishedMap(
     bindings.add(mapping.binding.id);
     entityIds.add(mapping.entityId);
   }
+  const source = snapshot.bundle.scene.source;
+  if (source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 7) {
+    requireIdentity(
+      entityIds.size === entities.size,
+      "Mixed dynamic profile V7 requires one verified source/runtime mapping for every Scene entity.",
+    );
+  }
   return map;
 }
 
@@ -475,6 +544,25 @@ export function parseVerifiedSourceRuntimeIdentityMapV1(
   snapshot: VerifiedCompiledFastManimSnapshotResultV1,
 ) {
   return validatePublishedMap(value, snapshot);
+}
+
+/** Enforces profile-level identity publication requirements after snapshot sealing and on every durable read. */
+export function assertFastManimSnapshotIdentityAuthorityV1(
+  snapshot: VerifiedFastManimSnapshotResultV1,
+  identity: VerifiedSourceRuntimeIdentityMapV1 | null,
+) {
+  if (
+    snapshot.kind !== "compiled" ||
+    snapshot.bundle.scene.source.kind !== "imported-manim-server-snapshot" ||
+    snapshot.bundle.scene.source.snapshotVersion !== 7
+  ) {
+    return;
+  }
+  requireIdentity(
+    identity !== null,
+    "Mixed dynamic profile V7 requires complete source/runtime identity evidence before publication.",
+  );
+  validatePublishedMap(identity, snapshot);
 }
 
 /**
@@ -541,6 +629,16 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     sourceBlock,
     input.expected.snapshotVersion,
   );
+  let mixedDynamicMathTexEntityId: string | null = null;
+  if (input.expected.snapshotVersion === 7 && input.snapshot.kind === "compiled") {
+    const compiledSnapshot = input.snapshot;
+    const candidates = compiledSnapshot.bundle.scene.entities.filter((entity) => {
+      const evidence = compiledSnapshot.bundle.scene.provenance.find(({ id }) => id === entity.provenanceId)?.evidence;
+      return evidence?.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7;
+    });
+    requireIdentity(candidates.length === 1, "Mixed dynamic profile V7 has ambiguous MathTex identity authority.");
+    mixedDynamicMathTexEntityId = candidates[0]!.id;
+  }
 
   const seenMemberships = new Set<string>();
   const activeBindingNames = new Set<string>();
@@ -632,7 +730,8 @@ export function verifyFastManimSourceRuntimeIdentityV1(
       Array.isArray(recordValue.bindings) && recordValue.bindings.length <= MAX_BINDINGS_PER_ENTITY,
       "Source binding history is unbounded.",
     );
-    const active: Array<Readonly<{ binding: SourceBindingV1; studioSupported: boolean }>> = [];
+    const active: Array<Readonly<{ binding: SourceBindingV1; constructor: string | null; studioSupported: boolean }>> =
+      [];
     let lastBoundSequence = 0;
     for (const claim of recordValue.bindings) {
       totalClaims += 1;
@@ -692,6 +791,24 @@ export function verifyFastManimSourceRuntimeIdentityV1(
       requireIdentity(active.length === 1 && reasons.length === 0, "Mapped evidence must be one-to-one.");
       const activeClaim = active[0]!;
       const { binding } = activeClaim;
+      if (input.expected.snapshotVersion === 7 && input.snapshot.kind === "compiled") {
+        const mathTexTarget = entityId === mixedDynamicMathTexEntityId;
+        const expectedRuntimeType =
+          activeClaim.constructor === null
+            ? undefined
+            : STUDIO_RUNTIME_TYPES_BY_CONSTRUCTOR_V7.get(activeClaim.constructor);
+        requireIdentity(
+          activeClaim.studioSupported &&
+            expectedRuntimeType !== undefined &&
+            runtimeType === expectedRuntimeType &&
+            (mathTexTarget
+              ? activeClaim.constructor === "MathTex"
+              : activeClaim.constructor !== null &&
+                STUDIO_SUPPORTED_CONSTRUCTORS_V7.has(activeClaim.constructor) &&
+                activeClaim.constructor !== "MathTex"),
+          "Mixed dynamic profile V7 source constructors do not match their exact verified runtime entity types.",
+        );
+      }
       requireIdentity(!activeMappedBindings.has(binding.id), "One source binding maps to several runtime entities.");
       activeMappedBindings.add(binding.id);
       if (activeClaim.studioSupported) mappings.push({ binding, entityId, familyPath, provenanceId });
@@ -738,6 +855,9 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     );
   }
 
+  if (input.expected.snapshotVersion === 7 && input.snapshot.kind === "compiled") {
+    requireIdentity(complete, "Mixed dynamic profile V7 requires complete source/runtime identity evidence.");
+  }
   if (!complete) return null;
   requireIdentity(input.snapshot.kind === "compiled", "Complete identity evidence requires a compiled snapshot.");
   const snapshotEntities = input.snapshot.bundle.scene.entities;

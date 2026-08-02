@@ -6,9 +6,16 @@ import {
   FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
   FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
 } from "../src/engine/source-runtime-identity";
-import { MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
+import {
+  FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+} from "./fast-manim-snapshot-contract";
 import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
-import { verifyFastManimSourceRuntimeIdentityV1 } from "./fast-manim-source-runtime-identity";
+import {
+  assertFastManimSnapshotIdentityAuthorityV1,
+  parseVerifiedSourceRuntimeIdentityMapV1,
+  verifyFastManimSourceRuntimeIdentityV1,
+} from "./fast-manim-source-runtime-identity";
 
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value === "boolean" || typeof value === "string") return JSON.stringify(value);
@@ -417,6 +424,196 @@ class GenericLeaves(Scene):
       })),
     );
     expect(verify(1)).toEqual([]);
+  });
+
+  it("requires complete one-to-one V7 mappings and binds MathTex separately from basic vector leaves", () => {
+    const sourceText = String.raw`from manim import BLUE, YELLOW, Circle, Create, CubicBezier, Line, MathTex, MoveAlongPath, Rectangle, Scene, linear
+
+class MixedMathDemo(Scene):
+    def construct(self):
+        equation = MathTex(r"E = mc^2")
+        ring = (
+            Circle(radius=1.2)
+            .set_fill(opacity=0)
+            .set_stroke(BLUE, width=24)
+            .shift([-3, 0, 0])
+        )
+        particle = (
+            Circle(radius=0.2)
+            .set_fill(YELLOW, opacity=1)
+            .set_stroke(width=0)
+            .move_to([1, -1, 0])
+        )
+        rectangle = Rectangle()
+        line = Line([-1, -1, 0], [1, 1, 0])
+        path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
+
+        self.add(equation, rectangle, line)
+        self.play(Create(ring, rate_func=linear), run_time=1)
+        self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)
+        self.wait(1, frozen_frame=True)
+`;
+    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    const sceneId = `scene:${"7".repeat(64)}`;
+    const runtimeConfigHash = "8".repeat(64);
+    const snapshotHash = "9".repeat(64);
+    const snapshotDigest = "a".repeat(64);
+    const sourceLines = sourceText.split("\n");
+    const binding = (name: string, ordinal: number) => {
+      const lineIndex = sourceLines.findIndex((line) => line.trimStart().startsWith(`${name} =`));
+      if (lineIndex < 0) throw new Error(`Expected the ${name} assignment.`);
+      const rawLine = sourceLines[lineIndex]!;
+      const characterColumn = rawLine.indexOf(name);
+      const startColumn = Buffer.byteLength(rawLine.slice(0, characterColumn), "utf8");
+      const span = {
+        endColumn: startColumn + Buffer.byteLength(name, "utf8"),
+        endLine: lineIndex + 1,
+        startColumn,
+        startLine: lineIndex + 1,
+      };
+      const payload = [
+        FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
+        String(FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1),
+        sourceHash,
+        sceneId,
+        name,
+        String(ordinal),
+        String(span.startLine),
+        String(span.startColumn),
+        String(span.endLine),
+        String(span.endColumn),
+      ].join("\u0000");
+      return {
+        id: `source-binding:${createHash("sha256").update(payload, "utf8").digest("hex")}`,
+        name,
+        ordinal,
+        span,
+      };
+    };
+    const bindings = [
+      binding("equation", 1),
+      binding("ring", 2),
+      binding("particle", 3),
+      binding("rectangle", 4),
+      binding("line", 5),
+    ];
+    const entities = bindings.map((_, sceneOrder) => ({
+      id: `${sceneId}/entity:${sceneOrder}`,
+      provenanceId: `${sceneId}/provenance:entity:${sceneOrder}`,
+    }));
+    const expected = {
+      frame: { height: 8, width: 14.222222222222221 },
+      projectId: "default",
+      requestId: "mixed-dynamic-v7-identity",
+      runtimeConfigHash,
+      snapshotVersion: 7 as const,
+      sceneId,
+      sceneName: "MixedMathDemo",
+      sourceHash,
+      sourcePath: "scene.py",
+    };
+    const snapshot = {
+      bundle: {
+        scene: {
+          entities,
+          provenance: [
+            { evidence: ["v7"], id: `${sceneId}/provenance:scene` },
+            {
+              evidence: [FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7],
+              id: entities[0]!.provenanceId,
+            },
+            { evidence: ["v7"], id: entities[1]!.provenanceId },
+            { evidence: ["v7"], id: entities[2]!.provenanceId },
+            { evidence: ["v7"], id: entities[3]!.provenanceId },
+            { evidence: ["v7"], id: entities[4]!.provenanceId },
+          ],
+          source: { kind: "imported-manim-server-snapshot", snapshotVersion: 7 },
+        },
+      },
+      kind: "compiled",
+      runtimeConfigHash,
+      sceneId,
+      snapshotHash,
+      sourceHash,
+    } as never;
+    const runtimeTypes: readonly string[] = [
+      "manim.renderer._scene_snapshot.mathtex.HermeticMathTexSnapshotMobject",
+      "manim.mobject.geometry.arc.Circle",
+      "manim.mobject.geometry.arc.Circle",
+      "manim.mobject.geometry.polygram.Rectangle",
+      "manim.mobject.geometry.line.Line",
+    ];
+    const records = bindings.map((sourceBinding, sceneOrder) => ({
+      bindings: [{ binding: sourceBinding, boundSequence: sceneOrder + 1, releasedSequence: null }],
+      entityId: entities[sceneOrder]!.id,
+      familyPath: [],
+      lifecycle: [],
+      provenanceId: entities[sceneOrder]!.provenanceId,
+      reasons: [],
+      runtimeType: runtimeTypes[sceneOrder]!,
+      sceneOrder,
+      status: "mapped",
+    }));
+    const evidence = {
+      issues: [],
+      kind: "complete",
+      projectId: expected.projectId,
+      records,
+      requestId: expected.requestId,
+      runtimeConfigHash,
+      sceneId,
+      sceneName: expected.sceneName,
+      snapshotDigest,
+      sourceHash,
+      sourcePath: expected.sourcePath,
+    };
+    const verify = (candidateRecords: typeof records) =>
+      verifyFastManimSourceRuntimeIdentityV1(
+        { document: { evidence: { ...evidence, records: candidateRecords }, snapshotDigest }, snapshotDigest },
+        { expected, snapshot, sourceText },
+      );
+
+    const result = verify(records);
+    expect(result?.mappings.map(({ binding: mapped, entityId }) => ({ entityId, name: mapped.name }))).toEqual([
+      { entityId: entities[0]!.id, name: "equation" },
+      { entityId: entities[1]!.id, name: "ring" },
+      { entityId: entities[2]!.id, name: "particle" },
+      { entityId: entities[3]!.id, name: "rectangle" },
+      { entityId: entities[4]!.id, name: "line" },
+    ]);
+
+    const swappedRoles = structuredClone(records);
+    [swappedRoles[0]!.bindings, swappedRoles[1]!.bindings] = [swappedRoles[1]!.bindings, swappedRoles[0]!.bindings];
+    expect(() => verify(swappedRoles)).toThrowError(expect.objectContaining({ code: "identity-evidence-invalid" }));
+
+    const nonHermeticMathTex = structuredClone(records);
+    nonHermeticMathTex[0]!.runtimeType = "manim.mobject.text.tex_mobject.MathTex";
+    expect(() => verify(nonHermeticMathTex)).toThrowError(
+      expect.objectContaining({ code: "identity-evidence-invalid" }),
+    );
+
+    const swappedVectorRuntimeTypes = structuredClone(records);
+    [swappedVectorRuntimeTypes[1]!.runtimeType, swappedVectorRuntimeTypes[3]!.runtimeType] = [
+      swappedVectorRuntimeTypes[3]!.runtimeType,
+      swappedVectorRuntimeTypes[1]!.runtimeType,
+    ];
+    expect(() => verify(swappedVectorRuntimeTypes)).toThrowError(
+      expect.objectContaining({ code: "identity-evidence-invalid" }),
+    );
+
+    const aliasedLineRuntimeType = structuredClone(records);
+    aliasedLineRuntimeType[4]!.runtimeType = "custom.geometry.Line";
+    expect(() => verify(aliasedLineRuntimeType)).toThrowError(
+      expect.objectContaining({ code: "identity-evidence-invalid" }),
+    );
+    if (!result) throw new Error("Expected a complete V7 source/runtime identity map.");
+    expect(() => assertFastManimSnapshotIdentityAuthorityV1(snapshot, null)).toThrowError(
+      expect.objectContaining({ code: "identity-evidence-invalid" }),
+    );
+    expect(() => assertFastManimSnapshotIdentityAuthorityV1(snapshot, result)).not.toThrow();
+    expect(() =>
+      parseVerifiedSourceRuntimeIdentityMapV1({ ...result, mappings: result.mappings.slice(0, 2) }, snapshot),
+    ).toThrowError(expect.objectContaining({ code: "identity-evidence-invalid" }));
   });
 
   it("publishes V5 as one explicitly ambiguous display-only render track", () => {
