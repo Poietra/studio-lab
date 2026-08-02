@@ -18,6 +18,7 @@ class MixedMathDemo(Scene):
         )
         path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
 
+        # poietra:anchor 0.000
         self.add(equation)
         self.play(Create(ring, rate_func=linear), run_time=1)
         self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)

@@ -60,19 +60,21 @@ function resolveManimCommand() {
 }
 
 const manimCommand = resolveManimCommand();
-if (snapshotProfile === "4" && !manimCommand) {
+if ((snapshotProfile === "4" || snapshotProfile === "7") && !manimCommand) {
   throw new Error(
-    "The real ImageMobject edit E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
+    "The real editable Scene E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
   );
 }
 
 const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview-v${snapshotProfile}`);
-const harnessRoot =
-  snapshotProfile === "4"
-    ? mkdtempSync(join(tmpdir(), "poietra-real-preview-harness-v4-"))
-    : join(process.cwd(), "fixtures", "real-preview-harness");
-if (snapshotProfile === "4") {
+const mutableHarness = snapshotProfile === "4" || snapshotProfile === "7";
+const harnessRoot = mutableHarness
+  ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
+  : join(process.cwd(), "fixtures", "real-preview-harness");
+if (mutableHarness) {
   cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+}
+if (snapshotProfile === "4") {
   const width = 270;
   const height = 135;
   const rgba = new Uint8Array(width * height * 4);
