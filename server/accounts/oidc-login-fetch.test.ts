@@ -80,6 +80,8 @@ describe("OIDC login Fetch handler", () => {
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("https://identity.example/authorize?request=fixed");
     expect(response.headers.get("location")).not.toContain(invitationToken);
+    expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+    expect(response.headers.getSetCookie().join(";")).not.toContain(invitationToken);
     expect(service.start).toHaveBeenCalledWith({ invitationToken }, expect.any(AbortSignal));
   });
 

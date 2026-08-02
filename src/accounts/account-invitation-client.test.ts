@@ -59,4 +59,25 @@ describe("account invitation browser client", () => {
       "invitation details",
     );
   });
+
+  it("rejects oversized and non-JSON success responses before parsing secrets", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ padding: "x".repeat(2_048), ...invitation }, { status: 201 })),
+    );
+    await expect(createAccountInvitationV1({ email: "member@example.com", role: "member" })).rejects.toThrow(
+      "invalid response",
+    );
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(invitation), { headers: { "content-type": "text/plain" }, status: 201 }),
+      ),
+    );
+    await expect(createAccountInvitationV1({ email: "member@example.com", role: "member" })).rejects.toThrow(
+      "invalid response",
+    );
+  });
 });
