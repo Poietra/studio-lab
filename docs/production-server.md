@@ -31,7 +31,8 @@ full runtime probe.
 Migration v11 adds the account control-plane records required by request
 admission: OIDC identities, organizations, and memberships. Migration v22 adds
 bounded organization invitations and binds their digest to the one-time OIDC
-attempt. The exported
+attempt. Migration v24 indexes the durable tenant/actor invitation issuance
+window used by the account-control-plane quota. The exported
 `createOrganizationMembershipProductionAdmissionV1` composes an injected
 external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
 `X-Poietra-Organization-Id` is only an untrusted organization selector; the
@@ -85,11 +86,13 @@ the same account view. Logout revokes only the presented opaque session and
 expires its fixed HttpOnly cookie; missing, unknown, and already-revoked
 sessions remain idempotent. These account-session routes stay available during
 an IdP outage. General self-signup remains a later #309 slice; an invitation is
-not a self-signup credential and cannot choose its tenant or role. Cloudflare Worker/BFF
-deployment must rate-limit
-both `/auth/oidc/start` and `/auth/oidc/callback` at the edge (with separate
-thresholds if needed); an in-process per-isolate limiter is not a meaningful
-abuse boundary. A syntactically valid but unknown callback still performs the
+not a self-signup credential and cannot choose its tenant or role. Cloudflare
+Worker/BFF deployment must rate-limit `/auth/oidc/start`,
+`/auth/oidc/callback`, and invitation create/revoke mutations at the edge; an
+in-process per-isolate limiter is not a meaningful abuse boundary. The
+Cloudflare counters are PoP-local and eventually consistent, so the serialized
+PostgreSQL pending and issuance-window quota remains the durable authority. A
+syntactically valid but unknown callback still performs the
 one-time-state lookup, so callback limits protect PostgreSQL as well as the IdP.
 OIDC tenant and role claims are never authorization inputs. Owner, admin, and
 member roles can enter the Manim API; the billing-only role cannot. The
@@ -100,8 +103,8 @@ The deployable Cloudflare entry is
 `server/cloudflare-account-control-plane-worker.ts`. Copy
 `wrangler.account-control-plane.example.jsonc` to the ignored
 `wrangler.account-control-plane.jsonc`, then replace its example route, zone,
-Hyperdrive ID, rate-limit namespace IDs, and non-secret OIDC values. The two
-rate-limit namespaces must be distinct from each other and from other
+Hyperdrive ID, rate-limit namespace IDs, and non-secret OIDC values. Every
+rate-limit namespace must be distinct from the others and from other
 environments. Store `POIETRA_OIDC_CLIENT_SECRET` with
 `pnpm exec wrangler secret put POIETRA_OIDC_CLIENT_SECRET --config wrangler.account-control-plane.jsonc`;
 never add it to `vars`, an environment file in source control, or CI output.
@@ -111,22 +114,25 @@ production configuration.
 
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
-memberships, invitations, or one-time login state. Apply bundled migration v22
-before deploying this Worker; both the invitation and OIDC repositories require
-its exact checksum. The Worker routes must remain limited to the same-origin
+memberships, invitations, or one-time login state. Apply bundled migrations
+through v24 before deploying this Worker. The invitation repository requires
+the exact v24 quota migration, while the OIDC repository requires the exact v22
+invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
 `/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with
 `workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
 Invocation logs and traces remain disabled because callback URLs contain OIDC
-codes and state and invitation-start bodies contain raw invitation tokens. Do
+codes and state, invitation requests contain invited email addresses, and
+invitation responses contain raw invitation tokens. Do
 not attach raw Worker Tail, Logpush, request-body logging, or request-URL logging
 to this Worker; zone Logpush must omit full request URIs for these routes. Use a
 sentinel callback and invitation to verify that code, state, nonce, cookies,
-invitation tokens, and secrets do not appear in production logs. The Worker limits start and callback independently
-before it opens PostgreSQL storage; missing bindings, invalid configuration,
-rate-limit errors, and missing Cloudflare client IPs fail closed with a generic
-503.
+invitation tokens, and secrets do not appear in production logs. The Worker
+limits OIDC start, OIDC callback, invitation creation, and invitation revocation
+independently before it opens PostgreSQL storage; missing bindings, invalid
+configuration, rate-limit errors, and missing Cloudflare client IPs fail closed
+with a generic 503.
 
 Realtime Editor head notification is a third, separately deployed edge at
 `server/cloudflare-editor-collaboration-worker.ts`. Copy

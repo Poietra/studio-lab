@@ -1,21 +1,31 @@
 import type { Pool, PoolConfig, QueryResultRow } from "pg";
-
 import {
+  accountUserIdSchemaV1,
+  normalizeAccountEmailV1,
+  organizationIdSchemaV1,
+  organizationInvitationRoleSchemaV1,
+} from "../../accounts/account-domain";
+import {
+  ACCOUNT_INVITATION_ISSUANCE_WINDOW_MS_V1,
+  ACCOUNT_INVITATION_MAX_ACTOR_ISSUANCE_PER_WINDOW_V1,
   ACCOUNT_INVITATION_MAX_LIFETIME_MS_V1,
+  ACCOUNT_INVITATION_MAX_PENDING_PER_TENANT_V1,
+  ACCOUNT_INVITATION_MAX_TENANT_ISSUANCE_PER_WINDOW_V1,
   ACCOUNT_INVITATION_MIN_LIFETIME_MS_V1,
   type AccountInvitationRepositoryV1,
   type CreateAccountInvitationV1,
   type CreatedAccountInvitationV1,
 } from "../../accounts/account-invitation-repository";
-import {
-  accountUserIdSchemaV1,
-  normalizeAccountEmailV1,
-  organizationInvitationRoleSchemaV1,
-} from "../../accounts/account-domain";
-import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
+import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 type InvitationRow = QueryResultRow & { expires_at: Date; invitation_id: string };
+type InvitationActorRow = QueryResultRow & { active_tenant_id: string; user_id: string };
+type InvitationQuotaRow = QueryResultRow & {
+  actor_window_count: string;
+  pending_count: string;
+  tenant_window_count: string;
+};
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -53,6 +63,11 @@ function invitationFromRow(row: InvitationRow): CreatedAccountInvitationV1 {
   return { expiresAt: new Date(row.expires_at.getTime()), invitationId: id };
 }
 
+function quotaCount(value: string, name: string) {
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) throw new TypeError(`PostgreSQL returned an invalid ${name}.`);
+  return BigInt(value);
+}
+
 export class PostgresAccountInvitationRepositoryV1 implements AccountInvitationRepositoryV1 {
   readonly #connection: PostgresRepositoryConnectionV1;
 
@@ -63,15 +78,15 @@ export class PostgresAccountInvitationRepositoryV1 implements AccountInvitationR
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 22",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 24",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
         result.rowCount === 1 &&
-        result.rows[0]?.version === 22 &&
-        result.rows[0]?.checksum === ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM
+        result.rows[0]?.version === 24 &&
+        result.rows[0]?.checksum === ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -88,9 +103,11 @@ export class PostgresAccountInvitationRepositoryV1 implements AccountInvitationR
     const role = organizationInvitationRoleSchemaV1.parse(input.role);
     const lifetime = lifetimeMs(input.lifetimeMs);
     throwIfAborted(signal);
-    const result = await this.#connection.query<InvitationRow>(
-      `WITH actor AS MATERIALIZED (
-         SELECT session.user_id, session.active_tenant_id
+    return this.#connection.transaction(async (client) => {
+      throwIfAborted(signal);
+      // The organization lock serializes all supported create/revoke paths before durable counts are read.
+      const actors = await client.query<InvitationActorRow>(
+        `SELECT session.user_id::text, session.active_tenant_id
            FROM public.account_sessions session
            JOIN public.users account ON account.user_id = session.user_id
            JOIN public.organization_memberships membership
@@ -104,23 +121,67 @@ export class PostgresAccountInvitationRepositoryV1 implements AccountInvitationR
             AND membership.status = 'active'
             AND membership.role IN ('owner', 'admin')
             AND organization.status = 'active'
-          FOR UPDATE OF membership, organization
-       ), issued_at AS (SELECT clock_timestamp() AS value)
-       INSERT INTO public.organization_invitations
-         (invitation_id, tenant_id, token_digest, normalized_email, invited_role,
-          created_by, created_at, expires_at, updated_at)
-       SELECT $2, actor.active_tenant_id, $3, $4, $5,
-              actor.user_id, issued_at.value,
-              issued_at.value + ($6::bigint * interval '1 millisecond'), issued_at.value
-         FROM actor CROSS JOIN issued_at
-       RETURNING invitation_id::text, expires_at`,
-      [sessionTokenHash, id, tokenDigest, email, role, lifetime],
-      signal,
-    );
-    throwIfAborted(signal);
-    if (result.rows.length > 1) throw new TypeError("PostgreSQL created duplicate organization invitations.");
-    const row = result.rows[0];
-    return row ? invitationFromRow(row) : null;
+          FOR UPDATE OF account, session, membership, organization`,
+        [sessionTokenHash],
+      );
+      throwIfAborted(signal);
+      if (actors.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate invitation actors.");
+      const actor = actors.rows[0];
+      if (!actor) return null;
+      const tenantId = organizationIdSchemaV1.parse(actor.active_tenant_id);
+      const userId = accountUserIdSchemaV1.parse(actor.user_id);
+
+      const quotas = await client.query<InvitationQuotaRow>(
+        `WITH quota_clock AS (SELECT clock_timestamp() AS value)
+         SELECT count(*) FILTER (
+                  WHERE invitation.status = 'pending' AND invitation.expires_at > quota_clock.value
+                )::text AS pending_count,
+                count(*) FILTER (
+                  WHERE invitation.created_at >
+                    quota_clock.value - ($2::bigint * interval '1 millisecond')
+                )::text AS tenant_window_count,
+                count(*) FILTER (
+                  WHERE invitation.created_by = $3
+                    AND invitation.created_at >
+                      quota_clock.value - ($2::bigint * interval '1 millisecond')
+                )::text AS actor_window_count
+           FROM public.organization_invitations invitation
+           CROSS JOIN quota_clock
+          WHERE invitation.tenant_id = $1`,
+        [tenantId, ACCOUNT_INVITATION_ISSUANCE_WINDOW_MS_V1, userId],
+      );
+      throwIfAborted(signal);
+      const quota = quotas.rows[0];
+      if (quotas.rowCount !== 1 || !quota) throw new TypeError("PostgreSQL did not return invitation quotas.");
+      if (
+        quotaCount(quota.pending_count, "pending invitation count") >=
+          BigInt(ACCOUNT_INVITATION_MAX_PENDING_PER_TENANT_V1) ||
+        quotaCount(quota.tenant_window_count, "tenant invitation issuance count") >=
+          BigInt(ACCOUNT_INVITATION_MAX_TENANT_ISSUANCE_PER_WINDOW_V1) ||
+        quotaCount(quota.actor_window_count, "actor invitation issuance count") >=
+          BigInt(ACCOUNT_INVITATION_MAX_ACTOR_ISSUANCE_PER_WINDOW_V1)
+      ) {
+        return null;
+      }
+
+      const result = await client.query<InvitationRow>(
+        `WITH issued_at AS (SELECT clock_timestamp() AS value)
+         INSERT INTO public.organization_invitations
+           (invitation_id, tenant_id, token_digest, normalized_email, invited_role,
+            created_by, created_at, expires_at, updated_at)
+         SELECT $1, $2, $3, $4, $5, $6, issued_at.value,
+                issued_at.value + ($7::bigint * interval '1 millisecond'), issued_at.value
+           FROM issued_at
+         RETURNING invitation_id::text, expires_at`,
+        [id, tenantId, tokenDigest, email, role, userId, lifetime],
+      );
+      throwIfAborted(signal);
+      const row = result.rows[0];
+      if (result.rowCount !== 1 || !row || result.rows.length !== 1) {
+        throw new TypeError("PostgreSQL did not create one organization invitation.");
+      }
+      return invitationFromRow(row);
+    }, signal);
   }
 
   async revokeInvitation(

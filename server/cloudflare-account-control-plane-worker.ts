@@ -1,24 +1,27 @@
+import { createHash } from "node:crypto";
+
 import {
-  ACCOUNT_LOGOUT_ROUTE_V1,
   ACCOUNT_INVITATIONS_ROUTE_V1,
+  ACCOUNT_LOGOUT_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
   createOidcAccountControlPlaneV1,
   OIDC_LOGIN_START_ROUTE_V1,
   type OidcAccountControlPlaneOptionsV1,
-  PostgresAccountSessionRepositoryV1,
   PostgresAccountInvitationRepositoryV1,
+  PostgresAccountSessionRepositoryV1,
   PostgresOidcLoginRepositoryV1,
 } from "./account-control-plane";
+import { createAccountInvitationFetchRequestGuardV1 } from "./accounts/account-invitation-fetch";
+import { accountSessionTokenHashV1 } from "./accounts/account-session-authenticator";
 import {
   createAccountSessionActionFetchRequestGuardV1,
   createAccountSessionFetchRequestGuardV1,
 } from "./accounts/account-session-fetch";
-import { createAccountInvitationFetchRequestGuardV1 } from "./accounts/account-invitation-fetch";
 import { createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
 import type { OidcProviderConfigV1 } from "./accounts/openid-client-provider";
 
 export interface CloudflareRateLimitBindingV1 {
-  limit(input: Readonly<{ key: string }>): Promise<unknown>;
+  limit(input: Readonly<{ key: string }>): Promise<Readonly<{ success: boolean }>>;
 }
 
 export interface CloudflareHyperdriveBindingV1 {
@@ -27,6 +30,7 @@ export interface CloudflareHyperdriveBindingV1 {
 
 export type CloudflareAccountControlPlaneEnvironmentV1 = Readonly<{
   HYPERDRIVE: CloudflareHyperdriveBindingV1;
+  INVITATION_MUTATION_RATE_LIMITER: CloudflareRateLimitBindingV1;
   OIDC_CALLBACK_RATE_LIMITER: CloudflareRateLimitBindingV1;
   OIDC_START_RATE_LIMITER: CloudflareRateLimitBindingV1;
   POIETRA_OIDC_CLIENT_AUTHENTICATION?: "client_secret_basic" | "client_secret_post";
@@ -50,6 +54,7 @@ export type CloudflareAccountControlPlaneWorkerOptionsV1 = Readonly<{
 
 const MAX_POSTGRES_CONNECTION_STRING_BYTES_V1 = 8 * 1_024;
 const CONNECTING_IP_PATTERN_V1 = /^[0-9A-Fa-f:.]{2,64}$/u;
+const INVITATION_LIMIT_KEY_DOMAIN_V1 = "poietra:account-invitation-mutation:v1\u0000";
 
 function safeHeaders() {
   return new Headers({
@@ -72,6 +77,14 @@ function accountUnavailableResponse() {
   response.headers.set("cache-control", "private, no-store");
   response.headers.set("vary", "Cookie");
   return response;
+}
+
+function invitationMutationResponse(status: 403 | 429 | 503) {
+  const headers = safeHeaders();
+  headers.set("cache-control", "private, no-store");
+  headers.set("vary", "Cookie");
+  if (status === 429) headers.set("retry-after", "60");
+  return new Response(JSON.stringify({ error: "Account invitation action is not available." }), { headers, status });
 }
 
 function boundedString(value: unknown, name: string, maximum: number) {
@@ -173,6 +186,18 @@ async function isAllowed(binding: CloudflareRateLimitBindingV1, key: string) {
   return (result as { success: boolean }).success;
 }
 
+function invitationMutationRateLimitKey(request: Request) {
+  const sessionTokenHash = accountSessionTokenHashV1(request.headers.get("cookie"));
+  if (sessionTokenHash === null) return null;
+  // Keep the PoP-local edge key pseudonymous; PostgreSQL remains the tenant/actor quota authority.
+  const fingerprint = createHash("sha256")
+    .update(INVITATION_LIMIT_KEY_DOMAIN_V1, "utf8")
+    .update(sessionTokenHash)
+    .digest("base64url");
+  const operation = request.method === "POST" ? "create" : "revoke";
+  return `account-invitation:${operation}:${fingerprint}`;
+}
+
 /** Cloudflare Worker edge for the OIDC account control plane. */
 export function createCloudflareAccountControlPlaneWorkerV1(
   options: CloudflareAccountControlPlaneWorkerOptionsV1 = {},
@@ -211,12 +236,9 @@ export function createCloudflareAccountControlPlaneWorkerV1(
   return Object.freeze({
     async fetch(request: Request, environment: CloudflareAccountControlPlaneEnvironmentV1) {
       const pathname = new URL(request.url).pathname;
-      if (
-        pathname === ACCOUNT_SESSION_ROUTE_V1 ||
-        pathname === ACCOUNT_LOGOUT_ROUTE_V1 ||
-        pathname === ACCOUNT_INVITATIONS_ROUTE_V1 ||
-        pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`)
-      ) {
+      const isInvitation =
+        pathname === ACCOUNT_INVITATIONS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`);
+      if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1 || isInvitation) {
         try {
           const publicOrigin = boundedString(environment.POIETRA_PUBLIC_ORIGIN, "Public origin", 2_048);
           const rejected =
@@ -226,9 +248,18 @@ export function createCloudflareAccountControlPlaneWorkerV1(
                 : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request)
               : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
           if (rejected) return rejected;
+          if (isInvitation) {
+            const key = invitationMutationRateLimitKey(request);
+            if (key === null) return invitationMutationResponse(403);
+            const limiter = rateLimitBinding(
+              environment.INVITATION_MUTATION_RATE_LIMITER,
+              "Invitation mutation rate limiter",
+            );
+            if (!(await isAllowed(limiter, key))) return invitationMutationResponse(429);
+          }
           return await controlPlaneFor(deferredOidcOptions(environment, publicOrigin)).fetch(request, environment);
         } catch {
-          return accountUnavailableResponse();
+          return isInvitation ? invitationMutationResponse(503) : accountUnavailableResponse();
         }
       }
       try {
