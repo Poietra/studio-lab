@@ -3,7 +3,12 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 
 import { POIETRA_ORGANIZATION_HEADER_V1 } from "../accounts/organization-scoped-manim-fetch";
-import { FetchEditorDocumentClientV1 } from "./editor-document-client";
+import {
+  attemptEditorDocumentSessionKeepaliveV1,
+  editorCommitOutcomeMayBeUnknownV1,
+  FetchEditorDocumentClientV1,
+  MAX_EDITOR_SESSION_KEEPALIVE_BODY_BYTES_V1,
+} from "./editor-document-client";
 import {
   canonicalEditorSessionSnapshotJsonV1,
   type EditorSessionSnapshotV1,
@@ -108,6 +113,10 @@ function commitRequest(baseRevision = "0") {
 }
 
 describe("Editor document HTTP client", () => {
+  it("treats an aborted mutation response as outcome-unknown", () => {
+    expect(editorCommitOutcomeMayBeUnknownV1(new DOMException("request aborted", "AbortError"))).toBe(true);
+  });
+
   it("calls the browser fetch default with its required global receiver", async () => {
     const originalFetch = globalThis.fetch;
     const browserFetch = vi.fn(function (this: unknown) {
@@ -336,6 +345,94 @@ describe("Editor document HTTP client", () => {
     );
     expect(init).toMatchObject({ cache: "no-store", credentials: "same-origin", method: "PUT" });
     expect(JSON.parse(String(init?.body))).toEqual(request);
+  });
+
+  it("starts a small exact session PUT with keepalive without treating its response as an acknowledgement", () => {
+    const fetchImpl = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>(async () => {
+      throw new Error("response intentionally unavailable after page exit");
+    });
+    const request = {
+      documentRevision: "0",
+      epoch: EPOCH,
+      expectedSessionGeneration: "0",
+      snapshot: sessionSnapshot,
+      snapshotVersion: 1 as const,
+    };
+
+    expect(
+      attemptEditorDocumentSessionKeepaliveV1(
+        { organizationId: ORGANIZATION, projectId: PROJECT },
+        DOCUMENT_KEY,
+        request,
+        fetchImpl,
+      ),
+    ).toBe(true);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [path, init] = fetchImpl.mock.calls[0]!;
+    expect(path).toBe(
+      `/api/editor/projects/${PROJECT}/documents/${DOCUMENT_KEY}/session?epoch=${encodeURIComponent(EPOCH)}`,
+    );
+    expect(init).toMatchObject({
+      cache: "no-store",
+      credentials: "same-origin",
+      keepalive: true,
+      method: "PUT",
+    });
+    expect(init?.signal).toBeUndefined();
+    expect(new Headers(init?.headers).get(POIETRA_ORGANIZATION_HEADER_V1)).toBe(ORGANIZATION);
+    expect(new Headers(init?.headers).get("content-type")).toBe("application/json");
+    expect(JSON.parse(String(init?.body))).toEqual(request);
+  });
+
+  it("skips a keepalive PUT whose UTF-8 JSON body exceeds the shared 64 KiB budget", () => {
+    const fetchImpl = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
+    const unicodeSnapshot = {
+      ...sessionSnapshot,
+      selectedObjectIds: Array.from(
+        { length: 48 },
+        (_, index) => `${index.toString().padStart(2, "0")}${"数".repeat(498)}`,
+      ),
+    };
+    const request = {
+      documentRevision: "0",
+      epoch: EPOCH,
+      expectedSessionGeneration: "0",
+      snapshot: unicodeSnapshot,
+      snapshotVersion: 1 as const,
+    };
+    const body = JSON.stringify(request);
+    expect(body.length).toBeLessThan(MAX_EDITOR_SESSION_KEEPALIVE_BODY_BYTES_V1);
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(MAX_EDITOR_SESSION_KEEPALIVE_BODY_BYTES_V1);
+
+    expect(
+      attemptEditorDocumentSessionKeepaliveV1(
+        { organizationId: ORGANIZATION, projectId: PROJECT },
+        DOCUMENT_KEY,
+        request,
+        fetchImpl,
+      ),
+    ).toBe(false);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("strictly rejects an invalid keepalive request before invoking fetch", () => {
+    const fetchImpl = vi.fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>();
+
+    expect(() =>
+      attemptEditorDocumentSessionKeepaliveV1(
+        { organizationId: ORGANIZATION, projectId: PROJECT },
+        DOCUMENT_KEY,
+        {
+          documentRevision: "0",
+          epoch: EPOCH,
+          expectedSessionGeneration: "0",
+          snapshot: { ...sessionSnapshot, privateToken: "must-not-pass" },
+          snapshotVersion: 1,
+        } as never,
+        fetchImpl,
+      ),
+    ).toThrow(/Unrecognized key/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("fails closed on unknown session response fields and a body/status mismatch", async () => {
