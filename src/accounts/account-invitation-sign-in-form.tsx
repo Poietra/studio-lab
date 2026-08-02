@@ -1,27 +1,38 @@
 import { useEffect, useRef } from "react";
 
+type InvitationSecretEventTargetV1 = Pick<EventTarget, "addEventListener" | "removeEventListener">;
+
+export function bindInvitationSecretClearingV1(
+  form: InvitationSecretEventTargetV1,
+  input: { value: string },
+  lifecycle: InvitationSecretEventTargetV1,
+) {
+  const clearSecret = () => {
+    input.value = "";
+  };
+  form.addEventListener("formdata", clearSecret);
+  lifecycle.addEventListener("pagehide", clearSecret);
+  lifecycle.addEventListener("pageshow", clearSecret);
+  return () => {
+    form.removeEventListener("formdata", clearSecret);
+    lifecycle.removeEventListener("pagehide", clearSecret);
+    lifecycle.removeEventListener("pageshow", clearSecret);
+    clearSecret();
+  };
+}
+
 export function AccountInvitationSignInForm() {
   const formRef = useRef<HTMLFormElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     const form = formRef.current;
-    const clearSecret = () => {
-      if (inputRef.current) inputRef.current.value = "";
-    };
-    if (!form) return;
+    const input = inputRef.current;
+    if (!form || !input) return;
     // The native formdata event runs after the browser has constructed the
     // request body. Clear only the DOM copy, leaving the submitted FormData
     // intact and preventing BFCache/history restoration of the raw token.
-    form.addEventListener("formdata", clearSecret);
-    window.addEventListener("pagehide", clearSecret);
-    window.addEventListener("pageshow", clearSecret);
-    return () => {
-      form.removeEventListener("formdata", clearSecret);
-      window.removeEventListener("pagehide", clearSecret);
-      window.removeEventListener("pageshow", clearSecret);
-      clearSecret();
-    };
+    return bindInvitationSecretClearingV1(form, input, window);
   }, []);
 
   return (

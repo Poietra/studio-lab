@@ -3,8 +3,11 @@ import type { Pool } from "pg";
 import { createEditorDocumentKeyV1 } from "../server/storage/editor-document-repository";
 
 export type AccountEditorDocumentFixtureV1 = Readonly<{
+  additionalOidcSubjects: readonly string[];
   documentSceneId: string;
+  oidcIssuer: string;
   organizationId: string;
+  ownerOidcSubject: string;
   projectId: string;
   sceneId: string;
   sourceHash: string;
@@ -24,6 +27,25 @@ export async function cleanupAccountEditorDocumentFixtureV1(pool: Pool, fixture:
     // The production ledger is deliberately append-only. This dedicated E2E
     // database uses replica mode only while deleting the fixture's exact keys.
     await client.query("SET LOCAL session_replication_role = replica");
+    await client.query(
+      `DELETE FROM public.oidc_login_attempts attempt
+        WHERE attempt.invitation_token_digest IN (
+          SELECT invitation.token_digest
+            FROM public.organization_invitations invitation
+           WHERE invitation.tenant_id = $1
+        )`,
+      [fixture.organizationId],
+    );
+    await client.query(
+      `DELETE FROM public.account_sessions
+        WHERE active_tenant_id = $1
+           OR user_id IN (
+             SELECT user_id FROM public.users
+              WHERE oidc_issuer = $2 AND oidc_subject = ANY($3::text[])
+           )`,
+      [fixture.organizationId, fixture.oidcIssuer, [fixture.ownerOidcSubject, ...fixture.additionalOidcSubjects]],
+    );
+    await client.query("DELETE FROM public.organization_invitations WHERE tenant_id = $1", [fixture.organizationId]);
     const documentValues = [fixture.organizationId, fixture.projectId, key] as const;
     for (const table of [
       "editor_session_snapshots",
@@ -50,13 +72,14 @@ export async function cleanupAccountEditorDocumentFixtureV1(pool: Pool, fixture:
       fixture.organizationId,
       fixture.projectId,
     ]);
-    await client.query("DELETE FROM public.organization_memberships WHERE tenant_id = $1 AND user_id = $2::uuid", [
-      fixture.organizationId,
-      fixture.userId,
-    ]);
+    await client.query("DELETE FROM public.organization_memberships WHERE tenant_id = $1", [fixture.organizationId]);
     await client.query("DELETE FROM public.organizations WHERE tenant_id = $1", [fixture.organizationId]);
     await client.query("DELETE FROM public.workspace_tenants WHERE tenant_id = $1", [fixture.organizationId]);
-    await client.query("DELETE FROM public.users WHERE user_id = $1::uuid", [fixture.userId]);
+    await client.query(
+      `DELETE FROM public.users
+        WHERE oidc_issuer = $1 AND oidc_subject = ANY($2::text[])`,
+      [fixture.oidcIssuer, [fixture.ownerOidcSubject, ...fixture.additionalOidcSubjects]],
+    );
     await client.query("COMMIT");
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
@@ -74,8 +97,8 @@ export async function prepareAccountEditorDocumentFixtureV1(pool: Pool, fixture:
     await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1)", [fixture.organizationId]);
     await client.query(
       `INSERT INTO public.users (user_id, oidc_issuer, oidc_subject, display_name)
-       VALUES ($1::uuid, 'https://identity.e2e.invalid', 'account-e2e-user', 'Ada Lovelace')`,
-      [fixture.userId],
+       VALUES ($1::uuid, $2, $3, 'Ada Lovelace')`,
+      [fixture.userId, fixture.oidcIssuer, fixture.ownerOidcSubject],
     );
     await client.query("INSERT INTO public.organizations (tenant_id, display_name) VALUES ($1, 'Studio Team')", [
       fixture.organizationId,

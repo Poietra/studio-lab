@@ -6,76 +6,49 @@ import { Readable } from "node:stream";
 import { calculatePKCECodeChallenge } from "openid-client";
 import { Pool } from "pg";
 import type { Plugin } from "vite";
+import { createAccountInvitationFetchHandlerV1 } from "../server/accounts/account-invitation-fetch";
+import { createAccountInvitationServiceV1 } from "../server/accounts/account-invitation-service";
 import { createAccountSessionIdentityAuthenticatorV1 } from "../server/accounts/account-session-authenticator";
 import {
   createAccountSessionActionFetchHandlerV1,
   createAccountSessionFetchHandlerV1,
 } from "../server/accounts/account-session-fetch";
-import type {
-  AccountSessionControlRepositoryV1,
-  ResolvedAccountSessionAccountV1,
-  ResolvedAccountSessionV1,
-} from "../server/accounts/account-session-repository";
 import { createOidcLoginFetchHandlerV1 } from "../server/accounts/oidc-login-fetch";
-import type {
-  ConsumedOidcLoginAttemptV1,
-  CreateOidcLoginAttemptV1,
-  IssueAccountSessionV1,
-  IssueInvitedAccountSessionV1,
-  OidcLoginRepositoryV1,
-} from "../server/accounts/oidc-login-repository";
 import { createOidcLoginServiceV1 } from "../server/accounts/oidc-login-service";
 import type {
+  OidcAccountIdentityV1,
   OidcAuthorizationRequestV1,
   OidcAuthorizationResponseV1,
   OidcIdentityProviderV1,
 } from "../server/accounts/openid-client-provider";
 import { createOrganizationMembershipProductionAdmissionV1 } from "../server/accounts/organization-membership-admission";
-import type {
-  ExternalAccountIdentityV1,
-  OrganizationMembershipRepositoryV1,
-} from "../server/accounts/organization-membership-repository";
 import type { ManimApi } from "../server/manim-api";
 import { type ProductionManimServer, startProductionManimServer } from "../server/manim-production-server";
 import { applyBundledDurableStorageMigrations } from "../server/storage/postgres/migrate";
+import { PostgresAccountInvitationRepositoryV1 } from "../server/storage/postgres/postgres-account-invitation-repository";
+import { PostgresAccountSessionRepositoryV1 } from "../server/storage/postgres/postgres-account-session-repository";
 import { PostgresEditorDocumentRepositoryV1 } from "../server/storage/postgres/postgres-editor-document-repository";
+import { PostgresOidcLoginRepositoryV1 } from "../server/storage/postgres/postgres-oidc-login-repository";
+import { PostgresOrganizationMembershipRepositoryV1 } from "../server/storage/postgres/postgres-organization-membership-repository";
 import {
   ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1,
-  ACCOUNT_E2E_BILLING_ORGANIZATION_ID as BILLING_ORGANIZATION_ID,
   ACCOUNT_E2E_IDENTITY as IDENTITY,
   ACCOUNT_E2E_IMPORTED_SCENE as IMPORTED_SCENE,
+  ACCOUNT_E2E_INVITED_IDENTITY as INVITED_IDENTITY,
+  ACCOUNT_E2E_INVITED_USER_ID as INVITED_USER_ID,
+  ACCOUNT_E2E_MISMATCH_IDENTITY as MISMATCH_IDENTITY,
   ACCOUNT_E2E_PROJECT_ID as PROJECT_ID,
   ACCOUNT_E2E_SCENE_NAME as SCENE_NAME,
   ACCOUNT_E2E_SOURCE as SOURCE,
   ACCOUNT_E2E_SOURCE_PATH as SOURCE_PATH,
   ACCOUNT_E2E_STUDIO_ORGANIZATION_ID as STUDIO_ORGANIZATION_ID,
-  ACCOUNT_E2E_USER_ID as USER_ID,
 } from "./account-production-fixture";
 
 const SOURCE_HASH = ACCOUNT_EDITOR_DOCUMENT_FIXTURE_V1.sourceHash;
-const ORGANIZATIONS = Object.freeze([
-  Object.freeze({ displayName: "Billing Team", id: BILLING_ORGANIZATION_ID, role: "billing" as const }),
-  Object.freeze({ displayName: "Studio Team", id: STUDIO_ORGANIZATION_ID, role: "member" as const }),
-]);
 const THUMBNAIL = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
   "base64",
 );
-
-type LoginAttempt = Readonly<{
-  browserBindingHash: string;
-  codeVerifier: string;
-  expiresAt: Date;
-  invitationTokenDigest: Uint8Array | null;
-  nonce: string;
-}>;
-
-type BrowserSession = {
-  activeOrganizationId: string;
-  expiresAt: Date;
-  identity: ExternalAccountIdentityV1;
-  version: number;
-};
 
 type ManimRequestEvidence = Readonly<{
   method: string;
@@ -83,141 +56,9 @@ type ManimRequestEvidence = Readonly<{
   pathname: string;
 }>;
 
-function digestKey(value: Uint8Array) {
-  return Buffer.from(value).toString("hex");
-}
-
-function sameIdentity(identity: ExternalAccountIdentityV1) {
-  return identity.issuer === IDENTITY.issuer && identity.subject === IDENTITY.subject;
-}
-
-class AccountMemoryAuthority implements OidcLoginRepositoryV1, AccountSessionControlRepositoryV1 {
-  readonly attempts = new Map<string, LoginAttempt>();
-  readonly sessions = new Map<string, BrowserSession>();
-
-  close() {
-    return Promise.resolve();
-  }
-
-  consumeLoginAttempt(
-    selector: Readonly<{ browserBindingHash: Uint8Array; stateHash: Uint8Array }>,
-    signal?: AbortSignal,
-  ): Promise<ConsumedOidcLoginAttemptV1 | null> {
-    signal?.throwIfAborted();
-    const stateHash = digestKey(selector.stateHash);
-    const attempt = this.attempts.get(stateHash);
-    if (!attempt || attempt.browserBindingHash !== digestKey(selector.browserBindingHash)) {
-      return Promise.resolve(null);
-    }
-    this.attempts.delete(stateHash);
-    if (attempt.expiresAt.getTime() <= Date.now()) return Promise.resolve(null);
-    return Promise.resolve({
-      codeVerifier: attempt.codeVerifier,
-      invitationTokenDigest: attempt.invitationTokenDigest,
-      nonce: attempt.nonce,
-    });
-  }
-
-  createLoginAttempt(input: CreateOidcLoginAttemptV1, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    const expiresAt = new Date(Date.now() + input.lifetimeMs);
-    this.attempts.set(digestKey(input.stateHash), {
-      browserBindingHash: digestKey(input.browserBindingHash),
-      codeVerifier: input.codeVerifier,
-      expiresAt,
-      invitationTokenDigest: input.invitationTokenDigest ?? null,
-      nonce: input.nonce,
-    });
-    return Promise.resolve({ expiresAt });
-  }
-
-  issueAccountSession(input: IssueAccountSessionV1, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    if (!sameIdentity(input.identity)) return Promise.resolve(null);
-    const expiresAt = new Date(Date.now() + input.lifetimeMs);
-    this.sessions.set(digestKey(input.sessionTokenHash), {
-      activeOrganizationId: BILLING_ORGANIZATION_ID,
-      expiresAt,
-      identity: input.identity,
-      version: 1,
-    });
-    return Promise.resolve({ expiresAt });
-  }
-
-  issueInvitedAccountSession(_input: IssueInvitedAccountSessionV1, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    return Promise.resolve(null);
-  }
-
-  ready(signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    return Promise.resolve(true);
-  }
-
-  resolveAccountSession(sessionTokenHash: Uint8Array, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    const session = this.activeSession(sessionTokenHash);
-    return Promise.resolve(session ? this.account(session.activeOrganizationId, session.version) : null);
-  }
-
-  resolveActiveSession(sessionTokenHash: Uint8Array, signal?: AbortSignal): Promise<ResolvedAccountSessionV1 | null> {
-    signal?.throwIfAborted();
-    const session = this.activeSession(sessionTokenHash);
-    return Promise.resolve(
-      session ? { ...session.identity, sessionOrganizationId: session.activeOrganizationId } : null,
-    );
-  }
-
-  revokeAccountSession(sessionTokenHash: Uint8Array, signal?: AbortSignal) {
-    signal?.throwIfAborted();
-    this.sessions.delete(digestKey(sessionTokenHash));
-    return Promise.resolve();
-  }
-
-  switchActiveOrganization(
-    sessionTokenHash: Uint8Array,
-    organizationId: string,
-    expectedVersion: number,
-    signal?: AbortSignal,
-  ) {
-    signal?.throwIfAborted();
-    const session = this.activeSession(sessionTokenHash);
-    if (!session) return Promise.resolve({ kind: "invalid-session" } as const);
-    if (!ORGANIZATIONS.some((organization) => organization.id === organizationId)) {
-      return Promise.resolve({ kind: "organization-unavailable" } as const);
-    }
-    if (session.activeOrganizationId === organizationId) {
-      return Promise.resolve({ account: this.account(organizationId, session.version), kind: "updated" } as const);
-    }
-    if (session.version !== expectedVersion) return Promise.resolve({ kind: "conflict" } as const);
-    session.activeOrganizationId = organizationId;
-    session.version += 1;
-    return Promise.resolve({ account: this.account(organizationId, session.version), kind: "updated" } as const);
-  }
-
-  private account(activeOrganizationId: string, version: number): ResolvedAccountSessionAccountV1 {
-    return {
-      activeOrganizationId,
-      organizations: ORGANIZATIONS,
-      user: { displayName: "Ada Lovelace", id: USER_ID },
-      version,
-    };
-  }
-
-  private activeSession(sessionTokenHash: Uint8Array) {
-    const key = digestKey(sessionTokenHash);
-    const session = this.sessions.get(key);
-    if (!session || session.expiresAt.getTime() <= Date.now()) {
-      this.sessions.delete(key);
-      return null;
-    }
-    return session;
-  }
-}
-
 class FakeOidcProvider implements OidcIdentityProviderV1 {
   private readonly authorizationRequests = new Map<string, OidcAuthorizationRequestV1>();
-  private readonly codes = new Map<string, string>();
+  private readonly codes = new Map<string, Readonly<{ identity: OidcAccountIdentityV1; state: string }>>();
   private nextCode = 0;
 
   constructor(private readonly publicOrigin: string) {}
@@ -234,27 +75,47 @@ class FakeOidcProvider implements OidcIdentityProviderV1 {
   authorize(url: URL) {
     const state = url.searchParams.get("state");
     const request = state ? this.authorizationRequests.get(state) : null;
+    const identity =
+      url.searchParams.get("identity") === "owner"
+        ? IDENTITY
+        : url.searchParams.get("identity") === "invited"
+          ? INVITED_IDENTITY
+          : url.searchParams.get("identity") === "mismatch"
+            ? MISMATCH_IDENTITY
+            : null;
     if (
       !state ||
       !request ||
+      !identity ||
       request.codeChallenge !== url.searchParams.get("code_challenge") ||
       request.nonce !== url.searchParams.get("nonce")
     ) {
       return null;
     }
     const code = `account-e2e-code-${++this.nextCode}`;
-    this.codes.set(code, state);
+    this.codes.set(code, { identity, state });
     return { code, state };
+  }
+
+  pending(url: URL) {
+    const state = url.searchParams.get("state");
+    const request = state ? this.authorizationRequests.get(state) : null;
+    return Boolean(
+      state &&
+        request &&
+        request.codeChallenge === url.searchParams.get("code_challenge") &&
+        request.nonce === url.searchParams.get("nonce"),
+    );
   }
 
   async exchange(input: OidcAuthorizationResponseV1) {
     const code = input.callbackUrl.searchParams.get("code");
     const request = this.authorizationRequests.get(input.expectedState);
-    const state = code ? this.codes.get(code) : null;
+    const evidence = code ? this.codes.get(code) : null;
     if (
       !code ||
       !request ||
-      state !== input.expectedState ||
+      evidence?.state !== input.expectedState ||
       request.nonce !== input.expectedNonce ||
       request.codeChallenge !== (await calculatePKCECodeChallenge(input.codeVerifier))
     ) {
@@ -262,7 +123,7 @@ class FakeOidcProvider implements OidcIdentityProviderV1 {
     }
     this.codes.delete(code);
     this.authorizationRequests.delete(input.expectedState);
-    return IDENTITY;
+    return evidence.identity;
   }
 }
 
@@ -274,20 +135,24 @@ function deterministicRandomBytes() {
   };
 }
 
-function memberships(): OrganizationMembershipRepositoryV1 {
-  return {
-    close: async () => undefined,
-    ready: async (signal) => {
-      signal?.throwIfAborted();
-      return true;
-    },
-    resolveActiveMembership: async (identity, organizationId, signal) => {
-      signal?.throwIfAborted();
-      if (!sameIdentity(identity)) return null;
-      const organization = ORGANIZATIONS.find((candidate) => candidate.id === organizationId);
-      return organization ? { organizationId, role: organization.role, userId: USER_ID, version: 1n } : null;
-    },
-  };
+function escapedHtmlAttribute(value: string) {
+  return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+}
+
+function identitySelectionUrl(url: URL, identity: "invited" | "mismatch" | "owner") {
+  const selected = new URL(url);
+  selected.searchParams.set("identity", identity);
+  return escapedHtmlAttribute(`${selected.pathname}${selected.search}`);
+}
+
+function fakeOidcIdentitySelection(url: URL) {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>Test identity</title></head>
+<body><main><h1>Choose a test identity</h1>
+<a href="${identitySelectionUrl(url, "owner")}">Continue as Ada Lovelace</a>
+<a href="${identitySelectionUrl(url, "invited")}">Continue as invited member</a>
+<a href="${identitySelectionUrl(url, "mismatch")}">Continue with mismatched email</a>
+</main></body></html>`;
 }
 
 function runtimeApi(): ManimApi {
@@ -446,25 +311,40 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
       } finally {
         await migrationPool.end();
       }
-      const authority = new AccountMemoryAuthority();
       const provider = new FakeOidcProvider(publicOrigin);
+      const oidcRepository = new PostgresOidcLoginRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
+      });
+      const accountSessions = new PostgresAccountSessionRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
+      });
+      const invitationRepository = new PostgresAccountInvitationRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
+      });
+      const membershipRepository = new PostgresOrganizationMembershipRepositoryV1({
+        poolConfig: { connectionString: databaseUrl, max: 4 },
+      });
+      const evidencePool = new Pool({ connectionString: databaseUrl, max: 2 });
       const loginService = createOidcLoginServiceV1({
         loginAttemptLifetimeMs: 60_000,
         provider,
         randomBytes: deterministicRandomBytes(),
-        repository: authority,
+        randomUuid: () => INVITED_USER_ID,
+        repository: oidcRepository,
         sessionLifetimeMs: 60_000,
       });
+      const invitationService = createAccountInvitationServiceV1(invitationRepository);
       const loginHandler = createOidcLoginFetchHandlerV1(loginService, publicOrigin);
-      const sessionHandler = createAccountSessionFetchHandlerV1(authority, publicOrigin);
-      const actionHandler = createAccountSessionActionFetchHandlerV1(authority, publicOrigin);
+      const invitationHandler = createAccountInvitationFetchHandlerV1(invitationService, publicOrigin);
+      const sessionHandler = createAccountSessionFetchHandlerV1(accountSessions, publicOrigin);
+      const actionHandler = createAccountSessionActionFetchHandlerV1(accountSessions, publicOrigin);
       const editorDocuments = new PostgresEditorDocumentRepositoryV1({
         poolConfig: { connectionString: databaseUrl, max: 4 },
       });
       const productionServer = await startProductionManimServer({
         admission: createOrganizationMembershipProductionAdmissionV1({
-          identities: createAccountSessionIdentityAuthenticatorV1(authority),
-          memberships: memberships(),
+          identities: createAccountSessionIdentityAuthenticatorV1(accountSessions),
+          memberships: membershipRepository,
         }),
         config: {
           deployment: "production",
@@ -493,6 +373,19 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
         const url = new URL(request.url ?? "/", publicOrigin);
         void (async () => {
           if (url.pathname === "/__e2e/oidc/authorize") {
+            if (!url.searchParams.has("identity")) {
+              if (!provider.pending(url)) {
+                response.writeHead(400).end();
+                return;
+              }
+              response.writeHead(200, {
+                "cache-control": "no-store",
+                "content-type": "text/html; charset=utf-8",
+                "referrer-policy": "no-referrer",
+              });
+              response.end(fakeOidcIdentitySelection(url));
+              return;
+            }
             const authorized = provider.authorize(url);
             if (!authorized) {
               response.writeHead(400).end();
@@ -505,8 +398,18 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
             return;
           }
           if (url.pathname === "/__e2e/account/metrics") {
+            const sessions = await evidencePool.query<{ count: string }>(
+              `SELECT count(*)::text AS count
+                 FROM public.account_sessions
+                WHERE revoked_at IS NULL AND expires_at > clock_timestamp()`,
+            );
             response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" });
-            response.end(JSON.stringify({ activeSessionCount: authority.sessions.size, manimRequests: manimEvidence }));
+            response.end(
+              JSON.stringify({
+                activeSessionCount: Number(sessions.rows[0]?.count ?? "0"),
+                manimRequests: manimEvidence,
+              }),
+            );
             return;
           }
           if (url.pathname.startsWith("/auth/oidc/")) {
@@ -516,6 +419,10 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
           if (url.pathname === "/api/account/session" || url.pathname === "/api/account/logout") {
             const handler = request.method === "GET" ? sessionHandler : actionHandler;
             await sendFetchResponse(await handler.fetch(fetchRequest(request, publicOrigin)), response);
+            return;
+          }
+          if (url.pathname === "/api/account/invitations") {
+            await sendFetchResponse(await invitationHandler.fetch(fetchRequest(request, publicOrigin)), response);
             return;
           }
           if (url.pathname.startsWith("/api/manim/") || url.pathname.startsWith("/api/editor/")) {
@@ -538,7 +445,12 @@ export function accountProductionHarnessPlugin(publicOrigin: string, databaseUrl
       });
 
       preview.httpServer?.once("close", () => {
-        void Promise.allSettled([loginService.close(), productionServer.close()]);
+        void Promise.allSettled([
+          loginService.close(),
+          invitationService.close(),
+          productionServer.close(),
+          evidencePool.end(),
+        ]);
       });
     },
   };
