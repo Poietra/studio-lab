@@ -762,6 +762,33 @@ describe("Editor document authority", () => {
     expect(authority.sessionRecoveryPending).toBe(false);
   });
 
+  it("retains the exact session PUT when an abort can race with server acceptance", async () => {
+    const snapshot = sessionSnapshot([], { currentTime: 1 });
+    const controller = new AbortController();
+    const requests: unknown[] = [];
+    const putSession = vi.fn<EditorDocumentClientV1["putSession"]>(async (_identity, _key, request) => {
+      requests.push(request);
+      if (requests.length === 1) {
+        controller.abort();
+        throw new DOMException("request aborted", "AbortError");
+      }
+      return { kind: "stored", replayed: true, session: session(0, 1, request.snapshot) };
+    });
+    const authority = new EditorDocumentAuthorityV1(client({ putSession }), identity);
+    await authority.open();
+
+    await expect(authority.saveSession(snapshot, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(authority.sessionRecoveryPending).toBe(true);
+    await expect(authority.retrySession()).resolves.toEqual({
+      kind: "stored",
+      replayed: true,
+      sessionGeneration: "1",
+    });
+    expect(requests).toHaveLength(2);
+    expect(requests[1]).toEqual(requests[0]);
+    expect(authority.sessionRecoveryPending).toBe(false);
+  });
+
   it("reports session CAS loss separately and does not trust the conflicting generation", async () => {
     const authority = new EditorDocumentAuthorityV1(
       client({

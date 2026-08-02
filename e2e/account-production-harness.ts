@@ -36,13 +36,31 @@ import type {
 } from "../server/accounts/organization-membership-repository";
 import type { ManimApi } from "../server/manim-api";
 import { type ProductionManimServer, startProductionManimServer } from "../server/manim-production-server";
+import { importManimScene } from "../src/render-pipeline/source-import";
+import { AccountEditorDocumentMemoryRepositoryV1 } from "./editor-document-memory-repository";
 
 const BILLING_ORGANIZATION_ID = "billing-team";
 const STUDIO_ORGANIZATION_ID = "editor-team";
 const USER_ID = "2f2e3ea4-88de-4f37-81f7-1860d8f942f8";
 const IDENTITY = Object.freeze({ issuer: "https://identity.e2e.invalid", subject: "account-e2e-user" });
 const PROJECT_ID = "production-demo";
-const SOURCE_HASH = "a".repeat(64);
+const SOURCE_PATH = "scene.py";
+const SCENE_NAME = "ProductionScene";
+const SOURCE = `from manim import *
+
+class ProductionScene(Scene):
+    def construct(self):
+        equation = MathTex("E", "=", "m", "c^2")
+        self.play(Write(equation), run_time=1)
+        # poietra:anchor 1.000
+        self.wait(7)
+`;
+const IMPORTED_SCENE = importManimScene(SOURCE, SOURCE_PATH, SCENE_NAME);
+if (!IMPORTED_SCENE) throw new TypeError("The account E2E Scene fixture could not be imported.");
+if (!IMPORTED_SCENE.anchors.some((anchor) => Math.abs(anchor - 1) < 0.0005)) {
+  throw new TypeError("The account E2E Scene fixture must expose its one-second authoring anchor.");
+}
+const SOURCE_HASH = IMPORTED_SCENE.sourceHash;
 const ORGANIZATIONS = Object.freeze([
   Object.freeze({ displayName: "Billing Team", id: BILLING_ORGANIZATION_ID, role: "billing" as const }),
   Object.freeze({ displayName: "Studio Team", id: STUDIO_ORGANIZATION_ID, role: "member" as const }),
@@ -282,6 +300,8 @@ function memberships(): OrganizationMembershipRepositoryV1 {
 
 function runtimeApi(): ManimApi {
   return {
+    exportOriginalSource: async () => ({ fileName: SOURCE_PATH, projectId: PROJECT_ID, source: SOURCE }),
+    exportSource: async () => ({ fileName: SOURCE_PATH, projectId: PROJECT_ID, source: SOURCE }),
     projects: async () => ({
       defaultProjectId: PROJECT_ID,
       projects: [{ id: PROJECT_ID, kind: "managed", name: "Production Demo" }],
@@ -301,11 +321,42 @@ function runtimeApi(): ManimApi {
       generatedAt: "2026-08-01T00:00:00.000Z",
       imageKind: "rendered",
       projectId: PROJECT_ID,
-      sceneName: "ProductionScene",
+      sceneName: SCENE_NAME,
       sourceHash: SOURCE_HASH,
-      sourcePath: "scene.py",
+      sourcePath: SOURCE_PATH,
       state: "current",
     }),
+    workspace: async (projectId = PROJECT_ID) => {
+      if (projectId !== PROJECT_ID) throw new TypeError("The account E2E workspace identity is unavailable.");
+      return {
+        commandAvailable: false,
+        frame: { height: 8, width: 14.222 },
+        projectId: PROJECT_ID,
+        projectName: "Production Demo",
+        renderCapability: {
+          available: false,
+          kind: "durable-sandbox",
+          unavailableReason: "durable-render-unconfigured",
+        },
+        sources: [
+          {
+            path: SOURCE_PATH,
+            scenes: [
+              {
+                anchors: IMPORTED_SCENE.anchors,
+                name: IMPORTED_SCENE.name,
+                nextSceneId: null,
+                runtimeSceneState: IMPORTED_SCENE.runtimeSceneState,
+                sceneId: IMPORTED_SCENE.sceneId,
+                sourceHash: IMPORTED_SCENE.sourceHash,
+                sourceVariables: IMPORTED_SCENE.sourceVariables,
+                staticSemanticState: IMPORTED_SCENE.staticSemanticState,
+              },
+            ],
+          },
+        ],
+      };
+    },
   } as unknown as ManimApi;
 }
 
@@ -409,6 +460,13 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
       const loginHandler = createOidcLoginFetchHandlerV1(loginService, publicOrigin);
       const sessionHandler = createAccountSessionFetchHandlerV1(authority, publicOrigin);
       const actionHandler = createAccountSessionActionFetchHandlerV1(authority, publicOrigin);
+      const editorDocuments = new AccountEditorDocumentMemoryRepositoryV1({
+        projectId: PROJECT_ID,
+        sourceHash: SOURCE_HASH,
+        sourcePath: SOURCE_PATH,
+        subjectId: USER_ID,
+        tenantId: STUDIO_ORGANIZATION_ID,
+      });
       const productionServer = await startProductionManimServer({
         admission: createOrganizationMembershipProductionAdmissionV1({
           identities: createAccountSessionIdentityAuthenticatorV1(authority),
@@ -422,7 +480,9 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
         },
         runtime: {
           api: runtimeApi(),
-          close: async () => undefined,
+          close: () => editorDocuments.close(),
+          editorDocuments,
+          editorReady: async (signal) => editorDocuments.ready(signal),
           ready: async () => ({
             executionBoundary: "adapter-attests-external-sandbox",
             ready: true,
@@ -455,6 +515,24 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
             response.end(JSON.stringify({ activeSessionCount: authority.sessions.size, manimRequests: manimEvidence }));
             return;
           }
+          if (url.pathname === "/__e2e/editor/reset") {
+            if (request.method !== "POST") {
+              response.writeHead(405, { allow: "POST" }).end();
+              return;
+            }
+            editorDocuments.reset();
+            response.writeHead(200, { "cache-control": "no-store", "content-type": "application/json" });
+            response.end(
+              JSON.stringify({
+                organizationId: STUDIO_ORGANIZATION_ID,
+                projectId: PROJECT_ID,
+                sceneId: IMPORTED_SCENE.sceneId,
+                sourceHash: SOURCE_HASH,
+                userId: USER_ID,
+              }),
+            );
+            return;
+          }
           if (url.pathname.startsWith("/auth/oidc/")) {
             await sendFetchResponse(await loginHandler.fetch(fetchRequest(request, publicOrigin)), response);
             return;
@@ -464,7 +542,7 @@ export function accountProductionHarnessPlugin(publicOrigin: string): Plugin {
             await sendFetchResponse(await handler.fetch(fetchRequest(request, publicOrigin)), response);
             return;
           }
-          if (url.pathname.startsWith("/api/manim/")) {
+          if (url.pathname.startsWith("/api/manim/") || url.pathname.startsWith("/api/editor/")) {
             manimEvidence.push({
               method: request.method ?? "GET",
               organizationHeader:

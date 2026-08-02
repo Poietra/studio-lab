@@ -11,9 +11,11 @@ import {
   editorProgramRecord,
   initializeEditorScene,
   installAuthoritativeEditorPrograms,
+  installCloudEditorSessionSnapshotV1,
   LatestRequestController,
   redoEditorProgram,
   restoreEditorSession,
+  snapshotCloudEditorSessionV1,
   snapshotEditorSession,
   stageEditorDraft,
   undoEditorProgram,
@@ -123,6 +125,91 @@ describe("editor session lifecycle", () => {
       motionDuration: 3,
       selectedObjectIds: ["first-visible"],
     });
+  });
+
+  it("exports only the strict subject-private cloud snapshot", () => {
+    const exported = snapshotCloudEditorSessionV1({
+      ...createInitialEditorState(),
+      durationError: "local duration error",
+      draftError: "local draft error",
+      insertValue: "unfinished input",
+      instruction: "unfinished instruction",
+      suggestionMessage: "transient",
+    });
+
+    expect(exported).toMatchObject({ appliedPrograms: [], currentTime: 0 });
+    expect(exported).not.toHaveProperty("durationError");
+    expect(exported).not.toHaveProperty("draftError");
+    expect(exported).not.toHaveProperty("insertValue");
+    expect(exported).not.toHaveProperty("instruction");
+    expect(exported).not.toHaveProperty("pendingClarification");
+    expect(exported).not.toHaveProperty("suggestionMessage");
+  });
+
+  it("installs cloud authoring state only beside the exact authoritative projection", () => {
+    const authoritative = record("applied");
+    const privateApplied = editorProgramRecord(authoritative, motionOperation, ["equation"]);
+    const cloud = snapshotCloudEditorSessionV1({
+      ...createInitialEditorState(),
+      appliedPrograms: [privateApplied],
+      currentTime: 7,
+      draftOperation: motionOperation,
+      draftProgram: record("draft"),
+      insertTool: "Circle",
+      interactionMode: "position",
+      motionDuration: 2.5,
+      programUndoEntries: [{ index: 0, kind: "append", value: privateApplied }],
+      selectedObjectIds: ["equation"],
+    });
+    const current = {
+      ...createInitialEditorState(),
+      isPlaying: true,
+      suggestionMessage: "must be cleared",
+      suggestionStatus: "loading" as const,
+    };
+
+    const installed = installCloudEditorSessionSnapshotV1(current, [authoritative], cloud);
+
+    expect(installed.kind).toBe("installed");
+    if (installed.kind !== "installed") throw new Error("Expected the cloud snapshot to install.");
+    expect(installed.state).toMatchObject({
+      appliedPrograms: [privateApplied],
+      currentTime: 7,
+      draftProgram: record("draft"),
+      insertTool: "Circle",
+      interactionMode: "position",
+      isPlaying: false,
+      motionDuration: 2.5,
+      selectedObjectIds: ["equation"],
+      suggestionMessage: null,
+      suggestionStatus: "idle",
+    });
+
+    const mismatched = installCloudEditorSessionSnapshotV1(current, [record("other")], cloud);
+    expect(mismatched).toEqual({ kind: "projection-mismatch" });
+    expect(installCloudEditorSessionSnapshotV1(current, [authoritative], { ...cloud, unknown: true })).toEqual({
+      kind: "invalid-snapshot",
+    });
+  });
+
+  it("preserves the personal redo boundary across a cloud snapshot round trip", () => {
+    const first = editorProgramRecord(record("first"), null, []);
+    const latest = editorProgramRecord(record("latest"), motionOperation, ["equation"]);
+    const beforeUndo = {
+      ...createInitialEditorState(),
+      appliedPrograms: [first, latest],
+      programUndoEntries: [
+        { index: 0, kind: "append" as const, value: first },
+        { index: 1, kind: "append" as const, value: latest },
+      ],
+    };
+    const afterUndo = undoEditorProgram(beforeUndo);
+    const cloud = snapshotCloudEditorSessionV1(afterUndo);
+    const restored = installCloudEditorSessionSnapshotV1(createInitialEditorState(), [first], cloud);
+
+    expect(restored.kind).toBe("installed");
+    if (restored.kind !== "installed") throw new Error("Expected the cloud snapshot to install.");
+    expect(redoEditorProgram(restored.state).appliedPrograms).toEqual([first, latest]);
   });
 });
 

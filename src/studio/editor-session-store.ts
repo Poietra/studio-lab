@@ -183,7 +183,11 @@ function parseLocalEditorSessionSnapshot(value: unknown): EditorSessionSnapshot 
   return durable.success && transient.success ? { ...durable.data, ...transient.data } : null;
 }
 
-function durableSnapshot(snapshot: EditorSessionSnapshot) {
+/**
+ * Closes the local editor payload over the subject-private cloud contract.
+ * Text inputs and transient errors never cross the account storage boundary.
+ */
+export function durableEditorSessionSnapshotV1(snapshot: EditorSessionSnapshot): EditorSessionSnapshotV1 {
   return parseEditorSessionSnapshotV1({
     appliedPrograms: snapshot.appliedPrograms,
     currentTime: snapshot.currentTime,
@@ -227,6 +231,7 @@ function migrateStoredEnvelope(value: unknown) {
 }
 
 export class EditorSessionStore {
+  private readonly cloudManagedSessions = new Set<string>();
   private readonly memorySessions = new Map<string, EditorSessionSnapshot>();
   private readonly persistedSessions = new Map<string, StoredEntry>();
 
@@ -257,7 +262,29 @@ export class EditorSessionStore {
       const parsedKey = JSON.parse(key) as readonly string[];
       if (parsedKey[0] === projectId) this.memorySessions.delete(key);
     }
+    for (const key of this.cloudManagedSessions) {
+      const [candidateProjectId] = JSON.parse(key) as readonly string[];
+      if (candidateProjectId === projectId) this.cloudManagedSessions.delete(key);
+    }
     if (changed) this.flush();
+  }
+
+  clearMigrated(identity: EditorSessionIdentity) {
+    if (!this.markCloudManaged(identity)) return false;
+    this.clear(identity);
+    return true;
+  }
+
+  isCloudManaged(identity: EditorSessionIdentity) {
+    const key = editorSessionIdentityKey(identity);
+    return key !== null && this.cloudManagedSessions.has(key);
+  }
+
+  markCloudManaged(identity: EditorSessionIdentity) {
+    const key = editorSessionIdentityKey(identity);
+    if (key === null) return false;
+    this.cloudManagedSessions.add(key);
+    return true;
   }
 
   pruneProjects(projectIds: ReadonlySet<string>) {
@@ -272,6 +299,10 @@ export class EditorSessionStore {
       const parsedKey = JSON.parse(key) as readonly string[];
       const projectId = parsedKey[0];
       if (projectId && !projectIds.has(projectId)) this.memorySessions.delete(key);
+    }
+    for (const key of this.cloudManagedSessions) {
+      const [projectId] = JSON.parse(key) as readonly string[];
+      if (projectId && !projectIds.has(projectId)) this.cloudManagedSessions.delete(key);
     }
     if (changed) this.flush();
   }
@@ -317,11 +348,12 @@ export class EditorSessionStore {
     if (!parsedIdentity.success || !parsedSnapshot) return false;
     const persistedIdentity = storedIdentity(parsedIdentity.data);
     const key = sessionKey(persistedIdentity);
+    if (this.cloudManagedSessions.has(key)) return false;
     this.memorySessions.set(key, parsedSnapshot);
     const entry: StoredEntry = {
       identity: persistedIdentity,
       savedAt: Math.max(0, Math.floor(this.now())),
-      snapshot: durableSnapshot(parsedSnapshot),
+      snapshot: durableEditorSessionSnapshotV1(parsedSnapshot),
     };
     const serializedEntry = JSON.stringify(entry);
     if (serializedBytes(serializedEntry) > MAX_STORED_EDITOR_SESSION_BYTES) {
