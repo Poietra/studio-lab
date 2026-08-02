@@ -1,4 +1,5 @@
 import type {
+  BrowserManimProjectImportRequestV1,
   ManimProjectListView,
   ManimProjectMutationView,
   OriginalManimSourceExportRequest,
@@ -27,6 +28,7 @@ import type { ManimProjectConfig } from "./manim-render-config";
 import { ManimRenderManager } from "./manim-render-manager";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
+import { validateBrowserManimProjectImportV1 } from "./manim-workspace";
 
 export class ManimProjectRegistry {
   private readonly catalog: PersistentManimProjectCatalog | null;
@@ -210,6 +212,27 @@ export class ManimProjectRegistry {
       }
       throw error;
     }
+    return this.mutationView({ id: created.projectId, kind: created.kind, name: created.projectName });
+  }
+
+  importBrowserProject(request: BrowserManimProjectImportRequestV1, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    const { projectPng, request: validated } = validateBrowserManimProjectImportV1(request, this.frame);
+    signal?.throwIfAborted();
+    const catalog = this.mutableCatalog();
+    const created = catalog.createManagedFromSource(validated, projectPng?.bytes ?? null);
+    try {
+      this.addManager(created);
+    } catch (error) {
+      try {
+        catalog.rollbackManagedCreation(created.projectId);
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], "Could not roll back the imported workspace creation.");
+      }
+      throw error;
+    }
+    // The catalog and source file are already published. Do not turn a late
+    // caller cancellation into cleanup of a workspace now visible by ID.
     return this.mutationView({ id: created.projectId, kind: created.kind, name: created.projectName });
   }
 

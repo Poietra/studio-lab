@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
@@ -20,7 +19,6 @@ import {
   FAST_MANIM_SNAPSHOT_UNSUPPORTED_MESSAGES_V1,
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
-  fastManimSnapshotManifestIdV1,
   fastManimSnapshotMotionPathChannelIdV2,
   fastManimSnapshotMotionPathChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
@@ -40,6 +38,10 @@ import {
   parseVerifiedFastManimSnapshotResultV1,
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
+import {
+  pngSnapshotBundleFixture,
+  staticSnapshotBundleFixture,
+} from "./test-fixtures/fast-manim-snapshot-bundle-fixture";
 
 const expected = {
   frame: { height: 8, width: 14.222222222222221 },
@@ -57,73 +59,8 @@ const expected = {
 // is server-side expected state only and never appears on the wire.
 const { frame: _serverOnlyFrame, snapshotVersion: _serverOnlySnapshotVersion, ...wireCorrelation } = expected;
 
-type FixtureIdRecord = Record<string, unknown> & {
-  entityId?: string;
-  id: string;
-  kind?: string;
-  parentId?: string | null;
-  provenanceId?: string;
-  sceneOrder?: number;
-};
-
 async function importedBundle(): Promise<SceneIrBundleV1> {
-  // The exporter's static v1 shape: cubic-path-only entities, no animation
-  // channels, 1-second duration — never the shared animated engine fixture.
-  const url = new URL("./test-fixtures/fast-manim-static-bundle.json", import.meta.url);
-  const fixture = JSON.parse(await readFile(url, "utf8")) as {
-    assets: Record<string, unknown>;
-    scene: Record<string, unknown> & { entities: FixtureIdRecord[] };
-  };
-  // Every identifier is the exact deterministic ID the mutual
-  // exporter/server rule derives from the Scene identity and the validated
-  // enumerate order: `entity:${sceneOrder}`, `manifest`, one
-  // `provenance:scene` record, and one `provenance:entity:${sceneOrder}`
-  // record per entity in order.
-  const ns = (suffix: string) => `${expected.sceneId}/${suffix}`;
-  const entityProvenanceId = (sceneOrder: number) => ns(`provenance:entity:${sceneOrder}`);
-  const manifestId = ns("manifest");
-  const manifestDigest = await digestAssetManifestV1({
-    assets: [],
-    manifestDigest: ZERO_SHA256,
-    manifestId,
-    schema: "poietra.asset-manifest",
-    version: 1,
-  });
-  const draft = sceneIrBundleV1Schema.parse({
-    assets: { assets: [], manifestDigest, manifestId, schema: "poietra.asset-manifest", version: 1 },
-    scene: {
-      ...fixture.scene,
-      animationChannels: [],
-      assetManifest: { manifestDigest, manifestId },
-      entities: fixture.scene.entities.map((entity, index) => ({
-        ...entity,
-        id: ns(`entity:${index}`),
-        parentId: null,
-        provenanceId: entityProvenanceId(index),
-      })),
-      provenance: [
-        {
-          evidence: ["fast-manim static snapshot"],
-          id: ns("provenance:scene"),
-          origin: "fast-manim-server-snapshot",
-        },
-        ...fixture.scene.entities.map((_, index) => ({
-          evidence: ["fast-manim static snapshot"],
-          id: entityProvenanceId(index),
-          origin: "fast-manim-server-snapshot",
-        })),
-      ],
-      sceneId: expected.sceneId,
-      source: {
-        kind: "imported-manim-server-snapshot",
-        runtimeConfigHash: expected.runtimeConfigHash,
-        snapshotHash: ZERO_SHA256,
-        snapshotVersion: 1,
-        sourceHash: expected.sourceHash,
-      },
-    },
-  });
-  return draft;
+  return staticSnapshotBundleFixture(expected);
 }
 
 type FixturePoint = Readonly<{ x: number; y: number }>;
@@ -388,75 +325,7 @@ async function hermeticMathTexMorphBundleV5(
 }
 
 async function hermeticPngBundle(sampler: "linear" | "nearest" = "nearest"): Promise<SceneIrBundleV1> {
-  const base = await importedBundle();
-  const pixelHeight = 1;
-  const pixelWidth = 2;
-  const sha256 = "4".repeat(64);
-  const assetId = fastManimSnapshotPngAssetIdV4(expected.sceneId);
-  const manifestId = fastManimSnapshotManifestIdV1(expected.sceneId);
-  const asset = {
-    alphaMode: "straight" as const,
-    byteLength: 74,
-    colorSpace: "srgb" as const,
-    id: assetId,
-    kind: "png-image" as const,
-    mediaType: "image/png" as const,
-    pixelHeight,
-    pixelWidth,
-    sha256,
-  };
-  const manifestDigest = await digestAssetManifestV1({
-    assets: [asset],
-    manifestDigest: ZERO_SHA256,
-    manifestId,
-    schema: "poietra.asset-manifest",
-    version: 1,
-  });
-  const height = (pixelHeight / 1_080) * expected.frame.height;
-  const width = (height * pixelWidth) / pixelHeight;
-  return sceneIrBundleV1Schema.parse({
-    assets: {
-      assets: [asset],
-      manifestDigest,
-      manifestId,
-      schema: "poietra.asset-manifest",
-      version: 1,
-    },
-    scene: {
-      ...base.scene,
-      assetManifest: { manifestDigest, manifestId },
-      entities: [
-        {
-          ...base.scene.entities[0],
-          appearance: { kind: "image", opacity: 1 },
-          geometry: {
-            asset: { assetId, sha256 },
-            kind: "image",
-            localRect: { bottom: -height / 2, left: -width / 2, right: width / 2, top: height / 2 },
-            sampler,
-          },
-          sourceZIndex: 0,
-        },
-      ],
-      provenance: [
-        {
-          ...base.scene.provenance[0],
-          evidence: ["fast-manim hermetic PNG Scene snapshot profile v4"],
-        },
-        {
-          ...base.scene.provenance[1],
-          evidence: [
-            "capability png-image: one verified PNG-backed rectangle",
-            `PNG encoded digest ${sha256}`,
-            `PNG dimensions ${pixelWidth} x ${pixelHeight}`,
-            `PNG sampler ${sampler}`,
-          ],
-        },
-      ],
-      requiredCapabilities: ["png-image"],
-      source: { ...base.scene.source, snapshotVersion: 4 },
-    },
-  });
+  return pngSnapshotBundleFixture({ ...expected, snapshotVersion: 4 }, { sampler });
 }
 
 async function dynamicOpacityBundle(): Promise<SceneIrBundleV1> {

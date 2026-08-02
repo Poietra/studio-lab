@@ -4,6 +4,7 @@ import { isIP } from "node:net";
 
 import { z } from "zod";
 
+import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import { EditSuggestionAdmissionController } from "./edit-suggestions/admission";
 import { createEditSuggestionRequestHandler, EDIT_SUGGESTION_ROUTE } from "./edit-suggestions/handler";
 import type { EditSuggestionGenerator } from "./edit-suggestions/service";
@@ -13,6 +14,7 @@ import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
   authenticateManimRequestContext,
   handleManimRequest,
+  isManimBrowserProjectImportRequest,
   isManimRenderStartRequest,
   isManimVideoRequest,
   isManimWorkspaceBootstrapRequest,
@@ -63,7 +65,7 @@ const DEFAULT_LIMITS = {
   handlerTimeoutMs: 30_000,
   headersTimeoutMs: 10_000,
   keepAliveTimeoutMs: 5_000,
-  maxBodyBytes: 512 * 1024,
+  maxBodyBytes: MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
   maxConnections: 256,
   maxHeaderBytes: 16 * 1024,
   maxRequestsPerSocket: 100,
@@ -90,7 +92,7 @@ const limitsSchema = z
       .number()
       .int()
       .min(1_024)
-      .max(512 * 1024)
+      .max(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1)
       .default(DEFAULT_LIMITS.maxBodyBytes),
     maxConnections: z.number().int().min(1).max(10_000).default(DEFAULT_LIMITS.maxConnections),
     maxHeaderBytes: z
@@ -321,7 +323,7 @@ function validateTransportRequest(
     request.resume();
     throw new TransportError("Request body is too large.", 413);
   }
-  const bodyMethod = request.method === "POST" || request.method === "PATCH";
+  const bodyMethod = request.method === "POST" || request.method === "PUT" || request.method === "PATCH";
   if (bodyMethod && contentLength === undefined) {
     request.resume();
     throw new TransportError("A bounded Content-Length header is required.", 411);
@@ -412,7 +414,9 @@ export async function startProductionManimServer(
         options.runtime.editorDocuments === null ||
         typeof options.runtime.editorDocuments.openDocument !== "function" ||
         typeof options.runtime.editorDocuments.commitMutation !== "function" ||
+        typeof options.runtime.editorDocuments.putSessionSnapshot !== "function" ||
         typeof options.runtime.editorDocuments.readEventTail !== "function" ||
+        typeof options.runtime.editorDocuments.readSessionSnapshot !== "function" ||
         typeof options.runtime.editorReady !== "function"))
   ) {
     throw new TypeError("Production editor document adapter is incomplete.");
@@ -706,15 +710,17 @@ export async function startProductionManimServer(
         );
         return;
       }
-      // Project/workspace bootstrap requires only durable source storage so the
-      // workspace can report a bounded render outage. Render-start routes use
-      // that same reported render boundary; existing session and unrelated
-      // routes retain the full sandbox + durable-runtime attestation.
-      const requestRuntimeReady = isManimWorkspaceBootstrapRequest(request.method, pathname)
-        ? await runtimeWorkspaceIsReady(controller.signal)
-        : isManimRenderStartRequest(request.method, pathname)
-          ? await runtimeRenderIsReady(controller.signal)
-          : await runtimeIsReady(controller.signal);
+      // Project/workspace bootstrap and bounded browser source import require
+      // only durable source storage, so they remain available through a render
+      // outage. Render-start routes use the exact reported render boundary;
+      // existing session and unrelated routes retain full runtime attestation.
+      const requestRuntimeReady =
+        isManimWorkspaceBootstrapRequest(request.method, pathname) ||
+        isManimBrowserProjectImportRequest(request.method, pathname)
+          ? await runtimeWorkspaceIsReady(controller.signal)
+          : isManimRenderStartRequest(request.method, pathname)
+            ? await runtimeRenderIsReady(controller.signal)
+            : await runtimeIsReady(controller.signal);
       if (!requestRuntimeReady) {
         throw new TransportError("Production runtime is not ready.", 503);
       }

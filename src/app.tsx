@@ -11,6 +11,7 @@ import {
   type EditSuggestionOperation,
   suggestEdit,
 } from "./ai/edit-suggestions";
+import type { EditorDocumentAuthorityOpenOutcomeV1 } from "./collaboration/editor-document-authority";
 import {
   MAX_EDITOR_LIVE_PLAYHEAD_SECONDS_V1,
   MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
@@ -106,15 +107,23 @@ import { replaceAppliedProgram } from "./studio/transactions";
 import {
   type AppliedProgramEdit,
   applyEditorDraft as applyEditorDraftTransition,
+  createInitialEditorState,
   type EditorControllerState,
   type EditorProgramRecord,
   type EditorSessionIdentity,
   editorProgramRecord,
+  initializeEditorScene,
+  installAuthoritativeEditorPrograms,
+  installCloudEditorSessionSnapshotV1,
   redoEditorProgram as redoEditorProgramTransition,
+  snapshotCloudEditorSessionV1,
   undoEditorProgram as undoEditorProgramTransition,
   useEditorController,
 } from "./studio/use-editor-controller";
-import { useEditorDocumentAuthorityV1 } from "./studio/use-editor-document-authority";
+import {
+  editorDocumentSessionFlushAllowsTransitionV1,
+  useEditorDocumentAuthorityV1,
+} from "./studio/use-editor-document-authority";
 import { useEditorRevisionController } from "./studio/use-editor-revision-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
@@ -277,16 +286,18 @@ export function App({
     applyDraft: applyEditorDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
+    clearMigratedLocalSession,
     clearProjectSessions,
     clearSession,
     discardDraft,
     editAppliedProgram: stageAppliedProgramEdit,
     finishSuggestionRequest,
     installAcceptedState,
-    installAuthoritativePrograms,
     isSuggestionRequestCurrent,
+    markSessionCloudManaged,
     openSession,
     pruneSessions,
+    readLocalSessionForCloudMigration,
     redoProgram: redoEditorProgram,
     resetPrograms,
     saveSession,
@@ -333,6 +344,10 @@ export function App({
     suggestionStatus,
     verifiedSourceDurationBasis,
   } = editorState;
+  const cloudEditorSessionSnapshot = useMemo(
+    () => (accountSession ? snapshotCloudEditorSessionV1(editorState) : null),
+    [accountSession, editorState],
+  );
   const {
     reconcileRenderedSource,
     reimportWorkspace,
@@ -363,6 +378,7 @@ export function App({
   const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
   const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
+  const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
@@ -370,6 +386,7 @@ export function App({
   const pasteCount = useRef(0);
   const commandHandler = useRef<(command: StudioCommandId) => boolean>(() => false);
   const previewActivationDialog = useRef<HTMLDialogElement | null>(null);
+  const sessionTransitionInFlight = useRef(false);
   const sourceTimingResolutionDialog = useRef<HTMLDialogElement | null>(null);
   const sourceTimingResolutionTarget = useRef<string | null>(null);
   const workspaceBounds = useRef<HTMLElement | null>(null);
@@ -491,19 +508,145 @@ export function App({
   const installEditorDocumentProjection = useCallback(
     (programs: readonly ProgramRecord["program"][], reason: "open" | "remote") => {
       if (!activeScene) throw new TypeError("The authoritative Editor projection has no selected Scene.");
-      installAuthoritativePrograms(
-        materializeAuthoritativeEditorProgramsV1(activeScene, appliedPrograms, programs),
-        reason === "remote"
-          ? "This Scene changed in another editor. Local draft and Undo/Redo history were reset."
-          : null,
+      installAcceptedState(
+        installAuthoritativeEditorPrograms(
+          editorState,
+          materializeAuthoritativeEditorProgramsV1(activeScene, appliedPrograms, programs),
+          reason === "remote"
+            ? "This Scene changed in another editor. Local draft and Undo/Redo history were reset."
+            : null,
+        ),
       );
     },
-    [activeScene, appliedPrograms, installAuthoritativePrograms],
+    [activeScene, appliedPrograms, editorState, installAcceptedState],
+  );
+  const bootstrapEditorDocumentSession = useCallback(
+    (outcome: EditorDocumentAuthorityOpenOutcomeV1) => {
+      if (!activeProjectId || !activeScene) {
+        throw new TypeError("The private Editor session has no selected Scene.");
+      }
+      const identity = {
+        projectId: activeProjectId,
+        sceneId: activeScene.sceneId,
+        sourceHash: activeScene.sourceHash,
+      };
+      const initialTime = activeScene.anchors[0] ?? 0;
+      const initialEntities = Object.values(activeScene.runtimeSceneState.objectGraph.entities).filter((entity) =>
+        entity.lifetime.some((lifetime) => initialTime >= lifetime.start && initialTime < lifetime.end),
+      );
+      const authoritativePrograms = materializeAuthoritativeEditorProgramsV1(activeScene, [], outcome.programs);
+      const cleanState = installAuthoritativeEditorPrograms(
+        initializeEditorScene(createInitialEditorState(), {
+          currentTime: clamp(initialTime, 0, activeScene.runtimeSceneState.duration),
+          selectedObjectIds: initialEntities.slice(0, 1).map((entity) => entity.id),
+        }),
+        authoritativePrograms,
+      );
+      if (outcome.session !== null) {
+        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativePrograms, outcome.session);
+        if (installed.kind !== "installed") {
+          throw new TypeError(`The private Editor session could not be installed (${installed.kind}).`);
+        }
+        installAcceptedState(installed.state);
+        return {
+          onCloudReady: () => {
+            if (!markSessionCloudManaged(identity)) {
+              throw new TypeError("The private Editor session identity could not be marked cloud-managed.");
+            }
+          },
+          persist: false,
+          snapshot: outcome.session,
+        } as const;
+      }
+
+      const localCandidate =
+        outcome.sessionGeneration === "0" ? readLocalSessionForCloudMigration(identity, authoritativePrograms) : null;
+      if (localCandidate !== null) {
+        const installed = installCloudEditorSessionSnapshotV1(cleanState, authoritativePrograms, localCandidate);
+        if (installed.kind !== "installed") {
+          throw new TypeError(`The local Editor session could not be migrated (${installed.kind}).`);
+        }
+        installAcceptedState(installed.state);
+        return {
+          onCloudReady: () => {
+            if (!clearMigratedLocalSession(identity)) {
+              throw new TypeError("The migrated local Editor session could not be cleared.");
+            }
+          },
+          persist: true,
+          snapshot: localCandidate,
+        } as const;
+      }
+
+      installAcceptedState(cleanState);
+      return {
+        onCloudReady: () => {
+          if (!markSessionCloudManaged(identity)) {
+            throw new TypeError("The private Editor session identity could not be marked cloud-managed.");
+          }
+        },
+        persist: true,
+        snapshot: snapshotCloudEditorSessionV1(cleanState),
+      } as const;
+    },
+    [
+      activeProjectId,
+      activeScene,
+      clearMigratedLocalSession,
+      installAcceptedState,
+      markSessionCloudManaged,
+      readLocalSessionForCloudMigration,
+    ],
   );
   const editorDocumentAuthority = useEditorDocumentAuthorityV1({
     identity: editorDocumentIdentity,
+    onOpen: bootstrapEditorDocumentSession,
     onProjection: installEditorDocumentProjection,
+    ownerKey: accountSession?.user.id ?? null,
+    sessionSnapshot: cloudEditorSessionSnapshot,
   });
+  async function runAfterEditorSessionFlush(
+    transition: () => unknown | Promise<unknown>,
+    transitionKind: "account" | "document" = "document",
+  ) {
+    if (sessionTransitionInFlight.current) return false;
+    sessionTransitionInFlight.current = true;
+    setSessionTransitionPending(true);
+    cancelSuggestionRequest();
+    setIsPlaying(false);
+    saveEditorSession();
+    try {
+      const flushOutcome = await editorDocumentAuthority.flushSession();
+      if (!editorDocumentSessionFlushAllowsTransitionV1(flushOutcome, transitionKind)) return false;
+      await transition();
+      return true;
+    } finally {
+      sessionTransitionInFlight.current = false;
+      setSessionTransitionPending(false);
+    }
+  }
+
+  const flushedAccountActions: AccountSessionActionsV1 | null = accountActions
+    ? {
+        actionError: accountActions.actionError,
+        logout: () => {
+          void runAfterEditorSessionFlush(accountActions.logout, "account");
+        },
+        switchOrganization: (organizationId) => {
+          void runAfterEditorSessionFlush(() => accountActions.switchOrganization(organizationId), "account");
+        },
+      }
+    : null;
+
+  function reimportWorkspaceAfterSessionFlush() {
+    void runAfterEditorSessionFlush(() => {
+      void reimportWorkspace();
+    });
+  }
+
+  function discardPendingCloudSession() {
+    if (editorDocumentAuthority.discardPendingSession()) window.location.reload();
+  }
   const editorPresenceSessionAligned =
     activeScene !== null &&
     activeSessionIdentity?.projectId === activeProjectId &&
@@ -520,7 +663,7 @@ export function App({
         : [],
     });
   }, [currentTime, editorDocumentIdentity, editorPresenceSessionAligned, selectedObjectIds, updateEditorPresence]);
-  const editorDocumentPresentationReady = !editorDocumentAuthority.enabled || editorDocumentAuthority.canAuthor();
+  const editorDocumentPresentationReady = editorDocumentAuthority.presentationReady;
 
   const importedSceneBoundaryActive =
     activeScene?.runtimeSceneState.eventTrack.events.some(
@@ -634,6 +777,7 @@ export function App({
   const { sourceLifecyclePending } = sourceLifecycle;
   const studioAuthoringLocked =
     editorDocumentAuthority.authoringBlocked ||
+    sessionTransitionPending ||
     sourceLifecycle.studioAuthoringLocked ||
     (editorRevision.selectionAligned && !editorRevision.sessionReady);
   const sourceDurationSessionKey = editorRevision.sessionKey;
@@ -719,15 +863,15 @@ export function App({
     cancelSuggestionRequest();
     setIsPlaying(false);
     setDraftError(null);
+    const accepted = { ...planned, isPlaying: false };
     try {
-      const outcome = await editorDocumentAuthority.commitMutation(mutation);
+      const outcome = await editorDocumentAuthority.commitMutation(mutation, snapshotCloudEditorSessionV1(accepted));
       if (outcome.kind === "stale") return;
       if (outcome.kind === "blocked") {
         setDraftError(editorDocumentAuthority.message ?? "The shared Editor mutation could not be committed.");
         return;
       }
       if (outcome.kind === "reconciled") return;
-      const accepted = { ...planned, isPlaying: false };
       if (
         !isEditorRevisionRequestCurrent(revisionRequest) ||
         !editorProgramsMatchAuthorityV1(accepted.appliedPrograms, outcome.snapshot.programs)
@@ -1333,14 +1477,17 @@ export function App({
       }
       if (authorityMutation) {
         cancelSuggestionRequest();
-        const outcome = await editorDocumentAuthority.commitMutation(authorityMutation);
+        const accepted = { ...plannedAuthorityState!, isPlaying: false };
+        const outcome = await editorDocumentAuthority.commitMutation(
+          authorityMutation,
+          snapshotCloudEditorSessionV1(accepted),
+        );
         if (outcome.kind === "stale") return;
         if (outcome.kind === "blocked") {
           setDraftError(editorDocumentAuthority.message ?? "The shared Editor mutation could not be committed.");
           return;
         }
         if (outcome.kind === "reconciled") return;
-        const accepted = { ...plannedAuthorityState!, isPlaying: false };
         if (
           !isEditorRevisionRequestCurrent(revisionRequest) ||
           !editorProgramsMatchAuthorityV1(accepted.appliedPrograms, outcome.snapshot.programs)
@@ -2511,15 +2658,16 @@ export function App({
     workspace?.projectName ?? projects.find((project) => project.id === activeProjectId)?.name ?? "Workspace";
 
   function returnToWorkspaceLauncher() {
-    saveEditorSession();
-    suspendEditor();
-    canvasDrag.current = null;
-    canvasResize.current = null;
-    setDragPreview(null);
-    setGeometryPreview(null);
-    setScalePreview(null);
-    setInspectorReturnFocus(null);
-    leaveWorkspace();
+    void runAfterEditorSessionFlush(() => {
+      suspendEditor();
+      canvasDrag.current = null;
+      canvasResize.current = null;
+      setDragPreview(null);
+      setGeometryPreview(null);
+      setScalePreview(null);
+      setInspectorReturnFocus(null);
+      leaveWorkspace();
+    });
   }
 
   async function unregisterWorkspaceAndClearSession(workspaceId: string) {
@@ -2540,8 +2688,13 @@ export function App({
         creationMode={shell === "Browser" ? "managed" : window.poietraDesktop ? "native-existing" : "existing"}
         error={workspaceError}
         headerAccessory={
-          accountSession && accountActions ? (
-            <AccountSessionBadge actions={accountActions} session={accountSession} />
+          accountSession && flushedAccountActions ? (
+            <AccountSessionBadge
+              actions={flushedAccountActions}
+              beforeExternalNavigation={() => runAfterEditorSessionFlush(() => undefined)}
+              disabled={sessionTransitionPending}
+              session={accountSession}
+            />
           ) : null
         }
         isLoading={workspaceStatus === "loading"}
@@ -2568,7 +2721,7 @@ export function App({
             <button
               aria-label="Back to workspaces"
               className="shrink-0 border border-zinc-700 px-2 py-1 text-xs font-medium text-zinc-300 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={sourceLifecyclePending}
+              disabled={sourceLifecyclePending || sessionTransitionPending}
               onClick={returnToWorkspaceLauncher}
               type="button"
             >
@@ -2587,8 +2740,8 @@ export function App({
                 className="h-8 min-w-0 w-full max-w-sm border border-zinc-700 bg-zinc-950 px-2 text-xs text-zinc-300 outline-none focus:border-sky-500"
                 disabled={studioAuthoringLocked}
                 onChange={(event) => {
-                  saveEditorSession();
-                  setActiveSceneId(event.currentTarget.value);
+                  const sceneId = event.currentTarget.value;
+                  void runAfterEditorSessionFlush(() => setActiveSceneId(sceneId));
                 }}
                 value={activeSceneId ?? ""}
               >
@@ -2601,13 +2754,21 @@ export function App({
             ) : null}
           </div>
           <div className="flex shrink-0 items-center gap-2 text-xs">
-            {accountSession && accountActions ? (
-              <AccountSessionBadge actions={accountActions} compact session={accountSession} />
+            {accountSession && flushedAccountActions ? (
+              <AccountSessionBadge
+                actions={flushedAccountActions}
+                beforeExternalNavigation={() => runAfterEditorSessionFlush(() => undefined)}
+                compact
+                disabled={sessionTransitionPending}
+                session={accountSession}
+              />
             ) : null}
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
-              disabled={workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId}
-              onClick={() => void reimportWorkspace()}
+              disabled={
+                sessionTransitionPending || workspaceIsRefreshing || sourceMutationPendingProjectId === activeProjectId
+              }
+              onClick={reimportWorkspaceAfterSessionFlush}
               type="button"
             >
               {workspaceIsRefreshing ? "Reimporting…" : "Reimport"}
@@ -2641,7 +2802,8 @@ export function App({
             <span className="min-w-0 truncate">Reimport failed: {workspaceError}</span>
             <button
               className="shrink-0 underline underline-offset-2 hover:text-white"
-              onClick={() => void reimportWorkspace()}
+              disabled={sessionTransitionPending}
+              onClick={reimportWorkspaceAfterSessionFlush}
               type="button"
             >
               Retry
@@ -2651,10 +2813,33 @@ export function App({
 
         {editorDocumentAuthority.message ? (
           <div
-            className="shrink-0 border-b border-amber-950 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200"
+            className="flex shrink-0 items-center justify-between gap-3 border-b border-amber-950 bg-amber-950/40 px-3 py-1.5 text-xs text-amber-200"
             role="alert"
           >
-            Editor sync: {editorDocumentAuthority.message}
+            <span className="min-w-0 truncate">Editor sync: {editorDocumentAuthority.message}</span>
+            {editorDocumentAuthority.retryable && editorDocumentPresentationReady ? (
+              <button
+                className="shrink-0 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+                onClick={() => void editorDocumentAuthority.retry()}
+                type="button"
+              >
+                Retry sync
+              </button>
+            ) : editorDocumentAuthority.pendingSessionConflict ? (
+              <button
+                className="shrink-0 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-400"
+                onClick={discardPendingCloudSession}
+                type="button"
+              >
+                {editorDocumentAuthority.pendingSessionConflictAccountWide
+                  ? editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                    ? "Clear all pending mutation journals"
+                    : "Clear all pending session journals"
+                  : editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                    ? "Clear pending mutation journal"
+                    : "Clear pending session journal"}
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -2748,6 +2933,20 @@ export function App({
                 >
                   Retry sync
                 </button>
+              ) : editorDocumentAuthority.pendingSessionConflict ? (
+                <button
+                  className="mt-4 border border-amber-700 px-3 py-1.5 text-xs font-medium text-amber-200 hover:bg-amber-950/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-amber-500"
+                  onClick={discardPendingCloudSession}
+                  type="button"
+                >
+                  {editorDocumentAuthority.pendingSessionConflictAccountWide
+                    ? editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                      ? "Clear all pending mutation journals"
+                      : "Clear all pending session journals"
+                    : editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                      ? "Clear pending mutation journal"
+                      : "Clear pending session journal"}
+                </button>
               ) : null}
             </div>
           </div>
@@ -2760,7 +2959,8 @@ export function App({
               </p>
               <button
                 className="mt-4 bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950"
-                onClick={() => void reimportWorkspace()}
+                disabled={sessionTransitionPending}
+                onClick={reimportWorkspaceAfterSessionFlush}
                 type="button"
               >
                 Inspect workspace again

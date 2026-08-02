@@ -4,6 +4,9 @@ import type { AddressInfo } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1,
+  MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
+  MAX_BROWSER_MANIM_SOURCE_BYTES_V1,
   type ProgramRenderRequest,
   RENDER_SESSION_CONTRACT_VERSION_HEADER,
   RENDER_SESSION_CONTRACT_VERSION_WITH_CPU_LIMIT,
@@ -126,6 +129,87 @@ function programRenderRequest(sceneName: string): ProgramRenderRequest {
 }
 
 describe("render session contract negotiation", () => {
+  it("routes bounded source and optional image browser imports without accepting storage identifiers", async () => {
+    const imported = {
+      catalog: {
+        defaultProjectId: "project-browser-import",
+        projects: [{ id: "project-browser-import", kind: "managed" as const, name: "Imported demo" }],
+      },
+      project: { id: "project-browser-import", kind: "managed" as const, name: "Imported demo" },
+    };
+    const importBrowserProject = vi.fn(async () => imported);
+    const api = {
+      importBrowserProject,
+      storageBoundary: { kind: "shared-durable", namespace: "browser-import-http-test" },
+      tenantId: "tenant-a",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    const source = "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const accepted = await send(port, "/api/manim/project-imports", {
+        body: JSON.stringify({ imagePngBase64: null, name: "Imported demo", source, sourceName: "lesson.py" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(201);
+      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(imported);
+      expect(importBrowserProject).toHaveBeenCalledWith(
+        { imagePngBase64: null, name: "Imported demo", source, sourceName: "lesson.py" },
+        expect.any(AbortSignal),
+      );
+
+      const traversal = await send(port, "/api/manim/project-imports", {
+        body: JSON.stringify({ imagePngBase64: null, name: "Traversal", source, sourceName: "../lesson.py" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(traversal.status).toBe(400);
+      expect(importBrowserProject).toHaveBeenCalledOnce();
+
+      const escapedSource = `${source}${"\u0001".repeat(MAX_BROWSER_MANIM_SOURCE_BYTES_V1 - Buffer.byteLength(source))}`;
+      const maximumPngBase64 = Buffer.alloc(MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1).toString("base64");
+      const worstCaseBody = JSON.stringify({
+        imagePngBase64: maximumPngBase64,
+        name: "Escaped source",
+        source: escapedSource,
+        sourceName: "scene.py",
+      });
+      expect(Buffer.byteLength(escapedSource)).toBe(MAX_BROWSER_MANIM_SOURCE_BYTES_V1);
+      expect(Buffer.from(maximumPngBase64, "base64")).toHaveLength(MAX_BROWSER_MANIM_IMAGE_PNG_BYTES_V1);
+      expect(Buffer.byteLength(worstCaseBody)).toBeLessThanOrEqual(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1);
+      const worstCase = await send(port, "/api/manim/project-imports", {
+        body: worstCaseBody,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(worstCase.status).toBe(201);
+      expect(importBrowserProject).toHaveBeenCalledTimes(2);
+      expect(importBrowserProject).toHaveBeenNthCalledWith(
+        2,
+        { imagePngBase64: maximumPngBase64, name: "Escaped source", source: escapedSource, sourceName: "scene.py" },
+        expect.any(AbortSignal),
+      );
+
+      const oversizedBody = JSON.stringify({
+        imagePngBase64: null,
+        name: "Oversized transport",
+        source: "\u0001".repeat(Math.ceil(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 / 6) + 1_024),
+        sourceName: "scene.py",
+      });
+      expect(Buffer.byteLength(oversizedBody)).toBeGreaterThan(MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1);
+      const oversized = await send(port, "/api/manim/project-imports", {
+        body: oversizedBody,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(oversized.status).toBe(413);
+      expect(importBrowserProject).toHaveBeenCalledTimes(2);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("omits failureCode for legacy clients, downmaps CPU for v2, and preserves it in v3", async () => {
     const view = vi.fn(async () =>
       renderSession({

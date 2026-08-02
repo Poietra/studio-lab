@@ -2,6 +2,7 @@ import { createServer as createHttpServer, request as createRequest } from "node
 import type { AddressInfo } from "node:net";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1 } from "../src/render-pipeline/contracts";
 import { fastManimSnapshotSceneIdV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
@@ -15,7 +16,11 @@ import {
 } from "./manim-production-server";
 import type { ManimApi } from "./manim-render-http";
 import { request as renderRequest } from "./manim-render-pipeline-test-fixtures";
-import { createEditorDocumentKeyV1, type EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
+import {
+  canonicalEditorSessionSnapshotV1,
+  createEditorDocumentKeyV1,
+  type EditorDocumentRepositoryV1,
+} from "./storage/editor-document-repository";
 
 const servers: ProductionManimServer[] = [];
 const TEST_PRINCIPAL = Object.freeze({ subjectId: "production-user", tenantId: "tenant-a" });
@@ -154,7 +159,7 @@ describe("production Manim server configuration", () => {
     expect(parsed.publicOrigin).toBe("https://studio.example");
     expect(parsed.trustedProxyAddresses).toEqual(["127.0.0.1"]);
     expect(parsed.limits).toMatchObject({
-      maxBodyBytes: 512 * 1024,
+      maxBodyBytes: MAX_BROWSER_MANIM_PROJECT_IMPORT_JSON_BYTES_V1,
       maxConnections: 256,
       maxHeaderBytes: 16 * 1024,
       requestDrainTimeoutMs: 10_000,
@@ -283,12 +288,20 @@ describe("standalone production Manim HTTP adapter", () => {
     ).rejects.toThrow(/runtime adapter is incomplete/i);
   });
 
-  it("rejects a partially configured editor document adapter before listening", async () => {
+  it("rejects an editor adapter that omits the private-session methods before listening", async () => {
     await expect(
       startProductionManimServer({
         admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
         config: await startConfig(),
-        runtime: { ...createRuntime(), editorDocuments: {} } as never,
+        runtime: {
+          ...createRuntime(),
+          editorDocuments: {
+            commitMutation: async () => ({ kind: "conflict", reason: "not-found" }),
+            openDocument: async () => ({ kind: "not-found" }),
+            readEventTail: async () => null,
+          },
+          editorReady: async () => true,
+        } as never,
       }),
     ).rejects.toThrow(/editor document adapter is incomplete/i);
   });
@@ -359,7 +372,7 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(authenticateCalls).toBe(1);
   });
 
-  it("keeps authenticated workspace bootstrap readable during a render outage while mutations fail closed", async () => {
+  it("keeps authenticated workspace bootstrap and source import available during a render outage", async () => {
     const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
     const renderReadiness = vi.fn(async () => false);
     let workspaceAvailable = true;
@@ -378,13 +391,20 @@ describe("standalone production Manim HTTP adapter", () => {
       sources: [],
     }));
     const start = vi.fn();
+    const importBrowserProject = vi.fn(async () => ({
+      catalog: {
+        defaultProjectId: "project-imported",
+        projects: [{ id: "project-imported", kind: "managed" as const, name: "Imported" }],
+      },
+      project: { id: "project-imported", kind: "managed" as const, name: "Imported" },
+    }));
     const baseRuntime = createRuntime(() => false);
     const server = await startProductionManimServer({
       admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
       config: await startConfig(),
       runtime: {
         ...baseRuntime,
-        api: { ...baseRuntime.api, projects, start, workspace } as unknown as ManimApi,
+        api: { ...baseRuntime.api, importBrowserProject, projects, start, workspace } as unknown as ManimApi,
         ready: fullReadiness,
         renderReady: renderReadiness,
         workspaceReady: workspaceReadiness,
@@ -405,9 +425,24 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(fullReadiness).not.toHaveBeenCalled();
     expect(workspaceReadiness).toHaveBeenCalledTimes(4);
 
+    const imported = await send(server, "/api/manim/project-imports", {
+      body: JSON.stringify({
+        imagePngBase64: null,
+        name: "Imported",
+        source: "from manim import *\nclass DemoScene(Scene):\n    def construct(self):\n        self.wait(1)\n",
+        sourceName: "demo.py",
+      }),
+      headers: { "content-type": "application/json", origin: "https://studio.example" },
+      method: "POST",
+    });
+    expect(imported).toMatchObject({ status: 201 });
+    expect(importBrowserProject).toHaveBeenCalledOnce();
+    expect(workspaceReadiness).toHaveBeenCalledTimes(5);
+    expect(fullReadiness).not.toHaveBeenCalled();
+
     workspaceAvailable = false;
     expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 503 });
-    expect(workspaceReadiness).toHaveBeenCalledTimes(5);
+    expect(workspaceReadiness).toHaveBeenCalledTimes(6);
     expect(projects).toHaveBeenCalledOnce();
 
     const render = await send(server, "/api/manim/projects/project-a/renders", {
@@ -476,11 +511,29 @@ describe("standalone production Manim HTTP adapter", () => {
   it("serves authenticated editor storage independently from render readiness", async () => {
     const openedAt = new Date("2026-08-01T00:00:00.000Z");
     const sceneId = fastManimSnapshotSceneIdV1("scene.py", "Scene");
+    const documentKey = createEditorDocumentKeyV1("scene.py", sceneId);
+    const epoch = "10000000-0000-4000-8000-000000000001";
+    const accountSubject = "00000000-0000-4000-8000-000000000001";
+    const sessionSnapshot = {
+      appliedPrograms: [],
+      currentTime: 0,
+      draftOperation: null,
+      draftProgram: null,
+      editingAppliedProgram: null,
+      insertTool: "select" as const,
+      interactionMode: "position" as const,
+      motionDuration: 1,
+      programUndoEntries: [],
+      redoPrograms: [],
+      selectedObjectIds: [],
+      verifiedSourceDurationBasis: null,
+    };
+    const canonicalSession = canonicalEditorSessionSnapshotV1(sessionSnapshot);
     const openDocument = vi.fn<EditorDocumentRepositoryV1["openDocument"]>(async (input) => ({
       created: true,
       document: {
-        documentKey: createEditorDocumentKeyV1("scene.py", sceneId),
-        epoch: "10000000-0000-4000-8000-000000000001",
+        documentKey,
+        epoch,
         openedAt,
         projectId: input.projectId,
         revision: 0n,
@@ -493,14 +546,36 @@ describe("standalone production Manim HTTP adapter", () => {
       kind: "opened",
       projection: { programs: [], revision: 0n },
     }));
+    const putSessionSnapshot = vi.fn<EditorDocumentRepositoryV1["putSessionSnapshot"]>(async (input) => ({
+      kind: "stored",
+      replayed: false,
+      session: {
+        documentKey: input.documentKey,
+        documentRevision: input.documentRevision,
+        epoch: input.epoch,
+        projectId: input.projectId,
+        sessionGeneration: input.expectedSessionGeneration + 1n,
+        snapshot: canonicalSession.snapshot,
+        snapshotByteSize: canonicalSession.byteSize,
+        snapshotDigest: canonicalSession.digest,
+        snapshotVersion: input.snapshotVersion,
+        subjectId: input.subjectId,
+        tenantId: input.tenantId,
+        updatedAt: openedAt,
+      },
+    }));
     const editorDocuments: EditorDocumentRepositoryV1 = {
       close: async () => undefined,
       commitMutation: async () => {
         throw new Error("commitMutation was not expected");
       },
       openDocument,
+      putSessionSnapshot,
       readEventTail: async () => {
         throw new Error("readEventTail was not expected");
+      },
+      readSessionSnapshot: async () => {
+        throw new Error("readSessionSnapshot was not expected");
       },
       ready: async () => true,
     };
@@ -511,7 +586,9 @@ describe("standalone production Manim HTTP adapter", () => {
     const baseRuntime = createRuntime(() => false);
     const admission = {
       authenticate: async ({ credentials }: { credentials: { authorization?: string } }) => {
-        if (credentials.authorization === "Bearer tenant-a") return TEST_PRINCIPAL;
+        if (credentials.authorization === "Bearer tenant-a") {
+          return { subjectId: accountSubject, tenantId: "tenant-a" };
+        }
         if (credentials.authorization === "Bearer tenant-b") {
           return { subjectId: "foreign-user", tenantId: "tenant-b" };
         }
@@ -570,6 +647,55 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(fullReadiness).not.toHaveBeenCalled();
     expect(workspaceReadiness).toHaveBeenCalledOnce();
     expect(editorReadiness).toHaveBeenCalledOnce();
+
+    const storedSession = await send(
+      server,
+      `/api/editor/projects/project-a/documents/${documentKey}/session?epoch=${epoch}`,
+      {
+        body: JSON.stringify({
+          documentRevision: "0",
+          epoch,
+          expectedSessionGeneration: "0",
+          snapshot: sessionSnapshot,
+          snapshotVersion: 1,
+        }),
+        headers: {
+          authorization: "Bearer tenant-a",
+          "content-type": "application/json",
+          origin: "https://studio.example",
+        },
+        method: "PUT",
+      },
+    );
+    expect(storedSession).toMatchObject({ status: 200 });
+    expect(JSON.parse(storedSession.body)).toMatchObject({
+      kind: "stored",
+      session: { sessionGeneration: "1", tenantId: "tenant-a" },
+    });
+    expect(putSessionSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        documentKey,
+        epoch,
+        subjectId: accountSubject,
+        tenantId: "tenant-a",
+      }),
+      expect.any(AbortSignal),
+    );
+
+    const atomicBoundaryBody = JSON.stringify({ padding: "x".repeat(520 * 1024) });
+    expect(Buffer.byteLength(atomicBoundaryBody)).toBeGreaterThan(512 * 1024);
+    expect(Buffer.byteLength(atomicBoundaryBody)).toBeLessThanOrEqual(672 * 1024);
+    expect(
+      await send(server, `/api/editor/projects/project-a/documents/${documentKey}/events`, {
+        body: atomicBoundaryBody,
+        headers: {
+          authorization: "Bearer tenant-a",
+          "content-type": "application/json",
+          origin: "https://studio.example",
+        },
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 400 });
 
     editorAvailable = false;
     expect(await request("Bearer tenant-a")).toMatchObject({ status: 503 });

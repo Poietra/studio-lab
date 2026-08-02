@@ -226,6 +226,29 @@ describe("durable editor session storage", () => {
     expect(store.restore(identity())).toEqual({ kind: "restored", snapshot: snapshot() });
   });
 
+  it("separates cloud management from exact migrated-entry deletion", () => {
+    const adapter = new MemoryAdapter();
+    const migrated = identity("examples/scene.py#Migrated");
+    const retained = identity("examples/scene.py#Retained");
+    const store = new EditorSessionStore(adapter);
+    store.save(migrated, { ...snapshot(), currentTime: 1 });
+    store.save(retained, { ...snapshot(), currentTime: 2 });
+
+    expect(store.markCloudManaged(migrated)).toBe(true);
+    expect(store.isCloudManaged(migrated)).toBe(true);
+    expect(store.save(migrated, { ...snapshot(), currentTime: 3 })).toBe(false);
+
+    const marked = new EditorSessionStore(adapter);
+    expect(marked.restore(migrated)).toMatchObject({ kind: "restored", snapshot: { currentTime: 1 } });
+    expect(marked.restore(retained)).toMatchObject({ kind: "restored", snapshot: { currentTime: 2 } });
+
+    expect(store.clearMigrated(migrated)).toBe(true);
+
+    const reopened = new EditorSessionStore(adapter);
+    expect(reopened.restore(migrated)).toEqual({ kind: "empty" });
+    expect(reopened.restore(retained)).toMatchObject({ kind: "restored", snapshot: { currentTime: 2 } });
+  });
+
   it("round-trips replacement history so undo and redo remain reversible", () => {
     const adapter = new MemoryAdapter();
     const original = editorProgramRecord(record("motion"), motionOperation, ["equation"]);

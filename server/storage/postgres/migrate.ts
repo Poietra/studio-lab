@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Pool } from "pg";
-import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM } from "./account-invitation-quota-schema";
+import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
@@ -9,6 +9,7 @@ import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlemen
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
 import { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 import workspaceSourceSqlV1 from "./migrations/0001_workspace_source.sql?raw";
 import renderSessionSqlV2 from "./migrations/0002_render_sessions.sql?raw";
@@ -32,7 +33,8 @@ import renderSessionSceneNameSqlV19 from "./migrations/0019_render_session_scene
 import immutableObjectGenerationSqlV20 from "./migrations/0020_immutable_object_generations.sql?raw";
 import renderArtifactTombstoneSqlV21 from "./migrations/0021_render_artifact_tombstones.sql?raw";
 import accountInvitationSqlV22 from "./migrations/0022_account_invitations.sql?raw";
-import accountInvitationQuotaSqlV23 from "./migrations/0023_account_invitation_quotas.sql?raw";
+import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapshots.sql?raw";
+import accountInvitationQuotaSqlV24 from "./migrations/0024_account_invitation_quotas.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -48,13 +50,14 @@ import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-us
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
-export { ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM } from "./account-invitation-quota-schema";
+export { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+export { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
 export { IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM } from "./immutable-object-generation-schema";
 export { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 export { SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM } from "./postgres-snapshot-publication-repository";
@@ -112,7 +115,8 @@ export const RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE = renderSessionScene
 export const IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE = immutableObjectGenerationSqlV20;
 export const RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE = renderArtifactTombstoneSqlV21;
 export const ACCOUNT_INVITATION_MIGRATION_V22_SOURCE = accountInvitationSqlV22;
-export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_SOURCE = accountInvitationQuotaSqlV23;
+export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapshotSqlV23;
+export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE = accountInvitationQuotaSqlV24;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -338,15 +342,26 @@ const accountInvitationMigrationV22: DurableStorageMigration<22> = Object.freeze
   version: 22,
 });
 
-const accountInvitationQuotaMigrationV23: DurableStorageMigration<23> = Object.freeze({
-  checksum: ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM,
-  checksumMismatch: "The account-invitation quota migration checksum is invalid.",
-  installedMismatch: "The installed account-invitation quota schema does not match migration v23.",
-  missingPrerequisite: "Account-invitation quota migration v23 requires durable storage migrations v1 through v22.",
+const editorSessionSnapshotMigrationV23: DurableStorageMigration<23> = Object.freeze({
+  checksum: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM,
+  checksumMismatch: "The editor-session snapshot migration checksum is invalid.",
+  installedMismatch: "The installed editor-session snapshot schema does not match migration v23.",
+  missingPrerequisite: "Editor-session snapshot migration v23 requires durable storage migrations v1 through v22.",
   prerequisiteMismatch:
-    "Account-invitation quota migration v23 requires exact durable storage migrations v1 through v22.",
-  source: ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_SOURCE,
+    "Editor-session snapshot migration v23 requires exact durable storage migrations v1 through v22.",
+  source: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE,
   version: 23,
+});
+
+const accountInvitationQuotaMigrationV24: DurableStorageMigration<24> = Object.freeze({
+  checksum: ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM,
+  checksumMismatch: "The account-invitation quota migration checksum is invalid.",
+  installedMismatch: "The installed account-invitation quota schema does not match migration v24.",
+  missingPrerequisite: "Account-invitation quota migration v24 requires durable storage migrations v1 through v23.",
+  prerequisiteMismatch:
+    "Account-invitation quota migration v24 requires exact durable storage migrations v1 through v23.",
+  source: ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
+  version: 24,
 });
 
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
@@ -372,7 +387,8 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   immutableObjectGenerationMigrationV20,
   renderArtifactTombstoneMigrationV21,
   accountInvitationMigrationV22,
-  accountInvitationQuotaMigrationV23,
+  editorSessionSnapshotMigrationV23,
+  accountInvitationQuotaMigrationV24,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -615,8 +631,12 @@ export function applyAccountInvitationMigrationV22(pool: Pool, source: string) {
   return applyMigration(pool, { ...accountInvitationMigrationV22, source }, bundledMigrationsBefore(22));
 }
 
-export function applyAccountInvitationQuotaMigrationV23(pool: Pool, source: string) {
-  return applyMigration(pool, { ...accountInvitationQuotaMigrationV23, source }, bundledMigrationsBefore(23));
+export function applyEditorSessionSnapshotMigrationV23(pool: Pool, source: string) {
+  return applyMigration(pool, { ...editorSessionSnapshotMigrationV23, source }, bundledMigrationsBefore(23));
+}
+
+export function applyAccountInvitationQuotaMigrationV24(pool: Pool, source: string) {
+  return applyMigration(pool, { ...accountInvitationQuotaMigrationV24, source }, bundledMigrationsBefore(24));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

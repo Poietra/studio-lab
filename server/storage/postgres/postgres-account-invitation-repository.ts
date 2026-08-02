@@ -16,7 +16,7 @@ import {
   type CreateAccountInvitationV1,
   type CreatedAccountInvitationV1,
 } from "../../accounts/account-invitation-repository";
-import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM } from "./account-invitation-quota-schema";
+import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
 type InvitationRow = QueryResultRow & { expires_at: Date; invitation_id: string };
@@ -78,15 +78,15 @@ export class PostgresAccountInvitationRepositoryV1 implements AccountInvitationR
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 23",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 24",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
         result.rowCount === 1 &&
-        result.rows[0]?.version === 23 &&
-        result.rows[0]?.checksum === ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM
+        result.rows[0]?.version === 24 &&
+        result.rows[0]?.checksum === ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);

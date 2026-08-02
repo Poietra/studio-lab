@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { AccountSessionViewV1 } from "../accounts/account-session-contract";
 import type { BillingStatusViewV1 } from "./billing-contract";
@@ -8,6 +8,7 @@ import {
   BillingSettingsControl,
   BillingStatusDetailsV1,
   billingAvailableActionsV1,
+  billingExternalNavigationAllowedV1,
   billingReturnKindV1,
 } from "./billing-settings";
 
@@ -57,6 +58,17 @@ describe("billing settings policy", () => {
     expect(billingReturnKindV1("?billing=unknown")).toBeNull();
   });
 
+  it("awaits the Editor flush gate before allowing an external billing navigation", async () => {
+    const allowed = vi.fn(async () => true);
+    const blocked = vi.fn(async () => false);
+
+    await expect(billingExternalNavigationAllowedV1()).resolves.toBe(true);
+    await expect(billingExternalNavigationAllowedV1(allowed)).resolves.toBe(true);
+    await expect(billingExternalNavigationAllowedV1(blocked)).resolves.toBe(false);
+    expect(allowed).toHaveBeenCalledOnce();
+    expect(blocked).toHaveBeenCalledOnce();
+  });
+
   it("renders a compact native dialog control without commercial claims", () => {
     const organization: AccountSessionViewV1["activeOrganization"] = {
       displayName: "Poietra",
@@ -69,6 +81,18 @@ describe("billing settings policy", () => {
     expect(markup).toContain("<dialog");
     expect(markup).toContain("Billing settings");
     expect(markup).not.toMatch(/price|currency|remaining/i);
+  });
+
+  it("disables the billing entry point while the Editor session transition is pending", () => {
+    const organization: AccountSessionViewV1["activeOrganization"] = {
+      displayName: "Poietra",
+      id: "organization-a",
+      role: "owner",
+    };
+    const markup = renderToStaticMarkup(<BillingSettingsControl disabled organization={organization} />);
+
+    expect(markup).toContain('disabled=""');
+    expect(markup).toContain(">Billing</button>");
   });
 
   it("shows only authoritative status, period, and render limit details", () => {

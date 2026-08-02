@@ -7,7 +7,7 @@ import {
   ACCOUNT_INVITATION_MAX_PENDING_PER_TENANT_V1,
   ACCOUNT_INVITATION_MAX_TENANT_ISSUANCE_PER_WINDOW_V1,
 } from "../../accounts/account-invitation-repository";
-import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM } from "./account-invitation-quota-schema";
+import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { PostgresAccountInvitationRepositoryV1 } from "./postgres-account-invitation-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
@@ -53,9 +53,9 @@ function quotaRow(
 describe("PostgresAccountInvitationRepositoryV1", () => {
   it("requires the exact account-invitation quota migration", async () => {
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("version = 23");
+      expect(text).toContain("version = 24");
       expect(values).toEqual([]);
-      return { rowCount: 1, rows: [{ checksum: ACCOUNT_INVITATION_QUOTA_MIGRATION_V23_CHECKSUM, version: 23 }] };
+      return { rowCount: 1, rows: [{ checksum: ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM, version: 24 }] };
     });
 
     await expect(new PostgresAccountInvitationRepositoryV1({ pool: fixture.pool }).ready()).resolves.toBe(true);

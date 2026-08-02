@@ -1,15 +1,18 @@
 import type { Pool, PoolClient } from "pg";
 import { describe, expect, it, vi } from "vitest";
 
+import type { EditorSessionSnapshotV1 } from "../../../src/collaboration/editor-session-contract";
 import type { CanonicalEditProgram } from "../../../src/studio/operations";
 import {
   canonicalEditorProgramV1,
+  canonicalEditorSessionSnapshotV1,
   createEditorDocumentKeyV1,
   type EditorDocumentCommitInputV1,
   type EditorEditMutationV1,
 } from "../editor-document-repository";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
+import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
 import { PostgresEditorDocumentRepositoryV1 } from "./postgres-editor-document-repository";
 import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./postgres-repository-connection";
 
@@ -94,6 +97,54 @@ const PROGRAM_A_REPLACED = {
   schedule: program("editor-a-replaced").schedule,
 } satisfies CanonicalEditProgram;
 
+function sessionSnapshot(programs: readonly CanonicalEditProgram[] = []): EditorSessionSnapshotV1 {
+  return {
+    appliedPrograms: programs.map((programValue) => ({
+      program: programValue,
+      validation: { issues: [], status: "valid" as const },
+    })),
+    currentTime: 0,
+    draftOperation: null,
+    draftProgram: null,
+    editingAppliedProgram: null,
+    insertTool: "select",
+    interactionMode: "position",
+    motionDuration: 1,
+    programUndoEntries: [],
+    redoPrograms: [],
+    selectedObjectIds: [],
+    verifiedSourceDurationBasis: null,
+  };
+}
+
+function sessionRow(
+  snapshotValue: EditorSessionSnapshotV1,
+  options: Readonly<{
+    documentRevision?: string;
+    epoch?: string;
+    generation?: string;
+    projectId?: string;
+    subjectId?: string;
+    tenantId?: string;
+  }> = {},
+) {
+  const canonical = canonicalEditorSessionSnapshotV1(snapshotValue);
+  return {
+    document_key: Buffer.from(DOCUMENT_KEY, "hex"),
+    document_revision: options.documentRevision ?? "0",
+    epoch: options.epoch ?? EPOCH_A,
+    project_id: options.projectId ?? PROJECT,
+    session_generation: options.generation ?? "1",
+    snapshot: canonical.snapshot,
+    snapshot_byte_size: canonical.byteSize,
+    snapshot_digest: Buffer.from(canonical.digest, "hex"),
+    snapshot_version: 1,
+    subject_id: options.subjectId ?? SUBJECT,
+    tenant_id: options.tenantId ?? TENANT_A,
+    updated_at: UPDATED_AT,
+  };
+}
+
 function documentRow(
   options: Readonly<{
     epoch?: string;
@@ -124,11 +175,17 @@ function eventRow(
     epoch?: string;
     mutation?: EditorEditMutationV1;
     revision?: string;
+    sessionSnapshot?: EditorSessionSnapshotV1;
+    sessionBaseGeneration?: string;
     tenantId?: string;
   }> = {},
 ) {
   const mutation = options.mutation ?? ({ kind: "append", program: PROGRAM_A } as const);
   const canonical = canonicalEditorProgramV1(mutation.program);
+  const sessionCanonical = options.sessionSnapshot
+    ? canonicalEditorSessionSnapshotV1(options.sessionSnapshot)
+    : undefined;
+  const sessionBaseGeneration = options.sessionBaseGeneration ?? "0";
   return {
     base_revision: options.baseRevision ?? "0",
     canonical_byte_size: canonical.byteSize,
@@ -141,6 +198,11 @@ function eventRow(
     mutation_kind: mutation.kind,
     project_id: PROJECT,
     revision: options.revision ?? "1",
+    session_base_generation: sessionCanonical ? sessionBaseGeneration : null,
+    session_generation: sessionCanonical ? (BigInt(sessionBaseGeneration) + 1n).toString() : null,
+    session_snapshot_byte_size: sessionCanonical?.byteSize ?? null,
+    session_snapshot_digest: sessionCanonical ? Buffer.from(sessionCanonical.digest, "hex") : null,
+    session_snapshot_version: sessionCanonical ? 1 : null,
     subject_id: SUBJECT,
     target_transaction_id: mutation.kind === "append" ? null : mutation.targetTransactionId,
     tenant_id: options.tenantId ?? TENANT_A,
@@ -181,12 +243,13 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     const sealValues: (readonly unknown[])[] = [];
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.poietra_schema_migrations")) {
-        expect(text).toContain("version IN (17, 18) ORDER BY version");
+        expect(text).toContain("version IN (17, 18, 23) ORDER BY version");
         return {
-          rowCount: 2,
+          rowCount: 3,
           rows: [
             { checksum: EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM, version: 17 },
             { checksum: EDITOR_MUTATION_MIGRATION_V18_CHECKSUM, version: 18 },
+            { checksum: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM, version: 23 },
           ],
         };
       }
@@ -654,7 +717,16 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
             scenario.mutation.kind,
             scenario.mutation.kind === "append" ? null : scenario.mutation.targetTransactionId,
           ]);
-          expect(values.slice(10)).toEqual([canonical.json, Buffer.from(canonical.digest, "hex"), canonical.byteSize]);
+          expect(values.slice(10)).toEqual([
+            canonical.json,
+            Buffer.from(canonical.digest, "hex"),
+            canonical.byteSize,
+            null,
+            null,
+            null,
+            null,
+            null,
+          ]);
           return {
             rowCount: 1,
             rows: [
@@ -939,5 +1011,280 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     expect(tail?.events.map((event) => event.revision)).toEqual([2n, 3n]);
     await expect(tailRepository.readEventTail({ ...tailInput, tenantId: TENANT_B })).resolves.toBeNull();
     expect(eventTailReads).toBe(1);
+  });
+
+  it("creates, exactly replays, advances, reads, and isolates a subject-private session snapshot", async () => {
+    let stored: ReturnType<typeof sessionRow> | null = null;
+    let currentDocumentRevision = "0";
+    let writes = 0;
+    let prunes = 0;
+    const initialSnapshot = sessionSnapshot();
+    const advancedSnapshot = { ...initialSnapshot, currentTime: 2 };
+    const fixture = fakePool((text, values) => {
+      if (text.includes("AS actor_can_edit")) {
+        return { rowCount: 1, rows: [{ actor_can_edit: values[1] === SUBJECT }] };
+      }
+      if (
+        text.includes("FROM public.editor_documents document") &&
+        text.includes("JOIN public.workspace_projects project") &&
+        text.includes("FOR UPDATE OF document, project")
+      ) {
+        return { rowCount: 1, rows: [documentRow({ epoch: String(values[3]) })] };
+      }
+      if (text.includes("FROM public.workspace_source_heads source")) {
+        return { rowCount: 1, rows: [{ current_source_hash: Buffer.from(SOURCE_A, "hex") }] };
+      }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
+      if (text.includes("FROM public.editor_session_snapshots snapshot") && text.includes("FOR UPDATE OF snapshot")) {
+        return stored ? { rowCount: 1, rows: [stored] } : { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_session_snapshots")) {
+        writes += 1;
+        stored = sessionRow(JSON.parse(String(values[7])) as EditorSessionSnapshotV1);
+        return { rowCount: 1, rows: [stored] };
+      }
+      if (text.startsWith("UPDATE public.editor_session_snapshots snapshot")) {
+        writes += 1;
+        stored = sessionRow(JSON.parse(String(values[8])) as EditorSessionSnapshotV1, {
+          documentRevision: String(values[5]),
+          epoch: String(values[4]),
+          generation: String(values[6]),
+        });
+        return { rowCount: 1, rows: [stored] };
+      }
+      if (text.startsWith("DELETE FROM public.editor_session_snapshots stale")) {
+        prunes += 1;
+        expect(text).toContain("OFFSET 19");
+        expect(values).toEqual([TENANT_A, SUBJECT, PROJECT, Buffer.from(DOCUMENT_KEY, "hex")]);
+        return { rowCount: 0, rows: [] };
+      }
+      if (
+        text.includes("FROM public.editor_session_snapshots snapshot") &&
+        text.includes("JOIN public.editor_documents document")
+      ) {
+        return stored
+          ? {
+              rowCount: 1,
+              rows: [
+                {
+                  ...stored,
+                  current_document_revision: currentDocumentRevision,
+                  projection_programs: [],
+                  projection_revision: currentDocumentRevision,
+                },
+              ],
+            }
+          : { rowCount: 0, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+    const create = {
+      documentKey: DOCUMENT_KEY,
+      documentRevision: 0n,
+      epoch: EPOCH_A,
+      expectedSessionGeneration: 0n,
+      projectId: PROJECT,
+      snapshot: initialSnapshot,
+      snapshotVersion: 1,
+      subjectId: SUBJECT,
+      tenantId: TENANT_A,
+    } as const;
+
+    await expect(repository.putSessionSnapshot(create)).resolves.toMatchObject({
+      kind: "stored",
+      replayed: false,
+      session: { documentRevision: 0n, sessionGeneration: 1n, snapshot: initialSnapshot },
+    });
+    await expect(repository.putSessionSnapshot(create)).resolves.toMatchObject({
+      kind: "stored",
+      replayed: true,
+      session: { sessionGeneration: 1n },
+    });
+    await expect(repository.putSessionSnapshot({ ...create, snapshot: advancedSnapshot })).resolves.toEqual({
+      currentSessionGeneration: 1n,
+      kind: "conflict",
+      reason: "session-generation-mismatch",
+    });
+    await expect(
+      repository.putSessionSnapshot({
+        ...create,
+        expectedSessionGeneration: 1n,
+        snapshot: advancedSnapshot,
+      }),
+    ).resolves.toMatchObject({
+      kind: "stored",
+      replayed: false,
+      session: { sessionGeneration: 2n, snapshot: advancedSnapshot },
+    });
+    await expect(
+      repository.readSessionSnapshot({
+        documentKey: DOCUMENT_KEY,
+        epoch: EPOCH_A,
+        projectId: PROJECT,
+        subjectId: SUBJECT,
+        tenantId: TENANT_A,
+      }),
+    ).resolves.toMatchObject({
+      kind: "available",
+      session: { sessionGeneration: 2n, snapshot: advancedSnapshot, subjectId: SUBJECT },
+    });
+    currentDocumentRevision = "1";
+    await expect(
+      repository.readSessionSnapshot({
+        documentKey: DOCUMENT_KEY,
+        epoch: EPOCH_A,
+        projectId: PROJECT,
+        subjectId: SUBJECT,
+        tenantId: TENANT_A,
+      }),
+    ).resolves.toEqual({ currentSessionGeneration: 2n, kind: "unavailable" });
+    currentDocumentRevision = "0";
+    await expect(
+      repository.readSessionSnapshot({
+        documentKey: DOCUMENT_KEY,
+        epoch: EPOCH_A,
+        projectId: PROJECT,
+        subjectId: "00000000-0000-4000-8000-000000000102",
+        tenantId: TENANT_A,
+      }),
+    ).resolves.toEqual({ currentSessionGeneration: 0n, kind: "unavailable" });
+    await expect(
+      repository.putSessionSnapshot({
+        ...create,
+        epoch: EPOCH_B,
+        expectedSessionGeneration: 2n,
+      }),
+    ).resolves.toEqual({
+      currentSessionGeneration: 0n,
+      kind: "conflict",
+      reason: "session-generation-mismatch",
+    });
+    await expect(
+      repository.putSessionSnapshot({
+        ...create,
+        epoch: EPOCH_B,
+      }),
+    ).resolves.toMatchObject({
+      kind: "stored",
+      replayed: false,
+      session: { epoch: EPOCH_B, sessionGeneration: 1n },
+    });
+    expect(writes).toBe(3);
+    expect(prunes).toBe(3);
+  });
+
+  it("commits a post-mutation session atomically and replays from immutable event evidence", async () => {
+    const snapshotAfterMutation = sessionSnapshot([PROGRAM_A]);
+    const canonicalSession = canonicalEditorSessionSnapshotV1(snapshotAfterMutation);
+    const persistedEvent = eventRow({ sessionSnapshot: snapshotAfterMutation });
+    let existingReads = 0;
+    let eventInserts = 0;
+    let sessionInserts = 0;
+    const fixture = fakePool((text, values) => {
+      if (text.includes("AS actor_can_edit")) return { rowCount: 1, rows: [{ actor_can_edit: true }] };
+      if (text.includes("FROM public.editor_edit_events event") && text.includes("event.subject_id = $3::uuid")) {
+        existingReads += 1;
+        return existingReads === 1 ? { rowCount: 0, rows: [] } : { rowCount: 1, rows: [persistedEvent] };
+      }
+      if (text.startsWith("SELECT document.source_path")) {
+        return { rowCount: 1, rows: [{ source_path: SOURCE_PATH }] };
+      }
+      if (text.startsWith("SELECT project.project_id")) return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      if (text.includes("FROM public.workspace_source_heads source")) {
+        return { rowCount: 1, rows: [{ current_source_hash: Buffer.from(SOURCE_A, "hex") }] };
+      }
+      if (text.includes("FROM public.editor_documents document") && text.includes("FOR UPDATE OF document")) {
+        return { rowCount: 1, rows: [documentRow()] };
+      }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
+      if (text.includes("FROM public.editor_session_snapshots snapshot") && text.includes("FOR UPDATE OF snapshot")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_session_snapshots")) {
+        sessionInserts += 1;
+        return {
+          rowCount: 1,
+          rows: [sessionRow(snapshotAfterMutation, { documentRevision: "1", generation: "1" })],
+        };
+      }
+      if (text.startsWith("DELETE FROM public.editor_session_snapshots stale")) {
+        return { rowCount: 0, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_edit_events")) {
+        eventInserts += 1;
+        expect(values.slice(13)).toEqual([
+          "0",
+          "1",
+          1,
+          Buffer.from(canonicalSession.digest, "hex"),
+          canonicalSession.byteSize,
+        ]);
+        return { rowCount: 1, rows: [persistedEvent] };
+      }
+      if (text.startsWith("UPDATE public.editor_documents document")) {
+        return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+      }
+      if (text.startsWith("UPDATE public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [] };
+      }
+      if (text.includes("FROM public.editor_documents document") && !text.includes("FOR UPDATE OF document")) {
+        return { rowCount: 1, rows: [documentRow({ revision: "1" })] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+    const input = commitInput(append(PROGRAM_A), {
+      sessionUpdate: {
+        documentRevision: 1n,
+        expectedSessionGeneration: 0n,
+        snapshot: snapshotAfterMutation,
+        snapshotVersion: 1,
+      },
+    });
+
+    const first = await repository.commitMutation(input);
+    const replay = await repository.commitMutation(input);
+    if (first.kind !== "committed" || replay.kind !== "committed" || !input.sessionUpdate) {
+      throw new Error("The atomic editor mutation did not commit and replay.");
+    }
+    expect(first).toMatchObject({
+      document: { revision: 1n },
+      kind: "committed",
+      replayed: false,
+      sessionUpdate: {
+        documentRevision: 1n,
+        sessionGeneration: 1n,
+        snapshotByteSize: canonicalSession.byteSize,
+        snapshotDigest: canonicalSession.digest,
+        snapshotVersion: 1,
+      },
+    });
+    expect(replay).toMatchObject({ kind: "committed", replayed: true, sessionUpdate: first.sessionUpdate });
+    await expect(
+      repository.commitMutation({
+        ...input,
+        sessionUpdate: {
+          ...input.sessionUpdate,
+          snapshot: { ...snapshotAfterMutation, currentTime: 3 },
+        },
+      }),
+    ).resolves.toEqual({ kind: "conflict", reason: "mutation-reused" });
+    expect(sessionInserts).toBe(1);
+    expect(eventInserts).toBe(1);
+
+    const lockKeys = fixture.query.mock.calls
+      .filter(([text]) => String(text).includes("pg_advisory_xact_lock"))
+      .slice(0, 3)
+      .map(([, values]) => String((values as readonly unknown[])[0]));
+    expect(lockKeys.map((key) => key.split(":")[0])).toEqual([
+      "editor-mutation",
+      "editor-session-subject",
+      "editor-document",
+    ]);
   });
 });

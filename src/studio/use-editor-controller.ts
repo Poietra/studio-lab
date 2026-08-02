@@ -2,16 +2,20 @@ import { type SetStateAction, useCallback, useEffect, useReducer, useRef } from 
 
 import type { PendingClarification } from "../ai/clarification";
 import type { EditSuggestion, EditSuggestionOperation } from "../ai/edit-suggestions";
+import { type EditorSessionSnapshotV1, editorSessionSnapshotSchemaV1 } from "../collaboration/editor-session-contract";
+import { editorProgramsMatchAuthorityV1 } from "./editor-authority-state";
 import {
   type AppliedProgramEdit,
   type AppliedProgramMutation,
   browserEditorSessionStorageAdapter,
+  durableEditorSessionSnapshotV1,
   EDITOR_SESSION_STALE_SOURCE_MESSAGE,
   type EditorProgramRecord,
   type EditorSessionAccountScope,
   type EditorSessionIdentity,
   type EditorSessionSnapshot,
   EditorSessionStore,
+  editorSessionIdentityKey,
   type RedoProgramEntry,
 } from "./editor-session-store";
 import type { SuggestionStatus } from "./magic-edit-panel";
@@ -138,6 +142,11 @@ export function snapshotEditorSession(state: EditorControllerState): EditorSessi
   };
 }
 
+/** Subject-private editor state suitable for the strict cloud wire contract. */
+export function snapshotCloudEditorSessionV1(state: EditorControllerState): EditorSessionSnapshotV1 {
+  return durableEditorSessionSnapshotV1(snapshotEditorSession(state));
+}
+
 export function restoreEditorSession(
   state: EditorControllerState,
   snapshot: EditorSessionSnapshot,
@@ -147,6 +156,48 @@ export function restoreEditorSession(
     ...snapshot,
     isPlaying: false,
   });
+}
+
+export type CloudEditorSessionInstallResultV1 =
+  | Readonly<{ kind: "installed"; state: EditorControllerState }>
+  | Readonly<{ kind: "invalid-snapshot" }>
+  | Readonly<{ kind: "projection-mismatch" }>;
+
+/**
+ * Installs private cloud state only when it is an exact companion to the
+ * already revalidated authoritative projection. Canonical Programs and their
+ * browser validation stay authoritative; only private authoring metadata is
+ * copied from the subject snapshot.
+ */
+export function installCloudEditorSessionSnapshotV1(
+  state: EditorControllerState,
+  authoritativePrograms: readonly EditorProgramRecord[],
+  snapshotValue: unknown,
+): CloudEditorSessionInstallResultV1 {
+  const parsed = editorSessionSnapshotSchemaV1.safeParse(snapshotValue);
+  if (!parsed.success) return { kind: "invalid-snapshot" };
+  if (
+    !editorProgramsMatchAuthorityV1(
+      parsed.data.appliedPrograms,
+      authoritativePrograms.map((record) => record.program),
+    )
+  ) {
+    return { kind: "projection-mismatch" };
+  }
+  const appliedPrograms = authoritativePrograms.map((record, index) => {
+    const { editorMetadata: _ignoredMetadata, ...authoritativeRecord } = record;
+    const editorMetadata = parsed.data.appliedPrograms[index]?.editorMetadata;
+    return editorMetadata === undefined ? authoritativeRecord : { ...authoritativeRecord, editorMetadata };
+  });
+  const snapshot: EditorSessionSnapshot = {
+    ...parsed.data,
+    appliedPrograms,
+    durationError: null,
+    draftError: null,
+    insertValue: "",
+    instruction: "",
+  };
+  return { kind: "installed", state: restoreEditorSession(state, snapshot) };
 }
 
 export function initializeEditorScene(
@@ -517,10 +568,13 @@ function resolveStateAction<T>(previous: T, next: SetStateAction<T>) {
 export function useEditorController(accountScope?: EditorSessionAccountScope) {
   const [state, dispatch] = useReducer(editorControllerReducer, undefined, createInitialEditorState);
   const sessionStore = useRef<EditorSessionStore | null>(null);
+  // Production mounts App behind accountSessionMountKeyV1, so an account or
+  // organization change creates a fresh controller and storage boundary.
   if (!sessionStore.current) {
     sessionStore.current = new EditorSessionStore(browserEditorSessionStorageAdapter(accountScope));
   }
   const activeSession = useRef<EditorSessionIdentity | null>(null);
+  const localMigrationCandidates = useRef(new Map<string, EditorSessionSnapshotV1>());
   const stateRef = useRef(state);
   stateRef.current = state;
   const requestController = useRef(new LatestRequestController());
@@ -530,8 +584,10 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
   useEffect(() => {
     const identity = activeSession.current;
     if (!identity) return;
+    const identityKey = editorSessionIdentityKey(identity);
+    if (identityKey === null || sessionStore.current?.isCloudManaged(identity)) return;
     const timeout = window.setTimeout(() => {
-      if (activeSession.current !== identity) return;
+      if (activeSession.current !== identity || sessionStore.current?.isCloudManaged(identity)) return;
       sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
     }, SESSION_AUTOSAVE_DELAY_MS);
     return () => window.clearTimeout(timeout);
@@ -540,7 +596,10 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
   useEffect(() => {
     const saveBeforePageExit = () => {
       const identity = activeSession.current;
-      if (identity) sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
+      const identityKey = identity ? editorSessionIdentityKey(identity) : null;
+      if (identity && identityKey) {
+        sessionStore.current?.save(identity, snapshotEditorSession(stateRef.current));
+      }
     };
     window.addEventListener("pagehide", saveBeforePageExit);
     return () => window.removeEventListener("pagehide", saveBeforePageExit);
@@ -580,6 +639,14 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
       }
       activeSession.current = identity;
       const restored = sessionStore.current?.restore(identity) ?? { kind: "empty" as const };
+      const identityKey = editorSessionIdentityKey(identity);
+      if (identityKey) {
+        if (restored.kind === "restored") {
+          localMigrationCandidates.current.set(identityKey, durableEditorSessionSnapshotV1(restored.snapshot));
+        } else {
+          localMigrationCandidates.current.delete(identityKey);
+        }
+      }
       const initialized = initializeEditorScene(stateRef.current, fallback);
       dispatch({
         state:
@@ -594,6 +661,33 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     },
     [],
   );
+
+  const readLocalSessionForCloudMigration = useCallback(
+    (identity: EditorSessionIdentity, authoritativePrograms: readonly EditorProgramRecord[]) => {
+      const identityKey = editorSessionIdentityKey(identity);
+      if (identityKey === null) return null;
+      const snapshot = localMigrationCandidates.current.get(identityKey) ?? null;
+      if (snapshot === null) return null;
+      return editorProgramsMatchAuthorityV1(
+        snapshot.appliedPrograms,
+        authoritativePrograms.map((record) => record.program),
+      )
+        ? snapshot
+        : null;
+    },
+    [],
+  );
+
+  const markSessionCloudManaged = useCallback((identity: EditorSessionIdentity) => {
+    return sessionStore.current?.markCloudManaged(identity) ?? false;
+  }, []);
+
+  const clearMigratedLocalSession = useCallback((identity: EditorSessionIdentity) => {
+    const identityKey = editorSessionIdentityKey(identity);
+    if (identityKey === null) return false;
+    localMigrationCandidates.current.delete(identityKey);
+    return sessionStore.current?.clearMigrated(identity) ?? false;
+  }, []);
 
   const stageDraft = useCallback(
     (input: StageDraftInput) => {
@@ -657,14 +751,6 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     update(resetEditorPrograms);
   }, [update]);
 
-  const installAuthoritativePrograms = useCallback(
-    (programs: readonly EditorProgramRecord[], message: string | null = null) => {
-      requestController.current.cancel();
-      update((current) => installAuthoritativeEditorPrograms(current, programs, message));
-    },
-    [update],
-  );
-
   const installAcceptedState = useCallback((next: EditorControllerState) => {
     requestController.current.cancel();
     dispatch({ state: next, type: "replace" });
@@ -690,13 +776,20 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     applyDraft,
     beginSuggestionRequest,
     cancelSuggestionRequest,
+    clearMigratedLocalSession,
     clearProjectSessions: (projectId: string) => {
       sessionStore.current?.clearProject(projectId);
+      for (const key of localMigrationCandidates.current.keys()) {
+        const [candidateProjectId] = JSON.parse(key) as readonly string[];
+        if (candidateProjectId === projectId) localMigrationCandidates.current.delete(key);
+      }
       if (activeSession.current?.projectId === projectId) activeSession.current = null;
     },
     clearSession: (identity: EditorSessionIdentity) => {
       sessionStore.current?.clear(identity);
-      // Clearing persisted history does not unload the in-memory session.
+      const identityKey = editorSessionIdentityKey(identity);
+      if (identityKey) localMigrationCandidates.current.delete(identityKey);
+      // Clearing local persistence does not unload the current controller state.
       // Source reconciliation resets its programs separately; retaining the
       // identity lets a same-hash refresh remain aligned, while a changed hash
       // still fails closed until App opens the replacement session.
@@ -706,16 +799,21 @@ export function useEditorController(accountScope?: EditorSessionAccountScope) {
     finishSuggestionRequest,
     isSuggestionRequestCurrent,
     installAcceptedState,
-    installAuthoritativePrograms,
     openSession,
     pruneSessions: (projectIds: ReadonlySet<string>) => {
       sessionStore.current?.pruneProjects(projectIds);
+      for (const key of localMigrationCandidates.current.keys()) {
+        const [projectId] = JSON.parse(key) as readonly string[];
+        if (projectId && !projectIds.has(projectId)) localMigrationCandidates.current.delete(key);
+      }
       const projectId = activeSession.current?.projectId;
       if (projectId && !projectIds.has(projectId)) activeSession.current = null;
     },
+    readLocalSessionForCloudMigration,
     redoProgram,
     resetPrograms,
     saveSession,
+    markSessionCloudManaged,
     setCurrentTime: (value: SetStateAction<number>) => setField("currentTime", value),
     setDurationError: (value: SetStateAction<string | null>) => setField("durationError", value),
     setDraftError: (value: SetStateAction<string | null>) => setField("draftError", value),

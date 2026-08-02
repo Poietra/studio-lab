@@ -1330,16 +1330,31 @@ function hermeticPngV4Statements(source: string, sceneName: string) {
   }
   if (!analysis.valid || !block || block.bodyIndent === null) return null;
   const statements: string[] = [];
+  let skippedLeadingDocstring = false;
+  let skippingLeadingDocstring = false;
   for (let index = block.bodyStart; index < block.bodyEnd; index += 1) {
     let line = analysis.lines[index];
     if (!line || !line.hasSignificantToken) continue;
+    // The pinned producer owns V4 prelude admission and permits one leading
+    // construct docstring. The lexical pass intentionally blanks string
+    // contents, so skip that producer-owned prefix before deriving post-add
+    // mutations from structural code.
+    if (statements.length === 0 && skippingLeadingDocstring && line.startsInString) {
+      skippingLeadingDocstring = line.endsInString;
+      continue;
+    }
+    if (statements.length === 0 && !skippedLeadingDocstring && !line.startsInString && line.code.trim().length === 0) {
+      skippedLeadingDocstring = true;
+      skippingLeadingDocstring = line.endsInString;
+      continue;
+    }
     if (!isPythonStatementStart(line) || line.indentation !== block.bodyIndent) return null;
     const parts = [line.code.trim()];
     while (line.bracketDepthAfter > 0 || line.continuesToNext) {
       index += 1;
       if (index >= block.bodyEnd) return null;
       const continuation = analysis.lines[index];
-      if (!continuation || continuation.startsInString || continuation.indentation <= block.bodyIndent) return null;
+      if (!continuation || continuation.startsInString || continuation.indentation < block.bodyIndent) return null;
       parts.push(continuation.code.trim());
       line = continuation;
     }

@@ -31,7 +31,7 @@ full runtime probe.
 Migration v11 adds the account control-plane records required by request
 admission: OIDC identities, organizations, and memberships. Migration v22 adds
 bounded organization invitations and binds their digest to the one-time OIDC
-attempt. Migration v23 indexes the durable tenant/actor invitation issuance
+attempt. Migration v24 indexes the durable tenant/actor invitation issuance
 window used by the account-control-plane quota. The exported
 `createOrganizationMembershipProductionAdmissionV1` composes an injected
 external-identity verifier with `PostgresOrganizationMembershipRepositoryV1`.
@@ -115,8 +115,8 @@ production configuration.
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
 memberships, invitations, or one-time login state. Apply bundled migrations
-through v23 before deploying this Worker. The invitation repository requires
-the exact v23 quota migration, while the OIDC repository requires the exact v22
+through v24 before deploying this Worker. The invitation repository requires
+the exact v24 quota migration, while the OIDC repository requires the exact v22
 invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
 `/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with

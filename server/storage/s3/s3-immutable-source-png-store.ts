@@ -60,7 +60,7 @@ function exactSourceBytes(value: unknown) {
   if (bytes.byteLength > MAX_MANIM_SOURCE_BYTES_V1) throw new RangeError("The Python source exceeds 2 MiB.");
   let decoded: string;
   try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    decoded = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new TypeError("The Python source must be exact UTF-8 text.");
   }
@@ -71,7 +71,7 @@ function exactSourceBytes(value: unknown) {
 function decodeExactSource(bytes: Uint8Array) {
   let source: string;
   try {
-    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    source = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     throw new Error("The immutable source object is not valid UTF-8.");
   }

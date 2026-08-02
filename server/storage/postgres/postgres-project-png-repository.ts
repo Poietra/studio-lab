@@ -130,6 +130,223 @@ function sameReceipt(left: ProjectPngBlobReceiptV1, right: ProjectPngBlobReceipt
   return sameProjectPngReceiptV1(left, right);
 }
 
+async function readProjectPngHeadInTransactionV1(client: PoolClient, tenant: string, project: string, lock = false) {
+  const result = await client.query<HeadRow>(
+    `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
+            o.digest, o.object_key, o.version_id, o.object_generation, o.etag, o.byte_size
+       FROM public.project_png_heads h
+       JOIN public.workspace_projects p
+         ON p.tenant_id = h.tenant_id AND p.project_id = h.project_id
+        AND p.deleted_at IS NULL
+       JOIN public.project_png_generations g
+         ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
+        AND g.generation = h.generation AND g.digest = h.digest
+       JOIN public.project_png_objects o
+         ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
+        AND o.digest = g.digest AND o.object_key = g.object_key
+        AND ${storageObjectLocatorJoinSqlV1("o", "g")}
+      WHERE h.tenant_id = $1 AND h.project_id = $2
+      ${lock ? "FOR UPDATE OF h" : ""}`,
+    [tenant, project],
+  );
+  return result.rows[0] ? headFromRow(result.rows[0]) : null;
+}
+
+/**
+ * Detaches the current project PNG head using the caller's transaction.
+ *
+ * The caller must already hold the active workspace-project row lock. That
+ * row is the serialization point shared with head replacement, so this helper
+ * intentionally does not acquire the project-level advisory lock itself.
+ */
+export async function detachProjectPngHeadInTransactionV1(
+  client: PoolClient,
+  input: Readonly<{ projectId: string; tenantId: string }>,
+) {
+  const tenant = tenantId(input.tenantId);
+  const project = projectId(input.projectId);
+  const current = await readProjectPngHeadInTransactionV1(client, tenant, project, true);
+  if (!current) return null;
+
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `project-png-object:${tenant}:${current.receipt.objectKey}:${projectPngLocatorIdentityV1(current.receipt)}`,
+  ]);
+  const detached = await client.query(
+    `DELETE FROM public.project_png_heads
+      WHERE tenant_id = $1 AND project_id = $2
+        AND generation = $3::bigint AND digest = $4`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (detached.rowCount !== 1) {
+    throw new Error("The project image.png head changed before it could be detached.");
+  }
+
+  const orphaned = await client.query(
+    `UPDATE public.project_png_generations g
+        SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
+      WHERE g.tenant_id = $1 AND g.project_id = $2
+        AND g.generation = $3::bigint AND g.digest = $4
+        AND NOT EXISTS (
+          SELECT 1 FROM public.project_png_heads h
+           WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+             AND h.generation = g.generation AND h.digest = g.digest
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM public.render_sessions s
+           WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+             AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+        )`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (orphaned.rowCount === 1) return current;
+  if (orphaned.rowCount !== 0) {
+    throw new Error("PostgreSQL updated an unexpected number of project image.png generations.");
+  }
+
+  const retained = await client.query(
+    `SELECT 1
+       FROM public.project_png_generations g
+      WHERE g.tenant_id = $1 AND g.project_id = $2
+        AND g.generation = $3::bigint AND g.digest = $4
+        AND (
+          EXISTS (
+            SELECT 1 FROM public.project_png_heads h
+             WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+               AND h.generation = g.generation AND h.digest = g.digest
+          )
+          OR EXISTS (
+            SELECT 1 FROM public.render_sessions s
+             WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+               AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+          )
+        )
+      FOR UPDATE OF g`,
+    [tenant, project, current.generation.toString(), current.receipt.digest],
+  );
+  if (retained.rowCount !== 1) {
+    throw new Error("The detached project image.png generation lost its retention evidence.");
+  }
+  return current;
+}
+
+/**
+ * Publishes one already-validated project PNG receipt using the caller's
+ * transaction. The caller owns the project-row/head CAS decision; sharing
+ * this helper lets initial browser import publish project/source/PNG heads in
+ * the same PostgreSQL commit as later standalone PNG replacement uses.
+ */
+export async function publishProjectPngHeadInTransactionV1(
+  client: PoolClient,
+  input: Readonly<{
+    candidate: ProjectPngBlobReceiptV1;
+    current: ProjectPngHeadV1 | null;
+    projectId: string;
+    tenantId: string;
+  }>,
+) {
+  const tenant = tenantId(input.tenantId);
+  const project = projectId(input.projectId);
+  const candidate = assertProjectPngReceiptV1(tenant, project, input.candidate);
+  if (
+    input.current &&
+    (input.current.tenantId !== tenant || input.current.projectId !== project || input.current.generation < 1n)
+  ) {
+    throw new TypeError("The current project image.png head is invalid.");
+  }
+  const [candidateVersionId, candidateObjectGeneration] = storageObjectLocatorSqlValuesV1(candidate);
+  await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+    `project-png-object:${tenant}:${candidate.objectKey}:${projectPngLocatorIdentityV1(candidate)}`,
+  ]);
+  const deleting = await client.query(
+    `SELECT 1 FROM public.project_png_deletions deletion
+      WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
+        AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}`,
+    [tenant, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
+  );
+  if (deleting.rowCount !== 0) throw new HttpError("Project image.png candidate is queued for deletion.", 409);
+  const nextGeneration = input.current ? input.current.generation + 1n : 1n;
+  generation(nextGeneration);
+  await client.query(
+    `INSERT INTO public.project_png_objects
+       (tenant_id, project_id, digest, object_key, version_id, object_generation, etag, byte_size)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     ON CONFLICT DO NOTHING`,
+    [
+      tenant,
+      project,
+      candidate.digest,
+      candidate.objectKey,
+      candidateVersionId,
+      candidateObjectGeneration,
+      candidate.etag,
+      candidate.byteSize,
+    ],
+  );
+  const storedObject = await client.query<ReceiptRow>(
+    `SELECT ${RECEIPT_COLUMNS}
+       FROM public.project_png_objects stored
+      WHERE stored.tenant_id = $1 AND stored.project_id = $2 AND stored.object_key = $3
+        AND ${storageObjectLocatorPredicateSqlV1("stored", 4, 5)}
+      FOR KEY SHARE`,
+    [tenant, project, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
+  );
+  const registered = storedObject.rows[0];
+  if (!registered || !sameReceipt(receiptFromRow(tenant, project, registered), candidate)) {
+    throw new Error("The immutable image.png object version is bound to different metadata.");
+  }
+  await client.query(
+    `INSERT INTO public.project_png_generations
+       (tenant_id, project_id, generation, digest, object_key, version_id, object_generation, orphaned_at)
+     VALUES ($1, $2, $3::bigint, $4, $5, $6, $7, NULL)`,
+    [
+      tenant,
+      project,
+      nextGeneration.toString(),
+      candidate.digest,
+      candidate.objectKey,
+      candidateVersionId,
+      candidateObjectGeneration,
+    ],
+  );
+  await client.query(
+    input.current
+      ? `INSERT INTO public.project_png_heads (tenant_id, project_id, generation, digest)
+         VALUES ($1, $2, $3::bigint, $4)
+         ON CONFLICT (tenant_id, project_id) DO UPDATE
+           SET generation = EXCLUDED.generation, digest = EXCLUDED.digest, updated_at = clock_timestamp()`
+      : `INSERT INTO public.project_png_heads (tenant_id, project_id, generation, digest)
+         VALUES ($1, $2, $3::bigint, $4)`,
+    [tenant, project, nextGeneration.toString(), candidate.digest],
+  );
+  if (input.current) {
+    await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+      `project-png-object:${tenant}:${input.current.receipt.objectKey}:${projectPngLocatorIdentityV1(input.current.receipt)}`,
+    ]);
+    await client.query(
+      `UPDATE public.project_png_generations g
+          SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
+        WHERE g.tenant_id = $1 AND g.project_id = $2
+          AND g.generation = $3::bigint AND g.digest = $4
+          AND NOT EXISTS (
+            SELECT 1 FROM public.project_png_heads h
+             WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
+               AND h.generation = g.generation AND h.digest = g.digest
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM public.render_sessions s
+             WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
+               AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
+          )`,
+      [tenant, project, input.current.generation.toString(), input.current.receipt.digest],
+    );
+  }
+  const created = await readProjectPngHeadInTransactionV1(client, tenant, project);
+  if (!created || !sameReceipt(created.receipt, candidate)) {
+    throw new Error("PostgreSQL did not retain the project image.png replacement.");
+  }
+  return created;
+}
+
 /** PostgreSQL authority for project image.png replacement, render pinning, and deletion claims. */
 export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
   readonly #connection: PostgresRepositoryConnectionV1;
@@ -155,25 +372,6 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     );
   }
 
-  async #readHead(client: PoolClient, tenant: string, project: string, lock = false) {
-    const result = await client.query<HeadRow>(
-      `SELECT h.tenant_id, h.project_id, h.generation::text AS generation,
-              o.digest, o.object_key, o.version_id, o.object_generation, o.etag, o.byte_size
-         FROM public.project_png_heads h
-         JOIN public.project_png_generations g
-           ON g.tenant_id = h.tenant_id AND g.project_id = h.project_id
-          AND g.generation = h.generation AND g.digest = h.digest
-         JOIN public.project_png_objects o
-           ON o.tenant_id = g.tenant_id AND o.project_id = g.project_id
-          AND o.digest = g.digest AND o.object_key = g.object_key
-          AND ${storageObjectLocatorJoinSqlV1("o", "g")}
-        WHERE h.tenant_id = $1 AND h.project_id = $2
-        ${lock ? "FOR UPDATE OF h" : ""}`,
-      [tenant, project],
-    );
-    return result.rows[0] ? headFromRow(result.rows[0]) : null;
-  }
-
   async compareAndSwapHead(
     input: Readonly<{
       candidate: ProjectPngBlobReceiptV1;
@@ -186,7 +384,6 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
     const tenant = tenantId(input.tenantId);
     const project = projectId(input.projectId);
     const candidate = assertProjectPngReceiptV1(tenant, project, input.candidate);
-    const [candidateVersionId, candidateObjectGeneration] = storageObjectLocatorSqlValuesV1(candidate);
     const expected = input.expected
       ? { digest: input.expected.digest, generation: generation(input.expected.generation) }
       : null;
@@ -202,7 +399,7 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
         [tenant, project],
       );
       if (active.rowCount !== 1) throw new HttpError("Managed project not found.", 404);
-      const current = await this.#readHead(client, tenant, project, true);
+      const current = await readProjectPngHeadInTransactionV1(client, tenant, project, true);
       if (
         (expected === null && current !== null) ||
         (expected !== null &&
@@ -213,101 +410,19 @@ export class PostgresProjectPngRepositoryV1 implements ProjectPngRepositoryV1 {
         throw new HttpError("Project image.png changed before replacement.", 409);
       }
       if (current && sameReceipt(current.receipt, candidate)) return current;
-      await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-        `project-png-object:${tenant}:${candidate.objectKey}:${projectPngLocatorIdentityV1(candidate)}`,
-      ]);
-      const deleting = await client.query(
-        `SELECT 1 FROM public.project_png_deletions deletion
-          WHERE deletion.tenant_id = $1 AND deletion.object_key = $2
-            AND ${storageObjectLocatorPredicateSqlV1("deletion", 3, 4)}`,
-        [tenant, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
-      );
-      if (deleting.rowCount !== 0) throw new HttpError("Project image.png candidate is queued for deletion.", 409);
-      const nextGeneration = current ? current.generation + 1n : 1n;
-      generation(nextGeneration);
-      await client.query(
-        `INSERT INTO public.project_png_objects
-           (tenant_id, project_id, digest, object_key, version_id, object_generation, etag, byte_size)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         ON CONFLICT DO NOTHING`,
-        [
-          tenant,
-          project,
-          candidate.digest,
-          candidate.objectKey,
-          candidateVersionId,
-          candidateObjectGeneration,
-          candidate.etag,
-          candidate.byteSize,
-        ],
-      );
-      const storedObject = await client.query<ReceiptRow>(
-        `SELECT ${RECEIPT_COLUMNS}
-           FROM public.project_png_objects stored
-          WHERE stored.tenant_id = $1 AND stored.project_id = $2 AND stored.object_key = $3
-            AND ${storageObjectLocatorPredicateSqlV1("stored", 4, 5)}
-          FOR KEY SHARE`,
-        [tenant, project, candidate.objectKey, candidateVersionId, candidateObjectGeneration],
-      );
-      const registered = storedObject.rows[0];
-      if (!registered || !sameReceipt(receiptFromRow(tenant, project, registered), candidate)) {
-        throw new Error("The immutable image.png object version is bound to different metadata.");
-      }
-      await client.query(
-        `INSERT INTO public.project_png_generations
-           (tenant_id, project_id, generation, digest, object_key, version_id, object_generation, orphaned_at)
-         VALUES ($1, $2, $3::bigint, $4, $5, $6, $7, NULL)`,
-        [
-          tenant,
-          project,
-          nextGeneration.toString(),
-          candidate.digest,
-          candidate.objectKey,
-          candidateVersionId,
-          candidateObjectGeneration,
-        ],
-      );
-      await client.query(
-        `INSERT INTO public.project_png_heads (tenant_id, project_id, generation, digest)
-         VALUES ($1, $2, $3::bigint, $4)
-         ON CONFLICT (tenant_id, project_id) DO UPDATE
-           SET generation = EXCLUDED.generation, digest = EXCLUDED.digest, updated_at = clock_timestamp()`,
-        [tenant, project, nextGeneration.toString(), candidate.digest],
-      );
-      if (current) {
-        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
-          `project-png-object:${tenant}:${current.receipt.objectKey}:${projectPngLocatorIdentityV1(current.receipt)}`,
-        ]);
-        await client.query(
-          `UPDATE public.project_png_generations g
-              SET orphaned_at = COALESCE(g.orphaned_at, clock_timestamp())
-            WHERE g.tenant_id = $1 AND g.project_id = $2
-              AND g.generation = $3::bigint AND g.digest = $4
-              AND NOT EXISTS (
-                SELECT 1 FROM public.project_png_heads h
-                 WHERE h.tenant_id = g.tenant_id AND h.project_id = g.project_id
-                   AND h.generation = g.generation AND h.digest = g.digest
-              )
-              AND NOT EXISTS (
-                SELECT 1 FROM public.render_sessions s
-                 WHERE s.tenant_id = g.tenant_id AND s.project_id = g.project_id
-                   AND s.project_png_generation = g.generation AND s.project_png_digest = g.digest
-              )`,
-          [tenant, project, current.generation.toString(), current.receipt.digest],
-        );
-      }
-      const created = await this.#readHead(client, tenant, project);
-      if (!created || !sameReceipt(created.receipt, candidate)) {
-        throw new Error("PostgreSQL did not retain the project image.png replacement.");
-      }
-      return created;
+      return publishProjectPngHeadInTransactionV1(client, {
+        candidate,
+        current,
+        projectId: project,
+        tenantId: tenant,
+      });
     }, signal);
   }
 
   async readHead(tenantValue: string, projectValue: string, signal?: AbortSignal) {
     const tenant = tenantId(tenantValue);
     const project = projectId(projectValue);
-    return this.#connection.withClient((client) => this.#readHead(client, tenant, project), signal);
+    return this.#connection.withClient((client) => readProjectPngHeadInTransactionV1(client, tenant, project), signal);
   }
 
   async isVersionRetained(
