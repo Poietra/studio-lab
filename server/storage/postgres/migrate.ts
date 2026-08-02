@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { Pool } from "pg";
+import { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
@@ -33,6 +34,7 @@ import immutableObjectGenerationSqlV20 from "./migrations/0020_immutable_object_
 import renderArtifactTombstoneSqlV21 from "./migrations/0021_render_artifact_tombstones.sql?raw";
 import accountInvitationSqlV22 from "./migrations/0022_account_invitations.sql?raw";
 import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapshots.sql?raw";
+import accountInvitationQuotaSqlV24 from "./migrations/0024_account_invitation_quotas.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -48,6 +50,7 @@ import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-us
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
+export { ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM } from "./account-invitation-quota-schema";
 export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-schema";
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
@@ -113,6 +116,7 @@ export const IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_SOURCE = immutableObjectG
 export const RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE = renderArtifactTombstoneSqlV21;
 export const ACCOUNT_INVITATION_MIGRATION_V22_SOURCE = accountInvitationSqlV22;
 export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapshotSqlV23;
+export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE = accountInvitationQuotaSqlV24;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -349,6 +353,17 @@ const editorSessionSnapshotMigrationV23: DurableStorageMigration<23> = Object.fr
   version: 23,
 });
 
+const accountInvitationQuotaMigrationV24: DurableStorageMigration<24> = Object.freeze({
+  checksum: ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM,
+  checksumMismatch: "The account-invitation quota migration checksum is invalid.",
+  installedMismatch: "The installed account-invitation quota schema does not match migration v24.",
+  missingPrerequisite: "Account-invitation quota migration v24 requires durable storage migrations v1 through v23.",
+  prerequisiteMismatch:
+    "Account-invitation quota migration v24 requires exact durable storage migrations v1 through v23.",
+  source: ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
+  version: 24,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -373,6 +388,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   renderArtifactTombstoneMigrationV21,
   accountInvitationMigrationV22,
   editorSessionSnapshotMigrationV23,
+  accountInvitationQuotaMigrationV24,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -617,6 +633,10 @@ export function applyAccountInvitationMigrationV22(pool: Pool, source: string) {
 
 export function applyEditorSessionSnapshotMigrationV23(pool: Pool, source: string) {
   return applyMigration(pool, { ...editorSessionSnapshotMigrationV23, source }, bundledMigrationsBefore(23));
+}
+
+export function applyAccountInvitationQuotaMigrationV24(pool: Pool, source: string) {
+  return applyMigration(pool, { ...accountInvitationQuotaMigrationV24, source }, bundledMigrationsBefore(24));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

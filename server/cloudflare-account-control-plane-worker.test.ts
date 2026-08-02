@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it, vi } from "vitest";
@@ -18,11 +19,14 @@ function limiter(success = true) {
 function environment() {
   const start = limiter();
   const callback = limiter();
+  const invitation = limiter();
   return {
     callback,
+    invitation,
     start,
     value: {
       HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
+      INVITATION_MUTATION_RATE_LIMITER: invitation.binding,
       OIDC_CALLBACK_RATE_LIMITER: callback.binding,
       OIDC_START_RATE_LIMITER: start.binding,
       POIETRA_OIDC_CLIENT_AUTHENTICATION: "client_secret_post",
@@ -88,6 +92,26 @@ function invitationRequest() {
   });
 }
 
+function invitationRevokeRequest() {
+  return new Request(`${origin}/api/account/invitations/00000000-0000-4000-8000-000000000001`, {
+    headers: {
+      cookie: `__Host-poietra_session=${opaqueToken}`,
+      origin,
+      "sec-fetch-site": "same-origin",
+    },
+    method: "DELETE",
+  });
+}
+
+function invitationRateLimitKey(operation: "create" | "revoke") {
+  const tokenHash = createHash("sha256").update(Buffer.from(opaqueToken, "base64url")).digest();
+  const fingerprint = createHash("sha256")
+    .update("poietra:account-invitation-mutation:v1\u0000", "utf8")
+    .update(tokenHash)
+    .digest("base64url");
+  return `account-invitation:${operation}:${fingerprint}`;
+}
+
 function harness() {
   const forwarded = vi.fn(async () => new Response(null, { status: 204 }));
   const createControlPlane = vi.fn((_options: unknown) => ({ fetch: forwarded }));
@@ -102,7 +126,14 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
   it("routes invitation creation and revocation through the production Worker template", async () => {
     const configuration = JSON.parse(
       await readFile(new URL("../wrangler.account-control-plane.example.jsonc", import.meta.url), "utf8"),
-    ) as { routes?: readonly { pattern?: unknown }[] };
+    ) as {
+      ratelimits?: readonly {
+        name?: unknown;
+        namespace_id?: unknown;
+        simple?: Readonly<{ limit?: unknown; period?: unknown }>;
+      }[];
+      routes?: readonly { pattern?: unknown }[];
+    };
 
     expect(configuration.routes?.map(({ pattern }) => pattern)).toEqual(
       expect.arrayContaining([
@@ -110,6 +141,11 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
         "https://studio.example.com/api/account/invitations/*",
       ]),
     );
+    expect(configuration.ratelimits?.find(({ name }) => name === "INVITATION_MUTATION_RATE_LIMITER")).toEqual({
+      name: "INVITATION_MUTATION_RATE_LIMITER",
+      namespace_id: "31203",
+      simple: { limit: 20, period: 60 },
+    });
   });
 
   it("rejects invalid requests before rate limiting or control-plane creation", async () => {
@@ -140,20 +176,28 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     await expect(worker.fetch(accountSwitchRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(logoutRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(invitationRequest(), env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(invitationRevokeRequest(), env.value)).resolves.toMatchObject({ status: 204 });
 
     expect(env.start.limit).toHaveBeenCalledWith({ key: "oidc:start:203.0.113.4" });
     expect(env.callback.limit).toHaveBeenCalledWith({ key: "oidc:callback:2001:db8::4" });
+    expect(env.invitation.limit).toHaveBeenNthCalledWith(1, { key: invitationRateLimitKey("create") });
+    expect(env.invitation.limit).toHaveBeenNthCalledWith(2, { key: invitationRateLimitKey("revoke") });
+    expect(JSON.stringify(env.invitation.limit.mock.calls)).not.toContain(opaqueToken);
+    expect(JSON.stringify(env.invitation.limit.mock.calls)).not.toContain("member@example.com");
     expect(createControlPlane).toHaveBeenCalledOnce();
     expect(createControlPlane.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({ invitationRepository: expect.any(Function) }),
     );
     expect(forwarded).toHaveBeenNthCalledWith(1, start, env.value);
     expect(forwarded).toHaveBeenNthCalledWith(2, callback, env.value);
-    expect(forwarded).toHaveBeenCalledTimes(6);
+    expect(forwarded).toHaveBeenCalledTimes(7);
   });
 
-  it("keeps an existing account session independent from OIDC and connecting-IP bindings", async () => {
+  it("keeps existing account and OIDC session paths independent from the invitation limiter", async () => {
     const env = environment();
+    env.value.INVITATION_MUTATION_RATE_LIMITER.limit = vi.fn(async () => {
+      throw new Error("invitation limiter unavailable");
+    });
     const accountOnlyEnvironment = {
       HYPERDRIVE: env.value.HYPERDRIVE,
       POIETRA_PUBLIC_ORIGIN: env.value.POIETRA_PUBLIC_ORIGIN,
@@ -161,15 +205,19 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     const { createControlPlane, forwarded, worker } = harness();
 
     const responses = await Promise.all(
-      [accountRequest(), accountSwitchRequest(), logoutRequest(), invitationRequest()].map((request) =>
+      [accountRequest(), accountSwitchRequest(), logoutRequest()].map((request) =>
         worker.fetch(request, accountOnlyEnvironment),
       ),
     );
+    const invitation = await worker.fetch(invitationRequest(), accountOnlyEnvironment);
+    const oidc = await worker.fetch(startRequest(), env.value);
 
-    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204, 204]);
+    expect(responses.map(({ status }) => status)).toEqual([204, 204, 204]);
+    expect(invitation.status).toBe(503);
+    expect(oidc.status).toBe(204);
     expect(createControlPlane).toHaveBeenCalledOnce();
     expect(forwarded).toHaveBeenCalledTimes(4);
-    expect(env.start.limit).not.toHaveBeenCalled();
+    expect(env.start.limit).toHaveBeenCalledOnce();
     expect(env.callback.limit).not.toHaveBeenCalled();
   });
 
@@ -198,6 +246,74 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     expect(createControlPlane).not.toHaveBeenCalled();
     expect(env.start.limit).not.toHaveBeenCalled();
     expect(env.callback.limit).not.toHaveBeenCalled();
+    expect(env.invitation.limit).not.toHaveBeenCalled();
+  });
+
+  it("fails invitation mutations closed before control-plane storage opens", async () => {
+    const env = environment();
+    const { createControlPlane, forwarded, worker } = harness();
+    const missing = {
+      ...env.value,
+      INVITATION_MUTATION_RATE_LIMITER: undefined,
+    } as unknown as CloudflareAccountControlPlaneEnvironmentV1;
+
+    const missingResponse = await worker.fetch(invitationRequest(), missing);
+    env.value.INVITATION_MUTATION_RATE_LIMITER.limit = vi.fn(async () => {
+      throw new Error("binding unavailable");
+    });
+    const outageResponse = await worker.fetch(invitationRequest(), env.value);
+    const malformedBindingResponse = await worker.fetch(invitationRequest(), {
+      ...env.value,
+      INVITATION_MUTATION_RATE_LIMITER: { limit: "not-a-function" },
+    } as unknown as CloudflareAccountControlPlaneEnvironmentV1);
+    const malformedResultResponse = await worker.fetch(invitationRequest(), {
+      ...env.value,
+      INVITATION_MUTATION_RATE_LIMITER: { limit: vi.fn(async () => ({ allowed: true })) },
+    } as unknown as CloudflareAccountControlPlaneEnvironmentV1);
+
+    expect([
+      missingResponse.status,
+      outageResponse.status,
+      malformedBindingResponse.status,
+      malformedResultResponse.status,
+    ]).toEqual([503, 503, 503, 503]);
+    for (const response of [missingResponse, outageResponse, malformedBindingResponse, malformedResultResponse]) {
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
+      await expect(response.json()).resolves.toEqual({ error: "Account invitation action is not available." });
+    }
+    expect(createControlPlane).not.toHaveBeenCalled();
+    expect(forwarded).not.toHaveBeenCalled();
+  });
+
+  it("returns generic non-cacheable invitation denials and recovers after the edge window", async () => {
+    const env = environment();
+    env.invitation.limit.mockResolvedValueOnce({ success: false }).mockResolvedValueOnce({ success: true });
+    const { forwarded, worker } = harness();
+
+    const limited = await worker.fetch(invitationRequest(), env.value);
+    const recovered = await worker.fetch(invitationRequest(), env.value);
+
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("cache-control")).toBe("private, no-store");
+    expect(limited.headers.get("vary")).toBe("Cookie");
+    expect(limited.headers.get("retry-after")).toBe("60");
+    expect(await limited.json()).toEqual({ error: "Account invitation action is not available." });
+    expect(recovered.status).toBe(204);
+    expect(forwarded).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a missing invitation session before consuming the limiter", async () => {
+    const env = environment();
+    const { createControlPlane, worker } = harness();
+    const request = invitationRequest();
+    request.headers.delete("cookie");
+
+    const response = await worker.fetch(request, env.value);
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+    expect(env.invitation.limit).not.toHaveBeenCalled();
+    expect(createControlPlane).not.toHaveBeenCalled();
   });
 
   it("returns a non-cacheable 429 without consuming a rejected callback", async () => {
@@ -229,7 +345,9 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     [
       "malformed rate limiter result",
       (value: CloudflareAccountControlPlaneEnvironmentV1) => {
-        value.OIDC_START_RATE_LIMITER.limit = vi.fn(async () => ({ allowed: true }));
+        value.OIDC_START_RATE_LIMITER.limit = vi.fn(async () => ({
+          allowed: true,
+        })) as unknown as CloudflareRateLimitBindingV1["limit"];
         return value;
       },
       startRequest(),

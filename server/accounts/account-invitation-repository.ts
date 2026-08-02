@@ -3,6 +3,10 @@ import type { OrganizationInvitationRoleV1 } from "./account-domain";
 export const ACCOUNT_INVITATION_MIN_LIFETIME_MS_V1 = 5 * 60_000;
 export const ACCOUNT_INVITATION_MAX_LIFETIME_MS_V1 = 7 * 24 * 60 * 60_000;
 export const ACCOUNT_INVITATION_DEFAULT_LIFETIME_MS_V1 = 72 * 60 * 60_000;
+export const ACCOUNT_INVITATION_ISSUANCE_WINDOW_MS_V1 = 60 * 60_000;
+export const ACCOUNT_INVITATION_MAX_ACTOR_ISSUANCE_PER_WINDOW_V1 = 50;
+export const ACCOUNT_INVITATION_MAX_PENDING_PER_TENANT_V1 = 100;
+export const ACCOUNT_INVITATION_MAX_TENANT_ISSUANCE_PER_WINDOW_V1 = 100;
 
 export type CreateAccountInvitationV1 = Readonly<{
   invitationId: string;
