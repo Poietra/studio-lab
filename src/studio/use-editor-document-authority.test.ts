@@ -25,6 +25,7 @@ describe("Editor document navigation flush policy", () => {
         {
           journalConflict: true,
           journalConflictAccountWide: true,
+          journalConflictKind: "session",
           message: null,
           phase: "ready",
           retryable: false,
@@ -34,6 +35,7 @@ describe("Editor document navigation flush policy", () => {
     ).toEqual({
       journalConflict: false,
       journalConflictAccountWide: false,
+      journalConflictKind: null,
       message: "Browser storage is unavailable.",
       phase: "ready",
       retryable: false,

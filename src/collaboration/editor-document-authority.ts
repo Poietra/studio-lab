@@ -76,7 +76,8 @@ export type EditorDocumentAuthoritySessionSaveOutcomeV1 =
     }>;
 
 export type EditorDocumentAuthorityCommitOptionsV1 = Readonly<{
-  sessionSnapshot: EditorSessionSnapshotV1;
+  onPrepared?: (request: EditorDocumentCommitRequestV1) => void;
+  sessionSnapshot?: EditorSessionSnapshotV1;
   signal?: AbortSignal;
 }>;
 
@@ -350,8 +351,12 @@ export class EditorDocumentAuthorityV1 {
     optionsOrSignal?: AbortSignal | EditorDocumentAuthorityCommitOptionsV1,
   ): Promise<EditorDocumentAuthorityCommitOutcomeV1> {
     const options = abortSignalV1(optionsOrSignal)
-      ? { sessionSnapshot: undefined, signal: optionsOrSignal }
-      : { sessionSnapshot: optionsOrSignal?.sessionSnapshot, signal: optionsOrSignal?.signal };
+      ? { onPrepared: undefined, sessionSnapshot: undefined, signal: optionsOrSignal }
+      : {
+          onPrepared: optionsOrSignal?.onPrepared,
+          sessionSnapshot: optionsOrSignal?.sessionSnapshot,
+          signal: optionsOrSignal?.signal,
+        };
     const signal = options.signal;
     const document = this.#document;
     if (!document) authorityErrorV1("Open the Editor document before committing.", "not-open");
@@ -414,6 +419,10 @@ export class EditorDocumentAuthorityV1 {
             : {}),
         }),
       });
+    // The callback is deliberately synchronous and precedes both the in-memory
+    // retry lane and the network request. Callers can therefore fail closed
+    // unless the exact idempotent request is already durable.
+    options.onPrepared?.(pending.request);
     this.#pending = pending;
     this.#inFlight = true;
     try {
