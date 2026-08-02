@@ -10,7 +10,6 @@ rust-version = "1.92"
 kurbo.workspace = true
 poietra-scene-ir.workspace = true
 ratex-font.workspace = true
-ratex-katex-fonts.workspace = true
 ratex-layout.workspace = true
 ratex-lexer.workspace = true
 ratex-parser.workspace = true
@@ -18,6 +17,9 @@ ratex-types.workspace = true
 serde.workspace = true
 sha2.workspace = true
 ttf-parser.workspace = true
+
+[build-dependencies]
+ratex-katex-fonts.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

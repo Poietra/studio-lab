@@ -11,10 +11,9 @@ const manifestPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outl
 const libraryPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/src/lib.rs");
 const digestPath = resolve(repositoryRoot, "engine/crates/poietra-mathtex-outline/src/digest.rs");
 const noticeName = "THIRD_PARTY_NOTICES.txt";
-const expectedFontDigest = "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa";
+const expectedFontDigest = "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a";
 const expectedFontFaces = [
   "KaTeX_AMS-Regular.ttf",
-  "KaTeX_Caligraphic-Bold.ttf",
   "KaTeX_Caligraphic-Regular.ttf",
   "KaTeX_Fraktur-Bold.ttf",
   "KaTeX_Fraktur-Regular.ttf",
@@ -54,9 +53,8 @@ for (const required of [
 ]) {
   assert.ok(noticeText.includes(required), `the canonical notice is missing: ${required}`);
 }
-for (const face of expectedFontFaces) {
-  assert.ok(noticeText.includes(`  ${face}\n`), `the canonical notice is missing font face: ${face}`);
-}
+const attestedFontFaces = [...noticeText.matchAll(/^ {2}(KaTeX_[^\n]+[.]ttf)$/gmu)].map((match) => match[1]);
+assert.deepEqual(attestedFontFaces, expectedFontFaces, "the canonical notice must list exactly the runtime font set");
 assert.match(manifest, /^license-file = "PACKAGE-LICENSES[.]txt"$/mu);
 assert.match(manifest, /^publish = false$/mu);
 assert.doesNotMatch(manifest, /^license(?:[.]workspace)?\s*=/mu);

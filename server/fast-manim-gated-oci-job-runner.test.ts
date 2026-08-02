@@ -260,10 +260,10 @@ const TRUSTED_IMAGE_LABELS = Object.freeze({
     "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32",
   "io.poietra.mathtex-outline.engine-commit": "be671c1ddcfc8466548c8822956e19579256e581",
   "io.poietra.mathtex-outline.engine-tree": "d0f6d72213c65527ae9b7a4717390b48db1e9256",
-  "io.poietra.mathtex-outline.font-sha256": "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
-  "io.poietra.mathtex-outline.notice-sha256": "44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856",
+  "io.poietra.mathtex-outline.font-sha256": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+  "io.poietra.mathtex-outline.notice-sha256": "3877c499f478175d2f02df3db43c8276cc6f6650f63fe2784c1ed83cd37d5026",
   "io.poietra.mathtex-outline.target": "linux-amd64",
-  "io.poietra.mathtex-outline.toolchain-sha256": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+  "io.poietra.mathtex-outline.toolchain-sha256": "9719d236a037e2f6ff263d8940a473521e32c43f02114e41a6dce4e363111825",
   "io.poietra.snapshot-sandbox-envelope-version": "2",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
