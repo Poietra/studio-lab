@@ -22,7 +22,6 @@ import {
   fastManimSnapshotAffineTransformChannelIdV2,
   fastManimSnapshotAffineTransformChannelProvenanceIdV2,
   fastManimSnapshotEntityIdV1,
-  fastManimSnapshotEntityProvenanceIdV1,
   fastManimSnapshotMotionPathChannelIdV2,
   fastManimSnapshotMotionPathChannelProvenanceIdV2,
   fastManimSnapshotOpacityChannelIdV2,
@@ -34,7 +33,6 @@ import {
   fastManimSnapshotPngAssetIdV4,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
-  fastManimSnapshotSceneProvenanceIdV1,
   isCanonicalFastManimLineSegmentV1,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_BUNDLE_JSON_BYTES,
@@ -44,6 +42,7 @@ import {
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
+  mixedDynamic2dSnapshotBundleFixtureV7,
   pngSnapshotBundleFixture,
   staticSnapshotBundleFixture,
 } from "./test-fixtures/fast-manim-snapshot-bundle-fixture";
@@ -632,110 +631,7 @@ async function dynamicMotionPathBundle(): Promise<SceneIrBundleV1> {
  * hermetic MathTex leaf, one Create ring, and one particle moving along one
  * bounded cubic path. */
 async function mixedDynamic2dBundleV7(): Promise<SceneIrBundleV1> {
-  const [mathTex, pathTrim, motionPath] = await Promise.all([
-    hermeticMathTexBundle(),
-    dynamicPathTrimBundle([0, 1]),
-    dynamicMotionPathBundle(),
-  ]);
-  const mathTexEntity = mathTex.scene.entities[0]!;
-  const ringSource = pathTrim.scene.entities[0]!;
-  const particleSource = motionPath.scene.entities[0]!;
-  const ringId = fastManimSnapshotEntityIdV1(expected.sceneId, 1);
-  const ringProvenanceId = fastManimSnapshotEntityProvenanceIdV1(expected.sceneId, 1);
-  const particleId = fastManimSnapshotEntityIdV1(expected.sceneId, 2);
-  const particleProvenanceId = fastManimSnapshotEntityProvenanceIdV1(expected.sceneId, 2);
-  const ringChannelProvenanceId = fastManimSnapshotPathTrimChannelProvenanceIdV2(expected.sceneId, 1);
-  const particleChannelProvenanceId = fastManimSnapshotMotionPathChannelProvenanceIdV2(expected.sceneId, 2);
-  const sourceRingChannel = pathTrim.scene.animationChannels[0];
-  const sourceParticleChannel = motionPath.scene.animationChannels[0];
-  if (sourceRingChannel?.kind !== "path-trim" || sourceParticleChannel?.kind !== "motion-path") {
-    throw new Error("Expected the V2 path-trim and motion-path fixture channels.");
-  }
-  return sceneIrBundleV1Schema.parse({
-    ...mathTex,
-    scene: {
-      ...mathTex.scene,
-      animationChannels: [
-        {
-          ...sourceRingChannel,
-          entityId: ringId,
-          id: fastManimSnapshotPathTrimChannelIdV2(expected.sceneId, 1),
-          keyframes: [
-            { at: 0, easingToNext: { kind: "linear" }, value: 0 },
-            { at: 1, easingToNext: null, value: 1 },
-          ],
-          provenanceId: ringChannelProvenanceId,
-        },
-        {
-          ...sourceParticleChannel,
-          entityId: particleId,
-          id: fastManimSnapshotMotionPathChannelIdV2(expected.sceneId, 2),
-          keyframes: [
-            { at: 1, easingToNext: { kind: "linear" }, value: 0 },
-            { at: 3, easingToNext: null, value: 1 },
-          ],
-          provenanceId: particleChannelProvenanceId,
-        },
-      ],
-      duration: 4,
-      entities: [
-        { ...mathTexEntity, lifetimes: [{ end: 4, start: 0 }] },
-        {
-          ...ringSource,
-          id: ringId,
-          lifetimes: [{ end: 4, start: 0 }],
-          provenanceId: ringProvenanceId,
-          sceneOrder: 1,
-          sourceZIndex: 1,
-        },
-        {
-          ...particleSource,
-          id: particleId,
-          lifetimes: [{ end: 4, start: 1 }],
-          provenanceId: particleProvenanceId,
-          sceneOrder: 2,
-          sourceZIndex: 2,
-        },
-      ],
-      provenance: [
-        {
-          evidence: ["producer-authored mixed Scene evidence must be normalized"],
-          id: fastManimSnapshotSceneProvenanceIdV1(expected.sceneId),
-          origin: "fast-manim-server-snapshot",
-        },
-        {
-          ...mathTex.scene.provenance[1]!,
-          evidence: [
-            "MathTex content digest 4e86be799123233a78ef7e88c1a053a807d9c5de4f5db5dc4723bdfd1cda2eb4",
-            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
-            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
-          ],
-        },
-        {
-          evidence: ["producer-authored Circle evidence must be normalized"],
-          id: ringProvenanceId,
-          origin: "fast-manim-server-snapshot",
-        },
-        {
-          evidence: ["producer-authored moving Circle evidence must be normalized"],
-          id: particleProvenanceId,
-          origin: "fast-manim-server-snapshot",
-        },
-        {
-          evidence: ["producer-authored Create evidence must be normalized"],
-          id: ringChannelProvenanceId,
-          origin: "fast-manim-server-snapshot",
-        },
-        {
-          evidence: ["producer-authored MoveAlongPath evidence must be normalized"],
-          id: particleChannelProvenanceId,
-          origin: "fast-manim-server-snapshot",
-        },
-      ],
-      requiredCapabilities: ["cubic-path-geometry", "motion-path-animation", "path-trim-animation"],
-      source: { ...mathTex.scene.source, snapshotVersion: 7 },
-    },
-  });
+  return mixedDynamic2dSnapshotBundleFixtureV7({ ...expected, snapshotVersion: 7 });
 }
 
 function compiled(bundle: SceneIrBundleV1, expectedValue: ExpectedFastManimSnapshotCorrelationV1 = expected) {

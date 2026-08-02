@@ -4,6 +4,10 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import {
+  STUDIO_VERIFIED_SOURCE_RUNTIME_IDENTITY_MAP_SCHEMA_V1,
+  type VerifiedSourceRuntimeIdentityMapV1,
+} from "../../src/engine/source-runtime-identity";
+import {
   deriveHermeticPngV4TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   fastManimSnapshotSceneIdV1,
@@ -13,6 +17,7 @@ import {
   ZERO_SHA256,
 } from "../fast-manim-snapshot-contract";
 import {
+  mixedDynamic2dSnapshotBundleFixtureV7,
   pngSnapshotBundleFixture,
   staticSnapshotBundleFixture,
 } from "../test-fixtures/fast-manim-snapshot-bundle-fixture";
@@ -23,6 +28,7 @@ import {
 import { SnapshotArtifactPublisherV1 } from "./snapshot-artifact-publisher";
 import {
   LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1,
+  parseSnapshotArtifactReceiptV1,
   SnapshotArtifactReadErrorV1,
   type SnapshotArtifactReceiptV1,
   type SnapshotArtifactStoreV1,
@@ -63,6 +69,12 @@ const expected = {
   sourcePath: identity.sourcePath,
 } satisfies ExpectedFastManimSnapshotCorrelationV1;
 
+const expectedV7 = {
+  ...expected,
+  requestId: "snapshot-request-v7",
+  snapshotVersion: 7,
+} as const satisfies ExpectedFastManimSnapshotCorrelationV1;
+
 const TRANSFORMED_PNG_SOURCE = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
 
 class ExampleScene(Scene):
@@ -93,6 +105,52 @@ async function sealedSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelatio
   );
   if (sealed.kind !== "compiled") throw new Error("Expected a compiled test snapshot.");
   return sealed;
+}
+
+async function sealedMixedDynamicSnapshotV7() {
+  const bundle = await mixedDynamic2dSnapshotBundleFixtureV7(expectedV7);
+  const { frame: _frame, snapshotVersion: _snapshotVersion, ...wire } = expectedV7;
+  const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
+    JSON.stringify({
+      ...wire,
+      bundle,
+      kind: "compiled",
+      schema: "poietra.fast-manim-snapshot-result",
+      snapshotHash: ZERO_SHA256,
+      version: 1,
+    }),
+    expectedV7,
+  );
+  if (sealed.kind !== "compiled") throw new Error("Expected a compiled V7 mixed dynamic snapshot.");
+  return sealed;
+}
+
+function completeV7Identity(snapshot: VerifiedCompiledFastManimSnapshotResultV1) {
+  const names = ["equation", "ring", "particle"] as const;
+  return {
+    mappings: snapshot.bundle.scene.entities.map((entity, index) => {
+      const name = names[index];
+      if (!name) throw new Error("Expected exactly three V7 fixture entities.");
+      return {
+        binding: {
+          id: `source-binding:${String(index + 1).repeat(64)}`,
+          name,
+          ordinal: index + 1,
+          span: { endColumn: name.length, endLine: index + 1, startColumn: 0, startLine: index + 1 },
+        },
+        entityId: entity.id,
+        familyPath: [],
+        provenanceId: entity.provenanceId,
+      };
+    }),
+    runtimeConfigHash: snapshot.runtimeConfigHash,
+    sceneId: snapshot.sceneId,
+    schema: STUDIO_VERIFIED_SOURCE_RUNTIME_IDENTITY_MAP_SCHEMA_V1,
+    snapshotDigest: createHash("sha256").update(canonicalJsonV1(snapshot), "utf8").digest("hex"),
+    snapshotHash: snapshot.snapshotHash,
+    sourceHash: snapshot.sourceHash,
+    version: 1,
+  } satisfies VerifiedSourceRuntimeIdentityMapV1;
 }
 
 async function sealedTransformedPngSnapshot(expectedValue: ExpectedFastManimSnapshotCorrelationV1) {
@@ -271,13 +329,16 @@ class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
 
 describe("SnapshotArtifactPublisherV1", () => {
   let snapshot: VerifiedCompiledFastManimSnapshotResultV1;
+  let snapshotV7: VerifiedCompiledFastManimSnapshotResultV1;
+  let sourceRuntimeIdentityV7: VerifiedSourceRuntimeIdentityMapV1;
   let events: string[];
   let artifacts: MemoryArtifactStore;
   let publications: MemoryPublicationRepository;
   let publisher: SnapshotArtifactPublisherV1;
 
   beforeAll(async () => {
-    snapshot = await sealedSnapshot();
+    [snapshot, snapshotV7] = await Promise.all([sealedSnapshot(), sealedMixedDynamicSnapshotV7()]);
+    sourceRuntimeIdentityV7 = completeV7Identity(snapshotV7);
   });
 
   beforeEach(() => {
@@ -363,6 +424,57 @@ describe("SnapshotArtifactPublisherV1", () => {
   it("rejects the reserved legacy runtime identity before uploading", async () => {
     await expect(publish({ runtimeDigest: LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1 })).rejects.toThrow(/legacy/i);
     expect(events).toEqual([]);
+  });
+
+  it("rejects a V7 snapshot without complete identity before uploading any artifact bytes", async () => {
+    await expect(
+      publish({ expected: expectedV7, snapshot: snapshotV7, sourceRuntimeIdentity: null }),
+    ).rejects.toMatchObject({ code: "identity-evidence-invalid" });
+
+    expect(events).toEqual([]);
+    expect(artifacts.bytes.size).toBe(0);
+    expect(publications.head).toEqual({ kind: "missing" });
+  });
+
+  it("marks a V7 artifact corrupt when its identity is removed despite a matching digest and receipt", async () => {
+    artifacts = new MemoryArtifactStore(events, "immutable");
+    publisher = new SnapshotArtifactPublisherV1({ artifacts, publications });
+    const result = await publish({
+      expected: expectedV7,
+      snapshot: snapshotV7,
+      sourceRuntimeIdentity: sourceRuntimeIdentityV7,
+    });
+    if (result.kind !== "published") throw new Error("Expected a V7 publication.");
+    const artifact = result.publication.artifact;
+    if (!("identity" in artifact)) throw new Error("Expected an immutable V7 artifact.");
+    const stored = artifacts.bytes.get(artifact.objectGeneration);
+    if (!stored) throw new Error("Expected stored V7 artifact bytes.");
+    const wire = JSON.parse(Buffer.from(stored).toString("utf8")) as Record<string, unknown>;
+    wire.sourceRuntimeIdentity = null;
+    const tampered = Buffer.from(canonicalJsonV1(wire), "utf8");
+    const tamperedIdentity = {
+      ...artifact.identity,
+      resultDigest: createHash("sha256").update(tampered).digest("hex"),
+    };
+    const tamperedArtifact = parseSnapshotArtifactReceiptV1(TENANT, {
+      ...artifact,
+      byteSize: tampered.byteLength,
+      identity: tamperedIdentity,
+      objectKey: immutableSnapshotArtifactObjectKeyV1(TENANT, tamperedIdentity, artifact.objectGeneration),
+    });
+    artifacts.bytes.set(artifact.objectGeneration, tampered);
+    publications.head = {
+      kind: "published",
+      publication: { ...result.publication, artifact: tamperedArtifact },
+    };
+
+    expect(tamperedIdentity.resultDigest).toBe(createHash("sha256").update(tampered).digest("hex"));
+    await expect(publisher.readCurrent(identity)).resolves.toEqual({
+      generation: result.publication.generation,
+      kind: "stale",
+      reason: "artifact-corrupt",
+    });
+    expect(publications.clearHeadIfGeneration).toHaveBeenCalledWith(identity, result.publication.generation, undefined);
   });
 
   it("stores and revalidates an explicit V2 profile expectation", async () => {
