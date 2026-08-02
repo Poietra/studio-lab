@@ -55,6 +55,14 @@
   ],
   "ratelimits": [
     {
+      "name": "INVITATION_MUTATION_RATE_LIMITER",
+      "namespace_id": "31203",
+      "simple": {
+        "limit": 20,
+        "period": 60
+      }
+    },
+    {
       "name": "OIDC_START_RATE_LIMITER",
       "namespace_id": "31201",
       "simple": {
