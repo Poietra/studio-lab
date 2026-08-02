@@ -2832,8 +2832,12 @@ export function App({
                 type="button"
               >
                 {editorDocumentAuthority.pendingSessionConflictAccountWide
-                  ? "Clear all pending session journals"
-                  : "Clear pending session journal"}
+                  ? editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                    ? "Clear all pending mutation journals"
+                    : "Clear all pending session journals"
+                  : editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                    ? "Clear pending mutation journal"
+                    : "Clear pending session journal"}
               </button>
             ) : null}
           </div>
@@ -2936,8 +2940,12 @@ export function App({
                   type="button"
                 >
                   {editorDocumentAuthority.pendingSessionConflictAccountWide
-                    ? "Clear all pending session journals"
-                    : "Clear pending session journal"}
+                    ? editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                      ? "Clear all pending mutation journals"
+                      : "Clear all pending session journals"
+                    : editorDocumentAuthority.pendingJournalConflictKind === "mutation"
+                      ? "Clear pending mutation journal"
+                      : "Clear pending session journal"}
                 </button>
               ) : null}
             </div>

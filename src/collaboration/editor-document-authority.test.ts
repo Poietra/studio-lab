@@ -212,6 +212,51 @@ describe("Editor document authority", () => {
     expect(requests[0]).toMatchObject({ baseRevision: "0", clientMutationId: MUTATION_ID, mutation });
   });
 
+  it("exposes the exact request synchronously before the first commit attempt", async () => {
+    const value = program("first", 1);
+    const mutation = { kind: "append", program: value } as const;
+    let prepared: unknown = null;
+    const commit = vi.fn<EditorDocumentClientV1["commit"]>(async (_identity, _key, request) => {
+      expect(prepared).toEqual(request);
+      return {
+        document: document(1),
+        event: event(1, mutation, { clientMutationId: request.clientMutationId }),
+        kind: "committed",
+        replayed: false,
+      };
+    });
+    const authority = new EditorDocumentAuthorityV1(client({ commit }), identity, () => MUTATION_ID);
+    await authority.open();
+
+    await authority.commit(mutation, {
+      onPrepared: (request) => {
+        prepared = request;
+      },
+    });
+
+    expect(prepared).toMatchObject({ baseRevision: "0", clientMutationId: MUTATION_ID, mutation });
+    expect(commit).toHaveBeenCalledOnce();
+  });
+
+  it("never sends a mutation when its synchronous durability hook fails", async () => {
+    const commit = vi.fn<EditorDocumentClientV1["commit"]>();
+    const authority = new EditorDocumentAuthorityV1(client({ commit }), identity, () => MUTATION_ID);
+    await authority.open();
+
+    await expect(
+      authority.commit(
+        { kind: "append", program: program("first", 1) },
+        {
+          onPrepared: () => {
+            throw new Error("browser storage unavailable");
+          },
+        },
+      ),
+    ).rejects.toThrow("browser storage unavailable");
+    expect(commit).not.toHaveBeenCalled();
+    expect(authority.recoveryKind).toBeNull();
+  });
+
   it("exposes an ambiguous request for manual replay without changing any request byte", async () => {
     const value = program("first", 1);
     const mutation = { kind: "append", program: value } as const;

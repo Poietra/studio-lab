@@ -2,6 +2,7 @@ import { type Browser, type BrowserContext, expect, type Page, type Request, tes
 import { Pool } from "pg";
 
 import type { EditorSessionSnapshotV1 } from "../src/collaboration/editor-session-contract";
+import { editorMutationPendingJournalStoragePrefixV1 } from "../src/studio/editor-mutation-pending-journal";
 import { editorSessionPendingJournalEntryStoragePrefixV1 } from "../src/studio/editor-session-pending-journal";
 import { editorSessionIdentityKey, editorSessionStorageKey } from "../src/studio/editor-session-store";
 import { createInitialEditorState, snapshotCloudEditorSessionV1 } from "../src/studio/use-editor-controller";
@@ -14,6 +15,8 @@ import {
 const WORKSPACE_NAME = "Production Demo";
 const SESSION_PUT_PATH = /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/session$/u;
 const SESSION_PUT_ROUTE = "**/api/editor/projects/production-demo/documents/*/session?*";
+const MUTATION_POST_PATH = /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/events$/u;
+const MUTATION_POST_ROUTE = "**/api/editor/projects/production-demo/documents/*/events";
 
 type EditorFixtureIdentity = Readonly<{
   organizationId: string;
@@ -36,6 +39,18 @@ test.afterAll(async () => {
 });
 
 type SessionPutBody = Readonly<{ snapshot?: EditorSessionSnapshotV1 }>;
+type MutationPostBody = Readonly<{
+  baseRevision: string;
+  clientMutationId: string;
+  sessionUpdate?: Readonly<{ expectedSessionGeneration: string }>;
+}>;
+type CommittedMutationResult = Readonly<{
+  document: Readonly<{ revision: string }>;
+  event: Readonly<{ clientMutationId: string; revision: string }>;
+  kind: "committed";
+  replayed: boolean;
+  sessionUpdate?: Readonly<{ sessionGeneration: string }>;
+}>;
 type StoredSessionPutResult = Readonly<{
   kind: "stored";
   replayed: boolean;
@@ -86,11 +101,18 @@ function mutationPost(page: Page, status = 201) {
   return page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
-      response.request().method() === "POST" &&
-      /^\/api\/editor\/projects\/production-demo\/documents\/[0-9a-f]{64}\/events$/u.test(url.pathname) &&
-      response.status() === status
+      response.request().method() === "POST" && MUTATION_POST_PATH.test(url.pathname) && response.status() === status
     );
   });
+}
+
+function mutationPostBody(request: Request) {
+  if (request.method() !== "POST" || !MUTATION_POST_PATH.test(new URL(request.url()).pathname)) return null;
+  try {
+    return request.postDataJSON() as MutationPostBody;
+  } catch {
+    return null;
+  }
 }
 
 async function prepareEditorAuthority() {
@@ -230,6 +252,31 @@ async function pendingJournalTimes(page: Page, identity: EditorFixtureIdentity) 
     }
     return times.length === 0 ? null : times;
   }, prefix);
+}
+
+async function pendingMutationRequests(page: Page, identity: EditorFixtureIdentity) {
+  const prefix = editorMutationPendingJournalStoragePrefixV1({
+    organizationId: identity.organizationId,
+    userId: identity.userId,
+  });
+  return page.evaluate((entryPrefix) => {
+    const requests: MutationPostBody[] = [];
+    for (let index = 0; index < window.localStorage.length; index += 1) {
+      const key = window.localStorage.key(index);
+      if (key === null || !key.startsWith(entryPrefix)) continue;
+      const serialized = window.localStorage.getItem(key);
+      if (serialized === null) continue;
+      const payload = JSON.parse(serialized) as { request?: MutationPostBody };
+      if (payload.request) requests.push(payload.request);
+    }
+    return requests.length === 0 ? null : requests;
+  }, prefix);
+}
+
+async function createCircleDraft(page: Page, position: Readonly<{ x: number; y: number }>) {
+  await page.getByRole("button", { name: /Insert circle/ }).click();
+  await page.locator("[data-studio-canvas]").click({ position });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
 }
 
 test("restores a private editor session after reload and in a fresh context for the same account", async ({
@@ -474,6 +521,151 @@ test("retains the cloud winner and exposes a pending-session conflict after a co
     } finally {
       await observer.context.close();
     }
+  } finally {
+    await winner.context.close();
+  }
+});
+
+test("replays the exact pending mutation after a pre-store abort and hard reload", async ({ page }) => {
+  const identity = await signInAndOpenStudio(page);
+  const attempts: MutationPostBody[] = [];
+  const aborted = deferred<void>();
+  let block = true;
+  await page.route(MUTATION_POST_ROUTE, async (route) => {
+    const body = mutationPostBody(route.request());
+    if (!body || !block) {
+      await route.continue();
+      return;
+    }
+    attempts.push(body);
+    if (attempts.length === 2) aborted.resolve();
+    await route.abort("failed");
+  });
+
+  await createCircleDraft(page, { x: 180, y: 120 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await aborted.promise;
+  expect(new Set(attempts.map((request) => request.clientMutationId)).size).toBe(1);
+  await expect
+    .poll(() => pendingMutationRequests(page, identity))
+    .toMatchObject([
+      {
+        baseRevision: "0",
+        clientMutationId: attempts[0]!.clientMutationId,
+        sessionUpdate: { expectedSessionGeneration: expect.any(String) },
+      },
+    ]);
+
+  block = false;
+  const recovered = mutationPost(page, 201);
+  await reopenStudio(page);
+  const recoveredRequest = mutationPostBody((await recovered).request());
+  expect(recoveredRequest?.clientMutationId).toBe(attempts[0]!.clientMutationId);
+  await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
+  await expect.poll(() => pendingMutationRequests(page, identity)).toBeNull();
+});
+
+test("observes a stored mutation response loss without advancing document or session twice", async ({ page }) => {
+  const identity = await signInAndOpenStudio(page);
+  const storedWithoutResponse = deferred<CommittedMutationResult>();
+  const immediateReplayLost = deferred<void>();
+  const attempts: MutationPostBody[] = [];
+  await page.route(MUTATION_POST_ROUTE, async (route) => {
+    const body = mutationPostBody(route.request());
+    if (!body) {
+      await route.continue();
+      return;
+    }
+    attempts.push(body);
+    if (attempts.length <= 2) {
+      const response = await route.fetch();
+      const result = (await response.json()) as CommittedMutationResult;
+      if (attempts.length === 1) storedWithoutResponse.resolve(result);
+      else immediateReplayLost.resolve();
+      await route.abort("failed");
+      return;
+    }
+    await route.continue();
+  });
+
+  await createCircleDraft(page, { x: 210, y: 140 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+  const stored = await storedWithoutResponse.promise;
+  await immediateReplayLost.promise;
+  expect(stored).toMatchObject({ kind: "committed", replayed: false });
+  expect(new Set(attempts.map((request) => request.clientMutationId)).size).toBe(1);
+  await expect.poll(() => pendingMutationRequests(page, identity)).not.toBeNull();
+
+  const recoveredResponse = mutationPost(page, 200);
+  await reopenStudio(page);
+  const recovered = (await (await recoveredResponse).json()) as CommittedMutationResult;
+  expect(recovered).toMatchObject({
+    document: { revision: stored.document.revision },
+    event: {
+      clientMutationId: stored.event.clientMutationId,
+      revision: stored.event.revision,
+    },
+    kind: "committed",
+    replayed: true,
+    sessionUpdate: { sessionGeneration: stored.sessionUpdate?.sessionGeneration },
+  });
+  await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
+  await expect.poll(() => pendingMutationRequests(page, identity)).toBeNull();
+});
+
+test("keeps a concurrent mutation loser explicit and never overwrites the cloud winner", async ({ browser, page }) => {
+  const identity = await signInAndOpenStudio(page);
+  const origin = new URL("/", page.url()).href;
+  const loserAttempts: MutationPostBody[] = [];
+  const loserAborted = deferred<void>();
+  let blockLoser = true;
+  await page.route(MUTATION_POST_ROUTE, async (route) => {
+    const body = mutationPostBody(route.request());
+    if (!body || !blockLoser) {
+      await route.continue();
+      return;
+    }
+    loserAttempts.push(body);
+    if (loserAttempts.length === 2) loserAborted.resolve();
+    await route.abort("failed");
+  });
+
+  await createCircleDraft(page, { x: 180, y: 120 });
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await loserAborted.promise;
+  await expect.poll(() => pendingMutationRequests(page, identity)).not.toBeNull();
+
+  const winner = await sameAccountContext(browser, page.context(), origin);
+  try {
+    await createCircleDraft(winner.page, { x: 180, y: 120 });
+    const winnerResponse = mutationPost(winner.page, 201);
+    await winner.page.getByRole("button", { name: "Apply program" }).click();
+    const winnerResult = (await (await winnerResponse).json()) as CommittedMutationResult;
+    expect(winnerResult).toMatchObject({ document: { revision: "1" }, kind: "committed" });
+    blockLoser = false;
+
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    const conflict = mutationPost(page, 409);
+    await page.getByRole("button", { name: `Open ${WORKSPACE_NAME} workspace` }).click();
+    await conflict;
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("retained Editor mutation conflicts with cloud state (revision-mismatch)");
+    await expect(alert.getByRole("button", { name: "Clear pending mutation journal" })).toBeVisible();
+    await expect.poll(() => pendingMutationRequests(page, identity)).not.toBeNull();
+
+    const observer = await sameAccountContext(browser, page.context(), origin);
+    try {
+      await expect(observer.page.getByRole("button", { name: "Move Circle" })).toHaveCount(1);
+    } finally {
+      await observer.context.close();
+    }
+
+    await alert.getByRole("button", { name: "Clear pending mutation journal" }).click();
+    await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+    await expect.poll(() => pendingMutationRequests(page, identity)).toBeNull();
+    await openStudio(page);
+    await expect(page.getByRole("button", { name: "Move Circle" })).toHaveCount(1);
   } finally {
     await winner.context.close();
   }

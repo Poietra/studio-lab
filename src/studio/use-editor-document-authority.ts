@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  createBrowserEditorDocumentKeyV1,
   type EditorDocumentAuthorityCommitOutcomeV1,
   EditorDocumentAuthorityErrorV1,
   type EditorDocumentAuthorityIdentityV1,
   type EditorDocumentAuthorityOpenOutcomeV1,
+  type EditorDocumentAuthorityRecoveryKindV1,
   type EditorDocumentAuthoritySnapshotV1,
   EditorDocumentAuthorityV1,
 } from "../collaboration/editor-document-authority";
@@ -25,6 +27,15 @@ import {
   canonicalEditorSessionSnapshotJsonV1,
   type EditorSessionSnapshotV1,
 } from "../collaboration/editor-session-contract";
+import {
+  assertEditorMutationCommitAcknowledgementV1,
+  browserEditorMutationPendingJournalV1,
+  type EditorMutationPendingJournalEntryV1,
+  EditorMutationPendingJournalErrorV1,
+  type EditorMutationPendingJournalIdentityV1,
+  type EditorMutationPendingJournalLookupV1,
+  type EditorMutationPendingJournalV1,
+} from "./editor-mutation-pending-journal";
 import {
   browserEditorSessionPendingJournalV1,
   type EditorSessionPendingJournalBasisV1,
@@ -52,6 +63,7 @@ type EditorDocumentAuthorityPhaseV1 = "blocked" | "disabled" | "opening" | "pend
 export type EditorDocumentAuthorityUiStateV1 = Readonly<{
   journalConflict: boolean;
   journalConflictAccountWide: boolean;
+  journalConflictKind: "mutation" | "session" | null;
   message: string | null;
   phase: EditorDocumentAuthorityPhaseV1;
   retryable: boolean;
@@ -68,6 +80,15 @@ class EditorSessionPendingJournalConflictV1 extends Error {
       "A pending private Editor session conflicts with newer cloud state. Discard the pending local state or return after resolving the other editor.",
     );
     this.name = "EditorSessionPendingJournalConflictV1";
+  }
+}
+
+class EditorMutationPendingJournalConflictV1 extends Error {
+  constructor(
+    message = "A retained Editor mutation conflicts with newer cloud state. Clear it explicitly or resolve the other editor before continuing.",
+  ) {
+    super(message);
+    this.name = "EditorMutationPendingJournalConflictV1";
   }
 }
 
@@ -93,7 +114,13 @@ export function editorDocumentAuthorityStateAfterJournalStorageFailureV1(
   state: EditorDocumentAuthorityUiStateV1,
   message: string,
 ): EditorDocumentAuthorityUiStateV1 {
-  return { ...state, journalConflict: false, journalConflictAccountWide: false, message };
+  return {
+    ...state,
+    journalConflict: false,
+    journalConflictAccountWide: false,
+    journalConflictKind: null,
+    message,
+  };
 }
 
 export function installEditorAuthorityBasisAfterJournalSettlementV1(
@@ -159,11 +186,44 @@ function pendingJournalBasisV1(snapshot: EditorDocumentAuthoritySnapshotV1): Edi
   };
 }
 
+function pendingMutationJournalIdentityV1(
+  snapshot: EditorDocumentAuthoritySnapshotV1,
+): EditorMutationPendingJournalIdentityV1 {
+  return {
+    documentKey: snapshot.document.documentKey,
+    epoch: snapshot.document.epoch,
+    projectId: snapshot.document.projectId,
+    sourceHash: snapshot.document.sourceHash,
+    sourcePath: snapshot.document.sourcePath,
+  };
+}
+
+function pendingMutationJournalLookupV1(
+  identity: Pick<EditorDocumentAuthorityIdentityV1, "projectId" | "sourceHash" | "sourcePath">,
+  documentKey: string,
+): EditorMutationPendingJournalLookupV1 {
+  return {
+    documentKey,
+    projectId: identity.projectId,
+    sourceHash: identity.sourceHash,
+    sourcePath: identity.sourcePath,
+  };
+}
+
 function canonicalJournalEntrySnapshotV1(entry: EditorSessionPendingJournalEntryV1) {
   return canonicalEditorSessionSnapshotJsonV1(entry.request.snapshot);
 }
 
 function publicAuthorityMessageV1(error: unknown) {
+  if (error instanceof EditorMutationPendingJournalConflictV1) return error.message;
+  if (error instanceof EditorMutationPendingJournalErrorV1) {
+    if (error.code === "storage") {
+      return "Browser storage is unavailable. Enable site storage, then reload before continuing to edit.";
+    }
+    return error.code === "ambiguous" || error.code === "mismatch"
+      ? "A pending Editor mutation cannot be resolved safely. Clear its recovery journal before continuing."
+      : "Pending Editor mutations cannot be resolved safely. Clear all mutation recovery journals before continuing.";
+  }
   if (error instanceof EditorSessionPendingJournalConflictV1) return error.message;
   if (error instanceof EditorSessionPendingJournalReadErrorV1) {
     if (error.code === "storage") {
@@ -179,8 +239,11 @@ function publicAuthorityMessageV1(error: unknown) {
 }
 
 function shouldExposeJournalDiscardV1(error: unknown, retryable: boolean, retainedEvidence: boolean) {
+  if (error instanceof EditorMutationPendingJournalErrorV1 && error.code === "storage") return false;
   if (error instanceof EditorSessionPendingJournalReadErrorV1 && error.code === "storage") return false;
   return (
+    error instanceof EditorMutationPendingJournalConflictV1 ||
+    error instanceof EditorMutationPendingJournalErrorV1 ||
     error instanceof EditorSessionPendingJournalConflictV1 ||
     error instanceof EditorSessionPendingJournalReadErrorV1 ||
     (!retryable && retainedEvidence)
@@ -189,8 +252,70 @@ function shouldExposeJournalDiscardV1(error: unknown, retryable: boolean, retain
 
 function journalConflictIsAccountWideV1(error: unknown) {
   return (
-    error instanceof EditorSessionPendingJournalReadErrorV1 && (error.code === "capacity" || error.code === "corrupt")
+    (error instanceof EditorMutationPendingJournalErrorV1 || error instanceof EditorSessionPendingJournalReadErrorV1) &&
+    (error.code === "capacity" || error.code === "corrupt")
   );
+}
+
+function journalConflictKindV1(error: unknown): "mutation" | "session" | null {
+  if (error instanceof EditorMutationPendingJournalConflictV1 || error instanceof EditorMutationPendingJournalErrorV1) {
+    return "mutation";
+  }
+  if (
+    error instanceof EditorSessionPendingJournalConflictV1 ||
+    error instanceof EditorSessionPendingJournalReadErrorV1
+  ) {
+    return "session";
+  }
+  return null;
+}
+
+export function editorMutationJournalConflictIsDefinitiveV1(
+  error: unknown,
+  retainedMutation: boolean,
+  recoveryKind: EditorDocumentAuthorityRecoveryKindV1 | null,
+) {
+  return (
+    retainedMutation &&
+    recoveryKind !== "commit" &&
+    error instanceof EditorDocumentAuthorityErrorV1 &&
+    (error.code === "conflict" || error.code === "session-conflict")
+  );
+}
+
+export async function recoverPendingEditorMutationBeforeOpenV1(
+  input: Readonly<{
+    client: EditorDocumentClientV1;
+    identity: EditorDocumentAuthorityIdentityV1;
+    journal: EditorMutationPendingJournalV1 | null;
+    onLookup?: (lookup: EditorMutationPendingJournalLookupV1) => void;
+    onPending?: (entry: EditorMutationPendingJournalEntryV1, lookup: EditorMutationPendingJournalLookupV1) => void;
+    signal?: AbortSignal;
+  }>,
+) {
+  if (!input.journal) return { kind: "empty" } as const;
+  input.signal?.throwIfAborted();
+  const documentKey = await createBrowserEditorDocumentKeyV1(input.identity);
+  input.signal?.throwIfAborted();
+  const lookup = pendingMutationJournalLookupV1(input.identity, documentKey);
+  input.onLookup?.(lookup);
+  const entry = input.journal.readExact(lookup);
+  if (!entry) return { kind: "empty" } as const;
+  input.onPending?.(entry, lookup);
+  const result = await input.client.commit(input.identity, documentKey, entry.request, input.signal);
+  input.signal?.throwIfAborted();
+  if (result.kind === "conflict") {
+    throw new EditorMutationPendingJournalConflictV1(
+      `A retained Editor mutation conflicts with cloud state (${result.reason}). Clear it explicitly or resolve the other editor before continuing.`,
+    );
+  }
+  await assertEditorMutationCommitAcknowledgementV1(entry, result);
+  if (!input.journal.acknowledgeExact(entry)) {
+    throw new EditorMutationPendingJournalConflictV1(
+      "The accepted Editor mutation remains in browser recovery storage. Reload before continuing.",
+    );
+  }
+  return { entry, kind: "recovered", result } as const;
 }
 
 function emptyEditorPresenceV1(): EditorLivePresenceV1 {
@@ -222,6 +347,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   const [state, setState] = useState<EditorDocumentAuthorityUiStateV1>({
     journalConflict: false,
     journalConflictAccountWide: false,
+    journalConflictKind: null,
     message: null,
     phase: "disabled",
     retryable: false,
@@ -236,12 +362,24 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   stateRef.current = state;
   const updateState = useCallback(
     (
-      next: Omit<EditorDocumentAuthorityUiStateV1, "journalConflict" | "journalConflictAccountWide"> & {
+      next: Omit<
+        EditorDocumentAuthorityUiStateV1,
+        "journalConflict" | "journalConflictAccountWide" | "journalConflictKind"
+      > & {
         journalConflict?: boolean;
         journalConflictAccountWide?: boolean;
+        journalConflictKind?: "mutation" | "session" | null;
       },
     ) => {
-      const normalized = { journalConflict: false, journalConflictAccountWide: false, ...next };
+      const journalConflict = next.journalConflict ?? false;
+      const normalized: EditorDocumentAuthorityUiStateV1 = {
+        journalConflict,
+        journalConflictAccountWide: next.journalConflictAccountWide ?? false,
+        journalConflictKind: journalConflict ? (next.journalConflictKind ?? "session") : null,
+        message: next.message,
+        phase: next.phase,
+        retryable: next.retryable,
+      };
       stateRef.current = normalized;
       setState(normalized);
     },
@@ -272,9 +410,21 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         : null,
     [input.identity?.organizationId, input.ownerKey],
   );
+  const mutationJournal = useMemo(
+    () =>
+      input.identity && input.ownerKey
+        ? browserEditorMutationPendingJournalV1({
+            organizationId: input.identity.organizationId,
+            userId: input.ownerKey,
+          })
+        : null,
+    [input.identity?.organizationId, input.ownerKey],
+  );
   const authoritySnapshot = useRef<EditorDocumentAuthoritySnapshotV1 | null>(null);
   const journalBasis = useRef<EditorSessionPendingJournalBasisV1 | null>(null);
   const journalConflictIdentity = useRef<EditorSessionPendingJournalLaneIdentityV1 | null>(null);
+  const mutationConflictLookup = useRef<EditorMutationPendingJournalLookupV1 | null>(null);
+  const pendingMutationRecovery = useRef<EditorMutationPendingJournalEntryV1 | null>(null);
   const terminationAttemptedEntryId = useRef<string | null>(null);
   const lastSavedSessionCanonical = useRef<string | null>(null);
   const operationLane = useRef<Promise<void>>(Promise.resolve());
@@ -309,6 +459,26 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     authoritySnapshot.current = snapshot;
     journalBasis.current = pendingJournalBasisV1(snapshot);
   }, []);
+
+  const acknowledgePendingMutation = useCallback(
+    (outcome: EditorDocumentAuthorityCommitOutcomeV1) => {
+      if (outcome.kind === "reconciled" && !outcome.accepted) {
+        throw new EditorMutationPendingJournalConflictV1();
+      }
+      const entry = pendingMutationRecovery.current;
+      if (!mutationJournal || !entry) {
+        throw new EditorMutationPendingJournalErrorV1("The exact pending Editor mutation is unavailable.", "mismatch");
+      }
+      if (!mutationJournal.acknowledgeExact(entry)) {
+        throw new EditorMutationPendingJournalConflictV1(
+          "The accepted Editor mutation remains in browser recovery storage. Reload before continuing.",
+        );
+      }
+      pendingMutationRecovery.current = null;
+      mutationConflictLookup.current = null;
+    },
+    [mutationJournal],
+  );
 
   const installAuthoritySnapshotAfterBasisAdvance = useCallback(
     (snapshot: EditorDocumentAuthoritySnapshotV1) => {
@@ -593,6 +763,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     authoritySnapshot.current = null;
     journalBasis.current = null;
     journalConflictIdentity.current = null;
+    mutationConflictLookup.current = null;
+    pendingMutationRecovery.current = null;
     terminationAttemptedEntryId.current = null;
     authority.current = null;
     authorityIdentityKey.current = null;
@@ -622,6 +794,22 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         generation.current === activeGeneration &&
         renderedIdentityKey.current === identityKey &&
         authority.current === nextAuthority;
+      await recoverPendingEditorMutationBeforeOpenV1({
+        client,
+        identity: activeIdentity,
+        journal: mutationJournal,
+        onLookup: (lookup) => {
+          mutationConflictLookup.current = lookup;
+        },
+        onPending: (entry, lookup) => {
+          pendingMutationRecovery.current = entry;
+          mutationConflictLookup.current = lookup;
+        },
+        signal: controller.signal,
+      });
+      if (!openAttemptIsCurrent()) return null;
+      pendingMutationRecovery.current = null;
+      mutationConflictLookup.current = null;
       for (let attempt = 0; attempt < 3; attempt += 1) {
         let snapshot = await nextAuthority.open(controller.signal);
         if (!openAttemptIsCurrent()) return null;
@@ -728,10 +916,15 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         if (message) {
           const journalConflict = shouldExposeJournalDiscardV1(error, retryable, pendingJournalRetainsCurrentBasis());
           const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
-          if (journalConflictAccountWide) journalConflictIdentity.current = null;
+          const journalConflictKind = journalConflictKindV1(error);
+          if (journalConflictAccountWide) {
+            journalConflictIdentity.current = null;
+            if (journalConflictKind === "mutation") mutationConflictLookup.current = null;
+          }
           updateState({
             journalConflict,
             journalConflictAccountWide,
+            journalConflictKind,
             message,
             phase: journalConflict ? "blocked" : retryable ? "recoverable" : "blocked",
             retryable: journalConflict ? false : retryable,
@@ -770,6 +963,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     identityKey,
     installAuthoritySnapshot,
     installAuthoritySnapshotAfterBasisAdvance,
+    mutationJournal,
     pendingJournalRetainsCurrentBasis,
     recoverPendingJournalAtOpen,
     updateState,
@@ -1129,6 +1323,11 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           )
             return { kind: "blocked" };
           const activeGeneration = generation.current;
+          const activeSnapshot = authoritySnapshot.current;
+          if (!activeSnapshot) return { kind: "blocked" };
+          const mutationIdentity = pendingMutationJournalIdentityV1(activeSnapshot);
+          const mutationLookup = pendingMutationJournalLookupV1(mutationIdentity, mutationIdentity.documentKey);
+          mutationConflictLookup.current = mutationLookup;
           const controller = new AbortController();
           request.current = controller;
           updateState({ message: null, phase: "pending", retryable: false });
@@ -1139,9 +1338,19 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               }
             : null;
           try {
-            const outcome: EditorDocumentAuthorityCommitOutcomeV1 = sessionSnapshot
-              ? await activeAuthority.commit(mutation, { sessionSnapshot, signal: controller.signal })
-              : await activeAuthority.commit(mutation, controller.signal);
+            const outcome: EditorDocumentAuthorityCommitOutcomeV1 = await activeAuthority.commit(mutation, {
+              onPrepared: (request) => {
+                if (!mutationJournal) {
+                  throw new EditorMutationPendingJournalErrorV1(
+                    "Pending Editor mutation storage is unavailable.",
+                    "storage",
+                  );
+                }
+                pendingMutationRecovery.current = mutationJournal.record(mutationIdentity, request);
+              },
+              sessionSnapshot,
+              signal: controller.signal,
+            });
             if (
               controller.signal.aborted ||
               generation.current !== activeGeneration ||
@@ -1149,6 +1358,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               authority.current !== activeAuthority
             )
               return { kind: "stale" };
+            acknowledgePendingMutation(outcome);
             if (outcome.kind === "reconciled") {
               pendingCommitSessionRecovery.current = null;
               if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
@@ -1183,17 +1393,37 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               authority.current !== activeAuthority
             )
               return { kind: "stale" };
-            const message = publicAuthorityMessageV1(error);
             const retryable = activeAuthority.sessionRecoveryPending || activeAuthority.recoveryKind !== null;
+            const retainedMutation = pendingMutationRecovery.current !== null;
+            const definitiveMutationConflict = editorMutationJournalConflictIsDefinitiveV1(
+              error,
+              retainedMutation,
+              activeAuthority.recoveryKind,
+            );
+            const message = publicAuthorityMessageV1(error);
             if (activeAuthority.recoveryKind !== "commit") pendingCommitSessionRecovery.current = null;
+            if (
+              pendingMutationRecovery.current === null &&
+              !(error instanceof EditorMutationPendingJournalErrorV1) &&
+              !(error instanceof EditorMutationPendingJournalConflictV1)
+            ) {
+              mutationConflictLookup.current = null;
+            }
             if (message) {
               const journalConflict = shouldExposeJournalDiscardV1(
                 error,
                 retryable,
-                pendingJournalRetainsCurrentBasis(),
+                pendingJournalRetainsCurrentBasis() || definitiveMutationConflict,
               );
+              const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
+              const journalConflictKind = definitiveMutationConflict ? "mutation" : journalConflictKindV1(error);
+              if (journalConflictAccountWide && journalConflictKind === "mutation") {
+                mutationConflictLookup.current = null;
+              }
               updateState({
                 journalConflict,
+                journalConflictAccountWide,
+                journalConflictKind,
                 message,
                 phase: journalConflict ? "blocked" : retryable ? "recoverable" : "blocked",
                 retryable: journalConflict ? false : retryable,
@@ -1218,7 +1448,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     },
     [
       canAuthor,
+      acknowledgePendingMutation,
       installAuthoritySnapshotAfterBasisAdvance,
+      mutationJournal,
       pendingJournalRetainsCurrentBasis,
       runInOperationLane,
       settlePendingJournalBeforeBasisAdvance,
@@ -1352,6 +1584,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authority.current !== activeAuthority
       )
         return false;
+      if (pendingMutationRecovery.current !== null) acknowledgePendingMutation(outcome);
       pendingSessionRecovery.current = null;
       const pendingCommitSession = pendingCommitSessionRecovery.current;
       if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
@@ -1388,15 +1621,29 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         authority.current !== activeAuthority
       )
         return false;
-      const message = publicAuthorityMessageV1(error);
       const retryable = activeAuthority.recoveryKind !== null || activeAuthority.sessionRecoveryPending;
+      const definitiveMutationConflict = editorMutationJournalConflictIsDefinitiveV1(
+        error,
+        pendingMutationRecovery.current !== null,
+        activeAuthority.recoveryKind,
+      );
+      const message = publicAuthorityMessageV1(error);
       if (message) {
-        const journalConflict = shouldExposeJournalDiscardV1(error, retryable, pendingJournalRetainsCurrentBasis());
+        const journalConflict = shouldExposeJournalDiscardV1(
+          error,
+          retryable,
+          pendingJournalRetainsCurrentBasis() || definitiveMutationConflict,
+        );
         const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
-        if (journalConflictAccountWide) journalConflictIdentity.current = null;
+        const journalConflictKind = definitiveMutationConflict ? "mutation" : journalConflictKindV1(error);
+        if (journalConflictAccountWide) {
+          journalConflictIdentity.current = null;
+          if (journalConflictKind === "mutation") mutationConflictLookup.current = null;
+        }
         updateState({
           journalConflict,
           journalConflictAccountWide,
+          journalConflictKind,
           message,
           phase: journalConflict ? "blocked" : retryable ? "recoverable" : "blocked",
           retryable: journalConflict ? false : retryable,
@@ -1407,6 +1654,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       if (request.current === controller) request.current = null;
     }
   }, [
+    acknowledgePendingMutation,
     installAuthoritySnapshot,
     installAuthoritySnapshotAfterBasisAdvance,
     pendingJournalRetainsCurrentBasis,
@@ -1511,8 +1759,21 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   }, []);
 
   const discardPendingSession = useCallback(() => {
+    if (!stateRef.current.journalConflict) return false;
+    if (stateRef.current.journalConflictKind === "mutation") {
+      const lookup = mutationConflictLookup.current;
+      if (!mutationJournal) return false;
+      if (stateRef.current.journalConflictAccountWide) {
+        if (!mutationJournal.discardAll()) return false;
+      } else if (!lookup || !mutationJournal.discardExact(lookup)) {
+        return false;
+      }
+      mutationConflictLookup.current = null;
+      pendingMutationRecovery.current = null;
+      return true;
+    }
     const identity = journalConflictIdentity.current;
-    if (!stateRef.current.journalConflict || !sessionJournal) return false;
+    if (!sessionJournal) return false;
     if (stateRef.current.journalConflictAccountWide) {
       if (!sessionJournal.discardAll()) return false;
     } else if (identity) {
@@ -1528,7 +1789,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     }
     journalConflictIdentity.current = null;
     return true;
-  }, [sessionJournal]);
+  }, [mutationJournal, sessionJournal]);
 
   const updatePresence = useCallback((update: Partial<EditorLivePresenceV1>) => {
     const activeIdentityKey = renderedIdentityKey.current;
@@ -1562,6 +1823,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     message: state.message,
     pendingSessionConflict: state.journalConflict,
     pendingSessionConflictAccountWide: state.journalConflictAccountWide,
+    pendingJournalConflictKind: state.journalConflictKind,
     phase: state.phase,
     presentationReady:
       input.identity === null ||
