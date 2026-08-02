@@ -49,7 +49,7 @@ function browserEditorLiveClientV1() {
 
 type EditorDocumentAuthorityPhaseV1 = "blocked" | "disabled" | "opening" | "pending" | "ready" | "recoverable";
 
-type EditorDocumentAuthorityUiStateV1 = Readonly<{
+export type EditorDocumentAuthorityUiStateV1 = Readonly<{
   journalConflict: boolean;
   journalConflictAccountWide: boolean;
   message: string | null;
@@ -75,6 +75,44 @@ export type EditorDocumentAuthorityHookCommitOutcomeV1 =
   | EditorDocumentAuthorityCommitOutcomeV1
   | Readonly<{ kind: "blocked" }>
   | Readonly<{ kind: "stale" }>;
+
+export type EditorDocumentSessionFlushOutcomeV1 = Readonly<{
+  kind: "busy" | "failed" | "journaled" | "stored";
+}>;
+
+export function editorDocumentSessionFlushAllowsTransitionV1(
+  outcome: EditorDocumentSessionFlushOutcomeV1,
+  transition: "account" | "document" = "document",
+) {
+  return (
+    outcome.kind === "stored" || outcome.kind === "journaled" || (transition === "account" && outcome.kind === "failed")
+  );
+}
+
+export function editorDocumentAuthorityStateAfterJournalStorageFailureV1(
+  state: EditorDocumentAuthorityUiStateV1,
+  message: string,
+): EditorDocumentAuthorityUiStateV1 {
+  return { ...state, journalConflict: false, journalConflictAccountWide: false, message };
+}
+
+export function installEditorAuthorityBasisAfterJournalSettlementV1(
+  input: Readonly<{
+    currentDocumentRevision: string | null;
+    install: () => void;
+    nextDocumentRevision: string;
+    pendingLaneDocumentRevision: string | null;
+  }>,
+) {
+  const staleLane =
+    input.currentDocumentRevision !== null &&
+    input.currentDocumentRevision !== input.nextDocumentRevision &&
+    input.pendingLaneDocumentRevision !== null &&
+    input.pendingLaneDocumentRevision !== input.nextDocumentRevision;
+  if (staleLane) return false;
+  input.install();
+  return true;
+}
 
 export type EditorDocumentSessionBootstrapV1 = Readonly<{
   onCloudReady: () => void;
@@ -254,6 +292,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     snapshot: EditorSessionSnapshotV1;
   }> | null>(null);
   const queuedCommitIdentityKey = useRef<string | null>(null);
+  const queuedReconcileIdentityKey = useRef<string | null>(null);
   const [renderedQueuedCommitIdentityKey, setRenderedQueuedCommitIdentityKey] = useState<string | null>(null);
   const presentationReady = useRef(false);
   const reconcileRunner = useRef<() => Promise<boolean>>(async () => false);
@@ -270,6 +309,23 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     authoritySnapshot.current = snapshot;
     journalBasis.current = pendingJournalBasisV1(snapshot);
   }, []);
+
+  const installAuthoritySnapshotAfterBasisAdvance = useCallback(
+    (snapshot: EditorDocumentAuthoritySnapshotV1) => {
+      const previousBasis = journalBasis.current;
+      const lane = sessionJournal && previousBasis ? sessionJournal.readLaneExact(previousBasis.identity) : null;
+      if (lane && previousBasis) journalConflictIdentity.current = previousBasis.identity;
+      const installed = installEditorAuthorityBasisAfterJournalSettlementV1({
+        currentDocumentRevision: previousBasis?.documentRevision ?? null,
+        install: () => installAuthoritySnapshot(snapshot),
+        nextDocumentRevision: snapshot.revision,
+        pendingLaneDocumentRevision: lane?.head.request.documentRevision ?? null,
+      });
+      if (installed) journalConflictIdentity.current = null;
+      return installed;
+    },
+    [installAuthoritySnapshot, sessionJournal],
+  );
 
   const recordSessionSnapshot = useCallback(
     (snapshot: EditorSessionSnapshotV1) => {
@@ -298,6 +354,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
           if (journalConflictAccountWide) journalConflictIdentity.current = null;
           if (message) {
+            if (error instanceof EditorSessionPendingJournalReadErrorV1 && error.code === "storage") {
+              updateState(editorDocumentAuthorityStateAfterJournalStorageFailureV1(stateRef.current, message));
+              return { durable: false, entry: null } as const;
+            }
             updateState({
               journalConflict,
               journalConflictAccountWide,
@@ -526,6 +586,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     pendingSessionRecovery.current = null;
     pendingCommitSessionRecovery.current = null;
     queuedCommitIdentityKey.current = null;
+    queuedReconcileIdentityKey.current = null;
     setRenderedQueuedCommitIdentityKey(null);
     presentationReady.current = false;
     lastSavedSessionCanonical.current = null;
@@ -590,12 +651,13 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
             const saved = await nextAuthority.saveSession(installed.snapshot, controller.signal);
             if (!openAttemptIsCurrent()) return null;
             if (saved.kind === "reconciled") {
-              installAuthoritySnapshot(saved.snapshot);
+              if (!installAuthoritySnapshotAfterBasisAdvance(saved.snapshot)) {
+                throw new EditorSessionPendingJournalConflictV1();
+              }
               sessionAuthorityEpoch.current += 1;
               lastSavedSessionCanonical.current = null;
               projection.current(saved.snapshot.programs, "remote");
               pendingSessionRecovery.current = null;
-              if (attemptedJournalEntry) throw new EditorSessionPendingJournalConflictV1();
               if (attempt < 2) continue;
               throw new EditorDocumentAuthorityErrorV1(
                 "The Editor document kept changing while its private session opened.",
@@ -683,7 +745,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       if (
         presentationReady.current &&
         pendingCommitSessionRecovery.current === null &&
-        queuedCommitIdentityKey.current === null
+        queuedCommitIdentityKey.current === null &&
+        queuedReconcileIdentityKey.current === null
       ) {
         checkpointLatestSession(false);
       }
@@ -706,6 +769,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     connectLive,
     identityKey,
     installAuthoritySnapshot,
+    installAuthoritySnapshotAfterBasisAdvance,
     pendingJournalRetainsCurrentBasis,
     recoverPendingJournalAtOpen,
     updateState,
@@ -790,12 +854,14 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               if (!saveAttemptIsCurrent()) return false;
               pendingSessionRecovery.current = null;
               if (outcome.kind === "reconciled") {
-                installAuthoritySnapshot(outcome.snapshot);
+                if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+                  throw new EditorSessionPendingJournalConflictV1();
+                }
                 sessionAuthorityEpoch.current += 1;
                 lastSavedSessionCanonical.current = null;
                 projection.current(outcome.snapshot.programs, "remote");
                 remoteHeadQueue.current?.kick();
-                throw new EditorSessionPendingJournalConflictV1();
+                return false;
               }
               const previousSnapshot = authoritySnapshot.current;
               if (!previousSnapshot) throw new EditorSessionPendingJournalConflictV1();
@@ -830,7 +896,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           }
           pendingSessionRecovery.current = null;
           if (outcome.kind === "reconciled") {
-            installAuthoritySnapshot(outcome.snapshot);
+            if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+              throw new EditorSessionPendingJournalConflictV1();
+            }
             sessionAuthorityEpoch.current += 1;
             lastSavedSessionCanonical.current = null;
             projection.current(outcome.snapshot.programs, "remote");
@@ -850,6 +918,13 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
             renderedIdentityKey.current !== activeIdentityKey ||
             authority.current !== activeAuthority
           ) {
+            return false;
+          }
+          if (error instanceof EditorSessionPendingJournalReadErrorV1 && error.code === "storage") {
+            const message = publicAuthorityMessageV1(error);
+            if (message) {
+              updateState(editorDocumentAuthorityStateAfterJournalStorageFailureV1(stateRef.current, message));
+            }
             return false;
           }
           const retryable = activeAuthority.sessionRecoveryPending || activeAuthority.recoveryKind !== null;
@@ -875,6 +950,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     },
     [
       installAuthoritySnapshot,
+      installAuthoritySnapshotAfterBasisAdvance,
       pendingJournalRetainsCurrentBasis,
       recordSessionSnapshot,
       runInOperationLane,
@@ -883,15 +959,57 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     ],
   );
 
+  const settlePendingJournalBeforeBasisAdvance = useCallback(async () => {
+    const basis = journalBasis.current;
+    if (!sessionJournal || !basis) return true;
+    try {
+      const lane = sessionJournal.readLaneExact(basis.identity);
+      if (!lane) return true;
+      return await saveSessionSnapshot((lane.successor ?? lane.head).request.snapshot);
+    } catch (error) {
+      const message = publicAuthorityMessageV1(error);
+      if (error instanceof EditorSessionPendingJournalReadErrorV1 && error.code === "storage") {
+        if (message) updateState(editorDocumentAuthorityStateAfterJournalStorageFailureV1(stateRef.current, message));
+        return false;
+      }
+      const journalConflictAccountWide = journalConflictIsAccountWideV1(error);
+      if (journalConflictAccountWide) journalConflictIdentity.current = null;
+      if (message) {
+        updateState({
+          journalConflict: true,
+          journalConflictAccountWide,
+          message,
+          phase: "blocked",
+          retryable: false,
+        });
+      }
+      return false;
+    }
+  }, [saveSessionSnapshot, sessionJournal, updateState]);
+
   /**
    * Checkpoints the latest session, then gives the serialized cloud-save lane
    * a bounded opportunity to acknowledge it before navigation continues.
    */
   const flushSession = useCallback(async () => {
-    if (renderedIdentityKey.current === null) return true;
-    if (!presentationReady.current) return true;
+    if (renderedIdentityKey.current === null) return { kind: "stored" } as const;
+    if (!presentationReady.current) return { kind: "stored" } as const;
+    if (
+      pendingCommitSessionRecovery.current !== null ||
+      queuedCommitIdentityKey.current !== null ||
+      queuedReconcileIdentityKey.current !== null
+    ) {
+      updateState({
+        ...stateRef.current,
+        message: "Wait for the current Editor change to finish before leaving this Scene.",
+      });
+      return { kind: "busy" } as const;
+    }
     const snapshot = latestSessionSnapshot.current;
-    if (snapshot === null) return false;
+    if (snapshot === null) {
+      updateState({ ...stateRef.current, message: "The current Editor session is not ready to be saved." });
+      return { kind: "failed" } as const;
+    }
     const checkpoint = checkpointLatestSession();
     const saveAttempt = saveSessionSnapshot(snapshot).catch(() => false);
     let timeout: ReturnType<typeof setTimeout> | null = null;
@@ -902,11 +1020,19 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           timeout = setTimeout(() => resolve({ kind: "timed-out" }), EDITOR_SESSION_NAVIGATION_FLUSH_WAIT_MS_V1);
         }),
       ]);
-      return outcome.kind === "settled" ? outcome.saved || checkpoint.durable : checkpoint.durable;
+      if (outcome.kind === "settled" && outcome.saved) return { kind: "stored" } as const;
+      if (checkpoint.durable) return { kind: "journaled" } as const;
+      updateState({
+        ...stateRef.current,
+        message:
+          stateRef.current.message ??
+          "The private Editor session could not be saved. Retry the action after browser storage is available.",
+      });
+      return { kind: "failed" } as const;
     } finally {
       if (timeout !== null) clearTimeout(timeout);
     }
-  }, [checkpointLatestSession, saveSessionSnapshot]);
+  }, [checkpointLatestSession, saveSessionSnapshot, updateState]);
 
   useEffect(() => {
     if (
@@ -931,32 +1057,34 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     const terminationIdentity = input.identity;
     const checkpointForTermination = () => {
       if (!presentationReady.current) return;
-      if (pendingCommitSessionRecovery.current !== null || queuedCommitIdentityKey.current !== null) return;
+      if (
+        pendingCommitSessionRecovery.current !== null ||
+        queuedCommitIdentityKey.current !== null ||
+        queuedReconcileIdentityKey.current !== null
+      )
+        return;
       const basis = journalBasis.current;
       if (!basis) return;
       const checkpoint = checkpointLatestSession(false);
       if (!checkpoint.entry) return;
-      const attempted = sessionJournal.markAttemptedExact(checkpoint.entry.entryId);
-      if (!attempted || terminationAttemptedEntryId.current === attempted.entryId) return;
-      terminationAttemptedEntryId.current = attempted.entryId;
-      void sessionJournal.sealExact(attempted.entryId);
-      attemptEditorDocumentSessionKeepaliveV1(
+      if (terminationAttemptedEntryId.current === checkpoint.entry.entryId) return;
+      const accepted = attemptEditorDocumentSessionKeepaliveV1(
         {
           organizationId: terminationIdentity.organizationId,
           projectId: terminationIdentity.projectId,
         },
         basis.identity.documentKey,
-        attempted.request,
+        checkpoint.entry.request,
       );
-    };
-    const checkpointWhenHidden = () => {
-      if (document.visibilityState === "hidden") checkpointForTermination();
+      if (!accepted) return;
+      const attempted = sessionJournal.markAttemptedExact(checkpoint.entry.entryId);
+      if (!attempted) return;
+      terminationAttemptedEntryId.current = attempted.entryId;
+      void sessionJournal.sealExact(attempted.entryId);
     };
     window.addEventListener("pagehide", checkpointForTermination);
-    document.addEventListener("visibilitychange", checkpointWhenHidden);
     return () => {
       window.removeEventListener("pagehide", checkpointForTermination);
-      document.removeEventListener("visibilitychange", checkpointWhenHidden);
     };
   }, [checkpointLatestSession, identityKey, input.identity, sessionJournal]);
 
@@ -981,83 +1109,103 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       if (queuedIdentityKey === null || !canAuthor()) return Promise.resolve({ kind: "blocked" } as const);
       queuedCommitIdentityKey.current = queuedIdentityKey;
       setRenderedQueuedCommitIdentityKey(queuedIdentityKey);
-      return runInOperationLane<EditorDocumentAuthorityHookCommitOutcomeV1>(async () => {
-        if (
-          generation.current !== queuedGeneration ||
-          queuedIdentityKey === null ||
-          renderedIdentityKey.current !== queuedIdentityKey
-        ) {
-          return { kind: "stale" };
-        }
-        const activeAuthority = authority.current;
-        const activeIdentityKey = renderedIdentityKey.current;
-        if (
-          !activeAuthority ||
-          activeIdentityKey === null ||
-          authorityIdentityKey.current !== activeIdentityKey ||
-          stateRef.current.phase !== "ready"
-        )
-          return { kind: "blocked" };
-        const activeGeneration = generation.current;
-        const controller = new AbortController();
-        request.current = controller;
-        updateState({ message: null, phase: "pending", retryable: false });
-        pendingCommitSessionRecovery.current = sessionSnapshot
-          ? {
-              canonical: canonicalEditorSessionSnapshotJsonV1(sessionSnapshot),
-              snapshot: sessionSnapshot,
+      const commit = async () => {
+        if (!(await settlePendingJournalBeforeBasisAdvance())) return { kind: "blocked" } as const;
+        return runInOperationLane<EditorDocumentAuthorityHookCommitOutcomeV1>(async () => {
+          if (
+            generation.current !== queuedGeneration ||
+            queuedIdentityKey === null ||
+            renderedIdentityKey.current !== queuedIdentityKey
+          ) {
+            return { kind: "stale" };
+          }
+          const activeAuthority = authority.current;
+          const activeIdentityKey = renderedIdentityKey.current;
+          if (
+            !activeAuthority ||
+            activeIdentityKey === null ||
+            authorityIdentityKey.current !== activeIdentityKey ||
+            stateRef.current.phase !== "ready"
+          )
+            return { kind: "blocked" };
+          const activeGeneration = generation.current;
+          const controller = new AbortController();
+          request.current = controller;
+          updateState({ message: null, phase: "pending", retryable: false });
+          pendingCommitSessionRecovery.current = sessionSnapshot
+            ? {
+                canonical: canonicalEditorSessionSnapshotJsonV1(sessionSnapshot),
+                snapshot: sessionSnapshot,
+              }
+            : null;
+          try {
+            const outcome: EditorDocumentAuthorityCommitOutcomeV1 = sessionSnapshot
+              ? await activeAuthority.commit(mutation, { sessionSnapshot, signal: controller.signal })
+              : await activeAuthority.commit(mutation, controller.signal);
+            if (
+              controller.signal.aborted ||
+              generation.current !== activeGeneration ||
+              renderedIdentityKey.current !== activeIdentityKey ||
+              authority.current !== activeAuthority
+            )
+              return { kind: "stale" };
+            if (outcome.kind === "reconciled") {
+              pendingCommitSessionRecovery.current = null;
+              if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+                throw new EditorSessionPendingJournalConflictV1();
+              }
+              sessionAuthorityEpoch.current += 1;
+              lastSavedSessionCanonical.current = null;
+              projection.current(outcome.snapshot.programs, "remote");
             }
-          : null;
-        try {
-          const outcome: EditorDocumentAuthorityCommitOutcomeV1 = sessionSnapshot
-            ? await activeAuthority.commit(mutation, { sessionSnapshot, signal: controller.signal })
-            : await activeAuthority.commit(mutation, controller.signal);
-          if (
-            controller.signal.aborted ||
-            generation.current !== activeGeneration ||
-            renderedIdentityKey.current !== activeIdentityKey ||
-            authority.current !== activeAuthority
-          )
-            return { kind: "stale" };
-          if (outcome.kind === "reconciled") {
-            pendingCommitSessionRecovery.current = null;
-            installAuthoritySnapshot(outcome.snapshot);
-            sessionAuthorityEpoch.current += 1;
-            lastSavedSessionCanonical.current = null;
-            projection.current(outcome.snapshot.programs, "remote");
+            if (outcome.kind === "committed") {
+              pendingCommitSessionRecovery.current = null;
+              if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+                throw new EditorSessionPendingJournalConflictV1();
+              }
+              sessionAuthorityEpoch.current += 1;
+              lastSavedSessionCanonical.current =
+                !outcome.sessionInvalidated && sessionSnapshot
+                  ? canonicalEditorSessionSnapshotJsonV1(sessionSnapshot)
+                  : null;
+            }
+            updateState({ message: null, phase: "ready", retryable: false });
+            if (outcome.kind === "committed" || outcome.accepted) {
+              liveConnection.current?.publishHead(outcome.snapshot.revision);
+            }
+            remoteHeadQueue.current?.kick();
+            return outcome;
+          } catch (error) {
+            if (
+              controller.signal.aborted ||
+              generation.current !== activeGeneration ||
+              renderedIdentityKey.current !== activeIdentityKey ||
+              authority.current !== activeAuthority
+            )
+              return { kind: "stale" };
+            const message = publicAuthorityMessageV1(error);
+            const retryable = activeAuthority.sessionRecoveryPending || activeAuthority.recoveryKind !== null;
+            if (activeAuthority.recoveryKind !== "commit") pendingCommitSessionRecovery.current = null;
+            if (message) {
+              const journalConflict = shouldExposeJournalDiscardV1(
+                error,
+                retryable,
+                pendingJournalRetainsCurrentBasis(),
+              );
+              updateState({
+                journalConflict,
+                message,
+                phase: journalConflict ? "blocked" : retryable ? "recoverable" : "blocked",
+                retryable: journalConflict ? false : retryable,
+              });
+            }
+            return { kind: "blocked" };
+          } finally {
+            if (request.current === controller) request.current = null;
           }
-          if (outcome.kind === "committed") {
-            pendingCommitSessionRecovery.current = null;
-            installAuthoritySnapshot(outcome.snapshot);
-            sessionAuthorityEpoch.current += 1;
-            lastSavedSessionCanonical.current =
-              !outcome.sessionInvalidated && sessionSnapshot
-                ? canonicalEditorSessionSnapshotJsonV1(sessionSnapshot)
-                : null;
-          }
-          updateState({ message: null, phase: "ready", retryable: false });
-          if (outcome.kind === "committed" || outcome.accepted) {
-            liveConnection.current?.publishHead(outcome.snapshot.revision);
-          }
-          remoteHeadQueue.current?.kick();
-          return outcome;
-        } catch (error) {
-          if (
-            controller.signal.aborted ||
-            generation.current !== activeGeneration ||
-            renderedIdentityKey.current !== activeIdentityKey ||
-            authority.current !== activeAuthority
-          )
-            return { kind: "stale" };
-          const message = publicAuthorityMessageV1(error);
-          const retryable = activeAuthority.recoveryKind !== null;
-          if (activeAuthority.recoveryKind !== "commit") pendingCommitSessionRecovery.current = null;
-          if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
-          return { kind: "blocked" };
-        } finally {
-          if (request.current === controller) request.current = null;
-        }
-      }).finally(() => {
+        });
+      };
+      return commit().finally(() => {
         if (
           generation.current === queuedGeneration &&
           renderedIdentityKey.current === queuedIdentityKey &&
@@ -1068,7 +1216,14 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         }
       });
     },
-    [canAuthor, installAuthoritySnapshot, runInOperationLane, updateState],
+    [
+      canAuthor,
+      installAuthoritySnapshotAfterBasisAdvance,
+      pendingJournalRetainsCurrentBasis,
+      runInOperationLane,
+      settlePendingJournalBeforeBasisAdvance,
+      updateState,
+    ],
   );
 
   const retry = useCallback(async () => {
@@ -1114,12 +1269,14 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         pendingSessionRecovery.current = null;
         const journalRecovery = pending.journalRecovery;
         if (outcome.kind === "reconciled") {
-          installAuthoritySnapshot(outcome.snapshot);
+          if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+            throw new EditorSessionPendingJournalConflictV1();
+          }
           sessionAuthorityEpoch.current += 1;
           lastSavedSessionCanonical.current = null;
           projection.current(outcome.snapshot.programs, "remote");
           const basis = journalBasis.current;
-          if (journalRecovery || (basis && sessionJournal?.readLaneExact(basis.identity))) {
+          if (basis && sessionJournal?.readLaneExact(basis.identity)) {
             throw new EditorSessionPendingJournalConflictV1();
           }
         } else {
@@ -1196,8 +1353,10 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       )
         return false;
       pendingSessionRecovery.current = null;
-      installAuthoritySnapshot(outcome.snapshot);
       const pendingCommitSession = pendingCommitSessionRecovery.current;
+      if (!installAuthoritySnapshotAfterBasisAdvance(outcome.snapshot)) {
+        throw new EditorSessionPendingJournalConflictV1();
+      }
       pendingCommitSessionRecovery.current = null;
       if (outcome.kind === "committed" && !outcome.sessionInvalidated && pendingCommitSession) {
         sessionAuthorityEpoch.current += 1;
@@ -1249,6 +1408,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     }
   }, [
     installAuthoritySnapshot,
+    installAuthoritySnapshotAfterBasisAdvance,
     pendingJournalRetainsCurrentBasis,
     recoverPendingJournalAtOpen,
     sessionJournal,
@@ -1258,61 +1418,91 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
   const performRemoteHeadReconcile = useCallback(() => {
     const queuedGeneration = generation.current;
     const queuedIdentityKey = renderedIdentityKey.current;
-    return runInOperationLane(async () => {
-      if (
-        generation.current !== queuedGeneration ||
-        queuedIdentityKey === null ||
-        renderedIdentityKey.current !== queuedIdentityKey
-      ) {
-        return false;
-      }
-      const activeAuthority = authority.current;
-      const activeIdentityKey = renderedIdentityKey.current;
-      if (
-        !activeAuthority ||
-        activeIdentityKey === null ||
-        authorityIdentityKey.current !== activeIdentityKey ||
-        stateRef.current.phase !== "ready"
-      )
-        return false;
-      const activeGeneration = generation.current;
-      const controller = new AbortController();
-      request.current = controller;
-      updateState({ message: null, phase: "pending", retryable: false });
-      try {
-        const result = await activeAuthority.reconcile(controller.signal);
+    if (queuedIdentityKey === null) return Promise.resolve(false);
+    queuedReconcileIdentityKey.current = queuedIdentityKey;
+    const reconcile = async () => {
+      if (!(await settlePendingJournalBeforeBasisAdvance())) return false;
+      return runInOperationLane(async () => {
         if (
-          controller.signal.aborted ||
-          generation.current !== activeGeneration ||
-          renderedIdentityKey.current !== activeIdentityKey ||
-          authority.current !== activeAuthority
-        )
+          generation.current !== queuedGeneration ||
+          queuedIdentityKey === null ||
+          renderedIdentityKey.current !== queuedIdentityKey
+        ) {
           return false;
-        if (result.changed) {
-          installAuthoritySnapshot(result.snapshot);
-          sessionAuthorityEpoch.current += 1;
-          lastSavedSessionCanonical.current = null;
-          projection.current(result.snapshot.programs, "remote");
         }
-        updateState({ message: null, phase: "ready", retryable: false });
-        return true;
-      } catch (error) {
+        const activeAuthority = authority.current;
+        const activeIdentityKey = renderedIdentityKey.current;
         if (
-          controller.signal.aborted ||
-          generation.current !== activeGeneration ||
-          renderedIdentityKey.current !== activeIdentityKey ||
-          authority.current !== activeAuthority
+          !activeAuthority ||
+          activeIdentityKey === null ||
+          authorityIdentityKey.current !== activeIdentityKey ||
+          stateRef.current.phase !== "ready"
         )
           return false;
-        const message = publicAuthorityMessageV1(error);
-        const retryable = activeAuthority.recoveryKind !== null;
-        if (message) updateState({ message, phase: retryable ? "recoverable" : "blocked", retryable });
-        return false;
-      } finally {
-        if (request.current === controller) request.current = null;
+        const activeGeneration = generation.current;
+        const controller = new AbortController();
+        request.current = controller;
+        updateState({ message: null, phase: "pending", retryable: false });
+        try {
+          const result = await activeAuthority.reconcile(controller.signal);
+          if (
+            controller.signal.aborted ||
+            generation.current !== activeGeneration ||
+            renderedIdentityKey.current !== activeIdentityKey ||
+            authority.current !== activeAuthority
+          )
+            return false;
+          if (result.changed) {
+            if (!installAuthoritySnapshotAfterBasisAdvance(result.snapshot)) {
+              throw new EditorSessionPendingJournalConflictV1();
+            }
+            sessionAuthorityEpoch.current += 1;
+            lastSavedSessionCanonical.current = null;
+            projection.current(result.snapshot.programs, "remote");
+          }
+          updateState({ message: null, phase: "ready", retryable: false });
+          return true;
+        } catch (error) {
+          if (
+            controller.signal.aborted ||
+            generation.current !== activeGeneration ||
+            renderedIdentityKey.current !== activeIdentityKey ||
+            authority.current !== activeAuthority
+          )
+            return false;
+          const message = publicAuthorityMessageV1(error);
+          const retryable = activeAuthority.recoveryKind !== null;
+          if (message) {
+            const journalConflict = shouldExposeJournalDiscardV1(error, retryable, pendingJournalRetainsCurrentBasis());
+            updateState({
+              journalConflict,
+              message,
+              phase: journalConflict ? "blocked" : retryable ? "recoverable" : "blocked",
+              retryable: journalConflict ? false : retryable,
+            });
+          }
+          return false;
+        } finally {
+          if (request.current === controller) request.current = null;
+        }
+      });
+    };
+    return reconcile().finally(() => {
+      if (
+        generation.current === queuedGeneration &&
+        renderedIdentityKey.current === queuedIdentityKey &&
+        queuedReconcileIdentityKey.current === queuedIdentityKey
+      ) {
+        queuedReconcileIdentityKey.current = null;
       }
     });
-  }, [installAuthoritySnapshot, runInOperationLane, updateState]);
+  }, [
+    installAuthoritySnapshotAfterBasisAdvance,
+    pendingJournalRetainsCurrentBasis,
+    runInOperationLane,
+    settlePendingJournalBeforeBasisAdvance,
+    updateState,
+  ]);
   reconcileRunner.current = performRemoteHeadReconcile;
 
   /** Transport-independent wake-up seam. The notification revision is never trusted. */

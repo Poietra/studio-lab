@@ -120,7 +120,10 @@ import {
   undoEditorProgram as undoEditorProgramTransition,
   useEditorController,
 } from "./studio/use-editor-controller";
-import { useEditorDocumentAuthorityV1 } from "./studio/use-editor-document-authority";
+import {
+  editorDocumentSessionFlushAllowsTransitionV1,
+  useEditorDocumentAuthorityV1,
+} from "./studio/use-editor-document-authority";
 import { useEditorRevisionController } from "./studio/use-editor-revision-controller";
 import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
@@ -602,7 +605,10 @@ export function App({
     ownerKey: accountSession?.user.id ?? null,
     sessionSnapshot: cloudEditorSessionSnapshot,
   });
-  async function runAfterEditorSessionFlush(transition: () => unknown | Promise<unknown>) {
+  async function runAfterEditorSessionFlush(
+    transition: () => unknown | Promise<unknown>,
+    transitionKind: "account" | "document" = "document",
+  ) {
     if (sessionTransitionInFlight.current) return false;
     sessionTransitionInFlight.current = true;
     setSessionTransitionPending(true);
@@ -610,7 +616,8 @@ export function App({
     setIsPlaying(false);
     saveEditorSession();
     try {
-      if (!(await editorDocumentAuthority.flushSession())) return false;
+      const flushOutcome = await editorDocumentAuthority.flushSession();
+      if (!editorDocumentSessionFlushAllowsTransitionV1(flushOutcome, transitionKind)) return false;
       await transition();
       return true;
     } finally {
@@ -623,10 +630,10 @@ export function App({
     ? {
         actionError: accountActions.actionError,
         logout: () => {
-          void runAfterEditorSessionFlush(accountActions.logout);
+          void runAfterEditorSessionFlush(accountActions.logout, "account");
         },
         switchOrganization: (organizationId) => {
-          void runAfterEditorSessionFlush(() => accountActions.switchOrganization(organizationId));
+          void runAfterEditorSessionFlush(() => accountActions.switchOrganization(organizationId), "account");
         },
       }
     : null;

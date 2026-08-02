@@ -46,6 +46,17 @@ const pendingJournalLaneIdentitySchemaV1 = z
   })
   .strict();
 
+const pendingJournalSupersessionEvidenceSchemaV1 = z
+  .object({
+    documentRevision: editorRevisionStringSchemaV1,
+    entryId: z.uuid(),
+    epoch: z.uuid(),
+    expectedSessionGeneration: editorRevisionStringSchemaV1,
+    predecessorEntryId: z.uuid().nullable(),
+    writerId: z.uuid(),
+  })
+  .strict();
+
 const pendingJournalEntryCoreSchemaV1 = z
   .object({
     entryId: z.uuid(),
@@ -54,6 +65,7 @@ const pendingJournalEntryCoreSchemaV1 = z
     savedAt: z.number().int().nonnegative(),
     snapshotByteSize: z.number().int().positive(),
     supersedesEntryId: z.uuid().nullable(),
+    supersessionEvidence: pendingJournalSupersessionEvidenceSchemaV1.nullable(),
     writerId: z.uuid(),
   })
   .strict()
@@ -68,6 +80,19 @@ const pendingJournalEntryCoreSchemaV1 = z
       (entry.predecessorEntryId !== null && entry.predecessorEntryId === entry.supersedesEntryId)
     ) {
       context.addIssue({ code: "custom", message: "Pending Editor session ancestry is self-referential." });
+    }
+    const evidence = entry.supersessionEvidence;
+    if (
+      (entry.supersedesEntryId === null) !== (evidence === null) ||
+      (evidence !== null &&
+        (evidence.entryId !== entry.supersedesEntryId ||
+          evidence.writerId !== entry.writerId ||
+          evidence.predecessorEntryId !== entry.predecessorEntryId ||
+          evidence.documentRevision !== entry.request.documentRevision ||
+          evidence.epoch !== entry.request.epoch ||
+          evidence.expectedSessionGeneration !== entry.request.expectedSessionGeneration))
+    ) {
+      context.addIssue({ code: "custom", message: "Pending Editor session supersession evidence is invalid." });
     }
   });
 
@@ -210,7 +235,7 @@ export interface EditorSessionPendingJournalStorageAdapterV1 {
 export class EditorSessionPendingJournalReadErrorV1 extends Error {
   constructor(
     message: string,
-    readonly code: "ambiguous" | "capacity" | "corrupt" | "storage",
+    readonly code: "ambiguous" | "capacity" | "corrupt" | "mismatch" | "storage",
   ) {
     super(message);
     this.name = "EditorSessionPendingJournalReadErrorV1";
@@ -284,7 +309,7 @@ function pendingJournalEntryCoreV1(
     entryId: string;
     now: number;
     predecessorEntryId: string | null;
-    supersedesEntryId: string | null;
+    supersedes: z.infer<typeof pendingJournalEntryCoreSchemaV1> | null;
     writerId: string;
   }>,
 ) {
@@ -295,7 +320,17 @@ function pendingJournalEntryCoreV1(
     request,
     savedAt: Math.max(0, Math.floor(input.now)),
     snapshotByteSize: serializedBytesV1(canonicalSnapshot),
-    supersedesEntryId: input.supersedesEntryId,
+    supersedesEntryId: input.supersedes?.entryId ?? null,
+    supersessionEvidence: input.supersedes
+      ? {
+          documentRevision: input.supersedes.request.documentRevision,
+          entryId: input.supersedes.entryId,
+          epoch: input.supersedes.request.epoch,
+          expectedSessionGeneration: input.supersedes.request.expectedSessionGeneration,
+          predecessorEntryId: input.supersedes.predecessorEntryId,
+          writerId: input.supersedes.writerId,
+        }
+      : null,
     writerId: input.writerId,
   });
 }
@@ -397,7 +432,7 @@ export class EditorSessionPendingJournalV1 {
       const identityRecords = this.recordsForIdentity(records, identity);
       const lane = this.resolveLane(identity, identityRecords);
       let predecessorEntryId: string | null = null;
-      let supersedesEntryId: string | null = null;
+      let supersedes: z.infer<typeof pendingJournalEntryCoreSchemaV1> | null = null;
       let nextRequest = request;
 
       if (lane) {
@@ -405,17 +440,25 @@ export class EditorSessionPendingJournalV1 {
           lane.head.core.request.documentRevision !== documentRevision ||
           lane.head.core.request.epoch !== identity.epoch
         ) {
-          return null;
+          throw new EditorSessionPendingJournalReadErrorV1(
+            "Pending Editor session basis does not match the retained lane.",
+            "mismatch",
+          );
         }
         if (sameRequestV1(lane.head.core.request, request)) return ownedEntryV1(lane.head.view);
         if (lane.successor && sameRequestV1(lane.successor.core.request, request)) {
           return ownedEntryV1(lane.successor.view);
         }
         if (lane.head.view.state === "prepared") {
-          if (lane.head.core.request.expectedSessionGeneration !== expectedSessionGeneration) return null;
+          if (lane.head.core.request.expectedSessionGeneration !== expectedSessionGeneration) {
+            throw new EditorSessionPendingJournalReadErrorV1(
+              "Pending Editor session generation does not match the retained lane.",
+              "mismatch",
+            );
+          }
           if (lane.head.core.writerId === this.writerId) {
             predecessorEntryId = lane.head.core.predecessorEntryId;
-            supersedesEntryId = lane.head.core.entryId;
+            supersedes = lane.head.core;
           }
         } else {
           predecessorEntryId = lane.head.core.entryId;
@@ -424,7 +467,7 @@ export class EditorSessionPendingJournalV1 {
             expectedSessionGeneration: (BigInt(lane.head.core.request.expectedSessionGeneration) + 1n).toString(10),
           });
           if (lane.successor) {
-            if (lane.successor.core.writerId === this.writerId) supersedesEntryId = lane.successor.core.entryId;
+            if (lane.successor.core.writerId === this.writerId) supersedes = lane.successor.core;
           }
         }
       } else {
@@ -436,7 +479,9 @@ export class EditorSessionPendingJournalV1 {
             ? [record.record]
             : [],
         );
-        if (frontiers.length > 1) return null;
+        if (frontiers.length > 1) {
+          throw this.ambiguous("Pending Editor session evidence has multiple acknowledgement frontiers.");
+        }
         predecessorEntryId = frontiers[0]?.entryId ?? null;
       }
 
@@ -444,7 +489,7 @@ export class EditorSessionPendingJournalV1 {
         entryId: this.randomUuid(),
         now: this.now(),
         predecessorEntryId,
-        supersedesEntryId,
+        supersedes,
         writerId: this.writerId,
       });
       const record = pendingJournalStoredEntrySchemaV1.parse({
@@ -454,11 +499,28 @@ export class EditorSessionPendingJournalV1 {
         scope: this.scope,
         version: EDITOR_SESSION_PENDING_JOURNAL_VERSION_V1,
       });
-      if (!this.writeRecord(record, records, true)) return null;
+      const compactableEntryIds = this.compactableSupersessionEntryIds(core, identityRecords);
+      if (!this.writeRecord(record, records, true, new Set(compactableEntryIds))) return null;
+      if (compactableEntryIds.length > 0) {
+        const latestRecords = this.scan();
+        const latestLane = this.resolveLane(identity, this.recordsForIdentity(latestRecords, identity));
+        if (latestLane?.head.core.entryId !== core.entryId && latestLane?.successor?.core.entryId !== core.entryId) {
+          throw this.ambiguous("Pending Editor session supersession changed before compaction.");
+        }
+        for (const entryId of [...compactableEntryIds].reverse()) {
+          if (!this.removeRecord(entryId)) break;
+        }
+      }
       return this.entryView(core, identityRecords, predecessorEntryId !== null);
     } catch (error) {
       if (error instanceof EditorSessionPendingJournalReadErrorV1) throw error;
-      return null;
+      if (error instanceof z.ZodError) {
+        throw new EditorSessionPendingJournalReadErrorV1(
+          `Pending Editor session input does not satisfy the journal contract: ${error.issues[0]?.message ?? "invalid input"}`,
+          "mismatch",
+        );
+      }
+      throw error;
     }
   }
 
@@ -571,7 +633,9 @@ export class EditorSessionPendingJournalV1 {
       const seal = this.findFact(identityRecords, "seal", parsedEntryId);
       if (!seal || seal.digest !== requestDigest) return false;
       const retiredEntryIds = this.supersessionAncestry(stored.entry, identityRecords);
-      if (!retiredEntryIds) return false;
+      if (!retiredEntryIds) {
+        throw this.ambiguous("Pending Editor session supersession ancestry cannot be acknowledged safely.");
+      }
       const acknowledgement = pendingJournalStoredAcknowledgementSchemaV1.parse({
         acknowledgedAt: Math.max(0, Math.floor(this.now())),
         documentRevision: request.documentRevision,
@@ -602,7 +666,13 @@ export class EditorSessionPendingJournalV1 {
       return true;
     } catch (error) {
       if (error instanceof EditorSessionPendingJournalReadErrorV1) throw error;
-      return false;
+      if (error instanceof z.ZodError) {
+        throw new EditorSessionPendingJournalReadErrorV1(
+          "Pending Editor session acknowledgement input does not satisfy the journal contract.",
+          "mismatch",
+        );
+      }
+      throw error;
     }
   }
 
@@ -661,6 +731,19 @@ export class EditorSessionPendingJournalV1 {
     const retired = new Set(
       Array.from(acknowledgements.values()).flatMap((acknowledgement) => acknowledgement.retiredEntryIds),
     );
+    for (const acknowledgement of acknowledgements.values()) {
+      for (const entry of entries.values()) {
+        if (
+          entry.writerId === acknowledgement.writerId &&
+          entry.predecessorEntryId === acknowledgement.predecessorEntryId &&
+          entry.request.epoch === acknowledgement.epoch &&
+          entry.request.documentRevision === acknowledgement.documentRevision &&
+          entry.request.expectedSessionGeneration === acknowledgement.expectedSessionGeneration
+        ) {
+          retired.add(entry.entryId);
+        }
+      }
+    }
 
     for (const fact of [...attemptFacts.values(), ...seals.values()]) {
       const entry = entries.get(fact.entryId);
@@ -718,20 +801,35 @@ export class EditorSessionPendingJournalV1 {
       if (retired.has(entry.entryId)) continue;
       if (entry.supersedesEntryId === null) continue;
       const target = entries.get(entry.supersedesEntryId);
-      if (
-        !target ||
+      const evidence = entry.supersessionEvidence;
+      if (!evidence || evidence.entryId !== entry.supersedesEntryId) {
+        throw new EditorSessionPendingJournalReadErrorV1(
+          "Pending Editor session supersession lacks compacted-boundary evidence.",
+          "corrupt",
+        );
+      }
+      if (!target) {
+        if (attempts.has(evidence.entryId) || seals.has(evidence.entryId) || acknowledgements.has(evidence.entryId)) {
+          throw this.ambiguous("Pending Editor session compaction raced immutable lifecycle evidence.");
+        }
+      } else if (
         retired.has(target.entryId) ||
-        target.writerId !== entry.writerId ||
+        target.writerId !== evidence.writerId ||
+        target.predecessorEntryId !== evidence.predecessorEntryId ||
+        target.request.documentRevision !== evidence.documentRevision ||
+        target.request.epoch !== evidence.epoch ||
+        target.request.expectedSessionGeneration !== evidence.expectedSessionGeneration ||
         !sameCasSlotV1(target, entry) ||
         attempts.has(target.entryId) ||
+        seals.has(target.entryId) ||
         acknowledgements.has(target.entryId)
       ) {
         throw this.ambiguous("Pending Editor session supersession raced an attempt or has missing evidence.");
       }
-      const children = supersedingChildren.get(target.entryId) ?? [];
+      const children = supersedingChildren.get(entry.supersedesEntryId) ?? [];
       children.push(entry.entryId);
-      supersedingChildren.set(target.entryId, children);
-      superseded.add(target.entryId);
+      supersedingChildren.set(entry.supersedesEntryId, children);
+      if (target) superseded.add(target.entryId);
     }
     if (Array.from(supersedingChildren.values()).some((children) => children.length !== 1)) {
       throw this.ambiguous("Pending Editor session evidence has competing supersessions.");
@@ -839,6 +937,10 @@ export class EditorSessionPendingJournalV1 {
       integrity: seal ? { digest: seal.digest, kind: "sha256" } : { kind: "unsealed" },
       predecessorEntryId: normalizePredecessor ? null : entry.predecessorEntryId,
       state: this.hasFact(records, "attempt", entry.entryId) ? "attempted" : "prepared",
+      supersessionEvidence:
+        normalizePredecessor && entry.supersessionEvidence
+          ? { ...entry.supersessionEvidence, predecessorEntryId: null }
+          : entry.supersessionEvidence,
     });
   }
 
@@ -869,6 +971,38 @@ export class EditorSessionPendingJournalV1 {
 
   private hasFact(records: readonly ParsedStoredRecordV1[], kind: "ack" | "attempt" | "seal", entryId: string) {
     return this.findFact(records, kind, entryId) !== null;
+  }
+
+  private compactableSupersessionEntryIds(
+    entry: z.infer<typeof pendingJournalEntryCoreSchemaV1>,
+    records: readonly ParsedStoredRecordV1[],
+  ) {
+    const entries = new Map(
+      records.flatMap((record) =>
+        record.record.kind === "entry" ? [[record.record.entry.entryId, record.record.entry] as const] : [],
+      ),
+    );
+    const compactable: string[] = [];
+    const visited = new Set<string>();
+    let ancestorId = entry.supersedesEntryId;
+    while (ancestorId) {
+      if (visited.has(ancestorId)) throw this.ambiguous("Pending Editor session supersession is cyclic.");
+      visited.add(ancestorId);
+      const ancestor = entries.get(ancestorId);
+      if (!ancestor) break;
+      if (
+        ancestor.writerId !== entry.writerId ||
+        !sameCasSlotV1(ancestor, entry) ||
+        this.hasFact(records, "attempt", ancestorId) ||
+        this.hasFact(records, "seal", ancestorId) ||
+        this.hasFact(records, "ack", ancestorId)
+      ) {
+        return [];
+      }
+      compactable.push(ancestorId);
+      ancestorId = ancestor.supersedesEntryId;
+    }
+    return compactable;
   }
 
   private scan(): readonly ParsedStoredRecordV1[] {
@@ -925,6 +1059,7 @@ export class EditorSessionPendingJournalV1 {
     record: PendingJournalStoredRecordV1,
     records: readonly ParsedStoredRecordV1[],
     enforcePayloadAdmission: boolean,
+    projectedRemovedEntryIds: ReadonlySet<string> = new Set(),
   ) {
     const storageId = storageIdForRecordV1(record);
     const serialized = JSON.stringify(record);
@@ -948,15 +1083,19 @@ export class EditorSessionPendingJournalV1 {
       );
     }
     if (enforcePayloadAdmission && record.kind === "entry" && !existing) {
-      const entryRecords = records.filter((candidate) => candidate.record.kind === "entry");
-      const laneRecords = records.filter(
+      const projectedRecords = records.filter((candidate) => !projectedRemovedEntryIds.has(candidate.storageId));
+      const entryRecords = projectedRecords.filter((candidate) => candidate.record.kind === "entry");
+      const laneRecords = projectedRecords.filter(
         (candidate) => candidate.record.kind === "entry" || candidate.record.kind === "ack",
       );
       const laneCount = new Set(laneRecords.map((candidate) => laneIdentityKeyV1(candidate.record.identity))).size;
       const identityAlreadyPresent = laneRecords.some(
         (candidate) => laneIdentityKeyV1(candidate.record.identity) === laneIdentityKeyV1(record.identity),
       );
-      const currentBytes = records.reduce((sum, candidate) => sum + serializedBytesV1(candidate.serialized), 0);
+      const currentBytes = projectedRecords.reduce(
+        (sum, candidate) => sum + serializedBytesV1(candidate.serialized),
+        0,
+      );
       if (
         entryRecords.length >= MAX_EDITOR_SESSION_PENDING_JOURNAL_ENTRIES_V1 ||
         (!identityAlreadyPresent && laneCount >= MAX_EDITOR_SESSION_PENDING_JOURNAL_LANES_V1) ||
@@ -1051,13 +1190,20 @@ export class EditorSessionPendingJournalV1 {
     let ancestorId = entry.supersedesEntryId;
     while (ancestorId) {
       const ancestor = entries.get(ancestorId);
-      if (
-        !ancestor ||
-        ancestor.writerId !== entry.writerId ||
-        !sameCasSlotV1(ancestor, child) ||
-        ancestry.includes(ancestorId)
-      )
+      if (!ancestor) {
+        if (child.supersessionEvidence?.entryId !== ancestorId) return null;
+        if (
+          this.hasFact(records, "attempt", ancestorId) ||
+          this.hasFact(records, "seal", ancestorId) ||
+          this.hasFact(records, "ack", ancestorId)
+        ) {
+          throw this.ambiguous("Pending Editor session compaction raced immutable lifecycle evidence.");
+        }
+        break;
+      }
+      if (ancestor.writerId !== entry.writerId || !sameCasSlotV1(ancestor, child) || ancestry.includes(ancestorId)) {
         return null;
+      }
       ancestry.push(ancestorId);
       child = ancestor;
       ancestorId = ancestor.supersedesEntryId;

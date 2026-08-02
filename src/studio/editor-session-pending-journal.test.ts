@@ -192,7 +192,7 @@ describe("pending cloud Editor session journal", () => {
     expect(first.discardLaneExact(laneIdentity())).toBe(true);
   });
 
-  it("replaces only an unattempted same-writer head without deleting its crash evidence", async () => {
+  it("replaces and compacts an unattempted same-writer head", async () => {
     const { adapter, journal: pending } = journal();
     const first = pending.record(basis(), snapshot(1));
     if (!first) throw new TypeError("Expected the first journal entry.");
@@ -201,7 +201,7 @@ describe("pending cloud Editor session journal", () => {
 
     expect(replacement.entryId).not.toBe(first.entryId);
     expect(pending.readLaneExact(laneIdentity())?.head).toEqual(replacement);
-    expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(2);
+    expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(1);
     expect(await pending.acknowledgeExact(first.entryId, first.request)).toBe(false);
     expect(await pending.acknowledgeExact(replacement.entryId, first.request)).toBe(false);
     await attemptAndSeal(pending, replacement.entryId);
@@ -241,8 +241,10 @@ describe("pending cloud Editor session journal", () => {
   it("retires the whole supersession ancestry before any acknowledgement cleanup", async () => {
     const { adapter, journal: pending } = journal();
     const first = pending.record(basis(), snapshot(1));
+    adapter.failRemove = true;
     const replacement = pending.record(basis(), snapshot(2));
     if (!first || !replacement) throw new TypeError("Expected the replacement chain.");
+    adapter.failRemove = false;
     await attemptAndSeal(pending, replacement.entryId);
     adapter.failRemove = true;
 
@@ -255,8 +257,10 @@ describe("pending cloud Editor session journal", () => {
   it("keeps retired payload evidence harmless after partial acknowledgement cleanup", async () => {
     const { adapter, journal: pending } = journal();
     const first = pending.record(basis(), snapshot(1));
+    adapter.failRemove = true;
     const replacement = pending.record(basis(), snapshot(2));
     if (!first || !replacement) throw new TypeError("Expected the replacement chain.");
+    adapter.failRemove = false;
     await attemptAndSeal(pending, replacement.entryId);
     adapter.successfulRemovesBeforeFailure = 1;
 
@@ -390,7 +394,9 @@ describe("pending cloud Editor session journal", () => {
       expect(first.markAttemptedExact(head.entryId)).not.toBeNull();
     };
 
-    expect(second.record(basis(), snapshot(2))).not.toBeNull();
+    expect(() => second.record(basis(), snapshot(2))).toThrowError(
+      expect.objectContaining<Partial<EditorSessionPendingJournalReadErrorV1>>({ code: "ambiguous" }),
+    );
     expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(2);
     expect(() => first.readLaneExact(laneIdentity())).toThrowError(
       expect.objectContaining<Partial<EditorSessionPendingJournalReadErrorV1>>({ code: "ambiguous" }),
@@ -562,6 +568,115 @@ describe("pending cloud Editor session journal", () => {
     expect(pending.discardAll()).toBe(true);
   });
 
+  it("keeps the newest conditional save admissible and acknowledgeable after more than forty updates", async () => {
+    const { adapter, journal: pending } = journal();
+    const head = pending.record(basis(), snapshot(0));
+    if (!head) throw new TypeError("Expected the pending head.");
+    expect(pending.markAttemptedExact(head.entryId)).not.toBeNull();
+
+    let latestEntryId: string | null = null;
+    for (let index = 1; index <= MAX_EDITOR_SESSION_PENDING_JOURNAL_ENTRIES_V1 + 5; index += 1) {
+      const latest = pending.record(basis(), snapshot(index));
+      if (!latest) throw new TypeError("Expected the newest conditional save to remain admissible.");
+      latestEntryId = latest.entryId;
+    }
+
+    const lane = pending.readLaneExact(laneIdentity());
+    expect(lane?.head.entryId).toBe(head.entryId);
+    expect(lane?.successor?.entryId).toBe(latestEntryId);
+    expect(lane?.successor?.request.snapshot.currentTime).toBe(MAX_EDITOR_SESSION_PENDING_JOURNAL_ENTRIES_V1 + 5);
+    expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(2);
+
+    expect((await pending.sealExact(head.entryId)).kind).toBe("sealed");
+    expect(await pending.acknowledgeExact(head.entryId, head.request)).toBe(true);
+    if (!latestEntryId) throw new TypeError("Expected the latest compacted successor.");
+    const latest = pending.readLaneExact(laneIdentity())?.head;
+    if (!latest || latest.entryId !== latestEntryId) throw new TypeError("Expected the promoted compacted successor.");
+    await attemptAndSeal(pending, latest.entryId);
+    expect(await pending.acknowledgeExact(latest.entryId, latest.request)).toBe(true);
+    expect(pending.readLaneExact(laneIdentity())).toBeNull();
+  });
+
+  it("compacts obsolete same-slot payloads before byte pressure can reject the newest save", () => {
+    const { adapter, journal: pending } = journal();
+    const head = pending.record(basis(), snapshot(0));
+    if (!head) throw new TypeError("Expected the pending head.");
+    expect(pending.markAttemptedExact(head.entryId)).not.toBeNull();
+    const selectedObjectIds = Array.from(
+      { length: 256 },
+      (_, index) => `entity-${index.toString().padStart(3, "0")}-${"x".repeat(480)}`,
+    );
+
+    let latestEntryId: string | null = null;
+    for (let index = 1; index <= 20; index += 1) {
+      const latest = pending.record(basis(), snapshot(index, selectedObjectIds));
+      if (!latest) throw new TypeError("Expected the newest large conditional save to remain admissible.");
+      latestEntryId = latest.entryId;
+    }
+
+    expect(pending.readLaneExact(laneIdentity())?.successor?.entryId).toBe(latestEntryId);
+    expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(2);
+  });
+
+  it("keeps the lane readable when oldest-first post-write compaction is interrupted", () => {
+    const { adapter, journal: pending } = journal();
+    const head = pending.record(basis(), snapshot(0));
+    if (!head) throw new TypeError("Expected the pending head.");
+    expect(pending.markAttemptedExact(head.entryId)).not.toBeNull();
+    adapter.failRemove = true;
+    expect(pending.record(basis(), snapshot(1))).not.toBeNull();
+    expect(pending.record(basis(), snapshot(2))).not.toBeNull();
+    adapter.failRemove = false;
+    adapter.successfulRemovesBeforeFailure = 1;
+
+    const newest = pending.record(basis(), snapshot(3));
+    if (!newest) throw new TypeError("Expected write-first replacement.");
+    expect(storedKinds(adapter).filter((kind) => kind === "entry")).toHaveLength(3);
+    expect(pending.readLaneExact(laneIdentity())?.successor?.entryId).toBe(newest.entryId);
+  });
+
+  it("fails closed when lifecycle evidence arrives after its compacted payload was removed", () => {
+    const { adapter, journal: pending } = journal();
+    const head = pending.record(basis(), snapshot(0));
+    if (!head) throw new TypeError("Expected the pending head.");
+    expect(pending.markAttemptedExact(head.entryId)).not.toBeNull();
+    const compacted = pending.record(basis(), snapshot(1));
+    if (!compacted) throw new TypeError("Expected the compacted successor candidate.");
+    const headAttempt = adapter.values.get(`attempt.${head.entryId}`);
+    if (!headAttempt) throw new TypeError("Expected the head attempt fact.");
+    expect(pending.record(basis(), snapshot(2))).not.toBeNull();
+    expect(adapter.values.has(compacted.entryId)).toBe(false);
+
+    const lateAttempt = JSON.parse(headAttempt) as Record<string, unknown>;
+    lateAttempt.entryId = compacted.entryId;
+    lateAttempt.expectedSessionGeneration = compacted.request.expectedSessionGeneration;
+    adapter.values.set(`attempt.${compacted.entryId}`, JSON.stringify(lateAttempt));
+    expect(() => pending.readLaneExact(laneIdentity())).toThrowError(
+      expect.objectContaining<Partial<EditorSessionPendingJournalReadErrorV1>>({ code: "ambiguous" }),
+    );
+  });
+
+  it("keeps a compacted same-slot payload retired if it reappears after the newest acknowledgement", async () => {
+    const { adapter, journal: pending } = journal();
+    const head = pending.record(basis(), snapshot(0));
+    if (!head) throw new TypeError("Expected the pending head.");
+    expect(pending.markAttemptedExact(head.entryId)).not.toBeNull();
+    const compacted = pending.record(basis(), snapshot(1));
+    if (!compacted) throw new TypeError("Expected the compacted successor candidate.");
+    const delayedPayload = adapter.values.get(compacted.entryId);
+    if (!delayedPayload) throw new TypeError("Expected the delayed compacted payload.");
+    const newest = pending.record(basis(), snapshot(2));
+    if (!newest) throw new TypeError("Expected the newest successor.");
+
+    expect((await pending.sealExact(head.entryId)).kind).toBe("sealed");
+    expect(await pending.acknowledgeExact(head.entryId, head.request)).toBe(true);
+    await attemptAndSeal(pending, newest.entryId);
+    expect(await pending.acknowledgeExact(newest.entryId, newest.request)).toBe(true);
+    adapter.values.set(compacted.entryId, delayedPayload);
+
+    expect(pending.readLaneExact(laneIdentity())).toBeNull();
+  });
+
   it("keeps existing lanes readable, sealable, and acknowledgeable after a cross-tab soft-limit overshoot", async () => {
     const { adapter, journal: pending } = journal();
     let firstLaneHead: ReturnType<EditorSessionPendingJournalV1["record"]> = null;
@@ -577,10 +692,11 @@ describe("pending cloud Editor session journal", () => {
     }
     if (!firstLaneOriginal || !firstLaneHead) throw new TypeError("Expected the first retained lane.");
     const overflowEntryId = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-    const overflow = parsedRecord(adapter, firstLaneOriginal.entryId);
+    const overflow = parsedRecord(adapter, firstLaneHead.entryId);
     overflow.entry.entryId = overflowEntryId;
     overflow.entry.predecessorEntryId = null;
     overflow.entry.supersedesEntryId = null;
+    overflow.entry.supersessionEvidence = null;
     overflow.identity = laneIdentity(MAX_EDITOR_SESSION_PENDING_JOURNAL_LANES_V1 + 1);
     adapter.values.set(overflowEntryId, JSON.stringify(overflow));
 
