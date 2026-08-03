@@ -608,6 +608,26 @@ mod tests {
     }
 
     #[test]
+    fn retained_session_samples_manim_smooth_easing() {
+        let mut fixture = fixture();
+        fixture["scene"]["animationChannels"][0]["keyframes"][0]["easingToNext"] =
+            json!({ "kind": "manim-smooth" });
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let request = serde_json::to_vec(&json!({
+            "evidence": ["Python Manim smooth fixture"],
+            "packetId": "wasm:manim-smooth",
+            "sampleTime": 0.5,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 90, "widthPx": 160 },
+        }))
+        .unwrap();
+        let sampled = session.sample_packet_json(&request).unwrap();
+
+        assert!((sampled.packet.draws[0].opacity() - 0.070_103_716_545_108_15).abs() <= 1.0e-15);
+    }
+
+    #[test]
     fn retained_session_accepts_imported_snapshot_profile_four() {
         let mut fixture = fixture();
         fixture["scene"]["source"] = json!({

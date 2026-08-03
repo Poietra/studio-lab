@@ -175,6 +175,29 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     expect(frame.packet.draws[0].opacity).toBe(0.15625);
   });
 
+  it("samples Manim default smooth opacity without changing smoothstep semantics", async () => {
+    const assets = await emptyManifest();
+    const scene = createScene(assets, {
+      animationChannels: [
+        {
+          entityId: "circle",
+          id: "fade",
+          keyframes: [
+            { at: 0, easingToNext: { kind: "manim-smooth" }, value: 0 },
+            { at: 1, easingToNext: null, value: 1 },
+          ],
+          kind: "opacity",
+          provenanceId: "fixture",
+        },
+      ],
+      entities: [vectorEntity("circle", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 })],
+      requiredCapabilities: ["opacity-animation", "shape-primitives"],
+    });
+    const frame = await compile(scene, assets, 0.25);
+    expect(frame.packet.draws).toHaveLength(1);
+    expect(frame.packet.draws[0].opacity).toBeCloseTo(0.07010371654510815, 15);
+  });
+
   it("lowers a sampled singular affine midpoint without dropping sibling draws", async () => {
     const assets = await emptyManifest();
     const scene = createScene(assets, {

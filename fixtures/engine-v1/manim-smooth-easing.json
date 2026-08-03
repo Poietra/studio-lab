@@ -1,0 +1,21 @@
+{
+  "reference": {
+    "inflection": 10,
+    "manimVersion": "0.20.1",
+    "symbol": "manim.utils.rate_functions.smooth"
+  },
+  "samples": [
+    { "progress": -1, "value": 0 },
+    { "progress": 0, "value": 0 },
+    { "progress": 0.001, "value": 0.00006771601278592096 },
+    { "progress": 0.1, "value": 0.011446579538697649 },
+    { "progress": 0.25, "value": 0.07010371654510815 },
+    { "progress": 0.5, "value": 0.5 },
+    { "progress": 0.75, "value": 0.929896283454892 },
+    { "progress": 0.9, "value": 0.9885534204613024 },
+    { "progress": 0.999, "value": 0.9999322839872141 },
+    { "progress": 1, "value": 1 },
+    { "progress": 2, "value": 1 }
+  ],
+  "tolerance": 0.000000000000001
+}

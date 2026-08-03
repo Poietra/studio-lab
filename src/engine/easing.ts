@@ -1,11 +1,21 @@
 export type EngineEasingV1 =
   | Readonly<{ kind: "linear" }>
   | Readonly<{ kind: "smooth" }>
+  | Readonly<{ kind: "manim-smooth" }>
   | Readonly<{ kind: "cubic-bezier"; x1: number; x2: number; y1: number; y2: number }>;
 
 const NEWTON_ITERATIONS = 8;
 const BISECTION_ITERATIONS = 24;
 const SOLVER_TOLERANCE = 1e-7;
+const MANIM_SMOOTH_INFLECTION = 10;
+const MANIM_SMOOTH_ERROR = 1 / (1 + Math.exp(MANIM_SMOOTH_INFLECTION / 2));
+
+function manimSmooth(progress: number) {
+  if (progress <= 0) return 0;
+  if (progress >= 1) return 1;
+  const sigmoid = 1 / (1 + Math.exp(-MANIM_SMOOTH_INFLECTION * (progress - 0.5)));
+  return Math.min(1, Math.max(0, (sigmoid - MANIM_SMOOTH_ERROR) / (1 - 2 * MANIM_SMOOTH_ERROR)));
+}
 
 function cubicCoordinate(control1: number, control2: number, parameter: number) {
   const inverse = 1 - parameter;
@@ -49,6 +59,7 @@ export function applyEngineEasingV1(easing: EngineEasingV1, progress: number) {
   const bounded = Math.min(1, Math.max(0, progress));
   if (easing.kind === "linear") return bounded;
   if (easing.kind === "smooth") return bounded * bounded * (3 - 2 * bounded);
+  if (easing.kind === "manim-smooth") return manimSmooth(bounded);
   const parameter = solveBezierParameter(easing.x1, easing.x2, bounded);
   return cubicCoordinate(easing.y1, easing.y2, parameter);
 }

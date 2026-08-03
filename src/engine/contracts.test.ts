@@ -371,6 +371,33 @@ describe("Poietra Engine v1 contracts", () => {
     ).toBe(false);
   });
 
+  it("accepts the parameter-free Manim smooth easing tag", async () => {
+    const assets = await manifest();
+    const validScene = scene(assets);
+    const candidate = {
+      ...validScene,
+      animationChannels: validScene.animationChannels.map((channel) => ({
+        ...channel,
+        keyframes: channel.keyframes.map((keyframe, index) =>
+          index === 0 ? { ...keyframe, easingToNext: { kind: "manim-smooth" } } : keyframe,
+        ),
+      })),
+    };
+
+    expect(sceneIrV1Schema.safeParse(candidate).success).toBe(true);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...candidate,
+        animationChannels: candidate.animationChannels.map((channel) => ({
+          ...channel,
+          keyframes: channel.keyframes.map((keyframe, index) =>
+            index === 0 ? { ...keyframe, easingToNext: { inflection: 10, kind: "manim-smooth" } } : keyframe,
+          ),
+        })),
+      }).success,
+    ).toBe(false);
+  });
+
   it("keeps path-trim parameterization optional and rejects unknown modes", async () => {
     const assets = await manifest();
     const validScene = scene(assets);

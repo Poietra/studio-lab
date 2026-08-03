@@ -144,6 +144,7 @@ export const sceneEntityV1Schema = z
 const easingV1Schema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("linear") }).strict(),
   z.object({ kind: z.literal("smooth") }).strict(),
+  z.object({ kind: z.literal("manim-smooth") }).strict(),
   z
     .object({
       kind: z.literal("cubic-bezier"),

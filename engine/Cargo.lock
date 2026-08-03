@@ -912,6 +912,8 @@ name = "poietra-geometry"
 version = "0.1.0"
 dependencies = [
  "poietra-scene-ir",
+ "serde",
+ "serde_json",
  "thiserror 2.0.19",
 ]
 

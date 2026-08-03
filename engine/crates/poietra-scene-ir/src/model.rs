@@ -400,6 +400,8 @@ pub enum EasingV1 {
     Linear {},
     #[serde(rename = "smooth")]
     Smooth {},
+    #[serde(rename = "manim-smooth")]
+    ManimSmooth {},
     #[serde(rename = "cubic-bezier")]
     CubicBezier { x1: f64, x2: f64, y1: f64, y2: f64 },
 }
