@@ -37,7 +37,7 @@ const transitionCoverage = {
     sources: ["preparing", "rendering"],
     targets: ["cancelled", "failed", "ready"],
   },
-  discard: { sources: ["cancelled", "failed", "ready", "undone"], targets: ["discarded"] },
+  discard: { sources: ["cancelled", "committed", "failed", "ready", "undone"], targets: ["discarded"] },
   expire: { sources: ["preparing", "rendering"], targets: ["failed"] },
   "renew-lease": { sources: ["preparing", "rendering"], targets: ["preparing", "rendering"] },
   undo: { sources: ["committed"], targets: ["undone"] },
@@ -104,7 +104,7 @@ describe("Manim render session policy", () => {
     expect(statusesWith("active")).toEqual(["preparing", "rendering"]);
     expect(statusesWith("cancelable")).toEqual(["preparing", "rendering"]);
     expect(statusesWith("committable")).toEqual(["ready"]);
-    expect(statusesWith("discardable")).toEqual(["cancelled", "failed", "ready", "undone"]);
+    expect(statusesWith("discardable")).toEqual(["cancelled", "committed", "failed", "ready", "undone"]);
     expect(statusesWith("stopped")).toEqual(["cancelled", "discarded"]);
     expect(statusesWith("undoable")).toEqual(["committed"]);
 

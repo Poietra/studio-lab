@@ -1677,7 +1677,7 @@ export class PostgresRenderSessionRepositoryV1
         throw new HttpError(
           operation === "cancel"
             ? "Only an active render can be cancelled."
-            : "Cancel an active render or Undo a committed change before discarding it.",
+            : "Only a completed or cancelled render can be discarded.",
           409,
         );
       }

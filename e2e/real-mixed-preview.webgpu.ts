@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
+import { STUDIO_VIEWPORT } from "../src/studio/studio-viewport-geometry";
 
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
 const SCENE_LABEL = "scene_mixed_dynamic.py · MixedMathDemo";
@@ -92,6 +93,28 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+async function applyDraft(page: Page, previous: Readonly<{ packet: string; revision: string }>) {
+  const draft = page.getByRole("heading", { name: "Draft program" });
+  await expect(draft).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(draft).toHaveCount(0, { timeout: 30_000 });
+  return waitForNewPresentedFrame(page, previous.revision, previous.packet);
+}
+
+async function renderCommitAndRerun(page: Page) {
+  const render = page.getByRole("button", { name: "Render program" });
+  await expect(render).toBeVisible({ timeout: 30_000 });
+  await render.click();
+  const commit = page.getByRole("button", { name: "Commit to source" });
+  await expect(commit).toBeVisible({ timeout: 60_000 });
+  await commit.click();
+  const dialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
+  await expect(dialog).toBeVisible();
+  const response = snapshotResponse(page);
+  await dialog.getByRole("button", { name: "Commit source" }).click();
+  return verifiedMixedSnapshot(response);
+}
+
 async function dragBy(page: Page, target: Locator, delta: Readonly<{ x: number; y: number }>) {
   const box = await target.boundingBox();
   if (!box) throw new Error("The mixed V7 edit target is not visible.");
@@ -133,6 +156,17 @@ function animationSemantics(bundle: SceneIrBundleV1, identity: VerifiedSourceRun
     ...channel,
     sourceName: sourceNameByEntity.get(entityId),
   }));
+}
+
+function canonicalEquationTransform(source: string) {
+  const positions = [...source.matchAll(/^\s*equation\.move_to\(\(([-+0-9.eE]+), ([-+0-9.eE]+), 0\)\)\s*$/gm)];
+  const scales = [...source.matchAll(/^\s*equation\.scale\(([-+0-9.eE]+)\)\s*$/gm)];
+  expect(positions).toHaveLength(1);
+  expect(scales).toHaveLength(1);
+  return {
+    center: { x: Number(positions[0]?.[1]), y: Number(positions[0]?.[2]) },
+    scale: Number(scales[0]?.[1]),
+  };
 }
 
 async function renderCheckpoints(
@@ -305,45 +339,30 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
   expect(dragSurfaceWidth).toBeGreaterThan(0);
 
   await dragBy(page, equation, { x: 32, y: 0 });
-  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
-  const movedFrame = await waitForNewPresentedFrame(page, pristineRevision, pristinePacket);
+  const movedFrame = await applyDraft(page, { packet: pristinePacket, revision: pristineRevision });
   await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
 
   const resizeHandle = page.getByRole("button", { name: "Resize equation from bottom-right corner" });
   await expect(resizeHandle).toBeVisible();
   await resizeHandle.press("ArrowRight");
-  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
-  const resizedFrame = await waitForNewPresentedFrame(page, movedFrame.revision, movedFrame.packet);
+  const resizedFrame = await applyDraft(page, movedFrame);
   await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
   await expect(equationWrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
 
   const source = await exportedSource(page);
   expect(source).toContain("# poietra:cursor 0");
-  const exportedPosition = source.match(/equation\.move_to\(\(([-+0-9.eE]+), ([-+0-9.eE]+), 0\)\)/);
-  if (!exportedPosition) throw new Error("The mixed V7 export has no literal MathTex position.");
-  const exportedCenter = { x: Number(exportedPosition[1]), y: Number(exportedPosition[2]) };
+  const firstTransform = canonicalEquationTransform(source);
+  const exportedCenter = firstTransform.center;
   expect(exportedCenter.x).toBeCloseTo(
     run.bundle.scene.camera.view.center.x + (32 / dragSurfaceWidth) * run.bundle.scene.camera.view.frameWidth,
     8,
   );
   expect(exportedCenter.y).toBeCloseTo(run.bundle.scene.camera.view.center.y, 8);
-  expect(source).toContain("equation.scale(1.05)");
+  expect(firstTransform.scale).toBeCloseTo(1.05, 8);
   expect(source.indexOf("equation.scale(1.05)")).toBeLessThan(source.indexOf("self.play(Create(ring"));
   expect(source).toContain("# poietra:anchor 0");
 
-  await page.getByRole("button", { name: "Render program" }).click();
-  const commitButton = page.getByRole("button", { name: "Commit to source" });
-  await expect(commitButton).toBeVisible({ timeout: 60_000 });
-  await commitButton.click();
-  const commitDialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
-  await expect(commitDialog).toBeVisible();
-  const rerunResponse = snapshotResponse(page);
-  await commitDialog.getByRole("button", { name: "Commit source" }).click();
-  const rerun = await verifiedMixedSnapshot(rerunResponse);
+  const rerun = await renderCommitAndRerun(page);
   expect(rerun.snapshotHash).not.toBe(run.snapshotHash);
   expect(rerun.bundle.scene.duration).toBe(4);
   expect(animationSemantics(rerun.bundle, rerun.identity)).toEqual(animationSemantics(run.bundle, run.identity));
@@ -366,4 +385,56 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
   }
+  await page.getByRole("button", { name: "Keep source" }).click();
+  await expect(page.getByRole("button", { name: "Render program" })).toBeVisible();
+
+  const secondCanvas = page.locator("[data-studio-canvas]");
+  const secondPlayhead = page.getByRole("slider", { name: "Scene playhead" });
+  await secondPlayhead.press("Home");
+  await expect(secondPlayhead).toHaveValue("0");
+  await expect(secondCanvas).toHaveAttribute("data-preview-sample-time", "0");
+  const secondEquation = page.getByRole("button", { name: "Move equation", exact: true });
+  const secondStudioEquationId = await secondEquation.getAttribute("data-studio-entity");
+  if (!secondStudioEquationId) throw new Error("The rerun MathTex has no Studio identity.");
+  const secondEquationWrapper = page.locator(`[data-studio-entity-wrapper="${secondStudioEquationId}"]`);
+  await expect(secondEquationWrapper).toHaveAttribute("data-studio-runtime-entity", rerunEquationId);
+  await expect(secondEquationWrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
+  await page.getByRole("button", { name: "Set position" }).click();
+  await page.getByRole("checkbox", { name: "Select equation" }).check();
+
+  await secondEquation.press("Shift+ArrowRight");
+  const secondMovedFrame = await applyDraft(page, rerunFrame);
+  await expect(secondCanvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
+
+  const secondResizeHandle = page.getByRole("button", { name: "Resize equation from bottom-right corner" });
+  await secondResizeHandle.press("ArrowRight");
+  const secondResizedFrame = await applyDraft(page, secondMovedFrame);
+  await expect(secondCanvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
+  await expect(secondEquationWrapper).toHaveAttribute("data-studio-entity-scale", "1.1025");
+
+  const secondSource = await exportedSource(page);
+  const secondTransform = canonicalEquationTransform(secondSource);
+  expect(secondSource.match(/^\s*# poietra:cursor 0\s*$/gm)).toHaveLength(1);
+  expect(secondTransform.center.x).toBeCloseTo(
+    exportedCenter.x + (10 / STUDIO_VIEWPORT.width) * rerun.bundle.scene.camera.view.frameWidth,
+    8,
+  );
+  expect(secondTransform.center.y).toBeCloseTo(exportedCenter.y, 8);
+  expect(secondTransform.scale).toBeCloseTo(1.1025, 8);
+  expect(secondSource.indexOf("equation.scale(")).toBeLessThan(secondSource.indexOf("self.play(Create(ring"));
+
+  const secondRerun = await renderCommitAndRerun(page);
+  expect(secondRerun.snapshotHash).not.toBe(rerun.snapshotHash);
+  expect(animationSemantics(secondRerun.bundle, secondRerun.identity)).toEqual(
+    animationSemantics(run.bundle, run.identity),
+  );
+  const finalEquationId = secondRerun.identity.mappings.find(({ binding }) => binding.name === "equation")?.entityId;
+  if (!finalEquationId) throw new Error("The twice-edited MathTex did not regain source/runtime identity.");
+  const finalBounds = cubicEntityBounds(secondRerun.bundle, finalEquationId);
+  expect(finalBounds.center.x).toBeCloseTo(secondTransform.center.x, 8);
+  expect(finalBounds.center.y).toBeCloseTo(secondTransform.center.y, 8);
+  expect(finalBounds.width / initialEquationBounds.width).toBeCloseTo(1.1025, 8);
+  expect(finalBounds.height / initialEquationBounds.height).toBeCloseTo(1.1025, 8);
+  const finalFrame = await waitForNewPresentedFrame(page, secondResizedFrame.revision, secondResizedFrame.packet);
+  expect(finalFrame.revision).toBe(secondRerun.snapshotHash);
 });

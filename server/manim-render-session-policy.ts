@@ -36,7 +36,7 @@ const RENDER_SESSION_TRANSITIONS = {
   "claim-lease": { sources: ACTIVE_SESSION_STATUSES, target: "rendering" },
   commit: { sources: ["ready"], target: "committed" },
   "complete-lease": { sources: ACTIVE_SESSION_STATUSES, target: ["cancelled", "failed", "ready"] },
-  discard: { sources: ["cancelled", "failed", "ready", "undone"], target: "discarded" },
+  discard: { sources: ["cancelled", "committed", "failed", "ready", "undone"], target: "discarded" },
   expire: { sources: ACTIVE_SESSION_STATUSES, target: "failed" },
   "renew-lease": { sources: ACTIVE_SESSION_STATUSES, target: "same" },
   undo: { sources: ["committed"], target: "undone" },

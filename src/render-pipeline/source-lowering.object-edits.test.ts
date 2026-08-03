@@ -844,6 +844,20 @@ class GroupedEquation(Scene):
         equation.scale(0.75)
         # poietra:anchor 0.000
         self.wait(1)
+
+class MarkerText(Scene):
+    def construct(self):
+        note = """
+        # poietra:cursor 0
+        # poietra:position {"kind":"absolute","value":{"x":320,"y":180},"variable":"decoy","version":1}
+        decoy.move_to((0, 0, 0))
+        # poietra:transaction "old-decoy"
+        # poietra:cursor 0
+        # poietra:position {"kind":"absolute","value":{"x":360,"y":180},"variable":"decoy","version":1}
+        decoy.move_to((1, 0, 0))
+        # poietra:transaction "resize-reimported-source"
+        # poietra:anchor 0
+        """
 `;
     const frame = { height: 9, width: 16 };
     const imported = importManimScene(repeatedSource, "examples/relativity.py", "GroupedEquation", frame);
@@ -913,16 +927,51 @@ class GroupedEquation(Scene):
     );
     const secondReimport = importManimScene(second.source, "examples/relativity.py", "GroupedEquation", frame);
     const scaleSamples = secondReimport?.runtimeSceneState.propertyChannels[`${entityId}/scale`]?.samples ?? [];
+    const groupedSource = second.source.slice(0, second.source.indexOf("class MarkerText"));
 
-    expect(second.source.indexOf("equation.scale(0.75)")).toBeLessThan(second.source.indexOf("# poietra:cursor 0"));
-    expect(second.source.lastIndexOf("equation.scale(1.5)")).toBeLessThan(
-      second.source.lastIndexOf("# poietra:anchor 0"),
-    );
+    expect(groupedSource.indexOf("equation.scale(0.75)")).toBeLessThan(groupedSource.indexOf("# poietra:cursor 0"));
+    expect(groupedSource.match(/^\s*# poietra:cursor 0$/gm)).toHaveLength(1);
+    expect(groupedSource.match(/^\s*# poietra:position /gm)).toHaveLength(1);
+    expect(groupedSource.match(/^\s*# poietra:scale /gm)).toHaveLength(1);
+    expect(groupedSource).toContain("equation.scale(3)");
+    expect(groupedSource).not.toContain('poietra:transaction "move-after-source-transforms"');
+    expect(groupedSource).not.toContain('poietra:transaction "resize-after-source-transforms"');
+    expect(groupedSource).toContain('poietra:transaction "resize-reimported-source"');
+    expect(second.source.match(/^\s*decoy\.move_to/gm)).toHaveLength(2);
     expect(scaleSamples.at(-1)).toMatchObject({
       knowledge: { kind: "known", value: 4.5 },
       sameAnchorOrder: "before-studio-insertion",
       value: 4.5,
     });
+
+    const mismatchedFirst = first.source.replace(
+      /(# poietra:position [^\r\n]+\r?\n\s*)equation\.move_to\([^\r\n]+\)/,
+      "$1equation.move_to((0, 0, 0))",
+    );
+    const mismatchedOutput = lowerCanonicalProgramSource(
+      mismatchedFirst,
+      request(resizeAgain.program, [{ entityId, sourceVariable: "equation" }]),
+      frame,
+      null,
+    ).source;
+    const mismatchedSecond = mismatchedOutput.slice(0, mismatchedOutput.indexOf("class MarkerText"));
+    expect(mismatchedSecond.match(/^\s*# poietra:cursor 0$/gm)).toHaveLength(2);
+    expect(mismatchedSecond.match(/^\s*# poietra:scale /gm)).toHaveLength(2);
+
+    const mismatchedScaleFirst = first.source.replace(
+      '"value":3,"variable":"equation"',
+      '"value":300,"variable":"equation"',
+    );
+    const mismatchedScaleOutput = lowerCanonicalProgramSource(
+      mismatchedScaleFirst,
+      request(resizeAgain.program, [{ entityId, sourceVariable: "equation" }]),
+      frame,
+      null,
+    ).source;
+    const mismatchedScale = mismatchedScaleOutput.slice(0, mismatchedScaleOutput.indexOf("class MarkerText"));
+    expect(mismatchedScale.match(/^\s*# poietra:cursor 0$/gm)).toHaveLength(2);
+    expect(mismatchedScale.match(/^\s*# poietra:scale /gm)).toHaveLength(2);
+    expect(mismatchedScale).not.toContain("equation.scale(3)");
   });
 
   it("rebases relative scale Programs added in reverse source-anchor order and reimports the same result", () => {
