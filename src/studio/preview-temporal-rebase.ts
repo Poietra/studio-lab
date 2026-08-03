@@ -94,6 +94,22 @@ function localBoundaryCenter(entity: SceneEntityV1) {
   };
 }
 
+function uniformSourceTransform(entity: SceneEntityV1, localCenter: Point) {
+  const { m11, m12, m21, m22, tx, ty } = entity.transform;
+  const tolerance = Number.EPSILON * Math.max(1, Math.abs(m11), Math.abs(m22)) * 32;
+  if (
+    ![m11, m12, m21, m22, tx, ty].every(Number.isFinite) ||
+    m11 <= 0 ||
+    m12 !== 0 ||
+    m21 !== 0 ||
+    Math.abs(m11 - m22) > tolerance
+  ) {
+    return null;
+  }
+  const worldCenter = { x: m11 * localCenter.x + tx, y: m22 * localCenter.y + ty };
+  return Number.isFinite(worldCenter.x) && Number.isFinite(worldCenter.y) ? { scale: m11, worldCenter } : null;
+}
+
 function studioPointToScenePoint(
   point: Point,
   frame: Readonly<{ height: number; width: number }>,
@@ -394,23 +410,20 @@ export function compileStudioPreviewTemporalRebaseV1(
   if (!target || !center) {
     return unsupported("geometry-edit-unsupported", "The authorized V7 target has no bounded cubic geometry.");
   }
-  if (
-    target.transform.m11 !== 1 ||
-    target.transform.m12 !== 0 ||
-    target.transform.m21 !== 0 ||
-    target.transform.m22 !== 1 ||
-    target.transform.tx !== 0 ||
-    target.transform.ty !== 0
-  ) {
+  const sourceTransform = uniformSourceTransform(target, center);
+  if (!sourceTransform) {
     return unsupported(
       "profile-unsupported",
-      "Verified V7 base entities must retain the canonical identity transform.",
+      "Verified V7 base entities must retain a finite positive uniform transform without rotation or shear.",
     );
   }
-  const scale = edit.scaleFactor ?? 1;
+  const scale = sourceTransform.scale * (edit.scaleFactor ?? 1);
   const targetCenter = edit.position
     ? studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center)
-    : center;
+    : sourceTransform.worldCenter;
+  if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(targetCenter.x) || !Number.isFinite(targetCenter.y)) {
+    return unsupported("profile-unsupported", "The composed V7 transform is not finite and positive.");
+  }
   const provenanceId = `studio-temporal-rebase:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
     return unsupported("conflicting-edit-unsupported", "The Studio V7 rebase provenance identity already exists.");

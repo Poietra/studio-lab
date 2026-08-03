@@ -6,6 +6,7 @@ import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
+import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
@@ -458,7 +459,9 @@ class MathTexScene(Scene):
   };
 }
 
-async function mixedV7EditedMathTexPreviewInput(options: Readonly<{ includeRing?: boolean }> = {}) {
+async function mixedV7EditedMathTexPreviewInput(
+  options: Readonly<{ includeRing?: boolean; mathTexTransform?: SceneEntityV1["transform"] }> = {},
+) {
   const fixture = await importedMathTexPreviewInput();
   const baseStudioMathTex = fixture.workingState.runtimeSceneState.objectGraph.entities[fixture.entityId];
   const editedStudioMathTex = fixture.edited.evaluatedScene.objectGraph.entities[fixture.entityId];
@@ -498,7 +501,7 @@ async function mixedV7EditedMathTexPreviewInput(options: Readonly<{ includeRing?
       },
     },
   });
-  const unsigned = await mixedDynamic2dSnapshotBundleFixtureV7({
+  const fixtureBundle = await mixedDynamic2dSnapshotBundleFixtureV7({
     frame: MIXED_V7_FRAME,
     projectId: fixture.snapshot.correlation.context.projectId,
     requestId: "mixed-v7-preview-test",
@@ -509,6 +512,18 @@ async function mixedV7EditedMathTexPreviewInput(options: Readonly<{ includeRing?
     sourceHash: importedSource.sourceHash,
     sourcePath: fixture.snapshot.correlation.context.sourcePath,
   });
+  const mathTexTransform = options.mathTexTransform;
+  const unsigned = mathTexTransform
+    ? {
+        ...fixtureBundle,
+        scene: {
+          ...fixtureBundle.scene,
+          entities: fixtureBundle.scene.entities.map((entity, index) =>
+            index === 0 ? { ...entity, transform: mathTexTransform } : entity,
+          ),
+        },
+      }
+    : fixtureBundle;
   const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(unsigned);
   const snapshotBundle = await parseVerifiedSceneIrBundleV1({
     ...unsigned,
@@ -908,6 +923,47 @@ describe("compileStudioPreviewSceneV1", () => {
       kind: "studio-edit-program",
       revisionHash: result.scene.engineRevisionHash,
     });
+  });
+
+  it("composes a repeated MathTex edit against the transformed V7 source", async () => {
+    const baseScale = 1.5;
+    const fixture = await mixedV7EditedMathTexPreviewInput({
+      mathTexTransform: { m11: baseScale, m12: 0, m21: 0, m22: baseScale, tx: 0.75, ty: -0.5 },
+    });
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:second-mixed-v7-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+    const edited = scene.entities[0];
+    if (!edited) throw new Error("Repeated MathTex edit lost its target.");
+    expect(edited.transform.m11).toBeCloseTo(3, 12);
+    expect(edited.transform.m22).toBeCloseTo(3, 12);
+    expect(edited.transform.tx).toBeCloseTo(3.5555555555555554, 12);
+    expect(edited.transform.ty).toBeCloseTo(0.8888888888888888, 12);
+    expect(scene.animationChannels).toBe(fixture.snapshot.snapshot.scene.animationChannels);
+    expect(scene.entities.slice(1)).toEqual(fixture.snapshot.snapshot.scene.entities.slice(1));
+  });
+
+  it.each([
+    ["rotation", { m11: 1, m12: -0.25, m21: 0.25, m22: 1, tx: 0, ty: 0 }],
+    ["shear", { m11: 1, m12: 0.25, m21: 0, m22: 1, tx: 0, ty: 0 }],
+    ["non-uniform scale", { m11: 1, m12: 0, m21: 0, m22: 1.25, tx: 0, ty: 0 }],
+    ["reflection", { m11: -1, m12: 0, m21: 0, m22: -1, tx: 0, ty: 0 }],
+  ])("fails closed on a source transform with %s", async (_name, transform) => {
+    const fixture = await mixedV7EditedMathTexPreviewInput({ mathTexTransform: transform });
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:unsupported-source-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(result).toMatchObject({ error: expect.stringContaining("profile-unsupported"), kind: "unsupported" });
   });
 
   it("rebases an initial Create target transform while preserving the imported channels", async () => {
