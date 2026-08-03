@@ -37,10 +37,12 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export type DurableFastManimSnapshotRunnerHandleV1 = Readonly<{
   profileDigest: string;
   runner: FastManimSnapshotRunner;
+  runtimeConfigHash: string;
   runtimeDigest: string;
 }>;
 
 export interface DurableFastManimSnapshotRunnerFactoryV1 {
+  readonly runtimeConfigHash: string;
   readonly runtimeDigest: string;
   close(): Promise<void>;
   create(
@@ -114,6 +116,7 @@ export class DurableFastManimSnapshotServiceV1 {
   readonly #projects = new Map<string, ProjectRunnerEntry>();
   readonly #publicationIdFactory: () => string;
   readonly #publisher: SnapshotArtifactPublisherV1;
+  readonly #runtimeConfigHash: string;
   readonly #runtimeDigest: string;
   readonly #sourceRepository: WorkspaceSourceRepositoryV1;
   readonly #tenantId: string;
@@ -124,13 +127,18 @@ export class DurableFastManimSnapshotServiceV1 {
     const tenant = manimTenantIdSchema.safeParse(options.tenantId);
     if (!tenant.success) throw new TypeError("The durable snapshot tenant ID is invalid.");
     const runtimeDigest = options.factory.runtimeDigest;
+    const runtimeConfigHash = options.factory.runtimeConfigHash;
     if (!SHA256.test(runtimeDigest) || runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
       throw new TypeError("The durable snapshot factory runtime digest is invalid.");
+    }
+    if (!SHA256.test(runtimeConfigHash)) {
+      throw new TypeError("The durable snapshot factory runtime-config hash is invalid.");
     }
     this.#tenantId = tenant.data;
     this.#blobs = options.blobs;
     this.#factory = options.factory;
     this.#publisher = options.publisher;
+    this.#runtimeConfigHash = runtimeConfigHash;
     this.#runtimeDigest = runtimeDigest;
     this.#sourceRepository = options.sourceRepository;
     this.#publicationIdFactory = options.publicationIdFactory ?? randomUUID;
@@ -208,7 +216,11 @@ export class DurableFastManimSnapshotServiceV1 {
       pending = Promise.resolve()
         .then(() => this.#factory.create({ projectId, sourceProvider }))
         .then(async (handle) => {
-          if (!SHA256.test(handle.profileDigest) || handle.runtimeDigest !== this.#runtimeDigest) {
+          if (
+            !SHA256.test(handle.profileDigest) ||
+            handle.runtimeConfigHash !== this.#runtimeConfigHash ||
+            handle.runtimeDigest !== this.#runtimeDigest
+          ) {
             const invalid = new TypeError("The durable snapshot runner identity is invalid.");
             try {
               await handle.runner.close();
@@ -266,6 +278,9 @@ export class DurableFastManimSnapshotServiceV1 {
     const view = await handle.runner.runUnpublished(request, signal);
     this.#assertProjectActive(request.projectId, entry);
     if (view.status !== "verified") return view;
+    if (view.runtimeConfigHash !== this.#runtimeConfigHash) {
+      throw new Error("The verified durable snapshot does not match the active runtime configuration.");
+    }
     signal?.throwIfAborted();
     const after = await this.#sourceRepository.readSourceHead(
       this.#tenantId,
@@ -337,6 +352,7 @@ export class DurableFastManimSnapshotServiceV1 {
         profileDigest: handle.profileDigest,
         projectId: view.projectId,
         publicationId: this.#publicationIdFactory(),
+        runtimeConfigHash: this.#runtimeConfigHash,
         sceneName: view.sceneName,
         snapshot,
         sourcePath: view.sourcePath,
@@ -370,6 +386,7 @@ export class DurableFastManimSnapshotServiceV1 {
     const result = await this.#publisher.readCurrent(
       {
         projectId,
+        runtimeConfigHash: this.#runtimeConfigHash,
         runtimeDigest: this.#runtimeDigest,
         sceneName: query.sceneName,
         sourcePath: query.sourcePath,

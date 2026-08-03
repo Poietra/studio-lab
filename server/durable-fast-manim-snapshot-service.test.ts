@@ -165,6 +165,7 @@ function publication(generation = 12n): SnapshotPublicationV1 {
     publicationId: "018f57e2-4c8b-4d31-a91e-4ae5e5c6c8a1",
     publishedAt: PUBLISHED_AT,
     requestId: request.requestId,
+    runtimeConfigHash: RUNTIME_DIGEST,
     runtimeDigest: RELEASE_RUNTIME_DIGEST,
     sceneName: SCENE_NAME,
     snapshotHash: SNAPSHOT_DIGEST,
@@ -303,6 +304,7 @@ function deferred<T>() {
 function harness(
   runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView,
   runtimeDigest = RELEASE_RUNTIME_DIGEST,
+  runtimeConfigHash = RUNTIME_DIGEST,
 ) {
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
@@ -313,12 +315,14 @@ function harness(
   const create = vi.fn<DurableFastManimSnapshotRunnerFactoryV1["create"]>(async () => ({
     profileDigest: PROFILE_DIGEST,
     runner,
+    runtimeConfigHash,
     runtimeDigest,
   }));
   const factory = {
     close: vi.fn(async () => undefined),
     create,
     ready: vi.fn(async () => true),
+    runtimeConfigHash,
     runtimeDigest,
   } satisfies DurableFastManimSnapshotRunnerFactoryV1;
   const readSourceHead = vi.fn<WorkspaceSourceRepositoryV1["readSourceHead"]>(async () => sourceHead());
@@ -381,6 +385,12 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     },
   );
 
+  it("rejects an invalid active runtime configuration before taking ownership", () => {
+    expect(() => harness(verifiedView, RELEASE_RUNTIME_DIGEST, "not-a-digest")).toThrow(
+      /factory runtime-config hash is invalid/i,
+    );
+  });
+
   it("lazily shares one project runner and returns the committed durable revision", async () => {
     const fixture = harness();
 
@@ -398,6 +408,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       expected: expected(),
       expectedSourceGeneration: 7n,
       profileDigest: PROFILE_DIGEST,
+      runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
   });
@@ -558,6 +569,13 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(rejected).toMatchObject({ failure: { code: "source-changed" }, status: "failed" });
   });
 
+  it("rejects a verified result from another runtime configuration before publication", async () => {
+    const fixture = harness({ ...verifiedView, runtimeConfigHash: "2".repeat(64) });
+
+    await expect(fixture.service.run(request)).rejects.toThrow(/active runtime configuration/i);
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
   it("serves a version-pinned durable artifact without constructing a runner", async () => {
     const fixture = harness();
     fixture.readCurrent.mockResolvedValueOnce({
@@ -587,6 +605,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(fixture.readCurrent).toHaveBeenCalledWith(
       {
         projectId: PROJECT,
+        runtimeConfigHash: RUNTIME_DIGEST,
         runtimeDigest: RELEASE_RUNTIME_DIGEST,
         sceneName: SCENE_NAME,
         sourcePath: SOURCE_PATH,
@@ -722,7 +741,12 @@ describe("DurableFastManimSnapshotServiceV1", () => {
 
   it("closes a runner that finishes creation after its project is released", async () => {
     const fixture = harness();
-    const creation = deferred<{ profileDigest: string; runner: FastManimSnapshotRunner; runtimeDigest: string }>();
+    const creation = deferred<{
+      profileDigest: string;
+      runner: FastManimSnapshotRunner;
+      runtimeConfigHash: string;
+      runtimeDigest: string;
+    }>();
     fixture.factory.create.mockReturnValueOnce(creation.promise);
     const run = fixture.service.run(request);
     await vi.waitFor(() => expect(fixture.factory.create).toHaveBeenCalledTimes(1));
@@ -731,6 +755,7 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     creation.resolve({
       profileDigest: PROFILE_DIGEST,
       runner: fixture.runner,
+      runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
 
@@ -745,7 +770,23 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     fixture.factory.create.mockResolvedValueOnce({
       profileDigest: PROFILE_DIGEST,
       runner: fixture.runner,
+      runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: "1".repeat(64),
+    });
+
+    await expect(fixture.service.run(request)).rejects.toThrow(/runner identity is invalid/i);
+    expect(fixture.runnerClose).toHaveBeenCalledOnce();
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("closes and rejects a runner from a different runtime configuration", async () => {
+    const fixture = harness();
+    fixture.factory.create.mockResolvedValueOnce({
+      profileDigest: PROFILE_DIGEST,
+      runner: fixture.runner,
+      runtimeConfigHash: "2".repeat(64),
+      runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
 
     await expect(fixture.service.run(request)).rejects.toThrow(/runner identity is invalid/i);

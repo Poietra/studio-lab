@@ -44,6 +44,14 @@ migration invalidates old snapshot heads instead of guessing which runtime made
 them. It retains their immutable objects with the reserved all-zero runtime
 digest so only the new GC can remove them; they are never eligible for API reads.
 
+Snapshot runtime-config head migration v25 is also a stop-the-world schema
+cutover. It backfills each active head from its exact publication, removes
+configuration-less tombstones, and makes `(runtime_digest,
+runtime_config_hash)` part of the Scene-head identity. A raw runtime digest
+continues to mean the attested OCI release; it is never replaced by a synthetic
+combined digest. Uncorrelated legacy rows make the migration fail instead of
+being assigned to a guessed configuration.
+
 `objectStorage.writeLane` is required and applies to source, project PNG,
 snapshot, video, and thumbnail publication together. Set it to `versioned` only
 while `objectStorage.legacy` is configured. Setting it to `immutable` moves new

@@ -7,7 +7,13 @@ import {
   createFastManimProductionSandboxClientV1,
   type FastManimProductionSandboxClientOptionsV1,
 } from "./fast-manim-production-sandbox-client";
-import type { FastManimSnapshotProfileVersionV1 } from "./fast-manim-snapshot-contract";
+import {
+  digestFastManimSnapshotRuntimeConfigV1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+  type FastManimSnapshotProfileVersionV1,
+} from "./fast-manim-snapshot-contract";
 import { DurableFastManimSnapshotPngProviderV1 } from "./fast-manim-snapshot-durable-png-provider";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import type { ProjectPngBlobStoreV1, ProjectPngRepositoryV1 } from "./storage/project-png-storage";
@@ -37,6 +43,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   readonly #activeReadiness = new Set<Promise<SnapshotRunnerReadinessOutcomeV1>>();
   readonly #cleanupFailures: unknown[] = [];
   readonly #options: FastManimProductionSnapshotRunnerFactoryOptionsV1;
+  readonly #runtimeConfigHash: string;
   readonly #runtimeDigest: string;
   #closeRequest: Promise<void> | null = null;
   #closed = false;
@@ -49,6 +56,20 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
       throw new TypeError("Hermetic PNG snapshot profile V4 requires durable project PNG storage.");
     }
     this.#options = options;
+    const snapshotVersion = options.snapshotVersion ?? 1;
+    this.#runtimeConfigHash = digestFastManimSnapshotRuntimeConfigV1({
+      capabilities:
+        snapshotVersion === 4
+          ? ["png-image"]
+          : snapshotVersion === 8
+            ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8]
+            : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+      frame: options.frame,
+      randomSeed: 0,
+      schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+      snapshotVersion,
+      version: 1,
+    });
     this.#runtimeDigest = verifyFastManimGatedOciReleaseV1(
       options.client.signedRelease,
       options.client.publicKeys,
@@ -57,6 +78,10 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
 
   get runtimeDigest() {
     return this.#runtimeDigest;
+  }
+
+  get runtimeConfigHash() {
+    return this.#runtimeConfigHash;
   }
 
   async create(
@@ -106,6 +131,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           tenantId: this.#options.tenantId,
           ...(this.#options.timeoutMs === undefined ? {} : { timeoutMs: this.#options.timeoutMs }),
         }),
+        runtimeConfigHash: this.#runtimeConfigHash,
         runtimeDigest: client.runtimeDigest,
       };
     } catch (error) {

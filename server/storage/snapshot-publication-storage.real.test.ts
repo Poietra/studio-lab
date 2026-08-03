@@ -45,6 +45,7 @@ const E2E_CONFIGURED = [
 ].every((key) => Boolean(process.env[key]));
 const PROFILE_DIGEST = "c".repeat(64);
 const RUNTIME_CONFIG_HASH = "b".repeat(64);
+const OTHER_RUNTIME_CONFIG_HASH = "a".repeat(64);
 const RUNTIME_DIGEST = "d".repeat(64);
 const OTHER_RUNTIME_DIGEST = "e".repeat(64);
 
@@ -249,7 +250,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== "publisher")("durable snapsh
       const artifact = await storage.artifacts.put(input.identity.tenantId, {
         bytes: Buffer.from(input.artifactBytes, "utf8"),
         profileDigest: PROFILE_DIGEST,
-        runtimeConfigHash: RUNTIME_CONFIG_HASH,
+        runtimeConfigHash: input.identity.runtimeConfigHash,
         runtimeDigest: input.identity.runtimeDigest,
         sourceDigest: input.expectedSourceDigest,
       });
@@ -503,8 +504,8 @@ async function prepareStorage(environment: StorageEnvironment) {
       applied: true,
       version: 10,
     });
-    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 24 });
-    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: false, version: 24 });
+    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 25 });
+    expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: false, version: 25 });
     const migratedLegacy = await pool.query<{
       artifact_runtime_digest: string;
       artifact_object_key: string;
@@ -570,6 +571,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     const projectId = `project-${suffix}`;
     const identity = {
       projectId,
+      runtimeConfigHash: RUNTIME_CONFIG_HASH,
       runtimeDigest: RUNTIME_DIGEST,
       sceneName: "MainScene",
       sourcePath: "main.py",
@@ -628,6 +630,29 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       expect(await runReaderChild(otherRuntimeIdentity)).toEqual(otherRuntimePublication);
       expect(await runReaderChild(identity)).toEqual(publication);
 
+      const otherConfigIdentity = { ...identity, runtimeConfigHash: OTHER_RUNTIME_CONFIG_HASH };
+      const otherConfigPublication = await runPublisherChild({
+        artifactBytes: `other-config-snapshot-artifact-${suffix}`,
+        expectedSourceDigest: sourceHead.blob.digest,
+        expectedSourceGeneration: sourceHead.generation.toString(),
+        identity: otherConfigIdentity,
+        publicationId: randomUUID(),
+        requestId: `other-config-${requestId}`,
+        snapshotHash: createHash("sha256").update(`other-config-snapshot-${suffix}`).digest("hex"),
+      });
+      expect(otherConfigPublication.generation).toBe("1");
+      expect(otherConfigPublication.artifact.objectKey).not.toBe(publication.artifact.objectKey);
+      expect(await runReaderChild(otherConfigIdentity)).toEqual(otherConfigPublication);
+      expect(await runReaderChild(identity)).toEqual(publication);
+      const unknownConfigReader = snapshotStorage();
+      try {
+        await expect(
+          unknownConfigReader.publications.readCurrent({ ...identity, runtimeConfigHash: "9".repeat(64) }),
+        ).resolves.toEqual({ kind: "missing" });
+      } finally {
+        await closeSnapshotStorage(unknownConfigReader);
+      }
+
       const tenantBReader = snapshotStorage();
       try {
         await expect(tenantBReader.publications.readCurrent({ ...identity, tenantId: tenantB })).resolves.toEqual({
@@ -659,6 +684,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         });
         await expect(staleReader.publications.readCurrent(otherRuntimeIdentity)).resolves.toEqual({
           generation: BigInt(otherRuntimePublication.generation),
+          kind: "stale",
+        });
+        await expect(staleReader.publications.readCurrent(otherConfigIdentity)).resolves.toEqual({
+          generation: BigInt(otherConfigPublication.generation),
           kind: "stale",
         });
       } finally {

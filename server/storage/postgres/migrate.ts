@@ -35,6 +35,7 @@ import renderArtifactTombstoneSqlV21 from "./migrations/0021_render_artifact_tom
 import accountInvitationSqlV22 from "./migrations/0022_account_invitations.sql?raw";
 import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapshots.sql?raw";
 import accountInvitationQuotaSqlV24 from "./migrations/0024_account_invitation_quotas.sql?raw";
+import snapshotRuntimeConfigHeadSqlV25 from "./migrations/0025_snapshot_runtime_config_heads.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -47,6 +48,7 @@ import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 import { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
@@ -67,6 +69,7 @@ export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 export { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+export { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 export { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
 
@@ -117,6 +120,7 @@ export const RENDER_ARTIFACT_TOMBSTONE_MIGRATION_V21_SOURCE = renderArtifactTomb
 export const ACCOUNT_INVITATION_MIGRATION_V22_SOURCE = accountInvitationSqlV22;
 export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapshotSqlV23;
 export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE = accountInvitationQuotaSqlV24;
+export const SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE = snapshotRuntimeConfigHeadSqlV25;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -364,6 +368,17 @@ const accountInvitationQuotaMigrationV24: DurableStorageMigration<24> = Object.f
   version: 24,
 });
 
+const snapshotRuntimeConfigHeadMigrationV25: DurableStorageMigration<25> = Object.freeze({
+  checksum: SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM,
+  checksumMismatch: "The snapshot runtime-config head migration checksum is invalid.",
+  installedMismatch: "The installed snapshot runtime-config head schema does not match migration v25.",
+  missingPrerequisite: "Snapshot runtime-config head migration v25 requires durable storage migrations v1 through v24.",
+  prerequisiteMismatch:
+    "Snapshot runtime-config head migration v25 requires exact durable storage migrations v1 through v24.",
+  source: SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE,
+  version: 25,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -389,6 +404,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   accountInvitationMigrationV22,
   editorSessionSnapshotMigrationV23,
   accountInvitationQuotaMigrationV24,
+  snapshotRuntimeConfigHeadMigrationV25,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -637,6 +653,10 @@ export function applyEditorSessionSnapshotMigrationV23(pool: Pool, source: strin
 
 export function applyAccountInvitationQuotaMigrationV24(pool: Pool, source: string) {
   return applyMigration(pool, { ...accountInvitationQuotaMigrationV24, source }, bundledMigrationsBefore(24));
+}
+
+export function applySnapshotRuntimeConfigHeadMigrationV25(pool: Pool, source: string) {
+  return applyMigration(pool, { ...snapshotRuntimeConfigHeadMigrationV25, source }, bundledMigrationsBefore(25));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */
