@@ -40,11 +40,13 @@ import {
 } from "./snapshot-publication-repository";
 
 const PROFILE = "c".repeat(64);
+const RUNTIME_CONFIG_HASH = "b".repeat(64);
 const RUNTIME_DIGEST = "5".repeat(64);
 const TENANT = "tenant-a";
 const PUBLICATION_ID = "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8a1";
 const identity = {
   projectId: "workspace-a",
+  runtimeConfigHash: RUNTIME_CONFIG_HASH,
   runtimeDigest: RUNTIME_DIGEST,
   sceneName: "ExampleScene",
   sourcePath: "examples/scene.py",
@@ -61,7 +63,7 @@ const expected = {
   frame: { height: 8, width: 14.222222222222221 },
   projectId: identity.projectId,
   requestId: "snapshot-request-a",
-  runtimeConfigHash: "b".repeat(64),
+  runtimeConfigHash: RUNTIME_CONFIG_HASH,
   snapshotVersion: 1,
   sceneId: fastManimSnapshotSceneIdV1(identity.sourcePath, identity.sceneName),
   sceneName: identity.sceneName,
@@ -262,39 +264,65 @@ class MemoryArtifactStore implements SnapshotArtifactStoreV1 {
 
 class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
   readonly clearHeadIfGeneration = vi.fn(async (value: SnapshotPublicationIdentityV1, generation: bigint) => {
-    if (
-      this.head.kind !== "published" ||
-      this.head.publication.generation !== generation ||
-      this.head.publication.tenantId !== value.tenantId
-    ) {
+    const key = this.#key(value);
+    const head = this.#heads.get(key) ?? { kind: "missing" as const };
+    if (head.kind !== "published" || head.publication.generation !== generation) {
       return false;
     }
-    this.head = { generation, kind: "stale" };
+    this.#heads.set(key, { generation, kind: "stale" });
     return true;
   });
   readonly confirmCurrent = vi.fn(async (publication: SnapshotPublicationV1) => {
-    return this.head.kind === "published" && this.head.publication.publicationId === publication.publicationId;
+    const head = this.#heads.get(this.#key(publication));
+    return (
+      head?.kind === "published" &&
+      head.publication.generation === publication.generation &&
+      head.publication.publicationId === publication.publicationId
+    );
   });
   readonly events: string[];
-  head: SnapshotPublicationReadV1 = { kind: "missing" };
   readQueue: SnapshotPublicationReadV1[] = [];
   sourceStale = false;
-  #generation = 0n;
+  readonly #generations = new Map<string, bigint>();
+  readonly #heads = new Map<string, SnapshotPublicationReadV1>();
 
   constructor(events: string[]) {
     this.events = events;
   }
 
+  #key(value: SnapshotPublicationIdentityV1) {
+    return [
+      value.tenantId,
+      value.projectId,
+      value.sourcePath,
+      value.sceneName,
+      value.runtimeDigest,
+      value.runtimeConfigHash,
+    ].join("\0");
+  }
+
+  get head() {
+    return this.#heads.get(this.#key(identity)) ?? ({ kind: "missing" } as const);
+  }
+
+  set head(value: SnapshotPublicationReadV1) {
+    this.#heads.set(this.#key(identity), value);
+  }
+
   async publish(input: Parameters<SnapshotPublicationRepositoryV1["publish"]>[0]) {
     this.events.push("publish");
     if (this.sourceStale) return { kind: "source-stale" as const };
+    const key = this.#key(input);
+    const generation = (this.#generations.get(key) ?? 0n) + 1n;
+    this.#generations.set(key, generation);
     const publication: SnapshotPublicationV1 = {
       artifact: input.artifact,
-      generation: ++this.#generation,
+      generation,
       projectId: input.projectId,
       publicationId: input.publicationId,
       publishedAt: new Date("2026-07-28T00:00:00.000Z"),
       requestId: input.requestId,
+      runtimeConfigHash: input.runtimeConfigHash,
       runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       snapshotHash: input.snapshotHash,
@@ -302,12 +330,13 @@ class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
       sourcePath: input.sourcePath,
       tenantId: input.tenantId,
     };
-    this.head = { kind: "published", publication };
-    return this.head;
+    const result = { kind: "published" as const, publication };
+    this.#heads.set(key, result);
+    return result;
   }
 
-  async readCurrent() {
-    return this.readQueue.shift() ?? this.head;
+  async readCurrent(value: SnapshotPublicationIdentityV1) {
+    return this.readQueue.shift() ?? this.#heads.get(this.#key(value)) ?? { kind: "missing" as const };
   }
 
   async acknowledgeArtifactDeletion() {}
@@ -403,6 +432,44 @@ describe("SnapshotArtifactPublisherV1", () => {
       expect(read.kind).toBe("published");
       if (read.kind === "published") expect(read.document.expected.snapshotVersion).toBe(1);
     }
+  });
+
+  it("isolates publication heads by exact runtime configuration under one attested runtime", async () => {
+    const otherRuntimeConfigHash = "d".repeat(64);
+    const otherIdentity = { ...identity, runtimeConfigHash: otherRuntimeConfigHash };
+    const otherExpected = {
+      ...expected,
+      requestId: "snapshot-request-other-config",
+      runtimeConfigHash: otherRuntimeConfigHash,
+      snapshotVersion: 2,
+    } as const satisfies ExpectedFastManimSnapshotCorrelationV1;
+
+    const first = await publish();
+    const second = await publish({
+      ...otherIdentity,
+      expected: otherExpected,
+      publicationId: "018f57e2-4c8b-7d31-a91e-4ae5e5c6c8a2",
+      snapshot: await sealedSnapshot(otherExpected),
+    });
+
+    expect(first).toMatchObject({ kind: "published", publication: { generation: 1n } });
+    expect(second).toMatchObject({ kind: "published", publication: { generation: 1n } });
+    await expect(publisher.readCurrent(identity)).resolves.toMatchObject({
+      document: { expected: { requestId: expected.requestId, runtimeConfigHash: RUNTIME_CONFIG_HASH } },
+      kind: "published",
+    });
+    await expect(publisher.readCurrent(otherIdentity)).resolves.toMatchObject({
+      document: { expected: { requestId: otherExpected.requestId, runtimeConfigHash: otherRuntimeConfigHash } },
+      kind: "published",
+    });
+    await expect(publisher.readCurrent({ ...identity, runtimeConfigHash: "e".repeat(64) })).resolves.toEqual({
+      kind: "missing",
+    });
+  });
+
+  it("rejects a publication identity that disagrees with the verified runtime configuration", async () => {
+    await expect(publish({ runtimeConfigHash: "d".repeat(64) })).rejects.toThrow(/publication identity/i);
+    expect(events).toEqual([]);
   });
 
   it("publishes and reads the immutable receipt shape without flattening its locator", async () => {

@@ -14,6 +14,7 @@ import {
   PostgresSnapshotPublicationRepositoryV1,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM,
 } from "./postgres-snapshot-publication-repository";
+import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
 const TENANT = "tenant-a";
@@ -37,20 +38,25 @@ const PROJECT_PNG_OBJECT_KEY = `tenants/${TENANT}/projects/${PROJECT}/assets/ima
 
 const identity: SnapshotPublicationIdentityV1 = {
   projectId: PROJECT,
+  runtimeConfigHash: RUNTIME,
   runtimeDigest: RUNTIME_DIGEST,
   sceneName: SCENE,
   sourcePath: SOURCE_PATH,
   tenantId: TENANT,
 };
 
-function artifact(sourceDigest = SOURCE_A, runtimeDigest = RUNTIME_DIGEST): VersionedSnapshotArtifactReceiptV1 {
+function artifact(
+  sourceDigest = SOURCE_A,
+  runtimeDigest = RUNTIME_DIGEST,
+  runtimeConfigHash = RUNTIME,
+): VersionedSnapshotArtifactReceiptV1 {
   return {
     byteSize: 128,
     etag: "artifact-etag",
-    objectKey: `tenants/${TENANT}/snapshots/${sourceDigest}/${RUNTIME}/${PROFILE}/${runtimeDigest}/${RESULT}`,
+    objectKey: `tenants/${TENANT}/snapshots/${sourceDigest}/${runtimeConfigHash}/${PROFILE}/${runtimeDigest}/${RESULT}`,
     profileDigest: PROFILE,
     resultDigest: RESULT,
-    runtimeConfigHash: RUNTIME,
+    runtimeConfigHash,
     runtimeDigest,
     sourceDigest,
     versionId: "artifact-version",
@@ -176,6 +182,7 @@ function sceneHeadRow(
     head_generation: options.generation ?? "2",
     head_project_id: PROJECT,
     head_publication_id: publication?.publication_id ?? null,
+    head_runtime_config_hash: RUNTIME,
     head_runtime_digest: RUNTIME_DIGEST,
     head_scene_name: SCENE,
     head_source_path: SOURCE_PATH,
@@ -370,14 +377,27 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     expect(fixture.query).not.toHaveBeenCalled();
   });
 
-  it("keys current Scene heads by the active runtime digest", async () => {
+  it("rejects an artifact from another runtime configuration before opening a transaction", async () => {
+    const fixture = fakePool((text) => {
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(
+      repository.publish({ ...publishInput(), artifact: artifact(SOURCE_A, RUNTIME_DIGEST, "9".repeat(64)) }),
+    ).rejects.toThrow("does not belong to the active runtime configuration");
+    expect(fixture.query).not.toHaveBeenCalled();
+  });
+
+  it("keys current Scene heads by the active runtime digest and configuration", async () => {
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.workspace_source_heads h")) {
         return { rowCount: 1, rows: [sourceRow()] };
       }
       if (text.includes("FROM public.snapshot_scene_heads h")) {
         expect(text).toContain("h.runtime_digest = $5");
-        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, OTHER_RUNTIME_DIGEST]);
+        expect(text).toContain("h.runtime_config_hash = $6");
+        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, OTHER_RUNTIME_DIGEST, RUNTIME]);
         return { rowCount: 0, rows: [] };
       }
       throw new Error(`Unexpected query: ${text}`);
@@ -408,7 +428,18 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [publicationRow({ generation: "8" })] };
       }
       if (text.startsWith("UPDATE public.snapshot_scene_heads")) {
-        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, "8", PUBLICATION_ID, RUNTIME_DIGEST, "7", null]);
+        expect(values).toEqual([
+          TENANT,
+          PROJECT,
+          SOURCE_PATH,
+          SCENE,
+          RUNTIME_DIGEST,
+          RUNTIME,
+          "8",
+          PUBLICATION_ID,
+          "7",
+          null,
+        ]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("INSERT INTO public.workspace_project_references")) {
@@ -554,7 +585,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [sceneHeadRow({ generation: "2", publication: stalePublication })] };
       }
       if (text.startsWith("UPDATE public.snapshot_scene_heads")) {
-        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, RUNTIME_DIGEST, "2", PUBLICATION_ID]);
+        expect(values).toEqual([TENANT, PROJECT, SOURCE_PATH, SCENE, RUNTIME_DIGEST, RUNTIME, "2", PUBLICATION_ID]);
         return { rowCount: 1, rows: [] };
       }
       if (text.startsWith("DELETE FROM public.workspace_project_references")) {
@@ -634,16 +665,17 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [artifactRow()] };
       }
       if (text.includes("poietra_schema_migrations")) {
-        expect(text).toContain("version IN (3, 5, 6, 10, 20)");
+        expect(text).toContain("version IN (3, 5, 6, 10, 20, 25)");
         expect(values).toEqual([]);
         return {
-          rowCount: 5,
+          rowCount: 6,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
             { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
             { checksum: DURABLE_RETENTION_MIGRATION_V6_CHECKSUM, version: 6 },
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
             { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
+            { checksum: SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM, version: 25 },
           ],
         };
       }

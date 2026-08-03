@@ -107,6 +107,7 @@ function sameIdentity(left: SnapshotPublicationIdentityV1, right: SnapshotPublic
   return (
     left.tenantId === right.tenantId &&
     left.projectId === right.projectId &&
+    left.runtimeConfigHash === right.runtimeConfigHash &&
     left.runtimeDigest === right.runtimeDigest &&
     left.sourcePath === right.sourcePath &&
     left.sceneName === right.sceneName
@@ -119,6 +120,7 @@ function assertExpectedIdentity(
 ) {
   if (
     expected.projectId !== identity.projectId ||
+    expected.runtimeConfigHash !== identity.runtimeConfigHash ||
     expected.sourcePath !== identity.sourcePath ||
     expected.sceneName !== identity.sceneName
   ) {
@@ -286,6 +288,7 @@ export class SnapshotArtifactPublisherV1 {
     signal?.throwIfAborted();
     const identity: SnapshotPublicationIdentityV1 = {
       projectId: input.projectId,
+      runtimeConfigHash: input.runtimeConfigHash,
       runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       sourcePath: input.sourcePath,
@@ -354,7 +357,11 @@ export class SnapshotArtifactPublisherV1 {
     identity: SnapshotPublicationIdentityV1,
     signal?: AbortSignal,
   ): Promise<SnapshotArtifactReadResultV1> {
-    const expectedIdentity = { ...identity, runtimeDigest: activeRuntimeDigest(identity.runtimeDigest) };
+    const expectedIdentity = {
+      ...identity,
+      runtimeConfigHash: sha256(identity.runtimeConfigHash, "Snapshot runtime-config hash"),
+      runtimeDigest: activeRuntimeDigest(identity.runtimeDigest),
+    };
     let lastGeneration = 0n;
     for (let attempt = 0; attempt < MAX_READ_ATTEMPTS; attempt += 1) {
       signal?.throwIfAborted();
@@ -367,9 +374,10 @@ export class SnapshotArtifactPublisherV1 {
       const artifactIdentity = snapshotArtifactIdentityV1(publication.artifact);
       if (
         !sameIdentity(publication, expectedIdentity) ||
+        artifactIdentity.runtimeConfigHash !== expectedIdentity.runtimeConfigHash ||
         artifactIdentity.runtimeDigest !== expectedIdentity.runtimeDigest
       ) {
-        throw new Error("The snapshot repository returned a publication for another runtime or Scene.");
+        throw new Error("The snapshot repository returned a publication for another runtime configuration or Scene.");
       }
       lastGeneration = publication.generation;
       let bytes: Uint8Array;

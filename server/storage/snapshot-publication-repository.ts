@@ -132,6 +132,7 @@ export function sameSnapshotArtifactContentV1(left: SnapshotArtifactReceiptV1, r
 
 export type SnapshotPublicationIdentityV1 = Readonly<{
   projectId: string;
+  runtimeConfigHash: string;
   runtimeDigest: string;
   sceneName: string;
   sourcePath: string;

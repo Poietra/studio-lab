@@ -146,6 +146,7 @@ function durableStorage() {
       publicationId: input.publicationId,
       publishedAt: PUBLISHED_AT,
       requestId: input.requestId,
+      runtimeConfigHash: input.runtimeConfigHash,
       runtimeDigest: input.runtimeDigest,
       sceneName: input.sceneName,
       snapshotHash: input.snapshotHash,

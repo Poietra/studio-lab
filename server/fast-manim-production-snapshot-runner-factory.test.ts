@@ -3,6 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createFastManimProductionSandboxClientV1 } from "./fast-manim-production-sandbox-client";
 import { FastManimProductionSnapshotRunnerFactoryV1 } from "./fast-manim-production-snapshot-runner-factory";
 import type { FastManimSandboxBackendV1 } from "./fast-manim-sandbox-backend";
+import {
+  digestFastManimSnapshotRuntimeConfigV1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+} from "./fast-manim-snapshot-contract";
 import { productionSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 vi.mock("./fast-manim-production-sandbox-client", () => ({
@@ -61,6 +67,47 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
       projectPngRepository: { readHead: vi.fn() },
       projectPngs: { read: vi.fn() },
     });
+    expect(configured.runtimeConfigHash).toBe(
+      digestFastManimSnapshotRuntimeConfigV1({
+        capabilities: ["png-image"],
+        frame: base.frame,
+        randomSeed: 0,
+        schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+        snapshotVersion: 4,
+        version: 1,
+      }),
+    );
+    await configured.close();
+  });
+
+  it("pins the exact V8 capability surface into the factory and runner handle identity", async () => {
+    const frame = { height: 8, width: 14.222222222222221 } as const;
+    const configured = new FastManimProductionSnapshotRunnerFactoryV1({
+      client: {} as never,
+      frame,
+      snapshotVersion: 8,
+      tenantId: "tenant-a",
+    });
+    const expectedRuntimeConfigHash = digestFastManimSnapshotRuntimeConfigV1({
+      capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8],
+      frame,
+      randomSeed: 0,
+      schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+      snapshotVersion: 8,
+      version: 1,
+    });
+
+    expect(configured.runtimeConfigHash).toBe(expectedRuntimeConfigHash);
+
+    const created = client();
+    createClient.mockResolvedValue(created as never);
+    const handle = await configured.create({
+      projectId: "project-a",
+      sourceProvider: { readVerified: async () => Promise.reject(new Error("not used")) },
+    });
+    expect(handle.runtimeConfigHash).toBe(expectedRuntimeConfigHash);
+
+    await handle.runner.close();
     await configured.close();
   });
 
@@ -162,7 +209,18 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
     });
 
     expect(runners.runtimeDigest).toBe(RUNTIME);
+    expect(runners.runtimeConfigHash).toBe(
+      digestFastManimSnapshotRuntimeConfigV1({
+        capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+        frame: { height: 8, width: 14.222 },
+        randomSeed: 0,
+        schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+        snapshotVersion: 1,
+        version: 1,
+      }),
+    );
     expect(handle.profileDigest).toBe(PROFILE);
+    expect(handle.runtimeConfigHash).toBe(runners.runtimeConfigHash);
     expect(handle.runtimeDigest).toBe(RUNTIME);
     await handle.runner.close();
     await runners.close();
