@@ -560,6 +560,13 @@ fn serialized_field_and_tag_names_match_the_v1_wire_format() {
     })
     .unwrap();
     assert_eq!(easing["kind"], "cubic-bezier");
+
+    let manim_smooth = serde_json::to_value(EasingV1::ManimSmooth {}).unwrap();
+    assert_eq!(manim_smooth, json!({ "kind": "manim-smooth" }));
+    assert_eq!(
+        serde_json::from_value::<EasingV1>(manim_smooth).unwrap(),
+        EasingV1::ManimSmooth {}
+    );
 }
 
 #[test]

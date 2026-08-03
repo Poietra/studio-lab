@@ -63,7 +63,7 @@ The contract contains:
 - Circle, Rectangle, Line, absolute cubic Path, and PNG Image geometry;
 - solid fill, solid stroke, opacity, image sampler, and 2D affine transform;
 - affine, opacity, path-trim, path-morph, motion-path, and camera channels;
-- linear, smooth, and constrained cubic-bezier easing;
+- linear, smoothstep, Manim default smooth, and constrained cubic-bezier easing;
 - orthographic camera, asset references, fidelity, and provenance;
 - an exact sorted list of capabilities derived from the document's contents.
 
@@ -138,7 +138,9 @@ translation; orientation, when enabled, pre-rotates its sampled linear 2x2 part.
 
 Before a channel's first keyframe, the base value is used; at and after its final
 keyframe, the final value is held. Every non-final keyframe supplies the easing for
-its outgoing segment. `linear` uses `t`, and `smooth` uses `3t² - 2t³`. After easing,
+its outgoing segment. `linear` uses `t`, and the existing `smooth` uses
+`3t² - 2t³`. `manim-smooth` is the distinct Manim default: the inflection-10
+logistic sigmoid normalized to exact zero and one endpoints. After easing,
 numbers, points, camera values, affine matrix components, and cubic control points
 interpolate component-wise. The evaluation order is base geometry, path morph,
 path trim, base/affine transform, motion-path pose, then root-to-leaf parent

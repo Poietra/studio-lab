@@ -792,6 +792,29 @@ mod tests {
     }
 
     #[test]
+    fn compiles_manim_smooth_opacity_at_an_interior_sample() {
+        let (assets, mut scene) = fixture();
+        let AnimationChannelV1::Opacity { keyframes, .. } = &mut scene.animation_channels[0] else {
+            panic!("fixture must contain an opacity channel");
+        };
+        keyframes[0].easing_to_next = Some(poietra_scene_ir::EasingV1::ManimSmooth {});
+        let frame = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:manim-smooth",
+            sample_time: 0.5,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+
+        assert!((frame.packet.draws[0].opacity() - 0.070_103_716_545_108_15).abs() <= 1.0e-15);
+    }
+
+    #[test]
     fn finite_hierarchy_inputs_fail_closed_when_affine_composition_overflows() {
         let (assets, mut scene) = fixture();
         scene.entities[0].transform.m11 = f64::MAX;
