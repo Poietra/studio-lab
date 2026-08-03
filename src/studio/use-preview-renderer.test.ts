@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
+import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
@@ -42,6 +43,7 @@ import {
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
+const MIXED_V7_FRAME = { height: 8, width: 14.222222222222221 } as const;
 
 function compiledMathTexResponse(
   digests: Readonly<{ content?: string; font?: string; toolchain?: string }> = {},
@@ -456,6 +458,97 @@ class MathTexScene(Scene):
   };
 }
 
+async function mixedV7EditedMathTexPreviewInput(options: Readonly<{ includeRing?: boolean }> = {}) {
+  const fixture = await importedMathTexPreviewInput();
+  const baseStudioMathTex = fixture.workingState.runtimeSceneState.objectGraph.entities[fixture.entityId];
+  const editedStudioMathTex = fixture.edited.evaluatedScene.objectGraph.entities[fixture.entityId];
+  const importedSource = fixture.snapshot.snapshot.scene.source;
+  if (importedSource.kind !== "imported-manim-server-snapshot" || !baseStudioMathTex || !editedStudioMathTex) {
+    throw new Error("Mixed V7 MathTex fixture is incomplete.");
+  }
+  const ringStudioId = "source:scene.py#MathTexScene:ring";
+  const particleStudioId = "source:scene.py#MathTexScene:particle";
+  const importedCircle = (
+    id: string,
+    sourceIdentity: string,
+  ): RuntimeSceneState["objectGraph"]["entities"][string] => ({
+    geometry: {
+      dimensions: { kind: "known", value: { radius: 1 } },
+      position: { kind: "known", value: { x: 320, y: 180 } },
+      scale: { kind: "known", value: 1 },
+      style: { kind: "known", value: {} },
+    },
+    id,
+    lifetime: [{ end: 4, start: 0 }],
+    provisional: false,
+    sourceIdentity: { kind: "known", value: sourceIdentity },
+    type: "Circle",
+  });
+  const ringStudioEntity = importedCircle(ringStudioId, "ring");
+  const particleStudioEntity = importedCircle(particleStudioId, "particle");
+  const extendScene = (scene: RuntimeSceneState, mathTexEntity: typeof baseStudioMathTex): RuntimeSceneState => ({
+    ...scene,
+    duration: 4,
+    objectGraph: {
+      ...scene.objectGraph,
+      entities: {
+        [fixture.entityId]: { ...mathTexEntity, lifetime: [{ end: 4, start: 0 }] },
+        ...(options.includeRing ? { [ringStudioId]: ringStudioEntity } : {}),
+        [particleStudioId]: particleStudioEntity,
+      },
+    },
+  });
+  const unsigned = await mixedDynamic2dSnapshotBundleFixtureV7({
+    frame: MIXED_V7_FRAME,
+    projectId: fixture.snapshot.correlation.context.projectId,
+    requestId: "mixed-v7-preview-test",
+    runtimeConfigHash: importedSource.runtimeConfigHash,
+    sceneId: fixture.snapshot.sceneId,
+    sceneName: fixture.snapshot.correlation.context.sceneName,
+    snapshotVersion: 7,
+    sourceHash: importedSource.sourceHash,
+    sourcePath: fixture.snapshot.correlation.context.sourcePath,
+  });
+  const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(unsigned);
+  const snapshotBundle = await parseVerifiedSceneIrBundleV1({
+    ...unsigned,
+    scene: { ...unsigned.scene, source: { ...unsigned.scene.source, snapshotHash } },
+  });
+  const [mathTexRuntime, ringRuntime, particleRuntime] = snapshotBundle.scene.entities;
+  if (!mathTexRuntime || !ringRuntime || !particleRuntime) throw new Error("Mixed V7 runtime fixture is incomplete.");
+  return {
+    ...fixture,
+    edited: {
+      ...fixture.edited,
+      base: {
+        ...fixture.edited.base,
+        runtimeSceneState: extendScene(fixture.workingState.runtimeSceneState, baseStudioMathTex),
+      },
+      evaluatedScene: extendScene(fixture.edited.evaluatedScene, editedStudioMathTex),
+    },
+    particleStudioId,
+    ringStudioId,
+    runtimeEntityId: mathTexRuntime.id,
+    snapshot: {
+      ...fixture.snapshot,
+      correlation: {
+        ...fixture.snapshot.correlation,
+        assetsManifestDigest: snapshotBundle.assets.manifestDigest,
+        context: { ...fixture.snapshot.correlation.context, sourceDuration: 4 },
+        engineRevisionHash: snapshotHash,
+        sceneDuration: 4,
+      },
+      duration: 4,
+      snapshot: snapshotBundle,
+      sourceRuntimeIdentity: new Map([
+        ["equation", { bindingId: "binding:equation", entityId: mathTexRuntime.id, sourceName: "equation" }],
+        ["ring", { bindingId: "binding:ring", entityId: ringRuntime.id, sourceName: "ring" }],
+        ["particle", { bindingId: "binding:particle", entityId: particleRuntime.id, sourceName: "particle" }],
+      ]),
+    } satisfies StudioVerifiedPreviewSnapshotV1,
+  };
+}
+
 describe("claimStudioPreviewCanvasV1", () => {
   it("claims a canvas exactly once so StrictMode remounts must mint a fresh element", () => {
     const canvas = {};
@@ -775,6 +868,118 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ]);
     expect(result.scene.bundle.scene.entities[0]?.transform.ty).toBeCloseTo(1, 12);
+  });
+
+  it("rebases an initial MathTex transform without reconstructing mixed V7 animation", async () => {
+    const fixture = await mixedV7EditedMathTexPreviewInput();
+    const baseScene = fixture.snapshot.snapshot.scene;
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      mathTexOutlineCompiler: async () => {
+        compilerCalls += 1;
+        return compiledMathTexResponse();
+      },
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:mixed-v7-mathtex-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(compilerCalls).toBe(0);
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+    expect(scene.sceneId).toBe(baseScene.sceneId);
+    expect(scene.camera).toBe(baseScene.camera);
+    expect(scene.duration).toBe(baseScene.duration);
+    expect(scene.animationChannels).toBe(baseScene.animationChannels);
+    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
+    expect(scene.entities[1]).toBe(baseScene.entities[1]);
+    expect(scene.entities[2]).toBe(baseScene.entities[2]);
+    expect(scene.entities[0]).toMatchObject({
+      geometry: baseScene.entities[0]?.geometry,
+      id: fixture.runtimeEntityId,
+      transform: { m11: 2, m12: 0, m21: 0, m22: 2 },
+    });
+    expect(scene.entities[0]?.transform.tx).toBeCloseTo(3.5555555555555554, 12);
+    expect(scene.entities[0]?.transform.ty).toBeCloseTo(0.8888888888888888, 12);
+    expect(scene.entities[0]?.provenanceId).not.toBe(baseScene.entities[0]?.provenanceId);
+    expect(scene.source).toEqual({
+      editProgramVersion: 1,
+      kind: "studio-edit-program",
+      revisionHash: result.scene.engineRevisionHash,
+    });
+  });
+
+  it("rebases an initial Create target transform while preserving the imported channels", async () => {
+    const fixture = await mixedV7EditedMathTexPreviewInput({ includeRing: true });
+    const baseScene = fixture.snapshot.snapshot.scene;
+    const baseState = fixture.edited.base.runtimeSceneState;
+    const position = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 64, y: -36 },
+      positions: { [fixture.ringStudioId]: { x: 320, y: 180 } },
+      scene: baseState,
+      start: 0,
+      targetEntityIds: [fixture.ringStudioId],
+      transactionId: "move-imported-create-target",
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [fixture.ringStudioId]: { from: 1, to: 1.25 } },
+      scene: baseState,
+      targetEntityIds: [fixture.ringStudioId],
+      transactionId: "scale-imported-create-target",
+    });
+    if (position.kind !== "valid" || scale.kind !== "valid") throw new Error("Create target edits are invalid.");
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: evaluateWorkingState({
+        ...fixture.edited.base,
+        appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
+      }),
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:mixed-v7-create-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+    expect(scene.animationChannels).toBe(baseScene.animationChannels);
+    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
+    expect(scene.animationChannels[0]).toMatchObject({ entityId: baseScene.entities[1]?.id, kind: "path-trim" });
+    expect(scene.entities[0]).toBe(baseScene.entities[0]);
+    expect(scene.entities[2]).toBe(baseScene.entities[2]);
+    expect(scene.entities[1]).toMatchObject({
+      geometry: baseScene.entities[1]?.geometry,
+      id: baseScene.entities[1]?.id,
+      transform: { m11: 1.25, m12: 0, m21: 0, m22: 1.25 },
+    });
+    expect(scene.entities[1]?.transform.tx).toBeCloseTo(2.672222222222222, 12);
+    expect(scene.entities[1]?.transform.ty).toBeCloseTo(0.8, 12);
+  });
+
+  it("fails closed when a mixed V7 edit targets MoveAlongPath", async () => {
+    const fixture = await mixedV7EditedMathTexPreviewInput();
+    const programs = fixture.edited.programs.map((record) => ({
+      ...record,
+      program: {
+        ...record.program,
+        operations: record.program.operations.map((operation) =>
+          "entityId" in operation ? { ...operation, entityId: fixture.particleStudioId } : operation,
+        ),
+      },
+    }));
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: { ...fixture.edited, programs },
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:mixed-v7-motion-target",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(result).toMatchObject({
+      error: expect.stringContaining("motion-path-edit-unsupported"),
+      kind: "unsupported",
+    });
   });
 
   it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {

@@ -1,4 +1,6 @@
-import { expect, type Page, test } from "@playwright/test";
+import { readFile } from "node:fs/promises";
+
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
 
@@ -55,6 +57,82 @@ async function expectPresented(page: Page, revision: number) {
   const viewport = await canvas.getAttribute("data-preview-viewport");
   if (!viewport) throw new Error("The mixed V7 preview did not expose its WebGPU viewport.");
   return viewport;
+}
+
+async function waitForNewPresentedFrame(page: Page, previousRevision: string, previousPacket: string) {
+  const canvas = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(
+      async () => {
+        const [phase, revision, packet, reason] = await Promise.all([
+          canvas.getAttribute("data-preview-renderer"),
+          canvas.getAttribute("data-preview-revision"),
+          canvas.getAttribute("data-preview-packet-id"),
+          canvas.getAttribute("data-preview-fallback-reason"),
+        ]);
+        return phase === "presented" && revision && revision !== previousRevision && packet && packet !== previousPacket
+          ? "presented"
+          : JSON.stringify({ packet, phase, reason, revision });
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("presented");
+  const revision = await canvas.getAttribute("data-preview-revision");
+  const packet = await canvas.getAttribute("data-preview-packet-id");
+  if (!revision || !packet) throw new Error("The edited mixed V7 frame has no retained-frame identity.");
+  return { packet, revision };
+}
+
+async function exportedSource(page: Page) {
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export .py" }).click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  if (!path) throw new Error("The mixed V7 source export was not persisted by Playwright.");
+  return readFile(path, "utf8");
+}
+
+async function dragBy(page: Page, target: Locator, delta: Readonly<{ x: number; y: number }>) {
+  const box = await target.boundingBox();
+  if (!box) throw new Error("The mixed V7 edit target is not visible.");
+  const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + delta.x, origin.y + delta.y);
+  await page.mouse.up();
+}
+
+function cubicEntityBounds(bundle: SceneIrBundleV1, entityId: string) {
+  const entity = bundle.scene.entities.find((candidate) => candidate.id === entityId);
+  if (!entity || entity.geometry.kind !== "cubic-path") {
+    throw new Error(`Entity ${entityId} has no cubic geometry.`);
+  }
+  const points = entity.geometry.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.map((segment) => segment.end),
+  ]);
+  if (points.length === 0) throw new Error(`Entity ${entityId} has empty cubic geometry.`);
+  const world = points.map(({ x, y }) => ({
+    x: entity.transform.m11 * x + entity.transform.m12 * y + entity.transform.tx,
+    y: entity.transform.m21 * x + entity.transform.m22 * y + entity.transform.ty,
+  }));
+  const left = Math.min(...world.map(({ x }) => x));
+  const right = Math.max(...world.map(({ x }) => x));
+  const bottom = Math.min(...world.map(({ y }) => y));
+  const top = Math.max(...world.map(({ y }) => y));
+  return {
+    center: { x: (left + right) / 2, y: (bottom + top) / 2 },
+    height: top - bottom,
+    width: right - left,
+  };
+}
+
+function animationSemantics(bundle: SceneIrBundleV1, identity: VerifiedSourceRuntimeIdentityMapV1) {
+  const sourceNameByEntity = new Map(identity.mappings.map(({ binding, entityId }) => [entityId, binding.name]));
+  return bundle.scene.animationChannels.map(({ entityId, id: _id, provenanceId: _provenanceId, ...channel }) => ({
+    ...channel,
+    sourceName: sourceNameByEntity.get(entityId),
+  }));
 }
 
 async function renderCheckpoints(
@@ -132,7 +210,7 @@ async function renderCheckpoints(
 test("renders one identity-mapped MathTex and animated shapes from a real Manim Scene through mixed V7", async ({
   page,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const run = await verifiedMixedSnapshot(openMixedWorkspace(page));
   const { scene } = run.bundle;
   expect(scene).toMatchObject({
@@ -205,5 +283,87 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
       ([red, green, blue, alpha]) => red === 0 && green === 0 && blue === 0 && alpha === 255,
     ),
   ).toBe(true);
-  await expect(page.getByRole("slider", { name: "Scene playhead" })).toHaveAttribute("max", "4");
+  const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+  await expect(scenePlayhead).toHaveAttribute("max", "4");
+
+  const canvas = page.locator("[data-studio-canvas]");
+  const pristineRevision = await canvas.getAttribute("data-preview-revision");
+  const pristinePacket = await canvas.getAttribute("data-preview-packet-id");
+  if (!pristineRevision || !pristinePacket) throw new Error("The pristine mixed V7 frame has no identity.");
+  const initialEquationBounds = cubicEntityBounds(run.bundle, equationId);
+  const equation = page.getByRole("button", { name: "Move equation", exact: true });
+  await expect(equation).toBeVisible();
+  await expect(equation).toBeEnabled();
+  await page.getByRole("button", { name: "Set position" }).click();
+  await page.getByRole("checkbox", { name: "Select equation" }).check();
+  const studioEquationId = await equation.getAttribute("data-studio-entity");
+  if (!studioEquationId) throw new Error("The mixed V7 MathTex has no Studio identity.");
+  const equationWrapper = page.locator(`[data-studio-entity-wrapper="${studioEquationId}"]`);
+  const dragSurfaceWidth = await equation.evaluate(
+    (element) => element.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect().width ?? 0,
+  );
+  expect(dragSurfaceWidth).toBeGreaterThan(0);
+
+  await dragBy(page, equation, { x: 32, y: 0 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
+  const movedFrame = await waitForNewPresentedFrame(page, pristineRevision, pristinePacket);
+  await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
+
+  const resizeHandle = page.getByRole("button", { name: "Resize equation from bottom-right corner" });
+  await expect(resizeHandle).toBeVisible();
+  await resizeHandle.press("ArrowRight");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
+  const resizedFrame = await waitForNewPresentedFrame(page, movedFrame.revision, movedFrame.packet);
+  await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
+  await expect(equationWrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
+
+  const source = await exportedSource(page);
+  expect(source).toContain("# poietra:cursor 0");
+  const exportedPosition = source.match(/equation\.move_to\(\(([-+0-9.eE]+), ([-+0-9.eE]+), 0\)\)/);
+  if (!exportedPosition) throw new Error("The mixed V7 export has no literal MathTex position.");
+  const exportedCenter = { x: Number(exportedPosition[1]), y: Number(exportedPosition[2]) };
+  expect(exportedCenter.x).toBeCloseTo(
+    run.bundle.scene.camera.view.center.x + (32 / dragSurfaceWidth) * run.bundle.scene.camera.view.frameWidth,
+    8,
+  );
+  expect(exportedCenter.y).toBeCloseTo(run.bundle.scene.camera.view.center.y, 8);
+  expect(source).toContain("equation.scale(1.05)");
+  expect(source.indexOf("equation.scale(1.05)")).toBeLessThan(source.indexOf("self.play(Create(ring"));
+  expect(source).toContain("# poietra:anchor 0");
+
+  await page.getByRole("button", { name: "Render program" }).click();
+  const commitButton = page.getByRole("button", { name: "Commit to source" });
+  await expect(commitButton).toBeVisible({ timeout: 60_000 });
+  await commitButton.click();
+  const commitDialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
+  await expect(commitDialog).toBeVisible();
+  const rerunResponse = snapshotResponse(page);
+  await commitDialog.getByRole("button", { name: "Commit source" }).click();
+  const rerun = await verifiedMixedSnapshot(rerunResponse);
+  expect(rerun.snapshotHash).not.toBe(run.snapshotHash);
+  expect(rerun.bundle.scene.duration).toBe(4);
+  expect(animationSemantics(rerun.bundle, rerun.identity)).toEqual(animationSemantics(run.bundle, run.identity));
+
+  const rerunEquationId = rerun.identity.mappings.find(({ binding }) => binding.name === "equation")?.entityId;
+  if (!rerunEquationId) throw new Error("The edited mixed V7 MathTex did not regain source/runtime identity.");
+  const editedEquationBounds = cubicEntityBounds(rerun.bundle, rerunEquationId);
+  expect(editedEquationBounds.width / initialEquationBounds.width).toBeCloseTo(1.05, 8);
+  expect(editedEquationBounds.height / initialEquationBounds.height).toBeCloseTo(1.05, 8);
+  expect(editedEquationBounds.center.x).toBeCloseTo(exportedCenter.x, 8);
+  expect(editedEquationBounds.center.y).toBeCloseTo(exportedCenter.y, 8);
+
+  const rerunFrame = await waitForNewPresentedFrame(page, resizedFrame.revision, resizedFrame.packet);
+  expect(rerunFrame.revision).toBe(rerun.snapshotHash);
+  await expect(page.locator("[data-studio-preview-status]")).toContainText(
+    `verified server snapshot r${rerun.revision}`,
+  );
+  for (const sampleTime of [0.5, 2, 3.99]) {
+    await scenePlayhead.fill(String(sampleTime));
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
+  }
 });

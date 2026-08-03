@@ -5,6 +5,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveMixedDynamicMathTexV7TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
@@ -290,7 +291,8 @@ export class DurableFastManimSnapshotServiceV1 {
     if (
       scene.source.snapshotVersion === 3 ||
       scene.source.snapshotVersion === 4 ||
-      scene.source.snapshotVersion === 5
+      scene.source.snapshotVersion === 5 ||
+      scene.source.snapshotVersion === 7
     ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
@@ -306,8 +308,10 @@ export class DurableFastManimSnapshotServiceV1 {
         hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(source, view.sceneName);
       } else if (scene.source.snapshotVersion === 4) {
         hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
-      } else {
+      } else if (scene.source.snapshotVersion === 5) {
         hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, view.sceneName);
+      } else {
+        hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, view.sceneName);
       }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {

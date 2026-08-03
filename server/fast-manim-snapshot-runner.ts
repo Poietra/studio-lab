@@ -20,6 +20,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveMixedDynamicMathTexV7TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -789,14 +790,21 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
-    if (this.snapshotVersion === 3 || this.snapshotVersion === 4 || this.snapshotVersion === 5) {
+    if (
+      this.snapshotVersion === 3 ||
+      this.snapshotVersion === 4 ||
+      this.snapshotVersion === 5 ||
+      this.snapshotVersion === 7
+    ) {
       try {
         if (this.snapshotVersion === 3) {
           hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(before.source, request.sceneName);
         } else if (this.snapshotVersion === 4) {
           hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
-        } else {
+        } else if (this.snapshotVersion === 5) {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
+        } else {
+          hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its

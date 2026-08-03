@@ -6,6 +6,7 @@ import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
+  deriveMixedDynamicMathTexV7TransformPlan,
   digestFastManimSnapshotBundleV1,
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
@@ -103,6 +104,8 @@ class MixedMathDemo(Scene):
         )
         path = CubicBezier([1, -1, 0], [2, 2, 0], [3, -2, 0], [4, 1, 0])
 
+        equation.move_to((0.5, -0.25, 0))
+        equation.scale(1.05)
         self.add(equation)
         self.play(Create(ring, rate_func=linear), run_time=1)
         self.play(MoveAlongPath(particle, path, rate_func=linear), run_time=2)
@@ -138,6 +141,7 @@ function createRealRunner(
   projectRoot: string,
   snapshotVersion: 1 | 2 | 4 | 7 = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
+  publicationStore = new FastManimSnapshotPublicationStore(),
 ) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
   const backend = new LocalProcessFastManimSandboxBackendV1({
@@ -154,7 +158,7 @@ function createRealRunner(
     projectId: "default",
     projectRoot,
     ...(pngProvider === undefined ? {} : { pngProvider }),
-    publicationStore: new FastManimSnapshotPublicationStore(),
+    publicationStore,
     snapshotVersion,
     tenantId: "test-tenant",
     timeoutMs: 120_000,
@@ -172,7 +176,8 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
     const sourcePath = "mixed-dynamic.py";
     const sceneName = "MixedMathDemo";
     const projectRoot = await temporaryProject(sourcePath, mixedDynamicSceneSource);
-    const runner = createRealRunner(projectRoot, 7);
+    const publicationStore = new FastManimSnapshotPublicationStore();
+    const runner = createRealRunner(projectRoot, 7, undefined, publicationStore);
     const view = fastManimSnapshotRunViewV1Schema.parse(
       await runner.run({
         projectId: "default",
@@ -193,6 +198,20 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
     });
     expect(bundle.scene.entities).toHaveLength(3);
     expect(bundle.scene.animationChannels).toHaveLength(2);
+    const equation = bundle.scene.entities[0];
+    if (!equation || equation.geometry.kind !== "cubic-path") throw new Error("Expected the real V7 MathTex outline.");
+    const equationAnchors = equation.geometry.path.subpaths.flatMap((subpath) => [
+      subpath.start,
+      ...subpath.segments.map(({ end }) => end),
+    ]);
+    const localCenter = {
+      x: (Math.min(...equationAnchors.map(({ x }) => x)) + Math.max(...equationAnchors.map(({ x }) => x))) / 2,
+      y: (Math.min(...equationAnchors.map(({ y }) => y)) + Math.max(...equationAnchors.map(({ y }) => y))) / 2,
+    };
+    expect(equation.transform.m11).toBeCloseTo(1.05, 12);
+    expect(equation.transform.m22).toBeCloseTo(1.05, 12);
+    expect(equation.transform.m11 * localCenter.x + equation.transform.tx).toBeCloseTo(0.5, 12);
+    expect(equation.transform.m22 * localCenter.y + equation.transform.ty).toBeCloseTo(-0.25, 12);
     expect(bundle.scene.animationChannels[0]).toMatchObject({
       entityId: `${view.snapshot.sceneId}/entity:1`,
       keyframes: [
@@ -214,6 +233,9 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       { entityId: `${view.snapshot.sceneId}/entity:2`, name: "particle" },
     ]);
     expect(view.sourceRuntimeIdentity?.mappings.some(({ binding }) => binding.name === "path")).toBe(false);
+    expect(publicationStore.entriesOf(1)[0]?.[1].expected.hermeticMathTexV3Plan).toEqual(
+      deriveMixedDynamicMathTexV7TransformPlan(mixedDynamicSceneSource, sceneName),
+    );
 
     const fetched = await runner.snapshot({ sceneName, sourcePath });
     expect(fetched.status).toBe("verified");

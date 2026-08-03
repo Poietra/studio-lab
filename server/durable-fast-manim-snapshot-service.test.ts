@@ -10,6 +10,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveMixedDynamicMathTexV7TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   type FastManimSnapshotRunViewV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
@@ -64,6 +65,24 @@ class ExampleScene(Scene):
         self.wait(1)
 `;
 const TRANSFORMED_MATHTEX_SOURCE_DIGEST = createHash("sha256").update(TRANSFORMED_MATHTEX_SOURCE, "utf8").digest("hex");
+const TRANSFORMED_MATHTEX_SOURCE_V7 = `from manim import Circle, Create, CubicBezier, MathTex, MoveAlongPath, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        ring = Circle()
+        particle = Circle()
+        path = CubicBezier((0, 0, 0), (1, 1, 0), (2, 1, 0), (3, 0, 0))
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        self.add(equation)
+        self.play(Create(ring), run_time=1)
+        self.play(MoveAlongPath(particle, path), run_time=2)
+        self.wait(1)
+`;
+const TRANSFORMED_MATHTEX_SOURCE_DIGEST_V7 = createHash("sha256")
+  .update(TRANSFORMED_MATHTEX_SOURCE_V7, "utf8")
+  .digest("hex");
 const MATHTEX_MORPH_SOURCE_V5 = String.raw`from manim import MathTex, Scene, TransformMatchingTex, smoothstep
 
 class ExampleScene(Scene):
@@ -220,6 +239,33 @@ function transformedMathTexSourceHead() {
   return {
     ...head,
     blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_MATHTEX_SOURCE, "utf8") },
+  };
+}
+
+function transformedMathTexV7View() {
+  const snapshot = {
+    ...compiledSnapshot,
+    bundle: {
+      ...compiledSnapshot.bundle,
+      scene: {
+        ...compiledSnapshot.bundle.scene,
+        source: {
+          ...compiledSnapshot.bundle.scene.source,
+          snapshotVersion: 7,
+          sourceHash: TRANSFORMED_MATHTEX_SOURCE_DIGEST_V7,
+        },
+      },
+    },
+    sourceHash: TRANSFORMED_MATHTEX_SOURCE_DIGEST_V7,
+  } as unknown as VerifiedCompiledFastManimSnapshotResultV1;
+  return { ...verifiedView, snapshot } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function transformedMathTexSourceHeadV7() {
+  const head = sourceHead(7n, TRANSFORMED_MATHTEX_SOURCE_DIGEST_V7);
+  return {
+    ...head,
+    blob: { ...head.blob, byteSize: Buffer.byteLength(TRANSFORMED_MATHTEX_SOURCE_V7, "utf8") },
   };
 }
 
@@ -386,6 +432,38 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(published.expected.hermeticMathTexV3Plan).toEqual(
       deriveHermeticMathTexV3TransformPlan(TRANSFORMED_MATHTEX_SOURCE, SCENE_NAME),
     );
+  });
+
+  it("retains and serves the server-derived V7 MathTex transform plan", async () => {
+    const fixture = harness(transformedMathTexV7View());
+    const head = transformedMathTexSourceHeadV7();
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(TRANSFORMED_MATHTEX_SOURCE_V7);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+
+    const published = fixture.publish.mock.calls[0]?.[0];
+    if (!published) throw new Error("Expected one durable V7 publication.");
+    expect(published.expected.hermeticMathTexV3Plan).toEqual(
+      deriveMixedDynamicMathTexV7TransformPlan(TRANSFORMED_MATHTEX_SOURCE_V7, SCENE_NAME),
+    );
+    fixture.readCurrent.mockResolvedValueOnce({
+      document: {
+        expected: published.expected,
+        profileDigest: PROFILE_DIGEST,
+        runtimeDigest: RELEASE_RUNTIME_DIGEST,
+        schema: "poietra.studio-snapshot-artifact",
+        snapshot: published.snapshot,
+        sourceRuntimeIdentity: published.sourceRuntimeIdentity,
+        version: 2,
+      },
+      kind: "published",
+      publication: publication(15n),
+    } as never);
+
+    await expect(
+      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+    ).resolves.toMatchObject({ snapshot: published.snapshot, status: "verified" });
   });
 
   it("re-derives and retains the strict V5 MathTex morph plan for durable publication", async () => {

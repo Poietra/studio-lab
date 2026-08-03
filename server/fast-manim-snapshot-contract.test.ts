@@ -7,6 +7,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveMixedDynamicMathTexV7TransformPlan,
   digestFastManimSnapshotBundleV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   expectedFastManimSnapshotCorrelationV1Schema,
@@ -889,6 +890,74 @@ describe("fast-manim snapshot result v1", () => {
         .every(({ evidence }) => evidence.length === 1 && evidence[0] === FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7),
     ).toBe(true);
     await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV7)).resolves.toEqual(sealed);
+  });
+
+  it("seals and revalidates only the source-proven V7 MathTex base transform using VMobject anchors", async () => {
+    const source = `from manim import Circle, Create, CubicBezier, MathTex, MoveAlongPath, Scene
+
+class ExampleScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        ring = Circle()
+        particle = Circle()
+        path = CubicBezier((0, 0, 0), (1, 1, 0), (2, 1, 0), (3, 0, 0))
+        equation.move_to((1.25, -0.75, 0))
+        equation.scale(1.5)
+        self.add(equation)
+        self.play(Create(ring), run_time=1)
+        self.play(MoveAlongPath(particle, path), run_time=2)
+        self.wait(1)
+`;
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, expected.sceneName);
+    expect(hermeticMathTexV3Plan).toEqual({
+      terminalWait: null,
+      transforms: [
+        { kind: "move-to", x: 1.25, y: -0.75 },
+        { factor: 1.5, kind: "scale" },
+      ],
+    });
+    const excessiveTransforms = source.replace(
+      "        equation.move_to((1.25, -0.75, 0))\n        equation.scale(1.5)",
+      Array.from({ length: 65 }, () => "        equation.scale(1)").join("\n"),
+    );
+    expect(() => deriveMixedDynamicMathTexV7TransformPlan(excessiveTransforms, expected.sceneName)).toThrow(
+      /too many static transforms/i,
+    );
+    const expectedV7 = { ...expected, hermeticMathTexV3Plan, snapshotVersion: 7, sourceHash } as const;
+    const base = await mixedDynamic2dSnapshotBundleFixtureV7(expectedV7);
+    const transformed = structuredClone(base);
+    const mathTex = transformed.scene.entities[0]!;
+    if (mathTex.geometry.kind !== "cubic-path") throw new Error("Expected V7 MathTex cubic geometry.");
+    // Real glyph handles may exceed the boundary anchors. Manim's center uses
+    // only anchors, so these extrema must not alter the source transform.
+    mathTex.geometry.path.subpaths[0]!.segments[0]!.control1 = { x: 8, y: -1 };
+    mathTex.geometry.path.subpaths[0]!.segments[0]!.control2 = { x: 7, y: -1 };
+    mathTex.transform = { m11: 1.5, m12: 0, m21: 0, m22: 1.5, tx: 1.25, ty: -0.75 };
+
+    const sealed = await parseProducer(compiled(transformed, expectedV7), expectedV7, source);
+    if (sealed.kind !== "compiled") throw new Error("Expected one transformed V7 snapshot.");
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expectedV7)).resolves.toEqual(sealed);
+
+    const wrongPlan = {
+      ...expectedV7,
+      hermeticMathTexV3Plan: {
+        ...hermeticMathTexV3Plan,
+        transforms: [
+          { kind: "move-to" as const, x: 2, y: -0.75 },
+          { factor: 1.5, kind: "scale" as const },
+        ],
+      },
+    };
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, wrongPlan)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+
+    const transformedRing = structuredClone(transformed);
+    transformedRing.scene.entities[1]!.transform.tx = 0.25;
+    await expect(parseProducer(compiled(transformedRing, expectedV7), expectedV7, source)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
   });
 
   it("keeps V7 fail-closed when MathTex is dynamic, duplicated, or not accompanied by mixed dynamic evidence", async () => {
@@ -2438,6 +2507,10 @@ class ExampleScene(Scene):
         .hermeticMathTexV3Plan,
     ).toEqual(hermeticMathTexV3Plan);
     expect(
+      expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion: 7 })
+        .hermeticMathTexV3Plan,
+    ).toEqual(hermeticMathTexV3Plan);
+    expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({
         ...legacy,
         hermeticMathTexMorphV5Plan,
@@ -2449,10 +2522,10 @@ class ExampleScene(Scene):
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);
     }
-    for (const snapshotVersion of [1, 2, 4, 5, 6, 7] as const) {
+    for (const snapshotVersion of [1, 2, 4, 5, 6] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticMathTexV3Plan, snapshotVersion }),
-      ).toThrow(/only for snapshot profile V3/i);
+      ).toThrow(/only for snapshot profiles V3 and V7/i);
     }
     for (const snapshotVersion of [1, 2, 3, 4, 6, 7] as const) {
       expect(() =>

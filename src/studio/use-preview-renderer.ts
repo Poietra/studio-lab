@@ -44,6 +44,7 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
+import { compileStudioPreviewTemporalRebaseV1 } from "./preview-temporal-rebase";
 
 export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -296,9 +297,44 @@ export async function compileStudioPreviewSceneV1(
     };
   }
   if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
+    const source = input.snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot" || Number(source.snapshotVersion) !== 7) {
+      return {
+        error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
+        kind: "unsupported",
+      };
+    }
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    const rebased = compileStudioPreviewTemporalRebaseV1({
+      frame: input.frame,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: engineRevisionHash,
+    });
+    if (rebased.kind === "unsupported") {
+      return {
+        error: `Mixed V7 temporal rebase is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        kind: "unsupported",
+      };
+    }
+    const bundle = { assets: input.snapshot.snapshot.assets, scene: rebased.scene };
     return {
-      error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
-      kind: "unsupported",
+      kind: "compiled",
+      scene: {
+        bundle,
+        engineRevisionHash,
+        frame: { ...input.frame },
+        interactionEntityIds: rebased.scene.entities.map(({ id }) => id).slice(0, MAX_CANVAS_INTERACTION_ENTITY_IDS),
+        snapshot: input.snapshot,
+        workingRevision: input.workingRevision,
+        workspaceKey: input.workspaceKey,
+      },
     };
   }
   const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
