@@ -19,9 +19,10 @@ if (
   snapshotProfile !== "3" &&
   snapshotProfile !== "4" &&
   snapshotProfile !== "5" &&
-  snapshotProfile !== "7"
+  snapshotProfile !== "7" &&
+  snapshotProfile !== "8"
 ) {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, 5, or 7.");
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, 5, 7, or 8.");
 }
 const externalBaseUrl = (() => {
   const configured = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
@@ -75,6 +76,10 @@ if (snapshotProfile === "7" && !externalBaseUrl) {
 }
 
 const dataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}-real-preview-v${snapshotProfile}`);
+const officialV8ProjectRoot = process.env.POIETRA_FAST_MANIM_V8_PROJECT_ROOT?.trim();
+if (snapshotProfile === "8" && !externalBaseUrl && !officialV8ProjectRoot) {
+  throw new Error("The real SquareToCircle V8 E2E requires POIETRA_FAST_MANIM_V8_PROJECT_ROOT.");
+}
 const mutableHarness = snapshotProfile === "4" || snapshotProfile === "7";
 const harnessRoot = mutableHarness
   ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
@@ -102,25 +107,29 @@ export default defineConfig({
   projects: [
     {
       name:
-        snapshotProfile === "7"
-          ? "real-mixed-preview-webgpu"
-          : snapshotProfile === "5"
-            ? "real-mathtex-morph-preview-webgpu"
-            : snapshotProfile === "3"
-              ? "real-mathtex-preview-webgpu"
-              : snapshotProfile === "4"
-                ? "real-image-preview-webgpu"
-                : "real-preview-webgpu",
+        snapshotProfile === "8"
+          ? "real-square-to-circle-preview-webgpu"
+          : snapshotProfile === "7"
+            ? "real-mixed-preview-webgpu"
+            : snapshotProfile === "5"
+              ? "real-mathtex-morph-preview-webgpu"
+              : snapshotProfile === "3"
+                ? "real-mathtex-preview-webgpu"
+                : snapshotProfile === "4"
+                  ? "real-image-preview-webgpu"
+                  : "real-preview-webgpu",
       testMatch:
-        snapshotProfile === "7"
-          ? "**/real-mixed-preview.webgpu.ts"
-          : snapshotProfile === "5"
-            ? "**/real-mathtex-morph-preview.webgpu.ts"
-            : snapshotProfile === "3"
-              ? "**/real-mathtex-preview.webgpu.ts"
-              : snapshotProfile === "4"
-                ? "**/real-image-preview.webgpu.ts"
-                : "**/real-scene-preview.webgpu.ts",
+        snapshotProfile === "8"
+          ? "**/real-square-to-circle-preview.webgpu.ts"
+          : snapshotProfile === "7"
+            ? "**/real-mixed-preview.webgpu.ts"
+            : snapshotProfile === "5"
+              ? "**/real-mathtex-morph-preview.webgpu.ts"
+              : snapshotProfile === "3"
+                ? "**/real-mathtex-preview.webgpu.ts"
+                : snapshotProfile === "4"
+                  ? "**/real-image-preview.webgpu.ts"
+                  : "**/real-scene-preview.webgpu.ts",
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,
@@ -151,7 +160,7 @@ export default defineConfig({
               {
                 id: "real-preview-harness",
                 name: "Real Preview Harness",
-                root: harnessRoot,
+                root: snapshotProfile === "8" ? officialV8ProjectRoot : harnessRoot,
               },
             ]),
             POIETRA_STUDIO_DATA_ROOT: dataRoot,
