@@ -10,6 +10,7 @@ import {
 
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
+  cameraCenter?: ProgramRenderRequest["cameraCenter"];
   destination: ProgramRenderRequest["destination"];
   program: CanonicalEditProgram;
   programs: readonly CanonicalEditProgram[];
@@ -44,6 +45,7 @@ export type RenderPipelinePolicy = Readonly<{
 
 export function renderCandidateRequest(candidate: RenderProgramCandidate): ProgramRenderRequest {
   return {
+    ...(candidate.cameraCenter ? { cameraCenter: candidate.cameraCenter } : {}),
     destination: candidate.destination,
     program: candidate.program,
     programs: candidate.programs,

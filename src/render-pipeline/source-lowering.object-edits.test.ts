@@ -4,6 +4,7 @@ import {
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
 } from "../studio/suggestion-program";
+import { programRenderRequestSchema } from "./contracts";
 import { importManimScene } from "./source-import";
 import {
   findMotionAnchors,
@@ -567,6 +568,61 @@ class GroupedEquation(Scene):
       kind: "exact",
       value: 1.5,
     });
+  });
+
+  it("round-trips viewport positions as world-space move_to calls through a non-origin camera", () => {
+    const frame = { height: 8, width: 14.222 };
+    const cameraCenter = { x: 2.5, y: -1.25 };
+    const positionProgram = (transactionId: string, value: Readonly<{ x: number; y: number }>) =>
+      canonicalProgram(
+        [
+          {
+            ...operationBase(`position-${transactionId}`, 7),
+            entityId: "equation_1",
+            key: "position",
+            kind: "SetProperty",
+            value,
+          },
+        ],
+        transactionId,
+      );
+    const firstProgram = positionProgram("panned-position-first", { x: 400.123456, y: 135.654321 });
+    const firstRequest = { ...request(firstProgram), cameraCenter };
+    expect(programRenderRequestSchema.safeParse(firstRequest).success).toBe(true);
+    const first = lowerCanonicalProgramBatchSource(
+      source,
+      firstRequest,
+      [{ program: firstProgram, sourceAnchor: 7 }],
+      frame,
+      null,
+    );
+    const firstImported = importManimScene(first.source, "examples/relativity.py", "GroupedEquation", frame);
+
+    expect(first.insertedCode).toContain("equation.move_to((4.2804934238, -0.264540466667, 0))");
+    expect(
+      firstImported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/position"
+      ]?.samples.at(-1),
+    ).toMatchObject({ kind: "exact", value: { x: 400.123456, y: 135.654321 } });
+
+    const secondProgram = positionProgram("panned-position-second", { x: 320, y: 180 });
+    const second = lowerCanonicalProgramBatchSource(
+      first.source,
+      { ...request(secondProgram), cameraCenter },
+      [{ program: secondProgram, sourceAnchor: 7 }],
+      frame,
+      null,
+    );
+    const secondImported = importManimScene(second.source, "examples/relativity.py", "GroupedEquation", frame);
+
+    expect(second.source.match(/^\s*# poietra:position /gm)).toHaveLength(1);
+    expect(second.source).toContain("equation.move_to((2.5, -1.25, 0))");
+    expect(second.source).not.toContain("equation.move_to((4.2804934238, -0.264540466667, 0))");
+    expect(
+      secondImported?.runtimeSceneState.propertyChannels[
+        "source:examples/relativity.py#GroupedEquation:equation/position"
+      ]?.samples.at(-1),
+    ).toMatchObject({ kind: "exact", value: { x: 320, y: 180 } });
   });
 
   it("reimports adjacent motion and scale markers from one parallel play", () => {

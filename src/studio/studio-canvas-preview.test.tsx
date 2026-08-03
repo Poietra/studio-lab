@@ -63,6 +63,7 @@ function previewView(
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
+    cameraCenter: null,
     epoch: 0,
     interactionGeometry,
     interactionAuthority,

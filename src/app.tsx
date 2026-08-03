@@ -1457,6 +1457,7 @@ export function App({
     try {
       await exportManimSource(
         {
+          ...(renderCandidate.cameraCenter ? { cameraCenter: renderCandidate.cameraCenter } : {}),
           destination: renderCandidate.destination,
           program: renderCandidate.program,
           programs: renderCandidate.programs,
@@ -2618,6 +2619,10 @@ export function App({
     activeScene && activeProjectId && renderProgram
       ? {
           anchors: activeScene.anchors,
+          ...(previewRenderer?.cameraCenter &&
+          (previewRenderer.cameraCenter.x !== 0 || previewRenderer.cameraCenter.y !== 0)
+            ? { cameraCenter: previewRenderer.cameraCenter }
+            : {}),
           destination:
             programsHaveSceneBoundary(renderPrograms) && nextScene
               ? {

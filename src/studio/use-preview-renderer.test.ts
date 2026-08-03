@@ -460,7 +460,11 @@ class MathTexScene(Scene):
 }
 
 async function mixedV7EditedMathTexPreviewInput(
-  options: Readonly<{ includeRing?: boolean; mathTexTransform?: SceneEntityV1["transform"] }> = {},
+  options: Readonly<{
+    cameraCenter?: Readonly<{ x: number; y: number }>;
+    includeRing?: boolean;
+    mathTexTransform?: SceneEntityV1["transform"];
+  }> = {},
 ) {
   const fixture = await importedMathTexPreviewInput();
   const baseStudioMathTex = fixture.workingState.runtimeSceneState.objectGraph.entities[fixture.entityId];
@@ -513,17 +517,23 @@ async function mixedV7EditedMathTexPreviewInput(
     sourcePath: fixture.snapshot.correlation.context.sourcePath,
   });
   const mathTexTransform = options.mathTexTransform;
-  const unsigned = mathTexTransform
-    ? {
-        ...fixtureBundle,
-        scene: {
-          ...fixtureBundle.scene,
-          entities: fixtureBundle.scene.entities.map((entity, index) =>
+  const unsigned = {
+    ...fixtureBundle,
+    scene: {
+      ...fixtureBundle.scene,
+      camera: options.cameraCenter
+        ? {
+            ...fixtureBundle.scene.camera,
+            view: { ...fixtureBundle.scene.camera.view, center: options.cameraCenter },
+          }
+        : fixtureBundle.scene.camera,
+      entities: mathTexTransform
+        ? fixtureBundle.scene.entities.map((entity, index) =>
             index === 0 ? { ...entity, transform: mathTexTransform } : entity,
-          ),
-        },
-      }
-    : fixtureBundle;
+          )
+        : fixtureBundle.scene.entities,
+    },
+  };
   const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(unsigned);
   const snapshotBundle = await parseVerifiedSceneIrBundleV1({
     ...unsigned,
@@ -947,6 +957,25 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(edited.transform.ty).toBeCloseTo(0.8888888888888888, 12);
     expect(scene.animationChannels).toBe(fixture.snapshot.snapshot.scene.animationChannels);
     expect(scene.entities.slice(1)).toEqual(fixture.snapshot.snapshot.scene.entities.slice(1));
+  });
+
+  it("projects a mixed V7 GUI position through a non-origin camera center", async () => {
+    const cameraCenter = { x: 2.5, y: -1.25 };
+    const fixture = await mixedV7EditedMathTexPreviewInput({ cameraCenter });
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:panned-camera-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const edited = result.scene.bundle.scene.entities[0];
+    if (!edited) throw new Error("Panned-camera edit lost its target.");
+
+    expect(result.scene.bundle.scene.camera.view.center).toEqual(cameraCenter);
+    expect(edited.transform.tx).toBeCloseTo(6.055555555555555, 12);
+    expect(edited.transform.ty).toBeCloseTo(-0.36111111111111116, 12);
   });
 
   it.each([

@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { enginePointV1Schema } from "../engine/primitives";
 import type { RuntimeSceneState, StaticSemanticState } from "../studio/model";
 import { canonicalOperationSchema } from "../studio/operation-registry";
 import type { CanonicalEditProgram } from "../studio/operations";
@@ -66,6 +67,7 @@ export const canonicalEditProgramSchemaV1 = z.object({
 });
 
 const programRenderRequestBaseSchema = z.object({
+  cameraCenter: enginePointV1Schema.optional(),
   destination: z
     .object({
       sceneName: manimSceneNameSchema,
