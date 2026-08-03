@@ -17,6 +17,17 @@ struct DynamicFixture {
     id: String,
     samples: Vec<DynamicSample>,
     scene: serde_json::Value,
+    timeline_proof: TimelineProof,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TimelineProof {
+    sample_count: usize,
+    sample_rate_hz: usize,
+    semantic_digest: String,
+    shuffle_stride: usize,
+    viewport: ViewportV1,
 }
 
 #[derive(Debug, Deserialize)]
@@ -157,6 +168,48 @@ fn assert_numbers_close(actual: &[f64], expected: &[f64]) {
     }
 }
 
+fn timeline_index_as_f64(value: usize) -> f64 {
+    f64::from(u32::try_from(value).expect("timeline proof values must fit in u32"))
+}
+
+fn timeline_semantic_digest(
+    session: &EngineSessionV1,
+    fixture_id: &str,
+    proof: &TimelineProof,
+    order: &[usize],
+) -> String {
+    let mut digests = vec![None; proof.sample_count];
+    for &sample_index in order {
+        let evidence_id = format!("timeline:{sample_index}");
+        let evidence = [fixture_id.to_owned(), evidence_id];
+        let packet_id = format!("dynamic:timeline:{sample_index}");
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &evidence,
+                packet_id: &packet_id,
+                sample_time: timeline_index_as_f64(sample_index)
+                    / timeline_index_as_f64(proof.sample_rate_hz),
+                viewport: proof.viewport.clone(),
+            })
+            .unwrap_or_else(|error| panic!("timeline:{sample_index} must evaluate: {error}"));
+        assert!(
+            digests[sample_index]
+                .replace(summarize(&packet).semantic_digest)
+                .is_none(),
+            "timeline sample {sample_index} was repeated"
+        );
+    }
+    let mut hasher = Sha256::new();
+    for digest in digests {
+        hasher.update(
+            digest
+                .expect("every timeline sample must be evaluated")
+                .as_bytes(),
+        );
+    }
+    format!("{:x}", hasher.finalize())
+}
+
 #[test]
 fn retained_evaluator_matches_shared_dynamic_golden_across_unordered_seeks() {
     let (fixture, bundle) = load_fixture();
@@ -231,4 +284,37 @@ fn retained_evaluator_matches_shared_dynamic_golden_across_unordered_seeks() {
     assert!(summaries["duration-end"].draw_entity_ids.is_empty());
     assert_eq!(summaries["a-repeat"], summaries["a-first"]);
     assert_eq!(summaries["a-after-end"], summaries["a-first"]);
+}
+
+#[test]
+fn retained_evaluator_keeps_the_sixty_second_timeline_history_free() {
+    let (fixture, bundle) = load_fixture();
+    let proof = &fixture.timeline_proof;
+    let timeline_end =
+        timeline_index_as_f64(proof.sample_count - 1) / timeline_index_as_f64(proof.sample_rate_hz);
+    assert!((bundle.scene.duration - timeline_end).abs() <= f64::EPSILON);
+    let ordered = (0..proof.sample_count).collect::<Vec<_>>();
+    let shuffled = ordered
+        .iter()
+        .map(|index| index * proof.shuffle_stride % proof.sample_count)
+        .collect::<Vec<_>>();
+    let continuous_scrub = ordered.iter().rev().copied().collect::<Vec<_>>();
+    let unique = shuffled
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(unique.len(), proof.sample_count);
+    assert!(
+        continuous_scrub
+            .windows(2)
+            .all(|samples| samples[0] == samples[1] + 1)
+    );
+
+    let session = EngineSessionV1::new(bundle).expect("dynamic fixture must install");
+    for order in [&ordered, &shuffled, &continuous_scrub] {
+        assert_eq!(
+            timeline_semantic_digest(&session, &fixture.id, proof, order),
+            proof.semantic_digest
+        );
+    }
 }

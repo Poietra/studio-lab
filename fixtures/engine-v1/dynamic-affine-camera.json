@@ -1,5 +1,15 @@
 {
   "id": "eng-v1-dynamic-affine-camera",
+  "timelineProof": {
+    "sampleCount": 241,
+    "sampleRateHz": 4,
+    "semanticDigest": "4ecb2387bbbafeed00db13dcf0e5de64be9d98af0894b66ec7f387fbcac2d865",
+    "shuffleStride": 73,
+    "viewport": {
+      "heightPx": 90,
+      "widthPx": 160
+    }
+  },
   "assets": {
     "assets": [],
     "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",

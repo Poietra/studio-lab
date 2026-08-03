@@ -498,6 +498,9 @@ test("preserves real V2 opacity and lifetime boundaries across non-monotonic Web
 
   const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
   await expect(scenePlayhead).toHaveAttribute("max", "7");
+  await scenePlayhead.fill("2");
+  await expectPresented(page, run.revision);
+  await expect(canvasRoot).toHaveAttribute("data-preview-sample-time", "2");
   const circle = page.getByRole("button", { name: "Move circle", exact: true });
   const studioId = await circle.getAttribute("data-studio-entity");
   if (!studioId) throw new Error("The dynamic Scene did not expose its source-owned Studio circle.");
