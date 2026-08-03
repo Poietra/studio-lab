@@ -16,6 +16,7 @@ import {
   localSandboxReadyStatus,
   productionSandboxReadyStatus,
   sandboxProducerRequest,
+  sandboxProducerRequestV9,
 } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
@@ -58,6 +59,18 @@ describe("fast-manim sandbox request bundle", () => {
     mutated[0] = 0;
     expect(first.copyBytes()[0]).not.toBe(0);
     expect(verifyFastManimSandboxRequestBundleV1(first)).toBe(true);
+  });
+
+  it("preserves profile V9 through the immutable no-asset sandbox envelope", () => {
+    const producer = sandboxProducerRequestV9();
+    const bundle = new FastManimSandboxRequestBundleV1(producer);
+    const rebuilt = FastManimSandboxRequestBundleV1.fromBytes(bundle.copyBytes());
+
+    expect(bundle.version).toBe(1);
+    expect(rebuilt.requestDigest).toBe(bundle.requestDigest);
+    expect(JSON.parse(Buffer.from(rebuilt.copyProducerRequestBytes()).toString("utf8"))).toEqual(producer);
+    expect(producer.snapshotVersion).toBe(9);
+    expect(producer.runtimeConfig.snapshotVersion).toBe(9);
   });
 
   it("seals one profile-4 PNG into a V2 envelope while preserving strict producer JSON", () => {

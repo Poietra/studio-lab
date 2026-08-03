@@ -6,8 +6,10 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   type FastManimSnapshotRuntimeConfigV1,
   fastManimSnapshotProducerRequestV1Schema,
+  fastManimSnapshotProfileVersionV1Schema,
   fastManimSnapshotSceneIdV1,
 } from "./fast-manim-snapshot-contract";
 import { sourceHash } from "./manim-source-store";
@@ -70,7 +72,7 @@ describe("fast-manim snapshot runtime config", () => {
     ).toThrow(/sorted/i);
   });
 
-  it("keeps V1-V7 canonical runtime digests frozen while negotiating V8 separately", () => {
+  it("keeps V1-V8 canonical runtime digests frozen while negotiating V9 separately", () => {
     const config = runtimeConfig();
     const expected = [
       [1, "5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a"],
@@ -107,6 +109,22 @@ describe("fast-manim snapshot runtime config", () => {
         frame: { ...v8.frame, width: 14.22222222222222 },
       }),
     ).toThrow(/exact canonical demo frame/i);
+
+    const v9 = runtimeConfig(9);
+    expect(v9.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9);
+    expect(digestFastManimSnapshotRuntimeConfigV1(v9)).toBe(
+      "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a",
+    );
+    expect(() => digestFastManimSnapshotRuntimeConfigV1({ ...v9, capabilities: [...config.capabilities] })).toThrow(
+      /exact frozen capability set/i,
+    );
+    expect(() =>
+      digestFastManimSnapshotRuntimeConfigV1({
+        ...v9,
+        frame: { ...v9.frame, width: 14.22222222222222 },
+      }),
+    ).toThrow(/exact canonical demo frame/i);
+    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(10).success).toBe(false);
   });
 
   it("pins the canonical randomSeed to exactly 0 in the runtime config contract", () => {
@@ -169,6 +187,21 @@ describe("fast-manim snapshot runtime config", () => {
     } as const;
     expect(fastManimSnapshotProducerRequestV1Schema.parse(v7Request)).toEqual(v7Request);
     expect(v7Request.runtimeConfigHash).not.toBe(v6Request.runtimeConfigHash);
+    const v9Config = runtimeConfig(9);
+    const v9Request = {
+      ...producerRequest,
+      runtimeConfig: v9Config,
+      runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(v9Config),
+      snapshotVersion: 9 as const,
+    };
+    expect(fastManimSnapshotProducerRequestV1Schema.parse(v9Request)).toEqual(v9Request);
+    expect(() =>
+      fastManimSnapshotProducerRequestV1Schema.parse({
+        ...v9Request,
+        runtimeConfig: { ...v9Config, snapshotVersion: 10 },
+        snapshotVersion: 10,
+      }),
+    ).toThrow();
     const v4Config = {
       ...config,
       capabilities: ["png-image"],

@@ -11,6 +11,7 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   type FastManimSnapshotProfileVersionV1,
 } from "./fast-manim-snapshot-contract";
@@ -63,7 +64,9 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
           ? ["png-image"]
           : snapshotVersion === 8
             ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8]
-            : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+            : snapshotVersion === 9
+              ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9]
+              : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
       frame: options.frame,
       randomSeed: 0,
       schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,

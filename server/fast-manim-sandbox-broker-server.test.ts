@@ -34,6 +34,7 @@ import {
   localSandboxReadyStatus,
   SANDBOX_TEST_SHA_A,
   sandboxProducerRequest,
+  sandboxProducerRequestV9,
 } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
@@ -181,6 +182,31 @@ describe("fast-manim single-operation broker server", () => {
     expect(backend.starts[0]?.request.version).toBe(2);
     expect(backend.starts[0]?.request.copyBytes()).toEqual(bundle.copyBytes());
     expect(backend.starts[0]?.request.copyPngBytes()).toEqual(png);
+    expect(JSON.parse(Buffer.from(backend.starts[0]!.request.copyProducerRequestBytes()).toString("utf8"))).toEqual(
+      producer,
+    );
+  });
+
+  it("preserves the V9 producer request across the production UDS broker byte path", async () => {
+    const path = await socketPath();
+    const backend = new TestBackend();
+    const server = await start({ backend, socketPath: path });
+    servers.push(server);
+    const producer = sandboxProducerRequestV9();
+    const bundle = new RequestBundle(producer);
+    const client = new FastManimUdsSandboxBackendV1({ socketPath: path });
+
+    await expect(
+      client.start(bundle, {
+        attestationDigest: SANDBOX_TEST_SHA_A,
+        deadlineEpochMs: Date.now() + 10_000,
+        identity: { ...identity, requestId: producer.requestId },
+        signal: new AbortController().signal,
+      }).result,
+    ).resolves.toMatchObject({ kind: "ok", requestDigest: bundle.requestDigest });
+    await client.close();
+
+    expect(backend.starts).toHaveLength(1);
     expect(JSON.parse(Buffer.from(backend.starts[0]!.request.copyProducerRequestBytes()).toString("utf8"))).toEqual(
       producer,
     );
