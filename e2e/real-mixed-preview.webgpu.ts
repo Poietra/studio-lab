@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
-import { STUDIO_VIEWPORT } from "../src/studio/studio-viewport-geometry";
 
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
 const SCENE_LABEL = "scene_mixed_dynamic.py · MixedMathDemo";
@@ -110,7 +109,7 @@ function cubicEntityBounds(bundle: SceneIrBundleV1, entityId: string) {
   }
   const points = entity.geometry.path.subpaths.flatMap((subpath) => [
     subpath.start,
-    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
+    ...subpath.segments.map((segment) => segment.end),
   ]);
   if (points.length === 0) throw new Error(`Entity ${entityId} has empty cubic geometry.`);
   const world = points.map(({ x, y }) => ({
@@ -300,6 +299,10 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
   const studioEquationId = await equation.getAttribute("data-studio-entity");
   if (!studioEquationId) throw new Error("The mixed V7 MathTex has no Studio identity.");
   const equationWrapper = page.locator(`[data-studio-entity-wrapper="${studioEquationId}"]`);
+  const dragSurfaceWidth = await equation.evaluate(
+    (element) => element.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect().width ?? 0,
+  );
+  expect(dragSurfaceWidth).toBeGreaterThan(0);
 
   await dragBy(page, equation, { x: 32, y: 0 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
@@ -320,7 +323,14 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
 
   const source = await exportedSource(page);
   expect(source).toContain("# poietra:cursor 0");
-  expect(source).toMatch(/equation\.move_to\(\([^\n]+, 0\)\)/);
+  const exportedPosition = source.match(/equation\.move_to\(\(([-+0-9.eE]+), ([-+0-9.eE]+), 0\)\)/);
+  if (!exportedPosition) throw new Error("The mixed V7 export has no literal MathTex position.");
+  const exportedCenter = { x: Number(exportedPosition[1]), y: Number(exportedPosition[2]) };
+  expect(exportedCenter.x).toBeCloseTo(
+    run.bundle.scene.camera.view.center.x + (32 / dragSurfaceWidth) * run.bundle.scene.camera.view.frameWidth,
+    8,
+  );
+  expect(exportedCenter.y).toBeCloseTo(run.bundle.scene.camera.view.center.y, 8);
   expect(source).toContain("equation.scale(1.05)");
   expect(source.indexOf("equation.scale(1.05)")).toBeLessThan(source.indexOf("self.play(Create(ring"));
   expect(source).toContain("# poietra:anchor 0");
@@ -343,17 +353,15 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
   const editedEquationBounds = cubicEntityBounds(rerun.bundle, rerunEquationId);
   expect(editedEquationBounds.width / initialEquationBounds.width).toBeCloseTo(1.05, 8);
   expect(editedEquationBounds.height / initialEquationBounds.height).toBeCloseTo(1.05, 8);
-  expect(editedEquationBounds.center.x - initialEquationBounds.center.x).toBeCloseTo(
-    (32 / STUDIO_VIEWPORT.width) * run.bundle.scene.camera.view.frameWidth,
-    8,
-  );
-  expect(editedEquationBounds.center.y).toBeCloseTo(initialEquationBounds.center.y, 8);
+  expect(editedEquationBounds.center.x).toBeCloseTo(exportedCenter.x, 8);
+  expect(editedEquationBounds.center.y).toBeCloseTo(exportedCenter.y, 8);
 
-  await waitForNewPresentedFrame(page, resizedFrame.revision, resizedFrame.packet);
+  const rerunFrame = await waitForNewPresentedFrame(page, resizedFrame.revision, resizedFrame.packet);
+  expect(rerunFrame.revision).toBe(rerun.snapshotHash);
   await expect(page.locator("[data-studio-preview-status]")).toContainText(
     `verified server snapshot r${rerun.revision}`,
   );
-  for (const sampleTime of [0.5, 2, 3.999]) {
+  for (const sampleTime of [0.5, 2, 3.99]) {
     await scenePlayhead.fill(String(sampleTime));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));

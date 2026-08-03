@@ -458,7 +458,7 @@ class MathTexScene(Scene):
   };
 }
 
-async function mixedV7EditedMathTexPreviewInput() {
+async function mixedV7EditedMathTexPreviewInput(options: Readonly<{ includeRing?: boolean }> = {}) {
   const fixture = await importedMathTexPreviewInput();
   const baseStudioMathTex = fixture.workingState.runtimeSceneState.objectGraph.entities[fixture.entityId];
   const editedStudioMathTex = fixture.edited.evaluatedScene.objectGraph.entities[fixture.entityId];
@@ -466,6 +466,7 @@ async function mixedV7EditedMathTexPreviewInput() {
   if (importedSource.kind !== "imported-manim-server-snapshot" || !baseStudioMathTex || !editedStudioMathTex) {
     throw new Error("Mixed V7 MathTex fixture is incomplete.");
   }
+  const ringStudioId = "source:scene.py#MathTexScene:ring";
   const particleStudioId = "source:scene.py#MathTexScene:particle";
   const importedCircle = (
     id: string,
@@ -483,6 +484,7 @@ async function mixedV7EditedMathTexPreviewInput() {
     sourceIdentity: { kind: "known", value: sourceIdentity },
     type: "Circle",
   });
+  const ringStudioEntity = importedCircle(ringStudioId, "ring");
   const particleStudioEntity = importedCircle(particleStudioId, "particle");
   const extendScene = (scene: RuntimeSceneState, mathTexEntity: typeof baseStudioMathTex): RuntimeSceneState => ({
     ...scene,
@@ -491,6 +493,7 @@ async function mixedV7EditedMathTexPreviewInput() {
       ...scene.objectGraph,
       entities: {
         [fixture.entityId]: { ...mathTexEntity, lifetime: [{ end: 4, start: 0 }] },
+        ...(options.includeRing ? { [ringStudioId]: ringStudioEntity } : {}),
         [particleStudioId]: particleStudioEntity,
       },
     },
@@ -524,6 +527,7 @@ async function mixedV7EditedMathTexPreviewInput() {
       evaluatedScene: extendScene(fixture.edited.evaluatedScene, editedStudioMathTex),
     },
     particleStudioId,
+    ringStudioId,
     runtimeEntityId: mathTexRuntime.id,
     snapshot: {
       ...fixture.snapshot,
@@ -904,6 +908,54 @@ describe("compileStudioPreviewSceneV1", () => {
       kind: "studio-edit-program",
       revisionHash: result.scene.engineRevisionHash,
     });
+  });
+
+  it("rebases an initial Create target transform while preserving the imported channels", async () => {
+    const fixture = await mixedV7EditedMathTexPreviewInput({ includeRing: true });
+    const baseScene = fixture.snapshot.snapshot.scene;
+    const baseState = fixture.edited.base.runtimeSceneState;
+    const position = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 64, y: -36 },
+      positions: { [fixture.ringStudioId]: { x: 320, y: 180 } },
+      scene: baseState,
+      start: 0,
+      targetEntityIds: [fixture.ringStudioId],
+      transactionId: "move-imported-create-target",
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [fixture.ringStudioId]: { from: 1, to: 1.25 } },
+      scene: baseState,
+      targetEntityIds: [fixture.ringStudioId],
+      transactionId: "scale-imported-create-target",
+    });
+    if (position.kind !== "valid" || scale.kind !== "valid") throw new Error("Create target edits are invalid.");
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: evaluateWorkingState({
+        ...fixture.edited.base,
+        appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
+      }),
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:mixed-v7-create-transform",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+    expect(scene.animationChannels).toBe(baseScene.animationChannels);
+    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
+    expect(scene.animationChannels[0]).toMatchObject({ entityId: baseScene.entities[1]?.id, kind: "path-trim" });
+    expect(scene.entities[0]).toBe(baseScene.entities[0]);
+    expect(scene.entities[2]).toBe(baseScene.entities[2]);
+    expect(scene.entities[1]).toMatchObject({
+      geometry: baseScene.entities[1]?.geometry,
+      id: baseScene.entities[1]?.id,
+      transform: { m11: 1.25, m12: 0, m21: 0, m22: 1.25 },
+    });
+    expect(scene.entities[1]?.transform.tx).toBeCloseTo(2.672222222222222, 12);
+    expect(scene.entities[1]?.transform.ty).toBeCloseTo(0.8, 12);
   });
 
   it("fails closed when a mixed V7 edit targets MoveAlongPath", async () => {

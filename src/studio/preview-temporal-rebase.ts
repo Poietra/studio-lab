@@ -12,7 +12,6 @@ export type StudioPreviewTemporalRebaseIssueCodeV1 =
   | "mid-animation-edit-unsupported"
   | "motion-path-edit-unsupported"
   | "profile-unsupported"
-  | "scale-edit-unsupported"
   | "source-correlation-invalid"
   | "target-edit-unsupported";
 
@@ -30,7 +29,6 @@ type AuthorizedEditV1 = Readonly<{
   position: Point | null;
   runtimeEntityId: string;
   scaleFactor: number | null;
-  studioEntityId: string;
 }>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
@@ -83,11 +81,11 @@ function snapshotCorrelationIsExact(snapshot: StudioVerifiedPreviewSnapshotV1) {
   );
 }
 
-function localCenter(entity: SceneEntityV1) {
+function localBoundaryCenter(entity: SceneEntityV1) {
   if (entity.geometry.kind !== "cubic-path") return null;
   const points = entity.geometry.path.subpaths.flatMap((subpath) => [
     subpath.start,
-    ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+    ...subpath.segments.map(({ end }) => end),
   ]);
   if (points.length === 0) return null;
   return {
@@ -270,7 +268,6 @@ function planInitialTransformEdit(
         position: null,
         runtimeEntityId,
         scaleFactor: null,
-        studioEntityId: operation.entityId,
       };
       if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
         if (prior.position) {
@@ -393,7 +390,7 @@ export function compileStudioPreviewTemporalRebaseV1(
   const { edit } = planned;
   const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);
   const target = scene.entities[targetIndex];
-  const center = target ? localCenter(target) : null;
+  const center = target ? localBoundaryCenter(target) : null;
   if (!target || !center) {
     return unsupported("geometry-edit-unsupported", "The authorized V7 target has no bounded cubic geometry.");
   }
