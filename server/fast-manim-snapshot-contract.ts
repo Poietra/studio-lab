@@ -159,7 +159,7 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // complete source blob. Omission is accepted only for legacy centered V4
     // artifacts, whose geometry remains subject to the old exact base rect.
     hermeticPngV4Plan: hermeticPngV4TransformPlanSchema.optional(),
-    // V3 retains the canonical provider path and carries only the independently
+    // V3 and the one static MathTex leaf in V7 retain only the independently
     // source-derived uniform affine. Omission keeps legacy centered snapshots
     // readable while non-identity producer output remains fail-closed.
     hermeticMathTexV3Plan: hermeticMathTexV3TransformPlanSchema.optional(),
@@ -179,10 +179,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         path: ["hermeticPngV4Plan"],
       });
     }
-    if (value.snapshotVersion !== 3 && value.hermeticMathTexV3Plan !== undefined) {
+    if (value.snapshotVersion !== 3 && value.snapshotVersion !== 7 && value.hermeticMathTexV3Plan !== undefined) {
       context.addIssue({
         code: "custom",
-        message: "Hermetic MathTex transform evidence is valid only for snapshot profile V3.",
+        message: "Hermetic MathTex transform evidence is valid only for snapshot profiles V3 and V7.",
         path: ["hermeticMathTexV3Plan"],
       });
     }
@@ -1113,14 +1113,21 @@ function assertHermeticMathTexTransformV3(
   if (entity.geometry.kind !== "cubic-path") {
     profileViolation("Hermetic MathTex transform evidence requires canonical cubic geometry.");
   }
-  const points = entity.geometry.path.subpaths.flatMap((subpath) => [
+  // VMobject.get_center() derives its boundary from anchors, not Bezier
+  // handles. Using control extrema here disagrees with real MathTex outlines
+  // and rejects a source-proven move_to/scale despite identical Manim state.
+  const boundaryPoints = entity.geometry.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.map(({ end }) => end),
+  ]);
+  const allPoints = entity.geometry.path.subpaths.flatMap((subpath) => [
     subpath.start,
     ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
   ]);
-  const minimumX = Math.min(...points.map(({ x }) => x));
-  const maximumX = Math.max(...points.map(({ x }) => x));
-  const minimumY = Math.min(...points.map(({ y }) => y));
-  const maximumY = Math.max(...points.map(({ y }) => y));
+  const minimumX = Math.min(...boundaryPoints.map(({ x }) => x));
+  const maximumX = Math.max(...boundaryPoints.map(({ x }) => x));
+  const minimumY = Math.min(...boundaryPoints.map(({ y }) => y));
+  const maximumY = Math.max(...boundaryPoints.map(({ y }) => y));
   const baseCenter = { x: (minimumX + maximumX) / 2, y: (minimumY + maximumY) / 2 };
   let scale = 1;
   let targetCenter: Readonly<{ x: number; y: number }> | null = null;
@@ -1161,7 +1168,7 @@ function assertHermeticMathTexTransformV3(
     profileViolation("Hermetic MathTex transform must derive from the exact server-held source plan.");
   }
   if (
-    points.some(({ x, y }) => {
+    allPoints.some(({ x, y }) => {
       const transformedX = expected.m11 * x + expected.tx;
       const transformedY = expected.m22 * y + expected.ty;
       return (
@@ -1404,6 +1411,45 @@ function hermeticPngV4Statements(source: string, sceneName: string) {
   return statements;
 }
 
+function hermeticStaticTransformStatement(
+  statement: string,
+  variable: string,
+  profile: "Hermetic MathTex" | "Hermetic PNG" | "Mixed dynamic MathTex",
+): HermeticMathTexV3TransformPlan["transforms"][number] | null {
+  const move = statement.match(
+    new RegExp(
+      `^${variable}\\.move_to\\(\\s*\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*0(?:_?0)*\\s*\\)\\s*\\)$`,
+    ),
+  );
+  if (move) {
+    const x = hermeticPngV4NumberLiteral(move[1]!);
+    const y = hermeticPngV4NumberLiteral(move[2]!);
+    if (x === null || y === null) profileViolation(`${profile} move_to coordinates must be bounded literals.`);
+    return { kind: "move-to", x, y };
+  }
+  const scale = statement.match(new RegExp(`^${variable}\\.scale\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*\\)$`));
+  if (!scale) return null;
+  const factor = hermeticPngV4NumberLiteral(scale[1]!, true);
+  if (factor === null) profileViolation(`${profile} scale factors must be bounded positive literals.`);
+  return { factor, kind: "scale" };
+}
+
+function pushHermeticStaticTransform(
+  transforms: HermeticMathTexV3TransformPlan["transforms"][number][],
+  transform: HermeticMathTexV3TransformPlan["transforms"][number],
+  cumulativeScale: number,
+  profile: "Hermetic MathTex" | "Hermetic PNG" | "Mixed dynamic MathTex",
+) {
+  if (transform.kind === "scale") {
+    cumulativeScale *= transform.factor;
+    if (!Number.isFinite(cumulativeScale) || cumulativeScale <= 0 || cumulativeScale > MAX_COORDINATE) {
+      profileViolation(`${profile} transforms produce an out-of-range cumulative scale.`);
+    }
+  }
+  transforms.push(transform);
+  return cumulativeScale;
+}
+
 /**
  * Independently derives the only V4 post-add mutations the server accepts.
  * Strings and comments are removed by the shared lexical pass; no Python is
@@ -1434,32 +1480,10 @@ function deriveHermeticStaticTransformPlan(
   if (tail.length > 64) profileViolation(`${profile} source contains too many static transforms.`);
   const transforms: Array<HermeticPngV4TransformPlan["transforms"][number]> = [];
   let cumulativeScale = 1;
-  const escapedVariable = variable;
-  const movePattern = new RegExp(
-    `^${escapedVariable}\\.move_to\\(\\s*\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*,\\s*0(?:_?0)*\\s*\\)\\s*\\)$`,
-  );
-  const scalePattern = new RegExp(`^${escapedVariable}\\.scale\\(\\s*(${HERMETIC_PNG_V4_NUMBER_LITERAL})\\s*\\)$`);
   for (const statement of tail) {
-    const move = statement.match(movePattern);
-    if (move) {
-      const x = hermeticPngV4NumberLiteral(move[1]!);
-      const y = hermeticPngV4NumberLiteral(move[2]!);
-      if (x === null || y === null) profileViolation(`${profile} move_to coordinates must be bounded literals.`);
-      transforms.push({ kind: "move-to", x, y });
-      continue;
-    }
-    const scale = statement.match(scalePattern);
-    if (scale) {
-      const factor = hermeticPngV4NumberLiteral(scale[1]!, true);
-      if (factor === null) profileViolation(`${profile} scale factors must be bounded positive literals.`);
-      cumulativeScale *= factor;
-      if (!Number.isFinite(cumulativeScale) || cumulativeScale <= 0 || cumulativeScale > MAX_COORDINATE) {
-        profileViolation(`${profile} transforms produce an out-of-range cumulative scale.`);
-      }
-      transforms.push({ factor, kind: "scale" });
-      continue;
-    }
-    profileViolation(`${profile} source contains a statement outside the static transform profile.`);
+    const transform = hermeticStaticTransformStatement(statement, variable, profile);
+    if (!transform) profileViolation(`${profile} source contains a statement outside the static transform profile.`);
+    cumulativeScale = pushHermeticStaticTransform(transforms, transform, cumulativeScale, profile);
   }
   return hermeticPngV4TransformPlanSchema.parse({ terminalWait, transforms });
 }
@@ -1473,6 +1497,63 @@ export function deriveHermeticMathTexV3TransformPlan(
   sceneName: string,
 ): HermeticMathTexV3TransformPlan {
   return deriveHermeticStaticTransformPlan(source, sceneName, "MathTex", "Hermetic MathTex");
+}
+
+/**
+ * Independently derives the bounded t=0 transform of V7's one static MathTex
+ * leaf while leaving the mixed Scene's other setup statements to its pinned
+ * producer profile. Any aliasing, indirect use, or transform after timeline
+ * advancement fails closed instead of becoming producer-authored authority.
+ */
+export function deriveMixedDynamicMathTexV7TransformPlan(
+  source: string,
+  sceneName: string,
+): HermeticMathTexV3TransformPlan {
+  const profile = "Mixed dynamic MathTex" as const;
+  const statements = hermeticPngV4Statements(source, sceneName);
+  if (!statements) profileViolation(`${profile} source must contain only direct construct-level statements.`);
+  const mathTexStatements = statements.flatMap((statement, index) =>
+    /\bMathTex\s*\(/.test(statement) ? [{ index, statement }] : [],
+  );
+  const assignment = mathTexStatements[0]?.statement.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*MathTex\s*\(.*\)$/);
+  if (mathTexStatements.length !== 1 || !assignment) {
+    profileViolation(`${profile} source must expose exactly one direct MathTex assignment.`);
+  }
+  const variable = assignment[1]!;
+  const assignmentIndex = mathTexStatements[0]!.index;
+  const timelineIndex = statements.findIndex((statement) => /^self\.(?:play|wait)\s*\(/.test(statement));
+  if (timelineIndex < 0 || assignmentIndex >= timelineIndex) {
+    profileViolation(`${profile} source must construct its MathTex before the bounded timeline begins.`);
+  }
+
+  const variableUse = new RegExp(`\\b${variable}\\b`);
+  const directAdd = new RegExp(`^self\\.add\\(\\s*${variable}\\s*\\)$`);
+  const transforms: HermeticMathTexV3TransformPlan["transforms"][number][] = [];
+  let cumulativeScale = 1;
+  let added = false;
+  for (const [index, statement] of statements.entries()) {
+    if (index === assignmentIndex) continue;
+    const transform = hermeticStaticTransformStatement(statement, variable, profile);
+    if (transform) {
+      if (index <= assignmentIndex || index >= timelineIndex) {
+        profileViolation(`${profile} transforms must follow construction and precede timeline advancement.`);
+      }
+      cumulativeScale = pushHermeticStaticTransform(transforms, transform, cumulativeScale, profile);
+      if (transforms.length > 64) profileViolation(`${profile} source contains too many static transforms.`);
+      continue;
+    }
+    if (directAdd.test(statement)) {
+      if (added || index <= assignmentIndex || index >= timelineIndex)
+        profileViolation(`${profile} must be added exactly once before the timeline.`);
+      added = true;
+      continue;
+    }
+    if (variableUse.test(statement)) {
+      profileViolation(`${profile} source contains an indirect or dynamic use of its MathTex binding.`);
+    }
+  }
+  if (!added) profileViolation(`${profile} must be added exactly once before the timeline.`);
+  return hermeticMathTexV3TransformPlanSchema.parse({ terminalWait: null, transforms });
 }
 
 function mathTexContentDigestV1(texPart: string) {
@@ -2255,7 +2336,9 @@ function assertFastManimSnapshotProfileV1(
       profileViolation("Entity lifetimes must match the negotiated snapshot timeline profile.");
     }
     const { m11, m12, m21, m22, tx, ty } = entity.transform;
-    if (snapshotVersion !== 3 && (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0)) {
+    const sourceTransformAuthorized =
+      snapshotVersion === 3 || (snapshotVersion === 7 && index === mixedDynamicMathTexIndex);
+    if (!sourceTransformAuthorized && (m11 !== 1 || m12 !== 0 || m21 !== 0 || m22 !== 1 || tx !== 0 || ty !== 0)) {
       profileViolation(
         "Snapshot profile entities must keep their base transform at identity; V2 affine motion belongs only in affine-transform channels.",
       );
@@ -2283,7 +2366,9 @@ function assertFastManimSnapshotProfileV1(
         assertGenericVmobjectProfileEntityV6(entity);
         break;
       case 7:
-        if (index !== mixedDynamicMathTexIndex) {
+        if (index === mixedDynamicMathTexIndex) {
+          assertHermeticMathTexTransformV3(entity, hermeticMathTexV3Plan);
+        } else {
           assertStaticProfileEntity(
             entity,
             pathTrimEntityIds.has(entity.id),
@@ -2442,7 +2527,10 @@ async function parseFastManimSnapshotResultV1(
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
   if (
-    (expected.snapshotVersion === 3 || expected.snapshotVersion === 4 || expected.snapshotVersion === 5) &&
+    (expected.snapshotVersion === 3 ||
+      expected.snapshotVersion === 4 ||
+      expected.snapshotVersion === 5 ||
+      expected.snapshotVersion === 7) &&
     mode === "producer" &&
     sourceText !== undefined &&
     createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
@@ -2452,13 +2540,24 @@ async function parseFastManimSnapshotResultV1(
       "The server-held hermetic source does not match the expected source digest.",
     );
   }
-  if (expected.snapshotVersion === 3 && mode === "producer" && sourceText !== undefined) {
-    const derivedPlan = deriveHermeticMathTexV3TransformPlan(sourceText, expected.sceneName);
+  if (
+    (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
+    mode === "producer" &&
+    sourceText !== undefined
+  ) {
+    const derivedPlan =
+      expected.snapshotVersion === 3
+        ? deriveHermeticMathTexV3TransformPlan(sourceText, expected.sceneName)
+        : deriveMixedDynamicMathTexV7TransformPlan(sourceText, expected.sceneName);
     if (hermeticMathTexV3Plan && !sameHermeticTransformPlan(hermeticMathTexV3Plan, derivedPlan)) {
       profileViolation("The retained MathTex transform plan does not match the server-held source.");
     }
     hermeticMathTexV3Plan = derivedPlan;
-  } else if (expected.snapshotVersion === 3 && mode === "producer" && hermeticMathTexV3Plan) {
+  } else if (
+    (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
+    mode === "producer" &&
+    hermeticMathTexV3Plan
+  ) {
     profileViolation("A retained MathTex transform plan requires the exact server-held source during sealing.");
   }
   if (expected.snapshotVersion === 4 && mode === "producer" && sourceText !== undefined) {
