@@ -34,6 +34,13 @@ type DynamicFixture = Readonly<{
     viewport: Readonly<{ heightPx: number; widthPx: number }>;
   }>[];
   scene: unknown;
+  timelineProof: Readonly<{
+    sampleCount: number;
+    sampleRateHz: number;
+    semanticDigest: string;
+    shuffleStride: number;
+    viewport: Readonly<{ heightPx: number; widthPx: number }>;
+  }>;
 }>;
 
 async function loadFixture(): Promise<DynamicFixture> {
@@ -76,6 +83,45 @@ function summarize(packet: RenderPacketV1) {
 function expectNumbersClose(actual: readonly number[], expected: readonly number[]) {
   expect(actual).toHaveLength(expected.length);
   actual.forEach((value, index) => expect(value).toBeCloseTo(expected[index]!, 12));
+}
+
+function timelineOrders(sampleCount: number, shuffleStride: number) {
+  const ordered = Array.from({ length: sampleCount }, (_, index) => index);
+  const shuffled = ordered.map((index) => (index * shuffleStride) % sampleCount);
+  const continuousScrub = [...ordered].reverse();
+  expect(new Set(shuffled).size).toBe(sampleCount);
+  expect(
+    continuousScrub.every((index, position) => position === 0 || continuousScrub[position - 1]! - index === 1),
+  ).toBe(true);
+  return { continuousScrub, ordered, shuffled };
+}
+
+async function timelineSemanticDigest(
+  fixture: DynamicFixture,
+  assets: ReturnType<typeof assetManifestV1Schema.parse>,
+  scene: ReturnType<typeof sceneIrV1Schema.parse>,
+  order: readonly number[],
+) {
+  const digests = new Array<string | undefined>(fixture.timelineProof.sampleCount);
+  for (const sampleIndex of order) {
+    const sampleTime = sampleIndex / fixture.timelineProof.sampleRateHz;
+    const result = await compileEngineFrameV1({
+      assets,
+      evidence: [fixture.id, `timeline:${sampleIndex}`],
+      packetId: `dynamic:timeline:${sampleIndex}`,
+      sampleTime,
+      scene,
+      viewport: fixture.timelineProof.viewport,
+    });
+    expect(result.kind).toBe("ready");
+    if (result.kind !== "ready") throw new Error(`timeline:${sampleIndex}: ${result.message}`);
+    expect(digests[sampleIndex]).toBeUndefined();
+    digests[sampleIndex] = summarize(result.frame.packet).semanticDigest;
+  }
+  expect(digests.every((digest) => digest !== undefined)).toBe(true);
+  const hash = createHash("sha256");
+  for (const digest of digests) hash.update(digest!, "ascii");
+  return hash.digest("hex");
 }
 
 describe("shared dynamic affine/camera fixture", () => {
@@ -146,5 +192,18 @@ describe("shared dynamic affine/camera fixture", () => {
     expect(summaries.get("duration-end")?.drawEntityIds).toEqual([]);
     expect(summaries.get("a-repeat")).toEqual(summaries.get("a-first"));
     expect(summaries.get("a-after-end")).toEqual(summaries.get("a-first"));
+  });
+
+  it("keeps the 60-second semantic timeline history-free across playback, shuffled seek, and continuous scrub", async () => {
+    const fixture = await loadFixture();
+    const assets = assetManifestV1Schema.parse(fixture.assets);
+    const scene = sceneIrV1Schema.parse(fixture.scene);
+    const proof = fixture.timelineProof;
+    expect(scene.duration * proof.sampleRateHz + 1).toBe(proof.sampleCount);
+    const orders = timelineOrders(proof.sampleCount, proof.shuffleStride);
+
+    for (const order of [orders.ordered, orders.shuffled, orders.continuousScrub]) {
+      await expect(timelineSemanticDigest(fixture, assets, scene, order)).resolves.toBe(proof.semanticDigest);
+    }
   });
 });
