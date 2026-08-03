@@ -130,7 +130,7 @@ type StudioPreviewHostInstallationV1 = Readonly<{
 
 /**
  * Runtime pixels may be presented without source interaction authority. V5
- * deliberately has aggregate morph lineage, while V6 and V7 require
+ * deliberately has aggregate morph lineage, while V6 through V8 require
  * server-verified source/runtime bindings. Older snapshot-only profiles retain
  * their semantic interaction fallback; no gesture guesses from Scene order.
  */
@@ -142,11 +142,15 @@ export function studioPreviewInteractionAuthorityV1(
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
-  if (Number(source.snapshotVersion) !== 6 && Number(source.snapshotVersion) !== 7) {
+  if (
+    Number(source.snapshotVersion) !== 6 &&
+    Number(source.snapshotVersion) !== 7 &&
+    Number(source.snapshotVersion) !== 8
+  ) {
     return { kind: "interactive" };
   }
   const identity = snapshot?.sourceRuntimeIdentity;
-  if (Number(source.snapshotVersion) === 7) {
+  if (Number(source.snapshotVersion) === 7 || Number(source.snapshotVersion) === 8) {
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
     const complete =

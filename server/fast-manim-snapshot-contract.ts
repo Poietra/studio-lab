@@ -61,6 +61,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(5),
   z.literal(6),
   z.literal(7),
+  z.literal(8),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -435,6 +436,8 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6 =
   "fast-manim server snapshot generic planar VMobject profile v6" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D profile v7" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 =
+  "fast-manim server snapshot SquareToCircle profile v8" as const;
 /** Distinct server-owned marker retained so sealed V7 bundles can re-prove the one static MathTex leaf. */
 export const FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D MathTex profile v7" as const;
@@ -595,6 +598,22 @@ export function fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId: string,
     throw new TypeError("Path-morph channel provenance identifiers derive from a non-negative integer sceneOrder.");
   }
   return `${sceneId}/provenance:channel:path-morph:${sceneOrder}`;
+}
+
+export function fastManimSnapshotVectorAppearanceChannelIdV8(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError("Vector-appearance channel identifiers derive from a non-negative integer sceneOrder.");
+  }
+  return `${sceneId}/channel:vector-appearance:${sceneOrder}`;
+}
+
+export function fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(sceneId: string, sceneOrder: number) {
+  if (!Number.isSafeInteger(sceneOrder) || sceneOrder < 0) {
+    throw new TypeError(
+      "Vector-appearance channel provenance identifiers derive from a non-negative integer sceneOrder.",
+    );
+  }
+  return `${sceneId}/provenance:channel:vector-appearance:${sceneOrder}`;
 }
 
 /** The exact static Scene duration the v1 exporter emits. */
@@ -2159,6 +2178,330 @@ function assertDynamicProfileV2(
 }
 
 /**
+ * Generated from Poietra/fast-manim profile V8's pinned Manim 0.20.1
+ * Square/align_data(Circle) endpoints. Correlation fields, deterministic IDs,
+ * timing, and provenance are verified separately; this digest pins only the
+ * renderer-facing base geometry/appearance and Transform endpoints.
+ */
+export const FAST_MANIM_SQUARE_TO_CIRCLE_SEMANTICS_SHA256_V8 =
+  "5c642aea1f1fa120ab4093411be4e06d7fa4a93052cdbc142e4141f60b7c0af4" as const;
+/**
+ * Exact audited UTF-8 sources accepted by Studio's first V8 consumer slice:
+ * fast-manim's pinned official example and a checked-in minimal copy of the
+ * same selected Scene closure. Identity evidence proves which runtime object
+ * maps to `square`; it does not prove the three Python play statements, so
+ * source semantics remain independently pinned here rather than delegated to
+ * producer claims.
+ */
+export const FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 =
+  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+export const FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8 =
+  "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40" as const;
+const FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8 = new Set<string>([
+  FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
+  FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
+]);
+
+const FAST_MANIM_SQUARE_TO_CIRCLE_REQUIRED_CAPABILITIES_V8 = [
+  "cubic-path-geometry",
+  "opacity-animation",
+  "path-morph-animation",
+  "path-trim-animation",
+  "vector-appearance-animation",
+] as const;
+
+const FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8 = {
+  height: 8,
+  width: 14.222222222222221,
+} as const;
+
+function fastManimSquareToCircleSemanticDigestV8(
+  entity: StaticProfileEntity,
+  pathMorph: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>,
+  vectorAppearance: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "vector-appearance" }>,
+) {
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        baseAppearance: entity.appearance,
+        baseGeometry: entity.geometry,
+        pathMorphValues: pathMorph.keyframes.map(({ value }) => value),
+        vectorAppearanceValues: vectorAppearance.keyframes.map(({ value }) => value),
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function exactSnapshotEasingV8(
+  keyframes: readonly Readonly<{ at: number; easingToNext: unknown; value: unknown }>[],
+  expected: readonly Readonly<{ at: number; value: unknown }>[],
+  label: string,
+) {
+  if (
+    keyframes.length !== expected.length ||
+    keyframes.some(
+      (keyframe, index) =>
+        keyframe.at !== expected[index]!.at ||
+        canonicalJsonV1(keyframe.value) !== canonicalJsonV1(expected[index]!.value) ||
+        (index === keyframes.length - 1
+          ? keyframe.easingToNext !== null
+          : canonicalJsonV1(keyframe.easingToNext) !== canonicalJsonV1({ kind: "manim-smooth" })),
+    )
+  ) {
+    profileViolation(`SquareToCircle profile V8 ${label} keyframes must match the exact default-smooth timeline.`);
+  }
+}
+
+function assertSquareToCircleProducerProvenanceV8(
+  scene: SceneIrBundleV1["scene"],
+  sourcePath: string,
+  sourceHash: string,
+) {
+  const sourceAnchorLine =
+    sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8
+      ? 75
+      : sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8
+        ? 7
+        : null;
+  if (sourceAnchorLine === null) {
+    profileViolation("SquareToCircle profile V8 provenance requires one pinned source generation.");
+  }
+  const [sceneRecord, entityRecord, opacityRecord, morphRecord, appearanceRecord, trimRecord] = scene.provenance;
+  const sceneEvidence = sceneRecord?.evidence;
+  if (
+    !sceneEvidence ||
+    sceneEvidence.length !== 8 ||
+    sceneEvidence[0] !== "fast-manim Scene snapshot profile v8" ||
+    sceneEvidence[1] !== `source path ${sourcePath}` ||
+    sceneEvidence[2] !== "scene class SquareToCircle" ||
+    !/^render trace session [0-9a-f]{32}$/.test(sceneEvidence[3] ?? "") ||
+    sceneEvidence[4] !== "bounded timeline: 3 plays, renderer time 3.0s, snapshot duration 3.0s" ||
+    sceneEvidence[5] !== "1 supported mobjects in observed dynamic sceneOrder" ||
+    sceneEvidence[6] !== "camera frame 14.222222222222221 x 8.0 scene units, background rgba(0.0, 0.0, 0.0, 1.0)" ||
+    sceneEvidence[7] !== "cairo line width multiple 0.01"
+  ) {
+    profileViolation("SquareToCircle profile V8 scene provenance does not match the pinned producer evidence.");
+  }
+  const session = sceneEvidence[3]!.slice("render trace session ".length);
+  const entityEvidence = entityRecord?.evidence;
+  if (
+    !entityEvidence ||
+    entityEvidence.length !== 6 ||
+    entityEvidence[0] !== `runtime object ${session}/object-000002` ||
+    entityEvidence[1] !== "runtime type manim.mobject.geometry.polygram.Square" ||
+    entityEvidence[2] !== "observed dynamic sceneOrder 0" ||
+    entityEvidence[3] !== "z_index 0.0" ||
+    entityEvidence[4] !==
+      "capability cubic-path-geometry: 8 cubic segments in 1 subpaths from the Cairo point layout" ||
+    entityEvidence[5] !== `source anchor ${sourcePath}:${sourceAnchorLine} in construct`
+  ) {
+    profileViolation("SquareToCircle profile V8 entity provenance does not match the pinned Square evidence.");
+  }
+  const expectedChannelEvidence = [
+    [
+      "runtime observed direct fade-out from 2.0s to 3.0s",
+      "exact reference FadeIn/FadeOut flags; exact default Manim smooth easing; animation interior not executed",
+    ],
+    [
+      "runtime observed direct compatible Transform from 1.0s to 2.0s",
+      "exact reference Transform flags; Manim-aligned canonical cubic topology; appearance is represented by its paired vector-appearance channel; animation lifecycle not executed",
+    ],
+    [
+      "runtime observed the canonical Square to Circle solid fill/stroke Transform from 1.0s to 2.0s",
+      "Manim align_rgbas endpoint evidence; component-wise color, opacity, and stroke-width interpolation with exact default smooth easing",
+    ],
+    [
+      "runtime observed direct create from 0.0s to 1.0s",
+      "exact reference Create/Uncreate flags; exact default Manim smooth easing; animation interior not executed",
+      "uniform-cubic-parameter-v1 over the frozen canonical Cairo point layout",
+    ],
+  ] as const;
+  for (const [record, expected] of [
+    [opacityRecord, expectedChannelEvidence[0]],
+    [morphRecord, expectedChannelEvidence[1]],
+    [appearanceRecord, expectedChannelEvidence[2]],
+    [trimRecord, expectedChannelEvidence[3]],
+  ] as const) {
+    if (!record || canonicalJsonV1(record.evidence) !== canonicalJsonV1(expected)) {
+      profileViolation("SquareToCircle profile V8 channel provenance does not match the pinned producer evidence.");
+    }
+  }
+}
+
+function assertSquareToCircleProfileV8(
+  bundle: SceneIrBundleV1,
+  expectedFrame: Readonly<{ height: number; width: number }>,
+  mode: "producer" | "sealed",
+  expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+) {
+  const { scene } = bundle;
+  const { sceneId } = scene;
+  if (
+    expectedIdentity.sceneName !== "SquareToCircle" ||
+    !FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expectedIdentity.sourceHash)
+  ) {
+    profileViolation("Snapshot profile V8 is reserved for the pinned SquareToCircle source generation.");
+  }
+  if (
+    expectedFrame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
+    expectedFrame.width !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.width
+  ) {
+    profileViolation("SquareToCircle profile V8 requires the exact canonical demo frame.");
+  }
+  if (
+    scene.duration !== 3 ||
+    scene.fidelity.kind !== "exact" ||
+    scene.camera.view.center.x !== 0 ||
+    scene.camera.view.center.y !== 0 ||
+    scene.camera.view.frameHeight !== expectedFrame.height ||
+    scene.camera.view.frameWidth !== expectedFrame.width ||
+    canonicalJsonV1(scene.camera.background) !== canonicalJsonV1({ alpha: 1, blue: 0, green: 0, red: 0 })
+  ) {
+    profileViolation("SquareToCircle profile V8 requires its exact three-second static camera contract.");
+  }
+  if (
+    bundle.assets.assets.length !== 0 ||
+    bundle.assets.manifestId !== fastManimSnapshotManifestIdV1(sceneId) ||
+    scene.requiredCapabilities.length !== FAST_MANIM_SQUARE_TO_CIRCLE_REQUIRED_CAPABILITIES_V8.length ||
+    scene.requiredCapabilities.some(
+      (capability, index) => capability !== FAST_MANIM_SQUARE_TO_CIRCLE_REQUIRED_CAPABILITIES_V8[index],
+    )
+  ) {
+    profileViolation("SquareToCircle profile V8 requires one exact asset-free renderer capability surface.");
+  }
+  if (scene.entities.length !== 1 || scene.animationChannels.length !== 4) {
+    profileViolation("SquareToCircle profile V8 requires one entity and its exact four animation channels.");
+  }
+  const entity = scene.entities[0]!;
+  if (
+    entity.id !== fastManimSnapshotEntityIdV1(sceneId, 0) ||
+    entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, 0) ||
+    entity.sceneOrder !== 0 ||
+    entity.parentId !== null ||
+    entity.sourceZIndex !== 0 ||
+    canonicalJsonV1(entity.lifetimes) !== canonicalJsonV1([{ end: 3, start: 0 }]) ||
+    canonicalJsonV1(entity.transform) !== canonicalJsonV1({ m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 }) ||
+    entity.geometry.kind !== "cubic-path" ||
+    entity.geometry.path.subpaths.length !== 1 ||
+    !entity.geometry.path.subpaths[0]?.closed ||
+    entity.geometry.path.subpaths[0].segments.length !== 8 ||
+    entity.appearance.kind !== "vector" ||
+    entity.appearance.opacity !== 1 ||
+    entity.appearance.fill !== null
+  ) {
+    profileViolation("SquareToCircle profile V8 entity does not match the exact aligned Square base state.");
+  }
+
+  const [opacity, pathMorph, vectorAppearance, pathTrim] = scene.animationChannels;
+  if (
+    opacity?.kind !== "opacity" ||
+    pathMorph?.kind !== "path-morph" ||
+    vectorAppearance?.kind !== "vector-appearance" ||
+    pathTrim?.kind !== "path-trim"
+  ) {
+    profileViolation(
+      "SquareToCircle profile V8 channels must be ordered opacity, path-morph, vector-appearance, path-trim.",
+    );
+  }
+  const expectedChannelIdentity = [
+    [
+      opacity,
+      fastManimSnapshotOpacityChannelIdV2(sceneId, 0),
+      fastManimSnapshotOpacityChannelProvenanceIdV2(sceneId, 0),
+    ],
+    [
+      pathMorph,
+      fastManimSnapshotPathMorphChannelIdV2(sceneId, 0),
+      fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId, 0),
+    ],
+    [
+      vectorAppearance,
+      fastManimSnapshotVectorAppearanceChannelIdV8(sceneId, 0),
+      fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(sceneId, 0),
+    ],
+    [
+      pathTrim,
+      fastManimSnapshotPathTrimChannelIdV2(sceneId, 0),
+      fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, 0),
+    ],
+  ] as const;
+  for (const [channel, id, provenanceId] of expectedChannelIdentity) {
+    if (channel.entityId !== entity.id || channel.id !== id || channel.provenanceId !== provenanceId) {
+      profileViolation("SquareToCircle profile V8 channel identity must derive from its one stable Square entity.");
+    }
+  }
+  exactSnapshotEasingV8(
+    opacity.keyframes,
+    [
+      { at: 2, value: 1 },
+      { at: 3, value: 0 },
+    ],
+    "FadeOut",
+  );
+  exactSnapshotEasingV8(
+    pathTrim.keyframes,
+    [
+      { at: 0, value: 0 },
+      { at: 1, value: 1 },
+    ],
+    "Create",
+  );
+  exactSnapshotEasingV8(
+    pathMorph.keyframes,
+    [
+      { at: 1, value: pathMorph.keyframes[0]?.value },
+      { at: 2, value: pathMorph.keyframes[1]?.value },
+    ],
+    "Transform geometry",
+  );
+  exactSnapshotEasingV8(
+    vectorAppearance.keyframes,
+    [
+      { at: 1, value: vectorAppearance.keyframes[0]?.value },
+      { at: 2, value: vectorAppearance.keyframes[1]?.value },
+    ],
+    "Transform appearance",
+  );
+  if (
+    pathTrim.parameterization !== "uniform-cubic-parameter-v1" ||
+    pathMorph.keyframes.length !== 2 ||
+    vectorAppearance.keyframes.length !== 2 ||
+    canonicalJsonV1(entity.geometry.path) !== canonicalJsonV1(pathMorph.keyframes[0]!.value) ||
+    fastManimSquareToCircleSemanticDigestV8(entity, pathMorph, vectorAppearance) !==
+      FAST_MANIM_SQUARE_TO_CIRCLE_SEMANTICS_SHA256_V8
+  ) {
+    profileViolation("SquareToCircle profile V8 geometry or appearance differs from its pinned Manim endpoints.");
+  }
+
+  const expectedProvenanceIds = [
+    fastManimSnapshotSceneProvenanceIdV1(sceneId),
+    entity.provenanceId,
+    opacity.provenanceId,
+    pathMorph.provenanceId,
+    vectorAppearance.provenanceId,
+    pathTrim.provenanceId,
+  ];
+  if (
+    scene.provenance.length !== expectedProvenanceIds.length ||
+    scene.provenance.some(
+      (record, index) => record.id !== expectedProvenanceIds[index] || record.origin !== "fast-manim-server-snapshot",
+    )
+  ) {
+    profileViolation("SquareToCircle profile V8 provenance must exactly follow Scene, entity, and channel order.");
+  }
+  if (mode === "producer") {
+    assertSquareToCircleProducerProvenanceV8(scene, expectedIdentity.sourcePath, expectedIdentity.sourceHash);
+  } else if (
+    scene.provenance.some(
+      ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8]),
+    )
+  ) {
+    profileViolation("Sealed SquareToCircle profile V8 provenance must contain only the server-owned marker.");
+  }
+}
+
+/**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
  * and Rectangle, stroked Lines with canonical 1/3–2/3 cubic controls plus
@@ -2178,7 +2521,12 @@ function assertFastManimSnapshotProfileV1(
   hermeticMathTexV3Plan: HermeticMathTexV3TransformPlan | undefined,
   hermeticPngV4Plan: HermeticPngV4TransformPlan | undefined,
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
+  expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
+  if (snapshotVersion === 8) {
+    assertSquareToCircleProfileV8(bundle, expectedFrame, mode, expectedIdentity);
+    return;
+  }
   const { scene } = bundle;
   const sceneId = scene.sceneId;
   const dynamicProfile = snapshotVersion === 2 || snapshotVersion === 7;
@@ -2452,7 +2800,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V4
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -2468,6 +2817,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6;
     case 7:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7;
+    case 8:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8;
   }
 }
 
@@ -2530,7 +2881,8 @@ async function parseFastManimSnapshotResultV1(
     (expected.snapshotVersion === 3 ||
       expected.snapshotVersion === 4 ||
       expected.snapshotVersion === 5 ||
-      expected.snapshotVersion === 7) &&
+      expected.snapshotVersion === 7 ||
+      expected.snapshotVersion === 8) &&
     mode === "producer" &&
     sourceText !== undefined &&
     createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
@@ -2539,6 +2891,9 @@ async function parseFastManimSnapshotResultV1(
       "correlation-mismatch",
       "The server-held hermetic source does not match the expected source digest.",
     );
+  }
+  if (expected.snapshotVersion === 8 && mode === "producer" && sourceText === undefined) {
+    profileViolation("SquareToCircle profile V8 requires the exact server-held source during sealing.");
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
@@ -2586,6 +2941,7 @@ async function parseFastManimSnapshotResultV1(
     hermeticMathTexV3Plan,
     hermeticPngV4Plan,
     hermeticMathTexMorphV5Plan,
+    expected,
   );
   const mixedDynamicMathTexProvenanceId =
     expected.snapshotVersion === 7
@@ -2695,6 +3051,20 @@ export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1 = Object.freeze([
   "shape-primitives",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 
+/**
+ * The separately negotiated V8 runtime surface. Keep V1 frozen: changing its
+ * array would change every V1-V7 runtime configuration digest even though
+ * only the bounded SquareToCircle vertical slice needs vector appearance.
+ */
+export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8 = Object.freeze([
+  "cubic-path-geometry",
+  "opacity-animation",
+  "path-morph-animation",
+  "path-trim-animation",
+  "shape-primitives",
+  "vector-appearance-animation",
+] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
+
 export const MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -2746,6 +3116,30 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
         code: "custom",
         message: "Only hermetic PNG profile V4 runtime requests may declare png-image.",
         path: ["capabilities"],
+      });
+    }
+    if (
+      config.snapshotVersion === 8 &&
+      (config.capabilities.length !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8.length ||
+        config.capabilities.some(
+          (capability, index) => capability !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8[index],
+        ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "SquareToCircle profile V8 runtime requests must declare its exact frozen capability set.",
+        path: ["capabilities"],
+      });
+    }
+    if (
+      config.snapshotVersion === 8 &&
+      (config.frame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
+        config.frame.width !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.width)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "SquareToCircle profile V8 runtime requests require the exact canonical demo frame.",
+        path: ["frame"],
       });
     }
   });
