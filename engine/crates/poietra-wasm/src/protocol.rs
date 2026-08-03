@@ -564,6 +564,15 @@ mod tests {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
+    fn real_square_to_circle_v8_snapshot() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../server/test-fixtures/fast-manim-square-to-circle-v8-combined.json");
+        let combined: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let producer_snapshot: Value =
+            serde_json::from_str(combined["snapshotJson"].as_str().unwrap()).unwrap();
+        serde_json::to_vec(&producer_snapshot["bundle"]).unwrap()
+    }
+
     fn snapshot(fixture: &Value) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "assets": fixture["assets"],
@@ -679,6 +688,83 @@ mod tests {
                     first_midpoint.as_ref(),
                     Some(&json!({ "fill": draw["fill"], "stroke": draw["stroke"] }))
                 );
+            }
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the audited fixture enumerates exact boundary/root f64 values"
+    )]
+    fn retained_wasm_protocol_samples_real_square_to_circle_v8_boundaries_and_winding_root() {
+        const CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME: f64 = 1.511_915_947_381_744_7;
+        let session =
+            EngineWorkerSessionV1::from_snapshot_json(&real_square_to_circle_v8_snapshot())
+                .unwrap();
+        let forward_samples = [
+            0.0,
+            0.5,
+            1.0,
+            1.5,
+            CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
+            2.0,
+            2.5,
+            3.0,
+        ];
+        let non_monotonic_samples = [
+            2.5,
+            0.5,
+            CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
+            1.0,
+            2.0,
+            0.0,
+            1.5,
+            3.0,
+            CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
+        ];
+        for (seek_index, sample_time) in forward_samples
+            .into_iter()
+            .chain(non_monotonic_samples)
+            .enumerate()
+        {
+            let request = serde_json::to_vec(&json!({
+                "evidence": ["real fast-manim SquareToCircle V8 WASM protocol"],
+                "packetId": format!("wasm:square-to-circle-v8:{seek_index}:{sample_time}"),
+                "sampleTime": sample_time,
+                "schema": "poietra.engine-sample-request",
+                "version": 1,
+                "viewport": { "heightPx": 360, "widthPx": 640 },
+            }))
+            .unwrap();
+            let sampled = session
+                .sample_packet_json(&request)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "V8 WASM protocol sample {sample_time} failed: {}",
+                        error.message
+                    )
+                });
+            assert_eq!(
+                sampled.correlation.sample_time.to_bits(),
+                sample_time.to_bits()
+            );
+            if sample_time == 3.0 {
+                assert!(sampled.packet.draws.is_empty());
+            } else {
+                assert_eq!(sampled.packet.draws.len(), 1);
+            }
+            if sample_time == 1.5 || sample_time == CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME {
+                let poietra_scene_ir::RenderDrawV1::Path {
+                    fill: Some(_),
+                    path,
+                    stroke: Some(_),
+                    ..
+                } = &sampled.packet.draws[0]
+                else {
+                    panic!("V8 WASM protocol sample {sample_time} must retain fill and stroke");
+                };
+                assert_eq!(path.subpaths[0].segments.len(), 8);
             }
         }
     }

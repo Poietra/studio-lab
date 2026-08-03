@@ -20,6 +20,7 @@ wgpu = { workspace = true, features = ["dx12", "gles", "metal", "std", "vulkan",
 
 [dev-dependencies]
 poietra-eval.workspace = true
+poietra-geometry.workspace = true
 pollster = "=1.0.1"
 serde.workspace = true
 serde_json.workspace = true

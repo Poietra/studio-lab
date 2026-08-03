@@ -171,6 +171,7 @@ const STUDIO_SUPPORTED_CONSTRUCTORS_V6 = new Set([
 ]);
 
 const STUDIO_SUPPORTED_CONSTRUCTORS_V7 = new Set(["Circle", "Line", "MathTex", "Rectangle"]);
+const STUDIO_SUPPORTED_CONSTRUCTORS_V8 = new Set(["Square"]);
 
 /**
  * Exact producer-owned runtime classes admitted by mixed dynamic V7.
@@ -187,6 +188,7 @@ const STUDIO_RUNTIME_TYPES_BY_CONSTRUCTOR_V7: ReadonlyMap<string, string> = new 
   ["MathTex", "manim.renderer._scene_snapshot.mathtex.HermeticMathTexSnapshotMobject"],
   ["Rectangle", "manim.mobject.geometry.polygram.Rectangle"],
 ] as const);
+const STUDIO_SQUARE_RUNTIME_TYPE_V8 = "manim.mobject.geometry.polygram.Square" as const;
 
 function studioSupportsConstructor(
   constructor: string,
@@ -199,6 +201,7 @@ function studioSupportsConstructor(
   if (snapshotVersion === 4) return constructor === "ImageMobject";
   if (snapshotVersion === 6) return STUDIO_SUPPORTED_CONSTRUCTORS_V6.has(constructor);
   if (snapshotVersion === 7) return STUDIO_SUPPORTED_CONSTRUCTORS_V7.has(constructor);
+  if (snapshotVersion === 8) return STUDIO_SUPPORTED_CONSTRUCTORS_V8.has(constructor);
   return STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor);
 }
 
@@ -324,7 +327,7 @@ function buildSourceBindingLookup(
     const line = analysis.lines[lineIndex];
     if (!line || !isPythonStatementStart(line)) continue;
     let code = line.code;
-    if (snapshotVersion === 6 || snapshotVersion === 7) {
+    if (snapshotVersion === 6 || snapshotVersion === 7 || snapshotVersion === 8) {
       const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
       if (continuedCode === null) {
         proofComplete = false;
@@ -350,6 +353,7 @@ function buildSourceBindingLookup(
       !direct ||
       (snapshotVersion !== 6 &&
         snapshotVersion !== 7 &&
+        snapshotVersion !== 8 &&
         (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
     ) {
       proofComplete = false;
@@ -529,10 +533,13 @@ function validatePublishedMap(
     entityIds.add(mapping.entityId);
   }
   const source = snapshot.bundle.scene.source;
-  if (source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 7) {
+  if (
+    source?.kind === "imported-manim-server-snapshot" &&
+    (source.snapshotVersion === 7 || source.snapshotVersion === 8)
+  ) {
     requireIdentity(
       entityIds.size === entities.size,
-      "Mixed dynamic profile V7 requires one verified source/runtime mapping for every Scene entity.",
+      "Snapshot profiles V7 and V8 require one verified source/runtime mapping for every Scene entity.",
     );
   }
   return map;
@@ -554,13 +561,13 @@ export function assertFastManimSnapshotIdentityAuthorityV1(
   if (
     snapshot.kind !== "compiled" ||
     snapshot.bundle.scene.source.kind !== "imported-manim-server-snapshot" ||
-    snapshot.bundle.scene.source.snapshotVersion !== 7
+    (snapshot.bundle.scene.source.snapshotVersion !== 7 && snapshot.bundle.scene.source.snapshotVersion !== 8)
   ) {
     return;
   }
   requireIdentity(
     identity !== null,
-    "Mixed dynamic profile V7 requires complete source/runtime identity evidence before publication.",
+    "Snapshot profiles V7 and V8 require complete source/runtime identity evidence before publication.",
   );
   validatePublishedMap(identity, snapshot);
 }
@@ -614,6 +621,12 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     Array.isArray(records) && records.length <= MAX_ENTITIES,
     "Identity records exceed the entity bound.",
   );
+  if (input.expected.snapshotVersion === 8 && input.snapshot.kind === "compiled") {
+    requireIdentity(
+      complete && records.length === 1,
+      "SquareToCircle profile V8 requires one complete runtime identity record.",
+    );
+  }
   const sourceAnalysis = analyzePythonSource(input.sourceText);
   requireIdentity(sourceAnalysis.valid, "The correlated source cannot be lexically verified.");
   let sourceBlock: ReturnType<typeof findSourceSceneBlock>;
@@ -725,6 +738,21 @@ export function verifyFastManimSourceRuntimeIdentityV1(
       requireIdentity(sequence > lastLifecycleSequence, "Lifecycle sequences must increase.");
       lastLifecycleSequence = sequence;
     }
+    if (input.expected.snapshotVersion === 8) {
+      const [added, removed] = recordValue.lifecycle;
+      requireIdentity(
+        sceneOrder === 0 &&
+          familyPath.length === 0 &&
+          recordValue.lifecycle.length === 2 &&
+          isPlainObject(added) &&
+          added.action === "add" &&
+          added.sequence === 5 &&
+          isPlainObject(removed) &&
+          removed.action === "remove" &&
+          removed.sequence === 13,
+        "SquareToCircle profile V8 requires the exact stable Square add/remove lifecycle.",
+      );
+    }
 
     requireIdentity(
       Array.isArray(recordValue.bindings) && recordValue.bindings.length <= MAX_BINDINGS_PER_ENTITY,
@@ -809,6 +837,19 @@ export function verifyFastManimSourceRuntimeIdentityV1(
           "Mixed dynamic profile V7 source constructors do not match their exact verified runtime entity types.",
         );
       }
+      if (input.expected.snapshotVersion === 8 && input.snapshot.kind === "compiled") {
+        requireIdentity(
+          activeClaim.studioSupported &&
+            activeClaim.constructor === "Square" &&
+            binding.name === "square" &&
+            binding.ordinal === 2 &&
+            recordValue.bindings.length === 1 &&
+            (recordValue.bindings[0] as PlainObject).boundSequence === 2 &&
+            (recordValue.bindings[0] as PlainObject).releasedSequence === null &&
+            runtimeType === STUDIO_SQUARE_RUNTIME_TYPE_V8,
+          "SquareToCircle profile V8 must map only the exact source Square binding to its exact runtime type.",
+        );
+      }
       requireIdentity(!activeMappedBindings.has(binding.id), "One source binding maps to several runtime entities.");
       activeMappedBindings.add(binding.id);
       if (activeClaim.studioSupported) mappings.push({ binding, entityId, familyPath, provenanceId });
@@ -855,8 +896,11 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     );
   }
 
-  if (input.expected.snapshotVersion === 7 && input.snapshot.kind === "compiled") {
-    requireIdentity(complete, "Mixed dynamic profile V7 requires complete source/runtime identity evidence.");
+  if (
+    (input.expected.snapshotVersion === 7 || input.expected.snapshotVersion === 8) &&
+    input.snapshot.kind === "compiled"
+  ) {
+    requireIdentity(complete, "Snapshot profiles V7 and V8 require complete source/runtime identity evidence.");
   }
   if (!complete) return null;
   requireIdentity(input.snapshot.kind === "compiled", "Complete identity evidence requires a compiled snapshot.");
@@ -886,6 +930,12 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         JSON.stringify(record.reasons) === JSON.stringify(["multiple-active-source-bindings"]) &&
         mappings.length === 0,
       "Hermetic MathTex morph V5 identity must remain one explicitly ambiguous display-only render track.",
+    );
+  }
+  if (input.expected.snapshotVersion === 8) {
+    requireIdentity(
+      mappings.length === 1 && mappings[0]?.binding.name === "square",
+      "SquareToCircle profile V8 must publish exactly one verified Square mapping.",
     );
   }
   const map = {

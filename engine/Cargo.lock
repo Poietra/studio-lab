@@ -962,6 +962,7 @@ dependencies = [
  "lyon_tessellation",
  "png",
  "poietra-eval",
+ "poietra-geometry",
  "poietra-scene-ir",
  "pollster",
  "serde",

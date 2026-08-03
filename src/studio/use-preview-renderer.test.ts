@@ -608,7 +608,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     ).toEqual([]);
   });
 
-  it("keeps V6 partially interactive but requires complete V7 identity authority", async () => {
+  it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;
     if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
@@ -650,19 +650,23 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
     }
 
-    const v7 = (identity: StudioPreviewSourceRuntimeIdentityV1 | null) =>
-      ({
-        ...snapshot,
-        snapshot: {
-          ...snapshot.snapshot,
-          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 7 } },
-        },
-        sourceRuntimeIdentity: identity,
-      }) as StudioVerifiedPreviewSnapshotV1;
-    expect(studioPreviewInteractionAuthorityV1(v7(null))).toEqual(displayOnly);
-    expect(studioPreviewInteractionAuthorityV1(v7(new Map()))).toEqual(displayOnly);
-    expect(studioPreviewInteractionAuthorityV1(v7(partialIdentity))).toEqual({ kind: "interactive" });
-    expect(studioPreviewInteractionAuthorityV1(v7(fullIdentity))).toEqual(displayOnly);
+    for (const snapshotVersion of [7, 8] as const) {
+      const identityBoundSnapshot = (identity: StudioPreviewSourceRuntimeIdentityV1 | null) =>
+        ({
+          ...snapshot,
+          snapshot: {
+            ...snapshot.snapshot,
+            scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion } },
+          },
+          sourceRuntimeIdentity: identity,
+        }) as StudioVerifiedPreviewSnapshotV1;
+      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(null))).toEqual(displayOnly);
+      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(new Map()))).toEqual(displayOnly);
+      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(partialIdentity))).toEqual({
+        kind: "interactive",
+      });
+      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(fullIdentity))).toEqual(displayOnly);
+    }
   });
 });
 

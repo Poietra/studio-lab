@@ -5,6 +5,7 @@ import {
   canonicalF64HexV1,
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   type FastManimSnapshotRuntimeConfigV1,
   fastManimSnapshotProducerRequestV1Schema,
   fastManimSnapshotSceneIdV1,
@@ -67,6 +68,45 @@ describe("fast-manim snapshot runtime config", () => {
         capabilities: [...config.capabilities].reverse(),
       }),
     ).toThrow(/sorted/i);
+  });
+
+  it("keeps V1-V7 canonical runtime digests frozen while negotiating V8 separately", () => {
+    const config = runtimeConfig();
+    const expected = [
+      [1, "5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a"],
+      [2, "64a012df329bfd29c2d45cc19d977b53eb17fdab3599f5b70cd03e149f37d458"],
+      [3, "813b7d95223f9a40606f7c45c2450cbde46f05e52a117023bc0602f8d90615d7"],
+      [4, "d150787a372811fecebd321dcceb6911e968328c23a64ec4503c972b37a0d8ab"],
+      [5, "103552e4ddfc17c7a5782ac9379f52f6694426dd71f777c619eeac8affb74aaa"],
+      [6, "6b7325c8cfb6a114196125d10a76f05a1fde626c5af4c8b1b10f11b67c427b61"],
+      [7, "e3d72030110f0426a977dac93b7f3a8f632b3b9874069533363ad3b434c213c1"],
+    ] as const;
+    for (const [snapshotVersion, digest] of expected) {
+      expect(
+        digestFastManimSnapshotRuntimeConfigV1({
+          ...config,
+          capabilities: snapshotVersion === 4 ? ["png-image"] : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+          snapshotVersion,
+        }),
+      ).toBe(digest);
+    }
+    const v8: FastManimSnapshotRuntimeConfigV1 = {
+      ...config,
+      capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8],
+      snapshotVersion: 8,
+    };
+    expect(digestFastManimSnapshotRuntimeConfigV1(v8)).toBe(
+      "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
+    );
+    expect(() => digestFastManimSnapshotRuntimeConfigV1({ ...v8, capabilities: [...config.capabilities] })).toThrow(
+      /exact frozen capability set/i,
+    );
+    expect(() =>
+      digestFastManimSnapshotRuntimeConfigV1({
+        ...v8,
+        frame: { ...v8.frame, width: 14.22222222222222 },
+      }),
+    ).toThrow(/exact canonical demo frame/i);
   });
 
   it("pins the canonical randomSeed to exactly 0 in the runtime config contract", () => {
