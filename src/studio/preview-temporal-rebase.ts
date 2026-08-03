@@ -31,6 +31,8 @@ type AuthorizedEditV1 = Readonly<{
   scaleFactor: number | null;
 }>;
 
+type SupportedTemporalRebaseProfileV1 = 7 | 8;
+
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
 }
@@ -63,12 +65,80 @@ function isExactCreateChannel(channel: SceneIrV1["animationChannels"][number]) {
   );
 }
 
+function supportedTemporalRebaseProfileV1(scene: SceneIrV1): SupportedTemporalRebaseProfileV1 | null {
+  const source = scene.source;
+  if (source.kind !== "imported-manim-server-snapshot") return null;
+  const version = Number(source.snapshotVersion);
+  return version === 7 || version === 8 ? version : null;
+}
+
+function isExactManimSmoothInterval(channel: SceneIrV1["animationChannels"][number], start: number, end: number) {
+  return (
+    channel.keyframes.length === 2 &&
+    channel.keyframes[0]?.at === start &&
+    channel.keyframes[0]?.easingToNext?.kind === "manim-smooth" &&
+    channel.keyframes[1]?.at === end &&
+    channel.keyframes[1]?.easingToNext === null
+  );
+}
+
+function isExactStableSquareToCircleV8(scene: SceneIrV1, runtimeEntityId: string) {
+  const [entity] = scene.entities;
+  const [opacity, pathMorph, vectorAppearance, pathTrim] = scene.animationChannels;
+  return (
+    supportedTemporalRebaseProfileV1(scene) === 8 &&
+    scene.duration === 3 &&
+    scene.entities.length === 1 &&
+    entity?.id === runtimeEntityId &&
+    entity.geometry.kind === "cubic-path" &&
+    entity.lifetimes.length === 1 &&
+    entity.lifetimes[0]?.start === 0 &&
+    entity.lifetimes[0]?.end === 3 &&
+    scene.animationChannels.length === 4 &&
+    opacity?.kind === "opacity" &&
+    opacity.entityId === runtimeEntityId &&
+    isExactManimSmoothInterval(opacity, 2, 3) &&
+    opacity.keyframes[0]?.value === 1 &&
+    opacity.keyframes[1]?.value === 0 &&
+    pathMorph?.kind === "path-morph" &&
+    pathMorph.entityId === runtimeEntityId &&
+    isExactManimSmoothInterval(pathMorph, 1, 2) &&
+    vectorAppearance?.kind === "vector-appearance" &&
+    vectorAppearance.entityId === runtimeEntityId &&
+    isExactManimSmoothInterval(vectorAppearance, 1, 2) &&
+    pathTrim?.kind === "path-trim" &&
+    pathTrim.entityId === runtimeEntityId &&
+    isExactCreateChannel(pathTrim) &&
+    pathTrim.keyframes[0]?.easingToNext?.kind === "manim-smooth" &&
+    pathTrim.keyframes[1]?.at === 1 &&
+    pathTrim.keyframes[1]?.easingToNext === null
+  );
+}
+
+/**
+ * Returns the only synthetic authoring anchor accepted by the bounded V8
+ * preview profile. This is preview authority, not a claim that the source
+ * contains a lowerable `# poietra:anchor` marker.
+ */
+export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
+  if (!snapshotCorrelationIsExact(snapshot)) return null;
+  const identity = snapshot.sourceRuntimeIdentity;
+  if (!identity || identity.size !== 1) return null;
+  const [entry] = identity;
+  if (!entry) return null;
+  const [sourceName, mapping] = entry;
+  if (mapping.sourceName !== sourceName || !isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId)) {
+    return null;
+  }
+  return 0;
+}
+
 function snapshotCorrelationIsExact(snapshot: StudioVerifiedPreviewSnapshotV1) {
   const { correlation, snapshot: bundle } = snapshot;
   const source = bundle.scene.source;
   return (
     source.kind === "imported-manim-server-snapshot" &&
-    Number(source.snapshotVersion) === 7 &&
+    supportedTemporalRebaseProfileV1(bundle.scene) !== null &&
     sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
     source.sourceHash === correlation.context.sourceHash &&
     bundle.assets.manifestDigest === correlation.assetsManifestDigest &&
@@ -138,27 +208,45 @@ function planInitialTransformEdit(
     proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
   }>,
-): Readonly<{ edit: AuthorizedEditV1; kind: "supported" }> | StudioPreviewTemporalRebaseResultV1 {
+):
+  | Readonly<{ edit: AuthorizedEditV1; kind: "supported"; profile: SupportedTemporalRebaseProfileV1 }>
+  | StudioPreviewTemporalRebaseResultV1 {
   const scene = input.snapshot.snapshot.scene;
   if (!snapshotCorrelationIsExact(input.snapshot)) {
-    return unsupported("source-correlation-invalid", "The verified V7 snapshot has inconsistent source authority.");
+    return unsupported(
+      "source-correlation-invalid",
+      "The verified temporal snapshot has inconsistent source authority.",
+    );
   }
+  const profile = supportedTemporalRebaseProfileV1(scene);
+  if (profile === null) return unsupported("profile-unsupported", "The snapshot profile cannot be temporally rebased.");
   if (input.proposedState.evaluatedScene.duration !== scene.duration) {
     return unsupported(
       "channel-timing-edit-unsupported",
-      "Mixed V7 initial edits cannot change Scene or channel timing.",
+      "Initial imported-animation edits cannot change Scene or channel timing.",
     );
   }
+  const base = input.proposedState.base;
+  const context = input.snapshot.correlation.context;
+  const expectedStudioSceneId = `${context.sourcePath}#${context.sceneName}`;
+  const expectedSourceHash = `sha256:${context.sourceHash}`;
   if (
-    input.proposedState.base.runtimeSceneState.duration !== scene.duration ||
-    input.proposedState.evaluatedScene.sceneId !== input.proposedState.base.runtimeSceneState.sceneId
+    base.runtimeSceneState.duration !== scene.duration ||
+    base.runtimeSceneState.sceneId !== expectedStudioSceneId ||
+    base.editorContext.activeSceneId !== expectedStudioSceneId ||
+    input.proposedState.evaluatedScene.sceneId !== expectedStudioSceneId ||
+    base.sourceSnapshot.sourceId !== context.sourcePath ||
+    base.sourceSnapshot.hash !== expectedSourceHash
   ) {
-    return unsupported("source-correlation-invalid", "Studio state is not correlated with the verified V7 Scene.");
+    return unsupported(
+      "source-correlation-invalid",
+      "Studio state is not correlated with the verified temporal Scene.",
+    );
   }
 
   const identity = input.snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== scene.entities.length) {
-    return unsupported("identity-unverified", "Mixed V7 initial edits require complete runtime identity.");
+    return unsupported("identity-unverified", "Imported-animation edits require complete runtime identity.");
   }
   const runtimeEntities = new Map(scene.entities.map((entity) => [entity.id, entity]));
   const verifiedRuntimeIds = new Set<string>();
@@ -168,19 +256,19 @@ function planInitialTransformEdit(
       !runtimeEntities.has(mapping.entityId) ||
       verifiedRuntimeIds.has(mapping.entityId)
     ) {
-      return unsupported("identity-unverified", "Mixed V7 source/runtime identity is incomplete or ambiguous.");
+      return unsupported("identity-unverified", "Temporal source/runtime identity is incomplete or ambiguous.");
     }
     verifiedRuntimeIds.add(mapping.entityId);
   }
   if (verifiedRuntimeIds.size !== runtimeEntities.size) {
-    return unsupported("identity-unverified", "Mixed V7 source/runtime identity does not cover every entity.");
+    return unsupported("identity-unverified", "Temporal source/runtime identity does not cover every entity.");
   }
-  const baseEntities = input.proposedState.base.runtimeSceneState.objectGraph.entities;
+  const baseEntities = base.runtimeSceneState.objectGraph.entities;
   const evaluatedEntities = input.proposedState.evaluatedScene.objectGraph.entities;
   if (Object.keys(baseEntities).length !== Object.keys(evaluatedEntities).length) {
     return unsupported(
       "target-edit-unsupported",
-      "Mixed V7 initial edits cannot create, remove, or replace Studio-imported entities.",
+      "Initial imported-animation edits cannot create, remove, or replace Studio-imported entities.",
     );
   }
 
@@ -197,25 +285,48 @@ function planInitialTransformEdit(
       baseEntity.sourceIdentity.kind !== "known" ||
       entity.sourceIdentity.value !== baseEntity.sourceIdentity.value
     ) {
-      return unsupported("identity-unverified", "A mixed V7 edit target has no stable imported identity.");
+      return unsupported("identity-unverified", "A temporal edit target has no stable imported identity.");
     }
     const mapping = identity.get(entity.sourceIdentity.value);
+    // Static import may retain source-only transform targets (the `circle` in
+    // SquareToCircle) that are not independent runtime entities. They may
+    // remain in Studio's semantic graph, but any operation targeting one is
+    // rejected below because it has no verified runtime mapping.
+    if (!mapping) {
+      const onlyRuntimeMapping = identity.values().next().value;
+      const sourceOnlyV8TransformTarget =
+        profile === 8 &&
+        entity.type === "Circle" &&
+        entity.sourceIdentity.value === "circle" &&
+        onlyRuntimeMapping !== undefined &&
+        isExactStableSquareToCircleV8(scene, onlyRuntimeMapping.entityId);
+      if (sourceOnlyV8TransformTarget) continue;
+      return unsupported("identity-unverified", "Temporal source/runtime identity is incomplete or ambiguous.");
+    }
     if (
-      !mapping ||
       mapping.sourceName !== entity.sourceIdentity.value ||
       !runtimeEntities.has(mapping.entityId) ||
       mappedStudioRuntimeIds.has(mapping.entityId)
     ) {
-      return unsupported("identity-unverified", "Mixed V7 source/runtime identity is incomplete or ambiguous.");
+      return unsupported("identity-unverified", "Temporal source/runtime identity is incomplete or ambiguous.");
     }
     mappedStudioRuntimeIds.add(mapping.entityId);
     studioToRuntime.set(entity.id, mapping.entityId);
   }
-
   const channelsByEntity = new Map<string, SceneIrV1["animationChannels"]>();
   for (const channel of scene.animationChannels) {
-    if (channel.kind !== "path-trim" && channel.kind !== "motion-path") {
-      return unsupported("profile-unsupported", "Mixed V7 temporal preview found an unsupported channel kind.");
+    if (!("entityId" in channel)) {
+      return unsupported("profile-unsupported", "Temporal preview does not admit camera animation channels.");
+    }
+    const supportedKind =
+      profile === 7
+        ? channel.kind === "path-trim" || channel.kind === "motion-path"
+        : channel.kind === "opacity" ||
+          channel.kind === "path-morph" ||
+          channel.kind === "vector-appearance" ||
+          channel.kind === "path-trim";
+    if (!supportedKind) {
+      return unsupported("profile-unsupported", "Temporal preview found a channel outside its bounded profile.");
     }
     channelsByEntity.set(channel.entityId, [...(channelsByEntity.get(channel.entityId) ?? []), channel]);
   }
@@ -228,38 +339,38 @@ function planInitialTransformEdit(
   for (const record of input.proposedState.programs) {
     const { program } = record;
     if (record.validation.status !== "valid") {
-      return unsupported("conflicting-edit-unsupported", "Mixed V7 initial preview cannot apply an invalid Program.");
+      return unsupported("conflicting-edit-unsupported", "Temporal preview cannot apply an invalid Program.");
     }
     if (program.anchor.resolvedSeconds !== 0 || program.anchor.capturedPlayhead !== 0) {
       return unsupported(
         "mid-animation-edit-unsupported",
-        "Mixed V7 initial edits must be captured and anchored at source time zero.",
+        "Initial imported-animation edits must be captured and anchored at source time zero.",
       );
     }
     if (program.loweringStatus !== "supported") {
-      return unsupported("target-edit-unsupported", "Mixed V7 initial preview accepts only source-lowerable edits.");
+      return unsupported("target-edit-unsupported", "Temporal preview accepts only source-lowerable edits.");
     }
     for (const operation of program.operations) {
       if (operation.interval.start !== 0 || operation.interval.end !== 0) {
         return unsupported(
           "mid-animation-edit-unsupported",
-          "Mixed V7 initial edits must be instantaneous at source time zero.",
+          "Initial imported-animation edits must be instantaneous at source time zero.",
         );
       }
       if (authorizedOperations.has(operation.id)) {
-        return unsupported("conflicting-edit-unsupported", "Mixed V7 initial operation IDs must be unique.");
+        return unsupported("conflicting-edit-unsupported", "Temporal operation IDs must be unique.");
       }
       if (!("entityId" in operation)) {
-        return unsupported(operationIssueCode(operation.kind), "The operation does not commute with imported V7 time.");
+        return unsupported(operationIssueCode(operation.kind), "The operation does not commute with imported time.");
       }
       const runtimeEntityId = studioToRuntime.get(operation.entityId);
       if (!runtimeEntityId) {
-        return unsupported("identity-unverified", "An edited Studio entity has no verified V7 runtime identity.");
+        return unsupported("identity-unverified", "An edited Studio entity has no verified runtime identity.");
       }
       if (edit && edit.runtimeEntityId !== runtimeEntityId) {
         return unsupported(
           "conflicting-edit-unsupported",
-          "One mixed V7 preview revision may edit one logical target.",
+          "One temporal preview revision may edit one logical target.",
         );
       }
       const targetChannels = channelsByEntity.get(runtimeEntityId) ?? [];
@@ -270,13 +381,19 @@ function planInitialTransformEdit(
         );
       }
       const studioEntity = evaluatedEntities[operation.entityId];
-      const staticMathTex = studioEntity?.type === "MathTex" && targetChannels.length === 0;
-      const createTarget = targetChannels.length === 1 && isExactCreateChannel(targetChannels[0]!);
+      const staticMathTex = profile === 7 && studioEntity?.type === "MathTex" && targetChannels.length === 0;
+      const createTarget = profile === 7 && targetChannels.length === 1 && isExactCreateChannel(targetChannels[0]!);
+      const stableV8Target =
+        profile === 8 &&
+        studioEntity?.type === "Square" &&
+        studioEntity.sourceIdentity.kind === "known" &&
+        studioEntity.sourceIdentity.value === "square" &&
+        isExactStableSquareToCircleV8(scene, runtimeEntityId);
       const runtimeEntity = runtimeEntities.get(runtimeEntityId);
-      if ((!staticMathTex && !createTarget) || runtimeEntity?.geometry.kind !== "cubic-path") {
+      if ((!staticMathTex && !createTarget && !stableV8Target) || runtimeEntity?.geometry.kind !== "cubic-path") {
         return unsupported(
           "target-edit-unsupported",
-          "Mixed V7 initial edits are limited to static MathTex and exact cubic Create targets.",
+          "The temporal profile does not authorize this imported animation target.",
         );
       }
       const prior: AuthorizedEditV1 = edit ?? {
@@ -287,7 +404,7 @@ function planInitialTransformEdit(
       };
       if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
         if (prior.position) {
-          return unsupported("conflicting-edit-unsupported", "One mixed V7 target has conflicting position edits.");
+          return unsupported("conflicting-edit-unsupported", "One temporal target has conflicting position edits.");
         }
         edit = { ...prior, operationIds: [...prior.operationIds, operation.id], position: { ...operation.value } };
         authorizedOperations.set(operation.id, {
@@ -313,7 +430,7 @@ function planInitialTransformEdit(
         closeEnough(operation.to / operation.from, operation.relativeFactor)
       ) {
         if (prior.scaleFactor !== null) {
-          return unsupported("conflicting-edit-unsupported", "One mixed V7 target has conflicting scale edits.");
+          return unsupported("conflicting-edit-unsupported", "One temporal target has conflicting scale edits.");
         }
         edit = {
           ...prior,
@@ -329,12 +446,12 @@ function planInitialTransformEdit(
       }
       return unsupported(
         operationIssueCode(operation.kind),
-        "Mixed V7 initial preview accepts only finite position and positive uniform scale edits.",
+        "Temporal preview accepts only finite position and positive uniform scale edits.",
       );
     }
   }
   if (!edit) {
-    return unsupported("target-edit-unsupported", "Mixed V7 initial preview found no supported edit.");
+    return unsupported("target-edit-unsupported", "Temporal preview found no supported edit.");
   }
 
   const observedOperations = new Map<string, number>();
@@ -364,7 +481,7 @@ function planInitialTransformEdit(
       ) {
         return unsupported(
           "conflicting-edit-unsupported",
-          "Evaluated mixed V7 property evidence does not match its authorized operation value.",
+          "Evaluated temporal property evidence does not match its authorized operation value.",
         );
       }
       observedOperations.set(sample.operationId, (observedOperations.get(sample.operationId) ?? 0) + 1);
@@ -373,14 +490,14 @@ function planInitialTransformEdit(
   if ([...authorizedOperations].some(([operationId]) => observedOperations.get(operationId) !== 1)) {
     return unsupported(
       "conflicting-edit-unsupported",
-      "Mixed V7 initial preview requires one evaluated property sample per authorized operation.",
+      "Temporal preview requires one evaluated property sample per authorized operation.",
     );
   }
-  return { edit, kind: "supported" };
+  return { edit, kind: "supported", profile };
 }
 
 /**
- * Rebase one bounded t=0 Studio transform directly onto a verified mixed V7
+ * Rebase one bounded t=0 Studio transform directly onto a verified temporal
  * snapshot. The static Studio adapter is deliberately bypassed: untouched
  * dynamic semantic state is not reconstructed or flattened.
  */
@@ -399,22 +516,22 @@ export function compileStudioPreviewTemporalRebaseV1(
     input.frame.width !== scene.camera.view.frameWidth ||
     input.frame.height !== scene.camera.view.frameHeight
   ) {
-    return unsupported("camera-edit-unsupported", "Mixed V7 rebase requires the exact verified camera frame.");
+    return unsupported("camera-edit-unsupported", "Temporal rebase requires the exact verified camera frame.");
   }
   const planned = planInitialTransformEdit(input);
   if (planned.kind !== "supported") return planned;
-  const { edit } = planned;
+  const { edit, profile } = planned;
   const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);
   const target = scene.entities[targetIndex];
   const center = target ? localBoundaryCenter(target) : null;
   if (!target || !center) {
-    return unsupported("geometry-edit-unsupported", "The authorized V7 target has no bounded cubic geometry.");
+    return unsupported("geometry-edit-unsupported", "The authorized temporal target has no bounded cubic geometry.");
   }
   const sourceTransform = uniformSourceTransform(target, center);
   if (!sourceTransform) {
     return unsupported(
       "profile-unsupported",
-      "Verified V7 base entities must retain a finite positive uniform transform without rotation or shear.",
+      "Verified temporal base entities must retain a finite positive uniform transform without rotation or shear.",
     );
   }
   const scale = sourceTransform.scale * (edit.scaleFactor ?? 1);
@@ -422,11 +539,14 @@ export function compileStudioPreviewTemporalRebaseV1(
     ? studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center)
     : sourceTransform.worldCenter;
   if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(targetCenter.x) || !Number.isFinite(targetCenter.y)) {
-    return unsupported("profile-unsupported", "The composed V7 transform is not finite and positive.");
+    return unsupported("profile-unsupported", "The composed temporal transform is not finite and positive.");
   }
   const provenanceId = `studio-temporal-rebase:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
-    return unsupported("conflicting-edit-unsupported", "The Studio V7 rebase provenance identity already exists.");
+    return unsupported(
+      "conflicting-edit-unsupported",
+      "The Studio temporal rebase provenance identity already exists.",
+    );
   }
   const editedEntity: SceneEntityV1 = {
     ...target,
@@ -447,7 +567,7 @@ export function compileStudioPreviewTemporalRebaseV1(
       ...scene.provenance,
       {
         evidence: [
-          "Studio t=0 transform rebased onto verified mixed V7 geometry",
+          `Studio t=0 transform rebased onto verified snapshot V${profile} geometry`,
           ...edit.operationIds.map((operationId) => `authorized operation ${operationId}`),
         ],
         id: provenanceId,
@@ -460,7 +580,7 @@ export function compileStudioPreviewTemporalRebaseV1(
   if (!parsed.success) {
     return unsupported(
       "conflicting-edit-unsupported",
-      `The mixed V7 temporal rebase is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
+      `The temporal rebase is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
     );
   }
   return { kind: "rebased", scene: candidate };

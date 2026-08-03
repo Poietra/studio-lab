@@ -41,6 +41,7 @@ export type StudioPreviewAuthorityActionV1 =
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
   committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
+  draftProposedState: ProposedState | null;
   frame: Readonly<{ height: number; width: number }>;
   retainedSourceDuration: number | null;
   sampleTime: number;
@@ -169,6 +170,7 @@ function activationIsAllowed() {
 export function useStudioPreviewAuthorityController({
   committedProposedState,
   context,
+  draftProposedState,
   frame,
   retainedSourceDuration,
   sampleTime,
@@ -214,6 +216,7 @@ export function useStudioPreviewAuthorityController({
   const renderer = useStudioPreviewRenderer({
     committedProposedState,
     context,
+    draftProposedState,
     frame,
     provider,
     retainedSourceDuration,

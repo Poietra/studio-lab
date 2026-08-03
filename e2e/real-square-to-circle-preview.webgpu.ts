@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
 
@@ -71,6 +71,36 @@ async function verifiedSnapshot(page: Page) {
     publicationRevision: body.revision,
     snapshotHash: body.snapshot.snapshotHash,
   };
+}
+
+async function waitForNewPresentedFrame(page: Page, previousRevision: string, previousPacket: string) {
+  const canvas = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(
+      async () => {
+        const [phase, revision, packet, reason] = await Promise.all([
+          canvas.getAttribute("data-preview-renderer"),
+          canvas.getAttribute("data-preview-revision"),
+          canvas.getAttribute("data-preview-packet-id"),
+          canvas.getAttribute("data-preview-fallback-reason"),
+        ]);
+        return phase === "presented" && revision && revision !== previousRevision && packet && packet !== previousPacket
+          ? "presented"
+          : JSON.stringify({ packet, phase, reason, revision });
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("presented");
+}
+
+async function dragBy(page: Page, target: Locator, delta: Readonly<{ x: number; y: number }>) {
+  const box = await target.boundingBox();
+  if (!box) throw new Error("The SquareToCircle edit target is not visible.");
+  const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + delta.x, origin.y + delta.y);
+  await page.mouse.up();
 }
 
 async function retainedWebGpuSamples(
@@ -283,4 +313,65 @@ test("renders official SquareToCircle V8 through retained browser WebGPU across 
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(snappedSampleTime));
   }
+
+  await playhead.fill("0.5");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "0.5");
+  const pristineSquareBounds = await square.boundingBox();
+  if (!pristineSquareBounds) throw new Error("The pristine Square has no visible browser bounds.");
+
+  // Imported source edits are anchored at t=0. The semantic wrapper remains
+  // editable while Create has not yet exposed runtime hit geometry.
+  await playhead.fill("0");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "0");
+  const pristineRevision = await canvas.getAttribute("data-preview-revision");
+  const pristinePacket = await canvas.getAttribute("data-preview-packet-id");
+  if (!pristineRevision || !pristinePacket) throw new Error("The pristine V8 frame has no retained identity.");
+
+  await page.getByRole("button", { name: "Set position" }).click();
+  await page.getByRole("checkbox", { name: "Select square" }).check();
+  await dragBy(page, square, { x: 32, y: -18 });
+  const draft = page.getByRole("heading", { name: "Draft program" });
+  await expect(draft).toBeVisible();
+  // V8 is frozen and has no explicit source anchor, so this remains a local
+  // draft preview. Source apply/export continues to fail closed.
+  await waitForNewPresentedFrame(page, pristineRevision, pristinePacket);
+  await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
+
+  for (const sampleTime of [0.5, 1.5, 2.5]) {
+    await playhead.fill(String(sampleTime));
+    await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+    await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
+    await expect(page.locator(`[data-studio-entity-wrapper="${studioEntityId}"]`)).toHaveAttribute(
+      "data-studio-runtime-entity",
+      entityId,
+    );
+    if (sampleTime === 0.5) {
+      const editedSquareBounds = await square.boundingBox();
+      if (!editedSquareBounds) throw new Error("The edited Square has no visible browser bounds.");
+      const pristineCenter = {
+        x: pristineSquareBounds.x + pristineSquareBounds.width / 2,
+        y: pristineSquareBounds.y + pristineSquareBounds.height / 2,
+      };
+      const editedCenter = {
+        x: editedSquareBounds.x + editedSquareBounds.width / 2,
+        y: editedSquareBounds.y + editedSquareBounds.height / 2,
+      };
+      // Prepared trim bounds are quantized to the browser canvas; keep the
+      // interaction-center proof within two CSS pixels of the pointer delta.
+      expect(Math.abs(editedCenter.x - pristineCenter.x - 32)).toBeLessThan(2);
+      expect(Math.abs(editedCenter.y - pristineCenter.y + 18)).toBeLessThan(2);
+    }
+  }
+
+  // A synthetic t=0 anchor authorizes one local preview draft only. A second
+  // drag temporarily suppresses renderer interaction authority, but still
+  // must not promote the first source-unlowerable draft into Applied programs.
+  await playhead.fill("0");
+  await dragBy(page, square, { x: 8, y: 0 });
+  await expect(page.getByRole("alert")).toContainText("Discard the preview-only draft before starting another edit.");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.getByText("Apply a draft to add it to the Scene working state.")).toBeVisible();
+  await page.getByRole("button", { name: "Discard" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeHidden();
+  await expect(page.getByText("Apply a draft to add it to the Scene working state.")).toBeVisible();
 });
