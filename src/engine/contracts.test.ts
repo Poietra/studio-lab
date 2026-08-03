@@ -235,7 +235,7 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
-  it("round-trips imported snapshot profiles V6 through V8 without coercing the negotiated integer union", () => {
+  it("round-trips imported snapshot profiles V6 through V9 without coercing the negotiated integer union", () => {
     const source = {
       kind: "imported-manim-server-snapshot" as const,
       runtimeConfigHash: ZERO_HASH,
@@ -246,7 +246,8 @@ describe("Poietra Engine v1 contracts", () => {
     expect(sceneSourceV1Schema.parse(JSON.parse(JSON.stringify(source)))).toEqual(source);
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 6 })).toEqual({ ...source, snapshotVersion: 6 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 8 })).toEqual({ ...source, snapshotVersion: 8 });
-    for (const unsupported of [0, 2.5, 9]) {
+    expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 9 })).toEqual({ ...source, snapshotVersion: 9 });
+    for (const unsupported of [0, 2.5, 10]) {
       expect(sceneSourceV1Schema.safeParse({ ...source, snapshotVersion: unsupported }).success).toBe(false);
     }
   });

@@ -7,6 +7,7 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
 } from "./fast-manim-snapshot-contract";
 import { productionSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
@@ -97,6 +98,38 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
       version: 1,
     });
 
+    expect(configured.runtimeConfigHash).toBe(expectedRuntimeConfigHash);
+
+    const created = client();
+    createClient.mockResolvedValue(created as never);
+    const handle = await configured.create({
+      projectId: "project-a",
+      sourceProvider: { readVerified: async () => Promise.reject(new Error("not used")) },
+    });
+    expect(handle.runtimeConfigHash).toBe(expectedRuntimeConfigHash);
+
+    await handle.runner.close();
+    await configured.close();
+  });
+
+  it("pins the exact V9 capability surface into the factory and runner handle cache identity", async () => {
+    const frame = { height: 8, width: 14.222222222222221 } as const;
+    const configured = new FastManimProductionSnapshotRunnerFactoryV1({
+      client: {} as never,
+      frame,
+      snapshotVersion: 9,
+      tenantId: "tenant-a",
+    });
+    const expectedRuntimeConfigHash = digestFastManimSnapshotRuntimeConfigV1({
+      capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9],
+      frame,
+      randomSeed: 0,
+      schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+      snapshotVersion: 9,
+      version: 1,
+    });
+
+    expect(expectedRuntimeConfigHash).toBe("a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a");
     expect(configured.runtimeConfigHash).toBe(expectedRuntimeConfigHash);
 
     const created = client();

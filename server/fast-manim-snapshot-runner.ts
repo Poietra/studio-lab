@@ -28,6 +28,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FastManimSnapshotContractError,
   type FastManimSnapshotProducerRequestV1,
@@ -321,7 +322,9 @@ export class FastManimSnapshotRunner {
           ? (["png-image"] as const)
           : this.snapshotVersion === 8
             ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8
-            : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
+            : this.snapshotVersion === 9
+              ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9
+              : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
     ]);
     this.deployment = deployment;
     this.frame = Object.freeze({ height: options.frame.height, width: options.frame.width });

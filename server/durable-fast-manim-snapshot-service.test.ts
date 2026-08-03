@@ -36,6 +36,7 @@ const PROFILE_DIGEST = "c".repeat(64);
 const RESULT_DIGEST = "d".repeat(64);
 const SNAPSHOT_DIGEST = "e".repeat(64);
 const RELEASE_RUNTIME_DIGEST = "f".repeat(64);
+const V9_RUNTIME_CONFIG_HASH = "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a";
 const PUBLISHED_AT = new Date("2026-07-28T01:02:03.000Z");
 const request = {
   projectId: PROJECT,
@@ -144,6 +145,21 @@ const verifiedView = {
   status: "verified",
   version: 1,
 } as const satisfies FastManimUnpublishedSnapshotRunViewV1;
+
+const v9VerifiedView = {
+  ...verifiedView,
+  runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
+  snapshot: {
+    ...compiledSnapshot,
+    bundle: {
+      ...compiledSnapshot.bundle,
+      scene: {
+        ...compiledSnapshot.bundle.scene,
+        source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 9 },
+      },
+    },
+  } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
+} satisfies FastManimUnpublishedSnapshotRunViewV1;
 
 const artifact = {
   byteSize: 256,
@@ -411,6 +427,30 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
+  });
+
+  it("preserves V9 and its runtime-config cache identity at the durable publication boundary", async () => {
+    const fixture = harness(v9VerifiedView, RELEASE_RUNTIME_DIGEST, V9_RUNTIME_CONFIG_HASH);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+
+    expect(fixture.publish).toHaveBeenCalledOnce();
+    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
+      expected: {
+        runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
+        snapshotVersion: 9,
+      },
+      runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
+      snapshot: v9VerifiedView.snapshot,
+    });
+
+    await expect(
+      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(fixture.readCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeConfigHash: V9_RUNTIME_CONFIG_HASH }),
+      undefined,
+    );
   });
 
   it("retains the server-derived V4 image transform plan for durable publication", async () => {

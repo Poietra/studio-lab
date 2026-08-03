@@ -38,7 +38,8 @@ describe("Manim command parsing", () => {
     expect(parseFastManimSnapshotVersion("6")).toBe(6);
     expect(parseFastManimSnapshotVersion("7")).toBe(7);
     expect(parseFastManimSnapshotVersion("8")).toBe(8);
-    expect(() => parseFastManimSnapshotVersion("9")).toThrow(/must be 1, 2, 3, 4, 5, 6, 7, or 8/i);
+    expect(parseFastManimSnapshotVersion("9")).toBe(9);
+    expect(() => parseFastManimSnapshotVersion("10")).toThrow(/must be 1, 2, 3, 4, 5, 6, 7, 8, or 9/i);
   });
 });
 

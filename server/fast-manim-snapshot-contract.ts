@@ -62,6 +62,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(6),
   z.literal(7),
   z.literal(8),
+  z.literal(9),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -2214,6 +2215,10 @@ const FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8 = {
   height: 8,
   width: 14.222222222222221,
 } as const;
+const FAST_MANIM_WARP_SQUARE_FRAME_V9 = {
+  height: 8,
+  width: 14.222222222222221,
+} as const;
 
 function fastManimSquareToCircleSemanticDigestV8(
   entity: StaticProfileEntity,
@@ -2523,6 +2528,9 @@ function assertFastManimSnapshotProfileV1(
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
+  if (snapshotVersion === 9) {
+    profileViolation("WarpSquare profile V9 semantic verification is not enabled yet.");
+  }
   if (snapshotVersion === 8) {
     assertSquareToCircleProfileV8(bundle, expectedFrame, mode, expectedIdentity);
     return;
@@ -2819,6 +2827,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7;
     case 8:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8;
+    case 9:
+      profileViolation("WarpSquare profile V9 semantic verification is not enabled yet.");
   }
 }
 
@@ -3065,6 +3075,17 @@ export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8 = Object.freeze([
   "vector-appearance-animation",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 
+/**
+ * The separately negotiated V9 runtime surface. It is intentionally narrower
+ * than V1 and V8: the bounded WarpSquare slice needs one cubic path and its
+ * path-morph channel, but no unrelated animation capability.
+ */
+export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9 = Object.freeze([
+  "cubic-path-geometry",
+  "path-morph-animation",
+  "shape-primitives",
+] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
+
 export const MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -3132,6 +3153,19 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       });
     }
     if (
+      config.snapshotVersion === 9 &&
+      (config.capabilities.length !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9.length ||
+        config.capabilities.some(
+          (capability, index) => capability !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9[index],
+        ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "WarpSquare profile V9 runtime requests must declare its exact frozen capability set.",
+        path: ["capabilities"],
+      });
+    }
+    if (
       config.snapshotVersion === 8 &&
       (config.frame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
         config.frame.width !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.width)
@@ -3139,6 +3173,17 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       context.addIssue({
         code: "custom",
         message: "SquareToCircle profile V8 runtime requests require the exact canonical demo frame.",
+        path: ["frame"],
+      });
+    }
+    if (
+      config.snapshotVersion === 9 &&
+      (config.frame.height !== FAST_MANIM_WARP_SQUARE_FRAME_V9.height ||
+        config.frame.width !== FAST_MANIM_WARP_SQUARE_FRAME_V9.width)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "WarpSquare profile V9 runtime requests require the exact canonical demo frame.",
         path: ["frame"],
       });
     }

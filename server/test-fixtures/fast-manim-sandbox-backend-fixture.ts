@@ -35,6 +35,17 @@ export function sandboxProducerRequest(): FastManimSnapshotProducerRequestV1 {
   };
 }
 
+export function sandboxProducerRequestV9(): FastManimSnapshotProducerRequestV1 {
+  const request = sandboxProducerRequest();
+  const config = runtimeConfig(9);
+  return {
+    ...request,
+    runtimeConfig: config,
+    runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(config),
+    snapshotVersion: 9,
+  };
+}
+
 export function localSandboxReadyStatus(profileDigest = SANDBOX_TEST_SHA_A): FastManimSandboxBackendStatusV1 {
   return {
     attestation: { profileDigest, runtimeDigest: SANDBOX_TEST_SHA_B, trust: "development-only" },

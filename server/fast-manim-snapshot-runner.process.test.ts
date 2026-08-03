@@ -130,6 +130,26 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     expect(bundle.scene.entities.every((entity) => entity.lifetimes[0]?.end === 2.5)).toBe(true);
   });
 
+  it("carries V9 through the runner and local sandbox while semantic acceptance remains fail-closed", async () => {
+    const root = await projectRoot();
+    const unsupportedRunner = createRunner(root, producerCommand("--mode=unsupported"), { snapshotVersion: 9 });
+    const unsupported = await unsupportedRunner.run(
+      runRequest({ requestId: "snapshot-request-v9-unsupported-transport" }),
+    );
+
+    expect(unsupported).toMatchObject({ status: "unsupported" });
+    expect(unsupported.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(9)));
+    await unsupportedRunner.close();
+
+    const compiledRunner = createRunner(root, producerCommand(), { snapshotVersion: 9 });
+    expectFailure(
+      await compiledRunner.run(runRequest({ requestId: "snapshot-request-v9-semantic-gate" })),
+      "result-rejected",
+      "profile-violation",
+    );
+    await compiledRunner.close();
+  });
+
   it("verifies and republishes the current snapshotJson source/runtime identity map", async () => {
     const runner = createRunner(await projectRoot(), producerCommand("--mode=combined-identity"));
     const first = await runner.run(runRequest());
