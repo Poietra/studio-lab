@@ -1,0 +1,191 @@
+use std::fs;
+use std::path::PathBuf;
+
+use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
+use poietra_scene_ir::{
+    AnimationChannelV1, RenderDrawV1, SceneIrBundleV1, StrokeStyleV1, VectorAppearanceValueV1,
+    ViewportV1, validate_scene_ir_v1,
+};
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct Fixture {
+    assets: serde_json::Value,
+    id: String,
+    samples: Vec<FixtureSample>,
+    scene: serde_json::Value,
+    viewport: ViewportV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct FixtureSample {
+    expected: VectorAppearanceValueV1,
+    id: String,
+    sample_time: f64,
+}
+
+fn fixture() -> (Fixture, SceneIrBundleV1) {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../fixtures/engine-v1/vector-appearance-square-circle.json");
+    let fixture: Fixture = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .unwrap();
+    (fixture, bundle)
+}
+
+fn assert_close(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() <= 1.0e-14 * expected.abs().max(1.0),
+        "expected {expected}, received {actual}"
+    );
+}
+
+fn assert_appearance(
+    fill: &poietra_scene_ir::FillStyleV1,
+    stroke: &StrokeStyleV1,
+    expected: &VectorAppearanceValueV1,
+) {
+    let expected_fill = expected.fill.as_ref().unwrap();
+    let expected_stroke = expected.stroke.as_ref().unwrap();
+    assert_eq!(fill.rule, expected_fill.rule);
+    assert_close(fill.color.alpha, expected_fill.color.alpha);
+    assert_close(fill.color.blue, expected_fill.color.blue);
+    assert_close(fill.color.green, expected_fill.color.green);
+    assert_close(fill.color.red, expected_fill.color.red);
+    assert_eq!(stroke.cap, expected_stroke.cap);
+    assert_eq!(stroke.join, expected_stroke.join);
+    assert_close(stroke.miter_limit, expected_stroke.miter_limit);
+    assert_close(stroke.width_world, expected_stroke.width_world);
+    assert_close(stroke.color.alpha, expected_stroke.color.alpha);
+    assert_close(stroke.color.blue, expected_stroke.color.blue);
+    assert_close(stroke.color.green, expected_stroke.color.green);
+    assert_close(stroke.color.red, expected_stroke.color.red);
+}
+
+#[test]
+fn retained_evaluator_matches_square_to_circle_appearance_at_unordered_boundary_samples() {
+    let (fixture, bundle) = fixture();
+    assert_eq!(
+        fixture
+            .samples
+            .iter()
+            .map(|sample| sample.sample_time)
+            .collect::<Vec<_>>(),
+        vec![1.5, 1.0, 1.25, 2.0, 1.5]
+    );
+    assert_close(bundle.scene.entities[0].lifetimes[0].start, 0.0);
+    assert_close(bundle.scene.entities[0].lifetimes[0].end, 3.0);
+    assert!(matches!(
+        &bundle.scene.animation_channels[..],
+        [
+            AnimationChannelV1::PathMorph { entity_id: morph, .. },
+            AnimationChannelV1::VectorAppearance { entity_id: appearance, .. }
+        ] if morph == "shape" && appearance == "shape"
+    ));
+    let session = EngineSessionV1::new(bundle).unwrap();
+    let mut first_midpoint = None;
+    for sample in &fixture.samples {
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[fixture.id.clone(), sample.id.clone()],
+                packet_id: &format!("appearance:{}", sample.id),
+                sample_time: sample.sample_time,
+                viewport: fixture.viewport.clone(),
+            })
+            .unwrap();
+        let RenderDrawV1::Path {
+            entity_id,
+            fill: Some(fill),
+            stroke: Some(stroke),
+            ..
+        } = &packet.draws[0]
+        else {
+            panic!("{} must sample one materialized path", sample.id);
+        };
+        assert_eq!(entity_id, "shape");
+        assert_appearance(fill, stroke, &sample.expected);
+        if sample.id == "midpoint-first" {
+            first_midpoint = Some((fill.clone(), stroke.clone()));
+        } else if sample.id == "midpoint-repeat" {
+            assert_eq!(
+                first_midpoint.as_ref(),
+                Some(&(fill.clone(), stroke.clone()))
+            );
+        }
+    }
+
+    let before = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "appearance:before",
+            sample_time: 0.5,
+            viewport: fixture.viewport.clone(),
+        })
+        .unwrap();
+    assert!(matches!(
+        &before.draws[0],
+        RenderDrawV1::Path { fill: None, .. }
+    ));
+}
+
+#[test]
+fn contract_rejects_implicit_cross_fades_and_samples_stroke_width() {
+    let (_, bundle) = fixture();
+
+    let mut absent = bundle.scene.clone();
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } = &mut absent.animation_channels[1]
+    else {
+        panic!("fixture appearance channel is missing");
+    };
+    keyframes[1].value.fill = None;
+    assert!(
+        validate_scene_ir_v1(&absent)
+            .unwrap_err()
+            .contains_message("absent and solid fill")
+    );
+
+    let mut opaque = bundle.scene.clone();
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } = &mut opaque.animation_channels[1]
+    else {
+        unreachable!()
+    };
+    keyframes[0].value.fill.as_mut().unwrap().color.alpha = 1.0;
+    assert!(
+        validate_scene_ir_v1(&opaque)
+            .unwrap_err()
+            .contains_message("transparent solid fill")
+    );
+
+    let mut width_bundle = bundle;
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut width_bundle.scene.animation_channels[1]
+    else {
+        unreachable!()
+    };
+    keyframes[1].value.stroke.as_mut().unwrap().width_world = 0.08;
+    let session = EngineSessionV1::new(width_bundle).unwrap();
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[],
+            packet_id: "appearance:width",
+            sample_time: 1.25,
+            viewport: ViewportV1 {
+                height_px: 90,
+                width_px: 160,
+            },
+        })
+        .unwrap();
+    let RenderDrawV1::Path {
+        stroke: Some(stroke),
+        ..
+    } = &packet.draws[0]
+    else {
+        panic!("expected a stroked path");
+    };
+    assert_close(stroke.width_world, 0.042_804_148_661_804_33);
+}

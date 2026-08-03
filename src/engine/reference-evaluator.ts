@@ -53,6 +53,46 @@ function interpolateNumber(left: number, right: number, progress: number) {
   return left + (right - left) * progress;
 }
 
+type VectorEntityAppearanceV1 = Extract<SceneIrV1["entities"][number]["appearance"], { kind: "vector" }>;
+type FillStyleV1 = NonNullable<VectorEntityAppearanceV1["fill"]>;
+type StrokeStyleV1 = NonNullable<VectorEntityAppearanceV1["stroke"]>;
+type RgbaColorV1 = FillStyleV1["color"];
+type VectorAppearanceValueV1 = Readonly<{ fill: FillStyleV1 | null; stroke: StrokeStyleV1 | null }>;
+
+function interpolateColor(left: RgbaColorV1, right: RgbaColorV1, progress: number): RgbaColorV1 {
+  return {
+    alpha: interpolateNumber(left.alpha, right.alpha, progress),
+    blue: interpolateNumber(left.blue, right.blue, progress),
+    green: interpolateNumber(left.green, right.green, progress),
+    red: interpolateNumber(left.red, right.red, progress),
+  };
+}
+
+function interpolateVectorAppearance(
+  left: VectorAppearanceValueV1,
+  right: VectorAppearanceValueV1,
+  progress: number,
+): VectorAppearanceValueV1 {
+  if ((left.fill === null) !== (right.fill === null) || (left.stroke === null) !== (right.stroke === null)) {
+    throw new Error("vector-appearance paint presence changed after validation.");
+  }
+  const fill =
+    left.fill === null || right.fill === null
+      ? null
+      : { color: interpolateColor(left.fill.color, right.fill.color, progress), rule: left.fill.rule };
+  const stroke =
+    left.stroke === null || right.stroke === null
+      ? null
+      : {
+          cap: left.stroke.cap,
+          color: interpolateColor(left.stroke.color, right.stroke.color, progress),
+          join: left.stroke.join,
+          miterLimit: left.stroke.miterLimit,
+          widthWorld: interpolateNumber(left.stroke.widthWorld, right.stroke.widthWorld, progress),
+        };
+  return { fill, stroke };
+}
+
 function interpolateCameraView(
   left: SceneIrV1["camera"]["view"],
   right: SceneIrV1["camera"]["view"],
@@ -95,8 +135,10 @@ function entityChannel<K extends EntityChannelKindV1>(
 type SampledLocalEntity = Readonly<{
   emptyReason?: "path-trim-zero" | "singular-affine-sample";
   entity: SceneIrV1["entities"][number];
+  fill?: FillStyleV1 | null;
   opacity: number;
   path?: CubicPathV1;
+  stroke?: StrokeStyleV1 | null;
   transform: EngineAffineTransformV1;
 }>;
 
@@ -109,6 +151,16 @@ function sampleLocalEntity(
   const opacity = opacityChannel
     ? sampleKeyframes(entity.appearance.opacity, opacityChannel.keyframes, time, interpolateNumber).value
     : entity.appearance.opacity;
+
+  const appearanceChannel = entityChannel(channels, entity.id, "vector-appearance");
+  const baseAppearance =
+    entity.appearance.kind === "vector"
+      ? { fill: entity.appearance.fill, stroke: entity.appearance.stroke }
+      : undefined;
+  const appearance =
+    appearanceChannel && baseAppearance
+      ? sampleKeyframes(baseAppearance, appearanceChannel.keyframes, time, interpolateVectorAppearance).value
+      : baseAppearance;
 
   const transformChannel = entityChannel(channels, entity.id, "affine-transform");
   const transformSample = transformChannel
@@ -154,7 +206,7 @@ function sampleLocalEntity(
           : trimCubicPathV1(path, trim);
     }
   }
-  return { emptyReason, entity, opacity, path, transform };
+  return { emptyReason, entity, fill: appearance?.fill, opacity, path, stroke: appearance?.stroke, transform };
 }
 
 type WorldSample = Readonly<{ opacity: number; transform: EngineAffineTransformV1 }>;
@@ -286,13 +338,13 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
       return {
         drawId: `draw:${entity.sceneOrder}`,
         entityId: entity.id,
-        fill: entity.appearance.kind === "vector" ? entity.appearance.fill : null,
+        fill: localSample.fill ?? null,
         kind: "path" as const,
         opacity: worldSample.opacity,
         paintOrder,
         path: localSample.path!,
         sourceZIndex: entity.sourceZIndex,
-        stroke: entity.appearance.kind === "vector" ? entity.appearance.stroke : null,
+        stroke: localSample.stroke ?? null,
         transform: worldSample.transform,
       };
     });

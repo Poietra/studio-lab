@@ -205,6 +205,24 @@ const pathMorphChannelV1Schema = z
   })
   .strict();
 
+export const vectorAppearanceValueV1Schema = z
+  .object({
+    fill: fillStyleV1Schema.nullable(),
+    stroke: strokeStyleV1Schema.nullable(),
+  })
+  .strict()
+  .refine((appearance) => appearance.fill !== null || appearance.stroke !== null, {
+    message: "A vector appearance keyframe requires a fill or stroke.",
+  });
+
+const vectorAppearanceChannelV1Schema = z
+  .object({
+    ...entityChannelBase,
+    keyframes: z.array(keyframeV1Schema(vectorAppearanceValueV1Schema)).min(2).max(MAX_KEYFRAMES),
+    kind: z.literal("vector-appearance"),
+  })
+  .strict();
+
 const motionPathChannelV1Schema = z
   .object({
     ...entityChannelBase,
@@ -247,6 +265,7 @@ export const animationChannelV1Schema = z.discriminatedUnion("kind", [
   opacityChannelV1Schema,
   pathMorphChannelV1Schema,
   pathTrimChannelV1Schema,
+  vectorAppearanceChannelV1Schema,
 ]);
 
 export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
@@ -304,6 +323,7 @@ export const sceneCapabilityV1Schema = z.enum([
   "path-trim-animation",
   "png-image",
   "shape-primitives",
+  "vector-appearance-animation",
 ]);
 
 const sceneIrV1BaseSchema = z
@@ -572,6 +592,103 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
         }
       });
     }
+    if (channel.kind === "vector-appearance") {
+      if (entity.appearance.kind !== "vector") {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance requires vector geometry and appearance.",
+          path: ["animationChannels", index, "entityId"],
+        });
+        return;
+      }
+      const first = channel.keyframes[0]?.value;
+      if (!first) return;
+      if (entity.appearance.fill === null && first.fill !== null && first.fill.color.alpha !== 0) {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance may materialize an absent base fill only as an explicit transparent solid fill.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "fill"],
+        });
+      }
+      if (entity.appearance.fill !== null && first.fill === null) {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance cannot discard the entity base fill.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "fill"],
+        });
+      }
+      if (entity.appearance.fill !== null && first.fill !== null && entity.appearance.fill.rule !== first.fill.rule) {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance cannot transition between fill rules.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "fill", "rule"],
+        });
+      }
+      if (entity.appearance.stroke === null && first.stroke !== null && first.stroke.color.alpha !== 0) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "vector-appearance may materialize an absent base stroke only as an explicit transparent solid stroke.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "stroke"],
+        });
+      }
+      if (entity.appearance.stroke !== null && first.stroke === null) {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance cannot discard the entity base stroke.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "stroke"],
+        });
+      }
+      if (
+        entity.appearance.stroke !== null &&
+        first.stroke !== null &&
+        (entity.appearance.stroke.cap !== first.stroke.cap ||
+          entity.appearance.stroke.join !== first.stroke.join ||
+          entity.appearance.stroke.miterLimit !== first.stroke.miterLimit)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "vector-appearance cannot transition between stroke cap, join, or miter-limit styles.",
+          path: ["animationChannels", index, "keyframes", 0, "value", "stroke"],
+        });
+      }
+      channel.keyframes.forEach((keyframe, keyframeIndex) => {
+        const value = keyframe.value;
+        const valuePath = ["animationChannels", index, "keyframes", keyframeIndex, "value"];
+        if ((value.fill === null) !== (first.fill === null)) {
+          context.addIssue({
+            code: "custom",
+            message: "vector-appearance cannot transition between absent and solid fill.",
+            path: [...valuePath, "fill"],
+          });
+        } else if (value.fill !== null && first.fill !== null && value.fill.rule !== first.fill.rule) {
+          context.addIssue({
+            code: "custom",
+            message: "vector-appearance cannot transition between fill rules.",
+            path: [...valuePath, "fill", "rule"],
+          });
+        }
+        if ((value.stroke === null) !== (first.stroke === null)) {
+          context.addIssue({
+            code: "custom",
+            message: "vector-appearance cannot transition between absent and solid stroke.",
+            path: [...valuePath, "stroke"],
+          });
+        } else if (value.stroke !== null && first.stroke !== null) {
+          if (
+            value.stroke.cap !== first.stroke.cap ||
+            value.stroke.join !== first.stroke.join ||
+            value.stroke.miterLimit !== first.stroke.miterLimit
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: "vector-appearance cannot transition between stroke cap, join, or miter-limit styles.",
+              path: [...valuePath, "stroke"],
+            });
+          }
+        }
+      });
+    }
     if (channel.kind === "motion-path") {
       if (channel.path.subpaths.length !== 1) {
         context.addIssue({
@@ -616,7 +733,9 @@ function requiredCapabilities(scene: SceneIrV1Input) {
               ? "opacity-animation"
               : channel.kind === "path-morph"
                 ? "path-morph-animation"
-                : "path-trim-animation";
+                : channel.kind === "path-trim"
+                  ? "path-trim-animation"
+                  : "vector-appearance-animation";
     capabilities.add(capability);
   }
   return [...capabilities].sort();

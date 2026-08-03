@@ -558,6 +558,12 @@ mod tests {
         serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
     }
 
+    fn appearance_fixture() -> Value {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/engine-v1/vector-appearance-square-circle.json");
+        serde_json::from_slice(&fs::read(path).unwrap()).unwrap()
+    }
+
     fn snapshot(fixture: &Value) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "assets": fixture["assets"],
@@ -625,6 +631,56 @@ mod tests {
         let sampled = session.sample_packet_json(&request).unwrap();
 
         assert!((sampled.packet.draws[0].opacity() - 0.070_103_716_545_108_15).abs() <= 1.0e-15);
+    }
+
+    #[test]
+    fn retained_session_samples_vector_appearance_across_unordered_seeks() {
+        let fixture = appearance_fixture();
+        let session = EngineWorkerSessionV1::from_snapshot_json(&snapshot(&fixture)).unwrap();
+        let mut first_midpoint = None;
+        for sample in fixture["samples"].as_array().unwrap() {
+            let sample_time = sample["sampleTime"].as_f64().unwrap();
+            let request = serde_json::to_vec(&json!({
+                "evidence": ["Poietra WASM vector-appearance fixture"],
+                "packetId": format!("wasm:{}", sample["id"].as_str().unwrap()),
+                "sampleTime": sample_time,
+                "schema": "poietra.engine-sample-request",
+                "version": 1,
+                "viewport": fixture["viewport"],
+            }))
+            .unwrap();
+            let sampled = session.sample_packet_json(&request).unwrap();
+            let draw = serde_json::to_value(&sampled.packet.draws[0]).unwrap();
+            for paint in ["fill", "stroke"] {
+                let actual = &draw[paint];
+                let expected = &sample["expected"][paint];
+                for component in ["alpha", "blue", "green", "red"] {
+                    let actual = actual["color"][component].as_f64().unwrap();
+                    let expected = expected["color"][component].as_f64().unwrap();
+                    assert!((actual - expected).abs() <= 1.0e-14);
+                }
+            }
+            assert_eq!(draw["fill"]["rule"], sample["expected"]["fill"]["rule"]);
+            for property in ["cap", "join"] {
+                assert_eq!(
+                    draw["stroke"][property],
+                    sample["expected"]["stroke"][property]
+                );
+            }
+            for property in ["miterLimit", "widthWorld"] {
+                let actual = draw["stroke"][property].as_f64().unwrap();
+                let expected = sample["expected"]["stroke"][property].as_f64().unwrap();
+                assert!((actual - expected).abs() <= 1.0e-14);
+            }
+            if sample["id"] == "midpoint-first" {
+                first_midpoint = Some(json!({ "fill": draw["fill"], "stroke": draw["stroke"] }));
+            } else if sample["id"] == "midpoint-repeat" {
+                assert_eq!(
+                    first_midpoint.as_ref(),
+                    Some(&json!({ "fill": draw["fill"], "stroke": draw["stroke"] }))
+                );
+            }
+        }
     }
 
     #[test]

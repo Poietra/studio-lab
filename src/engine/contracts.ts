@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 import {
-  assetManifestV1Schema,
   type AssetManifestV1,
+  assetManifestV1Schema,
   EngineContractIntegrityError,
   hasValidAssetManifestDigestV1,
 } from "./asset-manifest";
@@ -125,6 +125,11 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
   const entities = new Map(frame.scene.entities.map((entity) => [entity.id, entity]));
   const assets = assetIndex(frame.assets);
   const drawnEntityIds = new Set<string>();
+  const vectorAppearanceEntityIds = new Set(
+    frame.scene.animationChannels
+      .filter((channel) => channel.kind === "vector-appearance")
+      .map((channel) => channel.entityId),
+  );
   frame.packet.draws.forEach((draw, index) => {
     const entity = entities.get(draw.entityId);
     if (!entity) {
@@ -184,6 +189,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
     if (
       draw.kind === "path" &&
       entity.appearance.kind === "vector" &&
+      !vectorAppearanceEntityIds.has(draw.entityId) &&
       (JSON.stringify(draw.fill) !== JSON.stringify(entity.appearance.fill) ||
         JSON.stringify(draw.stroke) !== JSON.stringify(entity.appearance.stroke))
     ) {

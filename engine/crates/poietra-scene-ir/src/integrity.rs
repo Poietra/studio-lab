@@ -247,6 +247,14 @@ fn validate_render_packet_for_scene(
         .iter()
         .map(|entity| (entity.id.as_str(), entity))
         .collect();
+    let vector_appearance_entities: HashSet<&str> = scene
+        .animation_channels
+        .iter()
+        .filter_map(|channel| match channel {
+            AnimationChannelV1::VectorAppearance { entity_id, .. } => Some(entity_id.as_str()),
+            _ => None,
+        })
+        .collect();
     let mut drawn_entities = HashSet::new();
     for (index, draw) in packet.draws.iter().enumerate() {
         let path = format!("$.packet.draws[{index}]");
@@ -357,7 +365,8 @@ fn validate_render_packet_for_scene(
                     ..
                 },
             ) => {
-                if fill != entity_fill || stroke != entity_stroke {
+                let has_vector_appearance = vector_appearance_entities.contains(draw.entity_id());
+                if !has_vector_appearance && (fill != entity_fill || stroke != entity_stroke) {
                     issue(
                         &mut issues,
                         path.clone(),

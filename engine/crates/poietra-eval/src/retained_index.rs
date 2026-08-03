@@ -86,6 +86,7 @@ struct ChannelPositionsV1 {
     opacity: Vec<Option<usize>>,
     path_morph: Vec<Option<usize>>,
     path_trim: Vec<Option<usize>>,
+    vector_appearance: Vec<Option<usize>>,
 }
 
 impl ChannelPositionsV1 {
@@ -97,6 +98,7 @@ impl ChannelPositionsV1 {
             opacity: vec![None; entity_count],
             path_morph: vec![None; entity_count],
             path_trim: vec![None; entity_count],
+            vector_appearance: vec![None; entity_count],
         }
     }
 
@@ -108,6 +110,7 @@ impl ChannelPositionsV1 {
             self.opacity.capacity(),
             self.path_morph.capacity(),
             self.path_trim.capacity(),
+            self.vector_appearance.capacity(),
         ] {
             bytes = checked_add(bytes, checked_mul(capacity, size_of::<Option<usize>>())?)?;
         }
@@ -120,6 +123,7 @@ impl ChannelPositionsV1 {
             + self.opacity.iter().flatten().count()
             + self.path_morph.iter().flatten().count()
             + self.path_trim.iter().flatten().count()
+            + self.vector_appearance.iter().flatten().count()
             + usize::from(self.camera.is_some())
     }
 }
@@ -210,6 +214,14 @@ impl RetainedSceneIndexV1 {
 
     pub(crate) fn path_trim_channel(&self, entity_index: usize) -> Option<usize> {
         self.channels.path_trim.get(entity_index).copied().flatten()
+    }
+
+    pub(crate) fn vector_appearance_channel(&self, entity_index: usize) -> Option<usize> {
+        self.channels
+            .vector_appearance
+            .get(entity_index)
+            .copied()
+            .flatten()
     }
 
     pub(crate) fn stable_paint_order(&self) -> &[usize] {
@@ -330,6 +342,9 @@ fn install_channel_position(
         AnimationChannelV1::Opacity { .. } => &mut channels.opacity[entity_index()?],
         AnimationChannelV1::PathMorph { .. } => &mut channels.path_morph[entity_index()?],
         AnimationChannelV1::PathTrim { .. } => &mut channels.path_trim[entity_index()?],
+        AnimationChannelV1::VectorAppearance { .. } => {
+            &mut channels.vector_appearance[entity_index()?]
+        }
         AnimationChannelV1::Camera { .. } => {
             if channels.camera.replace(channel_index).is_some() {
                 return Err(RetainedSceneIndexErrorV1::Inconsistent(

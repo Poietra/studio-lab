@@ -1,0 +1,329 @@
+{
+  "assets": {
+    "assets": [],
+    "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+    "manifestId": "manifest",
+    "schema": "poietra.asset-manifest",
+    "version": 1
+  },
+  "id": "eng-v1-vector-appearance-square-circle",
+  "samples": [
+    {
+      "expected": {
+        "fill": {
+          "color": {
+            "alpha": 0.25,
+            "blue": 0.8705882352941177,
+            "green": 0.6392156862745098,
+            "red": 0.9098039215686274
+          },
+          "rule": "nonzero"
+        },
+        "stroke": {
+          "cap": "butt",
+          "color": { "alpha": 1, "blue": 0.6666666666666666, "green": 0.692156862745098, "red": 0.9941176470588236 },
+          "join": "miter",
+          "miterLimit": 10,
+          "widthWorld": 0.04
+        }
+      },
+      "id": "midpoint-first",
+      "sampleTime": 1.5
+    },
+    {
+      "expected": {
+        "fill": { "color": { "alpha": 0, "blue": 1, "green": 1, "red": 1 }, "rule": "nonzero" },
+        "stroke": {
+          "cap": "butt",
+          "color": { "alpha": 1, "blue": 1, "green": 1, "red": 1 },
+          "join": "miter",
+          "miterLimit": 10,
+          "widthWorld": 0.04
+        }
+      },
+      "id": "start-boundary",
+      "sampleTime": 1
+    },
+    {
+      "expected": {
+        "fill": {
+          "color": {
+            "alpha": 0.035051858272554075,
+            "blue": 0.9818555086589131,
+            "green": 0.9494153574733337,
+            "red": 0.9873538393683334
+          },
+          "rule": "nonzero"
+        },
+        "stroke": {
+          "cap": "butt",
+          "color": { "alpha": 1, "blue": 0.9532641889699279, "green": 0.9568381039310511, "red": 0.999175250393587 },
+          "join": "miter",
+          "miterLimit": 10,
+          "widthWorld": 0.04
+        }
+      },
+      "id": "manim-smooth-quarter",
+      "sampleTime": 1.25
+    },
+    {
+      "expected": {
+        "fill": {
+          "color": { "alpha": 0.5, "blue": 0.7411764705882353, "green": 0.2784313725490196, "red": 0.8196078431372549 },
+          "rule": "nonzero"
+        },
+        "stroke": {
+          "cap": "butt",
+          "color": { "alpha": 1, "blue": 0.3333333333333333, "green": 0.3843137254901961, "red": 0.9882352941176471 },
+          "join": "miter",
+          "miterLimit": 10,
+          "widthWorld": 0.04
+        }
+      },
+      "id": "terminal-boundary",
+      "sampleTime": 2
+    },
+    {
+      "expected": {
+        "fill": {
+          "color": {
+            "alpha": 0.25,
+            "blue": 0.8705882352941177,
+            "green": 0.6392156862745098,
+            "red": 0.9098039215686274
+          },
+          "rule": "nonzero"
+        },
+        "stroke": {
+          "cap": "butt",
+          "color": { "alpha": 1, "blue": 0.6666666666666666, "green": 0.692156862745098, "red": 0.9941176470588236 },
+          "join": "miter",
+          "miterLimit": 10,
+          "widthWorld": 0.04
+        }
+      },
+      "id": "midpoint-repeat",
+      "sampleTime": 1.5
+    }
+  ],
+  "scene": {
+    "animationChannels": [
+      {
+        "entityId": "shape",
+        "id": "path-morph:shape",
+        "keyframes": [
+          {
+            "at": 1,
+            "easingToNext": { "kind": "manim-smooth" },
+            "value": {
+              "subpaths": [
+                {
+                  "closed": true,
+                  "segments": [
+                    {
+                      "control1": { "x": -0.3333333333333333, "y": -1 },
+                      "control2": { "x": 0.3333333333333333, "y": -1 },
+                      "end": { "x": 1, "y": -1 }
+                    },
+                    {
+                      "control1": { "x": 1, "y": -0.3333333333333333 },
+                      "control2": { "x": 1, "y": 0.3333333333333333 },
+                      "end": { "x": 1, "y": 1 }
+                    },
+                    {
+                      "control1": { "x": 0.3333333333333333, "y": 1 },
+                      "control2": { "x": -0.3333333333333333, "y": 1 },
+                      "end": { "x": -1, "y": 1 }
+                    },
+                    {
+                      "control1": { "x": -1, "y": 0.3333333333333333 },
+                      "control2": { "x": -1, "y": -0.3333333333333333 },
+                      "end": { "x": -1, "y": -1 }
+                    }
+                  ],
+                  "start": { "x": -1, "y": -1 }
+                }
+              ]
+            }
+          },
+          {
+            "at": 2,
+            "easingToNext": null,
+            "value": {
+              "subpaths": [
+                {
+                  "closed": true,
+                  "segments": [
+                    {
+                      "control1": { "x": -1, "y": -0.5522847498307936 },
+                      "control2": { "x": -0.5522847498307936, "y": -1 },
+                      "end": { "x": 0, "y": -1 }
+                    },
+                    {
+                      "control1": { "x": 0.5522847498307936, "y": -1 },
+                      "control2": { "x": 1, "y": -0.5522847498307936 },
+                      "end": { "x": 1, "y": 0 }
+                    },
+                    {
+                      "control1": { "x": 1, "y": 0.5522847498307936 },
+                      "control2": { "x": 0.5522847498307936, "y": 1 },
+                      "end": { "x": 0, "y": 1 }
+                    },
+                    {
+                      "control1": { "x": -0.5522847498307936, "y": 1 },
+                      "control2": { "x": -1, "y": 0.5522847498307936 },
+                      "end": { "x": -1, "y": 0 }
+                    }
+                  ],
+                  "start": { "x": -1, "y": 0 }
+                }
+              ]
+            }
+          }
+        ],
+        "kind": "path-morph",
+        "provenanceId": "fixture"
+      },
+      {
+        "entityId": "shape",
+        "id": "vector-appearance:shape",
+        "keyframes": [
+          {
+            "at": 1,
+            "easingToNext": { "kind": "manim-smooth" },
+            "value": {
+              "fill": { "color": { "alpha": 0, "blue": 1, "green": 1, "red": 1 }, "rule": "nonzero" },
+              "stroke": {
+                "cap": "butt",
+                "color": { "alpha": 1, "blue": 1, "green": 1, "red": 1 },
+                "join": "miter",
+                "miterLimit": 10,
+                "widthWorld": 0.04
+              }
+            }
+          },
+          {
+            "at": 2,
+            "easingToNext": null,
+            "value": {
+              "fill": {
+                "color": {
+                  "alpha": 0.5,
+                  "blue": 0.7411764705882353,
+                  "green": 0.2784313725490196,
+                  "red": 0.8196078431372549
+                },
+                "rule": "nonzero"
+              },
+              "stroke": {
+                "cap": "butt",
+                "color": {
+                  "alpha": 1,
+                  "blue": 0.3333333333333333,
+                  "green": 0.3843137254901961,
+                  "red": 0.9882352941176471
+                },
+                "join": "miter",
+                "miterLimit": 10,
+                "widthWorld": 0.04
+              }
+            }
+          }
+        ],
+        "kind": "vector-appearance",
+        "provenanceId": "fixture"
+      }
+    ],
+    "assetManifest": {
+      "manifestDigest": "e675cb4bad3da6b425e5a6bbe88d7da7a986e3cac61dab06139ef63950dcc181",
+      "manifestId": "manifest"
+    },
+    "camera": {
+      "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
+      "view": { "center": { "x": 0, "y": 0 }, "frameHeight": 9, "frameWidth": 16 }
+    },
+    "coordinateSpace": {
+      "cpuPrecision": "f64",
+      "kind": "cartesian-2d",
+      "origin": "center",
+      "unit": "scene-unit",
+      "xAxis": "right",
+      "yAxis": "up"
+    },
+    "duration": 3,
+    "entities": [
+      {
+        "appearance": {
+          "fill": null,
+          "kind": "vector",
+          "opacity": 1,
+          "stroke": {
+            "cap": "butt",
+            "color": { "alpha": 1, "blue": 1, "green": 1, "red": 1 },
+            "join": "miter",
+            "miterLimit": 10,
+            "widthWorld": 0.04
+          }
+        },
+        "geometry": {
+          "kind": "cubic-path",
+          "path": {
+            "subpaths": [
+              {
+                "closed": true,
+                "segments": [
+                  {
+                    "control1": { "x": -0.3333333333333333, "y": -1 },
+                    "control2": { "x": 0.3333333333333333, "y": -1 },
+                    "end": { "x": 1, "y": -1 }
+                  },
+                  {
+                    "control1": { "x": 1, "y": -0.3333333333333333 },
+                    "control2": { "x": 1, "y": 0.3333333333333333 },
+                    "end": { "x": 1, "y": 1 }
+                  },
+                  {
+                    "control1": { "x": 0.3333333333333333, "y": 1 },
+                    "control2": { "x": -0.3333333333333333, "y": 1 },
+                    "end": { "x": -1, "y": 1 }
+                  },
+                  {
+                    "control1": { "x": -1, "y": 0.3333333333333333 },
+                    "control2": { "x": -1, "y": -0.3333333333333333 },
+                    "end": { "x": -1, "y": -1 }
+                  }
+                ],
+                "start": { "x": -1, "y": -1 }
+              }
+            ]
+          }
+        },
+        "id": "shape",
+        "lifetimes": [{ "end": 3, "start": 0 }],
+        "parentId": null,
+        "provenanceId": "fixture",
+        "sceneOrder": 0,
+        "sourceZIndex": 0,
+        "transform": { "m11": 1, "m12": 0, "m21": 0, "m22": 1, "tx": 0, "ty": 0 }
+      }
+    ],
+    "fidelity": { "kind": "exact" },
+    "provenance": [
+      {
+        "evidence": ["Fill and stroke appearance endpoints measured against Manim 0.20.1 SquareToCircle"],
+        "id": "fixture",
+        "origin": "fixture"
+      }
+    ],
+    "requiredCapabilities": ["cubic-path-geometry", "path-morph-animation", "vector-appearance-animation"],
+    "sceneId": "shared:square-circle-appearance",
+    "schema": "poietra.scene-ir",
+    "source": {
+      "editProgramVersion": 1,
+      "kind": "studio-edit-program",
+      "revisionHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    "version": 1
+  },
+  "viewport": { "heightPx": 90, "widthPx": 160 }
+}

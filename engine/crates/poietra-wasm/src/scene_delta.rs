@@ -921,6 +921,9 @@ mod tests {
             | AnimationChannelV1::PathMorph {
                 entity_id: target, ..
             }
+            | AnimationChannelV1::VectorAppearance {
+                entity_id: target, ..
+            }
             | AnimationChannelV1::MotionPath {
                 entity_id: target, ..
             } => *target = "later".to_owned(),

@@ -567,6 +567,54 @@ fn serialized_field_and_tag_names_match_the_v1_wire_format() {
         serde_json::from_value::<EasingV1>(manim_smooth).unwrap(),
         EasingV1::ManimSmooth {}
     );
+
+    let channel = json!({
+        "entityId": "shape",
+        "id": "appearance:shape",
+        "keyframes": [
+            {
+                "at": 0,
+                "easingToNext": { "kind": "manim-smooth" },
+                "value": {
+                    "fill": {
+                        "color": { "alpha": 0, "blue": 1, "green": 1, "red": 1 },
+                        "rule": "nonzero"
+                    },
+                    "stroke": null
+                }
+            },
+            {
+                "at": 1,
+                "easingToNext": null,
+                "value": {
+                    "fill": {
+                        "color": { "alpha": 0.5, "blue": 0.75, "green": 0.25, "red": 0.8 },
+                        "rule": "nonzero"
+                    },
+                    "stroke": null
+                }
+            }
+        ],
+        "kind": "vector-appearance",
+        "provenanceId": "fixture:root"
+    });
+    assert!(matches!(
+        serde_json::from_value::<AnimationChannelV1>(channel.clone()).unwrap(),
+        AnimationChannelV1::VectorAppearance { .. }
+    ));
+    let mut missing_nullable = channel.clone();
+    missing_nullable["keyframes"][0]["value"]
+        .as_object_mut()
+        .unwrap()
+        .remove("stroke");
+    assert!(serde_json::from_value::<AnimationChannelV1>(missing_nullable).is_err());
+    let mut unknown_paint = channel;
+    unknown_paint["keyframes"][1]["value"]["fill"]["gradient"] = json!(true);
+    assert!(serde_json::from_value::<AnimationChannelV1>(unknown_paint).is_err());
+    assert_eq!(
+        serde_json::to_value(SceneCapabilityV1::VectorAppearanceAnimation).unwrap(),
+        json!("vector-appearance-animation")
+    );
 }
 
 #[test]
