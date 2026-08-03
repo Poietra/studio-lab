@@ -1,0 +1,346 @@
+{
+  "corpusDigest": "fd5b45c86b5e6c8efeebc3eae381a32d9d6e50062221f2925a07eef8c086aa5a",
+  "manifestDigest": "1091353b5c8f864fc98b76d5f8f751e1ba67e8376beb48b0cfb0c3fb4e37cdb8",
+  "manifestVersion": 1,
+  "producerDigest": "1d155a86ef19f6d2c5a7391e088a259f658f601bef68bddc620f22369469bf7c",
+  "reasonCounts": {
+    "failure:producer-exit": 1,
+    "unsupported:animation-evidence-incomplete": 13,
+    "unsupported:runtime-semantics-unsupported": 37
+  },
+  "results": {
+    "calibration-affine/DynamicAffineScene/v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "b58bf969744a65f7a14350b51055bcbd71a1383e728812857cbd55633c79d7d6"
+    },
+    "calibration-generic-vmobject/GenericVmobjectScene/v6": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "c97591079bc6d0965ebd84098ae0d21b6bc656f9e61328458c7c4f0d968d5a5b"
+    },
+    "calibration-image/RealImageScene/v4": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "8eec98ef41f03e4db93a7f9970feab68641b8cd365688f317d758ef468561d62"
+    },
+    "calibration-mathtex-counter/RealMathTexCounterScene/v3": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "85b76408f395a8b68f4b1e27e19fcc3f2a1242e09c3875b2c0c49b6bf15b525f"
+    },
+    "calibration-mathtex-morph/RealMathTexMorphScene/v5": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "b6b3d133de5f14e833ccafd0179dc426075c249d9363c0f76bb238ef50b3cbbb"
+    },
+    "calibration-mathtex/RealMathTexScene/v3": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "79f0ce4495a6c4a3abc30e65edd13ea1c690f3128be5afd07510d57325184b19"
+    },
+    "calibration-mixed-dynamic/MixedMathDemo/v7": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "e032569abfd65de7604b042f9c691246472bca65b9409af6b0001ae117cbe5b3"
+    },
+    "calibration-motion-path/DynamicMotionPathScene/v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "e168ad3c6fadac34761676123ba2b3d19a15f37001e349015cd078bba2c6175f"
+    },
+    "calibration-opacity-lifetime/DynamicOpacityLifetimeScene/v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "df0048cafdb02a35b86cb100ccf6fd6b4ef0bc5705be44ee0c62a230261658ae"
+    },
+    "calibration-path-morph/DynamicPathMorphScene/v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "10b5c96a2af80a79e7379c4ff8a60732023f7c6356dde686e2b703eb52ff189c"
+    },
+    "calibration-path-trim/DynamicPathTrimScene/v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "194813386ec7326ff486d21f611c173f424506aa3060824fc273b677209f25e7"
+    },
+    "calibration-producer-failure/FailedPreviewScene/v2": {
+      "outcome": "rejected",
+      "reasons": ["failure:producer-exit"]
+    },
+    "calibration-static/RealPreviewScene/v1": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "2f96c272bf2d0ac74753ebbc5aae0246a416c9213ac29f4989823df2ea2bf1e7"
+    },
+    "calibration-unsupported/UnsupportedPreviewScene/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/LineJoints/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/LineJoints/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/OpeningManim/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/OpeningManim/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/SpiralInExample/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/SpiralInExample/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/SquareToCircle/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SquareToCircle/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/SquareToCircle/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SquareToCircle/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SquareToCircle/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SquareToCircle/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SquareToCircle/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/UpdatersExample/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/UpdatersExample/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/UpdatersExample/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/UpdatersExample/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/UpdatersExample/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/UpdatersExample/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/UpdatersExample/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/WarpSquare/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WarpSquare/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/WarpSquare/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WarpSquare/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WarpSquare/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WarpSquare/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WarpSquare/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/WriteStuff/v1": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WriteStuff/v2": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    },
+    "fast-manim-basic/WriteStuff/v3": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WriteStuff/v4": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WriteStuff/v5": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WriteStuff/v6": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/WriteStuff/v7": {
+      "outcome": "fallback",
+      "reasons": ["unsupported:animation-evidence-incomplete"]
+    }
+  },
+  "scenes": {
+    "calibration-affine/DynamicAffineScene": "accepted",
+    "calibration-generic-vmobject/GenericVmobjectScene": "accepted",
+    "calibration-image/RealImageScene": "accepted",
+    "calibration-mathtex-counter/RealMathTexCounterScene": "accepted",
+    "calibration-mathtex-morph/RealMathTexMorphScene": "accepted",
+    "calibration-mathtex/RealMathTexScene": "accepted",
+    "calibration-mixed-dynamic/MixedMathDemo": "accepted",
+    "calibration-motion-path/DynamicMotionPathScene": "accepted",
+    "calibration-opacity-lifetime/DynamicOpacityLifetimeScene": "accepted",
+    "calibration-path-morph/DynamicPathMorphScene": "accepted",
+    "calibration-path-trim/DynamicPathTrimScene": "accepted",
+    "calibration-producer-failure/FailedPreviewScene": "rejected",
+    "calibration-static/RealPreviewScene": "accepted",
+    "calibration-unsupported/UnsupportedPreviewScene": "fallback",
+    "fast-manim-basic/LineJoints": "fallback",
+    "fast-manim-basic/OpeningManim": "fallback",
+    "fast-manim-basic/SpiralInExample": "fallback",
+    "fast-manim-basic/SquareToCircle": "fallback",
+    "fast-manim-basic/UpdatersExample": "fallback",
+    "fast-manim-basic/WarpSquare": "fallback",
+    "fast-manim-basic/WriteStuff": "fallback"
+  },
+  "schema": "poietra.real-manim-census-report",
+  "summary": {
+    "attempts": {
+      "accepted": 12,
+      "fallback": 50,
+      "rejected": 1,
+      "total": 63
+    },
+    "corpora": {
+      "calibration": {
+        "attempts": {
+          "accepted": 12,
+          "fallback": 1,
+          "rejected": 1,
+          "total": 14
+        },
+        "scenes": {
+          "accepted": 12,
+          "fallback": 1,
+          "rejected": 1,
+          "total": 14
+        }
+      },
+      "compatibility": {
+        "attempts": {
+          "accepted": 0,
+          "fallback": 49,
+          "rejected": 0,
+          "total": 49
+        },
+        "scenes": {
+          "accepted": 0,
+          "fallback": 7,
+          "rejected": 0,
+          "total": 7
+        }
+      }
+    },
+    "scenes": {
+      "accepted": 12,
+      "fallback": 8,
+      "rejected": 1,
+      "total": 21
+    }
+  },
+  "version": 1
+}
