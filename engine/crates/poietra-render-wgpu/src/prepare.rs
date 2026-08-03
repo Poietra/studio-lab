@@ -1374,12 +1374,16 @@ fn maximum_stroke_input_ulp(stroke: &StrokeStyleV1) -> f64 {
     FLATTEN_TOLERANCE_PIXELS_V1 / (STROKE_INPUT_ULP_SAFETY_FACTOR_V1 * amplification)
 }
 
+fn stroke_input_collision_within_precision_budget(left: PointF64, right: PointF64) -> bool {
+    (left.x - right.x).hypot(left.y - right.y) <= FLATTEN_TOLERANCE_PIXELS_V1
+}
+
 fn stroke_input_point(
     world: PointF64,
     context: GeometryContextV1<'_>,
     pixels_per_world: f64,
     maximum_ulp_pixels: f64,
-    input_points: &mut HashMap<(u32, u32), (u64, u64)>,
+    input_points: &mut HashMap<(u32, u32), PointF64>,
 ) -> Result<LyonPoint, PrepareFrameErrorV1> {
     let (point, pixel) = world_to_stroke_point(
         world,
@@ -1388,11 +1392,16 @@ fn stroke_input_point(
         maximum_ulp_pixels,
         context.draw_id,
     )?;
-    if input_points
-        .insert(fill_point_key(point), point_key(pixel))
-        .is_some_and(|previous| previous != point_key(pixel))
-    {
-        return Err(stroke_precision_error(context.draw_id));
+    let upload_key = fill_point_key(point);
+    if let Some(previous) = input_points.get(&upload_key).copied() {
+        // Lyon receives one f32 point for both inputs. As for fills, that is
+        // safe only while the original pixel-space displacement stays within
+        // the existing flattening precision budget.
+        if !stroke_input_collision_within_precision_budget(previous, pixel) {
+            return Err(stroke_precision_error(context.draw_id));
+        }
+    } else {
+        input_points.insert(upload_key, pixel);
     }
     Ok(point)
 }
@@ -2537,6 +2546,22 @@ mod tests {
         };
         let scale = stroke_pixels_per_world(&camera, &viewport, "draw:aspect").unwrap();
         assert!((scale - 10.0).abs() <= f64::EPSILON);
+    }
+
+    #[test]
+    fn stroke_input_collision_accepts_only_sub_budget_pixel_displacement() {
+        let baseline = PointF64 { x: 0.0, y: 0.0 };
+        assert!(stroke_input_collision_within_precision_budget(
+            baseline,
+            PointF64 { x: 0.25, y: 0.0 }
+        ));
+        assert!(!stroke_input_collision_within_precision_budget(
+            baseline,
+            PointF64 {
+                x: f64::from_bits(0.25_f64.to_bits() + 1),
+                y: 0.0,
+            }
+        ));
     }
 
     #[test]

@@ -1,9 +1,12 @@
 #[allow(dead_code)]
 mod support;
 
-use poietra_render_wgpu::{PrepareFrameErrorV1, prepare_frame_v1};
+use poietra_render_wgpu::{
+    PrepareFrameErrorV1, PreparedGeometryCacheV1, prepare_frame_v1, prepare_frame_with_cache_v1,
+};
 use poietra_scene_ir::{
-    CubicSegmentV1, PointV1, RenderCapabilityV1, RenderDrawV1, StrokeCapV1, StrokeJoinV1,
+    CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, PointV1,
+    RenderCapabilityV1, RenderDrawV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1,
 };
 
 use support::{generic_stroke_fixture, straight_stroke_packet};
@@ -24,6 +27,167 @@ fn line_segment(start: &PointV1, end: PointV1) -> CubicSegmentV1 {
         ),
         end,
     }
+}
+
+fn lerp_point(source: [f64; 2], target: [f64; 2], progress: f64) -> PointV1 {
+    point(
+        source[0] + (target[0] - source[0]) * progress,
+        source[1] + (target[1] - source[1]) * progress,
+    )
+}
+
+#[allow(clippy::approx_constant, clippy::too_many_lines)]
+// Captured f64 values, including asymmetric roundoff, are the regression fixture.
+fn manim_square_to_circle_path(progress: f64) -> CubicPathV1 {
+    // Exact f64 control points produced by Manim 0.20.1 Transform.begin()
+    // after aligning Square().flip(RIGHT).rotate(-3 * TAU / 8) and Circle()
+    // to eight cubics. The flip intentionally preserves the opposite winding.
+    const SOURCE_START: [f64; 2] = [-1.414_213_562_373_095_1, -2.220_446_049_250_313e-16];
+    const TARGET_START: [f64; 2] = [1.0, 0.0];
+    const SOURCE: [[[f64; 2]; 3]; 8] = [
+        [
+            [-1.178_511_301_977_579_3, 0.235_702_260_395_515_64],
+            [-0.942_809_041_582_063_5, 0.471_404_520_791_031_57],
+            [-0.707_106_781_186_547_7, 0.707_106_781_186_547_4],
+        ],
+        [
+            [-0.471_404_520_791_031_9, 0.942_809_041_582_063_4],
+            [-0.235_702_260_395_516_06, 1.178_511_301_977_579_3],
+            [-2.220_446_049_250_313e-16, 1.414_213_562_373_095_1],
+        ],
+        [
+            [0.235_702_260_395_515_64, 1.178_511_301_977_579_3],
+            [0.471_404_520_791_031_57, 0.942_809_041_582_063_5],
+            [0.707_106_781_186_547_4, 0.707_106_781_186_547_7],
+        ],
+        [
+            [0.942_809_041_582_063_4, 0.471_404_520_791_031_9],
+            [1.178_511_301_977_579_3, 0.235_702_260_395_516_06],
+            [1.414_213_562_373_095_1, 2.220_446_049_250_313e-16],
+        ],
+        [
+            [1.178_511_301_977_579_3, -0.235_702_260_395_515_64],
+            [0.942_809_041_582_063_5, -0.471_404_520_791_031_57],
+            [0.707_106_781_186_547_7, -0.707_106_781_186_547_4],
+        ],
+        [
+            [0.471_404_520_791_031_9, -0.942_809_041_582_063_4],
+            [0.235_702_260_395_516_06, -1.178_511_301_977_579_3],
+            [2.220_446_049_250_313e-16, -1.414_213_562_373_095_1],
+        ],
+        [
+            [-0.235_702_260_395_515_64, -1.178_511_301_977_579_3],
+            [-0.471_404_520_791_031_57, -0.942_809_041_582_063_5],
+            [-0.707_106_781_186_547_4, -0.707_106_781_186_547_7],
+        ],
+        [
+            [-0.942_809_041_582_063_4, -0.471_404_520_791_031_9],
+            [-1.178_511_301_977_579_3, -0.235_702_260_395_516_06],
+            [-1.414_213_562_373_095_1, -2.220_446_049_250_313e-16],
+        ],
+    ];
+    const TARGET: [[[f64; 2]; 3]; 8] = [
+        [
+            [1.0, 0.265_216_489_839_544],
+            [0.894_643_159_634_582_2, 0.519_570_402_738_512_8],
+            [0.707_106_781_186_547_6, 0.707_106_781_186_547_5],
+        ],
+        [
+            [0.519_570_402_738_513, 0.894_643_159_634_582_1],
+            [0.265_216_489_839_544_05, 1.0],
+            [6.123_233_995_736_766e-17, 1.0],
+        ],
+        [
+            [-0.265_216_489_839_543_93, 1.0],
+            [-0.519_570_402_738_512_8, 0.894_643_159_634_582_2],
+            [-0.707_106_781_186_547_5, 0.707_106_781_186_547_6],
+        ],
+        [
+            [-0.894_643_159_634_582_1, 0.519_570_402_738_513],
+            [-1.0, 0.265_216_489_839_544_1],
+            [-1.0, 1.224_646_799_147_353_2e-16],
+        ],
+        [
+            [-1.0, -0.265_216_489_839_543_9],
+            [-0.894_643_159_634_582_3, -0.519_570_402_738_512_8],
+            [-0.707_106_781_186_547_7, -0.707_106_781_186_547_5],
+        ],
+        [
+            [-0.519_570_402_738_513_1, -0.894_643_159_634_582_1],
+            [-0.265_216_489_839_544_16, -1.0],
+            [-1.836_970_198_721_029_7e-16, -1.0],
+        ],
+        [
+            [0.265_216_489_839_543_8, -1.0],
+            [0.519_570_402_738_512_6, -0.894_643_159_634_582_3],
+            [0.707_106_781_186_547_4, -0.707_106_781_186_547_7],
+        ],
+        [
+            [0.894_643_159_634_582_1, -0.519_570_402_738_513_1],
+            [0.999_999_999_999_999_9, -0.265_216_489_839_544_2],
+            [1.0, -2.449_293_598_294_706_4e-16],
+        ],
+    ];
+
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: true,
+            segments: SOURCE
+                .into_iter()
+                .zip(TARGET)
+                .map(|(source, target)| CubicSegmentV1 {
+                    control1: lerp_point(source[0], target[0], progress),
+                    control2: lerp_point(source[1], target[1], progress),
+                    end: lerp_point(source[2], target[2], progress),
+                })
+                .collect(),
+            start: lerp_point(SOURCE_START, TARGET_START, progress),
+        }],
+    }
+}
+
+fn manim_square_to_circle_packet(progress: f64) -> poietra_scene_ir::RenderPacketV1 {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path {
+        fill,
+        opacity,
+        path,
+        stroke,
+        ..
+    } = &mut packet.draws[0]
+    else {
+        unreachable!()
+    };
+    // The endpoint colors keep both material passes visible in this geometry
+    // regression; paint color does not participate in path tessellation.
+    *fill = Some(FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 0.5,
+            blue: 189.0 / 255.0,
+            green: 71.0 / 255.0,
+            red: 209.0 / 255.0,
+        },
+        rule: FillRuleV1::NonZero,
+    });
+    *opacity = 1.0;
+    *path = manim_square_to_circle_path(progress);
+    let stroke = stroke.as_mut().expect("fixture must retain its stroke");
+    stroke.color = RgbaColorV1 {
+        alpha: 1.0,
+        blue: 1.0,
+        green: 1.0,
+        red: 1.0,
+    };
+    stroke.join = StrokeJoinV1::Miter;
+    stroke.miter_limit = 10.0;
+    stroke.width_world = 0.04;
+    packet.viewport.height_px = 360;
+    packet.viewport.width_px = 640;
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::CubicPathStroke,
+    ];
+    packet
 }
 
 fn clip_extents(frame: &poietra_render_wgpu::PreparedFrameV1) -> [f32; 4] {
@@ -107,6 +271,34 @@ fn shared_fixture_samples_trim_morph_and_motion_before_general_stroke_paint() {
     for phases in frame.draws().windows(2) {
         assert_eq!(phases[0].index_range().end, phases[1].index_range().start);
         assert_eq!(phases[0].vertex_range().end, phases[1].vertex_range().start);
+    }
+}
+
+#[test]
+fn manim_aligned_square_to_circle_fill_and_stroke_prepare_through_winding_change() {
+    const CUBIC_SIGNED_AREA_ROOT: f64 = 0.530_158_360_440_676_8;
+    // At 0.5, two non-adjacent endpoints share one f32 upload point while
+    // differing by only 1.0658e-14 physical pixels in this 640x360 fixture.
+    let mut cache = PreparedGeometryCacheV1::default();
+    for progress in [
+        0.0,
+        0.5,
+        CUBIC_SIGNED_AREA_ROOT - 1.0e-6,
+        CUBIC_SIGNED_AREA_ROOT,
+        CUBIC_SIGNED_AREA_ROOT + 1.0e-6,
+        0.75,
+        1.0,
+    ] {
+        let packet = manim_square_to_circle_packet(progress);
+        let direct = prepare_frame_v1(&packet)
+            .unwrap_or_else(|error| panic!("Manim morph progress {progress} failed: {error}"));
+        let retained = prepare_frame_with_cache_v1(&packet, &mut cache).unwrap_or_else(|error| {
+            panic!("retained Manim morph progress {progress} failed: {error}")
+        });
+        assert_eq!(direct.draws().len(), 2, "progress={progress}");
+        assert!(!direct.indices().is_empty(), "progress={progress}");
+        assert_eq!(direct.geometry_plan(), retained.geometry_plan());
+        assert_eq!(direct.indices(), retained.indices());
     }
 }
 
