@@ -1,0 +1,198 @@
+{
+  "schema": "poietra.real-manim-census-manifest",
+  "version": 1,
+  "producer": {
+    "repository": "https://github.com/Poietra/fast-manim.git",
+    "revision": "f0a395eb137a32cbc98a457aabec62b4a2fb54bc",
+    "tree": "ff0d08b2e7ffd7dd0be2df2cb2c7010f073ad60f",
+    "digest": "1d155a86ef19f6d2c5a7391e088a259f658f601bef68bddc620f22369469bf7c",
+    "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
+    "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
+    "module": "manim.renderer.source_runtime_identity"
+  },
+  "sources": [
+    {
+      "id": "calibration-static",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene.py",
+      "sha256": "be19c7339d0a33f31ad48ff8770b09ad4bd8b186363f1ccf5e2db9469d2e82b5",
+      "scenes": [{ "name": "RealPreviewScene", "profiles": [1] }]
+    },
+    {
+      "id": "calibration-affine",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_affine.py",
+      "sha256": "783ce0d0fbf5f3d4f2866e66b5ed6d02120ef66e721940daa5476632f4cde3ec",
+      "scenes": [{ "name": "DynamicAffineScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-opacity-lifetime",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_dynamic.py",
+      "sha256": "4cb935a058980b3131ab26b756c71cb08ce6a72524c51bbc05b282343bd93702",
+      "scenes": [{ "name": "DynamicOpacityLifetimeScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-producer-failure",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_failed.py",
+      "sha256": "1bedc9324be77811a6aab881816750e42592822e71d663b2bd31ecf93b5fcbc5",
+      "scenes": [{ "name": "FailedPreviewScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-generic-vmobject",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_generic_vmobject.py",
+      "sha256": "b9b921b1e9aba717c3f6fa3b90672f2d4f268d19310c3c9d1ebaf1e9d3b44159",
+      "scenes": [{ "name": "GenericVmobjectScene", "profiles": [6] }]
+    },
+    {
+      "id": "calibration-image",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_image.py",
+      "sha256": "df2678d91752533d9c4d70ef730adb6ae67b211a8c5ec49830b310c08403d416",
+      "asset": "fixture-png",
+      "scenes": [{ "name": "RealImageScene", "profiles": [4] }]
+    },
+    {
+      "id": "calibration-mathtex",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_mathtex.py",
+      "sha256": "1e58bebc2d212dc4b5e56a29c31a8d2fea20e31e2ecf8d1ed03486dbefad3637",
+      "scenes": [{ "name": "RealMathTexScene", "profiles": [3] }]
+    },
+    {
+      "id": "calibration-mathtex-counter",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_mathtex_counter.py",
+      "sha256": "9e7b7add6b23bc4b9fcf5a8bfc48c727afb273051f4ae562c2210f34fb77aa5e",
+      "scenes": [{ "name": "RealMathTexCounterScene", "profiles": [3] }]
+    },
+    {
+      "id": "calibration-mathtex-morph",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_mathtex_morph.py",
+      "sha256": "f03e0c5eed2c2c35047e8d0ee9ef0aa3f0fc00cd5ecd83ce36c3cf21e46e9dd6",
+      "scenes": [{ "name": "RealMathTexMorphScene", "profiles": [5] }]
+    },
+    {
+      "id": "calibration-mixed-dynamic",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_mixed_dynamic.py",
+      "sha256": "a6ab2501a780e4ce6b295ba86d50f446a4ba757cff98ab8d509c1632a0693dfc",
+      "scenes": [{ "name": "MixedMathDemo", "profiles": [7] }]
+    },
+    {
+      "id": "calibration-motion-path",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_motion_path.py",
+      "sha256": "3833b7cad5f4654bd5a27e71f158500f235ecc022b8332a6cfc30e1b7d45b8fa",
+      "scenes": [{ "name": "DynamicMotionPathScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-path-morph",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_path_morph.py",
+      "sha256": "5f911a03b7d2426805c343ad294ca98fe2769805f2e452e46c3f64095ce30d88",
+      "scenes": [{ "name": "DynamicPathMorphScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-path-trim",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_path_trim.py",
+      "sha256": "1d2598220595420e633c50ecb3340208bcc1b147e9662f343fb5b2bbd2c7c8af",
+      "scenes": [{ "name": "DynamicPathTrimScene", "profiles": [2] }]
+    },
+    {
+      "id": "calibration-unsupported",
+      "corpus": "calibration",
+      "repository": "studio-lab",
+      "path": "fixtures/real-preview-harness/scene_unsupported.py",
+      "sha256": "595d3aa91898b441f0bcf836768758d52ff75a29a3e78fe9d25d0a9136c8d9b7",
+      "scenes": [{ "name": "UnsupportedPreviewScene", "profiles": [2] }]
+    },
+    {
+      "id": "fast-manim-basic",
+      "corpus": "compatibility",
+      "repository": "fast-manim",
+      "path": "example_scenes/basic.py",
+      "sha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      "scenes": [
+        {
+          "name": "OpeningManim",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": [
+            "animation-builder",
+            "default-manim-easing",
+            "fade",
+            "hierarchy",
+            "mathtex",
+            "multi-animation-play",
+            "multi-scene-module",
+            "runtime-generated-geometry",
+            "tex",
+            "transform",
+            "write"
+          ]
+        },
+        {
+          "name": "SquareToCircle",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": ["create", "default-manim-easing", "fade", "multi-scene-module", "transform"]
+        },
+        {
+          "name": "WarpSquare",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": [
+            "apply-pointwise-function",
+            "default-manim-easing",
+            "multi-scene-module",
+            "runtime-generated-geometry"
+          ]
+        },
+        {
+          "name": "WriteStuff",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": ["default-manim-easing", "hierarchy", "mathtex", "multi-scene-module", "style", "tex", "write"]
+        },
+        {
+          "name": "UpdatersExample",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": ["animation-builder", "custom-easing", "hierarchy", "mobject-updater", "multi-scene-module"]
+        },
+        {
+          "name": "SpiralInExample",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": [
+            "default-manim-easing",
+            "fade",
+            "hierarchy",
+            "mathtex",
+            "multi-scene-module",
+            "runtime-generated-geometry",
+            "spiral-in",
+            "style"
+          ]
+        },
+        {
+          "name": "LineJoints",
+          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "features": ["hierarchy", "module-global-default", "multi-scene-module", "style"]
+        }
+      ]
+    }
+  ]
+}
