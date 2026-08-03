@@ -1,15 +1,19 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 
 const workspaceRoot = resolve(import.meta.dirname, "..");
 let fastManimRoot = resolve(workspaceRoot, "..", "fast-manim");
+let replaceCorpus = false;
 let update = false;
 
 for (let index = 2; index < process.argv.length; index += 1) {
   const argument = process.argv[index];
   if (argument === "--update") {
     update = true;
+    continue;
+  }
+  if (argument === "--replace-corpus") {
+    replaceCorpus = true;
     continue;
   }
   if (argument === "--fast-manim-root") {
@@ -21,9 +25,9 @@ for (let index = 2; index < process.argv.length; index += 1) {
   }
   throw new Error(`Unknown argument: ${argument}`);
 }
+if (replaceCorpus && !update) throw new Error("--replace-corpus requires --update.");
 
 const python = resolve(fastManimRoot, ".venv", "bin", "python");
-if (!existsSync(python)) throw new Error(`Pinned fast-manim Python was not found at ${python}.`);
 
 const completed = spawnSync(
   "pnpm",
@@ -35,7 +39,8 @@ const completed = spawnSync(
       ...process.env,
       POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: JSON.stringify([python, "-m", "manim.renderer.source_runtime_identity"]),
       POIETRA_REAL_MANIM_CENSUS_FAST_MANIM_ROOT: fastManimRoot,
-      ...(update ? { POIETRA_REAL_MANIM_CENSUS_UPDATE: "1" } : {}),
+      POIETRA_REAL_MANIM_CENSUS_REPLACE_CORPUS: replaceCorpus ? "1" : "0",
+      POIETRA_REAL_MANIM_CENSUS_UPDATE: update ? "1" : "0",
     },
     stdio: "inherit",
   },

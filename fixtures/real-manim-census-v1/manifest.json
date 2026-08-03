@@ -1,6 +1,13 @@
 {
   "schema": "poietra.real-manim-census-manifest",
   "version": 1,
+  "assets": [
+    {
+      "id": "fixture-png",
+      "sha256": "4cad24deb404b4bea2bb7028f65f939dcee803a3a01f570fe9035e5f7affc572",
+      "versionToken": "census-fixture-png-v1"
+    }
+  ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
     "revision": "f0a395eb137a32cbc98a457aabec62b4a2fb54bc",

@@ -1,28 +1,6 @@
 {
-  "fallbackFeatureCounts": {
-    "always-redraw": 0,
-    "animation-builder": 2,
-    "apply-pointwise-function": 1,
-    "asset": 0,
-    "create": 1,
-    "custom-easing": 1,
-    "default-manim-easing": 5,
-    "fade": 3,
-    "hierarchy": 5,
-    "mathtex": 3,
-    "mobject-updater": 1,
-    "module-global-default": 1,
-    "multi-animation-play": 1,
-    "multi-scene-module": 7,
-    "runtime-generated-geometry": 3,
-    "spiral-in": 1,
-    "style": 3,
-    "tex": 2,
-    "transform": 2,
-    "value-tracker": 0,
-    "write": 2
-  },
-  "manifestDigest": "6d5646e0648d714d13649dbbe5db66776699b3458c36ae7ae2565b5c358281bf",
+  "corpusDigest": "fd5b45c86b5e6c8efeebc3eae381a32d9d6e50062221f2925a07eef8c086aa5a",
+  "manifestDigest": "1091353b5c8f864fc98b76d5f8f751e1ba67e8376beb48b0cfb0c3fb4e37cdb8",
   "manifestVersion": 1,
   "producerDigest": "1d155a86ef19f6d2c5a7391e088a259f658f601bef68bddc620f22369469bf7c",
   "reasonCounts": {
@@ -327,7 +305,36 @@
       "rejected": 1,
       "total": 63
     },
-    "compatibilityRejectedAttempts": 0,
+    "corpora": {
+      "calibration": {
+        "attempts": {
+          "accepted": 12,
+          "fallback": 1,
+          "rejected": 1,
+          "total": 14
+        },
+        "scenes": {
+          "accepted": 12,
+          "fallback": 1,
+          "rejected": 1,
+          "total": 14
+        }
+      },
+      "compatibility": {
+        "attempts": {
+          "accepted": 0,
+          "fallback": 49,
+          "rejected": 0,
+          "total": 49
+        },
+        "scenes": {
+          "accepted": 0,
+          "fallback": 7,
+          "rejected": 0,
+          "total": 7
+        }
+      }
+    },
     "scenes": {
       "accepted": 12,
       "fallback": 8,

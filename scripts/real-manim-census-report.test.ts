@@ -6,7 +6,6 @@ import {
   assertRealManimCensusFloor,
   buildRealManimCensusReport,
   loadRealManimCensusManifest,
-  REAL_MANIM_CENSUS_FEATURES,
   type RealManimCensusAttempt,
   type RealManimCensusManifest,
   type RealManimCensusOutcome,
@@ -18,6 +17,7 @@ const snapshotHash = "b".repeat(64);
 const gammaFeatures = ["mobject-updater", "value-tracker"] as const;
 function manifest(): RealManimCensusManifest {
   return {
+    assets: [],
     producer: {
       digest,
       digestAlgorithm: "sha256(repository-nul-revision-nul-tree)",
@@ -111,7 +111,7 @@ describe("real Manim census report", () => {
     }
   });
 
-  it("builds deterministic attempt, scene, reason, and zero-filled feature summaries", () => {
+  it("builds deterministic attempt, scene, and reason summaries", () => {
     const input = attempts({
       alpha1: "fallback",
       alpha2: "accepted",
@@ -124,13 +124,19 @@ describe("real Manim census report", () => {
     expect(buildRealManimCensusReport(manifest(), digest, input.reverse())).toEqual(report);
     expect(report.summary).toEqual({
       attempts: { accepted: 1, fallback: 4, rejected: 1, total: 6 },
-      compatibilityRejectedAttempts: 1,
+      corpora: {
+        calibration: {
+          attempts: { accepted: 1, fallback: 3, rejected: 0, total: 4 },
+          scenes: { accepted: 1, fallback: 1, rejected: 0, total: 2 },
+        },
+        compatibility: {
+          attempts: { accepted: 0, fallback: 1, rejected: 1, total: 2 },
+          scenes: { accepted: 0, fallback: 0, rejected: 1, total: 1 },
+        },
+      },
       scenes: { accepted: 1, fallback: 1, rejected: 1, total: 3 },
     });
     expect(Object.values(report.scenes)).toEqual(["accepted", "fallback", "rejected"]);
-    expect(Object.keys(report.fallbackFeatureCounts)).toEqual(REAL_MANIM_CENSUS_FEATURES);
-    expect(report.fallbackFeatureCounts.style).toBe(1);
-    expect(report.fallbackFeatureCounts.mathtex).toBe(0);
     expect(Object.keys(report.reasonCounts)).toEqual([
       "contract:result-malformed",
       "failure:result-rejected",
@@ -162,7 +168,15 @@ describe("real Manim census report", () => {
     };
     check({ alpha1: "fallback", alpha2: "fallback", beta1: "accepted" }, "Accepted scene count");
     check({ alpha2: "fallback" }, "Accepted attempt count");
-    check({ alpha2: "fallback", gamma2: "accepted" }, "Previously accepted census case");
+    check({ alpha2: "fallback", beta1: "accepted" }, "Previously accepted census case");
+    const changedSnapshot = structuredClone(baseline);
+    changedSnapshot.results["cal-a/Alpha/v1"]!.snapshotHash = "9".repeat(64);
+    expect(() => assertRealManimCensusFloor(changedSnapshot, baseline)).toThrow("snapshot changed");
+    changedSnapshot.producerDigest = "8".repeat(64);
+    changedSnapshot.manifestDigest = "7".repeat(64);
+    expect(() => assertRealManimCensusFloor(changedSnapshot, baseline)).not.toThrow();
+    changedSnapshot.corpusDigest = "6".repeat(64);
+    expect(() => assertRealManimCensusFloor(changedSnapshot, baseline)).toThrow("different corpora");
     expect(() => assertRealManimCensusFloor(baseline, baseline)).not.toThrow();
 
     const rejectedBaselineOutcomes = { ...baselineOutcomes, alpha2: "fallback", beta1: "rejected" } as const;
@@ -175,5 +189,9 @@ describe("real Manim census report", () => {
     rejectedCheck({ alpha2: "rejected" }, "Rejected attempt count");
     rejectedCheck({ beta1: "fallback", gamma2: "rejected" }, "compatibility-corpus rejections");
     rejectedCheck({ alpha2: "rejected", beta1: "fallback" }, "safe fallback census case");
+
+    const missingCase = structuredClone(baseline);
+    delete missingCase.results["cal-a/Alpha/v1"];
+    expect(() => assertRealManimCensusFloor(baseline, missingCase)).toThrow("differ from the baseline");
   });
 });

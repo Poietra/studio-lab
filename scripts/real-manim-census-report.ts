@@ -62,8 +62,16 @@ const sceneSchema = z
       }
     }
   });
+const assetSchema = z
+  .object({
+    id: z.string().min(1).max(80).regex(SLUG),
+    sha256: z.string().regex(SHA256),
+    versionToken: z.string().min(1).max(128),
+  })
+  .strict();
 const manifestSchema = z
   .object({
+    assets: z.array(assetSchema).max(32),
     producer: z
       .object({
         digest: z.string().regex(SHA256),
@@ -106,6 +114,13 @@ const manifestSchema = z
   })
   .strict()
   .superRefine((manifest, context) => {
+    const assetIds = new Set<string>();
+    for (const [assetIndex, asset] of manifest.assets.entries()) {
+      if (assetIds.has(asset.id)) {
+        context.addIssue({ code: "custom", message: "Duplicate asset ID.", path: ["assets", assetIndex, "id"] });
+      }
+      assetIds.add(asset.id);
+    }
     const sourceIds = new Set<string>();
     const sceneIds = new Set<string>();
     for (const [sourceIndex, source] of manifest.sources.entries()) {
@@ -113,6 +128,9 @@ const manifestSchema = z
         context.addIssue({ code: "custom", message: "Duplicate source ID.", path: ["sources", sourceIndex, "id"] });
       }
       sourceIds.add(source.id);
+      if (source.asset !== undefined && !assetIds.has(source.asset)) {
+        context.addIssue({ code: "custom", message: "Unknown asset ID.", path: ["sources", sourceIndex, "asset"] });
+      }
       for (const [sceneIndex, scene] of source.scenes.entries()) {
         const sceneId = realManimCensusSceneId(source.id, scene.name);
         if (sceneIds.has(sceneId)) {
@@ -194,9 +212,10 @@ const countSchema = z.number().int().nonnegative();
 const countsSchema = z
   .object({ accepted: countSchema, fallback: countSchema, rejected: countSchema, total: countSchema })
   .strict();
+const corpusCountsSchema = z.object({ attempts: countsSchema, scenes: countsSchema }).strict();
 const reportSchema = z
   .object({
-    fallbackFeatureCounts: z.record(featureSchema, countSchema),
+    corpusDigest: z.string().regex(SHA256),
     manifestDigest: z.string().regex(SHA256),
     manifestVersion: z.literal(1),
     producerDigest: z.string().regex(SHA256),
@@ -207,7 +226,7 @@ const reportSchema = z
     summary: z
       .object({
         attempts: countsSchema,
-        compatibilityRejectedAttempts: countSchema,
+        corpora: z.object({ calibration: corpusCountsSchema, compatibility: corpusCountsSchema }).strict(),
         scenes: countsSchema,
       })
       .strict(),
@@ -293,9 +312,11 @@ export function buildRealManimCensusReport(
   results.sort((left, right) => left.caseId.localeCompare(right.caseId));
 
   const attempts = emptyCounts();
+  const corpusAttempts = { calibration: emptyCounts(), compatibility: emptyCounts() };
   const reasonCounts = new Map<string, number>();
   for (const result of results) {
     increment(attempts, result.outcome);
+    increment(corpusAttempts[result.corpus], result.outcome);
     for (const reason of result.reasons) reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
   }
   const scenes = [...sceneAttempts.entries()]
@@ -310,16 +331,15 @@ export function buildRealManimCensusReport(
     })
     .sort((left, right) => left.sceneId.localeCompare(right.sceneId));
   const sceneCounts = emptyCounts();
-  for (const scene of scenes) increment(sceneCounts, scene.outcome);
-  const fallbackFeatureCounts = Object.fromEntries(
-    REAL_MANIM_CENSUS_FEATURES.map((feature) => [
-      feature,
-      scenes.filter((scene) => scene.outcome === "fallback" && scene.features.includes(feature)).length,
-    ]),
-  ) as Record<(typeof REAL_MANIM_CENSUS_FEATURES)[number], number>;
-
+  const corpusScenes = { calibration: emptyCounts(), compatibility: emptyCounts() };
+  for (const scene of scenes) {
+    increment(sceneCounts, scene.outcome);
+    increment(corpusScenes[scene.corpus], scene.outcome);
+  }
   return reportSchema.parse({
-    fallbackFeatureCounts,
+    corpusDigest: createHash("sha256")
+      .update(JSON.stringify({ assets: manifest.assets, sources: manifest.sources }))
+      .digest("hex"),
     manifestDigest: createHash("sha256").update(JSON.stringify(manifest)).digest("hex"),
     manifestVersion: manifest.version,
     producerDigest,
@@ -334,9 +354,10 @@ export function buildRealManimCensusReport(
     schema: REPORT_SCHEMA,
     summary: {
       attempts,
-      compatibilityRejectedAttempts: results.filter(
-        ({ corpus, outcome }) => corpus === "compatibility" && outcome === "rejected",
-      ).length,
+      corpora: {
+        calibration: { attempts: corpusAttempts.calibration, scenes: corpusScenes.calibration },
+        compatibility: { attempts: corpusAttempts.compatibility, scenes: corpusScenes.compatibility },
+      },
       scenes: sceneCounts,
     },
     version: 1,
@@ -346,33 +367,55 @@ export function buildRealManimCensusReport(
 export function assertRealManimCensusFloor(reportInput: unknown, baselineInput: unknown): void {
   const report = reportSchema.parse(reportInput);
   const baseline = reportSchema.parse(baselineInput);
-  if (report.manifestDigest !== baseline.manifestDigest || report.manifestVersion !== baseline.manifestVersion) {
-    throw new Error("Census report and baseline use different manifests.");
+  if (report.corpusDigest !== baseline.corpusDigest || report.manifestVersion !== baseline.manifestVersion) {
+    throw new Error("Census report and baseline use different corpora.");
   }
-  for (const [name, current, floor] of [
+  const acceptedFloors = [
     ["Accepted scene", report.summary.scenes.accepted, baseline.summary.scenes.accepted],
     ["Accepted attempt", report.summary.attempts.accepted, baseline.summary.attempts.accepted],
-  ] as const) {
+    ...(["calibration", "compatibility"] as const).flatMap((corpus) => [
+      [
+        `Accepted ${corpus} scene`,
+        report.summary.corpora[corpus].scenes.accepted,
+        baseline.summary.corpora[corpus].scenes.accepted,
+      ] as const,
+      [
+        `Accepted ${corpus} attempt`,
+        report.summary.corpora[corpus].attempts.accepted,
+        baseline.summary.corpora[corpus].attempts.accepted,
+      ] as const,
+    ]),
+  ] as const;
+  for (const [name, current, floor] of acceptedFloors) {
     if (current < floor) throw new Error(`${name} count is below the census baseline.`);
   }
   const reportKeys = Object.keys(report.results);
   const baselineKeys = Object.keys(baseline.results);
   if (
     [...reportKeys].sort().some((caseId, index) => caseId !== reportKeys[index]) ||
-    [...baselineKeys].sort().some((caseId, index) => caseId !== baselineKeys[index])
+    [...baselineKeys].sort().some((caseId, index) => caseId !== baselineKeys[index]) ||
+    reportKeys.length !== baselineKeys.length ||
+    reportKeys.some((caseId, index) => caseId !== baselineKeys[index])
   ) {
-    throw new Error("Census report case IDs are noncanonical.");
+    throw new Error("Census report case IDs are noncanonical or differ from the baseline.");
   }
   for (const [caseId, result] of Object.entries(baseline.results)) {
-    if (result.outcome === "accepted" && report.results[caseId]?.outcome !== "accepted") {
+    if (result.outcome !== "accepted") continue;
+    const current = report.results[caseId];
+    if (current?.outcome !== "accepted") {
       throw new Error(`Previously accepted census case is no longer accepted: ${caseId}`);
+    }
+    if (report.producerDigest === baseline.producerDigest && current.snapshotHash !== result.snapshotHash) {
+      throw new Error(`Accepted census snapshot changed under the same producer pin: ${caseId}`);
     }
   }
   if (report.summary.attempts.rejected > baseline.summary.attempts.rejected) {
     throw new Error("Rejected attempt count exceeds the census baseline.");
   }
-  if (report.summary.compatibilityRejectedAttempts > baseline.summary.compatibilityRejectedAttempts) {
-    throw new Error("Unexpected compatibility-corpus rejections exceed the census baseline.");
+  for (const corpus of ["calibration", "compatibility"] as const) {
+    if (report.summary.corpora[corpus].attempts.rejected > baseline.summary.corpora[corpus].attempts.rejected) {
+      throw new Error(`Unexpected ${corpus}-corpus rejections exceed the census baseline.`);
+    }
   }
   for (const [caseId, result] of Object.entries(baseline.results)) {
     if (result.outcome === "fallback" && report.results[caseId]?.outcome === "rejected") {

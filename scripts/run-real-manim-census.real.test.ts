@@ -84,6 +84,16 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       throw new Error(`The census command must execute the pinned ${manifest.producer.module} module.`);
     }
     const producerDigest = await verifyPinnedProducer(fastManimRoot, manifest.producer);
+    await execute("uv", ["sync", "--frozen", "--project", fastManimRoot], { cwd: workspaceRoot, encoding: "utf8" });
+    const assetBytes = new Map([["fixture-png", pngBytes]]);
+    for (const asset of manifest.assets) {
+      const bytes = assetBytes.get(asset.id);
+      if (bytes === undefined || createHash("sha256").update(bytes).digest("hex") !== asset.sha256) {
+        throw new Error(`The real-Manim census asset ${asset.id} does not match its manifest pin.`);
+      }
+    }
+    const fixturePng = manifest.assets.find(({ id }) => id === "fixture-png");
+    if (fixturePng === undefined) throw new Error("The real-Manim census snapshot PNG is not pinned.");
     const cases = manifest.sources.flatMap((source) =>
       source.scenes.flatMap((scene) =>
         scene.profiles.map((profile) => ({
@@ -116,7 +126,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
         projectId: "census",
         projectRoot,
         pngProvider: {
-          readVerified: async () => ({ bytes: new Uint8Array(pngBytes), versionToken: "census-fixture-png-v1" }),
+          readVerified: async () => ({ bytes: new Uint8Array(pngBytes), versionToken: fixturePng.versionToken }),
         },
         snapshotVersion: entry.profile,
         tenantId: "census",
@@ -163,10 +173,13 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     });
 
     const report = buildRealManimCensusReport(manifest, producerDigest, attempts);
+    const baseline = JSON.parse(await readFile(baselinePath, "utf8")) as unknown;
     if (process.env.POIETRA_REAL_MANIM_CENSUS_UPDATE === "1") {
+      if (process.env.POIETRA_REAL_MANIM_CENSUS_REPLACE_CORPUS !== "1") {
+        assertRealManimCensusFloor(report, baseline);
+      }
       await writeFile(baselinePath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
     } else {
-      const baseline = JSON.parse(await readFile(baselinePath, "utf8")) as unknown;
       assertRealManimCensusFloor(report, baseline);
     }
     expect(report.summary.attempts.total).toBe(cases.length);
