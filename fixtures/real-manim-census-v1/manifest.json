@@ -10,9 +10,9 @@
   ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "04f1675799dd8ff5c6195f7e80fede86b2e59c67",
-    "tree": "716caad07d9fb7c09e25e300864b5ede91f4470c",
-    "digest": "1f0ba23aa3260c83d7879a1f3358b91659a767ad524793aaa8cc0deb86f6906b",
+    "revision": "a1e886fb854268ad7d06b00168f9a5ce3339857d",
+    "tree": "9ae1976517a9ed354e644215ae0909c30f95e12b",
+    "digest": "51a7d76c722964f40803ec35bb3dadb23c4768a56a4ac86b37f03248a04a10d6",
     "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
     "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
     "module": "manim.renderer.source_runtime_identity"
@@ -157,7 +157,7 @@
         },
         {
           "name": "SquareToCircle",
-          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "profiles": [1, 2, 3, 4, 5, 6, 7, 8],
           "features": ["create", "default-manim-easing", "fade", "multi-scene-module", "transform"]
         },
         {
