@@ -84,6 +84,11 @@ describe("visual parity v1 contracts", () => {
       "real-mathtex-morph-v5--return-midpoint",
       "real-mathtex-morph-v5--a-restored",
       "real-generic-vmobject-v6--static",
+      "real-square-to-circle-v8--create-midpoint",
+      "real-square-to-circle-v8--square",
+      "real-square-to-circle-v8--analytic-winding-root",
+      "real-square-to-circle-v8--circle",
+      "real-square-to-circle-v8--fade-midpoint",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -354,6 +359,118 @@ describe("visual parity v1 contracts", () => {
         viewport: entry.sample.viewport,
       }),
     ]);
+  });
+
+  it("pins the server-sealed real SquareToCircle V8 timeline to the default full-RGBA gate", async () => {
+    const fixtureRevision = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      [
+        "real-square-to-circle-v8--create-midpoint",
+        "create-midpoint",
+        0.5,
+        "2c894c6d88d7c14cc8f3b06c1df1b3b53ea3d6f715368cc5cac11d60135fd6d7",
+      ],
+      [
+        "real-square-to-circle-v8--square",
+        "square",
+        1,
+        "30f8fa1d7a9b844eba679f06e70aa0ee40ba3e0239f705515aa327930670985d",
+      ],
+      [
+        "real-square-to-circle-v8--analytic-winding-root",
+        "analytic-winding-root",
+        1.5119159473817447,
+        "b2573ce64a89fc3639fd9338672f58f64feb9e33d76076cb616129699d37e77d",
+      ],
+      [
+        "real-square-to-circle-v8--circle",
+        "circle",
+        2,
+        "cee317729cdea55294e3450710191d85e11a72519612dd67f78316a1ba091d2c",
+      ],
+      [
+        "real-square-to-circle-v8--fade-midpoint",
+        "fade-midpoint",
+        2.5,
+        "1f44bd7fbc2c7310fdcf1ec3b964bbd996ee65078c54dd0e7a39ac509215a00a",
+      ],
+    ] as const;
+    const entries = expectedSamples.map(([entryId]) => {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The SquareToCircle V8 corpus entry ${entryId} is missing.`);
+      return entry;
+    });
+    for (const [index, entry] of entries.entries()) {
+      const [entryId, sampleId, sampleTime, semanticDigest] = expectedSamples[index]!;
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-square-to-circle-v8",
+          path: "fixtures/engine-v1/real-square-to-circle-v8.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        id: entryId,
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-square-to-circle-v8.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: [
+        "cubic-path-geometry",
+        "opacity-animation",
+        "path-morph-animation",
+        "path-trim-animation",
+        "vector-appearance-animation",
+      ],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash: "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 8,
+        sourceHash: "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(1);
+    expect(bundle.scene.animationChannels.map(({ kind }) => kind)).toEqual([
+      "opacity",
+      "path-morph",
+      "vector-appearance",
+      "path-trim",
+    ]);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "1f195ba48d4e2ea92dd45b3cac4928342da320c9",
+      fastManimCommit: "a1e886fb854268ad7d06b00168f9a5ce3339857d",
+      kind: "server-sealed-real-fast-manim-profile-v8",
+      snapshotHash: fixtureRevision,
+      sourcePath: "fixtures/real-preview-harness/scene_square_to_circle.py",
+      sourceSha256: "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40",
+    });
+    expect(sha256(new Uint8Array(await readFile(fixture.producerReference.sourcePath)))).toBe(
+      fixture.producerReference.sourceSha256,
+    );
+    expect(fixture.samples).toEqual(
+      expectedSamples.map(([, sampleId, sampleTime, semanticDigest]) => ({
+        expected: { semanticDigest },
+        id: sampleId,
+        packetId: `real-square-to-circle-v8:${sampleId}`,
+        sampleTime,
+        viewport: { heightPx: 360, widthPx: 640 },
+      })),
+    );
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {
