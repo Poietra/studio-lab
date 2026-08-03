@@ -22,6 +22,7 @@ import {
   findSourceComments,
   findSourceSceneBlock,
   findSourceSceneComments,
+  findSourceSceneStatements,
   importManimScene,
   isSimpleShiftAnimationStatement,
 } from "./source-import";
@@ -306,6 +307,215 @@ function sourceMarker(
   value: Readonly<Record<string, unknown>>,
 ) {
   return `# poietra:${kind} ${JSON.stringify({ ...value, version: 1 })}`;
+}
+
+type StaticTransformPair =
+  | Readonly<{
+      callLine: number;
+      kind: "position";
+      markerLine: number;
+      variable: string;
+    }>
+  | Readonly<{
+      callLine: number;
+      factor: number;
+      kind: "scale";
+      markerLine: number;
+      value: number;
+      variable: string;
+    }>;
+
+function jsonRecord(value: string) {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]) {
+  const actual = Object.keys(value);
+  return actual.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+}
+
+function staticTransformPairAt(
+  lines: readonly string[],
+  callLine: number,
+  frame: Readonly<{ height: number; width: number }>,
+): StaticTransformPair | null {
+  if (callLine < 1) return null;
+  const markerLine = callLine - 1;
+  const marker = lines[markerLine] ?? "";
+  const call = lines[callLine] ?? "";
+  const position = marker.match(/^(\s*)#\s*poietra:position\s+(.+)\s*$/);
+  if (position) {
+    const parsed = jsonRecord(position[2]);
+    const value = parsed?.value;
+    if (
+      !parsed ||
+      !hasExactKeys(parsed, ["kind", "value", "variable", "version"]) ||
+      parsed.kind !== "absolute" ||
+      parsed.version !== 1 ||
+      typeof parsed.variable !== "string" ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.variable) ||
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      !hasExactKeys(value as Record<string, unknown>, ["x", "y"]) ||
+      !("x" in value) ||
+      !("y" in value) ||
+      typeof value.x !== "number" ||
+      typeof value.y !== "number" ||
+      !Number.isFinite(value.x) ||
+      !Number.isFinite(value.y)
+    ) {
+      return null;
+    }
+    const point = { x: value.x, y: value.y } as Readonly<{ x: number; y: number }>;
+    const expected = `${position[1]}${parsed.variable}.move_to(${pointExpression(point, frame, SOURCE_MARKER_VIEWPORT)})`;
+    return call === expected ? { callLine, kind: "position", markerLine, variable: parsed.variable } : null;
+  }
+
+  const scale = marker.match(/^(\s*)#\s*poietra:scale\s+(.+)\s*$/);
+  if (!scale) return null;
+  const parsed = jsonRecord(scale[2]);
+  if (
+    !parsed ||
+    !hasExactKeys(parsed, ["kind", "value", "variable", "version"]) ||
+    parsed.kind !== "exact" ||
+    parsed.version !== 1 ||
+    typeof parsed.value !== "number" ||
+    !Number.isFinite(parsed.value) ||
+    parsed.value <= 0 ||
+    typeof parsed.variable !== "string" ||
+    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(parsed.variable)
+  ) {
+    return null;
+  }
+  const escapedVariable = escapePattern(parsed.variable);
+  const factorExpression = call.match(
+    new RegExp(`^${escapePattern(scale[1])}${escapedVariable}\\.scale\\(([^()]*)\\)$`),
+  )?.[1];
+  if (!factorExpression || !/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(factorExpression.trim())) return null;
+  const factor = Number(factorExpression);
+  return Number.isFinite(factor) && factor > 0
+    ? { callLine, factor, kind: "scale", markerLine, value: parsed.value, variable: parsed.variable }
+    : null;
+}
+
+/**
+ * A committed zero-duration edit is imported as source-proven geometry. A
+ * later edit at that same anchor must not grow an unbounded chain of
+ * move_to/scale calls. Collapse only exact Studio marker + literal call pairs;
+ * unmarked or altered Python remains user-owned and is never rewritten.
+ */
+function collapseRepeatedStaticTransformHistory(
+  source: string,
+  frame: Readonly<{ height: number; width: number }>,
+  currentTransactionIds: ReadonlySet<string>,
+  sceneName: string,
+  sourcePath: string,
+) {
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const sceneBlock = findSourceSceneBlock(source, sceneName, sourcePath);
+  if (!sceneBlock || sceneBlock.bodyIndent === null) return source;
+  const directSceneLines = new Set(findSourceSceneStatements(source, sceneName, sourcePath).map(({ line }) => line));
+  for (
+    let anchorLine = Math.min(lines.length, sceneBlock.bodyEnd) - 1;
+    anchorLine >= sceneBlock.bodyStart;
+    anchorLine -= 1
+  ) {
+    if (!directSceneLines.has(anchorLine)) continue;
+    const anchor = lines[anchorLine]?.match(/^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/);
+    if (!anchor) continue;
+    const anchorSeconds = Number(anchor[1]);
+    const cursorLines: number[] = [];
+    const transactionLines: Array<Readonly<{ id: string; line: number }>> = [];
+    const pairs: StaticTransformPair[] = [];
+    let line = anchorLine - 1;
+    while (line >= 0) {
+      if (!directSceneLines.has(line)) break;
+      const cursor = lines[line]?.match(/^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/);
+      if (cursor && Math.abs(Number(cursor[1]) - anchorSeconds) < EPSILON) {
+        cursorLines.push(line);
+        line -= 1;
+        continue;
+      }
+      const transaction = lines[line]?.match(/^\s*#\s*poietra:transaction\s+(.+)\s*$/);
+      if (transaction) {
+        try {
+          const id = JSON.parse(transaction[1]) as unknown;
+          if (typeof id !== "string") break;
+          transactionLines.push({ id, line });
+          line -= 1;
+          continue;
+        } catch {
+          break;
+        }
+      }
+      const pair = staticTransformPairAt(lines, line, frame);
+      if (!pair || !directSceneLines.has(pair.markerLine)) break;
+      pairs.push(pair);
+      line = pair.markerLine - 1;
+    }
+    if (
+      cursorLines.length < 2 ||
+      pairs.length === 0 ||
+      !transactionLines.some(({ id }) => currentTransactionIds.has(id))
+    ) {
+      continue;
+    }
+
+    const orderedPairs = [...pairs].reverse();
+    const latestPair = new Map<string, StaticTransformPair>();
+    const scaleProducts = new Map<string, number>();
+    const scaleValues = new Map<string, number>();
+    let inconsistentScaleMarker = false;
+    for (const pair of orderedPairs) {
+      latestPair.set(`${pair.kind}:${pair.variable}`, pair);
+      if (pair.kind === "scale") {
+        const previousValue = scaleValues.get(pair.variable);
+        const expectedValue = previousValue === undefined ? pair.value : previousValue * pair.factor;
+        if (Math.abs(pair.value - expectedValue) > EPSILON * Math.max(1, pair.value, expectedValue)) {
+          inconsistentScaleMarker = true;
+          break;
+        }
+        scaleProducts.set(pair.variable, (scaleProducts.get(pair.variable) ?? 1) * pair.factor);
+        scaleValues.set(pair.variable, pair.value);
+      }
+    }
+    if (inconsistentScaleMarker) continue;
+    const removed = new Set<number>();
+    for (const pair of orderedPairs) {
+      if (latestPair.get(`${pair.kind}:${pair.variable}`) !== pair) {
+        removed.add(pair.markerLine);
+        removed.add(pair.callLine);
+      }
+    }
+    for (const pair of latestPair.values()) {
+      if (pair.kind !== "scale") continue;
+      const indentation = lines[pair.callLine]?.match(/^\s*/)?.[0] ?? "";
+      lines[pair.callLine] =
+        `${indentation}${pair.variable}.scale(${formatPositiveAmount(scaleProducts.get(pair.variable) ?? 1)})`;
+    }
+    const firstCursor = Math.min(...cursorLines);
+    for (const cursorLine of cursorLines) {
+      if (cursorLine !== firstCursor) removed.add(cursorLine);
+    }
+    for (const transaction of transactionLines) {
+      if (!currentTransactionIds.has(transaction.id)) removed.add(transaction.line);
+    }
+    lines.splice(
+      line + 1,
+      anchorLine - line - 1,
+      ...lines.slice(line + 1, anchorLine).filter((_, index) => !removed.has(line + 1 + index)),
+    );
+  }
+  return lines.join(newline);
 }
 
 function variableToken(transactionId: string, index: number) {
@@ -1377,12 +1587,22 @@ export function lowerCanonicalProgramSource(
     ...insertedLines,
     `${indentation}# poietra:anchor ${formatAmount(advancedAnchor)}`,
   );
+  const loweredSource = lines.join(newline);
   return {
     anchorLine: anchor.line,
     entityAliases,
     entityBindings,
     insertedCode: insertedLines.join(newline),
-    source: lines.join(newline),
+    source:
+      options.sourceAnchor === undefined
+        ? collapseRepeatedStaticTransformHistory(
+            loweredSource,
+            frame,
+            new Set([request.program.transactionId]),
+            request.sceneName,
+            request.sourcePath,
+          )
+        : loweredSource,
   };
 }
 
@@ -1686,6 +1906,12 @@ export function lowerCanonicalProgramBatchSource(
     anchorLine: groups[0].anchorLine,
     anchorLines: groups.map((group) => group.anchorLine),
     insertedCode: groups.flatMap((group) => group.insertedLines).join(newline),
-    source: lines.join(newline),
+    source: collapseRepeatedStaticTransformHistory(
+      lines.join(newline),
+      frame,
+      new Set(normalizedEntries.map(({ program }) => program.transactionId)),
+      request.sceneName,
+      request.sourcePath,
+    ),
   };
 }
