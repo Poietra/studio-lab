@@ -71,6 +71,7 @@ function previewView(
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity,
     state,
+    syntheticInitialEditAnchor: null,
     verifiedSourceDuration: 2,
   };
 }

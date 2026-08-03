@@ -750,6 +750,8 @@ export function App({
   } = useStudioPreviewAuthorityController({
     committedProposedState: committedPreviewState,
     context: editorDocumentPresentationReady ? editorRevision.previewContext : null,
+    draftProposedState:
+      draftProgram !== null && editingAppliedProgram === null ? (workspaceProjection?.proposedState ?? null) : null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
     retainedSourceDuration: editorRevision.retainedSourceDuration,
     sampleTime: currentTime,
@@ -810,6 +812,15 @@ export function App({
     }
     if (editorDocumentAuthority.enabled && input.preserveAppliedProgram) {
       setDraftError("Apply or discard the current draft before continuing this edit in shared mode.");
+      setIsPlaying(false);
+      return false;
+    }
+    const preservedAnchor = input.preserveAppliedProgram?.program.anchor.resolvedSeconds;
+    if (
+      preservedAnchor !== undefined &&
+      !activeScene?.anchors.some((anchor) => Math.abs(anchor - preservedAnchor) < 0.0005)
+    ) {
+      setDraftError("Discard the preview-only draft before starting another edit.");
       setIsPlaying(false);
       return false;
     }
@@ -1889,6 +1900,7 @@ export function App({
   function manualAuthoringAnchor(
     input: Readonly<{
       action: string;
+      allowSyntheticPreviewAnchor?: boolean;
       requireAlignedPlayhead: boolean;
       scene: RuntimeSceneState;
       sourcePrograms: readonly ProgramRecord["program"][];
@@ -1896,7 +1908,18 @@ export function App({
     }>,
   ) {
     if (!activeScene) return null;
-    const anchor = latestSafeSourceAnchor(input.sourcePrograms, activeScene.anchors, currentTime);
+    const sourceAnchor = latestSafeSourceAnchor(input.sourcePrograms, activeScene.anchors, currentTime);
+    const syntheticSourceAnchor = input.allowSyntheticPreviewAnchor
+      ? previewRenderer?.syntheticInitialEditAnchor
+      : undefined;
+    const anchor =
+      sourceAnchor ??
+      (syntheticSourceAnchor !== null && syntheticSourceAnchor !== undefined
+        ? {
+            sourceTime: syntheticSourceAnchor,
+            workingTime: sourceTimeToWorkingTime(input.sourcePrograms, syntheticSourceAnchor),
+          }
+        : null);
     if (!anchor) {
       setDraftError(
         `No safe .py source anchor exists before the playhead. Move to a source anchor before ${input.action}.`,
@@ -1964,6 +1987,7 @@ export function App({
     );
     const anchor = manualAuthoringAnchor({
       action: "object drag",
+      allowSyntheticPreviewAnchor: interactionMode === "position",
       requireAlignedPlayhead: true,
       scene: sourceScene,
       sourcePrograms: gestureContext.sourcePrograms,
@@ -2346,6 +2370,7 @@ export function App({
       capturedSourceAnchor === undefined
         ? manualAuthoringAnchor({
             action: "object resize",
+            allowSyntheticPreviewAnchor: !animated,
             requireAlignedPlayhead: true,
             scene: sourceScene,
             sourcePrograms: gestureContext.sourcePrograms,
@@ -2415,6 +2440,8 @@ export function App({
     );
     const anchor = manualAuthoringAnchor({
       action: "Inspector edit",
+      allowSyntheticPreviewAnchor:
+        edits.position !== undefined && edits.content === undefined && edits.dimensions === undefined,
       requireAlignedPlayhead: true,
       scene: sourceScene,
       sourcePrograms: gestureContext.sourcePrograms,
@@ -2474,6 +2501,7 @@ export function App({
       capturedSourceAnchor === undefined
         ? manualAuthoringAnchor({
             action: "object move",
+            allowSyntheticPreviewAnchor: true,
             requireAlignedPlayhead: true,
             scene: sourceScene,
             sourcePrograms: gestureContext.sourcePrograms,

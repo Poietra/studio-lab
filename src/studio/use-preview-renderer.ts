@@ -44,7 +44,10 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
-import { compileStudioPreviewTemporalRebaseV1 } from "./preview-temporal-rebase";
+import {
+  compileStudioPreviewTemporalRebaseV1,
+  studioPreviewSyntheticInitialEditAnchorV1,
+} from "./preview-temporal-rebase";
 
 export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -63,6 +66,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   /** Server-verified source name to runtime entity mapping for this snapshot. */
   sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   state: PreviewRendererHostStateV1;
+  /** Preview-only t=0 authority; it does not imply a lowerable source marker. */
+  syntheticInitialEditAnchor: number | null;
   /** Verified fast-manim base duration for the current source identity. */
   verifiedSourceDuration: number | null;
 }>;
@@ -77,6 +82,7 @@ export type StudioPreviewInteractionAuthorityV1 =
 export type UseStudioPreviewRendererInputV1 = Readonly<{
   committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
+  draftProposedState: ProposedState | null;
   frame: Readonly<{ height: number; width: number }>;
   provider: StudioPreviewSnapshotProviderV1 | null;
   retainedSourceDuration: number | null;
@@ -304,7 +310,10 @@ export async function compileStudioPreviewSceneV1(
   }
   if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
     const source = input.snapshot.snapshot.scene.source;
-    if (source.kind !== "imported-manim-server-snapshot" || Number(source.snapshotVersion) !== 7) {
+    if (
+      source.kind !== "imported-manim-server-snapshot" ||
+      (Number(source.snapshotVersion) !== 7 && Number(source.snapshotVersion) !== 8)
+    ) {
       return {
         error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
         kind: "unsupported",
@@ -325,7 +334,7 @@ export async function compileStudioPreviewSceneV1(
     });
     if (rebased.kind === "unsupported") {
       return {
-        error: `Mixed V7 temporal rebase is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        error: `Imported temporal rebase is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
         kind: "unsupported",
       };
     }
@@ -454,7 +463,16 @@ export function studioPreviewSnapshotMetadataForWorkspaceV1(
 const INSTALLING_STATE: PreviewRendererHostStateV1 = { detail: null, phase: "fallback", reason: "installing" };
 
 export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1): StudioPreviewRendererViewV1 | null {
-  const { committedProposedState, context, frame, provider, retainedSourceDuration, sampleTime, transientEdit } = input;
+  const {
+    committedProposedState,
+    context,
+    draftProposedState,
+    frame,
+    provider,
+    retainedSourceDuration,
+    sampleTime,
+    transientEdit,
+  } = input;
   const [bound, setBound] = useState<BoundHostStateV1 | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
   const [epoch, setEpoch] = useState(0);
@@ -462,8 +480,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const [compilation, setCompilation] = useState<StudioPreviewCompilationStateV1>(INACTIVE_COMPILATION);
   const [installation, setInstallation] = useState<StudioPreviewHostInstallationV1 | null>(null);
   const [viewport, setViewport] = useState<PreviewViewportV1 | null>(null);
-  const latestProposedState = useRef(committedProposedState);
-  latestProposedState.current = committedProposedState;
+  const latestCommittedProposedState = useRef(committedProposedState);
+  latestCommittedProposedState.current = committedProposedState;
+  const latestDraftProposedState = useRef(draftProposedState);
+  latestDraftProposedState.current = draftProposedState;
   const latestCompiledScene = useRef<CompiledStudioPreviewSceneV1 | null>(null);
   const queuedScene = useRef<Readonly<{
     binding: StudioPreviewHostBindingV1;
@@ -489,7 +509,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const snapshotError = currentMetadata.phase === "failed" ? currentMetadata.error : null;
 
   useEffect(() => {
-    const proposedState = latestProposedState.current;
+    const proposedState =
+      snapshot && studioPreviewSyntheticInitialEditAnchorV1(snapshot) !== null
+        ? (latestDraftProposedState.current ?? latestCommittedProposedState.current)
+        : latestCommittedProposedState.current;
     const workingRevision = context?.workingRevision;
     if (
       !snapshot ||
@@ -781,16 +804,21 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     [frame, interactionEntityIds, state],
   );
   if (!provider) return null;
+  const interactionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
   return {
     attachCanvas,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
     interactionGeometry,
-    interactionAuthority: studioPreviewInteractionAuthorityV1(snapshot),
+    interactionAuthority,
     sourceLabel: snapshot?.sourceLabel ?? null,
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
     state,
+    syntheticInitialEditAnchor:
+      snapshot && state.phase === "presented" && interactionAuthority.kind === "interactive"
+        ? studioPreviewSyntheticInitialEditAnchorV1(snapshot)
+        : null,
     verifiedSourceDuration,
   };
 }

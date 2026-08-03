@@ -399,6 +399,10 @@ class MathTexScene(Scene):
   const workingState: WorkingState = {
     ...base.proposedState.base,
     appliedPrograms: [],
+    editorContext: {
+      ...base.proposedState.base.editorContext,
+      activeSceneId: runtimeSceneState.sceneId,
+    },
     runtimeSceneState,
     sourceSnapshot: {
       ...base.proposedState.base.sourceSnapshot,
@@ -936,6 +940,40 @@ describe("compileStudioPreviewSceneV1", () => {
       editProgramVersion: 1,
       kind: "studio-edit-program",
       revisionHash: result.scene.engineRevisionHash,
+    });
+  });
+
+  it("keeps V7 fail-closed when Studio contains an unmapped semantic entity", async () => {
+    const fixture = await mixedV7EditedMathTexPreviewInput();
+    const particle = fixture.edited.evaluatedScene.objectGraph.entities[fixture.particleStudioId];
+    if (!particle) throw new Error("Mixed V7 fixture has no particle semantic entity.");
+    const ghostId = "source:scene.py#MathTexScene:ghost";
+    const ghost = {
+      ...particle,
+      id: ghostId,
+      sourceIdentity: { kind: "known" as const, value: "ghost" },
+    };
+    const addGhost = (scene: RuntimeSceneState): RuntimeSceneState => ({
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: { ...scene.objectGraph.entities, [ghostId]: ghost },
+      },
+    });
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: {
+        ...fixture.edited,
+        base: { ...fixture.edited.base, runtimeSceneState: addGhost(fixture.edited.base.runtimeSceneState) },
+        evaluatedScene: addGhost(fixture.edited.evaluatedScene),
+      },
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:mixed-v7-unmapped-semantic",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(result).toMatchObject({
+      error: expect.stringContaining("identity-unverified"),
+      kind: "unsupported",
     });
   });
 
