@@ -48,6 +48,8 @@ import { compileStudioPreviewTemporalRebaseV1 } from "./preview-temporal-rebase"
 
 export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
+  /** Verified world-space center used to project Studio viewport positions. */
+  cameraCenter: Readonly<{ x: number; y: number }> | null;
   epoch: number;
   /**
    * Hit-target geometry derived from that frame's prepared GPU vertices,
@@ -777,6 +779,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   if (!provider) return null;
   return {
     attachCanvas,
+    cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
     interactionGeometry,
     interactionAuthority: studioPreviewInteractionAuthorityV1(snapshot),

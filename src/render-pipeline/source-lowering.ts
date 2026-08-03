@@ -284,9 +284,10 @@ function pointExpression(
   point: Readonly<{ x: number; y: number }>,
   frame: Readonly<{ height: number; width: number }>,
   viewport: Readonly<{ height: number; width: number }>,
+  cameraCenter: Readonly<{ x: number; y: number }> = { x: 0, y: 0 },
 ) {
-  const x = (point.x / viewport.width - 0.5) * frame.width;
-  const y = (0.5 - point.y / viewport.height) * frame.height;
+  const x = cameraCenter.x + (point.x / viewport.width - 0.5) * frame.width;
+  const y = cameraCenter.y + (0.5 - point.y / viewport.height) * frame.height;
   // An absolute point must stay executable even when a source uses explicit
   // Manim imports. A numeric point tuple is accepted by Mobject.move_to and
   // does not silently depend on RIGHT/LEFT/UP/DOWN/ORIGIN being in scope.
@@ -345,6 +346,7 @@ function staticTransformPairAt(
   lines: readonly string[],
   callLine: number,
   frame: Readonly<{ height: number; width: number }>,
+  cameraCenter: Readonly<{ x: number; y: number }>,
 ): StaticTransformPair | null {
   if (callLine < 1) return null;
   const markerLine = callLine - 1;
@@ -375,7 +377,12 @@ function staticTransformPairAt(
       return null;
     }
     const point = { x: value.x, y: value.y } as Readonly<{ x: number; y: number }>;
-    const expected = `${position[1]}${parsed.variable}.move_to(${pointExpression(point, frame, SOURCE_MARKER_VIEWPORT)})`;
+    const expected = `${position[1]}${parsed.variable}.move_to(${pointExpression(
+      point,
+      frame,
+      SOURCE_MARKER_VIEWPORT,
+      cameraCenter,
+    )})`;
     return call === expected ? { callLine, kind: "position", markerLine, variable: parsed.variable } : null;
   }
 
@@ -415,6 +422,7 @@ function staticTransformPairAt(
 function collapseRepeatedStaticTransformHistory(
   source: string,
   frame: Readonly<{ height: number; width: number }>,
+  cameraCenter: Readonly<{ x: number; y: number }>,
   currentTransactionIds: ReadonlySet<string>,
   sceneName: string,
   sourcePath: string,
@@ -457,7 +465,7 @@ function collapseRepeatedStaticTransformHistory(
           break;
         }
       }
-      const pair = staticTransformPairAt(lines, line, frame);
+      const pair = staticTransformPairAt(lines, line, frame, cameraCenter);
       if (!pair || !directSceneLines.has(pair.markerLine)) break;
       pairs.push(pair);
       line = pair.markerLine - 1;
@@ -714,6 +722,7 @@ function resizeExpression(
   operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
   frame: Readonly<{ height: number; width: number }>,
   viewport: Readonly<{ height: number; width: number }>,
+  cameraCenter: Readonly<{ x: number; y: number }>,
   animated: boolean,
 ) {
   const target = operation.to.dimensions;
@@ -732,7 +741,7 @@ function resizeExpression(
       ? `${prefix}.scale_to_fit_width(${formatPositiveAmount(width)})`
       : `${prefix}.stretch_to_fit_width(${formatPositiveAmount(width)})` +
         `.stretch_to_fit_height(${formatPositiveAmount(height ?? 0)})`;
-  return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport)})`;
+  return `${resize}.move_to(${pointExpression(operation.to.position, frame, viewport, cameraCenter)})`;
 }
 
 function resizeMarkerEntry(
@@ -1138,6 +1147,7 @@ export function lowerCanonicalProgramSource(
     );
   }
   const request = singleProgramRequest(inputRequest, programs[0], inputRequest.sourceBindings);
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
   const execution = programExecutionCapabilities(request.program);
   if (execution.lowering !== "supported") {
     throw new ProgramLoweringError(
@@ -1303,7 +1313,9 @@ export function lowerCanonicalProgramSource(
               variable,
             }),
           );
-          output.push(`${variable}.move_to(${pointExpression(canonicalPosition, frame, SOURCE_MARKER_VIEWPORT)})`);
+          output.push(
+            `${variable}.move_to(${pointExpression(canonicalPosition, frame, SOURCE_MARKER_VIEWPORT, cameraCenter)})`,
+          );
         } else if (operation.key === "content") {
           const target = contentTarget(operation.value);
           if (!target) {
@@ -1376,7 +1388,7 @@ export function lowerCanonicalProgramSource(
           resize: resizeMarkerEntry(variable, operation, request.viewport),
         }),
       );
-      output.push(resizeExpression(variable, operation, frame, request.viewport, false));
+      output.push(resizeExpression(variable, operation, frame, request.viewport, cameraCenter, false));
     }
 
     const boundaries = bucket.filter((operation) => operation.kind === "InsertSceneBoundary");
@@ -1529,7 +1541,7 @@ export function lowerCanonicalProgramSource(
       } else if (operation.kind === "ResizeEntity") {
         const variable = requireVariable(variableByEntity, operation.entityId);
         resizes.push(resizeMarkerEntry(variable, operation, request.viewport));
-        actions.push(resizeExpression(variable, operation, frame, request.viewport, true));
+        actions.push(resizeExpression(variable, operation, frame, request.viewport, cameraCenter, true));
       }
     }
     if (actions.length > 0) {
@@ -1598,6 +1610,7 @@ export function lowerCanonicalProgramSource(
         ? collapseRepeatedStaticTransformHistory(
             loweredSource,
             frame,
+            cameraCenter,
             new Set([request.program.transactionId]),
             request.sceneName,
             request.sourcePath,
@@ -1612,6 +1625,7 @@ function singleProgramRequest(
   sourceBindings: SingleProgramRenderRequest["sourceBindings"],
 ): SingleProgramRenderRequest {
   return {
+    ...(request.cameraCenter ? { cameraCenter: request.cameraCenter } : {}),
     destination: request.destination,
     program,
     projectId: request.projectId,
@@ -1909,6 +1923,7 @@ export function lowerCanonicalProgramBatchSource(
     source: collapseRepeatedStaticTransformHistory(
       lines.join(newline),
       frame,
+      request.cameraCenter ?? { x: 0, y: 0 },
       new Set(normalizedEntries.map(({ program }) => program.transactionId)),
       request.sceneName,
       request.sourcePath,

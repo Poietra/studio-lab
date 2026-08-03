@@ -305,6 +305,7 @@ export function RenderPipelinePanel({
     try {
       const started = await startManimRender(
         {
+          ...(targetCandidate.cameraCenter ? { cameraCenter: targetCandidate.cameraCenter } : {}),
           destination: targetCandidate.destination,
           program: targetCandidate.program,
           programs: targetCandidate.programs,
@@ -363,6 +364,7 @@ export function RenderPipelinePanel({
       const exported = targetCandidate
         ? await exportManimSource(
             {
+              ...(targetCandidate.cameraCenter ? { cameraCenter: targetCandidate.cameraCenter } : {}),
               destination: targetCandidate.destination,
               program: targetCandidate.program,
               programs: targetCandidate.programs,
