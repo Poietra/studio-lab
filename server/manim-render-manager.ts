@@ -967,7 +967,7 @@ export class ManimRenderManager {
     await this.withSessionAction(id, async (session) => {
       targetSession = session;
       if (!renderSessionStatusPolicy(session.status).discardable) {
-        throw new HttpError("Cancel an active render or Undo a committed change before discarding it.", 409);
+        throw new HttpError("Only a completed or cancelled render can be discarded.", 409);
       }
       const child = session.child;
       stopRenderProcess(child);

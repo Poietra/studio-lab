@@ -436,6 +436,32 @@ class Independent(Scene):
     await expect(manager.start(request())).resolves.toMatchObject({ status: "rendering" });
   });
 
+  it("keeps a committed source while releasing its Undo snapshot for the next preview", async () => {
+    const { manager, projectRoot } = await fixture({ maxRetainedSessions: 1 });
+    const started = await manager.start(request());
+    await waitForTerminal(manager, started.id);
+    const committed = await manager.commit(started.id, commitRequest(started));
+    const committedSource = await readFile(join(projectRoot, "scene.py"), "utf8");
+
+    expect(committed).toMatchObject({ canDiscard: true, canUndo: true, status: "committed" });
+
+    const discarded = await manager.discard(started.id);
+
+    expect(discarded).toMatchObject({ canDiscard: false, canUndo: false, status: "discarded" });
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(committedSource);
+    expect(() => manager.view(started.id)).toThrow(/not found/i);
+
+    const nextProgram = motionProgram(5, "render-after-commit");
+    await expect(
+      manager.start({
+        ...request(),
+        program: nextProgram,
+        programs: [nextProgram],
+        sourceHash: committed.patch.patchedSourceHash,
+      }),
+    ).resolves.toMatchObject({ status: "rendering" });
+  });
+
   it("atomically reserves retained-session capacity across concurrent starts", async () => {
     const { manager } = await fixture({
       command: [process.execPath, fakeRenderer, "--slow-render"],

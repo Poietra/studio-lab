@@ -703,9 +703,14 @@ export function RenderPipelinePanel({
             className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:text-zinc-600"
             disabled={pendingAction !== null}
             onClick={() => void runAction("discard")}
+            title={
+              session.status === "committed"
+                ? "Keep the committed Python source and give up Undo for this preview."
+                : undefined
+            }
             type="button"
           >
-            Discard preview
+            {session.status === "committed" ? "Keep source" : "Discard preview"}
           </button>
         ) : null}
         {session?.canUndo ? (
