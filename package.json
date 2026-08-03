@@ -34,6 +34,7 @@
     "test:e2e:preview:real:mathtex-morph": "POIETRA_E2E_REAL_PREVIEW_PROFILE=5 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:image": "POIETRA_E2E_REAL_PREVIEW_PROFILE=4 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mixed": "POIETRA_E2E_REAL_PREVIEW_PROFILE=7 playwright test --config playwright.real-preview.config.ts",
+    "test:e2e:preview:real:square-to-circle": "POIETRA_E2E_REAL_PREVIEW_PROFILE=8 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:visual-parity": "playwright test --config playwright.visual-parity.config.ts",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
     "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",
