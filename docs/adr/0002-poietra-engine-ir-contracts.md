@@ -62,10 +62,11 @@ The contract contains:
 - opaque identity, parent identity, lifetime, source z-index, and stable scene order;
 - Circle, Rectangle, Line, absolute cubic Path, and PNG Image geometry;
 - solid fill, solid stroke, opacity, image sampler, and 2D affine transform;
-- affine, opacity, path-trim, path-morph, motion-path, and camera channels;
+- affine, opacity, path-trim, path-morph, motion-path, vector-appearance, and camera channels;
 - linear, smoothstep, Manim default smooth, and constrained cubic-bezier easing;
 - orthographic camera, asset references, fidelity, and provenance;
-- an exact sorted list of capabilities derived from the document's contents.
+- an exact sorted list of capabilities derived from the document's contents, including
+  `vector-appearance-animation` when that channel is present.
 
 There is no `unknown` value inside valid Scene IR. A producer that cannot prove
 geometry, style, position, ordering, camera, asset identity, or animation meaning
@@ -125,8 +126,12 @@ tangent, oriented evaluation rejects the frame.
 V1 motion paths contain exactly one subpath. Path morph is component-wise
 interpolation of matching cubic control points. Path trim is restricted to
 stroke-only entities because filling an open prefix would introduce an implicit
-closing edge. A camera channel replaces the base camera view. Only one channel may
-write a given entity/property, and only one camera channel may exist.
+closing edge. Vector appearance interpolates solid fill/stroke RGBA components and
+stroke width while keeping paint presence, fill rule, stroke cap/join, and miter
+limit fixed. An absent base paint may be materialized only by an explicit transparent
+first keyframe; later `null`/solid cross-fades are invalid. A camera channel replaces
+the base camera view. Only one channel may write a given entity/property, and only
+one camera channel may exist.
 
 V1 `arc-length-v1` evaluation is deterministic rather than adaptive: every cubic
 is sampled at 64 equal parameter intervals and the resulting chord lengths are
@@ -141,11 +146,12 @@ keyframe, the final value is held. Every non-final keyframe supplies the easing 
 its outgoing segment. `linear` uses `t`, and the existing `smooth` uses
 `3t² - 2t³`. `manim-smooth` is the distinct Manim default: the inflection-10
 logistic sigmoid normalized to exact zero and one endpoints. After easing,
-numbers, points, camera values, affine matrix components, and cubic control points
-interpolate component-wise. The evaluation order is base geometry, path morph,
-path trim, base/affine transform, motion-path pose, then root-to-leaf parent
-composition. Parent and child opacity multiply. Opacity and camera are sampled
-independently from their base values.
+numbers, points, camera values, affine matrix components, cubic control points, and
+vector paint components interpolate component-wise. The evaluation order is base
+geometry, path morph,
+path trim, base/vector appearance, base/affine transform, motion-path pose, then
+root-to-leaf parent composition. Parent and child opacity multiply. Opacity and
+camera are sampled independently from their base values.
 
 `cubic-bezier` easing uses the CSS timing-function interpretation: solve the
 monotonic x curve for normalized segment time, then evaluate y. All four controls

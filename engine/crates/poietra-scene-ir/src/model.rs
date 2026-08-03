@@ -250,6 +250,15 @@ pub struct StrokeStyleV1 {
     pub width_world: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VectorAppearanceValueV1 {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub fill: Option<FillStyleV1>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub stroke: Option<StrokeStyleV1>,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum AssetAlphaModeV1 {
     #[default]
@@ -482,6 +491,15 @@ pub enum AnimationChannelV1 {
         #[serde(rename = "provenanceId")]
         provenance_id: String,
     },
+    #[serde(rename = "vector-appearance")]
+    VectorAppearance {
+        #[serde(rename = "entityId")]
+        entity_id: String,
+        id: String,
+        keyframes: Vec<KeyframeV1<VectorAppearanceValueV1>>,
+        #[serde(rename = "provenanceId")]
+        provenance_id: String,
+    },
     #[serde(rename = "motion-path")]
     MotionPath {
         #[serde(rename = "entityId")]
@@ -513,6 +531,7 @@ impl AnimationChannelV1 {
             | Self::Opacity { id, .. }
             | Self::PathTrim { id, .. }
             | Self::PathMorph { id, .. }
+            | Self::VectorAppearance { id, .. }
             | Self::MotionPath { id, .. }
             | Self::Camera { id, .. } => id,
         }
@@ -525,6 +544,7 @@ impl AnimationChannelV1 {
             | Self::Opacity { provenance_id, .. }
             | Self::PathTrim { provenance_id, .. }
             | Self::PathMorph { provenance_id, .. }
+            | Self::VectorAppearance { provenance_id, .. }
             | Self::MotionPath { provenance_id, .. }
             | Self::Camera { provenance_id, .. } => provenance_id,
         }
@@ -537,6 +557,7 @@ impl AnimationChannelV1 {
             | Self::Opacity { entity_id, .. }
             | Self::PathTrim { entity_id, .. }
             | Self::PathMorph { entity_id, .. }
+            | Self::VectorAppearance { entity_id, .. }
             | Self::MotionPath { entity_id, .. } => Some(entity_id),
             Self::Camera { .. } => None,
         }
@@ -549,6 +570,7 @@ impl AnimationChannelV1 {
             Self::Opacity { .. } => "opacity",
             Self::PathTrim { .. } => "path-trim",
             Self::PathMorph { .. } => "path-morph",
+            Self::VectorAppearance { .. } => "vector-appearance",
             Self::MotionPath { .. } => "motion-path",
             Self::Camera { .. } => "camera",
         }
@@ -635,6 +657,8 @@ pub enum SceneCapabilityV1 {
     PngImage,
     #[serde(rename = "shape-primitives")]
     ShapePrimitives,
+    #[serde(rename = "vector-appearance-animation")]
+    VectorAppearanceAnimation,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]

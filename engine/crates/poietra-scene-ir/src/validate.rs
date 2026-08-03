@@ -631,6 +631,9 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
             AnimationChannelV1::Opacity { .. } => SceneCapabilityV1::OpacityAnimation,
             AnimationChannelV1::PathMorph { .. } => SceneCapabilityV1::PathMorphAnimation,
             AnimationChannelV1::PathTrim { .. } => SceneCapabilityV1::PathTrimAnimation,
+            AnimationChannelV1::VectorAppearance { .. } => {
+                SceneCapabilityV1::VectorAppearanceAnimation
+            }
         });
     }
     capabilities.into_iter().collect()
@@ -1084,6 +1087,123 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 value_path,
                                 "path morph keyframes must have matching cubic topology",
                             );
+                        }
+                    },
+                );
+            }
+            AnimationChannelV1::VectorAppearance {
+                entity_id,
+                keyframes,
+                ..
+            } => {
+                total_keyframes = total_keyframes.saturating_add(keyframes.len());
+                let base = entity_indexes
+                    .get(entity_id.as_str())
+                    .and_then(
+                        |entity_index| match &scene.entities[*entity_index].appearance {
+                            SceneAppearanceV1::Vector { fill, stroke, .. } => {
+                                Some((fill.as_ref(), stroke.as_ref()))
+                            }
+                            SceneAppearanceV1::Image { .. } => None,
+                        },
+                    );
+                if entity_indexes.contains_key(entity_id.as_str()) && base.is_none() {
+                    validator.issue(
+                        format!("{path}.entityId"),
+                        "vector-appearance requires vector geometry and appearance",
+                    );
+                }
+                let first = keyframes.first().map(|keyframe| &keyframe.value);
+                if let (Some((base_fill, base_stroke)), Some(first)) = (base, first) {
+                    match (base_fill, &first.fill) {
+                        (None, Some(fill)) if fill.color.alpha != 0.0 => validator.issue(
+                            format!("{path}.keyframes[0].value.fill"),
+                            "vector-appearance may materialize an absent base fill only as an explicit transparent solid fill",
+                        ),
+                        (Some(_), None) => validator.issue(
+                            format!("{path}.keyframes[0].value.fill"),
+                            "vector-appearance cannot discard the entity base fill",
+                        ),
+                        (Some(base_fill), Some(fill)) if base_fill.rule != fill.rule => validator.issue(
+                            format!("{path}.keyframes[0].value.fill.rule"),
+                            "vector-appearance cannot transition between fill rules",
+                        ),
+                        (None, None | Some(_)) | (Some(_), Some(_)) => {}
+                    }
+                    match (base_stroke, &first.stroke) {
+                        (None, Some(stroke)) if stroke.color.alpha != 0.0 => validator.issue(
+                            format!("{path}.keyframes[0].value.stroke"),
+                            "vector-appearance may materialize an absent base stroke only as an explicit transparent solid stroke",
+                        ),
+                        (Some(_), None) => validator.issue(
+                            format!("{path}.keyframes[0].value.stroke"),
+                            "vector-appearance cannot discard the entity base stroke",
+                        ),
+                        (Some(base_stroke), Some(stroke))
+                            if base_stroke.cap != stroke.cap
+                                || base_stroke.join != stroke.join
+                                || base_stroke.miter_limit.to_bits()
+                                    != stroke.miter_limit.to_bits() =>
+                        {
+                            validator.issue(
+                                format!("{path}.keyframes[0].value.stroke"),
+                                "vector-appearance cannot transition between stroke cap, join, or miter-limit styles",
+                            );
+                        }
+                        (None, None | Some(_)) | (Some(_), Some(_)) => {}
+                    }
+                }
+                validate_keyframes(
+                    keyframes,
+                    MAX_KEYFRAMES_V1,
+                    scene.duration,
+                    &format!("{path}.keyframes"),
+                    &mut validator,
+                    |value, value_path, validator| {
+                        if value.fill.is_none() && value.stroke.is_none() {
+                            validator.issue(
+                                value_path,
+                                "vector appearance keyframe requires a fill or stroke",
+                            );
+                        }
+                        if let Some(fill) = &value.fill {
+                            validate_fill(fill, &format!("{value_path}.fill"), validator);
+                        }
+                        if let Some(stroke) = &value.stroke {
+                            validate_stroke(stroke, &format!("{value_path}.stroke"), validator);
+                        }
+                        if let Some(first) = first {
+                            if value.fill.is_some() != first.fill.is_some() {
+                                validator.issue(
+                                    format!("{value_path}.fill"),
+                                    "vector-appearance cannot transition between absent and solid fill",
+                                );
+                            } else if let (Some(fill), Some(first_fill)) =
+                                (&value.fill, &first.fill)
+                                && fill.rule != first_fill.rule
+                            {
+                                validator.issue(
+                                    format!("{value_path}.fill.rule"),
+                                    "vector-appearance cannot transition between fill rules",
+                                );
+                            }
+                            if value.stroke.is_some() != first.stroke.is_some() {
+                                validator.issue(
+                                    format!("{value_path}.stroke"),
+                                    "vector-appearance cannot transition between absent and solid stroke",
+                                );
+                            } else if let (Some(stroke), Some(first_stroke)) =
+                                (&value.stroke, &first.stroke)
+                                && (stroke.cap != first_stroke.cap
+                                    || stroke.join != first_stroke.join
+                                    || stroke.miter_limit.to_bits()
+                                        != first_stroke.miter_limit.to_bits())
+                            {
+                                validator.issue(
+                                    format!("{value_path}.stroke"),
+                                    "vector-appearance cannot transition between stroke cap, join, or miter-limit styles",
+                                );
+                            }
                         }
                     },
                 );

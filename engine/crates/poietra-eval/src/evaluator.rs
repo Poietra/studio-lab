@@ -7,10 +7,11 @@ use poietra_geometry::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, AnimationChannelV1, AssetManifestV1, ContractVersionV1, CubicPathV1,
-    EngineFrameV1, KeyframeV1, MotionPathParameterizationV1, PathTrimParameterizationV1,
-    RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1,
-    RenderPacketSchemaV1, RenderPacketV1, SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneIrV1, ViewportV1, affine_transform_is_singular_v1,
+    EngineFrameV1, FillStyleV1, KeyframeV1, MotionPathParameterizationV1,
+    PathTrimParameterizationV1, RenderCameraKindV1, RenderCameraV1, RenderCapabilityV1,
+    RenderDrawV1, RenderEmptyReasonV1, RenderPacketSchemaV1, RenderPacketV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCameraViewV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+    SceneIrV1, StrokeStyleV1, VectorAppearanceValueV1, ViewportV1, affine_transform_is_singular_v1,
     validate_render_packet_for_validated_scene_v1, validate_scene_ir_with_assets_v1,
 };
 
@@ -152,12 +153,15 @@ impl EngineSessionV1 {
     }
 }
 
-fn sample_keyframes<T: Clone>(
+fn sample_keyframes<T: Clone, E>(
     base: &T,
     keyframes: &[KeyframeV1<T>],
     time: f64,
-    interpolate: impl Fn(&T, &T, f64) -> Result<T, GeometryError>,
-) -> Result<(T, bool), EvaluationError> {
+    interpolate: impl Fn(&T, &T, f64) -> Result<T, E>,
+) -> Result<(T, bool), EvaluationError>
+where
+    EvaluationError: From<E>,
+{
     let first = keyframes.first().ok_or(EvaluationError::MalformedScene(
         "animation channel has no keyframes",
     ))?;
@@ -191,7 +195,10 @@ fn sample_keyframes<T: Clone>(
         ))?;
     let progress = (time - left.at) / (right.at - left.at);
     let eased = apply_easing_v1(easing, progress);
-    Ok((interpolate(&left.value, &right.value, eased)?, true))
+    Ok((
+        interpolate(&left.value, &right.value, eased).map_err(EvaluationError::from)?,
+        true,
+    ))
 }
 
 #[allow(
@@ -222,11 +229,57 @@ fn interpolate_camera(
     })
 }
 
+fn interpolate_color(left: &RgbaColorV1, right: &RgbaColorV1, progress: f64) -> RgbaColorV1 {
+    RgbaColorV1 {
+        alpha: left.alpha + (right.alpha - left.alpha) * progress,
+        blue: left.blue + (right.blue - left.blue) * progress,
+        green: left.green + (right.green - left.green) * progress,
+        red: left.red + (right.red - left.red) * progress,
+    }
+}
+
+fn interpolate_vector_appearance(
+    left: &VectorAppearanceValueV1,
+    right: &VectorAppearanceValueV1,
+    progress: f64,
+) -> Result<VectorAppearanceValueV1, EvaluationError> {
+    let fill = match (&left.fill, &right.fill) {
+        (None, None) => None,
+        (Some(left), Some(right)) => Some(FillStyleV1 {
+            color: interpolate_color(&left.color, &right.color, progress),
+            rule: left.rule,
+        }),
+        (None, Some(_)) | (Some(_), None) => {
+            return Err(EvaluationError::MalformedScene(
+                "vector-appearance fill presence changed after validation",
+            ));
+        }
+    };
+    let stroke = match (&left.stroke, &right.stroke) {
+        (None, None) => None,
+        (Some(left), Some(right)) => Some(StrokeStyleV1 {
+            cap: left.cap,
+            color: interpolate_color(&left.color, &right.color, progress),
+            join: left.join,
+            miter_limit: left.miter_limit,
+            width_world: left.width_world + (right.width_world - left.width_world) * progress,
+        }),
+        (None, Some(_)) | (Some(_), None) => {
+            return Err(EvaluationError::MalformedScene(
+                "vector-appearance stroke presence changed after validation",
+            ));
+        }
+    };
+    Ok(VectorAppearanceValueV1 { fill, stroke })
+}
+
 #[derive(Clone, Debug)]
 struct LocalSample {
     empty_reason: Option<RenderEmptyReasonV1>,
+    fill: Option<FillStyleV1>,
     opacity: f64,
     path: Option<CubicPathV1>,
+    stroke: Option<StrokeStyleV1>,
     transform: AffineTransformV1,
 }
 
@@ -259,7 +312,9 @@ fn sample_affine_transform(
         &entity.transform,
         keyframes,
         time,
-        |left, right, progress| Ok(interpolate_affine_transform_v1(left, right, progress)),
+        |left, right, progress| {
+            Ok::<_, GeometryError>(interpolate_affine_transform_v1(left, right, progress))
+        },
     )?;
     // V1 evidence is deliberately limited to the entity's own sampled channel
     // before motion/world composition. Ancestor or motion-induced singularity,
@@ -272,6 +327,39 @@ fn sample_affine_transform(
     // preparation, which would fail the whole frame instead of this draw.
     let singular = active && affine_transform_is_singular_v1(&transform);
     Ok((transform, singular))
+}
+
+fn sample_vector_appearance(
+    index: &RetainedSceneIndexV1,
+    scene: &SceneIrV1,
+    entity_index: usize,
+    entity: &SceneEntityV1,
+    time: f64,
+) -> Result<Option<VectorAppearanceValueV1>, EvaluationError> {
+    let base = match &entity.appearance {
+        SceneAppearanceV1::Vector { fill, stroke, .. } => Some(VectorAppearanceValueV1 {
+            fill: fill.clone(),
+            stroke: stroke.clone(),
+        }),
+        SceneAppearanceV1::Image { .. } => None,
+    };
+    let Some(channel_index) = index.vector_appearance_channel(entity_index) else {
+        return Ok(base);
+    };
+    let Some(AnimationChannelV1::VectorAppearance { keyframes, .. }) =
+        scene.animation_channels.get(channel_index)
+    else {
+        return Err(EvaluationError::MalformedScene(
+            "retained vector-appearance channel index has the wrong kind",
+        ));
+    };
+    let Some(base) = &base else {
+        return Err(EvaluationError::MalformedScene(
+            "vector-appearance channel targets image appearance",
+        ));
+    };
+    sample_keyframes(base, keyframes, time, interpolate_vector_appearance)
+        .map(|sample| Some(sample.0))
 }
 
 fn sample_local_entity(
@@ -294,6 +382,8 @@ fn sample_local_entity(
     } else {
         base_opacity
     };
+
+    let appearance = sample_vector_appearance(index, scene, entity_index, entity, time)?;
 
     let (mut transform, singular_affine_sample) =
         sample_affine_transform(index, scene, entity_index, entity, time)?;
@@ -326,8 +416,10 @@ fn sample_local_entity(
     if matches!(&entity.geometry, SceneGeometryV1::Image { .. }) {
         return Ok(LocalSample {
             empty_reason: None,
+            fill: None,
             opacity,
             path: None,
+            stroke: None,
             transform,
         });
     }
@@ -371,8 +463,10 @@ fn sample_local_entity(
     }
     Ok(LocalSample {
         empty_reason,
+        fill: appearance.as_ref().and_then(|value| value.fill.clone()),
         opacity,
         path: Some(path),
+        stroke: appearance.and_then(|value| value.stroke),
         transform,
     })
 }
@@ -554,10 +648,10 @@ fn compile_render_packet_from_validated_v1(
                 (SceneGeometryV1::Image { .. }, _) => Err(EvaluationError::MalformedScene(
                     "image geometry has vector appearance",
                 )),
-                (_, SceneAppearanceV1::Vector { fill, stroke, .. }) => Ok(RenderDrawV1::Path {
+                (_, SceneAppearanceV1::Vector { .. }) => Ok(RenderDrawV1::Path {
                     draw_id,
                     entity_id: entity.id.clone(),
-                    fill: fill.clone(),
+                    fill: local_sample.fill.clone(),
                     opacity: world_sample.opacity,
                     paint_order,
                     path: local_sample
@@ -565,7 +659,7 @@ fn compile_render_packet_from_validated_v1(
                         .clone()
                         .ok_or(EvaluationError::MalformedScene("vector entity has no path"))?,
                     source_z_index: entity.source_z_index,
-                    stroke: stroke.clone(),
+                    stroke: local_sample.stroke.clone(),
                     transform: world_sample.transform.clone(),
                 }),
                 (_, SceneAppearanceV1::Image { .. }) => Err(EvaluationError::MalformedScene(
