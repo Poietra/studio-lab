@@ -135,6 +135,20 @@ describe("real Manim census report", () => {
       await writeFile(path, JSON.stringify(officialV9));
       await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV9);
 
+      const unpinnedV10 = structuredClone(manifest());
+      unpinnedV10.sources[2]!.scenes[0]!.profiles = [1, 2, 10];
+      await writeFile(path, JSON.stringify(unpinnedV10));
+      await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialV10 = structuredClone(manifest());
+      const officialLineJointsSource = officialV10.sources[2]!;
+      officialLineJointsSource.id = "fast-manim-basic";
+      officialLineJointsSource.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialLineJointsSource.scenes[0]!.name = "LineJoints";
+      officialLineJointsSource.scenes[0]!.profiles = [1, 2, 3, 4, 5, 6, 7, 10];
+      await writeFile(path, JSON.stringify(officialV10));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV10);
+
       const pinned = await loadRealManimCensusManifest(
         join(import.meta.dirname, "..", "fixtures", "real-manim-census-v1", "manifest.json"),
       );
@@ -156,6 +170,29 @@ describe("real Manim census report", () => {
           corpus: "compatibility",
           id: "fast-manim-basic",
           name: "SquareToCircle",
+          path: "example_scenes/basic.py",
+          repository: "fast-manim",
+          sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+        },
+      ]);
+      expect(
+        pinned.sources.flatMap((source) =>
+          source.scenes
+            .filter((scene) => scene.profiles.includes(10))
+            .map((scene) => ({
+              corpus: source.corpus,
+              id: source.id,
+              name: scene.name,
+              path: source.path,
+              repository: source.repository,
+              sha256: source.sha256,
+            })),
+        ),
+      ).toEqual([
+        {
+          corpus: "compatibility",
+          id: "fast-manim-basic",
+          name: "LineJoints",
           path: "example_scenes/basic.py",
           repository: "fast-manim",
           sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",

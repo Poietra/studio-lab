@@ -1,7 +1,9 @@
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectedEntity } from "./model";
 import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import { StudioInspector } from "./studio-sidebars";
 import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 
 const CIRCLE_ENTITY: ProjectedEntity = {
@@ -20,6 +22,43 @@ const CIRCLE_ENTITY: ProjectedEntity = {
   sourceIdentity: { kind: "known", value: "circle_1" },
   type: "Circle",
 };
+
+function lineJointsTriangle(sourceName: "t1" | "t2" | "t3", x: number): ProjectedEntity {
+  const runtimeOwned = (field: string) => ({ kind: "unknown" as const, reason: `VGroup owns runtime ${field}.` });
+  return {
+    geometry: {
+      dimensions: runtimeOwned("dimensions"),
+      position: runtimeOwned("position"),
+      scale: runtimeOwned("scale"),
+      style: runtimeOwned("paint"),
+    },
+    id: `source:example_scenes/basic.py#LineJoints:${sourceName}`,
+    opacity: 1,
+    position: { x, y: 180 },
+    present: true,
+    provisional: false,
+    scale: 1,
+    sourceIdentity: { kind: "known", value: sourceName },
+    type: "Triangle",
+  };
+}
+
+function findEntityButton(tree: ReactNode, entityId: string): ReactElement<Record<string, unknown>> {
+  let result: ReactElement<Record<string, unknown>> | null = null;
+  const visit = (node: ReactNode) => {
+    Children.forEach(node, (child) => {
+      if (result || !isValidElement<Record<string, unknown>>(child)) return;
+      if (child.type === "button" && child.props["data-studio-entity"] === entityId) {
+        result = child;
+        return;
+      }
+      visit(child.props.children as ReactNode);
+    });
+  };
+  visit(tree);
+  if (!result) throw new Error(`No Studio entity button exists for ${entityId}.`);
+  return result;
+}
 
 function baseProps(): StudioCanvasProps {
   return {
@@ -48,11 +87,43 @@ function baseProps(): StudioCanvasProps {
     onEntityResizePointerMove: vi.fn(),
     onEntityResizePointerUp: vi.fn(),
     onMotionControlChange: vi.fn(),
+    onSelectEntity: vi.fn(),
     readOnly: false,
     sampleId: "sample-1",
     scalePreview: null,
     selectedIds: new Set<string>(),
   };
+}
+
+function renderSelectedInspector(entity: ProjectedEntity, draftError: string | null) {
+  return renderToStaticMarkup(
+    <StudioInspector
+      appliedProgramCount={0}
+      draftApplyPending={false}
+      draftError={draftError}
+      draftOperation={null}
+      draftProgram={null}
+      inspectorReturnFocus={null}
+      onApplyDraft={vi.fn()}
+      onDiscardDraft={vi.fn()}
+      onDraftOperationChange={vi.fn()}
+      onEntityEdit={vi.fn()}
+      onEntityScaleChange={vi.fn()}
+      onInspectorFocusRestored={vi.fn()}
+      onRenderSessionChange={vi.fn()}
+      onSourceChanged={vi.fn()}
+      onSourceMutationPendingChange={vi.fn()}
+      renderCandidate={null}
+      renderCandidateLifecycleBlocker={null}
+      renderCandidateUnavailableReason="No render candidate."
+      renderSession={null}
+      replacingAppliedProgram={false}
+      selectedEntity={entity}
+      sourceExport={null}
+      suggestion={null}
+      workspace={null}
+    />,
+  );
 }
 
 function previewView(
@@ -415,6 +486,125 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain("height:12.5cqh;width:14.0627");
     expect(markup).toContain('aria-label="Resize image from bottom-right corner"');
     expect(markup.match(/data-studio-resize-handle="entity:image"/g)).toHaveLength(1);
+  });
+
+  it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {
+    const triangles = [lineJointsTriangle("t1", 120), lineJointsTriangle("t2", 320), lineJointsTriangle("t3", 520)];
+    const groupRuntimeId = "scene:line-joints/entity:0";
+    const leafRuntimeIds = [
+      "scene:line-joints/entity:1",
+      "scene:line-joints/entity:2",
+      "scene:line-joints/entity:3",
+    ] as const;
+    const group: ProjectedEntity = {
+      ...triangles[1]!,
+      id: "source:example_scenes/basic.py#LineJoints:grp",
+      sourceIdentity: { kind: "known", value: "grp" },
+      type: "VGroup",
+    };
+    const interactionGeometry = new Map(
+      leafRuntimeIds.map((runtimeEntityId, index) => [
+        runtimeEntityId,
+        { dimensions: { height: 3, width: 3 }, position: { x: 120 + index * 200, y: 180 } },
+      ]),
+    );
+    const sourceRuntimeIdentity = new Map([
+      [
+        "grp",
+        {
+          bindingId: `source-binding:${"a".repeat(64)}`,
+          entityId: groupRuntimeId,
+          sourceName: "grp",
+        },
+      ],
+      ...triangles.map(
+        (entity, index) =>
+          [
+            entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : "",
+            {
+              bindingId: `source-binding:${String(index + 1).repeat(64)}`,
+              entityId: leafRuntimeIds[index]!,
+              sourceName: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : "",
+            },
+          ] as const,
+      ),
+    ]);
+    const selected: ProjectedEntity[] = [];
+    let draftError: string | null = null;
+    const beginMutation = vi.fn(() => {
+      draftError = "No safe .py source anchor exists before the playhead.";
+    });
+    const nudgeMutation = vi.fn();
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [group, ...triangles],
+      onEntityKeyDown: nudgeMutation,
+      onEntityPointerDown: beginMutation,
+      onSelectEntity: (entityId) => {
+        const entity = triangles.find(({ id }) => id === entityId);
+        if (entity) selected.push(entity);
+      },
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:line-joints-v10",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        interactionGeometry,
+        sourceRuntimeIdentity,
+        { kind: "selection-only", reason: "source-edit-anchor-unavailable" },
+      ),
+      selectedIds: new Set([triangles[0]!.id]),
+    };
+    const tree = StudioCanvas(props);
+    expect(() => findEntityButton(tree, group.id)).toThrow(/No Studio entity button/);
+
+    for (const triangle of triangles) {
+      const button = findEntityButton(tree, triangle.id);
+      expect(button.props.disabled).toBe(false);
+      expect(button.props.className).not.toContain("pointer-events-none");
+      expect(button.props.onPointerMove).toBeUndefined();
+      expect(button.props.onPointerUp).toBeUndefined();
+      const stopPropagation = vi.fn();
+      const pointerDown = button.props.onPointerDown as
+        | ((event: Readonly<{ stopPropagation: () => void }>) => void)
+        | undefined;
+      expect(pointerDown).toBeTypeOf("function");
+      pointerDown?.({ stopPropagation });
+      expect(stopPropagation).toHaveBeenCalledOnce();
+
+      const preventDefault = vi.fn();
+      const keyDown = button.props.onKeyDown as
+        | ((event: Readonly<{ key: string; preventDefault: () => void }>) => void)
+        | undefined;
+      keyDown?.({ key: "ArrowRight", preventDefault });
+      expect(preventDefault).not.toHaveBeenCalled();
+    }
+
+    expect(selected).toEqual(triangles);
+    expect(beginMutation).not.toHaveBeenCalled();
+    expect(nudgeMutation).not.toHaveBeenCalled();
+    expect(draftError).toBeNull();
+
+    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
+    expect(markup).toContain('data-preview-interaction="selection-only"');
+    expect(markup).toContain("Canvas preview · verified fixture · selection only");
+    expect(markup).not.toContain(groupRuntimeId);
+    expect(markup).not.toContain(`data-studio-entity="${group.id}"`);
+    expect(markup).not.toContain("Move grp");
+    expect(markup.match(/data-studio-runtime-entity="scene:line-joints\/entity:[123]"/g)).toHaveLength(3);
+    expect(markup).not.toContain("data-studio-resize-handle");
+
+    for (const triangle of selected) {
+      const inspector = renderSelectedInspector(triangle, draftError);
+      if (triangle.sourceIdentity.kind !== "known") throw new Error("Expected a named Triangle source entity.");
+      expect(inspector).toContain(`<dd class="truncate text-zinc-300">${triangle.sourceIdentity.value}</dd>`);
+      expect(inspector).toContain('<dd class="text-zinc-300">Triangle</dd>');
+    }
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

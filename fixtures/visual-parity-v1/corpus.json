@@ -390,6 +390,24 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-line-joints-v10--static",
+      "fixture": {
+        "id": "eng-v1-real-line-joints-v10",
+        "path": "fixtures/engine-v1/real-line-joints-v10.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827"
+        }
+      },
+      "sample": {
+        "id": "static",
+        "sampleTime": 0.5,
+        "semanticDigest": "25199374e0078a2fe619e48af3ace591f35d0468b93a7b1fec39fa004e41c73e",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }

@@ -10,9 +10,9 @@
   ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "2c1e56287193e3acddbe6779f6ecd4bd91094588",
-    "tree": "2cd11bb2449728601961d1776a8e04096f8ef2eb",
-    "digest": "9308f7e00fcf35fa4478960a6907409930494db90543cf54514f9725eb31320e",
+    "revision": "29d21a2bd213df8ffeed0454278aa86289d190b8",
+    "tree": "d486d57ba637da1e915a5b29d6bda2d967570a54",
+    "digest": "f5760561042013c5b8461070141cf929a595997b07f4aacd687e6befeb562412",
     "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
     "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
     "module": "manim.renderer.source_runtime_identity"
@@ -196,7 +196,7 @@
         },
         {
           "name": "LineJoints",
-          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "profiles": [1, 2, 3, 4, 5, 6, 7, 10],
           "features": ["hierarchy", "module-global-default", "multi-scene-module", "style"]
         }
       ]

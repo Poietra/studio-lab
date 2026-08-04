@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
+import { LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1, readLineJointsCairoReferenceV1 } from "./line-joints-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -71,10 +72,24 @@ const REAL_WARP_SQUARE_V9_ENTRY_IDS = [
   "real-warp-square-v9--hold",
 ] as const;
 const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENTRY_IDS);
+const REAL_LINE_JOINTS_V10_ENTRY_ID = "real-line-joints-v10--static";
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
 );
+const FOCUSED_ENTRY_ID = process.env.POIETRA_VISUAL_PARITY_ENTRY_ID;
+const VISUAL_PARITY_ENTRIES = FOCUSED_ENTRY_ID
+  ? VISUAL_PARITY_CORPUS.entries.filter(({ id }) => id === FOCUSED_ENTRY_ID)
+  : VISUAL_PARITY_CORPUS.entries;
+if (FOCUSED_ENTRY_ID && VISUAL_PARITY_ENTRIES.length !== 1) {
+  throw new Error(`Unknown focused visual-parity corpus entry ${FOCUSED_ENTRY_ID}.`);
+}
+if (
+  FOCUSED_ENTRY_ID &&
+  (REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) || REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
+) {
+  throw new Error("Focused visual parity currently supports only independent single-frame entries.");
+}
 
 type FullRgbaProofV1 = Readonly<{
   capture: Readonly<{ policy: "exactly-one-render-submit"; renderSubmissionCount: 1 }>;
@@ -109,7 +124,7 @@ function requireArtifactRoot() {
 }
 
 test.beforeAll(async () => {
-  const expectedEntryIds = VISUAL_PARITY_CORPUS.entries.map(({ id }) => id).sort();
+  const expectedEntryIds = VISUAL_PARITY_ENTRIES.map(({ id }) => id).sort();
   const artifactEntryIds = (await readdir(requireArtifactRoot(), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -310,6 +325,46 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
     );
   }
+  if (entry.id === REAL_LINE_JOINTS_V10_ENTRY_ID) {
+    const cairo = await readLineJointsCairoReferenceV1();
+    if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("The LineJoints V10 Cairo comparison requires an imported Manim snapshot.");
+    }
+    expect(cairo.reference.frame.viewport).toEqual(entry.sample.viewport);
+    expect(cairo.reference.frame.sampleTime).toBe(0);
+    expect(cairo.reference.scene.sourceSha256).toBe(fixtureBundle.scene.source.sourceHash);
+    const referenceRgba = cairo.rgba;
+    for (const [comparison, comparisonMetrics] of [
+      [
+        "native/Cairo",
+        compareVisualParityFramesV1(referenceRgba, expectedRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+      [
+        "browser/Cairo",
+        compareVisualParityFramesV1(referenceRgba, actualRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+    ] as const) {
+      expect(
+        comparisonMetrics.ssim,
+        `${comparison}: ${LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+      ).toBeGreaterThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+      expect(
+        comparisonMetrics.pixelFractionAboveThreshold,
+        `${comparison}: ${LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+      ).toBeLessThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
+    }
+    artifactWrites.push(
+      writeFile(join(outputDirectory, "cairo-reference.png"), cairo.png),
+      writeFile(
+        join(outputDirectory, "native-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, expectedRgba), widthPx, heightPx),
+      ),
+      writeFile(
+        join(outputDirectory, "browser-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
+      ),
+    );
+  }
   await Promise.all(artifactWrites);
   const report = visualParityReportV1Schema.parse({
     artifacts: { actualPng: "actual.png", diffPng: "diff.png", expectedPng: "expected.png" },
@@ -431,7 +486,7 @@ function expectRealWarpSquareRelations(
   }
 }
 
-for (const entry of VISUAL_PARITY_CORPUS.entries.filter(
+for (const entry of VISUAL_PARITY_ENTRIES.filter(
   ({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) && !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id),
 )) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
@@ -440,6 +495,10 @@ for (const entry of VISUAL_PARITY_CORPUS.entries.filter(
 }
 
 test("matches native full-RGBA across the real MathTex morph V5 timeline", async ({ page }, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the five-frame MathTex artifact set.",
+  );
   testInfo.setTimeout(120_000);
   const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
   for (const entryId of REAL_MATHTEX_MORPH_V5_ENTRY_IDS) {
@@ -449,6 +508,10 @@ test("matches native full-RGBA across the real MathTex morph V5 timeline", async
 });
 
 test("matches native full-RGBA across the real WarpSquare V9 timeline", async ({ page }, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the five-frame WarpSquare artifact set.",
+  );
   testInfo.setTimeout(120_000);
   const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
   for (const entryId of REAL_WARP_SQUARE_V9_ENTRY_IDS) {

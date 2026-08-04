@@ -69,6 +69,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(7),
   z.literal(8),
   z.literal(9),
+  z.literal(10),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -465,6 +466,7 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 =
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 =
   "fast-manim server snapshot SquareToCircle profile v8" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9 = "fast-manim server snapshot WarpSquare profile v9" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10 = "fast-manim server snapshot LineJoints profile v10" as const;
 /** Distinct server-owned marker retained so sealed V7 bundles can re-prove the one static MathTex leaf. */
 export const FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D MathTex profile v7" as const;
@@ -2259,6 +2261,16 @@ export const FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9 =
   "8f683bf4dad38a06ef75e8bfd6066d7426f8941e011191c1a53243a7069b9825" as const;
 
 const FAST_MANIM_WARP_SQUARE_REQUIRED_CAPABILITIES_V9 = ["cubic-path-geometry", "path-morph-animation"] as const;
+const FAST_MANIM_LINE_JOINTS_FRAME_V10 = {
+  height: 8,
+  width: 14.222222222222221,
+} as const;
+export const FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 =
+  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+export const FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10 = "example_scenes/basic.py" as const;
+export const FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10 =
+  "b6ffabc679f939f5fbbd9d3265c785edb0064d327df3a94c1fedcc79efd7a8cd" as const;
+const FAST_MANIM_LINE_JOINTS_REQUIRED_CAPABILITIES_V10 = ["cubic-path-geometry", "logical-group"] as const;
 const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
 const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
 
@@ -2980,6 +2992,194 @@ function assertSquareToCircleProfileV8(
   }
 }
 
+function fastManimLineJointsSemanticDigestV10(scene: SceneIrBundleV1["scene"]) {
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1(
+        scene.entities.map(({ appearance, geometry, lifetimes, parentId, sceneOrder, sourceZIndex, transform }) => ({
+          appearance,
+          geometry,
+          lifetimes,
+          parentId,
+          sceneOrder,
+          sourceZIndex,
+          transform,
+        })),
+      ),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function assertLineJointsProducerProvenanceV10(scene: SceneIrBundleV1["scene"]) {
+  const [sceneRecord, groupRecord, ...triangleRecords] = scene.provenance;
+  const sceneEvidence = sceneRecord?.evidence;
+  if (
+    !sceneEvidence ||
+    sceneEvidence.length !== 8 ||
+    sceneEvidence[0] !== "fast-manim LineJoints Scene snapshot profile v10" ||
+    sceneEvidence[1] !== "source path example_scenes/basic.py" ||
+    sceneEvidence[2] !== "scene class LineJoints" ||
+    !/^render trace session [0-9a-f]{32}$/.test(sceneEvidence[3] ?? "") ||
+    sceneEvidence[4] !==
+      "static canonical VGroup family: 0 plays, renderer time 0s, canonical 1.0s snapshot duration" ||
+    sceneEvidence[5] !== "4 supported entities in canonical VGroup preorder" ||
+    sceneEvidence[6] !== "camera frame 14.222222222222221 x 8.0 scene units, background rgba(0.0, 0.0, 0.0, 1.0)" ||
+    sceneEvidence[7] !== "cairo line width multiple 0.01"
+  ) {
+    profileViolation("LineJoints profile V10 scene provenance does not match the pinned producer evidence.");
+  }
+  const session = sceneEvidence[3]!.slice("render trace session ".length);
+  if (
+    canonicalJsonV1(groupRecord?.evidence) !==
+    canonicalJsonV1([
+      `runtime object ${session}/object-000004`,
+      "runtime type manim.mobject.types.vectorized_mobject.VGroup",
+      "preorder family sceneOrder 0",
+      "z_index 0.0",
+      "source anchor example_scenes/basic.py:173 in construct",
+      "capability logical-group: one non-rendering VGroup parent",
+    ])
+  ) {
+    profileViolation("LineJoints profile V10 group provenance does not match the pinned producer evidence.");
+  }
+  const sourceLines = [169, 170, 171] as const;
+  for (const [index, record] of triangleRecords.entries()) {
+    if (
+      canonicalJsonV1(record?.evidence) !==
+      canonicalJsonV1([
+        `runtime object ${session}/object-${String(index + 1).padStart(6, "0")}`,
+        "runtime type manim.mobject.geometry.polygram.Triangle",
+        `preorder family sceneOrder ${index + 1}`,
+        "z_index 0.0",
+        `source anchor example_scenes/basic.py:${sourceLines[index]} in construct`,
+        "capability cubic-path-geometry: 3 cubic segments from the Cairo point layout",
+      ])
+    ) {
+      profileViolation("LineJoints profile V10 Triangle provenance does not match the pinned producer evidence.");
+    }
+  }
+}
+
+function assertLineJointsProfileV10(
+  bundle: SceneIrBundleV1,
+  expectedFrame: Readonly<{ height: number; width: number }>,
+  mode: "producer" | "sealed",
+  expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+) {
+  const { scene } = bundle;
+  const { sceneId } = scene;
+  if (
+    expectedIdentity.sceneName !== "LineJoints" ||
+    expectedIdentity.sourcePath !== FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10 ||
+    expectedIdentity.sourceHash !== FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10
+  ) {
+    profileViolation("Snapshot profile V10 is reserved for the pinned official LineJoints source generation.");
+  }
+  if (
+    expectedFrame.height !== FAST_MANIM_LINE_JOINTS_FRAME_V10.height ||
+    expectedFrame.width !== FAST_MANIM_LINE_JOINTS_FRAME_V10.width
+  ) {
+    profileViolation("LineJoints profile V10 requires the exact canonical demo frame.");
+  }
+  if (
+    scene.duration !== FAST_MANIM_SNAPSHOT_STATIC_DURATION_SECONDS_V1 ||
+    scene.fidelity.kind !== "exact" ||
+    scene.camera.view.center.x !== 0 ||
+    scene.camera.view.center.y !== 0 ||
+    scene.camera.view.frameHeight !== expectedFrame.height ||
+    scene.camera.view.frameWidth !== expectedFrame.width ||
+    canonicalJsonV1(scene.camera.background) !== canonicalJsonV1({ alpha: 1, blue: 0, green: 0, red: 0 })
+  ) {
+    profileViolation("LineJoints profile V10 requires its exact one-second static camera contract.");
+  }
+  if (
+    bundle.assets.assets.length !== 0 ||
+    bundle.assets.manifestId !== fastManimSnapshotManifestIdV1(sceneId) ||
+    scene.requiredCapabilities.length !== FAST_MANIM_LINE_JOINTS_REQUIRED_CAPABILITIES_V10.length ||
+    scene.requiredCapabilities.some(
+      (capability, index) => capability !== FAST_MANIM_LINE_JOINTS_REQUIRED_CAPABILITIES_V10[index],
+    )
+  ) {
+    profileViolation("LineJoints profile V10 requires one exact asset-free logical-group renderer surface.");
+  }
+  if (scene.entities.length !== 4 || scene.animationChannels.length !== 0) {
+    profileViolation("LineJoints profile V10 requires one logical group, three Triangle leaves, and no animation.");
+  }
+  const [group, ...triangles] = scene.entities;
+  const identityTransform = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
+  if (
+    !group ||
+    group.id !== fastManimSnapshotEntityIdV1(sceneId, 0) ||
+    group.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, 0) ||
+    group.sceneOrder !== 0 ||
+    group.parentId !== null ||
+    group.sourceZIndex !== 0 ||
+    canonicalJsonV1(group.lifetimes) !== canonicalJsonV1([{ end: 1, start: 0 }]) ||
+    canonicalJsonV1(group.transform) !== canonicalJsonV1(identityTransform) ||
+    canonicalJsonV1(group.geometry) !== canonicalJsonV1({ kind: "group" }) ||
+    canonicalJsonV1(group.appearance) !== canonicalJsonV1({ kind: "group", opacity: 1 })
+  ) {
+    profileViolation("LineJoints profile V10 group does not match the exact non-rendering VGroup contract.");
+  }
+  const joins = ["miter", "round", "bevel"] as const;
+  triangles.forEach((entity, index) => {
+    const sceneOrder = index + 1;
+    const stroke = entity.appearance.kind === "vector" ? entity.appearance.stroke : null;
+    if (
+      entity.id !== fastManimSnapshotEntityIdV1(sceneId, sceneOrder) ||
+      entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, sceneOrder) ||
+      entity.sceneOrder !== sceneOrder ||
+      entity.parentId !== group.id ||
+      entity.sourceZIndex !== 0 ||
+      canonicalJsonV1(entity.lifetimes) !== canonicalJsonV1([{ end: 1, start: 0 }]) ||
+      canonicalJsonV1(entity.transform) !== canonicalJsonV1(identityTransform) ||
+      entity.geometry.kind !== "cubic-path" ||
+      entity.geometry.path.subpaths.length !== 1 ||
+      entity.geometry.path.subpaths[0]?.closed !== true ||
+      entity.geometry.path.subpaths[0].segments.length !== 3 ||
+      entity.appearance.kind !== "vector" ||
+      entity.appearance.fill !== null ||
+      entity.appearance.opacity !== 1 ||
+      stroke === null ||
+      stroke.cap !== "butt" ||
+      stroke.join !== joins[index] ||
+      stroke.miterLimit !== 10 ||
+      stroke.widthWorld !== 0.2 ||
+      canonicalJsonV1(stroke.color) !==
+        canonicalJsonV1({ alpha: 1, blue: 0.8666666666666667, green: 0.7686274509803922, red: 0.34509803921568627 })
+    ) {
+      profileViolation("LineJoints profile V10 Triangle leaves differ from the pinned Cairo paint-state contract.");
+    }
+  });
+  if (fastManimLineJointsSemanticDigestV10(scene) !== FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10) {
+    profileViolation(
+      "The official LineJoints profile V10 hierarchy or renderer semantics differ from its producer fixture.",
+    );
+  }
+  const expectedProvenanceIds = [
+    fastManimSnapshotSceneProvenanceIdV1(sceneId),
+    ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
+  ];
+  if (
+    scene.provenance.length !== expectedProvenanceIds.length ||
+    scene.provenance.some(
+      (record, index) => record.id !== expectedProvenanceIds[index] || record.origin !== "fast-manim-server-snapshot",
+    )
+  ) {
+    profileViolation("LineJoints profile V10 provenance must exactly follow Scene and VGroup preorder.");
+  }
+  if (mode === "producer") {
+    assertLineJointsProducerProvenanceV10(scene);
+  } else if (
+    scene.provenance.some(
+      ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10]),
+    )
+  ) {
+    profileViolation("Sealed LineJoints profile V10 provenance must contain only the server-owned marker.");
+  }
+}
+
 /**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
@@ -3003,6 +3203,10 @@ function assertFastManimSnapshotProfileV1(
   warpSquareV9Plan: WarpSquareV9TransformPlan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
+  if (snapshotVersion === 10) {
+    assertLineJointsProfileV10(bundle, expectedFrame, mode, expectedIdentity);
+    return;
+  }
   if (snapshotVersion === 9) {
     assertWarpSquareProfileV9(bundle, expectedFrame, mode, expectedIdentity, warpSquareV9Plan);
     return;
@@ -3286,7 +3490,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -3306,6 +3511,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8;
     case 9:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9;
+    case 10:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10;
   }
 }
 
@@ -3371,7 +3578,8 @@ async function parseFastManimSnapshotResultV1(
       expected.snapshotVersion === 5 ||
       expected.snapshotVersion === 7 ||
       expected.snapshotVersion === 8 ||
-      expected.snapshotVersion === 9) &&
+      expected.snapshotVersion === 9 ||
+      expected.snapshotVersion === 10) &&
     mode === "producer" &&
     sourceText !== undefined &&
     createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
@@ -3386,6 +3594,9 @@ async function parseFastManimSnapshotResultV1(
   }
   if (expected.snapshotVersion === 9 && mode === "producer" && sourceText === undefined) {
     profileViolation("WarpSquare profile V9 requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 10 && mode === "producer" && sourceText === undefined) {
+    profileViolation("LineJoints profile V10 requires the exact server-held source during sealing.");
   }
   if (expected.snapshotVersion === 9 && mode === "producer" && sourceText !== undefined) {
     const derivedPlan = deriveWarpSquareV9TransformPlan(sourceText, expected.sceneName);
@@ -3576,6 +3787,13 @@ export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9 = Object.freeze([
   "shape-primitives",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 
+/** The exact producer surface for the pinned official LineJoints V10 slice. */
+export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10 = Object.freeze([
+  "cubic-path-geometry",
+  "logical-group",
+  "shape-primitives",
+] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
+
 export const MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -3656,6 +3874,19 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       });
     }
     if (
+      config.snapshotVersion === 10 &&
+      (config.capabilities.length !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10.length ||
+        config.capabilities.some(
+          (capability, index) => capability !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10[index],
+        ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "LineJoints profile V10 runtime requests must declare its exact frozen capability set.",
+        path: ["capabilities"],
+      });
+    }
+    if (
       config.snapshotVersion === 8 &&
       (config.frame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
         config.frame.width !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.width)
@@ -3674,6 +3905,17 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       context.addIssue({
         code: "custom",
         message: "WarpSquare profile V9 runtime requests require the exact canonical demo frame.",
+        path: ["frame"],
+      });
+    }
+    if (
+      config.snapshotVersion === 10 &&
+      (config.frame.height !== FAST_MANIM_LINE_JOINTS_FRAME_V10.height ||
+        config.frame.width !== FAST_MANIM_LINE_JOINTS_FRAME_V10.width)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "LineJoints profile V10 runtime requests require the exact canonical demo frame.",
         path: ["frame"],
       });
     }

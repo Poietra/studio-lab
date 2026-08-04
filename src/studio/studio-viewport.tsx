@@ -109,6 +109,7 @@ export function StudioViewport({
         onEntityResizePointerUp={onEntityResizePointerUp}
         onMotionControlChange={onMotionControlChange}
         onPresenceCursorChange={onPresenceCursorChange}
+        onSelectEntity={onSelectEntity}
         preview={preview}
         presenceParticipants={presenceParticipants}
         readOnly={readOnly}

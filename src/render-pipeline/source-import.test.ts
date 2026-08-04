@@ -645,6 +645,107 @@ class Geometry(Scene):
     );
   });
 
+  it("imports the LineJoints group closure without inventing nested layout facts", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+Triangle.set_default(stroke_width=20)
+
+class LineJoints(Scene):
+    def construct(self):
+        t1 = Triangle()
+        t2 = Triangle(joint_type=LineJointType.ROUND)
+        t3 = Triangle(joint_type=LineJointType.BEVEL)
+
+        grp = VGroup(t1, t2, t3).arrange(RIGHT)
+        grp.set(width=config.frame_width - 1)
+
+        self.add(grp)
+`,
+      "example_scenes/basic.py",
+      "LineJoints",
+    );
+    const entities = imported?.runtimeSceneState.objectGraph.entities;
+    const ids = ["t1", "t2", "t3"].map((variable) => `source:example_scenes/basic.py#LineJoints:${variable}`);
+
+    expect(imported?.anchors).toEqual([]);
+    expect(imported?.initialVisibleSourceVariables).toEqual(["t1", "t2", "t3", "grp"]);
+    for (const id of ids) {
+      expect(entities?.[id]).toMatchObject({
+        lifetime: [{ end: 0.1, start: 0 }],
+        type: "Triangle",
+      });
+      expect(entities?.[id]?.geometry).toEqual({
+        dimensions: expect.objectContaining({ kind: "unknown", reason: expect.stringMatching(/VGroup/) }),
+        position: expect.objectContaining({ kind: "unknown", reason: expect.stringMatching(/VGroup/) }),
+        scale: expect.objectContaining({ kind: "unknown", reason: expect.stringMatching(/VGroup/) }),
+        style: expect.objectContaining({ kind: "unknown", reason: expect.stringMatching(/runtime paint/) }),
+      });
+    }
+  });
+
+  it("does not flatten group presence when a child also has independent scene ownership", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class AmbiguousOwnership(Scene):
+    def construct(self):
+        child = Triangle()
+        grp = VGroup(child)
+        self.add(child, grp)
+        self.remove(grp)
+        self.wait(1)
+`,
+      "scene.py",
+      "AmbiguousOwnership",
+    );
+
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#AmbiguousOwnership:child"]?.lifetime,
+    ).toEqual([{ end: 1, start: 0 }]);
+  });
+
+  it("does not flatten group presence after an unmodelled membership mutation", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class MutatedMembership(Scene):
+    def construct(self):
+        child = Triangle()
+        grp = VGroup(child)
+        grp.clear()
+        self.add(grp)
+        self.wait(1)
+`,
+      "scene.py",
+      "MutatedMembership",
+    );
+
+    expect(
+      imported?.runtimeSceneState.objectGraph.entities["source:scene.py#MutatedMembership:child"]?.lifetime,
+    ).toEqual([]);
+  });
+
+  it("does not flatten a chained membership mutation hidden behind an allowed layout call", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class ChainedMutation(Scene):
+    def construct(self):
+        child = Triangle()
+        grp = VGroup(child).arrange(RIGHT).clear()
+        self.add(grp)
+        self.wait(1)
+`,
+      "scene.py",
+      "ChainedMutation",
+    );
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#ChainedMutation:child"]?.lifetime).toEqual(
+      [],
+    );
+  });
+
   it("imports direct ImageMobject assignments without inventing asset content or runtime dimensions", () => {
     const imported = importManimScene(
       `from manim import *

@@ -305,6 +305,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
         z.literal(7),
         z.literal(8),
         z.literal(9),
+        z.literal(10),
       ]),
       sourceHash: sha256V1Schema,
     })

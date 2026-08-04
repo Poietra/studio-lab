@@ -258,7 +258,13 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
     const runtimeEntityIds = new Set<string>();
     for (const mapping of verified.mappings) {
       const entity = entities.get(mapping.entityId);
-      if (!entity || entity.provenanceId !== mapping.provenanceId || mapping.familyPath.length !== 0) {
+      const expectedFamilyPath =
+        source.snapshotVersion === 10 && entity ? (entity.sceneOrder === 0 ? [] : [entity.sceneOrder - 1]) : [];
+      if (
+        !entity ||
+        entity.provenanceId !== mapping.provenanceId ||
+        JSON.stringify(mapping.familyPath) !== JSON.stringify(expectedFamilyPath)
+      ) {
         throw providerError("The verified source/runtime mapping does not name one exact Scene IR entity.");
       }
       if (

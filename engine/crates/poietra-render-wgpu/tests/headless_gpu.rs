@@ -17,7 +17,7 @@ use poietra_render_wgpu::{
 use poietra_scene_ir::{
     AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
     RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
-    SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, ViewportV1,
+    SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -377,6 +377,17 @@ const REAL_WARP_SQUARE_V9_SAMPLES: [(&str, &str, f64); 5] = [
     ("real-warp-square-v9--target", "target", 3.0),
     ("real-warp-square-v9--hold", "hold", 3.5),
 ];
+const REAL_LINE_JOINTS_V10_ENTRY_V1: &str = "real-line-joints-v10--static";
+const REAL_LINE_JOINTS_V10_FIXTURE_ID: &str = "eng-v1-real-line-joints-v10";
+const REAL_LINE_JOINTS_V10_FIXTURE_PATH: &str = "fixtures/engine-v1/real-line-joints-v10.json";
+const REAL_LINE_JOINTS_V10_SOURCE_PATH: &str = "example_scenes/basic.py";
+const REAL_LINE_JOINTS_V10_SOURCE_MIRROR_PATH: &str =
+    "fixtures/real-preview-harness/example_scenes/basic.py";
+const REAL_LINE_JOINTS_V10_SOURCE_SHA256: &str =
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT: &str = "29d21a2bd213df8ffeed0454278aa86289d190b8";
+const REAL_LINE_JOINTS_V10_SNAPSHOT_HASH: &str =
+    "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -976,6 +987,20 @@ fn real_warp_square_v9_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBun
         "scene": fixture.scene,
     }))
     .expect("real WarpSquare V9 fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_line_joints_v10_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_LINE_JOINTS_V10_FIXTURE_PATH);
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("real LineJoints V10 fixture must be readable"),
+    )
+    .expect("real LineJoints V10 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real LineJoints V10 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -2468,6 +2493,130 @@ fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
             0
         },
         "an opt-in WarpSquare V9 artifact request must emit all five frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one audited GPU proof binds the producer pins, join semantics, full-frame readback, and artifact"
+)]
+fn renders_real_line_joints_v10_static_with_fallback_adapter() {
+    let (fixture, bundle) = real_line_joints_v10_fixture();
+    let entry = load_visual_parity_entry(REAL_LINE_JOINTS_V10_ENTRY_V1);
+    assert_eq!(fixture.id, REAL_LINE_JOINTS_V10_FIXTURE_ID);
+    assert_eq!(entry.fixture.id, fixture.id);
+    assert_eq!(entry.fixture.path, REAL_LINE_JOINTS_V10_FIXTURE_PATH);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v10"
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_LINE_JOINTS_V10_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_LINE_JOINTS_V10_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_LINE_JOINTS_V10_SOURCE_SHA256
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(repository_root().join(REAL_LINE_JOINTS_V10_SOURCE_MIRROR_PATH))
+                    .expect("the mirrored official LineJoints source must remain readable")
+            )
+        ),
+        REAL_LINE_JOINTS_V10_SOURCE_SHA256
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real LineJoints V10 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V10);
+    assert_eq!(snapshot_hash, REAL_LINE_JOINTS_V10_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_LINE_JOINTS_V10_SOURCE_SHA256);
+    assert_eq!(bundle.scene.entities.len(), 4);
+    assert!(bundle.scene.animation_channels.is_empty());
+
+    let [sample] = fixture.samples.as_slice() else {
+        panic!("LineJoints V10 must contain one static visual-parity sample");
+    };
+    assert_eq!(sample.id, entry.sample.id);
+    assert_eq!(
+        sample.sample_time.to_bits(),
+        entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(sample.viewport, entry.sample.viewport);
+    assert_eq!(
+        sample.expected.semantic_digest,
+        entry.sample.semantic_digest
+    );
+    assert_eq!(
+        entry.fixture.revision.sha256,
+        REAL_LINE_JOINTS_V10_SNAPSHOT_HASH
+    );
+
+    let session = EngineSessionV1::new(bundle).expect("LineJoints V10 fixture must install");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id.clone(), sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("LineJoints V10 fixture must sample");
+    assert_eq!(
+        render_packet_semantic_digest(&packet),
+        sample.expected.semantic_digest
+    );
+    let joins = packet
+        .draws
+        .iter()
+        .map(|draw| match draw {
+            RenderDrawV1::Path {
+                fill: None,
+                stroke: Some(stroke),
+                ..
+            } => stroke.join,
+            _ => {
+                panic!("the VGroup must not draw and all three Triangle leaves must be stroke-only")
+            }
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        joins,
+        [
+            StrokeJoinV1::Miter,
+            StrokeJoinV1::Round,
+            StrokeJoinV1::Bevel
+        ]
+    );
+    render_and_assert_shared_reference(
+        &packet,
+        PixelReferenceSet {
+            clear_only: false,
+            reason: "the official LineJoints V10 scene must retain all three visible stroked Triangle leaves"
+                .to_owned(),
+            samples: std::collections::BTreeMap::new(),
+        },
+        "real-line-joints-v10",
+        Some(&entry),
     );
 }
 

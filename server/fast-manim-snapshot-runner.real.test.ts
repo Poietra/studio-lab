@@ -14,6 +14,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9,
@@ -387,7 +388,7 @@ describe.skipIf(!officialV8SeamEnabled)("real fast-manim SquareToCircle V8 integ
 });
 
 describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration", () => {
-  it("selects V3, V7, V8, and V9 per Scene through one Studio runner", { timeout: 600_000 }, async () => {
+  it("selects V3, V7, V8, V9, and V10 per Scene through one Studio runner", { timeout: 600_000 }, async () => {
     const projectRoot = await temporaryProject("mathtex.py", mathTexSceneSource);
     await mkdir(join(projectRoot, "example_scenes"));
     await Promise.all([
@@ -402,6 +403,7 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       { sceneName: "MixedMathDemo", sourcePath: "mixed-dynamic.py", snapshotVersion: 7 },
       { sceneName: "SquareToCircle", sourcePath: "example_scenes/basic.py", snapshotVersion: 8 },
       { sceneName: "WarpSquare", sourcePath: "example_scenes/basic.py", snapshotVersion: 9 },
+      { sceneName: "LineJoints", sourcePath: "example_scenes/basic.py", snapshotVersion: 10 },
     ] as const;
 
     for (const profile of cases) {
@@ -418,6 +420,18 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       }
       const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
       expect(bundle.scene.source).toMatchObject({ snapshotVersion: profile.snapshotVersion });
+      if (profile.snapshotVersion === 10) {
+        expect(view.runtimeConfigHash).toBe(
+          digestFastManimSnapshotRuntimeConfigV1({
+            capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10],
+            frame: REAL_FRAME,
+            randomSeed: 0,
+            schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+            snapshotVersion: 10,
+            version: 1,
+          }),
+        );
+      }
       await expect(
         runner.snapshot({
           runtimeConfigHash: view.runtimeConfigHash,
@@ -427,7 +441,7 @@ describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration
       ).resolves.toMatchObject({ runtimeConfigHash: view.runtimeConfigHash, status: "verified" });
     }
 
-    for (const pair of [cases.slice(0, 2), cases.slice(2, 4)]) {
+    for (const pair of [cases.slice(0, 2), cases.slice(2, 4), cases.slice(4)]) {
       const concurrent = await Promise.all(
         pair.map((profile) =>
           runner.run({
