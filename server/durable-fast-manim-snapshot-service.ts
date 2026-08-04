@@ -260,6 +260,49 @@ export class DurableFastManimSnapshotServiceV1 {
     return this.#track(operation);
   }
 
+  runCandidateUnpublished(
+    sourceText: string,
+    requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
+    signal?: AbortSignal,
+  ) {
+    const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
+    const request = {
+      projectId: parsed.projectId,
+      requestId: parsed.requestId,
+      sceneName: parsed.sceneName,
+      sourcePath: parsed.sourcePath,
+    };
+    this.#assertOpen();
+    const entry = this.#acquireProject(request.projectId);
+    const operation = this.#runCandidateUnpublished(sourceText, request, entry, signal).finally(() =>
+      this.#releaseProjectReference(request.projectId, entry),
+    );
+    return this.#track(operation);
+  }
+
+  async #runCandidateUnpublished(
+    sourceText: string,
+    request: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
+    entry: ProjectRunnerEntry,
+    signal?: AbortSignal,
+  ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
+    signal?.throwIfAborted();
+    const handle = await this.#runner(request.projectId, entry);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    const view = await handle.runner.runCandidateUnpublished(sourceText, request, signal);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    if (
+      view.status === "verified" &&
+      this.#runtimeConfigHash !== null &&
+      view.runtimeConfigHash !== this.#runtimeConfigHash
+    ) {
+      throw new Error("The verified durable candidate snapshot does not match the active runtime configuration.");
+    }
+    return view;
+  }
+
   async #run(
     request: FastManimSnapshotRunRequestV1,
     entry: ProjectRunnerEntry,

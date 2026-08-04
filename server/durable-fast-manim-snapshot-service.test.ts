@@ -331,8 +331,10 @@ function harness(
 ) {
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
+  const runnerRunCandidate = vi.fn<FastManimSnapshotRunner["runCandidateUnpublished"]>(async () => runView);
   const runner = {
     close: runnerClose,
+    runCandidateUnpublished: runnerRunCandidate,
     runUnpublished: runnerRun,
   } as unknown as FastManimSnapshotRunner;
   const create = vi.fn<DurableFastManimSnapshotRunnerFactoryV1["create"]>(async () => ({
@@ -390,6 +392,7 @@ function harness(
     runner,
     runnerClose,
     runnerRun,
+    runnerRunCandidate,
     service,
     softDeleteProject,
     sourceRepository,
@@ -434,6 +437,35 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
+  });
+
+  it("verifies immutable candidate bytes without source reads or publication", async () => {
+    const fixture = harness();
+    const candidateSource = "from manim import Scene\n";
+
+    await expect(fixture.service.runCandidateUnpublished(candidateSource, request)).resolves.toBe(verifiedView);
+
+    expect(fixture.factory.create).toHaveBeenCalledOnce();
+    expect(fixture.runnerRunCandidate).toHaveBeenCalledWith(candidateSource, request, undefined);
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
+    expect(fixture.readSourceHead).not.toHaveBeenCalled();
+    expect(fixture.readSource).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("does not allocate a candidate runner after an early abort", async () => {
+    const fixture = harness();
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      fixture.service.runCandidateUnpublished("from manim import Scene\n", request, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(fixture.factory.create).not.toHaveBeenCalled();
+    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
+    expect(fixture.readSourceHead).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
   });
 
   it("publishes an automatically selected concrete runtime identity and requires it for durable lookup", async () => {
