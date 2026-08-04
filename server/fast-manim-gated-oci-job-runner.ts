@@ -17,12 +17,12 @@ import {
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
 import {
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 
@@ -620,7 +620,7 @@ class PythonCanonicalJsonReader {
 
 export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   const stdout = Buffer.from(bytes);
-  if (stdout.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
+  if (stdout.byteLength > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES) {
     throw new FastManimGatedOciError("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
   }
   if (stdout.byteLength === 0 || stdout.at(-1) !== 0x0a) {
@@ -628,7 +628,7 @@ export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   }
   const body = stdout.subarray(0, -1);
   if (
-    body.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES - 1 ||
+    body.byteLength > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES - 1 ||
     body.at(0) !== 0x7b ||
     body.at(-1) !== 0x7d ||
     hasJsonWhitespaceOutsideStrings(body)
@@ -1309,7 +1309,7 @@ export async function runFastManimGatedOciJobV1(
     });
     attached.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
+      if (stdoutBytes > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES) {
         halt("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
         return;
       }

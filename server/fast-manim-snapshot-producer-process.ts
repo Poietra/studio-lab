@@ -1,10 +1,10 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
-import { MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
+import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import type { StructuredLogger } from "./logging/structured-logger";
 
-const MAX_PRODUCER_STDOUT_BYTES = MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES;
+const MAX_PRODUCER_STDOUT_BYTES = MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
 const MAX_PRODUCER_STDERR_BYTES = 256 * 1024;
 const PRODUCER_KILL_GRACE_MS = 2_000;
 const PRODUCER_CLOSE_GRACE_MS = 5_000;

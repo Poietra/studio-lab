@@ -30,6 +30,7 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
@@ -637,7 +638,7 @@ describe("gated OCI fixed profile", () => {
     const pngPath = fileURLToPath(new URL("../src-tauri/icons/32x32.png", import.meta.url));
     const result = spawnSync(pythonInterpreter, [testPath, entrypointPath, pngPath], { encoding: "utf8" });
     expect({ stderr: result.stderr, status: result.status }).toEqual({
-      stderr: expect.stringContaining("Ran 4 tests"),
+      stderr: expect.stringContaining("Ran 5 tests"),
       status: 0,
     });
   });
@@ -812,7 +813,7 @@ describe("gated OCI result boundary", () => {
       expect.objectContaining({ code: "sandbox-result-rejected" }),
     );
     expect(() =>
-      parseFastManimGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES + 1, 0x78)),
+      parseFastManimGatedOciResultV1(Buffer.alloc(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES + 1, 0x78)),
     ).toThrowError(expect.objectContaining({ code: "producer-output-overflow" }));
   });
 

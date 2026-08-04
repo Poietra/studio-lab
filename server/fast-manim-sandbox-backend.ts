@@ -8,9 +8,13 @@ import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotProducerRequestV1Schema,
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
+import {
+  type FastManimSnapshotProfileSelectionRequestV1,
+  fastManimSnapshotProfileSelectionRequestV1Schema,
+} from "./fast-manim-snapshot-profile-selection";
 import {
   inspectProjectPngBytesV1,
   MAX_PROJECT_PNG_BYTES_V1,
@@ -21,7 +25,8 @@ import {
 export const FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1 = "poietra.fast-manim-sandbox-status" as const;
 export const FAST_MANIM_SANDBOX_STATUS_VERSION_V1 = 1 as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.fast-manim-sandbox-request" as const;
-export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 32 * 1024;
+export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3 = "poietra.fast-manim-sandbox-request" as const;
+export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 64 * 1024;
 const MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES = 4 * Math.ceil(MAX_PROJECT_PNG_BYTES_V1 / 3);
 export const MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES =
   MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES + MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES + 64 * 1024;
@@ -88,6 +93,34 @@ const fastManimSandboxRequestEnvelopeV2Schema = z
   });
 
 type FastManimSandboxRequestEnvelopeV2 = z.infer<typeof fastManimSandboxRequestEnvelopeV2Schema>;
+
+const fastManimSandboxRequestEnvelopeV3Schema = z
+  .object({
+    assets: z.array(fastManimSandboxPngAssetV2Schema).length(1),
+    producerRequest: fastManimSnapshotProfileSelectionRequestV1Schema,
+    schema: z.literal(FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3),
+    version: z.literal(3),
+  })
+  .strict()
+  .superRefine((envelope, context) => {
+    if (!envelope.producerRequest.policy.candidates.some(({ snapshotVersion }) => snapshotVersion === 4)) {
+      context.addIssue({
+        code: "custom",
+        message: "A profile-selection PNG attachment requires an offered profile 4 candidate.",
+        path: ["producerRequest", "policy", "candidates"],
+      });
+    }
+  });
+
+type FastManimSandboxRequestEnvelopeV3 = z.infer<typeof fastManimSandboxRequestEnvelopeV3Schema>;
+export type FastManimSnapshotProducerOrSelectionRequestV1 =
+  | FastManimSnapshotProducerRequestV1
+  | FastManimSnapshotProfileSelectionRequestV1;
+
+export const fastManimSnapshotProducerOrSelectionRequestV1Schema = z.union([
+  fastManimSnapshotProducerRequestV1Schema,
+  fastManimSnapshotProfileSelectionRequestV1Schema,
+]);
 
 const fastManimSandboxCapabilityV1Schema = z.enum(FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1);
 const fastManimSandboxBackendKindV1Schema = z.enum(["disabled", "local-process", "production"]);
@@ -248,27 +281,31 @@ export function resolveFastManimSandboxReadiness(
  * producer JSON bytes. Profile 4 uses the Studio-owned V2 envelope to bind one
  * verified PNG while copyProducerRequestBytes() still returns the unchanged
  * strict producer JSON. No host workspace or object-store locator enters either
- * form.
+ * form. Producer-owned profile selection remains raw without assets and uses
+ * the V3 attachment envelope when its offer includes the PNG profile.
  */
 export class FastManimSandboxRequestBundleV1 {
   readonly byteLength: number;
   readonly requestDigest: string;
-  readonly version: 1 | 2;
+  readonly version: 1 | 2 | 3;
   readonly #bytes: Uint8Array;
   readonly #pngBytes: Uint8Array | undefined;
   readonly #producerRequestBytes: Uint8Array;
 
-  constructor(value: FastManimSnapshotProducerRequestV1, options?: Readonly<{ pngBytes: Uint8Array }>) {
-    const request = fastManimSnapshotProducerRequestV1Schema.parse(value);
+  constructor(value: FastManimSnapshotProducerOrSelectionRequestV1, options?: Readonly<{ pngBytes: Uint8Array }>) {
+    const request = fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(value);
     const producerRequestBytes = copyFastManimSandboxUint8ArrayV1(
       Buffer.from(canonicalJsonV1(request), "utf8"),
       MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
     );
-    const profileVersion = request.snapshotVersion;
-    if (profileVersion === 4 && options === undefined) {
+    const selectionRequest = request.schema === "poietra.fast-manim-snapshot-profile-selection-request";
+    const offersPng = selectionRequest
+      ? request.policy.candidates.some(({ snapshotVersion }) => snapshotVersion === 4)
+      : request.snapshotVersion === 4;
+    if (offersPng && options === undefined) {
       throw new TypeError("Snapshot producer profile 4 requires one verified image.png asset.");
     }
-    if (profileVersion !== 4 && options !== undefined) {
+    if (!offersPng && options !== undefined) {
       throw new TypeError("Snapshot PNG assets are accepted only by producer profile 4.");
     }
 
@@ -281,24 +318,30 @@ export class FastManimSandboxRequestBundleV1 {
       const inputPngBytes = copyFastManimSandboxUint8ArrayV1(options.pngBytes, MAX_PROJECT_PNG_BYTES_V1);
       const inspected = inspectProjectPngBytesV1(inputPngBytes);
       pngBytes = copyFastManimSandboxUint8ArrayV1(inspected.bytes, MAX_PROJECT_PNG_BYTES_V1);
-      const envelope: FastManimSandboxRequestEnvelopeV2 = {
-        assets: [
-          {
-            byteLength: inspected.byteSize,
-            bytesBase64: Buffer.from(pngBytes).toString("base64"),
-            digest: inspected.digest,
-            height: inspected.height,
-            logicalPath: PROJECT_PNG_LOGICAL_PATH_V1,
-            mediaType: "image/png",
-            width: inspected.width,
-          },
-        ],
-        producerRequest: request,
-        schema: FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2,
-        version: 2,
-      };
+      const asset = {
+        byteLength: inspected.byteSize,
+        bytesBase64: Buffer.from(pngBytes).toString("base64"),
+        digest: inspected.digest,
+        height: inspected.height,
+        logicalPath: PROJECT_PNG_LOGICAL_PATH_V1,
+        mediaType: "image/png" as const,
+        width: inspected.width,
+      } as const;
+      const envelope: FastManimSandboxRequestEnvelopeV2 | FastManimSandboxRequestEnvelopeV3 = selectionRequest
+        ? {
+            assets: [asset],
+            producerRequest: request,
+            schema: FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3,
+            version: 3,
+          }
+        : {
+            assets: [asset],
+            producerRequest: request,
+            schema: FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2,
+            version: 2,
+          };
       encoded = Buffer.from(canonicalJsonV1(envelope), "utf8");
-      this.version = 2;
+      this.version = selectionRequest ? 3 : 2;
     }
     const owned = copyFastManimSandboxUint8ArrayV1(
       encoded,
@@ -322,12 +365,14 @@ export class FastManimSandboxRequestBundleV1 {
     } catch (cause) {
       throw new TypeError("Sandbox request bytes are not valid UTF-8 JSON.", { cause });
     }
-    const envelope = fastManimSandboxRequestEnvelopeV2Schema.safeParse(parsed);
-    const bundle = envelope.success
-      ? new FastManimSandboxRequestBundleV1(envelope.data.producerRequest, {
-          pngBytes: Uint8Array.from(Buffer.from(envelope.data.assets[0].bytesBase64, "base64")),
+    const envelopeV2 = fastManimSandboxRequestEnvelopeV2Schema.safeParse(parsed);
+    const envelopeV3 = fastManimSandboxRequestEnvelopeV3Schema.safeParse(parsed);
+    const envelope = envelopeV2.success ? envelopeV2.data : envelopeV3.success ? envelopeV3.data : null;
+    const bundle = envelope
+      ? new FastManimSandboxRequestBundleV1(envelope.producerRequest, {
+          pngBytes: Uint8Array.from(Buffer.from(envelope.assets[0].bytesBase64, "base64")),
         })
-      : new FastManimSandboxRequestBundleV1(fastManimSnapshotProducerRequestV1Schema.parse(parsed));
+      : new FastManimSandboxRequestBundleV1(fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(parsed));
     if (!Buffer.from(bundle.copyBytes()).equals(Buffer.from(bytes))) {
       throw new TypeError("Sandbox request bytes are not in canonical sealed form.");
     }
@@ -440,7 +485,7 @@ export function copyFastManimSandboxUint8ArrayV1(value: unknown, maximumByteLeng
 
 const fastManimSandboxResultBytesV1Schema = z.custom<Uint8Array>((value) => {
   const byteLength = inspectedFastManimSandboxUint8ArrayByteLengthV1(value);
-  return byteLength !== null && byteLength <= MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES;
+  return byteLength !== null && byteLength <= MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
 }, "Sandbox results must be fixed Uint8Array bytes within the raw result byte budget.");
 
 export const fastManimSandboxBackendResultV1Schema = z.discriminatedUnion("kind", [

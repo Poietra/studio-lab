@@ -11,6 +11,10 @@ import {
   resolveFastManimSandboxReadiness,
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
+import {
+  createFastManimSnapshotProfileSelectionPolicyV1,
+  createFastManimSnapshotProfileSelectionRequestV1,
+} from "./fast-manim-snapshot-profile-selection";
 import { MAX_PROJECT_PNG_BYTES_V1 } from "./storage/project-png-storage";
 import {
   localSandboxReadyStatus,
@@ -104,6 +108,42 @@ describe("fast-manim sandbox request bundle", () => {
     const copied = bundle.copyPngBytes();
     copied?.fill(0);
     expect(bundle.copyPngBytes()).toEqual(png);
+  });
+
+  it("seals a PNG-capable profile selection into V3 and preserves raw no-asset selection", () => {
+    const concrete = sandboxProducerRequest();
+    const withPng = createFastManimSnapshotProfileSelectionRequestV1({
+      policy: createFastManimSnapshotProfileSelectionPolicyV1(concrete.runtimeConfig.frame, { pngAvailable: true }),
+      projectId: concrete.projectId,
+      requestId: concrete.requestId,
+      sceneId: concrete.sceneId,
+      sceneName: concrete.sceneName,
+      sourceHash: concrete.sourceHash,
+      sourcePath: concrete.sourcePath,
+      sourceText: concrete.sourceText,
+    });
+    const png = sandboxPngBytes();
+    const bundle = new FastManimSandboxRequestBundleV1(withPng, { pngBytes: png });
+
+    expect(bundle.version).toBe(3);
+    expect(JSON.parse(Buffer.from(bundle.copyBytes()).toString("utf8"))).toMatchObject({
+      producerRequest: withPng,
+      schema: "poietra.fast-manim-sandbox-request",
+      version: 3,
+    });
+    expect(FastManimSandboxRequestBundleV1.fromBytes(bundle.copyBytes()).requestDigest).toBe(bundle.requestDigest);
+    expect(() => new FastManimSandboxRequestBundleV1(withPng)).toThrow(/requires one verified image[.]png/i);
+
+    const withoutPng = createFastManimSnapshotProfileSelectionRequestV1({
+      ...withPng,
+      policy: createFastManimSnapshotProfileSelectionPolicyV1(concrete.runtimeConfig.frame, { pngAvailable: false }),
+    });
+    const raw = new FastManimSandboxRequestBundleV1(withoutPng);
+    expect(raw.version).toBe(1);
+    expect(JSON.parse(Buffer.from(raw.copyProducerRequestBytes()).toString("utf8"))).toEqual(withoutPng);
+    expect(() => new FastManimSandboxRequestBundleV1(withoutPng, { pngBytes: png })).toThrow(
+      /only by producer profile 4/i,
+    );
   });
 
   it("keeps the legacy request byte ceiling after the V2 transport budget grows", () => {
