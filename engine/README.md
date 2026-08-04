@@ -42,6 +42,20 @@ Three pinned real-Manim SVG references separately measure normalized outline sim
 node scripts/regenerate-mathtex-manim-parity.mjs
 ```
 
+The sibling `poietra.segmented-tex-outline` V1 ABI preserves the aggregate
+MathTex V1 wire contract while exposing deterministic display-item fragments
+for Studio authoring. `tex-text` accepts a bounded literal ASCII subset and
+provides exact UTF-8 source ranges, including deterministic literal paint
+matches; `mathtex-math` preserves expression-wide correlation rather than
+inventing glyph ranges for macros. Each fragment supplies separate outline and
+fill entity IDs plus a normalized two-phase Write plan: trimmed stroke reveal,
+then a full-path transition that raises fill opacity while shrinking stroke
+width to zero. The checked-in WriteStuff fixture
+covers the official text and summation expressions across Rust, TypeScript,
+WASM, and Python. This contract is outline evidence, not full Manim/Cairo scene
+parity; producer hierarchy, runtime admission, and final raster parity remain
+downstream responsibilities.
+
 The native GPU proof is ignored by the portable default test suite. On a host
 with a software Vulkan adapter such as Mesa Lavapipe, run it explicitly with:
 

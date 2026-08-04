@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { gzipSync } from "node:zlib";
 
@@ -11,6 +12,8 @@ const outline = await import(`../${moduleBase}.js`);
 await outline.default({ module_or_path: wasmBytes });
 assert.equal(outline.poietraMathTexOutlineAbiVersion(), 1);
 assert.equal(typeof outline.compileMathTexOutlineV1, "function");
+assert.equal(outline.poietraSegmentedTexOutlineAbiVersion(), 1);
+assert.equal(typeof outline.compileSegmentedTexOutlineV1, "function");
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -27,6 +30,26 @@ function encodeRequest(texParts) {
 
 function compileWasm(request) {
   const responseBytes = outline.compileMathTexOutlineV1(request);
+  assert.ok(responseBytes instanceof Uint8Array);
+  assert.ok(responseBytes.byteLength > 0 && responseBytes.byteLength <= 1024 * 1024);
+  return responseBytes;
+}
+
+function encodeSegmentedRequest({ mode, paintMatches = [], source, sourceKind = "literal" }) {
+  return encoder.encode(
+    JSON.stringify({
+      mode,
+      paintMatches,
+      schema: "poietra.segmented-tex-outline-request",
+      source,
+      sourceKind,
+      version: 1,
+    }),
+  );
+}
+
+function compileSegmentedWasm(request) {
+  const responseBytes = outline.compileSegmentedTexOutlineV1(request);
   assert.ok(responseBytes instanceof Uint8Array);
   assert.ok(responseBytes.byteLength > 0 && responseBytes.byteLength <= 1024 * 1024);
   return responseBytes;
@@ -248,6 +271,118 @@ assert.equal(typeof unsupported.result.message, "string");
 assert.ok(unsupported.result.message.length > 0);
 assert.ok(encoder.encode(unsupported.result.message).byteLength <= 512);
 
+const frozenAggregateWires = [
+  [encodeRequest(["E = mc^2"]), "62fd900a1efd0add6b76502b4236f824d70f67de4885b506b7998e5b59601e6d"],
+  [
+    encodeRequest([String.raw`\sum_{k=1}^\infty {1 \over k^2} = {\pi^2 \over 6}`]),
+    "545bc76ba67250fb044f33c67dcfb585d5c71faae0b79e50f748c06d80f67553",
+  ],
+];
+for (const [request, expectedSha256] of frozenAggregateWires) {
+  const response = compileWasm(request);
+  assert.equal(
+    createHash("sha256").update(response).digest("hex"),
+    expectedSha256,
+    "the aggregate MathTex V1 wire must remain byte-for-byte frozen",
+  );
+}
+
+const officialSegmentedRequests = [
+  encodeSegmentedRequest({
+    mode: "tex-text",
+    paintMatches: [{ literal: "text", paint: { alpha: 1, blue: 0, green: 1, red: 1 } }],
+    source: "This is a some text",
+  }),
+  encodeSegmentedRequest({
+    mode: "mathtex-math",
+    source: String.raw`\sum_{k=1}^\infty {1 \over k^2} = {\pi^2 \over 6}`,
+  }),
+];
+const segmentedWasmResponses = officialSegmentedRequests.map(compileSegmentedWasm);
+const segmentedNativeOutput = execFileSync(
+  "cargo",
+  [
+    "run",
+    "--quiet",
+    "--locked",
+    "--package",
+    "poietra-mathtex-wasm",
+    "--example",
+    "compile_segmented_request",
+    "--manifest-path",
+    "engine/Cargo.toml",
+  ],
+  {
+    input: Buffer.concat(officialSegmentedRequests.flatMap((request) => [request, Buffer.from("\n")])),
+    maxBuffer: 1024 * 1024,
+  },
+);
+const segmentedNativeResponses = decoder
+  .decode(segmentedNativeOutput)
+  .trimEnd()
+  .split("\n")
+  .map((response) => encoder.encode(response));
+assert.equal(segmentedNativeResponses.length, segmentedWasmResponses.length);
+for (const [index, wasmResponse] of segmentedWasmResponses.entries()) {
+  assert.deepEqual(
+    Buffer.from(wasmResponse),
+    Buffer.from(segmentedNativeResponses[index]),
+    `segmented native and WASM response ${index} must be byte-identical`,
+  );
+}
+
+const [segmentedText, segmentedMath] = segmentedWasmResponses.map((response) => JSON.parse(decoder.decode(response)));
+for (const response of [segmentedText, segmentedMath]) {
+  assert.equal(response.schema, "poietra.segmented-tex-outline-response");
+  assert.equal(response.version, 1);
+  assert.equal(response.result.kind, "compiled");
+  assert.equal(response.result.writePlan.representation, "separate-outline-and-fill-entities");
+  assert.equal(response.result.writePlan.phaseBoundary, 0.5);
+  assert.equal(response.result.writePlan.outlineStrokeWidth, 2);
+  assert.ok(
+    response.result.fragments.every(({ fillEntityId, id, outlineEntityId }) => {
+      return outlineEntityId === `${id}:outline` && fillEntityId === `${id}:fill`;
+    }),
+  );
+}
+assert.equal(segmentedText.result.fragments.length, 15);
+assert.deepEqual(
+  segmentedText.result.fragments.filter(({ paint }) => paint.blue === 0).map(({ order }) => order),
+  [11, 12, 13, 14],
+);
+assert.ok(
+  segmentedText.result.fragments.every(({ sourceCorrelation }) => sourceCorrelation.kind === "exact-byte-range"),
+);
+assert.equal(segmentedMath.result.fragments.length, 14);
+assert.equal(segmentedMath.result.fragments.filter(({ kind }) => kind === "rule").length, 2);
+assert.ok(
+  segmentedMath.result.fragments.every(({ sourceCorrelation }) => sourceCorrelation.kind === "expression-byte-range"),
+);
+
+const segmentedFallbacks = [
+  encodeSegmentedRequest({ mode: "tex-text", source: "dynamic()", sourceKind: "dynamic" }),
+  encodeSegmentedRequest({
+    mode: "tex-text",
+    paintMatches: [{ literal: "text", paint: { alpha: 1, blue: 0, green: 1, red: 1 } }],
+    source: "text and text",
+  }),
+  encoder.encode(
+    JSON.stringify({
+      mode: "tex-text",
+      paintMatches: [],
+      schema: "poietra.segmented-tex-outline-request",
+      source: "x",
+      sourceKind: "literal",
+      unsupportedOption: true,
+      version: 1,
+    }),
+  ),
+].map((request) => JSON.parse(decoder.decode(compileSegmentedWasm(request))));
+assert.deepEqual(
+  segmentedFallbacks.map(({ result }) => result.code),
+  ["dynamic-source-unsupported", "paint-partition-ambiguous", "invalid-request"],
+);
+
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 console.log(
   JSON.stringify({
@@ -255,6 +390,9 @@ console.log(
     compiledSubpaths: representative.result.path.subpaths.length,
     gzipBytes,
     segmentCount,
+    segmentedFormulaFragments: segmentedMath.result.fragments.length,
+    segmentedTextFragments: segmentedText.result.fragments.length,
+    segmentedUnsupportedCodes: segmentedFallbacks.map(({ result }) => result.code),
     macroUnsupportedCases: macroFallbacks.length,
     macroUnsupportedCode: macroFallbacks[0].result.code,
     sourceProfileCompiledCases: sourceProfileCompiledRequests.length,

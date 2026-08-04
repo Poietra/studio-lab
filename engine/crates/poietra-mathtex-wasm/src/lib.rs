@@ -5,13 +5,19 @@
 
 use poietra_mathtex_outline::{
     MATHTEX_OUTLINE_RESPONSE_SCHEMA_V1, MATHTEX_OUTLINE_VERSION_V1, MathTexOutlineRequestV1,
-    MathTexOutlineResultV1, MathTexOutlineUnsupportedCodeV1, compile_mathtex_outline_v1,
+    MathTexOutlineResultV1, MathTexOutlineUnsupportedCodeV1,
+    SEGMENTED_TEX_OUTLINE_RESPONSE_SCHEMA_V1, SEGMENTED_TEX_OUTLINE_VERSION_V1,
+    SegmentedTexOutlineRequestV1, SegmentedTexOutlineResultV1,
+    SegmentedTexOutlineUnsupportedCodeV1, compile_mathtex_outline_v1,
+    compile_segmented_tex_outline_v1,
 };
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
 /// JavaScript/WASM module handshake version.
 pub const POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
+/// Independent sibling ABI version for ordered Tex/MathTex fragments.
+pub const POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1: u32 = 1;
 /// Upper bound for one JSON compilation request crossing the WASM boundary.
 pub const MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1: usize = 16 * 1024;
 /// Upper bound for one JSON compilation response crossing the WASM boundary.
@@ -59,11 +65,65 @@ fn serialize_response(result: MathTexOutlineResultV1) -> Vec<u8> {
     }
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SegmentedTexOutlineResponseV1 {
+    result: SegmentedTexOutlineResultV1,
+    schema: &'static str,
+    version: u32,
+}
+
+impl SegmentedTexOutlineResponseV1 {
+    fn new(result: SegmentedTexOutlineResultV1) -> Self {
+        Self {
+            result,
+            schema: SEGMENTED_TEX_OUTLINE_RESPONSE_SCHEMA_V1,
+            version: SEGMENTED_TEX_OUTLINE_VERSION_V1,
+        }
+    }
+
+    fn unsupported(code: SegmentedTexOutlineUnsupportedCodeV1, message: &'static str) -> Self {
+        Self::new(SegmentedTexOutlineResultV1::unsupported(code, message))
+    }
+}
+
+fn serialize_segmented_boundary(
+    code: SegmentedTexOutlineUnsupportedCodeV1,
+    message: &'static str,
+) -> Vec<u8> {
+    serde_json::to_vec(&SegmentedTexOutlineResponseV1::unsupported(code, message)).unwrap_or_else(
+        |_| {
+            br#"{"result":{"kind":"unsupported","code":"internal-failure","message":"Segmented Tex outline response serialization failed"},"schema":"poietra.segmented-tex-outline-response","version":1}"#.to_vec()
+        },
+    )
+}
+
+fn serialize_segmented_response(result: SegmentedTexOutlineResultV1) -> Vec<u8> {
+    match serde_json::to_vec(&SegmentedTexOutlineResponseV1::new(result)) {
+        Ok(bytes) if bytes.len() <= MAX_MATHTEX_OUTLINE_RESPONSE_JSON_BYTES_V1 => bytes,
+        Ok(_) => serialize_segmented_boundary(
+            SegmentedTexOutlineUnsupportedCodeV1::ResponseTooLarge,
+            "Segmented Tex outline response exceeds the transfer limit",
+        ),
+        Err(_) => serialize_segmented_boundary(
+            SegmentedTexOutlineUnsupportedCodeV1::InternalFailure,
+            "Segmented Tex outline response could not be serialized",
+        ),
+    }
+}
+
 /// Returns the exact ABI version before any outline request is compiled.
 #[must_use]
 #[wasm_bindgen(js_name = poietraMathTexOutlineAbiVersion)]
 pub fn poietra_mathtex_outline_abi_version() -> u32 {
     POIETRA_MATHTEX_OUTLINE_ABI_VERSION_V1
+}
+
+/// Returns the independent segmented-outline ABI version.
+#[must_use]
+#[wasm_bindgen(js_name = poietraSegmentedTexOutlineAbiVersion)]
+pub fn poietra_segmented_tex_outline_abi_version() -> u32 {
+    POIETRA_SEGMENTED_TEX_OUTLINE_ABI_VERSION_V1
 }
 
 /// Compiles one bounded, versioned `MathTex` request into a bounded response.
@@ -88,6 +148,25 @@ pub fn compile_mathtex_outline_json_v1(request_json: &[u8]) -> Vec<u8> {
     serialize_response(compile_mathtex_outline_v1(&request))
 }
 
+/// Compiles one bounded literal Tex/MathTex request into ordered fragments.
+#[must_use]
+#[wasm_bindgen(js_name = compileSegmentedTexOutlineV1)]
+pub fn compile_segmented_tex_outline_json_v1(request_json: &[u8]) -> Vec<u8> {
+    if request_json.len() > MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1 {
+        return serialize_segmented_boundary(
+            SegmentedTexOutlineUnsupportedCodeV1::RequestTooLarge,
+            "Segmented Tex outline request exceeds the transfer limit",
+        );
+    }
+    let Ok(request) = serde_json::from_slice::<SegmentedTexOutlineRequestV1>(request_json) else {
+        return serialize_segmented_boundary(
+            SegmentedTexOutlineUnsupportedCodeV1::InvalidRequest,
+            "Segmented Tex outline request does not match the v1 contract",
+        );
+    };
+    serialize_segmented_response(compile_segmented_tex_outline_v1(&request))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -100,6 +179,7 @@ mod tests {
     #[test]
     fn exported_abi_version_is_explicit() {
         assert_eq!(poietra_mathtex_outline_abi_version(), 1);
+        assert_eq!(poietra_segmented_tex_outline_abi_version(), 1);
     }
 
     #[test]
@@ -116,6 +196,21 @@ mod tests {
         ]);
         assert!(oversized.len() <= MAX_MATHTEX_OUTLINE_RESPONSE_JSON_BYTES_V1);
         assert_eq!(decode(&oversized)["result"]["kind"], "unsupported");
+        assert_eq!(decode(&oversized)["result"]["code"], "request-too-large");
+    }
+
+    #[test]
+    fn segmented_boundary_returns_structured_failures() {
+        let malformed = compile_segmented_tex_outline_json_v1(br#"{"source":"x"}"#);
+        assert!(malformed.len() <= MAX_MATHTEX_OUTLINE_RESPONSE_JSON_BYTES_V1);
+        assert_eq!(decode(&malformed)["result"]["kind"], "unsupported");
+        assert_eq!(decode(&malformed)["result"]["code"], "invalid-request");
+
+        let oversized = compile_segmented_tex_outline_json_v1(&vec![
+            b'x';
+            MAX_MATHTEX_OUTLINE_REQUEST_JSON_BYTES_V1
+                + 1
+        ]);
         assert_eq!(decode(&oversized)["result"]["code"], "request-too-large");
     }
 }
