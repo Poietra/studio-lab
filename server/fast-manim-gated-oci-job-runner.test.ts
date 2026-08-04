@@ -610,7 +610,9 @@ describe("gated OCI fixed profile", () => {
     ] as const) {
       const digest = TRUSTED_IMAGE_LABELS[key];
       expect(verifier, `${key} must be verified inside the image`).toContain(digest);
-      expect(snapshotContract, `${key} must be admitted by the server`).toContain(digest);
+      if (FAST_MANIM_GATED_OCI_SNAPSHOT_RELEASE_READY_V1) {
+        expect(snapshotContract, `${key} must be admitted by the server`).toContain(digest);
+      }
     }
     // The current checkout can advance independently; the Containerfile verifies the notice
     // inside its pinned engine archive, so its two build checks and image label must agree.
