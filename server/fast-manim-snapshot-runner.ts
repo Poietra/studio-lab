@@ -29,9 +29,6 @@ import {
   FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FastManimSnapshotContractError,
   type FastManimSnapshotProducerRequestV1,
   type FastManimSnapshotProfileVersionV1,
@@ -45,8 +42,8 @@ import {
   fastManimSnapshotRunRequestV1Schema,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
   parseVerifiedFastManimSnapshotResultV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
@@ -60,6 +57,13 @@ import {
   sameFastManimSnapshotPngReadV1,
 } from "./fast-manim-snapshot-png-provider";
 import { abortError } from "./fast-manim-snapshot-producer-process";
+import {
+  createFastManimSnapshotProfileSelectionPolicyV1,
+  createFastManimSnapshotProfileSelectionRequestV1,
+  type FastManimSnapshotProfileSelectionRequestV1,
+  fastManimSnapshotRuntimeConfigForProfileV1,
+  parseFastManimSnapshotProfileSelectionResultV1,
+} from "./fast-manim-snapshot-profile-selection";
 import { type FastManimSnapshotPublicationStore, processPublicationStore } from "./fast-manim-snapshot-publication";
 import {
   type FastManimSnapshotSourceProviderV1,
@@ -208,6 +212,10 @@ const FAILURE_MESSAGES: Readonly<Record<FastManimSnapshotRunFailureCodeV1, strin
   "producer-timeout": "The fast-manim snapshot producer did not complete within its execution deadline.",
   "producer-unconfigured":
     "No fast-manim snapshot producer is configured; use the server-authoritative render pipeline.",
+  "profile-selection-ambiguous":
+    "The source Scene matches more than one fast-manim snapshot profile; use the server-authoritative render pipeline.",
+  "profile-selection-unsupported":
+    "The source Scene does not match an available fast-manim snapshot profile; use the server-authoritative render pipeline.",
   "result-rejected": "The fast-manim snapshot result failed server verification.",
   "runtime-config-changed": "The server runtime capability configuration changed during the snapshot run.",
   "sandbox-attestation-rejected": "The configured sandbox backend did not provide a current verified attestation.",
@@ -247,7 +255,7 @@ export class FastManimSnapshotRunner {
   private readonly publicationStore: FastManimSnapshotPublicationStore;
   private readonly publishRetentionMs: number;
   private readonly sandboxCloseGraceMs: number;
-  private readonly snapshotVersion: FastManimSnapshotProfileVersionV1;
+  private readonly snapshotVersion: FastManimSnapshotProfileVersionV1 | undefined;
   private readonly sourceProvider: FastManimSnapshotSourceProviderV1;
   private readonly shutdownController = new AbortController();
   private readonly tenantId: string;
@@ -318,16 +326,12 @@ export class FastManimSnapshotRunner {
     }
     this.attestationVerifier = options.attestationVerifier;
     this.backend = options.backend ?? new UnavailableFastManimSandboxBackendV1();
-    this.snapshotVersion = options.snapshotVersion ?? 1;
+    this.snapshotVersion = options.snapshotVersion;
     this.capabilities = Object.freeze([
       ...(options.capabilities ??
-        (this.snapshotVersion === 4
-          ? (["png-image"] as const)
-          : this.snapshotVersion === 8
-            ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8
-            : this.snapshotVersion === 9
-              ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9
-              : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
+        (this.snapshotVersion === undefined
+          ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1
+          : fastManimSnapshotRuntimeConfigForProfileV1(this.snapshotVersion, options.frame).capabilities)),
     ]);
     this.deployment = deployment;
     this.frame = Object.freeze({ height: options.frame.height, width: options.frame.width });
@@ -351,7 +355,14 @@ export class FastManimSnapshotRunner {
     this.tenantId = configuredIdentity.tenantId;
     this.timeoutMs = timeoutMs;
     // Fail fast on an invalid capability allowlist or frame instead of at run time.
-    digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig());
+    if (this.snapshotVersion === undefined) {
+      createFastManimSnapshotProfileSelectionPolicyV1(this.frame, {
+        capabilities: this.capabilities,
+        pngAvailable: false,
+      });
+    } else {
+      digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig(this.snapshotVersion));
+    }
   }
 
   get busy() {
@@ -664,15 +675,14 @@ export class FastManimSnapshotRunner {
     }
   }
 
-  private runtimeConfig(): FastManimSnapshotRuntimeConfigV1 {
-    return {
-      capabilities: [...this.capabilities],
-      frame: { height: this.frame.height, width: this.frame.width },
-      randomSeed: 0,
-      schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
-      snapshotVersion: this.snapshotVersion,
-      version: 1,
-    };
+  private runtimeConfig(snapshotVersion: FastManimSnapshotProfileVersionV1): FastManimSnapshotRuntimeConfigV1 {
+    return fastManimSnapshotRuntimeConfigForProfileV1(
+      snapshotVersion,
+      this.frame,
+      this.snapshotVersion === undefined && (snapshotVersion === 4 || snapshotVersion === 8 || snapshotVersion === 9)
+        ? undefined
+        : this.capabilities,
+    );
   }
 
   async run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
@@ -698,7 +708,7 @@ export class FastManimSnapshotRunner {
     requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
     signal?: AbortSignal,
   ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
-    if (this.snapshotVersion !== 9) {
+    if (this.snapshotVersion !== undefined && this.snapshotVersion !== 9) {
       throw new TypeError("Candidate source preflight is available only for snapshot profile V9.");
     }
     if (
@@ -763,23 +773,28 @@ export class FastManimSnapshotRunner {
     const throwIfHalted = () => {
       if (signal?.aborted || this.closing) throw abortError();
     };
-    const runtimeConfigHash = digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig());
-    const base = {
-      projectId: request.projectId,
-      requestId: request.requestId,
-      runtimeConfigHash,
-      sceneName: request.sceneName,
-      schema: FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
-      sourcePath: request.sourcePath,
-      version: 1,
-    } as const;
+    // Failures before producer-owned negotiation retain a valid deterministic
+    // diagnostic hash. Successful/unsupported selected results replace it
+    // with the exact concrete profile hash before they leave this method.
+    let runtimeConfig = this.runtimeConfig(this.snapshotVersion ?? 1);
+    let runtimeConfigHash = digestFastManimSnapshotRuntimeConfigV1(runtimeConfig);
+    const base = () =>
+      ({
+        projectId: request.projectId,
+        requestId: request.requestId,
+        runtimeConfigHash,
+        sceneName: request.sceneName,
+        schema: FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
+        sourcePath: request.sourcePath,
+        version: 1,
+      }) as const;
     const failed = (
       code: FastManimSnapshotRunFailureCodeV1,
       contractCode?: FastManimSnapshotContractError["code"],
     ): FastManimSnapshotRunViewV1 => {
       this.logger.warn("snapshot.run_failed", { code, contractCode, requestId: request.requestId });
       return {
-        ...base,
+        ...base(),
         failure: {
           code,
           ...(contractCode === undefined ? {} : { contractCode }),
@@ -831,15 +846,83 @@ export class FastManimSnapshotRunner {
     }
 
     let beforePng: FastManimSnapshotPngReadV1 | null = null;
-    if (this.snapshotVersion === 4) {
-      if (!this.pngProvider) return failed("asset-unavailable");
+    if (this.snapshotVersion === 4 && !this.pngProvider) return failed("asset-unavailable");
+    if (this.pngProvider && (this.snapshotVersion === undefined || this.snapshotVersion === 4)) {
       try {
         beforePng = await readFastManimSnapshotPngV1(this.pngProvider, signal);
       } catch {
         throwIfHalted();
-        return failed("asset-unavailable");
+        if (this.snapshotVersion === 4) return failed("asset-unavailable");
       }
       throwIfHalted();
+    }
+
+    const sceneId = fastManimSnapshotSceneIdV1(request.sourcePath, request.sceneName);
+    let selectionRequest: FastManimSnapshotProfileSelectionRequestV1 | undefined;
+    let producerRequest: FastManimSnapshotProducerRequestV1 | FastManimSnapshotProfileSelectionRequestV1;
+    if (this.snapshotVersion === undefined) {
+      const policy = createFastManimSnapshotProfileSelectionPolicyV1(this.frame, {
+        capabilities: this.capabilities,
+        pngAvailable: beforePng !== null,
+      });
+      selectionRequest = createFastManimSnapshotProfileSelectionRequestV1({
+        policy,
+        projectId: request.projectId,
+        requestId: request.requestId,
+        sceneId,
+        sceneName: request.sceneName,
+        sourceHash: before.hash,
+        sourcePath: request.sourcePath,
+        sourceText: before.source,
+      });
+      producerRequest = selectionRequest;
+    } else {
+      producerRequest = fastManimSnapshotProducerRequestV1Schema.parse({
+        projectId: request.projectId,
+        requestId: request.requestId,
+        runtimeConfig,
+        runtimeConfigHash,
+        sceneId,
+        sceneName: request.sceneName,
+        schema: FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
+        snapshotVersion: this.snapshotVersion,
+        sourceHash: before.hash,
+        sourcePath: request.sourcePath,
+        sourceText: before.source,
+        version: 1,
+      } satisfies FastManimSnapshotProducerRequestV1);
+    }
+
+    const sandboxRequest = new FastManimSandboxRequestBundleV1(
+      producerRequest,
+      beforePng === null ? undefined : { pngBytes: beforePng.bytes },
+    );
+    const produced = await this.produce(sandboxRequest, readiness.attestationDigest, request, signal);
+    throwIfHalted();
+    if (produced.kind !== "ok") return failed(produced.code);
+
+    let snapshotVersion: FastManimSnapshotProfileVersionV1 = this.snapshotVersion ?? 1;
+    let producerDocumentBytes = produced.resultBytes;
+    if (selectionRequest !== undefined) {
+      try {
+        const selection = parseFastManimSnapshotProfileSelectionResultV1(produced.resultBytes, selectionRequest);
+        if (selection.kind === "unresolved") {
+          return failed(
+            selection.reason === "ambiguous" ? "profile-selection-ambiguous" : "profile-selection-unsupported",
+          );
+        }
+        snapshotVersion = selection.selected.snapshotVersion;
+        runtimeConfig = selection.selected.runtimeConfig;
+        runtimeConfigHash = selection.selected.runtimeConfigHash;
+        // The outer selector is only an authenticated negotiation envelope.
+        // Its digest-bound opaque bytes flow through the exact same concrete
+        // producer-document parser and profile seal as forced profiles; no
+        // selected payload can bypass or be reserialized before verification.
+        producerDocumentBytes = selection.producerDocumentBytes;
+      } catch {
+        throwIfHalted();
+        return failed("result-rejected");
+      }
     }
 
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
@@ -847,20 +930,20 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
     if (
-      this.snapshotVersion === 3 ||
-      this.snapshotVersion === 4 ||
-      this.snapshotVersion === 5 ||
-      this.snapshotVersion === 7 ||
-      this.snapshotVersion === 9
+      snapshotVersion === 3 ||
+      snapshotVersion === 4 ||
+      snapshotVersion === 5 ||
+      snapshotVersion === 7 ||
+      snapshotVersion === 9
     ) {
       try {
-        if (this.snapshotVersion === 3) {
+        if (snapshotVersion === 3) {
           hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(before.source, request.sceneName);
-        } else if (this.snapshotVersion === 4) {
+        } else if (snapshotVersion === 4) {
           hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
-        } else if (this.snapshotVersion === 5) {
+        } else if (snapshotVersion === 5) {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
-        } else if (this.snapshotVersion === 7) {
+        } else if (snapshotVersion === 7) {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
         } else {
           warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
@@ -880,52 +963,19 @@ export class FastManimSnapshotRunner {
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
-      snapshotVersion: this.snapshotVersion,
-      sceneId: fastManimSnapshotSceneIdV1(request.sourcePath, request.sceneName),
+      snapshotVersion,
+      sceneId,
       sceneName: request.sceneName,
       sourceHash: before.hash,
       sourcePath: request.sourcePath,
     };
-    // Scene existence is the producer's authority: a Python-side base-class
-    // check here would false-negative legitimate transitive Scene subclasses.
-    // The producer request carries the canonical runtime config object plus
-    // the immutable source text, so the producer recomputes runtimeConfigHash
-    // and sourceHash instead of echoing them and never re-opens sourcePath.
-    // The expected frame is server-side verification state only; the wire
-    // request carries the frame inside the canonical runtimeConfig object.
-    const {
-      frame: _serverFrame,
-      hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
-      hermeticMathTexMorphV5Plan: _serverHermeticMathTexMorphV5Plan,
-      hermeticPngV4Plan: _serverHermeticPngV4Plan,
-      warpSquareV9Plan: _serverWarpSquareV9Plan,
-      snapshotVersion,
-      ...wireCorrelation
-    } = expected;
-    const producerRequest = fastManimSnapshotProducerRequestV1Schema.parse({
-      ...wireCorrelation,
-      runtimeConfig: this.runtimeConfig(),
-      schema: FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
-      snapshotVersion,
-      sourceText: before.source,
-      version: 1,
-    } satisfies FastManimSnapshotProducerRequestV1);
-
-    const sandboxRequest = new FastManimSandboxRequestBundleV1(
-      producerRequest,
-      beforePng === null ? undefined : { pngBytes: beforePng.bytes },
-    );
-    const produced = await this.produce(sandboxRequest, readiness.attestationDigest, request, signal);
-    throwIfHalted();
-    if (produced.kind !== "ok") return failed(produced.code);
-
     let sealed: VerifiedFastManimSnapshotResultV1;
     let sourceRuntimeIdentity = null;
     try {
       // The combined envelope is only split here. Its embedded snapshot first
       // passes the unchanged strict Snapshot/Scene IR verifier and server seal;
       // only then may the paired identity evidence be interpreted.
-      const producerDocument = parseFastManimProducerDocumentV1(produced.resultBytes);
+      const producerDocument = parseFastManimProducerDocumentV1(producerDocumentBytes);
       sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
         producerDocument.snapshotJson,
         expected,
@@ -955,7 +1005,7 @@ export class FastManimSnapshotRunner {
     }
     throwIfHalted();
 
-    if (beforePng !== null && sealed.kind === "compiled") {
+    if (snapshotVersion === 4 && beforePng !== null && sealed.kind === "compiled") {
       const asset = sealed.bundle.assets.assets[0];
       if (
         !asset ||
@@ -988,7 +1038,7 @@ export class FastManimSnapshotRunner {
     throwIfHalted();
     if (after.hash !== expected.sourceHash || after.versionToken !== before.versionToken)
       return failed("source-changed");
-    if (beforePng !== null) {
+    if (snapshotVersion === 4 && beforePng !== null) {
       let afterPng: FastManimSnapshotPngReadV1;
       try {
         afterPng = await readFastManimSnapshotPngV1(this.pngProvider!, signal);
@@ -999,16 +1049,16 @@ export class FastManimSnapshotRunner {
       throwIfHalted();
       if (!sameFastManimSnapshotPngReadV1(beforePng, afterPng)) return failed("asset-changed");
     }
-    if (digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig()) !== runtimeConfigHash) {
+    if (digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig(snapshotVersion)) !== runtimeConfigHash) {
       return failed("runtime-config-changed");
     }
 
     if (sealed.kind === "unsupported") {
-      return { ...base, fallback: FAST_MANIM_SNAPSHOT_FALLBACK_V1, issues: sealed.issues, status: "unsupported" };
+      return { ...base(), fallback: FAST_MANIM_SNAPSHOT_FALLBACK_V1, issues: sealed.issues, status: "unsupported" };
     }
 
     const unsupportedCapabilities = sealed.bundle.scene.requiredCapabilities.filter(
-      (capability) => !this.capabilities.includes(capability),
+      (capability) => !runtimeConfig.capabilities.includes(capability),
     );
     if (unsupportedCapabilities.length > 0) {
       this.logger.warn("snapshot.capability_unsupported", {
@@ -1028,7 +1078,7 @@ export class FastManimSnapshotRunner {
 
     throwIfHalted();
     const verified = {
-      ...base,
+      ...base(),
       snapshot: sealed,
       ...(sourceRuntimeIdentity === null ? {} : { sourceRuntimeIdentity }),
       status: "verified",
@@ -1171,7 +1221,7 @@ export class FastManimSnapshotRunner {
         try {
           resultBytes = copyFastManimSandboxUint8ArrayV1(
             parsed.data.resultBytes,
-            MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
+            MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
           );
         } catch {
           this.backendLifecycleRejected = true;
@@ -1316,6 +1366,9 @@ export class FastManimSnapshotRunner {
     if (ownerId === null) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
     const entry = this.publicationStore.get(ownerId, key);
     if (!entry) throw new HttpError("No verified Scene snapshot has been published for this Scene.", 404);
+    if (query.runtimeConfigHash !== undefined && query.runtimeConfigHash !== entry.expected.runtimeConfigHash) {
+      throw new HttpError("No verified Scene snapshot has been published for this runtime profile.", 404);
+    }
     const entryIsCurrent = () => this.publicationStore.peek(ownerId, key) === entry;
     const deleteIfCurrent = () => {
       if (entryIsCurrent()) this.publicationStore.delete(ownerId, key);
@@ -1387,7 +1440,8 @@ export class FastManimSnapshotRunner {
     }
     if (
       current.hash !== entry.expected.sourceHash ||
-      digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig()) !== entry.expected.runtimeConfigHash
+      digestFastManimSnapshotRuntimeConfigV1(this.runtimeConfig(entry.expected.snapshotVersion)) !==
+        entry.expected.runtimeConfigHash
     ) {
       return staleView();
     }

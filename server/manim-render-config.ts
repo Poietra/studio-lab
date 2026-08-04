@@ -45,9 +45,12 @@ export function parseFastManimSnapshotProducerCommand(value: string | undefined)
   return parseManimCommand(normalized);
 }
 
-export function parseFastManimSnapshotVersion(value: string | undefined): FastManimSnapshotProfileVersionV1 {
+export function parseFastManimSnapshotVersion(
+  value: string | undefined,
+): FastManimSnapshotProfileVersionV1 | undefined {
   const normalized = value?.trim();
-  if (!normalized || normalized === "1") return 1;
+  if (!normalized) return undefined;
+  if (normalized === "1") return 1;
   if (normalized === "2") return 2;
   if (normalized === "3") return 3;
   if (normalized === "4") return 4;

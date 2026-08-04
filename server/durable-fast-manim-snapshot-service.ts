@@ -38,12 +38,12 @@ const SHA256 = /^[0-9a-f]{64}$/;
 export type DurableFastManimSnapshotRunnerHandleV1 = Readonly<{
   profileDigest: string;
   runner: FastManimSnapshotRunner;
-  runtimeConfigHash: string;
+  runtimeConfigHash: string | null;
   runtimeDigest: string;
 }>;
 
 export interface DurableFastManimSnapshotRunnerFactoryV1 {
-  readonly runtimeConfigHash: string;
+  readonly runtimeConfigHash: string | null;
   readonly runtimeDigest: string;
   close(): Promise<void>;
   create(
@@ -117,7 +117,7 @@ export class DurableFastManimSnapshotServiceV1 {
   readonly #projects = new Map<string, ProjectRunnerEntry>();
   readonly #publicationIdFactory: () => string;
   readonly #publisher: SnapshotArtifactPublisherV1;
-  readonly #runtimeConfigHash: string;
+  readonly #runtimeConfigHash: string | null;
   readonly #runtimeDigest: string;
   readonly #sourceRepository: WorkspaceSourceRepositoryV1;
   readonly #tenantId: string;
@@ -132,7 +132,7 @@ export class DurableFastManimSnapshotServiceV1 {
     if (!SHA256.test(runtimeDigest) || runtimeDigest === LEGACY_SNAPSHOT_RUNTIME_DIGEST_V1) {
       throw new TypeError("The durable snapshot factory runtime digest is invalid.");
     }
-    if (!SHA256.test(runtimeConfigHash)) {
+    if (runtimeConfigHash !== null && !SHA256.test(runtimeConfigHash)) {
       throw new TypeError("The durable snapshot factory runtime-config hash is invalid.");
     }
     this.#tenantId = tenant.data;
@@ -279,7 +279,7 @@ export class DurableFastManimSnapshotServiceV1 {
     const view = await handle.runner.runUnpublished(request, signal);
     this.#assertProjectActive(request.projectId, entry);
     if (view.status !== "verified") return view;
-    if (view.runtimeConfigHash !== this.#runtimeConfigHash) {
+    if (this.#runtimeConfigHash !== null && view.runtimeConfigHash !== this.#runtimeConfigHash) {
       throw new Error("The verified durable snapshot does not match the active runtime configuration.");
     }
     signal?.throwIfAborted();
@@ -358,7 +358,7 @@ export class DurableFastManimSnapshotServiceV1 {
         profileDigest: handle.profileDigest,
         projectId: view.projectId,
         publicationId: this.#publicationIdFactory(),
-        runtimeConfigHash: this.#runtimeConfigHash,
+        runtimeConfigHash: view.runtimeConfigHash,
         sceneName: view.sceneName,
         snapshot,
         sourcePath: view.sourcePath,
@@ -389,10 +389,14 @@ export class DurableFastManimSnapshotServiceV1 {
     signal?: AbortSignal,
   ): Promise<FastManimSnapshotRunViewV1> {
     signal?.throwIfAborted();
+    const runtimeConfigHash = query.runtimeConfigHash ?? this.#runtimeConfigHash;
+    if (runtimeConfigHash === null) {
+      throw new HttpError("Automatic Scene snapshot lookup requires the selected runtimeConfigHash.", 400);
+    }
     const result = await this.#publisher.readCurrent(
       {
         projectId,
-        runtimeConfigHash: this.#runtimeConfigHash,
+        runtimeConfigHash,
         runtimeDigest: this.#runtimeDigest,
         sceneName: query.sceneName,
         sourcePath: query.sourcePath,

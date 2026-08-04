@@ -102,6 +102,7 @@ export function createRunner(
   command: readonly string[] | null,
   options: Readonly<{
     admissionController?: FastManimSnapshotAdmissionController;
+    automaticProfileSelection?: boolean;
     attestationVerifier?: FastManimSandboxAttestationVerifierV1;
     backend?: FastManimSandboxBackendV1;
     capabilities?: readonly FastManimSnapshotRuntimeCapabilityV1[];
@@ -155,7 +156,9 @@ export function createRunner(
     publicationStore: options.publicationStore ?? new FastManimSnapshotPublicationStore(),
     publishRetentionMs: options.publishRetentionMs,
     sourceReadHooks: options.sourceReadHooks,
-    snapshotVersion: options.snapshotVersion,
+    // Existing runner unit tests exercise one concrete historical profile.
+    // Opt in explicitly when a test targets the producer-owned selector.
+    snapshotVersion: options.automaticProfileSelection ? undefined : (options.snapshotVersion ?? 1),
     tenantId: "test-tenant",
     timeoutMs: options.timeoutMs,
   });

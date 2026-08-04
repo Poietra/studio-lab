@@ -327,7 +327,7 @@ function deferred<T>() {
 function harness(
   runView: FastManimUnpublishedSnapshotRunViewV1 = verifiedView,
   runtimeDigest = RELEASE_RUNTIME_DIGEST,
-  runtimeConfigHash = RUNTIME_DIGEST,
+  runtimeConfigHash: string | null = RUNTIME_DIGEST,
 ) {
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
@@ -434,6 +434,30 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeConfigHash: RUNTIME_DIGEST,
       runtimeDigest: RELEASE_RUNTIME_DIGEST,
     });
+  });
+
+  it("publishes an automatically selected concrete runtime identity and requires it for durable lookup", async () => {
+    const fixture = harness(verifiedView, RELEASE_RUNTIME_DIGEST, null);
+
+    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+    expect(fixture.publish).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeConfigHash: verifiedView.runtimeConfigHash }),
+      undefined,
+    );
+    await expect(
+      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+    ).rejects.toMatchObject({ status: 400 });
+    await expect(
+      fixture.service.snapshot(PROJECT, {
+        runtimeConfigHash: verifiedView.runtimeConfigHash,
+        sceneName: SCENE_NAME,
+        sourcePath: SOURCE_PATH,
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(fixture.readCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({ runtimeConfigHash: verifiedView.runtimeConfigHash }),
+      undefined,
+    );
   });
 
   it("retains the server-derived edited V9 plan at the durable publication boundary", async () => {

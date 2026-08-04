@@ -5,7 +5,6 @@ import { FastManimProductionSnapshotRunnerFactoryV1 } from "./fast-manim-product
 import type { FastManimSandboxBackendV1 } from "./fast-manim-sandbox-backend";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
@@ -242,18 +241,9 @@ describe("FastManimProductionSnapshotRunnerFactoryV1", () => {
     });
 
     expect(runners.runtimeDigest).toBe(RUNTIME);
-    expect(runners.runtimeConfigHash).toBe(
-      digestFastManimSnapshotRuntimeConfigV1({
-        capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
-        frame: { height: 8, width: 14.222 },
-        randomSeed: 0,
-        schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
-        snapshotVersion: 1,
-        version: 1,
-      }),
-    );
+    expect(runners.runtimeConfigHash).toBeNull();
     expect(handle.profileDigest).toBe(PROFILE);
-    expect(handle.runtimeConfigHash).toBe(runners.runtimeConfigHash);
+    expect(handle.runtimeConfigHash).toBeNull();
     expect(handle.runtimeDigest).toBe(RUNTIME);
     await handle.runner.close();
     await runners.close();

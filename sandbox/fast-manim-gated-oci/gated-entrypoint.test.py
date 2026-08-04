@@ -43,13 +43,21 @@ def _asset(data: bytes) -> dict[str, object]:
     }
 
 
-def _envelope(asset: dict[str, object] | None) -> bytes:
+def _envelope(asset: dict[str, object] | None, *, selection: bool = False) -> bytes:
+    producer_request = (
+        {
+            "policy": {"candidates": [{"snapshotVersion": 4}]},
+            "schema": "poietra.fast-manim-snapshot-profile-selection-request",
+        }
+        if selection
+        else {"runtimeConfig": {"snapshotVersion": 4}, "snapshotVersion": 4}
+    )
     return json.dumps(
         {
             "assets": [] if asset is None else [asset],
-            "producerRequest": {"runtimeConfig": {"snapshotVersion": 4}, "snapshotVersion": 4},
+            "producerRequest": producer_request,
             "schema": "poietra.fast-manim-sandbox-request",
-            "version": 2,
+            "version": 3 if selection else 2,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -72,6 +80,19 @@ class GatedEntrypointPngTest(unittest.TestCase):
         self.assertEqual(GATE._validated_request_payload(legacy), (legacy, None))
         with self.assertRaises(RuntimeError):
             GATE._validated_request_payload(b'{"snapshotVersion":4}')
+
+    def test_extracts_png_for_profile_selection_without_exposing_attachment_bytes(self) -> None:
+        producer_body, png = GATE._validated_request_payload(_envelope(_asset(STATIC_PNG), selection=True))
+        self.assertEqual(png, STATIC_PNG)
+        self.assertEqual(
+            json.loads(producer_body),
+            {
+                "policy": {"candidates": [{"snapshotVersion": 4}]},
+                "schema": "poietra.fast-manim-snapshot-profile-selection-request",
+            },
+        )
+        with self.assertRaises(RuntimeError):
+            GATE._validated_request_payload(producer_body)
 
     def test_rejects_missing_mismatched_oversized_and_animated_png(self) -> None:
         with self.assertRaises(RuntimeError):

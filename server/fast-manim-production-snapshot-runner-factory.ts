@@ -9,13 +9,10 @@ import {
 } from "./fast-manim-production-sandbox-client";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
-  FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   type FastManimSnapshotProfileVersionV1,
 } from "./fast-manim-snapshot-contract";
 import { DurableFastManimSnapshotPngProviderV1 } from "./fast-manim-snapshot-durable-png-provider";
+import { fastManimSnapshotRuntimeConfigForProfileV1 } from "./fast-manim-snapshot-profile-selection";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import type { ProjectPngBlobStoreV1, ProjectPngRepositoryV1 } from "./storage/project-png-storage";
 
@@ -44,7 +41,7 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
   readonly #activeReadiness = new Set<Promise<SnapshotRunnerReadinessOutcomeV1>>();
   readonly #cleanupFailures: unknown[] = [];
   readonly #options: FastManimProductionSnapshotRunnerFactoryOptionsV1;
-  readonly #runtimeConfigHash: string;
+  readonly #runtimeConfigHash: string | null;
   readonly #runtimeDigest: string;
   #closeRequest: Promise<void> | null = null;
   #closed = false;
@@ -57,22 +54,12 @@ export class FastManimProductionSnapshotRunnerFactoryV1 implements DurableFastMa
       throw new TypeError("Hermetic PNG snapshot profile V4 requires durable project PNG storage.");
     }
     this.#options = options;
-    const snapshotVersion = options.snapshotVersion ?? 1;
-    this.#runtimeConfigHash = digestFastManimSnapshotRuntimeConfigV1({
-      capabilities:
-        snapshotVersion === 4
-          ? ["png-image"]
-          : snapshotVersion === 8
-            ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8]
-            : snapshotVersion === 9
-              ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9]
-              : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
-      frame: options.frame,
-      randomSeed: 0,
-      schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
-      snapshotVersion,
-      version: 1,
-    });
+    this.#runtimeConfigHash =
+      options.snapshotVersion === undefined
+        ? null
+        : digestFastManimSnapshotRuntimeConfigV1(
+            fastManimSnapshotRuntimeConfigForProfileV1(options.snapshotVersion, options.frame),
+          );
     this.#runtimeDigest = verifyFastManimGatedOciReleaseV1(
       options.client.signedRelease,
       options.client.publicKeys,

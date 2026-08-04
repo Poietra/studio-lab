@@ -17,12 +17,12 @@ import {
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
 import {
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 import { abortError } from "./fast-manim-snapshot-producer-process";
 
@@ -87,9 +87,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sys",
   "/proc/sysrq-trigger",
 ] as const);
-const FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1 = "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823";
-const FAST_MANIM_GATED_OCI_COMMIT_V1 = "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3";
-const FAST_MANIM_GATED_OCI_TREE_V1 = "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a";
+const FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1 = "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6";
+const FAST_MANIM_GATED_OCI_COMMIT_V1 = "29d21a2bd213df8ffeed0454278aa86289d190b8";
+const FAST_MANIM_GATED_OCI_TREE_V1 = "d486d57ba637da1e915a5b29d6bda2d967570a54";
 
 /**
  * Versioned dependency on fast-manim's complete V4 Python-AST admission
@@ -121,7 +121,7 @@ const LOCKED_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
-  "io.poietra.snapshot-sandbox-envelope-version": "2",
+  "io.poietra.snapshot-sandbox-envelope-version": "3",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 /** False until #280 records the double-clean amd64 native artifact digest. */
@@ -175,7 +175,7 @@ export const FAST_MANIM_GATED_OCI_PROFILE_V1 = Object.freeze({
     hermeticPngV4: FAST_MANIM_HERMETIC_PNG_V4_PRODUCER_CONTRACT_V1,
   }),
   readOnlyRootfs: true,
-  requestEnvelopeVersions: Object.freeze([1, 2]),
+  requestEnvelopeVersions: Object.freeze([1, 2, 3]),
   requiredContainerLabels: Object.freeze({ ...LOCKED_LABELS, [JOB_LABEL_KEY]: JOB_LABEL_VALUE }),
   requiredMaskedSystemPaths: REQUIRED_MASKED_SYSTEM_PATHS,
   requiredReadOnlySystemPaths: REQUIRED_READ_ONLY_SYSTEM_PATHS,
@@ -430,22 +430,6 @@ function compareUnicodeCodePoints(left: string, right: string) {
   return leftPoints.length - rightPoints.length;
 }
 
-function pythonCanonicalJsonString(value: string) {
-  let result = '"';
-  for (const character of value) {
-    const codePoint = character.codePointAt(0)!;
-    if (character === '"' || character === "\\") result += `\\${character}`;
-    else if (character === "\b") result += "\\b";
-    else if (character === "\f") result += "\\f";
-    else if (character === "\n") result += "\\n";
-    else if (character === "\r") result += "\\r";
-    else if (character === "\t") result += "\\t";
-    else if (codePoint < 0x20) result += `\\u${codePoint.toString(16).padStart(4, "0")}`;
-    else result += character;
-  }
-  return `${result}"`;
-}
-
 class PythonCanonicalJsonReader {
   readonly #text: string;
   #entries = 0;
@@ -473,7 +457,7 @@ class PythonCanonicalJsonReader {
     const character = this.#text[this.#offset];
     if (character === "{") this.#readObject(depth);
     else if (character === "[") this.#readArray(depth);
-    else if (character === '"') this.#readString();
+    else if (character === '"') this.#readString(false);
     else if (character === "t") this.#readLiteral("true");
     else if (character === "f") this.#readLiteral("false");
     else if (character === "n") this.#readLiteral("null");
@@ -489,7 +473,7 @@ class PythonCanonicalJsonReader {
     let previousKey: string | undefined;
     let fields = 0;
     while (true) {
-      const key = this.#readString();
+      const key = this.#readString(true);
       fields += 1;
       if (fields > MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS) {
         rejectResult("The gated OCI result object exceeds its field budget.");
@@ -531,35 +515,52 @@ class PythonCanonicalJsonReader {
     }
   }
 
-  #readString() {
+  #readString(decode: boolean) {
     const start = this.#offset;
     this.#expect('"');
-    let escaped = false;
     while (this.#offset < this.#text.length) {
       const character = this.#text[this.#offset]!;
       this.#offset += 1;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
       if (character === "\\") {
-        escaped = true;
-        continue;
+        const escape = this.#text[this.#offset];
+        if (escape === '"' || escape === "\\" || /[bfnrt]/.test(escape ?? "")) {
+          this.#offset += 1;
+          continue;
+        }
+        if (escape === "u") {
+          const digits = this.#text.slice(this.#offset + 1, this.#offset + 5);
+          if (!/^00[0-1][0-9a-f]$/.test(digits)) {
+            rejectResult("The gated OCI result contains a non-canonical JSON string escape.");
+          }
+          const codePoint = Number.parseInt(digits, 16);
+          if (
+            codePoint === 0x08 ||
+            codePoint === 0x09 ||
+            codePoint === 0x0a ||
+            codePoint === 0x0c ||
+            codePoint === 0x0d
+          ) {
+            rejectResult("The gated OCI result contains a non-canonical JSON string escape.");
+          }
+          this.#offset += 5;
+          continue;
+        }
+        rejectResult("The gated OCI result contains a non-canonical JSON string escape.");
+      }
+      if (character.charCodeAt(0) < 0x20) {
+        rejectResult("The gated OCI result contains a raw control character.");
       }
       if (character === '"') {
+        if (!decode) return "";
         const raw = this.#text.slice(start, this.#offset);
-        let value: unknown;
         try {
-          value = JSON.parse(raw);
+          const value = JSON.parse(raw) as unknown;
+          if (typeof value === "string") return value;
         } catch {
-          rejectResult("The gated OCI result contains a malformed JSON string.");
+          // Fall through to the common malformed-string rejection.
         }
-        if (typeof value !== "string" || pythonCanonicalJsonString(value) !== raw) {
-          rejectResult("The gated OCI result contains a non-canonical JSON string.");
-        }
-        return value;
+        rejectResult("The gated OCI result contains a malformed JSON string.");
       }
-      if (character.charCodeAt(0) < 0x20) rejectResult("The gated OCI result contains a raw control character.");
     }
     rejectResult("The gated OCI result contains an unterminated JSON string.");
   }
@@ -620,7 +621,7 @@ class PythonCanonicalJsonReader {
 
 export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   const stdout = Buffer.from(bytes);
-  if (stdout.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
+  if (stdout.byteLength > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES) {
     throw new FastManimGatedOciError("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
   }
   if (stdout.byteLength === 0 || stdout.at(-1) !== 0x0a) {
@@ -628,7 +629,7 @@ export function parseFastManimGatedOciResultV1(bytes: Uint8Array) {
   }
   const body = stdout.subarray(0, -1);
   if (
-    body.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES - 1 ||
+    body.byteLength > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES - 1 ||
     body.at(0) !== 0x7b ||
     body.at(-1) !== 0x7d ||
     hasJsonWhitespaceOutsideStrings(body)
@@ -1309,7 +1310,7 @@ export async function runFastManimGatedOciJobV1(
     });
     attached.stdout.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES) {
+      if (stdoutBytes > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES) {
         halt("producer-output-overflow", "The gated OCI result exceeded its byte budget.");
         return;
       }

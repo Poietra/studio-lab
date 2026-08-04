@@ -22,7 +22,7 @@ from pathlib import Path
 MAGIC = b"POIETR1\x00"
 VERSION = 1
 HEADER_BYTES = 48
-MAX_LEGACY_REQUEST_BYTES = 2 * 1024 * 1024 + 32 * 1024
+MAX_LEGACY_REQUEST_BYTES = 2 * 1024 * 1024 + 64 * 1024
 MAX_PNG_BYTES = 512 * 1024
 MAX_PNG_BASE64_BYTES = 4 * ((MAX_PNG_BYTES + 2) // 3)
 MAX_REQUEST_BYTES = MAX_LEGACY_REQUEST_BYTES + MAX_PNG_BASE64_BYTES + 64 * 1024
@@ -220,6 +220,19 @@ def _validated_project_png(value: object) -> bytes:
     return decoded
 
 
+def _selection_offers_profile_4(request: object) -> bool:
+    if not isinstance(request, dict) or request.get("schema") != (
+        "poietra.fast-manim-snapshot-profile-selection-request"
+    ):
+        return False
+    policy = request.get("policy")
+    candidates = policy.get("candidates") if isinstance(policy, dict) else None
+    return isinstance(candidates, list) and any(
+        isinstance(candidate, dict) and candidate.get("snapshotVersion") == 4
+        for candidate in candidates
+    )
+
+
 def _validated_request_payload(body: bytes) -> tuple[bytes, bytes | None]:
     try:
         request = json.loads(body.decode("utf-8"))
@@ -229,29 +242,40 @@ def _validated_request_payload(body: bytes) -> tuple[bytes, bytes | None]:
         raise RuntimeError("The authenticated request is not an object.")
     is_envelope = (
         request.get("schema") == "poietra.fast-manim-sandbox-request"
-        or request.get("version") == 2
+        or request.get("version") in (2, 3)
         or "assets" in request
         or "producerRequest" in request
     )
     if not is_envelope:
-        if len(body) > MAX_LEGACY_REQUEST_BYTES or request.get("snapshotVersion") == 4:
+        if (
+            len(body) > MAX_LEGACY_REQUEST_BYTES
+            or request.get("snapshotVersion") == 4
+            or _selection_offers_profile_4(request)
+        ):
             raise RuntimeError("Producer profile 4 requires the sealed snapshot PNG envelope.")
         return body, None
     if (
         set(request) != {"assets", "producerRequest", "schema", "version"}
         or request.get("schema") != "poietra.fast-manim-sandbox-request"
-        or request.get("version") != 2
+        or request.get("version") not in (2, 3)
     ):
         raise RuntimeError("The snapshot sandbox envelope shape is invalid.")
     assets = request.get("assets")
     producer_request = request.get("producerRequest")
+    version = request.get("version")
+    concrete_v4 = (
+        version == 2
+        and isinstance(producer_request, dict)
+        and producer_request.get("snapshotVersion") == 4
+        and isinstance(producer_request.get("runtimeConfig"), dict)
+        and producer_request["runtimeConfig"].get("snapshotVersion") == 4
+    )
+    selection_v3 = version == 3 and _selection_offers_profile_4(producer_request)
     if (
         not isinstance(assets, list)
         or len(assets) != 1
         or not isinstance(producer_request, dict)
-        or producer_request.get("snapshotVersion") != 4
-        or not isinstance(producer_request.get("runtimeConfig"), dict)
-        or producer_request["runtimeConfig"].get("snapshotVersion") != 4
+        or not (concrete_v4 or selection_v3)
     ):
         raise RuntimeError("The snapshot sandbox envelope correlation is invalid.")
     producer_body = json.dumps(

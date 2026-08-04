@@ -44,6 +44,12 @@ export const MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES = MAX_FAST_MANIM_SNAPSHOT
  */
 export const MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES =
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES * 2 + 2 * 1024 * 1024 + 64 * 1024 + 1;
+/** Canonical base64 payload length for one maximum-size combined producer document. */
+export const MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES =
+  4 * Math.ceil((MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES - 1) / 3);
+/** Base64-wrapped combined document, bounded metadata envelope, and the CLI LF. */
+export const MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES =
+  MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES + 64 * 1024 + 1;
 export const MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS = 10_000;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH = 64;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 25_000;
@@ -3723,6 +3729,7 @@ export const fastManimSnapshotRunRequestV1Schema = z
 
 export const fastManimSnapshotQueryV1Schema = z
   .object({
+    runtimeConfigHash: sha256V1Schema.optional(),
     sceneName: manimSceneNameSchema,
     sourcePath: manimSourcePathSchema,
   })
@@ -3794,6 +3801,8 @@ export const fastManimSnapshotRunFailureCodeV1Schema = z.enum([
   "producer-spawn-failed",
   "producer-timeout",
   "producer-unconfigured",
+  "profile-selection-ambiguous",
+  "profile-selection-unsupported",
   "result-rejected",
   "runtime-config-changed",
   "sandbox-attestation-rejected",

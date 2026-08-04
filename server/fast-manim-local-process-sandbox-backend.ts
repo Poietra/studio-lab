@@ -166,7 +166,7 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
           capabilities: FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1,
           fixedAssets: [PROJECT_PNG_LOGICAL_PATH_V1],
           processBoundary: "node-child-process-development-only-v1",
-          requestEnvelopeVersions: [1, 2],
+          requestEnvelopeVersions: [1, 2, 3],
           timings: this.#producerProcessTimings,
         }),
         "utf8",

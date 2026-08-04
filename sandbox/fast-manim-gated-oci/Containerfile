@@ -58,9 +58,9 @@ COPY --from=mathtex-builder \
   /opt/poietra-build/studio/engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt \
   /opt/poietra-build/THIRD_PARTY_NOTICES.txt
 
-RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823" \
-    && test "$FAST_MANIM_COMMIT" = "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3" \
-    && test "$FAST_MANIM_TREE" = "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a" \
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6" \
+    && test "$FAST_MANIM_COMMIT" = "29d21a2bd213df8ffeed0454278aa86289d190b8" \
+    && test "$FAST_MANIM_TREE" = "d486d57ba637da1e915a5b29d6bda2d967570a54" \
     && test "$STUDIO_ENGINE_ARCHIVE_SHA256" = "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32" \
     && test "$STUDIO_ENGINE_COMMIT" = "be671c1ddcfc8466548c8822956e19579256e581" \
     && test "$STUDIO_ENGINE_TREE" = "d0f6d72213c65527ae9b7a4717390b48db1e9256" \
@@ -97,9 +97,9 @@ RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8
     && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
       /opt/venv/bin/python -c 'from manim.renderer.source_runtime_identity import export_source_runtime_identity; assert callable(export_source_runtime_identity)'
 
-LABEL io.poietra.fast-manim.commit="d2480e8096a5cac64f7f86ed1d0d01f5c87839e3" \
-      io.poietra.fast-manim.tree="0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a" \
-      io.poietra.fast-manim.archive-sha256="2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823" \
+LABEL io.poietra.fast-manim.commit="29d21a2bd213df8ffeed0454278aa86289d190b8" \
+      io.poietra.fast-manim.tree="d486d57ba637da1e915a5b29d6bda2d967570a54" \
+      io.poietra.fast-manim.archive-sha256="c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6" \
       io.poietra.mathtex-outline.engine-commit="be671c1ddcfc8466548c8822956e19579256e581" \
       io.poietra.mathtex-outline.engine-tree="d0f6d72213c65527ae9b7a4717390b48db1e9256" \
       io.poietra.mathtex-outline.engine-archive-sha256="2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32" \
@@ -109,7 +109,7 @@ LABEL io.poietra.fast-manim.commit="d2480e8096a5cac64f7f86ed1d0d01f5c87839e3" \
       io.poietra.mathtex-outline.toolchain-sha256="40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430" \
       io.poietra.mathtex-outline.notice-sha256="44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856" \
       io.poietra.mathtex-outline.target="linux-amd64" \
-      io.poietra.snapshot-sandbox-envelope-version="2" \
+      io.poietra.snapshot-sandbox-envelope-version="3" \
       io.poietra.sandbox-slice="gated-oci-v1"
 
 ENV HOME=/run/poietra/home \

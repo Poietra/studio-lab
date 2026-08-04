@@ -59,6 +59,58 @@ describe("fast-manim snapshot runner portability", () => {
 });
 
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
+  it("negotiates one concrete profile per run and republishes through the existing profile seal", async () => {
+    const runner = createRunner(await projectRoot(), producerCommand("--select-version=1"), {
+      automaticProfileSelection: true,
+    });
+
+    const selected = await runner.run(runRequest({ requestId: "snapshot-request-auto-profile" }));
+
+    expect(selected.status).toBe("verified");
+    if (selected.status !== "verified" || selected.snapshot.kind !== "compiled") {
+      throw new Error("Expected a verified producer-selected profile.");
+    }
+    expect(selected.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(1)));
+    expect((selected.snapshot.bundle as { scene: { source: unknown } }).scene.source).toMatchObject({
+      snapshotVersion: 1,
+    });
+    await expect(runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" })).resolves.toMatchObject({
+      runtimeConfigHash: selected.runtimeConfigHash,
+      status: "verified",
+    });
+    await expect(
+      runner.snapshot({
+        runtimeConfigHash: "f".repeat(64),
+        sceneName: "ExampleScene",
+        sourcePath: "scene.py",
+      }),
+    ).rejects.toMatchObject({ status: 404 });
+  });
+
+  it.each([
+    ["profile-selection-ambiguous", "profile-selection-ambiguous"],
+    ["profile-selection-unsupported", "profile-selection-unsupported"],
+  ] as const)("falls back structurally when producer selection is %s", async (mode, failureCode) => {
+    const runner = createRunner(await projectRoot(), producerCommand(`--mode=${mode}`), {
+      automaticProfileSelection: true,
+    });
+
+    expectFailure(await runner.run(runRequest({ requestId: `snapshot-request-${mode}` })), failureCode);
+    await expectNoSnapshot(runner);
+  });
+
+  it.each(["profile-selection-stale", "profile-selection-downgrade"] as const)(
+    "rejects a %s producer selection before interpreting its nested document",
+    async (mode) => {
+      const runner = createRunner(await projectRoot(), producerCommand(`--mode=${mode}`), {
+        automaticProfileSelection: true,
+      });
+
+      expectFailure(await runner.run(runRequest({ requestId: `snapshot-request-${mode}` })), "result-rejected");
+      await expectNoSnapshot(runner);
+    },
+  );
+
   it("runs the producer, seals the normalized snapshot server-side, and publishes revisions", async () => {
     const root = await projectRoot();
     const runner = createRunner(root, producerCommand());

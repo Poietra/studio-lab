@@ -11,6 +11,7 @@ import {
   fastManimSandboxBackendControlErrorCode,
   fastManimSandboxBackendResultV1Schema,
   fastManimSandboxBackendStatusV1Schema,
+  fastManimSnapshotProducerOrSelectionRequestV1Schema,
 } from "./fast-manim-sandbox-backend";
 import { acquireFastManimSandboxBrokerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
@@ -21,10 +22,7 @@ import {
   type FastManimSandboxBrokerClientMessageV1,
   type FastManimSandboxBrokerServerMessageV1,
 } from "./fast-manim-sandbox-broker-protocol";
-import {
-  fastManimSnapshotProducerRequestV1Schema,
-  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
-} from "./fast-manim-snapshot-contract";
+import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 
 const DEFAULT_CLOSE_TIMEOUT_MS = 10_000;
 const MAX_CLOSE_TIMEOUT_MS = 5 * 60_000;
@@ -257,7 +255,7 @@ function createBrokerConnection(
       const bytes = decodeFastManimSandboxBrokerRequestBytesV1(request.requestBytesBase64);
       if (createHash("sha256").update(bytes).digest("hex") !== request.requestDigest) throw new Error();
       bundle = FastManimSandboxRequestBundleV1.fromBytes(bytes);
-      const producer = fastManimSnapshotProducerRequestV1Schema.parse(
+      const producer = fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(
         JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bundle.copyProducerRequestBytes())),
       );
       if (producer.projectId !== request.identity.projectId || producer.requestId !== request.identity.requestId) {
@@ -314,7 +312,7 @@ function createBrokerConnection(
           result: {
             ...correlation,
             resultBytesBase64: encodeFastManimSandboxBrokerResultBytesV1(
-              copyFastManimSandboxUint8ArrayV1(resultBytes, MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES),
+              copyFastManimSandboxUint8ArrayV1(resultBytes, MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES),
             ),
           },
         });

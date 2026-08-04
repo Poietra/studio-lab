@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9,
+  type FastManimSnapshotProfileVersionV1,
   fastManimSnapshotEntityIdV1,
   fastManimSnapshotEntityProvenanceIdV1,
   fastManimSnapshotManifestIdV1,
@@ -70,6 +71,14 @@ class AnimatedScene(Scene):
         circle = Circle().set_fill(BLUE, opacity=1).set_stroke(width=0)
         self.add(circle)
         self.wait(1)
+`;
+
+const mathTexSceneSource = `from manim import MathTex, Scene
+
+class EquationScene(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
 `;
 
 const variableWaitSceneSource = `from manim import *
@@ -146,7 +155,7 @@ async function temporaryProject(fileName: string, source: string) {
 
 function createRealRunner(
   projectRoot: string,
-  snapshotVersion: 1 | 2 | 4 | 7 | 8 | 9 = 1,
+  snapshotVersion: FastManimSnapshotProfileVersionV1 | "auto" = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
   publicationStore = new FastManimSnapshotPublicationStore(),
   sourceReadHooks?: ManimSourceReadHooks,
@@ -167,7 +176,7 @@ function createRealRunner(
     projectRoot,
     ...(pngProvider === undefined ? {} : { pngProvider }),
     publicationStore,
-    snapshotVersion,
+    ...(snapshotVersion === "auto" ? {} : { snapshotVersion }),
     sourceReadHooks,
     tenantId: "test-tenant",
     timeoutMs: 120_000,
@@ -257,7 +266,7 @@ describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", (
     const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
     expect(sourceHash).not.toBe(FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9);
 
-    const runner = createRealRunner(projectRoot, 9, undefined, new FastManimSnapshotPublicationStore(), {
+    const runner = createRealRunner(projectRoot, "auto", undefined, new FastManimSnapshotPublicationStore(), {
       beforeOpen: () => {
         throw new Error("Candidate preflight must not read project source.");
       },
@@ -378,6 +387,71 @@ describe.skipIf(!officialV8SeamEnabled)("real fast-manim SquareToCircle V8 integ
 });
 
 describe.skipIf(!realSeamEnabled)("real fast-manim snapshot producer integration", () => {
+  it("selects V3, V7, V8, and V9 per Scene through one Studio runner", { timeout: 600_000 }, async () => {
+    const projectRoot = await temporaryProject("mathtex.py", mathTexSceneSource);
+    await mkdir(join(projectRoot, "example_scenes"));
+    await Promise.all([
+      writeFile(join(projectRoot, "mixed-dynamic.py"), mixedDynamicSceneSource, "utf8"),
+      readFile(new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url), "utf8").then(
+        (source) => writeFile(join(projectRoot, "example_scenes/basic.py"), source, "utf8"),
+      ),
+    ]);
+    const runner = createRealRunner(projectRoot, "auto");
+    const cases = [
+      { sceneName: "EquationScene", sourcePath: "mathtex.py", snapshotVersion: 3 },
+      { sceneName: "MixedMathDemo", sourcePath: "mixed-dynamic.py", snapshotVersion: 7 },
+      { sceneName: "SquareToCircle", sourcePath: "example_scenes/basic.py", snapshotVersion: 8 },
+      { sceneName: "WarpSquare", sourcePath: "example_scenes/basic.py", snapshotVersion: 9 },
+    ] as const;
+
+    for (const profile of cases) {
+      const view = fastManimSnapshotRunViewV1Schema.parse(
+        await runner.run({
+          projectId: "default",
+          requestId: `real-snapshot-auto-v${profile.snapshotVersion}`,
+          sceneName: profile.sceneName,
+          sourcePath: profile.sourcePath,
+        }),
+      );
+      if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+        throw new Error(`Expected auto-selected V${profile.snapshotVersion}, got ${JSON.stringify(view)}`);
+      }
+      const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+      expect(bundle.scene.source).toMatchObject({ snapshotVersion: profile.snapshotVersion });
+      await expect(
+        runner.snapshot({
+          runtimeConfigHash: view.runtimeConfigHash,
+          sceneName: profile.sceneName,
+          sourcePath: profile.sourcePath,
+        }),
+      ).resolves.toMatchObject({ runtimeConfigHash: view.runtimeConfigHash, status: "verified" });
+    }
+
+    for (const pair of [cases.slice(0, 2), cases.slice(2, 4)]) {
+      const concurrent = await Promise.all(
+        pair.map((profile) =>
+          runner.run({
+            projectId: "default",
+            requestId: `real-snapshot-auto-concurrent-v${profile.snapshotVersion}`,
+            sceneName: profile.sceneName,
+            sourcePath: profile.sourcePath,
+          }),
+        ),
+      );
+      expect(
+        concurrent.map((view) =>
+          view.status === "verified" && view.snapshot.kind === "compiled"
+            ? (() => {
+                const source = (view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0]).scene
+                  .source;
+                return source.kind === "imported-manim-server-snapshot" ? source.snapshotVersion : null;
+              })()
+            : null,
+        ),
+      ).toEqual(pair.map(({ snapshotVersion }) => snapshotVersion));
+    }
+  });
+
   it("seals and republishes the real V7 mixed MathTex/Create/MoveAlongPath Scene with complete identity", {
     timeout: 300_000,
   }, async () => {
