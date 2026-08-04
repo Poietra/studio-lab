@@ -545,7 +545,7 @@ fn validate_camera_view(view: &SceneCameraViewV1, path: &str, validator: &mut Va
 
 fn validate_appearance(appearance: &SceneAppearanceV1, path: &str, validator: &mut Validator) {
     match appearance {
-        SceneAppearanceV1::Group { opacity } => {
+        SceneAppearanceV1::Group { opacity } | SceneAppearanceV1::Image { opacity } => {
             validate_normalized(*opacity, &format!("{path}.opacity"), validator);
         }
         SceneAppearanceV1::Vector {
@@ -563,9 +563,6 @@ fn validate_appearance(appearance: &SceneAppearanceV1, path: &str, validator: &m
             if fill.is_none() && stroke.is_none() {
                 validator.issue(path, "vector appearance requires a fill or stroke");
             }
-        }
-        SceneAppearanceV1::Image { opacity } => {
-            validate_normalized(*opacity, &format!("{path}.opacity"), validator);
         }
     }
 }
