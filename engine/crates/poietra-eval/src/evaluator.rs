@@ -285,9 +285,9 @@ struct LocalSample {
 
 fn appearance_opacity(appearance: &SceneAppearanceV1) -> f64 {
     match appearance {
-        SceneAppearanceV1::Image { opacity } | SceneAppearanceV1::Vector { opacity, .. } => {
-            *opacity
-        }
+        SceneAppearanceV1::Group { opacity }
+        | SceneAppearanceV1::Image { opacity }
+        | SceneAppearanceV1::Vector { opacity, .. } => *opacity,
     }
 }
 
@@ -341,7 +341,7 @@ fn sample_vector_appearance(
             fill: fill.clone(),
             stroke: stroke.clone(),
         }),
-        SceneAppearanceV1::Image { .. } => None,
+        SceneAppearanceV1::Group { .. } | SceneAppearanceV1::Image { .. } => None,
     };
     let Some(channel_index) = index.vector_appearance_channel(entity_index) else {
         return Ok(base);
@@ -413,7 +413,10 @@ fn sample_local_entity(
         }
     }
 
-    if matches!(&entity.geometry, SceneGeometryV1::Image { .. }) {
+    if matches!(
+        &entity.geometry,
+        SceneGeometryV1::Group {} | SceneGeometryV1::Image { .. }
+    ) {
         return Ok(LocalSample {
             empty_reason: None,
             fill: None,
@@ -595,6 +598,12 @@ fn compile_render_packet_from_validated_v1(
 
     let draws = active
         .into_iter()
+        .filter(|entity_index| {
+            !matches!(
+                options.scene.entities[*entity_index].geometry,
+                SceneGeometryV1::Group {}
+            )
+        })
         .enumerate()
         .map(|(paint_order, entity_index)| {
             let paint_order = u32::try_from(paint_order)
@@ -609,6 +618,11 @@ fn compile_render_packet_from_validated_v1(
             let draw_id = format!("draw:{}", entity.scene_order);
             if let Some(reason) = local_sample.empty_reason {
                 return match (&entity.geometry, &entity.appearance) {
+                    (SceneGeometryV1::Group {}, _) | (_, SceneAppearanceV1::Group { .. }) => {
+                        Err(EvaluationError::MalformedScene(
+                            "logical group reached drawable packet assembly",
+                        ))
+                    }
                     (SceneGeometryV1::Image { .. }, _) => Err(EvaluationError::MalformedScene(
                         "image entity sampled an empty vector visual",
                     )),
@@ -627,6 +641,11 @@ fn compile_render_packet_from_validated_v1(
                 };
             }
             match (&entity.geometry, &entity.appearance) {
+                (SceneGeometryV1::Group {}, _) | (_, SceneAppearanceV1::Group { .. }) => {
+                    Err(EvaluationError::MalformedScene(
+                        "logical group reached drawable packet assembly",
+                    ))
+                }
                 (
                     SceneGeometryV1::Image {
                         asset,
@@ -936,6 +955,76 @@ mod tests {
         .unwrap_err();
 
         assert!(matches!(error, EvaluationError::InvalidOutput(_)));
+    }
+
+    #[test]
+    fn logical_group_composes_hierarchy_state_without_emitting_a_draw() {
+        let (assets, mut scene) = fixture();
+        scene.animation_channels.clear();
+        let mut child = scene.entities[0].clone();
+        child.id = "child".to_owned();
+        child.parent_id = Some("group".to_owned());
+        child.scene_order = 1;
+        child.transform.tx = 2.0;
+        child.transform.ty = 3.0;
+        let SceneAppearanceV1::Vector { opacity, .. } = &mut child.appearance else {
+            panic!("fixture child must be vector appearance");
+        };
+        *opacity = 0.5;
+        let group = SceneEntityV1 {
+            appearance: SceneAppearanceV1::Group { opacity: 0.5 },
+            geometry: SceneGeometryV1::Group {},
+            id: "group".to_owned(),
+            lifetimes: vec![IntervalV1 {
+                end: 2.0,
+                start: 0.0,
+            }],
+            parent_id: None,
+            provenance_id: "fixture".to_owned(),
+            scene_order: 0,
+            source_z_index: 0.0,
+            transform: AffineTransformV1 {
+                tx: 10.0,
+                ty: 5.0,
+                ..AffineTransformV1::identity()
+            },
+        };
+        scene.entities = vec![group, child];
+        scene.required_capabilities = vec![
+            SceneCapabilityV1::LogicalGroup,
+            SceneCapabilityV1::ShapePrimitives,
+        ];
+
+        let frame = compile_engine_frame_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:logical-group",
+            sample_time: 0.5,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+
+        let [
+            RenderDrawV1::Path {
+                entity_id,
+                opacity,
+                paint_order,
+                transform,
+                ..
+            },
+        ] = frame.packet.draws.as_slice()
+        else {
+            panic!("only the logical group's child must produce a path draw");
+        };
+        assert_eq!(entity_id, "child");
+        assert_eq!(*opacity, 0.25);
+        assert_eq!(*paint_order, 0);
+        assert_eq!(transform.tx, 12.0);
+        assert_eq!(transform.ty, 8.0);
     }
 
     #[test]

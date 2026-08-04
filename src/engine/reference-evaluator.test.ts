@@ -72,6 +72,24 @@ function vectorEntity(
   };
 }
 
+function groupEntity(
+  id: string,
+  sceneOrder: number,
+  options: Readonly<{ opacity?: number; parentId?: string | null; transform?: typeof identity }> = {},
+) {
+  return {
+    appearance: { kind: "group", opacity: options.opacity ?? 1 },
+    geometry: { kind: "group" },
+    id,
+    lifetimes: [{ end: 2, start: 0 }],
+    parentId: options.parentId ?? null,
+    provenanceId: "fixture",
+    sceneOrder,
+    sourceZIndex: 0,
+    transform: options.transform ?? identity,
+  };
+}
+
 function createScene(
   assets: AssetManifestV1,
   options: Readonly<{
@@ -346,6 +364,32 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     const child = frame.packet.draws.find((draw) => draw.entityId === "child");
     expect(child?.opacity).toBe(0.25);
     expect(child?.transform).toMatchObject({ tx: 12, ty: 8 });
+  });
+
+  it("uses a logical group for hierarchy state without emitting a draw", async () => {
+    const assets = await emptyManifest();
+    const scene = createScene(assets, {
+      entities: [
+        groupEntity("group", 0, { opacity: 0.5, transform: { ...identity, tx: 10, ty: 5 } }),
+        vectorEntity(
+          "child",
+          1,
+          { center: { x: 0, y: 0 }, kind: "circle", radius: 1 },
+          { opacity: 0.5, parentId: "group", transform: { ...identity, tx: 2, ty: 3 } },
+        ),
+      ],
+      requiredCapabilities: ["logical-group", "shape-primitives"],
+    });
+
+    const frame = await compile(scene, assets, 0.5);
+
+    expect(frame.packet.draws).toHaveLength(1);
+    expect(frame.packet.draws[0]).toMatchObject({
+      entityId: "child",
+      opacity: 0.25,
+      paintOrder: 0,
+      transform: { tx: 12, ty: 8 },
+    });
   });
 
   it("fails closed when finite hierarchy inputs overflow during affine composition", async () => {

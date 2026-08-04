@@ -187,7 +187,7 @@ function sampleLocalEntity(
     }
   }
 
-  if (entity.geometry.kind === "image") return { entity, opacity, transform };
+  if (entity.geometry.kind === "group" || entity.geometry.kind === "image") return { entity, opacity, transform };
   let emptyReason: SampledLocalEntity["emptyReason"] = singularAffineSample ? "singular-affine-sample" : undefined;
   let path = sceneGeometryAsCubicPathV1(entity.geometry);
   const pathMorphChannel = entityChannel(channels, entity.id, "path-morph");
@@ -306,48 +306,50 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
     const local = new Map(active.map((entity) => [entity.id, sampleLocalEntity(channels, entity, sampleTime)]));
     const world = worldSamples(scene, active, local);
 
-    const draws = active.map((entity, paintOrder) => {
-      const localSample = local.get(entity.id)!;
-      const worldSample = world.get(entity.id)!;
-      if (localSample.emptyReason) {
+    const draws = active
+      .filter((entity) => entity.geometry.kind !== "group")
+      .map((entity, paintOrder) => {
+        const localSample = local.get(entity.id)!;
+        const worldSample = world.get(entity.id)!;
+        if (localSample.emptyReason) {
+          return {
+            drawId: `draw:${entity.sceneOrder}`,
+            entityId: entity.id,
+            kind: "empty" as const,
+            opacity: worldSample.opacity,
+            paintOrder,
+            reason: localSample.emptyReason,
+            sourceZIndex: entity.sourceZIndex,
+            transform: worldSample.transform,
+          };
+        }
+        if (entity.geometry.kind === "image") {
+          return {
+            asset: entity.geometry.asset,
+            drawId: `draw:${entity.sceneOrder}`,
+            entityId: entity.id,
+            kind: "image" as const,
+            localRect: entity.geometry.localRect,
+            opacity: worldSample.opacity,
+            paintOrder,
+            sampler: entity.geometry.sampler,
+            sourceZIndex: entity.sourceZIndex,
+            transform: worldSample.transform,
+          };
+        }
         return {
           drawId: `draw:${entity.sceneOrder}`,
           entityId: entity.id,
-          kind: "empty" as const,
+          fill: localSample.fill ?? null,
+          kind: "path" as const,
           opacity: worldSample.opacity,
           paintOrder,
-          reason: localSample.emptyReason,
+          path: localSample.path!,
           sourceZIndex: entity.sourceZIndex,
+          stroke: localSample.stroke ?? null,
           transform: worldSample.transform,
         };
-      }
-      if (entity.geometry.kind === "image") {
-        return {
-          asset: entity.geometry.asset,
-          drawId: `draw:${entity.sceneOrder}`,
-          entityId: entity.id,
-          kind: "image" as const,
-          localRect: entity.geometry.localRect,
-          opacity: worldSample.opacity,
-          paintOrder,
-          sampler: entity.geometry.sampler,
-          sourceZIndex: entity.sourceZIndex,
-          transform: worldSample.transform,
-        };
-      }
-      return {
-        drawId: `draw:${entity.sceneOrder}`,
-        entityId: entity.id,
-        fill: localSample.fill ?? null,
-        kind: "path" as const,
-        opacity: worldSample.opacity,
-        paintOrder,
-        path: localSample.path!,
-        sourceZIndex: entity.sourceZIndex,
-        stroke: localSample.stroke ?? null,
-        transform: worldSample.transform,
-      };
-    });
+      });
 
     const camera = sampleCamera(scene, sampleTime);
     const packet = {

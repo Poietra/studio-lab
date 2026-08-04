@@ -292,7 +292,9 @@ fn validate_render_packet_for_scene(
         }
 
         match (draw, &entity.geometry, &entity.appearance) {
-            (RenderDrawV1::Path { .. }, SceneGeometryV1::Image { .. }, _)
+            (_, SceneGeometryV1::Group {}, _)
+            | (_, _, SceneAppearanceV1::Group { .. })
+            | (RenderDrawV1::Path { .. }, SceneGeometryV1::Image { .. }, _)
             | (RenderDrawV1::Image { .. }, _, SceneAppearanceV1::Vector { .. })
             | (RenderDrawV1::Empty { .. }, SceneGeometryV1::Image { .. }, _)
             | (RenderDrawV1::Empty { .. }, _, SceneAppearanceV1::Image { .. }) => {
@@ -411,6 +413,7 @@ fn validate_render_packet_for_scene(
 
     for entity in &scene.entities {
         if entity_is_active(entity, packet.sample_time)
+            && !matches!(entity.geometry, SceneGeometryV1::Group {})
             && !drawn_entities.contains(entity.id.as_str())
         {
             issue(

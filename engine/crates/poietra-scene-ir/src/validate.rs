@@ -451,6 +451,7 @@ fn validate_geometry(geometry: &SceneGeometryV1, path: &str, validator: &mut Val
                     .filter(|subpath| subpath.closed)
                     .count()
         }
+        SceneGeometryV1::Group {} => 0,
         SceneGeometryV1::Image {
             asset, local_rect, ..
         } => {
@@ -544,6 +545,9 @@ fn validate_camera_view(view: &SceneCameraViewV1, path: &str, validator: &mut Va
 
 fn validate_appearance(appearance: &SceneAppearanceV1, path: &str, validator: &mut Validator) {
     match appearance {
+        SceneAppearanceV1::Group { opacity } => {
+            validate_normalized(*opacity, &format!("{path}.opacity"), validator);
+        }
         SceneAppearanceV1::Vector {
             fill,
             opacity,
@@ -616,6 +620,7 @@ fn required_scene_capabilities(scene: &SceneIrV1) -> Vec<SceneCapabilityV1> {
     let mut capabilities = BTreeSet::new();
     for entity in &scene.entities {
         capabilities.insert(match entity.geometry {
+            SceneGeometryV1::Group {} => SceneCapabilityV1::LogicalGroup,
             SceneGeometryV1::Image { .. } => SceneCapabilityV1::PngImage,
             SceneGeometryV1::CubicPath { .. } => SceneCapabilityV1::CubicPathGeometry,
             _ => SceneCapabilityV1::ShapePrimitives,
@@ -839,9 +844,22 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
             &format!("{path}.appearance"),
             &mut validator,
         );
-        let image_geometry = matches!(entity.geometry, SceneGeometryV1::Image { .. });
-        let image_appearance = matches!(entity.appearance, SceneAppearanceV1::Image { .. });
-        if image_geometry != image_appearance {
+        let appearance_matches_geometry = matches!(
+            (&entity.geometry, &entity.appearance),
+            (SceneGeometryV1::Group {}, SceneAppearanceV1::Group { .. })
+                | (
+                    SceneGeometryV1::Image { .. },
+                    SceneAppearanceV1::Image { .. }
+                )
+                | (
+                    SceneGeometryV1::Circle { .. }
+                        | SceneGeometryV1::Rectangle { .. }
+                        | SceneGeometryV1::Line { .. }
+                        | SceneGeometryV1::CubicPath { .. },
+                    SceneAppearanceV1::Vector { .. }
+                )
+        );
+        if !appearance_matches_geometry {
             validator.issue(
                 format!("{path}.appearance"),
                 "appearance must match the geometry kind",
@@ -1032,7 +1050,7 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                 if matches!(channel, AnimationChannelV1::PathTrim { .. }) {
                     if let Some(entity_index) = entity_indexes.get(entity_id.as_str()) {
                         let entity = &scene.entities[*entity_index];
-                        if matches!(entity.geometry, SceneGeometryV1::Image { .. }) {
+                        if !matches!(entity.appearance, SceneAppearanceV1::Vector { .. }) {
                             validator.issue(
                                 format!("{path}.entityId"),
                                 "path-trim requires vector geometry",
@@ -1104,7 +1122,9 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             SceneAppearanceV1::Vector { fill, stroke, .. } => {
                                 Some((fill.as_ref(), stroke.as_ref()))
                             }
-                            SceneAppearanceV1::Image { .. } => None,
+                            SceneAppearanceV1::Group { .. } | SceneAppearanceV1::Image { .. } => {
+                                None
+                            }
                         },
                     );
                 if entity_indexes.contains_key(entity_id.as_str()) && base.is_none() {
