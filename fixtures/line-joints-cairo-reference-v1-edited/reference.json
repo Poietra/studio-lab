@@ -1,0 +1,83 @@
+{
+  "frame": {
+    "background": "opaque-black",
+    "camera": {
+      "height": 8,
+      "width": 14.222222222222221
+    },
+    "colorDomain": "srgb-u8",
+    "sampleTime": 0,
+    "viewport": {
+      "heightPx": 360,
+      "widthPx": 640
+    }
+  },
+  "png": {
+    "byteLength": 14934,
+    "channelOrder": "rgba",
+    "path": "expected.png",
+    "rgbaByteLength": 921600,
+    "rgbaSha256": "2d260ff43b1b7ef97defdf059237f6efff143b61ad3a2c37c241b704c7ca1684",
+    "rowOrder": "top-to-bottom",
+    "sha256": "159f1d30dcc0bd896608de708ab586c90feacc38196d61ca95342b1e6ec1a195"
+  },
+  "producer": {
+    "cairoLibrarySha256": "3144bd5935aee427d6c191b6b6d0ebf9010fb6320295a7f73edd276bc6993f2d",
+    "cairoVersion": "1.18.0",
+    "fastManimCommit": "cd0cb237606b240a3c795b1171d61eeb3cef5305",
+    "fastManimTree": "8007d53a31d2918e81116c675c352edc761a6ef2",
+    "identitySha256": "e9ff530520691e08dcbcbab3d46517e50520708777da5ac9073aed95de5fcf60",
+    "manimVersion": "0.20.1",
+    "numpyVersion": "2.4.1",
+    "pillowImagingModuleSha256": "8a2c7efde4f6b0ef41e6a6197c00a2c19416c5939bf9bb43086f680cb54136a9",
+    "pillowVersion": "12.2.0",
+    "pycairoModuleSha256": "a378b352cf9af46ba04511a5910543e33917fc01881ec6908c12ebc9a9cba731",
+    "pycairoVersion": "1.29.0",
+    "pythonExecutableSha256": "700660abb666fb5db819af3f03a92bc7d53c15e40b235c17fca6023b5755d784",
+    "pythonImplementation": "CPython",
+    "pythonVersion": "3.13.11",
+    "renderer": "cairo",
+    "uvLockSha256": "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753"
+  },
+  "rendererConfig": {
+    "identitySha256": "0666028c4abb9524b569d45103d786c17b8f70f2cd9b0ea80b080c4341ebde33",
+    "values": {
+      "antialias": "default",
+      "backgroundColor": "#000000",
+      "backgroundOpacity": 1,
+      "cairoCompositor": false,
+      "cairoCompositorFades": false,
+      "cairoForkWorkers": 0,
+      "cairoStaticLayers": false,
+      "disableCaching": true,
+      "format": "png",
+      "frameHeight": 8,
+      "frameRate": 60,
+      "frameWidth": 14.222222222222221,
+      "pixelHeight": 360,
+      "pixelWidth": 640,
+      "renderer": "cairo",
+      "saveLastFrame": true,
+      "transparent": false,
+      "verbosity": "WARNING",
+      "writeToMovie": false
+    }
+  },
+  "reproducibility": {
+    "environment": {
+      "PYTHONHASHSEED": "0"
+    },
+    "seeds": {
+      "numpy": 0,
+      "pythonRandom": 0
+    }
+  },
+  "scene": {
+    "className": "LineJoints",
+    "repository": "Poietra/fast-manim",
+    "sourcePath": "example_scenes/basic.py",
+    "sourceSha256": "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027"
+  },
+  "schema": "poietra.line-joints-cairo-reference",
+  "version": 1
+}

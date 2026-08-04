@@ -4,14 +4,14 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1,
+  LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1,
   lineJointsCairoReferenceV1Schema,
+  readLineJointsCairoReferenceForEntryV1,
   readLineJointsCairoReferenceV1,
 } from "./line-joints-cairo-reference";
 import { decodeRgbaPngV1, encodeRgbaPngV1 } from "./png-rgba";
 import { nativeVisualParityArtifactV1Schema, visualParityCorpusV1Schema } from "./visual-parity-contract";
 import { compareVisualParityFramesV1 } from "./visual-parity-metrics";
-
-const ENTRY_ID = "real-line-joints-v10--static";
 
 describe("LineJoints Cairo reference v1", () => {
   it("pins the exact source, producer binaries, renderer configuration, PNG, and top-to-bottom RGBA", async () => {
@@ -66,6 +66,42 @@ describe("LineJoints Cairo reference v1", () => {
     expect(result.rgba).toHaveLength(640 * 360 * 4);
   });
 
+  it("pins the independently rendered Studio move-and-scale source", async () => {
+    const result = await readLineJointsCairoReferenceForEntryV1("real-line-joints-v10-edited--static");
+    expect(result.reference).toMatchObject({
+      frame: {
+        camera: { height: 8, width: 14.222222222222221 },
+        sampleTime: 0,
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      png: {
+        byteLength: 14_934,
+        rgbaByteLength: 921_600,
+        rgbaSha256: "2d260ff43b1b7ef97defdf059237f6efff143b61ad3a2c37c241b704c7ca1684",
+        rowOrder: "top-to-bottom",
+        sha256: "159f1d30dcc0bd896608de708ab586c90feacc38196d61ca95342b1e6ec1a195",
+      },
+      producer: {
+        fastManimCommit: "cd0cb237606b240a3c795b1171d61eeb3cef5305",
+        fastManimTree: "8007d53a31d2918e81116c675c352edc761a6ef2",
+        identitySha256: "e9ff530520691e08dcbcbab3d46517e50520708777da5ac9073aed95de5fcf60",
+      },
+      rendererConfig: {
+        identitySha256: "0666028c4abb9524b569d45103d786c17b8f70f2cd9b0ea80b080c4341ebde33",
+      },
+      scene: {
+        className: "LineJoints",
+        repository: "Poietra/fast-manim",
+        sourcePath: "example_scenes/basic.py",
+        sourceSha256: "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027",
+      },
+      schema: "poietra.line-joints-cairo-reference",
+      version: 1,
+    });
+    expect(result.png).toHaveLength(14_934);
+    expect(result.rgba).toHaveLength(640 * 360 * 4);
+  });
+
   it("keeps its reusable RGBA decoder dimension-bound and the metadata contract strict", () => {
     const rgba = Uint8Array.from([0, 1, 2, 255, 3, 4, 5, 255]);
     const png = encodeRgbaPngV1(rgba, 2, 1);
@@ -81,30 +117,37 @@ describe("LineJoints Cairo reference v1", () => {
   });
 
   it.runIf(Boolean(process.env.POIETRA_LINE_JOINTS_NATIVE_ARTIFACT_DIR))(
-    "matches a native retained-WGPU full-frame artifact against independent Manim/Cairo",
+    "matches native retained-WGPU full-frame artifacts against independent Manim/Cairo",
     async () => {
       const artifactRoot = process.env.POIETRA_LINE_JOINTS_NATIVE_ARTIFACT_DIR;
       if (!artifactRoot) throw new Error("The native LineJoints artifact directory is required.");
-      const [cairo, corpusText, metadataText] = await Promise.all([
-        readLineJointsCairoReferenceV1(),
-        readFile("fixtures/visual-parity-v1/corpus.json", "utf8"),
-        readFile(join(artifactRoot, ENTRY_ID, "metadata.json"), "utf8"),
-      ]);
+      const corpusText = await readFile("fixtures/visual-parity-v1/corpus.json", "utf8");
       const corpus = visualParityCorpusV1Schema.parse(JSON.parse(corpusText));
-      const entry = corpus.entries.find(({ id }) => id === ENTRY_ID);
-      if (!entry) throw new Error("The LineJoints V10 visual-parity corpus entry is missing.");
-      const metadata = nativeVisualParityArtifactV1Schema.parse(JSON.parse(metadataText));
-      expect(metadata).toMatchObject({
-        corpusEntryId: ENTRY_ID,
-        fixture: { viewport: cairo.reference.frame.viewport },
-      });
-      const nativeRgba = new Uint8Array(await readFile(join(artifactRoot, ENTRY_ID, metadata.rgba.path)));
-      const metrics = compareVisualParityFramesV1(cairo.rgba, nativeRgba, entry.sample.viewport, corpus.metricContract);
-      const evidence = JSON.stringify(metrics);
-      expect(metrics.ssim, evidence).toBeGreaterThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
-      expect(metrics.pixelFractionAboveThreshold, evidence).toBeLessThanOrEqual(
-        LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold,
-      );
+      for (const entryId of LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1) {
+        const [cairo, metadataText] = await Promise.all([
+          readLineJointsCairoReferenceForEntryV1(entryId),
+          readFile(join(artifactRoot, entryId, "metadata.json"), "utf8"),
+        ]);
+        const entry = corpus.entries.find(({ id }) => id === entryId);
+        if (!entry) throw new Error(`The LineJoints V10 visual-parity entry ${entryId} is missing.`);
+        const metadata = nativeVisualParityArtifactV1Schema.parse(JSON.parse(metadataText));
+        expect(metadata).toMatchObject({
+          corpusEntryId: entryId,
+          fixture: { viewport: cairo.reference.frame.viewport },
+        });
+        const nativeRgba = new Uint8Array(await readFile(join(artifactRoot, entryId, metadata.rgba.path)));
+        const metrics = compareVisualParityFramesV1(
+          cairo.rgba,
+          nativeRgba,
+          entry.sample.viewport,
+          corpus.metricContract,
+        );
+        const evidence = `${entryId}: ${JSON.stringify(metrics)}`;
+        expect(metrics.ssim, evidence).toBeGreaterThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+        expect(metrics.pixelFractionAboveThreshold, evidence).toBeLessThanOrEqual(
+          LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold,
+        );
+      }
     },
   );
 });

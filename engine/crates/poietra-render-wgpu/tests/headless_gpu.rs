@@ -133,7 +133,11 @@ struct RealSnapshotVisualParityFixture {
 struct RealSnapshotProducerReference {
     engine_commit: String,
     fast_manim_commit: String,
+    #[serde(default)]
+    fast_manim_tree: Option<String>,
     kind: String,
+    #[serde(default)]
+    producer_snapshot_digest: Option<String>,
     snapshot_hash: String,
     source_path: String,
     source_sha256: String,
@@ -388,6 +392,63 @@ const REAL_LINE_JOINTS_V10_SOURCE_SHA256: &str =
 const REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT: &str = "29d21a2bd213df8ffeed0454278aa86289d190b8";
 const REAL_LINE_JOINTS_V10_SNAPSHOT_HASH: &str =
     "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
+const REAL_LINE_JOINTS_V10_EDITED_ENTRY_V1: &str = "real-line-joints-v10-edited--static";
+const REAL_LINE_JOINTS_V10_EDITED_FIXTURE_ID: &str = "eng-v1-real-line-joints-v10-edited";
+const REAL_LINE_JOINTS_V10_EDITED_FIXTURE_PATH: &str =
+    "fixtures/engine-v1/real-line-joints-v10-edited.json";
+const REAL_LINE_JOINTS_V10_EDITED_SOURCE_SHA256: &str =
+    "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027";
+const REAL_LINE_JOINTS_V10_EDITED_FAST_MANIM_COMMIT: &str =
+    "cd0cb237606b240a3c795b1171d61eeb3cef5305";
+const REAL_LINE_JOINTS_V10_EDITED_FAST_MANIM_TREE: &str =
+    "8007d53a31d2918e81116c675c352edc761a6ef2";
+const REAL_LINE_JOINTS_V10_EDITED_PRODUCER_SNAPSHOT_DIGEST: &str =
+    "6262b10ed9af78be6ad939987f043ed52d6500b392c4d0007070937bc1abaac8";
+const REAL_LINE_JOINTS_V10_EDITED_SNAPSHOT_HASH: &str =
+    "3de97161c0f5ff210f2a0b7e461bc7067dcc8a0eb92c66f02d3a870dfbd27a7f";
+const REAL_LINE_JOINTS_V10_EDIT_ANCHOR: &str =
+    "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)";
+const REAL_LINE_JOINTS_V10_EDIT_REPLACEMENT: &str = "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)";
+
+#[derive(Clone, Copy)]
+struct RealLineJointsV10Contract {
+    artifact_label: &'static str,
+    edited: bool,
+    entry_id: &'static str,
+    fast_manim_commit: &'static str,
+    fast_manim_tree: Option<&'static str>,
+    fixture_id: &'static str,
+    fixture_path: &'static str,
+    producer_snapshot_digest: Option<&'static str>,
+    snapshot_hash: &'static str,
+    source_sha256: &'static str,
+}
+
+const REAL_LINE_JOINTS_V10_CONTRACT: RealLineJointsV10Contract = RealLineJointsV10Contract {
+    artifact_label: "real-line-joints-v10",
+    edited: false,
+    entry_id: REAL_LINE_JOINTS_V10_ENTRY_V1,
+    fast_manim_commit: REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT,
+    fast_manim_tree: None,
+    fixture_id: REAL_LINE_JOINTS_V10_FIXTURE_ID,
+    fixture_path: REAL_LINE_JOINTS_V10_FIXTURE_PATH,
+    producer_snapshot_digest: None,
+    snapshot_hash: REAL_LINE_JOINTS_V10_SNAPSHOT_HASH,
+    source_sha256: REAL_LINE_JOINTS_V10_SOURCE_SHA256,
+};
+
+const REAL_LINE_JOINTS_V10_EDITED_CONTRACT: RealLineJointsV10Contract = RealLineJointsV10Contract {
+    artifact_label: "real-line-joints-v10-edited",
+    edited: true,
+    entry_id: REAL_LINE_JOINTS_V10_EDITED_ENTRY_V1,
+    fast_manim_commit: REAL_LINE_JOINTS_V10_EDITED_FAST_MANIM_COMMIT,
+    fast_manim_tree: Some(REAL_LINE_JOINTS_V10_EDITED_FAST_MANIM_TREE),
+    fixture_id: REAL_LINE_JOINTS_V10_EDITED_FIXTURE_ID,
+    fixture_path: REAL_LINE_JOINTS_V10_EDITED_FIXTURE_PATH,
+    producer_snapshot_digest: Some(REAL_LINE_JOINTS_V10_EDITED_PRODUCER_SNAPSHOT_DIGEST),
+    snapshot_hash: REAL_LINE_JOINTS_V10_EDITED_SNAPSHOT_HASH,
+    source_sha256: REAL_LINE_JOINTS_V10_EDITED_SOURCE_SHA256,
+};
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -990,8 +1051,10 @@ fn real_warp_square_v9_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBun
     (fixture, bundle)
 }
 
-fn real_line_joints_v10_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
-    let path = repository_root().join(REAL_LINE_JOINTS_V10_FIXTURE_PATH);
+fn real_line_joints_v10_fixture(
+    contract: RealLineJointsV10Contract,
+) -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(contract.fixture_path);
     let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
         &fs::read(path).expect("real LineJoints V10 fixture must be readable"),
     )
@@ -2496,29 +2559,38 @@ fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
     );
 }
 
-#[test]
-#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
 #[allow(
     clippy::too_many_lines,
     reason = "one audited GPU proof binds the producer pins, join semantics, full-frame readback, and artifact"
 )]
-fn renders_real_line_joints_v10_static_with_fallback_adapter() {
-    let (fixture, bundle) = real_line_joints_v10_fixture();
-    let entry = load_visual_parity_entry(REAL_LINE_JOINTS_V10_ENTRY_V1);
-    assert_eq!(fixture.id, REAL_LINE_JOINTS_V10_FIXTURE_ID);
+fn render_real_line_joints_v10_static_with_fallback_adapter(contract: RealLineJointsV10Contract) {
+    let (fixture, bundle) = real_line_joints_v10_fixture(contract);
+    let entry = load_visual_parity_entry(contract.entry_id);
+    assert_eq!(fixture.id, contract.fixture_id);
     assert_eq!(entry.fixture.id, fixture.id);
-    assert_eq!(entry.fixture.path, REAL_LINE_JOINTS_V10_FIXTURE_PATH);
+    assert_eq!(entry.fixture.path, contract.fixture_path);
     assert_eq!(
         fixture.producer_reference.kind,
         "server-sealed-real-fast-manim-profile-v10"
     );
     assert_eq!(
         fixture.producer_reference.fast_manim_commit,
-        REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT
+        contract.fast_manim_commit
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_tree.as_deref(),
+        contract.fast_manim_tree
+    );
+    assert_eq!(
+        fixture
+            .producer_reference
+            .producer_snapshot_digest
+            .as_deref(),
+        contract.producer_snapshot_digest
     );
     assert_eq!(
         fixture.producer_reference.snapshot_hash,
-        REAL_LINE_JOINTS_V10_SNAPSHOT_HASH
+        contract.snapshot_hash
     );
     assert_eq!(
         fixture.producer_reference.source_path,
@@ -2526,17 +2598,31 @@ fn renders_real_line_joints_v10_static_with_fallback_adapter() {
     );
     assert_eq!(
         fixture.producer_reference.source_sha256,
-        REAL_LINE_JOINTS_V10_SOURCE_SHA256
+        contract.source_sha256
     );
+
+    let official_source =
+        fs::read_to_string(repository_root().join(REAL_LINE_JOINTS_V10_SOURCE_MIRROR_PATH))
+            .expect("the mirrored official LineJoints source must remain readable");
+    let source = if contract.edited {
+        assert_eq!(
+            official_source
+                .matches(REAL_LINE_JOINTS_V10_EDIT_ANCHOR)
+                .count(),
+            1,
+            "the bounded LineJoints edit anchor must remain unique"
+        );
+        official_source.replacen(
+            REAL_LINE_JOINTS_V10_EDIT_ANCHOR,
+            REAL_LINE_JOINTS_V10_EDIT_REPLACEMENT,
+            1,
+        )
+    } else {
+        official_source
+    };
     assert_eq!(
-        format!(
-            "{:x}",
-            Sha256::digest(
-                fs::read(repository_root().join(REAL_LINE_JOINTS_V10_SOURCE_MIRROR_PATH))
-                    .expect("the mirrored official LineJoints source must remain readable")
-            )
-        ),
-        REAL_LINE_JOINTS_V10_SOURCE_SHA256
+        format!("{:x}", Sha256::digest(source.as_bytes())),
+        contract.source_sha256
     );
 
     let SceneSourceV1::ImportedManimServerSnapshot {
@@ -2549,8 +2635,8 @@ fn renders_real_line_joints_v10_static_with_fallback_adapter() {
         panic!("real LineJoints V10 must remain an imported server snapshot");
     };
     assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V10);
-    assert_eq!(snapshot_hash, REAL_LINE_JOINTS_V10_SNAPSHOT_HASH);
-    assert_eq!(source_hash, REAL_LINE_JOINTS_V10_SOURCE_SHA256);
+    assert_eq!(snapshot_hash, contract.snapshot_hash);
+    assert_eq!(source_hash, contract.source_sha256);
     assert_eq!(bundle.scene.entities.len(), 4);
     assert!(bundle.scene.animation_channels.is_empty());
 
@@ -2567,10 +2653,7 @@ fn renders_real_line_joints_v10_static_with_fallback_adapter() {
         sample.expected.semantic_digest,
         entry.sample.semantic_digest
     );
-    assert_eq!(
-        entry.fixture.revision.sha256,
-        REAL_LINE_JOINTS_V10_SNAPSHOT_HASH
-    );
+    assert_eq!(entry.fixture.revision.sha256, contract.snapshot_hash);
 
     let session = EngineSessionV1::new(bundle).expect("LineJoints V10 fixture must install");
     let packet = session
@@ -2611,13 +2694,30 @@ fn renders_real_line_joints_v10_static_with_fallback_adapter() {
         &packet,
         PixelReferenceSet {
             clear_only: false,
-            reason: "the official LineJoints V10 scene must retain all three visible stroked Triangle leaves"
-                .to_owned(),
+            reason: if contract.edited {
+                "the producer-confirmed Studio edit must retain all three visible stroked Triangle leaves"
+                    .to_owned()
+            } else {
+                "the official LineJoints V10 scene must retain all three visible stroked Triangle leaves"
+                    .to_owned()
+            },
             samples: std::collections::BTreeMap::new(),
         },
-        "real-line-joints-v10",
+        contract.artifact_label,
         Some(&entry),
     );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+fn renders_real_line_joints_v10_static_with_fallback_adapter() {
+    render_real_line_joints_v10_static_with_fallback_adapter(REAL_LINE_JOINTS_V10_CONTRACT);
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+fn renders_real_line_joints_v10_edited_static_with_fallback_adapter() {
+    render_real_line_joints_v10_static_with_fallback_adapter(REAL_LINE_JOINTS_V10_EDITED_CONTRACT);
 }
 
 #[test]

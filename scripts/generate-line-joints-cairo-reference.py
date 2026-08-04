@@ -1,4 +1,4 @@
-"""Generate the pinned Cairo reference for fast-manim's official LineJoints Scene."""
+"""Generate pinned Cairo references for the official or Studio-edited LineJoints Scene."""
 
 from __future__ import annotations
 
@@ -25,10 +25,23 @@ from manim import tempconfig
 from PIL import Image
 
 
-EXPECTED_FAST_MANIM_COMMIT = "29d21a2bd213df8ffeed0454278aa86289d190b8"
+OFFICIAL_FAST_MANIM_COMMIT = "29d21a2bd213df8ffeed0454278aa86289d190b8"
+EDITED_FAST_MANIM_COMMIT = "cd0cb237606b240a3c795b1171d61eeb3cef5305"
 EXPECTED_SOURCE_PATH = Path("example_scenes/basic.py")
-EXPECTED_SOURCE_SHA256 = (
+OFFICIAL_SOURCE_SHA256 = (
     "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
+)
+EDITED_SOURCE_SHA256 = (
+    "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027"
+)
+LINE_JOINTS_EDIT_ANCHOR = (
+    b"        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)"
+)
+LINE_JOINTS_EDIT_REPLACEMENT = (
+    b"        grp.set(width=config.frame_width - 1)\n"
+    b"        t2.move_to((1.25, -0.5, 0))\n"
+    b"        t2.scale(0.5)\n\n"
+    b"        self.add(grp)"
 )
 FRAME = {"height": 8, "width": 128.0 / 9.0}
 VIEWPORT = {"heightPx": 360, "widthPx": 640}
@@ -167,7 +180,7 @@ def producer_identity(fast_manim: Path) -> dict[str, Any]:
     return {**identity, "identitySha256": canonical_digest(identity)}
 
 
-def generate(output: Path, fast_manim: Path) -> None:
+def generate(output: Path, fast_manim: Path, variant: str) -> None:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite generator output: {output}")
     if os.environ.get("PYTHONHASHSEED") != "0":
@@ -180,27 +193,52 @@ def generate(output: Path, fast_manim: Path) -> None:
             f"imported manim is from {installed_fast_manim}; expected {fast_manim}"
         )
     fast_manim_commit = git(fast_manim, "rev-parse", "HEAD")
-    if fast_manim_commit != EXPECTED_FAST_MANIM_COMMIT:
+    expected_commit = (
+        EDITED_FAST_MANIM_COMMIT if variant == "edited" else OFFICIAL_FAST_MANIM_COMMIT
+    )
+    if fast_manim_commit != expected_commit:
         raise RuntimeError(
-            f"fast-manim is {fast_manim_commit}; expected {EXPECTED_FAST_MANIM_COMMIT}"
+            f"fast-manim is {fast_manim_commit}; expected {expected_commit}"
         )
     if git(fast_manim, "status", "--porcelain"):
         raise RuntimeError("fast-manim checkout must be clean")
 
     source = fast_manim / EXPECTED_SOURCE_PATH
-    source_bytes = source.read_bytes()
-    source_digest = sha256(source_bytes)
-    if source_digest != EXPECTED_SOURCE_SHA256:
+    official_source_bytes = source.read_bytes()
+    official_source_digest = sha256(official_source_bytes)
+    if official_source_digest != OFFICIAL_SOURCE_SHA256:
         raise RuntimeError(
-            f"LineJoints source hashes to {source_digest}; expected {EXPECTED_SOURCE_SHA256}"
+            f"LineJoints source hashes to {official_source_digest}; expected {OFFICIAL_SOURCE_SHA256}"
+        )
+    source_bytes = official_source_bytes
+    if variant == "edited":
+        if official_source_bytes.count(LINE_JOINTS_EDIT_ANCHOR) != 1:
+            raise RuntimeError(
+                "the exact official LineJoints edit anchor must occur once"
+            )
+        source_bytes = official_source_bytes.replace(
+            LINE_JOINTS_EDIT_ANCHOR,
+            LINE_JOINTS_EDIT_REPLACEMENT,
+        )
+    source_digest = sha256(source_bytes)
+    expected_source_digest = (
+        EDITED_SOURCE_SHA256 if variant == "edited" else OFFICIAL_SOURCE_SHA256
+    )
+    if source_digest != expected_source_digest:
+        raise RuntimeError(
+            f"derived LineJoints source hashes to {source_digest}; expected {expected_source_digest}"
         )
 
     values = renderer_config()
     random.seed(0)
     np.random.seed(0)
     with tempfile.TemporaryDirectory(prefix="poietra-line-joints-cairo-") as media:
+        rendered_source = source
+        if variant == "edited":
+            rendered_source = Path(media) / "edited_line_joints.py"
+            rendered_source.write_bytes(source_bytes)
         with tempconfig(manim_config(values, media)):
-            scene = load_scene(source)()
+            scene = load_scene(rendered_source)()
             scene.render()
             png = Path(scene.renderer.file_writer.image_file_path).read_bytes()
 
@@ -254,10 +292,16 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast-manim-repository", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument(
+        "--variant",
+        choices=("edited", "official"),
+        default="official",
+    )
     arguments = parser.parse_args()
     generate(
         arguments.output.resolve(),
         arguments.fast_manim_repository.resolve(),
+        arguments.variant,
     )
 
 

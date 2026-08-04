@@ -95,6 +95,7 @@ describe("visual parity v1 contracts", () => {
       "real-warp-square-v9--target",
       "real-warp-square-v9--hold",
       "real-line-joints-v10--static",
+      "real-line-joints-v10-edited--static",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -609,6 +610,96 @@ describe("visual parity v1 contracts", () => {
       snapshotHash: fixtureRevision,
       sourcePath: "example_scenes/basic.py",
       sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+  });
+
+  it("pins the actual producer snapshot after the Studio LineJoints move-and-scale edit", async () => {
+    const fixtureRevision = "3de97161c0f5ff210f2a0b7e461bc7067dcc8a0eb92c66f02d3a870dfbd27a7f";
+    const sourceHash = "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027";
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "real-line-joints-v10-edited--static");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-real-line-joints-v10-edited",
+        path: "fixtures/engine-v1/real-line-joints-v10-edited.json",
+        revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+      },
+      sample: {
+        id: "static",
+        sampleTime: 0.5,
+        semanticDigest: "7653377ca65bb58905c119a980b8849865511aa641345b9f8c5b4a5a501f4ade",
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      thresholdException: null,
+    });
+    if (!entry) throw new Error("The edited LineJoints V10 visual-parity entry is missing.");
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixtureBytes = new Uint8Array(await readFile(entry.fixture.path));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(16 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
+      snapshotHash: fixtureRevision,
+      snapshotVersion: 10,
+      sourceHash,
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(4);
+    expect(
+      bundle.scene.entities
+        .slice(1)
+        .map((entity) => (entity.appearance.kind === "vector" ? entity.appearance.stroke?.join : null)),
+    ).toEqual(["miter", "round", "bevel"]);
+
+    const officialFixture = JSON.parse(await readFile("fixtures/engine-v1/real-line-joints-v10.json", "utf8"));
+    const editedTarget = bundle.scene.entities[2];
+    const officialTarget = sceneIrBundleV1Schema.parse({
+      assets: officialFixture.assets,
+      scene: officialFixture.scene,
+    }).scene.entities[2];
+    if (editedTarget?.geometry.kind !== "cubic-path" || officialTarget?.geometry.kind !== "cubic-path") {
+      throw new Error("Both LineJoints fixtures must retain the central Triangle path.");
+    }
+    const bounds = (geometry: typeof editedTarget.geometry) => {
+      const points = geometry.path.subpaths.flatMap((subpath) => [
+        subpath.start,
+        ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+      ]);
+      const xs = points.map(({ x }) => x);
+      const ys = points.map(({ y }) => y);
+      return {
+        center: { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 },
+        height: Math.max(...ys) - Math.min(...ys),
+        width: Math.max(...xs) - Math.min(...xs),
+      };
+    };
+    const editedBounds = bounds(editedTarget.geometry);
+    const officialBounds = bounds(officialTarget.geometry);
+    expect(editedBounds.center.x).toBeCloseTo(1.25, 12);
+    expect(editedBounds.center.y).toBeCloseTo(-0.5, 12);
+    expect(editedBounds.width / officialBounds.width).toBeCloseTo(0.5, 12);
+    expect(editedBounds.height / officialBounds.height).toBeCloseTo(0.5, 12);
+
+    const officialSource = await readFile("fixtures/real-preview-harness/example_scenes/basic.py", "utf8");
+    const editedSource = officialSource.replace(
+      "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
+      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)",
+    );
+    expect(editedSource).not.toBe(officialSource);
+    expect(sha256(new TextEncoder().encode(editedSource))).toBe(sourceHash);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "f11f6278466c54055d7c7043e0f32bec68a12a16",
+      fastManimCommit: "cd0cb237606b240a3c795b1171d61eeb3cef5305",
+      fastManimTree: "8007d53a31d2918e81116c675c352edc761a6ef2",
+      kind: "server-sealed-real-fast-manim-profile-v10",
+      producerSnapshotDigest: "6262b10ed9af78be6ad939987f043ed52d6500b392c4d0007070937bc1abaac8",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: sourceHash,
     });
   });
 
