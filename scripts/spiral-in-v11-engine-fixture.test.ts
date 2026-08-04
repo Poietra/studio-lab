@@ -87,6 +87,7 @@ async function generateFixture() {
       expected: {
         semanticDigest: digestSemanticValue({
           camera: compiled.frame.packet.camera,
+          compositing: compiled.frame.packet.compositing,
           draws: compiled.frame.packet.draws,
         }),
       },
@@ -100,7 +101,7 @@ async function generateFixture() {
     assets: sealed.bundle.assets,
     id: "eng-v1-real-spiral-in-v11",
     producerReference: {
-      engineCommit: "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2",
+      engineCommit: "e5423a8cb79a8326d42337e204ed12784750cdf1",
       fastManimCommit: manifest.fastManimCommit,
       fastManimTree: manifest.fastManimTree,
       kind: "server-sealed-real-fast-manim-profile-v11",

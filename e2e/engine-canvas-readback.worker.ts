@@ -32,7 +32,11 @@ type GpuAdapterV1 = {
 
 type GpuCanvasContextV1 = {
   configure: (configuration: CanvasConfigurationV1) => void;
-  getCurrentTexture: () => unknown;
+  getCurrentTexture: () => GpuTextureV1;
+};
+
+type GpuTextureV1 = {
+  createView: (descriptor?: Readonly<{ format?: string }> & Record<string, unknown>) => unknown;
 };
 
 type GpuNavigatorV1 = {
@@ -110,11 +114,11 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
   const context = canvas.getContext("webgpu") as unknown as GpuCanvasContextV1 | null;
   if (!context) throw new Error("The E2E worker could not acquire a WebGPU canvas context.");
 
-  let capturedTexture: unknown;
+  let capturedTexture: GpuTextureV1 | undefined;
   let device: GpuDeviceV1 | null = null;
   let readback: GpuBufferV1 | null = null;
   let surfaceFormat: string | null = null;
-  let viewFormat: "Bgra8UnormSrgb" | "Rgba8UnormSrgb" | null = null;
+  let viewFormat: "Bgra8Unorm" | "Bgra8UnormSrgb" | "Rgba8Unorm" | "Rgba8UnormSrgb" | null = null;
   let armed = false;
   let renderSubmissionCount = 0;
   let delayedErrorScopes: ReturnType<typeof createDelayedErrorScopeBatch> | null = null;
@@ -132,7 +136,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
     surfaceFormat = configuration.format;
     const configuredViewFormats = configuration.viewFormats;
     const configuredViewFormat = Array.isArray(configuredViewFormats) ? configuredViewFormats[0] : undefined;
-    viewFormat =
+    const configuredSrgbViewFormat =
       configuredViewFormat === "bgra8unorm-srgb"
         ? "Bgra8UnormSrgb"
         : configuredViewFormat === "rgba8unorm-srgb"
@@ -144,7 +148,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
         : configuration.format === "rgba8unorm"
           ? "Rgba8UnormSrgb"
           : null;
-    if (!viewFormat || !expectedViewFormat || viewFormat !== expectedViewFormat) {
+    if (!configuredSrgbViewFormat || !expectedViewFormat || configuredSrgbViewFormat !== expectedViewFormat) {
       throw new Error(
         `The E2E readback requires the matching sRGB surface view; received ${String(configuredViewFormat)} for ${configuration.format}.`,
       );
@@ -159,8 +163,31 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
   };
   const getCurrentTexture = context.getCurrentTexture.bind(context);
   context.getCurrentTexture = () => {
-    capturedTexture = getCurrentTexture();
-    return capturedTexture;
+    const texture = getCurrentTexture();
+    const createView = texture.createView.bind(texture);
+    const createObservedView = (descriptor?: Readonly<{ format?: string }> & Record<string, unknown>) => {
+      const actualFormat = descriptor?.format ?? surfaceFormat;
+      viewFormat =
+        actualFormat === "bgra8unorm"
+          ? "Bgra8Unorm"
+          : actualFormat === "bgra8unorm-srgb"
+            ? "Bgra8UnormSrgb"
+            : actualFormat === "rgba8unorm"
+              ? "Rgba8Unorm"
+              : actualFormat === "rgba8unorm-srgb"
+                ? "Rgba8UnormSrgb"
+                : null;
+      if (!viewFormat) throw new Error(`The E2E readback observed an unsupported render view ${String(actualFormat)}.`);
+      return createView(descriptor);
+    };
+    capturedTexture = texture;
+    return new Proxy(texture, {
+      get(target, property) {
+        if (property === "createView") return createObservedView;
+        const value = Reflect.get(target, property, target);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
   };
 
   const gpu = (self.navigator as unknown as { gpu?: GpuNavigatorV1 }).gpu;
@@ -239,6 +266,7 @@ function installReadbackHooks(canvas: OffscreenCanvas, viewport: ProofRequestV1[
       capturedTexture = undefined;
       readback = null;
       renderSubmissionCount = 0;
+      viewFormat = null;
     },
     delayNextErrorScopes: (injected: readonly unknown[]) => {
       if (delayedErrorScopes) throw new Error("An error-scope delay batch is already active.");

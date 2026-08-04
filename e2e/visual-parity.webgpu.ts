@@ -61,7 +61,7 @@ type DynamicFixture = Readonly<{
   sample?: VisualParityFixtureSample;
   samples?: readonly VisualParityFixtureSample[];
   scene: Readonly<{
-    source: Readonly<{ kind: string; revisionHash?: string; snapshotHash?: string }>;
+    source: Readonly<{ kind: string; revisionHash?: string; snapshotHash?: string; snapshotVersion?: number }>;
   }>;
 }>;
 
@@ -109,7 +109,7 @@ type FullRgbaProofV1 = Readonly<{
   kind: "proof";
   pixels: Readonly<{
     surfaceFormat: "bgra8unorm" | "rgba8unorm";
-    viewFormat: "Bgra8UnormSrgb" | "Rgba8UnormSrgb";
+    viewFormat: "Bgra8Unorm" | "Bgra8UnormSrgb" | "Rgba8Unorm" | "Rgba8UnormSrgb";
   }>;
   response: Readonly<{
     result?: Readonly<{
@@ -275,6 +275,22 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     sampleTime: entry.sample.sampleTime,
     viewport: entry.sample.viewport,
   });
+  const usesManimCairoCompositing =
+    fixtureBundle.scene.source.kind === "imported-manim-server-snapshot" &&
+    fixtureBundle.scene.source.snapshotVersion === 11;
+  const expectedBrowserViewFormat = usesManimCairoCompositing
+    ? browserProof.pixels.surfaceFormat === "bgra8unorm"
+      ? "Bgra8Unorm"
+      : "Rgba8Unorm"
+    : browserProof.pixels.surfaceFormat === "bgra8unorm"
+      ? "Bgra8UnormSrgb"
+      : "Rgba8UnormSrgb";
+  expect(browserProof.pixels.viewFormat, "the observed surface view must match packet compositing").toBe(
+    expectedBrowserViewFormat,
+  );
+  expect(nativeMetadata.target.format, "the native target must match packet compositing").toBe(
+    usesManimCairoCompositing ? "Rgba8Unorm" : "Rgba8UnormSrgb",
+  );
   const actualRgba = Uint8Array.from(browserProof.rgba);
   expect(actualRgba.byteLength).toBe(expectedRgba.byteLength);
 

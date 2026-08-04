@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-const ENGINE_COMMIT: &str = "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2";
+const ENGINE_COMMIT: &str = "e5423a8cb79a8326d42337e204ed12784750cdf1";
 const FAST_MANIM_COMMIT: &str = "4a6eaf1b4085ed643698da5116dd23814411eb5b";
 const FIXTURE_ID: &str = "eng-v1-real-spiral-in-v11";
 const SNAPSHOT_HASH: &str = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
@@ -94,7 +94,11 @@ fn normalize_semantic_numbers(value: &mut Value) {
 }
 
 fn semantic_digest(packet: &RenderPacketV1) -> String {
-    let mut value = serde_json::json!({ "camera": packet.camera, "draws": packet.draws });
+    let mut value = serde_json::json!({
+        "camera": packet.camera,
+        "compositing": packet.compositing,
+        "draws": packet.draws,
+    });
     normalize_semantic_numbers(&mut value);
     format!(
         "{:x}",
