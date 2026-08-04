@@ -45,17 +45,22 @@ function request(
 function selectedResult(
   selectionRequest: FastManimSnapshotProfileSelectionRequestV1,
   selected = selectionRequest.policy.candidates[0]!,
+  producerDocumentBytes = Buffer.from(canonicalJsonV1({ kind: "fake-producer-document" }), "utf8"),
 ) {
   return {
     kind: "selected" as const,
     policyHash: selectionRequest.policyHash,
-    producerDocument: { kind: "fake-producer-document" },
+    producerDocumentBase64: producerDocumentBytes.toString("base64"),
+    producerDocumentDigest: createHash("sha256").update(producerDocumentBytes).digest("hex"),
     projectId: selectionRequest.projectId,
     requestId: selectionRequest.requestId,
     sceneId: selectionRequest.sceneId,
     sceneName: selectionRequest.sceneName,
     schema: "poietra.fast-manim-snapshot-profile-selection-result" as const,
-    selected,
+    selected: {
+      runtimeConfigHash: selected.runtimeConfigHash,
+      snapshotVersion: selected.snapshotVersion,
+    },
     selectionDigest: createFastManimSnapshotSelectedProfileDigestV1(selectionRequest, selected),
     sourceHash: selectionRequest.sourceHash,
     sourcePath: selectionRequest.sourcePath,
@@ -76,10 +81,10 @@ describe("fast-manim producer-owned profile selection", () => {
       1, 2, 3, 4, 5, 6, 7, 8, 9,
     ]);
     expect(selectionRequest.sourceHash).toBe("fca8ddecffa4a37ca4f97e7a9de9f6d3c9935b3e95d866bd41a1b67e9f91ad03");
-    expect(selectionRequest.policyHash).toBe("a5549df8bc31717781163800aa72f31556dc8f4ddb87fc9ccfe1df179a9919ec");
+    expect(selectionRequest.policyHash).toBe("80592c928f34e2867f8e75edc8ace43631f8abdab95cc5c8c0f43c28786c70d0");
     expect(selected.runtimeConfigHash).toBe("5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a");
     expect(createFastManimSnapshotSelectedProfileDigestV1(selectionRequest, selected)).toBe(
-      "b4d28d9fffd22da1b850b479476ed12926f63ad4cfadd36c4642bff652596136",
+      "dbbc3d6cb50cedefd41749c420ba12566a5c1f0c61b47a939e47214ed65b1355",
     );
   });
 
@@ -102,8 +107,13 @@ describe("fast-manim producer-owned profile selection", () => {
   it("accepts one canonical correlated selected result", () => {
     const selectionRequest = request();
     const result = selectedResult(selectionRequest);
+    const parsed = parseFastManimSnapshotProfileSelectionResultV1(canonicalBytes(result), selectionRequest);
 
-    expect(parseFastManimSnapshotProfileSelectionResultV1(canonicalBytes(result), selectionRequest)).toEqual(result);
+    expect(parsed).toMatchObject({ ...result, selected: selectionRequest.policy.candidates[0] });
+    if (parsed.kind !== "selected") throw new Error("Expected one selected profile.");
+    expect(Buffer.from(parsed.producerDocumentBytes)).toEqual(
+      Buffer.from(canonicalJsonV1({ kind: "fake-producer-document" }), "utf8"),
+    );
   });
 
   it("accepts one canonical unresolved result without inventing a concrete profile", () => {
@@ -143,6 +153,12 @@ describe("fast-manim producer-owned profile selection", () => {
         selectionRequest,
       ),
     ).toThrow(/deterministic digest/i);
+    expect(() =>
+      parseFastManimSnapshotProfileSelectionResultV1(
+        canonicalBytes({ ...result, producerDocumentDigest: "f".repeat(64) }),
+        selectionRequest,
+      ),
+    ).toThrow(/producer document bytes/i);
 
     const restrictedPolicy = fastManimSnapshotProfileSelectionPolicyV1Schema.parse({
       ...selectionRequest.policy,
@@ -169,5 +185,23 @@ describe("fast-manim producer-owned profile selection", () => {
     expect(digestFastManimSnapshotProfileSelectionPolicyV1(policy)).not.toBe(
       digestFastManimSnapshotProfileSelectionPolicyV1({ ...policy, candidates: policy.candidates.slice(0, -1) }),
     );
+  });
+
+  it.each([
+    [{ height: 1e-7, width: 1e20 }, "ac3a595c8e534d7c4b9e771b820e85e13f1551d5721cecde5c04a7173aea62f1"],
+    [{ height: 1e20, width: 1e-7 }, "0f205aef389c63f1329b799f9079c9e340caa182a1f669e4289e9050f212dbd1"],
+  ] as const)("keeps policy and selected bytes cross-runtime stable for frame %o", (frame, expectedPolicyHash) => {
+    const policy = createFastManimSnapshotProfileSelectionPolicyV1(frame, { pngAvailable: false });
+    expect(policy.candidates.map(({ snapshotVersion }) => snapshotVersion)).toEqual([1, 2, 3, 5, 6, 7]);
+    expect(digestFastManimSnapshotProfileSelectionPolicyV1(policy)).toBe(expectedPolicyHash);
+
+    const selectionRequest = request(policy);
+    const pythonCanonicalBytes = Buffer.from('{"kind":"float-regression","value":1e-07}', "utf8");
+    const parsed = parseFastManimSnapshotProfileSelectionResultV1(
+      canonicalBytes(selectedResult(selectionRequest, policy.candidates[0]!, pythonCanonicalBytes)),
+      selectionRequest,
+    );
+    if (parsed.kind !== "selected") throw new Error("Expected one selected profile.");
+    expect(Buffer.from(parsed.producerDocumentBytes)).toEqual(pythonCanonicalBytes);
   });
 });

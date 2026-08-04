@@ -29,8 +29,9 @@ describe("Manim command parsing", () => {
     expect(() => parseManimProjects('[{"root":"/tmp/a","path":"/private"}]')).toThrow(/unsupported field/i);
   });
 
-  it("keeps snapshot profile V1 as the default and accepts explicit supported profiles", () => {
-    expect(parseFastManimSnapshotVersion(undefined)).toBe(1);
+  it("uses producer-owned profile selection by default and accepts explicit diagnostic overrides", () => {
+    expect(parseFastManimSnapshotVersion(undefined)).toBeUndefined();
+    expect(parseFastManimSnapshotVersion("1")).toBe(1);
     expect(parseFastManimSnapshotVersion("2")).toBe(2);
     expect(parseFastManimSnapshotVersion("3")).toBe(3);
     expect(parseFastManimSnapshotVersion("4")).toBe(4);

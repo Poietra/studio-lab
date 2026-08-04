@@ -100,7 +100,7 @@ if (mode === "garbage") {
 }
 if (mode === "huge") {
   const filler = "x".repeat(64 * 1024);
-  for (let written = 0; written < 13 * 1024 * 1024; written += filler.length) {
+  for (let written = 0; written < 20 * 1024 * 1024; written += filler.length) {
     if (!process.stdout.write(filler)) {
       await new Promise((resolve) => process.stdout.once("drain", resolve));
     }
@@ -117,7 +117,92 @@ if (mode === "stderr-flood") {
   await new Promise(() => setInterval(() => undefined, 1_000));
 }
 
-const request = JSON.parse(requestJson);
+let request = JSON.parse(requestJson);
+const selectionRequest = request.schema === "poietra.fast-manim-snapshot-profile-selection-request" ? request : null;
+let selectedProfile = null;
+if (selectionRequest) {
+  const selectedVersion = Number(argumentValue("select-version") ?? "1");
+  selectedProfile = selectionRequest.policy?.candidates?.find(
+    (candidate) => candidate.snapshotVersion === selectedVersion,
+  );
+  if (!selectedProfile) {
+    process.stderr.write("Profile selection request does not offer the configured fake profile.\n");
+    process.exit(4);
+  }
+  request = {
+    projectId: selectionRequest.projectId,
+    requestId: selectionRequest.requestId,
+    runtimeConfig: selectedProfile.runtimeConfig,
+    runtimeConfigHash: selectedProfile.runtimeConfigHash,
+    sceneId: selectionRequest.sceneId,
+    sceneName: selectionRequest.sceneName,
+    schema: "poietra.fast-manim-snapshot-producer-request",
+    snapshotVersion: selectedProfile.snapshotVersion,
+    sourceHash: selectionRequest.sourceHash,
+    sourcePath: selectionRequest.sourcePath,
+    sourceText: selectionRequest.sourceText,
+    version: 1,
+  };
+}
+
+function wrapSelectedProfile(producerDocumentJson) {
+  if (!selectionRequest || !selectedProfile) return producerDocumentJson;
+  const candidateForEnvelope =
+    mode === "profile-selection-downgrade"
+      ? {
+          runtimeConfig: {
+            capabilities: ["png-image"],
+            frame: selectedProfile.runtimeConfig.frame,
+            randomSeed: 0,
+            schema: "poietra.fast-manim-runtime-config",
+            snapshotVersion: 4,
+            version: 1,
+          },
+          runtimeConfigHash: "",
+          snapshotVersion: 4,
+        }
+      : selectedProfile;
+  if (candidateForEnvelope.runtimeConfigHash === "") {
+    candidateForEnvelope.runtimeConfigHash = digestRuntimeConfig(candidateForEnvelope.runtimeConfig);
+  }
+  const selectedForEnvelope = {
+    runtimeConfigHash: candidateForEnvelope.runtimeConfigHash,
+    snapshotVersion: candidateForEnvelope.snapshotVersion,
+  };
+  const producerDocumentBytes = Buffer.from(canonicalJson(JSON.parse(producerDocumentJson)), "utf8");
+  const selectionDigest = createHash("sha256")
+    .update(
+      canonicalJson({
+        policyHash: selectionRequest.policyHash,
+        runtimeConfigHash: selectedForEnvelope.runtimeConfigHash,
+        sceneId: selectionRequest.sceneId,
+        sceneName: selectionRequest.sceneName,
+        schema: "poietra.fast-manim-snapshot-profile-selection-result",
+        snapshotVersion: selectedForEnvelope.snapshotVersion,
+        sourceHash: selectionRequest.sourceHash,
+        sourcePath: selectionRequest.sourcePath,
+        version: 1,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+  return `${canonicalJson({
+    kind: "selected",
+    policyHash: selectionRequest.policyHash,
+    producerDocumentBase64: producerDocumentBytes.toString("base64"),
+    producerDocumentDigest: createHash("sha256").update(producerDocumentBytes).digest("hex"),
+    projectId: selectionRequest.projectId,
+    requestId: selectionRequest.requestId,
+    sceneId: selectionRequest.sceneId,
+    sceneName: selectionRequest.sceneName,
+    schema: "poietra.fast-manim-snapshot-profile-selection-result",
+    selected: selectedForEnvelope,
+    selectionDigest,
+    sourceHash: mode === "profile-selection-stale" ? "f".repeat(64) : selectionRequest.sourceHash,
+    sourcePath: selectionRequest.sourcePath,
+    version: 1,
+  })}\n`;
+}
 if (!request.runtimeConfig || typeof request.runtimeConfig !== "object") {
   process.stderr.write("Producer request is missing the canonical runtime config object.\n");
   process.exit(4);
@@ -173,6 +258,24 @@ if (releaseHandle) {
 }
 if (mode === "hang") {
   await new Promise(() => setInterval(() => undefined, 1_000));
+}
+if (selectionRequest && (mode === "profile-selection-ambiguous" || mode === "profile-selection-unsupported")) {
+  await writeStdout(
+    `${canonicalJson({
+      kind: "unresolved",
+      policyHash: selectionRequest.policyHash,
+      projectId: selectionRequest.projectId,
+      reason: mode === "profile-selection-ambiguous" ? "ambiguous" : "unsupported",
+      requestId: selectionRequest.requestId,
+      sceneId: selectionRequest.sceneId,
+      sceneName: selectionRequest.sceneName,
+      schema: "poietra.fast-manim-snapshot-profile-selection-result",
+      sourceHash: selectionRequest.sourceHash,
+      sourcePath: selectionRequest.sourcePath,
+      version: 1,
+    })}\n`,
+  );
+  process.exit(0);
 }
 const runtimeConfigHash =
   mode === "config-drift"
@@ -250,7 +353,7 @@ if (mode === "unsupported" || mode === "leak-unsupported") {
             message: "raw source fragment follows",
           },
         ];
-  await writeStdout(JSON.stringify({ ...envelope, issues, kind: "unsupported" }));
+  await writeStdout(wrapSelectedProfile(JSON.stringify({ ...envelope, issues, kind: "unsupported" })));
   process.exit(0);
 }
 
@@ -534,7 +637,7 @@ if (mode.startsWith("combined-identity")) {
 
 const orphanModes = new Set(["orphan-hang", "orphan-flood", "orphan-setsid", "orphan-parent-hang"]);
 if (orphanModes.has(mode)) {
-  await writeStdout(resultJson);
+  await writeStdout(wrapSelectedProfile(resultJson));
   const orphanPidFile = argumentValue("orphan-pid-file") ?? "";
   // Self-expiry backstop: every fixture descendant exits on its own within a
   // bounded window so a test that relies on the server NOT signalling it (the
@@ -547,7 +650,7 @@ if (orphanModes.has(mode)) {
       ? `${selfExpiry}
          const filler = "x".repeat(65536); let sent = 0;
          const write = () => {
-           while (sent < 208) {
+           while (sent < 320) {
              sent += 1;
              if (!process.stdout.write(filler)) { process.stdout.once("drain", write); return; }
            }
@@ -618,4 +721,4 @@ if (orphanModes.has(mode)) {
   process.exit(0);
 }
 
-await writeStdout(resultJson);
+await writeStdout(wrapSelectedProfile(resultJson));

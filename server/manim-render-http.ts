@@ -546,11 +546,17 @@ async function routeManimRequest(
     const projectId = sceneSnapshotMatch[1]!;
     if (request.method === "GET") {
       const parsedQuery = fastManimSnapshotQueryV1Schema.safeParse({
+        ...(url.searchParams.get("runtimeConfigHash") === null
+          ? {}
+          : { runtimeConfigHash: url.searchParams.get("runtimeConfigHash") }),
         sceneName: url.searchParams.get("sceneName"),
         sourcePath: url.searchParams.get("sourcePath"),
       });
       if (!parsedQuery.success) {
-        throw new HttpError("Scene snapshot lookup requires sourcePath and sceneName query parameters.", 400);
+        throw new HttpError(
+          "Scene snapshot lookup requires sourcePath and sceneName plus an optional valid runtimeConfigHash.",
+          400,
+        );
       }
       sendJson(response, 200, await manager.sceneSnapshot(projectId, parsedQuery.data));
       return;

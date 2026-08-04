@@ -20,7 +20,9 @@ import {
   fastManimSnapshotProfileVersionV1Schema,
   fastManimSnapshotRuntimeConfigV1Schema,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
+  MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_SNAPSHOT_PROFILE_SELECTION_REQUEST_SCHEMA_V1 =
@@ -67,6 +69,15 @@ export const fastManimSnapshotProfileCandidateV1Schema = z
 
 export type FastManimSnapshotProfileCandidateV1 = z.infer<typeof fastManimSnapshotProfileCandidateV1Schema>;
 
+export const fastManimSnapshotProfileIdentityV1Schema = z
+  .object({
+    runtimeConfigHash: sha256V1Schema,
+    snapshotVersion: fastManimSnapshotProfileVersionV1Schema,
+  })
+  .strict();
+
+export type FastManimSnapshotProfileIdentityV1 = z.infer<typeof fastManimSnapshotProfileIdentityV1Schema>;
+
 export const fastManimSnapshotProfileSelectionPolicyV1Schema = z
   .object({
     candidates: z
@@ -90,7 +101,18 @@ export type FastManimSnapshotProfileSelectionPolicyV1 = z.infer<typeof fastManim
 
 export function digestFastManimSnapshotProfileSelectionPolicyV1(value: FastManimSnapshotProfileSelectionPolicyV1) {
   const policy = fastManimSnapshotProfileSelectionPolicyV1Schema.parse(value);
-  return createHash("sha256").update(canonicalJsonV1(policy), "utf8").digest("hex");
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        ...policy,
+        candidates: policy.candidates.map(({ runtimeConfigHash, snapshotVersion }) => ({
+          runtimeConfigHash,
+          snapshotVersion,
+        })),
+      }),
+      "utf8",
+    )
+    .digest("hex");
 }
 
 export function fastManimSnapshotRuntimeConfigForProfileV1(
@@ -120,8 +142,9 @@ export function fastManimSnapshotRuntimeConfigForProfileV1(
 export function fastManimSnapshotProfileCandidateV1(
   snapshotVersion: FastManimSnapshotProfileVersionV1,
   frame: Readonly<{ height: number; width: number }>,
+  capabilities?: readonly FastManimSnapshotRuntimeConfigV1["capabilities"][number][],
 ): FastManimSnapshotProfileCandidateV1 {
-  const runtimeConfig = fastManimSnapshotRuntimeConfigForProfileV1(snapshotVersion, frame);
+  const runtimeConfig = fastManimSnapshotRuntimeConfigForProfileV1(snapshotVersion, frame, capabilities);
   return Object.freeze({
     runtimeConfig,
     runtimeConfigHash: digestFastManimSnapshotRuntimeConfigV1(runtimeConfig),
@@ -136,10 +159,13 @@ export function fastManimSnapshotProfileCandidateV1(
  */
 export function createFastManimSnapshotProfileSelectionPolicyV1(
   frame: Readonly<{ height: number; width: number }>,
-  options: Readonly<{ pngAvailable: boolean }>,
+  options: Readonly<{
+    capabilities?: readonly FastManimSnapshotRuntimeConfigV1["capabilities"][number][];
+    pngAvailable: boolean;
+  }>,
 ): FastManimSnapshotProfileSelectionPolicyV1 {
   const candidates = ([1, 2, 3, 5, 6, 7] as const).map((snapshotVersion) =>
-    fastManimSnapshotProfileCandidateV1(snapshotVersion, frame),
+    fastManimSnapshotProfileCandidateV1(snapshotVersion, frame, options.capabilities),
   );
   if (options.pngAvailable) candidates.push(fastManimSnapshotProfileCandidateV1(4, frame));
   for (const snapshotVersion of [8, 9] as const) {
@@ -213,8 +239,13 @@ export const fastManimSnapshotProfileSelectionResultV1Schema = z.discriminatedUn
     .object({
       ...selectionResultBase,
       kind: z.literal("selected"),
-      producerDocument: z.record(z.string(), z.unknown()),
-      selected: fastManimSnapshotProfileCandidateV1Schema,
+      producerDocumentBase64: z
+        .string()
+        .min(4)
+        .max(MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES)
+        .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/),
+      producerDocumentDigest: sha256V1Schema,
+      selected: fastManimSnapshotProfileIdentityV1Schema,
       selectionDigest: sha256V1Schema,
     })
     .strict(),
@@ -231,7 +262,7 @@ export type FastManimSnapshotProfileSelectionResultV1 = z.infer<typeof fastManim
 
 function fastManimSnapshotProfileSelectionDigestV1(
   request: FastManimSnapshotProfileSelectionRequestV1,
-  selected: FastManimSnapshotProfileCandidateV1,
+  selected: FastManimSnapshotProfileIdentityV1,
 ) {
   return createHash("sha256")
     .update(
@@ -294,15 +325,25 @@ export function parseFastManimSnapshotProfileSelectionResultV1(
   }
   if (result.kind === "unresolved") return result;
   const offered = request.policy.candidates.find(
-    (candidate) => candidate.snapshotVersion === result.selected.snapshotVersion,
+    (candidate) =>
+      candidate.snapshotVersion === result.selected.snapshotVersion &&
+      candidate.runtimeConfigHash === result.selected.runtimeConfigHash,
   );
-  if (!offered || canonicalJsonV1(offered) !== canonicalJsonV1(result.selected)) {
+  if (!offered) {
     throw new TypeError("The producer selected a runtime profile Studio did not offer.");
   }
   if (result.selectionDigest !== fastManimSnapshotProfileSelectionDigestV1(request, result.selected)) {
     throw new TypeError("The selected profile identity does not match its deterministic digest.");
   }
-  return result;
+  const producerDocumentBytes = Buffer.from(result.producerDocumentBase64, "base64");
+  if (
+    producerDocumentBytes.toString("base64") !== result.producerDocumentBase64 ||
+    producerDocumentBytes.byteLength > MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES - 1 ||
+    createHash("sha256").update(producerDocumentBytes).digest("hex") !== result.producerDocumentDigest
+  ) {
+    throw new TypeError("The selected producer document bytes do not match their bounded canonical identity.");
+  }
+  return { ...result, producerDocumentBytes, selected: offered };
 }
 
 export function createFastManimSnapshotProfileSelectionRequestV1(

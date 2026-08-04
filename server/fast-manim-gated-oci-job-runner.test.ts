@@ -30,6 +30,7 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES,
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS,
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
@@ -252,9 +253,9 @@ class TransformedImageScene(Scene):
 ] as const);
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "2efa05e411df6a13b7c1bfab93bc99f8b58aeb8f3daf5f17db894b3c0ed54823",
-  "io.poietra.fast-manim.commit": "d2480e8096a5cac64f7f86ed1d0d01f5c87839e3",
-  "io.poietra.fast-manim.tree": "0ca5f7fc0c77a87fec7df605c8ce1190edf16f0a",
+  "io.poietra.fast-manim.archive-sha256": "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6",
+  "io.poietra.fast-manim.commit": "29d21a2bd213df8ffeed0454278aa86289d190b8",
+  "io.poietra.fast-manim.tree": "d486d57ba637da1e915a5b29d6bda2d967570a54",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":
@@ -265,7 +266,7 @@ const TRUSTED_IMAGE_LABELS = Object.freeze({
   "io.poietra.mathtex-outline.notice-sha256": "44eebb7f078626c705cf0d952509075410f86bb91af6e4102d38565c53ddb856",
   "io.poietra.mathtex-outline.target": "linux-amd64",
   "io.poietra.mathtex-outline.toolchain-sha256": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
-  "io.poietra.snapshot-sandbox-envelope-version": "2",
+  "io.poietra.snapshot-sandbox-envelope-version": "3",
   "io.poietra.sandbox-slice": "gated-oci-v1",
 });
 
@@ -792,6 +793,11 @@ describe("gated OCI result boundary", () => {
     expect(Buffer.from(parseFastManimGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
   });
 
+  it("accepts Python's canonical control-character escapes", () => {
+    const result = Buffer.from('{"a":"\\u0000\\u0001\\b\\t\\n\\u000b\\f\\r\\u000e\\u001f"}\n', "utf8");
+    expect(Buffer.from(parseFastManimGatedOciResultV1(result))).toEqual(result.subarray(0, -1));
+  });
+
   it("round-trips a combined envelope beyond the legacy snapshot-only result cap", () => {
     const snapshotJson = JSON.stringify("x".repeat(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES - 2));
     expect(Buffer.byteLength(snapshotJson, "utf8")).toBe(MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES);
@@ -805,6 +811,13 @@ describe("gated OCI result boundary", () => {
     expect(producerDocument.combined?.snapshotDigest).toBe(
       createHash("sha256").update(snapshotJson, "utf8").digest("hex"),
     );
+  });
+
+  it("accepts one near-limit opaque producer document without charging its bytes as JSON structure", () => {
+    const producerDocumentBase64 = "A".repeat(MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES);
+    const wire = Buffer.from(`${canonicalJsonV1({ producerDocumentBase64 })}\n`, "utf8");
+    expect(wire.byteLength).toBeLessThanOrEqual(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES);
+    expect(Buffer.from(parseFastManimGatedOciResultV1(wire)).equals(wire.subarray(0, -1))).toBe(true);
   });
 
   it("rejects invalid UTF-8 and output beyond the exact result-plus-LF budget", () => {
@@ -827,6 +840,10 @@ describe("gated OCI result boundary", () => {
     '{"a":0.00001}\n',
     '{"a":10000000000000000.0}\n',
     '{"a":"\\u03bb"}\n',
+    '{"a":"\\u0008"}\n',
+    '{"a":"\\u001B"}\n',
+    '{"a":"\\/"}\n',
+    '{"a":"\\u0061"}\n',
     '{ "a":1}\n',
     '{"a":1}\n\n',
   ])("rejects non-canonical result bytes: %s", (result) => {
