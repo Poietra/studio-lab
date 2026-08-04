@@ -121,10 +121,19 @@ describe("real Manim census report", () => {
       await writeFile(path, JSON.stringify(officialV8));
       await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV8);
 
-      const futureProfile = structuredClone(officialV8);
-      futureProfile.sources[2]!.scenes[0]!.profiles = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-      await writeFile(path, JSON.stringify(futureProfile));
+      const unpinnedV9 = structuredClone(manifest());
+      unpinnedV9.sources[2]!.scenes[0]!.profiles = [1, 2, 9];
+      await writeFile(path, JSON.stringify(unpinnedV9));
       await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialV9 = structuredClone(manifest());
+      const officialWarpSource = officialV9.sources[2]!;
+      officialWarpSource.id = "fast-manim-basic";
+      officialWarpSource.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialWarpSource.scenes[0]!.name = "WarpSquare";
+      officialWarpSource.scenes[0]!.profiles = [1, 2, 3, 4, 5, 6, 7, 9];
+      await writeFile(path, JSON.stringify(officialV9));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV9);
 
       const pinned = await loadRealManimCensusManifest(
         join(import.meta.dirname, "..", "fixtures", "real-manim-census-v1", "manifest.json"),
@@ -147,6 +156,29 @@ describe("real Manim census report", () => {
           corpus: "compatibility",
           id: "fast-manim-basic",
           name: "SquareToCircle",
+          path: "example_scenes/basic.py",
+          repository: "fast-manim",
+          sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+        },
+      ]);
+      expect(
+        pinned.sources.flatMap((source) =>
+          source.scenes
+            .filter((scene) => scene.profiles.includes(9))
+            .map((scene) => ({
+              corpus: source.corpus,
+              id: source.id,
+              name: scene.name,
+              path: source.path,
+              repository: source.repository,
+              sha256: source.sha256,
+            })),
+        ),
+      ).toEqual([
+        {
+          corpus: "compatibility",
+          id: "fast-manim-basic",
+          name: "WarpSquare",
           path: "example_scenes/basic.py",
           repository: "fast-manim",
           sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",

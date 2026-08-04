@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
@@ -11,8 +12,10 @@ import {
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
+  FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9,
   fastManimSnapshotEntityIdV1,
   fastManimSnapshotEntityProvenanceIdV1,
   fastManimSnapshotManifestIdV1,
@@ -141,7 +144,7 @@ async function temporaryProject(fileName: string, source: string) {
 
 function createRealRunner(
   projectRoot: string,
-  snapshotVersion: 1 | 2 | 4 | 7 | 8 = 1,
+  snapshotVersion: 1 | 2 | 4 | 7 | 8 | 9 = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
   publicationStore = new FastManimSnapshotPublicationStore(),
 ) {
@@ -172,6 +175,70 @@ function createRealRunner(
 const realSeamEnabled = Boolean(producerCommand) && ManimSourceStore.supportsVerifiedRead;
 const officialV8ProjectRoot = process.env.POIETRA_FAST_MANIM_V8_PROJECT_ROOT?.trim();
 const officialV8SeamEnabled = realSeamEnabled && Boolean(officialV8ProjectRoot);
+
+describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", () => {
+  it("seals and republishes the merged producer against the mirrored official example", {
+    timeout: 300_000,
+  }, async () => {
+    const projectRoot = fileURLToPath(new URL("../fixtures/real-preview-harness/", import.meta.url));
+    const sourcePath = "example_scenes/basic.py";
+    const sourceText = await readFile(join(projectRoot, sourcePath), "utf8");
+    expect(createHash("sha256").update(sourceText, "utf8").digest("hex")).toBe(
+      FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9,
+    );
+
+    const runner = createRealRunner(projectRoot, 9);
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-request-v9-official",
+        sceneName: "WarpSquare",
+        sourcePath,
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified official V9 snapshot, got ${JSON.stringify(view)}`);
+    }
+    expect(view.snapshot.sourceHash).toBe(FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9);
+    expect(view.runtimeConfigHash).toBe(
+      digestFastManimSnapshotRuntimeConfigV1({
+        capabilities: [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9],
+        frame: REAL_FRAME,
+        randomSeed: 0,
+        schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
+        snapshotVersion: 9,
+        version: 1,
+      }),
+    );
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    expect(bundle.scene).toMatchObject({
+      duration: 4,
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+      source: { kind: "imported-manim-server-snapshot", snapshotVersion: 9 },
+    });
+    expect(bundle.scene.entities).toHaveLength(1);
+    expect(bundle.scene.animationChannels).toEqual([
+      expect.objectContaining({
+        entityId: `${view.snapshot.sceneId}/entity:0`,
+        keyframes: [
+          expect.objectContaining({ at: 0, easingToNext: { kind: "manim-smooth" } }),
+          expect.objectContaining({ at: 3, easingToNext: null }),
+        ],
+        kind: "path-morph",
+      }),
+    ]);
+    expect(view.sourceRuntimeIdentity?.mappings).toEqual([
+      expect.objectContaining({ binding: expect.objectContaining({ name: "square", ordinal: 1 }), familyPath: [] }),
+    ]);
+
+    const fetched = await runner.snapshot({ sceneName: "WarpSquare", sourcePath });
+    expect(fetched.status).toBe("verified");
+    if (fetched.status === "verified") {
+      expect(fetched.snapshot).toEqual(view.snapshot);
+      expect(fetched.sourceRuntimeIdentity).toEqual(view.sourceRuntimeIdentity);
+    }
+  });
+});
 
 describe.skipIf(!officialV8SeamEnabled)("real fast-manim SquareToCircle V8 integration", () => {
   it("accepts the merged producer against its exact official example_scenes/basic.py", {

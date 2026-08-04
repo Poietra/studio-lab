@@ -63,6 +63,14 @@ const REAL_MATHTEX_MORPH_V5_ENTRY_IDS = [
   "real-mathtex-morph-v5--a-restored",
 ] as const;
 const REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET = new Set<string>(REAL_MATHTEX_MORPH_V5_ENTRY_IDS);
+const REAL_WARP_SQUARE_V9_ENTRY_IDS = [
+  "real-warp-square-v9--source",
+  "real-warp-square-v9--quarter",
+  "real-warp-square-v9--midpoint",
+  "real-warp-square-v9--target",
+  "real-warp-square-v9--hold",
+] as const;
+const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENTRY_IDS);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -394,7 +402,38 @@ function expectRealMathTexMorphRelations(
   }
 }
 
-for (const entry of VISUAL_PARITY_CORPUS.entries.filter(({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id))) {
+function expectRealWarpSquareRelations(
+  frames: ReadonlyMap<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>,
+) {
+  function requireFrame(entryId: (typeof REAL_WARP_SQUARE_V9_ENTRY_IDS)[number]) {
+    const frame = frames.get(entryId);
+    if (!frame) throw new Error(`The real WarpSquare proof is missing ${entryId}.`);
+    return frame;
+  }
+
+  const source = requireFrame("real-warp-square-v9--source");
+  const quarter = requireFrame("real-warp-square-v9--quarter");
+  const midpoint = requireFrame("real-warp-square-v9--midpoint");
+  const target = requireFrame("real-warp-square-v9--target");
+  const hold = requireFrame("real-warp-square-v9--hold");
+  for (const rgbaKind of ["expectedRgba", "actualRgba"] as const) {
+    const label = rgbaKind === "expectedRgba" ? "native" : "browser";
+    expect(rgbaBytesEqual(source[rgbaKind], quarter[rgbaKind]), `${label}: quarter must differ from source`).toBe(
+      false,
+    );
+    expect(rgbaBytesEqual(quarter[rgbaKind], midpoint[rgbaKind]), `${label}: midpoint must differ from quarter`).toBe(
+      false,
+    );
+    expect(rgbaBytesEqual(midpoint[rgbaKind], target[rgbaKind]), `${label}: target must differ from midpoint`).toBe(
+      false,
+    );
+    expect(rgbaBytesEqual(target[rgbaKind], hold[rgbaKind]), `${label}: hold must equal target`).toBe(true);
+  }
+}
+
+for (const entry of VISUAL_PARITY_CORPUS.entries.filter(
+  ({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) && !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id),
+)) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
     await proveVisualParityEntry(page, entry.id);
   });
@@ -407,4 +446,13 @@ test("matches native full-RGBA across the real MathTex morph V5 timeline", async
     frames.set(entryId, await proveVisualParityEntry(page, entryId));
   }
   expectRealMathTexMorphRelations(frames);
+});
+
+test("matches native full-RGBA across the real WarpSquare V9 timeline", async ({ page }, testInfo) => {
+  testInfo.setTimeout(120_000);
+  const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
+  for (const entryId of REAL_WARP_SQUARE_V9_ENTRY_IDS) {
+    frames.set(entryId, await proveVisualParityEntry(page, entryId));
+  }
+  expectRealWarpSquareRelations(frames);
 });

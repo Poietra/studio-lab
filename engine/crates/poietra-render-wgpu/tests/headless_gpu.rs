@@ -359,6 +359,24 @@ const REAL_SQUARE_TO_CIRCLE_V8_SAMPLES: [(&str, &str, f64); 5] = [
         2.5,
     ),
 ];
+const REAL_WARP_SQUARE_V9_FIXTURE_ID: &str = "eng-v1-real-warp-square-v9";
+const REAL_WARP_SQUARE_V9_FIXTURE_PATH: &str = "fixtures/engine-v1/real-warp-square-v9.json";
+const REAL_WARP_SQUARE_V9_SOURCE_PATH: &str = "example_scenes/basic.py";
+const REAL_WARP_SQUARE_V9_SOURCE_MIRROR_PATH: &str =
+    "fixtures/real-preview-harness/example_scenes/basic.py";
+const REAL_WARP_SQUARE_V9_SOURCE_SHA256: &str =
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const REAL_WARP_SQUARE_V9_ENGINE_COMMIT: &str = "0b331ce781411f38185dcabccdffdccee02d4376";
+const REAL_WARP_SQUARE_V9_FAST_MANIM_COMMIT: &str = "2c1e56287193e3acddbe6779f6ecd4bd91094588";
+const REAL_WARP_SQUARE_V9_SNAPSHOT_HASH: &str =
+    "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+const REAL_WARP_SQUARE_V9_SAMPLES: [(&str, &str, f64); 5] = [
+    ("real-warp-square-v9--source", "source", 0.0),
+    ("real-warp-square-v9--quarter", "quarter", 0.75),
+    ("real-warp-square-v9--midpoint", "midpoint", 1.5),
+    ("real-warp-square-v9--target", "target", 3.0),
+    ("real-warp-square-v9--hold", "hold", 3.5),
+];
 const VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1: &str = "POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -944,6 +962,20 @@ fn real_square_to_circle_v8_fixture() -> (RealSnapshotVisualParityFixture, Scene
         "scene": fixture.scene,
     }))
     .expect("real SquareToCircle V8 fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_warp_square_v9_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_WARP_SQUARE_V9_FIXTURE_PATH);
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("real WarpSquare V9 fixture must be readable"),
+    )
+    .expect("real WarpSquare V9 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real WarpSquare V9 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -2212,6 +2244,230 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
             0
         },
         "an opt-in SquareToCircle V8 artifact request must emit all five frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // One temporal proof binds the sealed V9 fixture to five full-frame GPU artifacts.
+fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
+    let (fixture, bundle) = real_warp_square_v9_fixture();
+    assert_eq!(fixture.id, REAL_WARP_SQUARE_V9_FIXTURE_ID);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v9"
+    );
+    assert_eq!(
+        fixture.producer_reference.engine_commit,
+        REAL_WARP_SQUARE_V9_ENGINE_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_WARP_SQUARE_V9_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_WARP_SQUARE_V9_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_WARP_SQUARE_V9_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_WARP_SQUARE_V9_SOURCE_SHA256
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(repository_root().join(REAL_WARP_SQUARE_V9_SOURCE_MIRROR_PATH))
+                    .expect("the mirrored official WarpSquare source must remain readable")
+            )
+        ),
+        REAL_WARP_SQUARE_V9_SOURCE_SHA256,
+        "the mirrored Python source must match the sealed V9 provenance"
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real WarpSquare V9 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V9);
+    assert_eq!(snapshot_hash, REAL_WARP_SQUARE_V9_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_WARP_SQUARE_V9_SOURCE_SHA256);
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        REAL_WARP_SQUARE_V9_SNAPSHOT_HASH
+    );
+    assert_eq!(bundle.scene.duration.to_bits(), 4.0_f64.to_bits());
+    assert_eq!(bundle.scene.entities.len(), 1);
+    assert_eq!(bundle.scene.animation_channels.len(), 1);
+
+    let visual_parity_entries =
+        REAL_WARP_SQUARE_V9_SAMPLES.map(|(entry_id, _, _)| load_visual_parity_entry(entry_id));
+    let expected_viewport = ViewportV1 {
+        height_px: 360,
+        width_px: 640,
+    };
+    for (index, &(entry_id, sample_id, sample_time)) in
+        REAL_WARP_SQUARE_V9_SAMPLES.iter().enumerate()
+    {
+        let entry = &visual_parity_entries[index];
+        let sample = fixture
+            .samples
+            .iter()
+            .find(|sample| sample.id == sample_id)
+            .unwrap_or_else(|| panic!("WarpSquare V9 sample {sample_id} must exist"));
+        assert_eq!(entry.id, entry_id);
+        assert_eq!(entry.fixture.id, REAL_WARP_SQUARE_V9_FIXTURE_ID);
+        assert_eq!(entry.fixture.path, REAL_WARP_SQUARE_V9_FIXTURE_PATH);
+        assert_eq!(
+            entry.fixture.revision.kind,
+            "imported-manim-server-snapshot"
+        );
+        assert_eq!(
+            entry.fixture.revision.sha256,
+            REAL_WARP_SQUARE_V9_SNAPSHOT_HASH
+        );
+        assert_eq!(entry.sample.id, sample_id);
+        assert_eq!(entry.sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(entry.sample.viewport, expected_viewport);
+        assert_eq!(sample.packet_id, format!("real-warp-square-v9:{sample_id}"));
+        assert_eq!(sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(sample.viewport, expected_viewport);
+        assert_eq!(
+            sample.expected.semantic_digest, entry.sample.semantic_digest,
+            "{sample_id} fixture and corpus semantics must stay pinned together"
+        );
+    }
+
+    let session =
+        EngineSessionV1::new(bundle).expect("real WarpSquare V9 fixture must install once");
+    let sampled_packets = REAL_WARP_SQUARE_V9_SAMPLES
+        .iter()
+        .map(|&(_, sample_id, _)| {
+            let sample = fixture
+                .samples
+                .iter()
+                .find(|sample| sample.id == sample_id)
+                .unwrap_or_else(|| panic!("WarpSquare V9 sample {sample_id} must exist"));
+            let packet = session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[fixture.id.clone(), sample.id.clone()],
+                    packet_id: &sample.packet_id,
+                    sample_time: sample.sample_time,
+                    viewport: sample.viewport.clone(),
+                })
+                .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+            let semantic_digest = render_packet_semantic_digest(&packet);
+            assert_eq!(packet.packet_id, sample.packet_id);
+            assert_eq!(packet.sample_time.to_bits(), sample.sample_time.to_bits());
+            assert_eq!(packet.viewport, sample.viewport);
+            assert_eq!(
+                packet.scene_revision_hash,
+                REAL_WARP_SQUARE_V9_SNAPSHOT_HASH
+            );
+            assert_eq!(
+                semantic_digest, sample.expected.semantic_digest,
+                "{} fixture semantic digest must match the native evaluator",
+                sample.id
+            );
+            assert!(matches!(
+                packet.draws.as_slice(),
+                [RenderDrawV1::Path {
+                    fill: None,
+                    stroke: Some(_),
+                    ..
+                }]
+            ));
+            (sample, packet)
+        })
+        .collect::<Vec<_>>();
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let mut frames_by_sample = std::collections::BTreeMap::new();
+
+    for (sample, packet) in &sampled_packets {
+        let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        assert_eq!(extent.width, sample.viewport.width_px);
+        assert_eq!(extent.height, sample.viewport.height_px);
+        assert!(
+            non_background_bounds(&rgba, extent.width, extent.height).is_some(),
+            "{} must retain visible vector ink",
+            sample.id
+        );
+        assert!(
+            frames_by_sample.insert(sample.id.clone(), rgba).is_none(),
+            "WarpSquare V9 parity sample ids must be unique"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through all five WarpSquare V9 readbacks"
+    );
+    for (left, right) in [
+        ("source", "quarter"),
+        ("quarter", "midpoint"),
+        ("midpoint", "target"),
+    ] {
+        assert_ne!(
+            frames_by_sample[left], frames_by_sample[right],
+            "{left} and {right} must produce distinct full frames"
+        );
+    }
+    assert_eq!(
+        frames_by_sample["target"], frames_by_sample["hold"],
+        "the target must remain unchanged during the final one-second wait"
+    );
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    let artifact_count = visual_parity_entries
+        .iter()
+        .map(|entry| {
+            usize::from(emit_native_visual_parity_artifact(
+                entry,
+                &adapter_info,
+                &frames_by_sample[&entry.sample.id],
+            ))
+        })
+        .sum::<usize>();
+    assert_eq!(
+        artifact_count,
+        if artifact_requested {
+            REAL_WARP_SQUARE_V9_SAMPLES.len()
+        } else {
+            0
+        },
+        "an opt-in WarpSquare V9 artifact request must emit all five frames"
     );
 }
 

@@ -439,6 +439,7 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D profile v7" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 =
   "fast-manim server snapshot SquareToCircle profile v8" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9 = "fast-manim server snapshot WarpSquare profile v9" as const;
 /** Distinct server-owned marker retained so sealed V7 bundles can re-prove the one static MathTex leaf. */
 export const FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D MathTex profile v7" as const;
@@ -2220,6 +2221,175 @@ const FAST_MANIM_WARP_SQUARE_FRAME_V9 = {
   width: 14.222222222222221,
 } as const;
 
+/**
+ * Exact official fast-manim source generation admitted by the first V9
+ * consumer slice. V9 remains a deliberately narrow WarpSquare demonstration
+ * profile rather than a claim that arbitrary ApplyPointwiseFunction callbacks
+ * are reproducible from producer evidence.
+ */
+export const FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9 =
+  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+export const FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9 =
+  "8f683bf4dad38a06ef75e8bfd6066d7426f8941e011191c1a53243a7069b9825" as const;
+
+const FAST_MANIM_WARP_SQUARE_REQUIRED_CAPABILITIES_V9 = ["cubic-path-geometry", "path-morph-animation"] as const;
+
+function fastManimWarpSquareSemanticDigestV9(
+  entity: StaticProfileEntity,
+  pathMorph: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>,
+) {
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        baseAppearance: entity.appearance,
+        baseGeometry: entity.geometry,
+        pathMorphValues: pathMorph.keyframes.map(({ value }) => value),
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function assertWarpSquareProducerProvenanceV9(scene: SceneIrBundleV1["scene"]) {
+  const [sceneRecord, entityRecord, morphRecord] = scene.provenance;
+  const sceneEvidence = sceneRecord?.evidence;
+  if (
+    !sceneEvidence ||
+    sceneEvidence.length !== 8 ||
+    sceneEvidence[0] !== "fast-manim Scene snapshot profile v9" ||
+    sceneEvidence[1] !== "source path example_scenes/basic.py" ||
+    sceneEvidence[2] !== "scene class WarpSquare" ||
+    !/^render trace session [0-9a-f]{32}$/.test(sceneEvidence[3] ?? "") ||
+    sceneEvidence[4] !== "bounded timeline: 2 plays, renderer time 4.0s, snapshot duration 4.0s" ||
+    sceneEvidence[5] !== "1 supported mobjects in observed dynamic sceneOrder" ||
+    sceneEvidence[6] !== "camera frame 14.222222222222221 x 8.0 scene units, background rgba(0.0, 0.0, 0.0, 1.0)" ||
+    sceneEvidence[7] !== "cairo line width multiple 0.01"
+  ) {
+    profileViolation("WarpSquare profile V9 scene provenance does not match the pinned producer evidence.");
+  }
+  const session = sceneEvidence[3]!.slice("render trace session ".length);
+  if (
+    canonicalJsonV1(entityRecord?.evidence) !==
+      canonicalJsonV1([
+        `runtime object ${session}/object-000001`,
+        "runtime type manim.mobject.geometry.polygram.Square",
+        "observed dynamic sceneOrder 0",
+        "z_index 0.0",
+        "capability cubic-path-geometry: 4 cubic segments in 1 subpaths from the Cairo point layout",
+        "source anchor example_scenes/basic.py:87 in construct",
+      ]) ||
+    canonicalJsonV1(morphRecord?.evidence) !==
+      canonicalJsonV1([
+        "runtime observed direct compatible ApplyPointwiseFunction from 0.0s to 3.0s",
+        "exact canonical ApplyPointwiseFunction flags and exponential callback closure; canonical exponential endpoint with identical cubic topology and appearance; animation lifecycle not executed",
+      ])
+  ) {
+    profileViolation("WarpSquare profile V9 entity or channel provenance does not match the pinned producer evidence.");
+  }
+}
+
+function assertWarpSquareProfileV9(
+  bundle: SceneIrBundleV1,
+  expectedFrame: Readonly<{ height: number; width: number }>,
+  mode: "producer" | "sealed",
+  expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+) {
+  const { scene } = bundle;
+  const { sceneId } = scene;
+  if (
+    expectedIdentity.sceneName !== "WarpSquare" ||
+    expectedIdentity.sourcePath !== "example_scenes/basic.py" ||
+    expectedIdentity.sourceHash !== FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9
+  ) {
+    profileViolation("Snapshot profile V9 is reserved for the pinned official WarpSquare source generation.");
+  }
+  if (
+    expectedFrame.height !== FAST_MANIM_WARP_SQUARE_FRAME_V9.height ||
+    expectedFrame.width !== FAST_MANIM_WARP_SQUARE_FRAME_V9.width
+  ) {
+    profileViolation("WarpSquare profile V9 requires the exact canonical demo frame.");
+  }
+  if (
+    scene.duration !== 4 ||
+    scene.fidelity.kind !== "exact" ||
+    scene.camera.view.center.x !== 0 ||
+    scene.camera.view.center.y !== 0 ||
+    scene.camera.view.frameHeight !== expectedFrame.height ||
+    scene.camera.view.frameWidth !== expectedFrame.width ||
+    canonicalJsonV1(scene.camera.background) !== canonicalJsonV1({ alpha: 1, blue: 0, green: 0, red: 0 })
+  ) {
+    profileViolation("WarpSquare profile V9 requires its exact four-second static camera contract.");
+  }
+  if (
+    bundle.assets.assets.length !== 0 ||
+    bundle.assets.manifestId !== fastManimSnapshotManifestIdV1(sceneId) ||
+    scene.requiredCapabilities.length !== FAST_MANIM_WARP_SQUARE_REQUIRED_CAPABILITIES_V9.length ||
+    scene.requiredCapabilities.some(
+      (capability, index) => capability !== FAST_MANIM_WARP_SQUARE_REQUIRED_CAPABILITIES_V9[index],
+    )
+  ) {
+    profileViolation("WarpSquare profile V9 requires one exact asset-free renderer capability surface.");
+  }
+  if (scene.entities.length !== 1 || scene.animationChannels.length !== 1) {
+    profileViolation("WarpSquare profile V9 requires one entity and one path-morph channel.");
+  }
+  const entity = scene.entities[0]!;
+  const pathMorph = scene.animationChannels[0];
+  if (
+    entity.id !== fastManimSnapshotEntityIdV1(sceneId, 0) ||
+    entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, 0) ||
+    entity.sceneOrder !== 0 ||
+    entity.parentId !== null ||
+    entity.sourceZIndex !== 0 ||
+    canonicalJsonV1(entity.lifetimes) !== canonicalJsonV1([{ end: 4, start: 0 }]) ||
+    canonicalJsonV1(entity.transform) !== canonicalJsonV1({ m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 }) ||
+    entity.geometry.kind !== "cubic-path" ||
+    entity.geometry.path.subpaths.length !== 1 ||
+    !entity.geometry.path.subpaths[0]?.closed ||
+    entity.geometry.path.subpaths[0].segments.length !== 4 ||
+    pathMorph?.kind !== "path-morph"
+  ) {
+    profileViolation("WarpSquare profile V9 entity does not match the exact canonical Square base state.");
+  }
+  if (
+    pathMorph.id !== fastManimSnapshotPathMorphChannelIdV2(sceneId, 0) ||
+    pathMorph.provenanceId !== fastManimSnapshotPathMorphChannelProvenanceIdV2(sceneId, 0) ||
+    pathMorph.entityId !== entity.id ||
+    pathMorph.keyframes.length !== 2 ||
+    pathMorph.keyframes[0]!.at !== 0 ||
+    canonicalJsonV1(pathMorph.keyframes[0]!.easingToNext) !== canonicalJsonV1({ kind: "manim-smooth" }) ||
+    pathMorph.keyframes[1]!.at !== 3 ||
+    pathMorph.keyframes[1]!.easingToNext !== null ||
+    canonicalJsonV1(entity.geometry.path) !== canonicalJsonV1(pathMorph.keyframes[0]!.value) ||
+    fastManimWarpSquareSemanticDigestV9(entity, pathMorph) !== FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9
+  ) {
+    profileViolation("WarpSquare profile V9 path morph differs from its pinned Manim timeline or endpoints.");
+  }
+
+  const expectedProvenanceIds = [
+    fastManimSnapshotSceneProvenanceIdV1(sceneId),
+    entity.provenanceId,
+    pathMorph.provenanceId,
+  ];
+  if (
+    scene.provenance.length !== expectedProvenanceIds.length ||
+    scene.provenance.some(
+      (record, index) => record.id !== expectedProvenanceIds[index] || record.origin !== "fast-manim-server-snapshot",
+    )
+  ) {
+    profileViolation("WarpSquare profile V9 provenance must exactly follow Scene, entity, and channel order.");
+  }
+  if (mode === "producer") {
+    assertWarpSquareProducerProvenanceV9(scene);
+  } else if (
+    scene.provenance.some(
+      ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9]),
+    )
+  ) {
+    profileViolation("Sealed WarpSquare profile V9 provenance must contain only the server-owned marker.");
+  }
+}
+
 function fastManimSquareToCircleSemanticDigestV8(
   entity: StaticProfileEntity,
   pathMorph: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>,
@@ -2529,7 +2699,8 @@ function assertFastManimSnapshotProfileV1(
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
   if (snapshotVersion === 9) {
-    profileViolation("WarpSquare profile V9 semantic verification is not enabled yet.");
+    assertWarpSquareProfileV9(bundle, expectedFrame, mode, expectedIdentity);
+    return;
   }
   if (snapshotVersion === 8) {
     assertSquareToCircleProfileV8(bundle, expectedFrame, mode, expectedIdentity);
@@ -2809,7 +2980,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V5
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V6
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V7
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -2828,7 +3000,7 @@ function fastManimSnapshotProvenanceEvidence(
     case 8:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8;
     case 9:
-      profileViolation("WarpSquare profile V9 semantic verification is not enabled yet.");
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9;
   }
 }
 
@@ -2892,7 +3064,8 @@ async function parseFastManimSnapshotResultV1(
       expected.snapshotVersion === 4 ||
       expected.snapshotVersion === 5 ||
       expected.snapshotVersion === 7 ||
-      expected.snapshotVersion === 8) &&
+      expected.snapshotVersion === 8 ||
+      expected.snapshotVersion === 9) &&
     mode === "producer" &&
     sourceText !== undefined &&
     createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
@@ -2904,6 +3077,9 @@ async function parseFastManimSnapshotResultV1(
   }
   if (expected.snapshotVersion === 8 && mode === "producer" && sourceText === undefined) {
     profileViolation("SquareToCircle profile V8 requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 9 && mode === "producer" && sourceText === undefined) {
+    profileViolation("WarpSquare profile V9 requires the exact server-held source during sealing.");
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&

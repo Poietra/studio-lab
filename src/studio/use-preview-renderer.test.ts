@@ -612,6 +612,26 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     ).toEqual([]);
   });
 
+  it("keeps V9 pointwise-function morphs display-only even with complete identity", async () => {
+    const { snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
+    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["square", { bindingId: "binding:square", entityId: "runtime-line", sourceName: "square" }],
+    ]);
+    const v9 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 9 } },
+      },
+      sourceRuntimeIdentity: identity,
+    } as StudioVerifiedPreviewSnapshotV1;
+    const authority = studioPreviewInteractionAuthorityV1(v9);
+    expect(authority).toEqual({ kind: "display-only", reason: "temporal-rebase-unavailable" });
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
+  });
+
   it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;

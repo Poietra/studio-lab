@@ -14,7 +14,7 @@ const GIT_ID = /^[a-f0-9]{40}$/;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
-const SQUARE_TO_CIRCLE_V8_SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const FAST_MANIM_BASIC_SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 
 export const REAL_MANIM_CENSUS_FEATURES = [
   "always-redraw",
@@ -42,7 +42,7 @@ export const REAL_MANIM_CENSUS_FEATURES = [
 
 const corpusSchema = z.enum(["calibration", "compatibility"]);
 const featureSchema = z.enum(REAL_MANIM_CENSUS_FEATURES);
-const profileSchema = z.number().int().min(1).max(8);
+const profileSchema = z.number().int().min(1).max(9);
 const sceneSchema = z
   .object({
     features: z.array(featureSchema).max(32).optional(),
@@ -141,13 +141,31 @@ const manifestSchema = z
             source.id === "fast-manim-basic" &&
             source.path === "example_scenes/basic.py" &&
             source.repository === "fast-manim" &&
-            source.sha256 === SQUARE_TO_CIRCLE_V8_SOURCE_SHA256 &&
+            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
             scene.name === "SquareToCircle"
           )
         ) {
           context.addIssue({
             code: "custom",
             message: "Profile V8 is reserved for the exact pinned fast-manim SquareToCircle source.",
+            path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
+          });
+        }
+        if (
+          scene.profiles.includes(9) &&
+          !(
+            source.asset === undefined &&
+            source.corpus === "compatibility" &&
+            source.id === "fast-manim-basic" &&
+            source.path === "example_scenes/basic.py" &&
+            source.repository === "fast-manim" &&
+            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
+            scene.name === "WarpSquare"
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Profile V9 is reserved for the exact pinned fast-manim WarpSquare source.",
             path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
           });
         }
