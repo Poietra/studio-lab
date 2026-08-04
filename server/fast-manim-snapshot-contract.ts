@@ -3569,8 +3569,7 @@ function assertSpiralInProfileV11(
   const segmentCounts = [3, 4, 8, 5, 40] as const;
   leaves.forEach((entity, index) => {
     const sceneOrder = index + 1;
-    const expectedTransform =
-      index === 4 ? { m11: 7, m12: 0, m21: 0, m22: 7, tx: -2.25, ty: 1.5 } : identityTransform;
+    const expectedTransform = index === 4 ? { m11: 7, m12: 0, m21: 0, m22: 7, tx: -2.25, ty: 1.5 } : identityTransform;
     if (
       entity.id !== fastManimSnapshotEntityIdV1(sceneId, sceneOrder) ||
       entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, sceneOrder) ||

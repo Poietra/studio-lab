@@ -1070,10 +1070,10 @@ mod tests {
             panic!("only the logical group's child must produce a path draw");
         };
         assert_eq!(entity_id, "child");
-        assert_eq!(*opacity, 0.25);
+        assert!((*opacity - 0.25).abs() < f64::EPSILON);
         assert_eq!(*paint_order, 0);
-        assert_eq!(transform.tx, 12.0);
-        assert_eq!(transform.ty, 8.0);
+        assert!((transform.tx - 12.0).abs() < f64::EPSILON);
+        assert!((transform.ty - 8.0).abs() < f64::EPSILON);
     }
 
     #[test]
