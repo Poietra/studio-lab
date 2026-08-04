@@ -344,6 +344,36 @@ describe.skipIf(!realSeamEnabled)("real fast-manim LineJoints V10 edited-source 
       status: "verified",
     });
 
+    const candidate = await runner.runCandidateUnpublished(source, {
+      projectId: "default",
+      requestId: "real-snapshot-edited-line-joints-v10-candidate",
+      sceneName: "LineJoints",
+      sourcePath,
+    });
+    expect(candidate).toMatchObject({
+      sceneName: "LineJoints",
+      snapshot: {
+        kind: "compiled",
+        sourceHash,
+      },
+      sourcePath,
+      status: "verified",
+    });
+    if (candidate.status !== "verified" || candidate.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified edited V10 candidate, got ${JSON.stringify(candidate)}`);
+    }
+    expect(
+      candidate.sourceRuntimeIdentity?.mappings.map(({ binding, familyPath }) => ({
+        familyPath,
+        name: binding.name,
+      })),
+    ).toEqual([
+      { familyPath: [], name: "grp" },
+      { familyPath: [0], name: "t1" },
+      { familyPath: [1], name: "t2" },
+      { familyPath: [2], name: "t3" },
+    ]);
+
     const generatedFixture = await editedLineJointsEngineFixture(view.snapshot, sourceHash, producerSnapshotDigest);
     if (process.env.POIETRA_UPDATE_LINE_JOINTS_V10_EDITED_FIXTURE === "1") {
       await writeFile(LINE_JOINTS_EDITED_FIXTURE_URL, generatedFixture, "utf8");

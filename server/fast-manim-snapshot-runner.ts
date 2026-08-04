@@ -701,7 +701,7 @@ export class FastManimSnapshotRunner {
 
   /**
    * Verifies immutable candidate bytes without reading or publishing project
-   * source. This is the server-internal V9 Apply preflight: candidate bytes
+   * source. This is the server-internal bounded-edit preflight: candidate bytes
    * become the correlated producer input and must pass the same seal plus
    * complete source/runtime identity authority as a normal unpublished run.
    */
@@ -710,8 +710,13 @@ export class FastManimSnapshotRunner {
     requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
     signal?: AbortSignal,
   ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
-    if (this.snapshotVersion !== undefined && this.snapshotVersion !== 9) {
-      throw new TypeError("Candidate source preflight is available only for snapshot profile V9.");
+    const candidateProfile =
+      requestValue.sceneName === "WarpSquare" ? 9 : requestValue.sceneName === "LineJoints" ? 10 : null;
+    if (
+      candidateProfile === null ||
+      (this.snapshotVersion !== undefined && this.snapshotVersion !== candidateProfile)
+    ) {
+      throw new TypeError("Candidate source preflight is available only for the bounded V9 and V10 edit profiles.");
     }
     if (
       typeof sourceText !== "string" ||
@@ -720,9 +725,10 @@ export class FastManimSnapshotRunner {
       throw new RangeError(`Candidate source accepts at most ${MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES} UTF-8 bytes.`);
     }
     // Candidate preflight is an internal fail-closed seam. Reject bytes that
-    // cannot be reduced to the audited WarpSquare source before reserving any
-    // producer or sandbox capacity.
-    deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
+    // cannot be reduced to the corresponding audited source before reserving
+    // any producer or sandbox capacity.
+    if (candidateProfile === 9) deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
+    else deriveLineJointsV10TransformPlan(sourceText, requestValue.sceneName);
     const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
     const candidate = Object.freeze({
       hash: sourceHash,
