@@ -38,6 +38,11 @@ const SNAPSHOT_HASH = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b
 const SOURCE_BINDING_ID = "source-binding:555240577158406fa67c9ef3fd4eced1471249d8e97362c3939e8a8a6f1e9b0f";
 const WORKING_REVISION = "4".repeat(64);
 const WINDING_ROOT = 1.5119159473817447;
+const WARP_SQUARE_SOURCE_PATH = "example_scenes/basic.py";
+const WARP_SQUARE_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#WarpSquare`;
+const WARP_SQUARE_ENTITY_ID = `source:${WARP_SQUARE_SCENE_ID}:square`;
+const WARP_SQUARE_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const WARP_SQUARE_SNAPSHOT_HASH = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
 
 type SquareToCircleFixtureFile = Readonly<{
   assets: unknown;
@@ -71,6 +76,28 @@ async function sealedSquareToCircleV8() {
     "vector-appearance",
     "path-trim",
   ]);
+  return bundle;
+}
+
+async function sealedWarpSquareV9() {
+  const fixtureUrl = new URL("../../fixtures/engine-v1/real-warp-square-v9.json", import.meta.url);
+  const fixture = JSON.parse(await readFile(fixtureUrl, "utf8")) as SquareToCircleFixtureFile;
+  expect(fixture.producerReference).toMatchObject({
+    snapshotHash: WARP_SQUARE_SNAPSHOT_HASH,
+    sourcePath: WARP_SQUARE_SOURCE_PATH,
+    sourceSha256: WARP_SQUARE_SOURCE_HASH,
+  });
+  const bundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+  const source = bundle.scene.source;
+  if (source.kind !== "imported-manim-server-snapshot" || bundle.scene.entities.length !== 1) {
+    throw new Error("The sealed WarpSquare V9 fixture is incomplete.");
+  }
+  expect(source).toMatchObject({
+    snapshotHash: WARP_SQUARE_SNAPSHOT_HASH,
+    snapshotVersion: 9,
+    sourceHash: WARP_SQUARE_SOURCE_HASH,
+  });
+  expect(bundle.scene.animationChannels.map(({ kind }) => kind)).toEqual(["path-morph"]);
   return bundle;
 }
 
@@ -156,7 +183,80 @@ function validRecord(validation: ReturnType<typeof createDirectManipulationPosit
   return programRecord(validation.program, validation);
 }
 
-function editedState(base: WorkingState, kind: EditKind): ProposedState {
+async function warpSquareInput(kind: EditKind = "combined") {
+  const bundle = await sealedWarpSquareV9();
+  const runtimeEntity = bundle.scene.entities[0];
+  const source = bundle.scene.source;
+  if (!runtimeEntity || source.kind !== "imported-manim-server-snapshot") {
+    throw new Error("The sealed WarpSquare V9 fixture lost its source authority.");
+  }
+  const studioEntity = {
+    ...importedSquareEntity(),
+    id: WARP_SQUARE_ENTITY_ID,
+    lifetime: [{ end: 4, start: 0 }],
+  };
+  const runtimeSceneState: RuntimeSceneState = {
+    ...baseRuntimeScene(WARP_SQUARE_SCENE_ID),
+    duration: 4,
+    objectGraph: { entities: { [studioEntity.id]: studioEntity }, lineage: [] },
+  };
+  const inherited = workingState(runtimeSceneState);
+  const base: WorkingState = {
+    ...inherited,
+    editorContext: { ...inherited.editorContext, selection: [studioEntity.id] },
+    sourceSnapshot: {
+      ...inherited.sourceSnapshot,
+      configId: "sealed-warp-square-v9",
+      hash: `sha256:${WARP_SQUARE_SOURCE_HASH}`,
+      sourceId: WARP_SQUARE_SOURCE_PATH,
+    },
+    staticSemanticState: {
+      ...inherited.staticSemanticState,
+      entities: [
+        {
+          runtimeIdentities: { kind: "known", value: [studioEntity.id] },
+          sourceIdentity: "square",
+          type: { kind: "known", value: "Square" },
+        },
+      ],
+    },
+  };
+  const mapping: StudioPreviewSourceRuntimeMappingV1 = {
+    bindingId: "binding:warp-square",
+    entityId: runtimeEntity.id,
+    sourceName: "square",
+  };
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
+    correlation: {
+      assetsManifestDigest: bundle.assets.manifestDigest,
+      context: {
+        projectId: "demo",
+        sceneName: "WarpSquare",
+        sourceDuration: 4,
+        sourceHash: source.sourceHash,
+        sourcePath: WARP_SQUARE_SOURCE_PATH,
+        workingRevision: PRISTINE_WORKING_REVISION,
+      },
+      engineRevisionHash: source.snapshotHash,
+      sceneDuration: 4,
+      sceneId: bundle.scene.sceneId,
+      serverPublicationRevision: 1,
+    },
+    duration: 4,
+    sceneId: bundle.scene.sceneId,
+    snapshot: bundle,
+    sourceLabel: `${WARP_SQUARE_SOURCE_PATH} · WarpSquare`,
+    sourceRuntimeIdentity: new Map([["square", mapping]]),
+  };
+  return {
+    mapping,
+    proposedState: editedState(base, kind, WARP_SQUARE_ENTITY_ID),
+    snapshot,
+  };
+}
+
+function editedState(base: WorkingState, kind: EditKind, entityId = STUDIO_ENTITY_ID): ProposedState {
   const records: ProgramRecord[] = [];
   if (kind === "position" || kind === "combined") {
     records.push(
@@ -164,10 +264,10 @@ function editedState(base: WorkingState, kind: EditKind): ProposedState {
         createDirectManipulationPositionProgram({
           capturedPlayhead: 0,
           delta: { x: 64, y: -36 },
-          positions: { [STUDIO_ENTITY_ID]: { x: 320, y: 180 } },
+          positions: { [entityId]: { x: 320, y: 180 } },
           scene: base.runtimeSceneState,
           start: 0,
-          targetEntityIds: [STUDIO_ENTITY_ID],
+          targetEntityIds: [entityId],
           transactionId: "move-square-at-zero",
         }),
       ),
@@ -179,9 +279,9 @@ function editedState(base: WorkingState, kind: EditKind): ProposedState {
         createDirectManipulationScaleProgram({
           capturedPlayhead: 0,
           interval: { end: 0, start: 0 },
-          scales: { [STUDIO_ENTITY_ID]: { from: 1, to: 1.5 } },
+          scales: { [entityId]: { from: 1, to: 1.5 } },
           scene: base.runtimeSceneState,
-          targetEntityIds: [STUDIO_ENTITY_ID],
+          targetEntityIds: [entityId],
           transactionId: "scale-square-at-zero",
         }),
       ),
@@ -544,5 +644,88 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
   ] as const)("fails closed on %s", async (_name, code, makeInput) => {
     const result = compile(await makeInput());
     expect(result).toMatchObject({ issue: { code }, kind: "unsupported" });
+  });
+});
+
+describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
+  function compileWarpSquare(input: Awaited<ReturnType<typeof warpSquareInput>>) {
+    return compileStudioPreviewTemporalRebaseV1({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: WORKING_REVISION,
+    });
+  }
+
+  it("exposes synthetic t=0 authority only for the exact correlated Square identity", async () => {
+    const input = await warpSquareInput("position");
+    const source = input.snapshot.snapshot.scene.source;
+    if (source.kind !== "imported-manim-server-snapshot") throw new Error("WarpSquare V9 lost its source.");
+    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
+    expect(studioPreviewSyntheticInitialEditAnchorV1({ ...input.snapshot, sourceRuntimeIdentity: null })).toBeNull();
+    expect(
+      studioPreviewSyntheticInitialEditAnchorV1({
+        ...input.snapshot,
+        sourceRuntimeIdentity: new Map([["other", { ...input.mapping, sourceName: "other" }]]),
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewSyntheticInitialEditAnchorV1({
+        ...input.snapshot,
+        snapshot: {
+          ...input.snapshot.snapshot,
+          scene: {
+            ...input.snapshot.snapshot.scene,
+            source: { ...source, snapshotVersion: 8 },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it.each([
+    ["position", 1, 1, 1.4222222222222223, 0.7999999999999998],
+    ["scale", 1.5, 1.5, 0, 0],
+    ["combined", 1.5, 1.5, 1.4222222222222223, 0.7999999999999998],
+  ] as const)("rebases a t=0 %s edit without changing the path morph", async (kind, m11, m22, tx, ty) => {
+    const input = await warpSquareInput(kind);
+    const importedScene = input.snapshot.snapshot.scene;
+    const importedChannelBytes = canonicalJsonV1(importedScene.animationChannels);
+    const result = compileWarpSquare(input);
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+
+    expect(result.scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(canonicalJsonV1(result.scene.animationChannels)).toBe(importedChannelBytes);
+    expect(result.scene.animationChannels.map(({ kind: channelKind }) => channelKind)).toEqual(["path-morph"]);
+    expect(result.scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
+    expect(result.scene.entities[0]?.transform).toMatchObject({ m11, m12: 0, m21: 0, m22 });
+    expect(result.scene.entities[0]?.transform.tx).toBeCloseTo(tx, 12);
+    expect(result.scene.entities[0]?.transform.ty).toBeCloseTo(ty, 12);
+  });
+
+  it("fails closed when the imported path-morph interval is not the exact V9 slice", async () => {
+    const input = await warpSquareInput("position");
+    const [channel] = input.snapshot.snapshot.scene.animationChannels;
+    if (!channel || channel.kind !== "path-morph") throw new Error("WarpSquare V9 lost its path morph.");
+    const result = compileWarpSquare({
+      ...input,
+      snapshot: {
+        ...input.snapshot,
+        snapshot: {
+          ...input.snapshot.snapshot,
+          scene: {
+            ...input.snapshot.snapshot.scene,
+            animationChannels: [
+              {
+                ...channel,
+                keyframes: [channel.keyframes[0]!, { ...channel.keyframes[1]!, at: 3.5 }],
+              },
+            ],
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({ issue: { code: "target-edit-unsupported" }, kind: "unsupported" });
   });
 });

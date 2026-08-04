@@ -31,7 +31,7 @@ type AuthorizedEditV1 = Readonly<{
   scaleFactor: number | null;
 }>;
 
-type SupportedTemporalRebaseProfileV1 = 7 | 8;
+type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -69,7 +69,7 @@ function supportedTemporalRebaseProfileV1(scene: SceneIrV1): SupportedTemporalRe
   const source = scene.source;
   if (source.kind !== "imported-manim-server-snapshot") return null;
   const version = Number(source.snapshotVersion);
-  return version === 7 || version === 8 ? version : null;
+  return version === 7 || version === 8 || version === 9 ? version : null;
 }
 
 function isExactManimSmoothInterval(channel: SceneIrV1["animationChannels"][number], start: number, end: number) {
@@ -115,19 +115,41 @@ function isExactStableSquareToCircleV8(scene: SceneIrV1, runtimeEntityId: string
   );
 }
 
+function isExactStableWarpSquareV9(scene: SceneIrV1, runtimeEntityId: string) {
+  const [entity] = scene.entities;
+  const [pathMorph] = scene.animationChannels;
+  return (
+    supportedTemporalRebaseProfileV1(scene) === 9 &&
+    scene.duration === 4 &&
+    scene.entities.length === 1 &&
+    entity?.id === runtimeEntityId &&
+    entity.geometry.kind === "cubic-path" &&
+    entity.lifetimes.length === 1 &&
+    entity.lifetimes[0]?.start === 0 &&
+    entity.lifetimes[0]?.end === 4 &&
+    scene.animationChannels.length === 1 &&
+    pathMorph?.kind === "path-morph" &&
+    pathMorph.entityId === runtimeEntityId &&
+    isExactManimSmoothInterval(pathMorph, 0, 3)
+  );
+}
+
 /**
- * Returns the only synthetic authoring anchor accepted by the bounded V8
- * preview profile. This is preview authority, not a claim that the source
+ * Returns the only synthetic authoring anchor accepted by the bounded V8/V9
+ * preview profiles. This is preview authority, not a claim that the source
  * contains a lowerable `# poietra:anchor` marker.
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
-  const [entry] = identity;
-  if (!entry) return null;
-  const [sourceName, mapping] = entry;
-  if (mapping.sourceName !== sourceName || !isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId)) {
+  const mapping = identity.get("square");
+  if (
+    !mapping ||
+    mapping.sourceName !== "square" ||
+    (!isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId) &&
+      !isExactStableWarpSquareV9(snapshot.snapshot.scene, mapping.entityId))
+  ) {
     return null;
   }
   return 0;
@@ -321,10 +343,12 @@ function planInitialTransformEdit(
     const supportedKind =
       profile === 7
         ? channel.kind === "path-trim" || channel.kind === "motion-path"
-        : channel.kind === "opacity" ||
-          channel.kind === "path-morph" ||
-          channel.kind === "vector-appearance" ||
-          channel.kind === "path-trim";
+        : profile === 8
+          ? channel.kind === "opacity" ||
+            channel.kind === "path-morph" ||
+            channel.kind === "vector-appearance" ||
+            channel.kind === "path-trim"
+          : channel.kind === "path-morph";
     if (!supportedKind) {
       return unsupported("profile-unsupported", "Temporal preview found a channel outside its bounded profile.");
     }
@@ -389,8 +413,17 @@ function planInitialTransformEdit(
         studioEntity.sourceIdentity.kind === "known" &&
         studioEntity.sourceIdentity.value === "square" &&
         isExactStableSquareToCircleV8(scene, runtimeEntityId);
+      const stableV9Target =
+        profile === 9 &&
+        studioEntity?.type === "Square" &&
+        studioEntity.sourceIdentity.kind === "known" &&
+        studioEntity.sourceIdentity.value === "square" &&
+        isExactStableWarpSquareV9(scene, runtimeEntityId);
       const runtimeEntity = runtimeEntities.get(runtimeEntityId);
-      if ((!staticMathTex && !createTarget && !stableV8Target) || runtimeEntity?.geometry.kind !== "cubic-path") {
+      if (
+        (!staticMathTex && !createTarget && !stableV8Target && !stableV9Target) ||
+        runtimeEntity?.geometry.kind !== "cubic-path"
+      ) {
         return unsupported(
           "target-edit-unsupported",
           "The temporal profile does not authorize this imported animation target.",

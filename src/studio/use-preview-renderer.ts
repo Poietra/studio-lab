@@ -137,8 +137,9 @@ type StudioPreviewHostInstallationV1 = Readonly<{
 /**
  * Runtime pixels may be presented without source interaction authority. V5
  * deliberately has aggregate morph lineage, while V9's pointwise-function
- * morph is display-only until Studio can truthfully rebase that semantic edit.
- * V6 through V8 require server-verified source/runtime bindings. Older
+ * morph remains display-only unless the exact WarpSquare V9 temporal slice can
+ * be truthfully rebased. V6 through V9 require server-verified source/runtime
+ * bindings. Older
  * snapshot-only profiles retain their semantic interaction fallback; no
  * gesture guesses from Scene order.
  */
@@ -151,7 +152,9 @@ export function studioPreviewInteractionAuthorityV1(
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
   if (Number(source.snapshotVersion) === 9) {
-    return { kind: "display-only", reason: "temporal-rebase-unavailable" };
+    return snapshot && studioPreviewSyntheticInitialEditAnchorV1(snapshot) === 0
+      ? { kind: "interactive" }
+      : { kind: "display-only", reason: "temporal-rebase-unavailable" };
   }
   if (
     Number(source.snapshotVersion) !== 6 &&
@@ -317,7 +320,9 @@ export async function compileStudioPreviewSceneV1(
     const source = input.snapshot.snapshot.scene.source;
     if (
       source.kind !== "imported-manim-server-snapshot" ||
-      (Number(source.snapshotVersion) !== 7 && Number(source.snapshotVersion) !== 8)
+      (Number(source.snapshotVersion) !== 7 &&
+        Number(source.snapshotVersion) !== 8 &&
+        Number(source.snapshotVersion) !== 9)
     ) {
       return {
         error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
