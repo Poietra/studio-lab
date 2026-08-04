@@ -81,6 +81,45 @@ export async function findRenderedImage(root: string, fileName: string): Promise
   return candidates.sort((left, right) => right.modified - left.modified)[0]?.path ?? null;
 }
 
+export async function findRenderedSceneImage(root: string, sceneName: string): Promise<string | null> {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(sceneName)) {
+    throw new TypeError("Rendered Scene image lookup requires an exact Python class name.");
+  }
+  const candidates: { modified: number; path: string }[] = [];
+  const versionedPrefix = `${sceneName}_ManimCE_v`;
+  let visitedDirectories = 0;
+  async function visit(directory: string) {
+    visitedDirectories += 1;
+    if (visitedDirectories > MAX_MEDIA_DIRECTORIES) {
+      throw new Error("Manim produced an unexpectedly large media directory tree.");
+    }
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      if (entry.isDirectory() && entry.name !== PARTIAL_MOVIE_DIRECTORY) {
+        await visit(path);
+      } else if (
+        entry.isFile() &&
+        (entry.name === `${sceneName}.png` ||
+          (entry.name.startsWith(versionedPrefix) &&
+            entry.name.endsWith(".png") &&
+            /^[0-9]{1,4}(?:\.[0-9]{1,4}){2}$/.test(entry.name.slice(versionedPrefix.length, -4))))
+      ) {
+        const metadata = await lstat(path);
+        if (metadata.isFile() && !metadata.isSymbolicLink() && metadata.size > 0) {
+          candidates.push({ modified: metadata.mtimeMs, path });
+        }
+      }
+    }
+  }
+  try {
+    await visit(root);
+  } catch {
+    return null;
+  }
+  return candidates.sort((left, right) => right.modified - left.modified)[0]?.path ?? null;
+}
+
 function signalRenderProcess(child: ChildProcess, signal: NodeJS.Signals) {
   if (process.platform !== "win32" && child.pid) {
     try {

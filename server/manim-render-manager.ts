@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -52,6 +52,7 @@ import {
 } from "./manim-render-mutation-transaction";
 import {
   appendRenderLog,
+  findRenderedSceneImage,
   findRenderedVideo,
   stopRenderProcess,
   waitForRenderExit,
@@ -196,6 +197,7 @@ export class ManimRenderManager {
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
   private readonly sessionRetentionMs: number;
+  private readonly staticVideoCommand: readonly string[];
   private readonly sessions = new Map<string, RenderSession>();
   private readonly snapshotRunner: FastManimSnapshotRunner;
   private readonly sourceStore: ManimSourceStore;
@@ -227,6 +229,7 @@ export class ManimRenderManager {
       snapshotVersion?: FastManimSnapshotProfileVersionV1;
       snapshotTimeoutMs?: number;
       sourceStoreHooks?: ManimSourceReadHooks;
+      staticVideoCommand?: readonly string[];
       tenantId: string;
       thumbnailCacheRoot?: string;
     }>,
@@ -235,6 +238,11 @@ export class ManimRenderManager {
       throw new TypeError("The Manim command must contain a non-empty executable and arguments.");
     }
     this.command = Object.freeze([...options.command]);
+    const staticVideoCommand = options.staticVideoCommand ?? ["ffmpeg"];
+    if (staticVideoCommand.length === 0 || staticVideoCommand.some((entry) => entry.length === 0)) {
+      throw new TypeError("The static video command must contain a non-empty executable and arguments.");
+    }
+    this.staticVideoCommand = Object.freeze([...staticVideoCommand]);
     this.frame = Object.freeze({
       height: requirePositiveFinite(options.frame.height, "Manim frame height"),
       width: requirePositiveFinite(options.frame.width, "Manim frame width"),
@@ -976,6 +984,7 @@ export class ManimRenderManager {
     session.status = "rendering";
     session.progress = 0.2;
     session.updatedAt = new Date().toISOString();
+    const deadline = Date.now() + this.renderTimeoutMs;
     try {
       const [executable, ...prefix] = this.command;
       const child = spawn(
@@ -1004,8 +1013,78 @@ export class ManimRenderManager {
           `Manim exited with ${exit.code === null ? `signal ${exit.signal ?? "unknown"}` : `code ${exit.code}`}.`,
         );
       }
-      const videoPath = await findRenderedVideo(mediaRoot, session.request.sceneName);
-      if (!videoPath) throw new Error("Manim completed without producing an MP4 preview.");
+      let videoPath = await findRenderedVideo(mediaRoot, session.request.sceneName);
+      if (renderSessionStatusPolicy(session.status).stopped) return;
+      if (!videoPath) {
+        const imagePath = await findRenderedSceneImage(mediaRoot, session.request.sceneName);
+        if (!imagePath) throw new Error("Manim completed without producing a preview artifact.");
+        if (renderSessionStatusPolicy(session.status).stopped) return;
+
+        const remainingMs = deadline - Date.now();
+        if (remainingMs <= 0) throw new Error(`Manim render exceeded the ${this.renderTimeoutMs}ms timeout.`);
+        const staticVideoRoot = await mkdtemp(join(mediaRoot, "static-preview-"));
+        if (renderSessionStatusPolicy(session.status).stopped) return;
+        const staticVideoPath = join(staticVideoRoot, `${session.request.sceneName}.mp4`);
+        const [converterExecutable, ...converterPrefix] = this.staticVideoCommand;
+        const converter = spawn(
+          converterExecutable,
+          [
+            ...converterPrefix,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-loop",
+            "1",
+            "-framerate",
+            "15",
+            "-i",
+            imagePath,
+            "-t",
+            "1",
+            "-an",
+            "-vf",
+            "pad=ceil(iw/2)*2:ceil(ih/2)*2",
+            "-c:v",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-movflags",
+            "+faststart",
+            staticVideoPath,
+          ],
+          {
+            cwd: this.projectRoot,
+            detached: process.platform !== "win32",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        session.child = converter;
+        converter.stdout?.on("data", (chunk: Buffer) => appendRenderLog(session, chunk));
+        converter.stderr?.on("data", (chunk: Buffer) => appendRenderLog(session, chunk));
+        const conversionExit = await waitForRenderExit(converter, remainingMs);
+        session.child = null;
+        if (renderSessionStatusPolicy(session.status).stopped) return;
+        if (conversionExit.code !== 0) {
+          throw new Error(
+            `Static preview conversion exited with ${
+              conversionExit.code === null
+                ? `signal ${conversionExit.signal ?? "unknown"}`
+                : `code ${conversionExit.code}`
+            }.`,
+          );
+        }
+        const convertedMetadata = await lstat(staticVideoPath).catch(() => null);
+        if (renderSessionStatusPolicy(session.status).stopped) return;
+        if (
+          !convertedMetadata ||
+          !convertedMetadata.isFile() ||
+          convertedMetadata.isSymbolicLink() ||
+          convertedMetadata.size <= 0
+        ) {
+          throw new Error("Static preview conversion completed without producing a valid MP4 preview.");
+        }
+        videoPath = staticVideoPath;
+      }
       session.videoPath = videoPath;
       session.progress = 1;
       session.status = "ready";
