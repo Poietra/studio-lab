@@ -58,9 +58,9 @@ COPY --from=mathtex-builder \
   /opt/poietra-build/studio/engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt \
   /opt/poietra-build/THIRD_PARTY_NOTICES.txt
 
-RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6" \
-    && test "$FAST_MANIM_COMMIT" = "29d21a2bd213df8ffeed0454278aa86289d190b8" \
-    && test "$FAST_MANIM_TREE" = "d486d57ba637da1e915a5b29d6bda2d967570a54" \
+RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "8eefa2a939cfa4670f4945537ba152b9a54906efafeaee338ddbb6624661c16b" \
+    && test "$FAST_MANIM_COMMIT" = "cd0cb237606b240a3c795b1171d61eeb3cef5305" \
+    && test "$FAST_MANIM_TREE" = "8007d53a31d2918e81116c675c352edc761a6ef2" \
     && test "$STUDIO_ENGINE_ARCHIVE_SHA256" = "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32" \
     && test "$STUDIO_ENGINE_COMMIT" = "be671c1ddcfc8466548c8822956e19579256e581" \
     && test "$STUDIO_ENGINE_TREE" = "d0f6d72213c65527ae9b7a4717390b48db1e9256" \
@@ -97,9 +97,9 @@ RUN test "$FAST_MANIM_ARCHIVE_SHA256" = "c4796847340c34a82396acdb56ae5e9d3d85e84
     && PYTHONHASHSEED=0 PYTHONPATH=/opt/fast-manim \
       /opt/venv/bin/python -c 'from manim.renderer.source_runtime_identity import export_source_runtime_identity; assert callable(export_source_runtime_identity)'
 
-LABEL io.poietra.fast-manim.commit="29d21a2bd213df8ffeed0454278aa86289d190b8" \
-      io.poietra.fast-manim.tree="d486d57ba637da1e915a5b29d6bda2d967570a54" \
-      io.poietra.fast-manim.archive-sha256="c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6" \
+LABEL io.poietra.fast-manim.commit="cd0cb237606b240a3c795b1171d61eeb3cef5305" \
+      io.poietra.fast-manim.tree="8007d53a31d2918e81116c675c352edc761a6ef2" \
+      io.poietra.fast-manim.archive-sha256="8eefa2a939cfa4670f4945537ba152b9a54906efafeaee338ddbb6624661c16b" \
       io.poietra.mathtex-outline.engine-commit="be671c1ddcfc8466548c8822956e19579256e581" \
       io.poietra.mathtex-outline.engine-tree="d0f6d72213c65527ae9b7a4717390b48db1e9256" \
       io.poietra.mathtex-outline.engine-archive-sha256="2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32" \
