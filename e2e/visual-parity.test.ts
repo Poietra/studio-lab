@@ -173,7 +173,7 @@ describe("visual parity v1 contracts", () => {
     expect(entry).toMatchObject({
       fixture: {
         id: "eng-v1-mathtex-nested-radical-fraction",
-        revision: { sha256: "ed9a992e754a09f9bd0bac9e58eeb6e6d08615c6b4a957e5b9ef61929eaa2467" },
+        revision: { sha256: "43fa43f9445110f25284bce82d11982379f82a05c6d6621864725edd806451e0" },
       },
       sample: {
         id: "static",
