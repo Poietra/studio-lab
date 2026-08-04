@@ -108,6 +108,7 @@ const SUPPORTED_TYPES = new Set([
   "ImageMobject",
   "Line",
   "MathTex",
+  "Polygon",
   "Rectangle",
   "RegularPolygon",
   "Square",
@@ -1023,6 +1024,97 @@ function expandDirectGroupPresence(
   return expanded;
 }
 
+const PRESENCE_PRESERVING_MEMBER_METHODS = new Set([
+  "align_to",
+  "flip",
+  "move_to",
+  "next_to",
+  "rotate",
+  "scale",
+  "set_color",
+  "set_fill",
+  "set_opacity",
+  "set_stroke",
+  "set_x",
+  "set_y",
+  "set_z",
+  "shift",
+  "stretch",
+  "to_corner",
+  "to_edge",
+]);
+
+function boundedPresenceMethodArguments(argumentsSource: string) {
+  const analysis = analyzePythonSource(argumentsSource);
+  if (!analysis.valid) return false;
+  const code = analysis.lines.map((line) => line.code).join("\n");
+  return (
+    !/\b[A-Za-z_][A-Za-z0-9_]*\s*\(/.test(code) && !/[;:[\]{}\\]/.test(code) && /^[A-Za-z0-9_.,+*/=()\s-]*$/.test(code)
+  );
+}
+
+function presencePreservingMemberSuffix(suffix: string) {
+  const methods = chainedMethods(suffix);
+  return (
+    methods !== null &&
+    methods.every(
+      (method) =>
+        PRESENCE_PRESERVING_MEMBER_METHODS.has(method.name) && boundedPresenceMethodArguments(method.argumentsSource),
+    )
+  );
+}
+
+function isPresencePreservingMemberStatement(statement: string, member: string) {
+  const escaped = member.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = statement.match(new RegExp(`^${escaped}(\\s*\\.[\\s\\S]*)$`));
+  return match ? presencePreservingMemberSuffix(match[1]) : false;
+}
+
+type DirectPresenceAnimationAction = "begin" | "end";
+
+const DIRECT_PRESENCE_ANIMATIONS = new Map<string, DirectPresenceAnimationAction>([
+  ["Create", "begin"],
+  ["FadeIn", "begin"],
+  ["SpiralIn", "begin"],
+  ["Write", "begin"],
+  ["FadeOut", "end"],
+  ["Uncreate", "end"],
+  ["Unwrite", "end"],
+]);
+
+function directPresenceAnimationAction(
+  statement: string,
+  targetVariable: string,
+): DirectPresenceAnimationAction | null {
+  const trimmed = statement.trim();
+  const playOpening = trimmed.match(/^self\.play\s*\(/)?.[0].lastIndexOf("(") ?? -1;
+  if (playOpening < 0) return null;
+  const playClosing = matchingCallEnd(trimmed, playOpening);
+  if (playClosing === null || trimmed.slice(playClosing + 1).trim() !== "") return null;
+  const target = targetVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const analysis = analyzePythonSource(trimmed);
+  const structuralSource = analysis.lines.map((line) => line.code).join("\n");
+  if (!analysis.valid || [...structuralSource.matchAll(new RegExp(`\\b${target}\\b`, "g"))].length !== 1) return null;
+  const actions = splitTopLevelArguments(trimmed.slice(playOpening + 1, playClosing)).flatMap((argument) => {
+    if (/^[A-Za-z_][A-Za-z0-9_]*\s*=/.test(argument)) return [];
+    const animation = argument.trim();
+    const animationName = animation.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
+    const action = animationName ? DIRECT_PRESENCE_ANIMATIONS.get(animationName) : undefined;
+    if (!animationName || !action) return [];
+    const opening = animation.indexOf("(");
+    const closing = matchingCallEnd(animation, opening);
+    if (closing === null || animation.slice(closing + 1).trim() !== "") return [];
+    const animationArguments = splitTopLevelArguments(animation.slice(opening + 1, closing));
+    if (!new RegExp(`^${target}$`).test(animationArguments[0]?.trim() ?? "")) return [];
+    const optionsAreBounded = animationArguments.slice(1).every((option) => {
+      const match = option.match(/^[A-Za-z_][A-Za-z0-9_]*\s*=\s*([\s\S]+)$/);
+      return match ? boundedPresenceMethodArguments(match[1]) : false;
+    });
+    return optionsAreBounded ? [action] : [];
+  });
+  return actions.length === 1 ? actions[0] : null;
+}
+
 function unambiguousDirectGroupPresence(
   statements: readonly SourceStatement[],
   directGroupMembers: ReadonlyMap<string, readonly string[]>,
@@ -1041,7 +1133,7 @@ function unambiguousDirectGroupPresence(
         members.some((member) => {
           const initialization = initializationByVariable.get(member);
           const assignment = initialization ? parseEntityAssignment(initialization) : null;
-          return !assignment || assignment.suffix.trim() !== "";
+          return !assignment || !presencePreservingMemberSuffix(assignment.suffix);
         })
       ) {
         return false;
@@ -1061,6 +1153,8 @@ function unambiguousDirectGroupPresence(
         if (new RegExp(`^${escaped}\\.set\\(\\s*width\\s*=\\s*config\\.frame_width\\s*-\\s*1\\s*\\)$`).test(text)) {
           return true;
         }
+        if (members.some((member) => isPresencePreservingMemberStatement(text, member))) return true;
+        if (directPresenceAnimationAction(text, group) !== null) return true;
         return new RegExp(`^self\\.(?:add|remove)\\(\\s*${escaped}\\s*\\)$`, "s").test(text);
       });
     }),
@@ -2141,14 +2235,27 @@ export function importManimScene(
       kind: "play",
       label: statement.text.split("\n", 1)[0].slice(0, 80),
     });
+    const beginningPresence = expandDirectGroupPresence(
+      new Set(
+        mutableEntities.flatMap((entity) =>
+          directPresenceAnimationAction(statement.text, entity.sourceVariable) === "begin"
+            ? [entity.sourceVariable]
+            : [],
+        ),
+      ),
+      directPresenceGroupMembers,
+    );
+    const endingPresence = expandDirectGroupPresence(
+      new Set(
+        mutableEntities.flatMap((entity) =>
+          directPresenceAnimationAction(statement.text, entity.sourceVariable) === "end" ? [entity.sourceVariable] : [],
+        ),
+      ),
+      directPresenceGroupMembers,
+    );
     for (const entity of mutableEntities) {
-      const variablePattern = entity.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      if (new RegExp(`(?:FadeIn|Create|Write)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
-        beginPresence(entity, cursor);
-      }
-      if (new RegExp(`(?:FadeOut|Uncreate|Unwrite)\\(\\s*${variablePattern}\\b`).test(statement.text)) {
-        endPresence(entity, interval.end);
-      }
+      if (beginningPresence.has(entity.sourceVariable)) beginPresence(entity, cursor);
+      if (endingPresence.has(entity.sourceVariable)) endPresence(entity, interval.end);
       if (actualPathVariables.includes(entity.sourceVariable)) beginPresence(entity, cursor);
       const marked = markedMotions.get(entity.sourceVariable);
       const shifted =

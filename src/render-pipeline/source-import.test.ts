@@ -684,6 +684,81 @@ class LineJoints(Scene):
     }
   });
 
+  it("imports the official SpiralIn group closure without inventing Polygon geometry", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class SpiralInExample(Scene):
+    def construct(self):
+        logo_green = "#81b29a"
+        logo_blue = "#454866"
+        logo_red = "#e07a5f"
+        font_color = "#ece6e2"
+
+        pi = MathTex(r"\\pi").scale(7).set_color(font_color)
+        pi.shift(2.25 * LEFT + 1.5 * UP)
+        circle = Circle(color=logo_green, fill_opacity=0.7, stroke_width=0).shift(LEFT)
+        square = Square(color=logo_blue, fill_opacity=0.8, stroke_width=0).shift(UP)
+        triangle = Triangle(color=logo_red, fill_opacity=0.9, stroke_width=0).shift(RIGHT)
+        pentagon = Polygon(
+            *[
+                [np.cos(2 * np.pi / 5 * i), np.sin(2 * np.pi / 5 * i), 0]
+                for i in range(5)
+            ],
+            color=PURPLE_B,
+            fill_opacity=1,
+            stroke_width=0,
+        ).shift(UP + 2 * RIGHT)
+        shapes = VGroup(triangle, square, circle, pentagon, pi)
+        self.play(SpiralIn(shapes, fade_in_fraction=0.9))
+        self.wait()
+        self.play(FadeOut(shapes))
+`,
+      "example_scenes/basic.py",
+      "SpiralInExample",
+    );
+    const entities = imported?.runtimeSceneState.objectGraph.entities;
+    const variables = ["pi", "circle", "square", "triangle", "pentagon", "shapes"];
+
+    expect(imported?.runtimeSceneState.duration).toBe(3);
+    expect(imported?.initialVisibleSourceVariables).toEqual(variables);
+    for (const variable of variables) {
+      expect(entities?.[`source:example_scenes/basic.py#SpiralInExample:${variable}`]?.lifetime).toEqual([
+        { end: 3, start: 0 },
+      ]);
+    }
+    expect(entities?.["source:example_scenes/basic.py#SpiralInExample:pentagon"]).toMatchObject({
+      geometry: { dimensions: { kind: "unknown" } },
+      type: "Polygon",
+    });
+    expect(runtimeSceneStateSchema.parse(JSON.parse(JSON.stringify(imported?.runtimeSceneState)))).toEqual(
+      imported?.runtimeSceneState,
+    );
+  });
+
+  it("does not flatten SpiralIn presence through an unknown member method", () => {
+    const imported = importManimScene(
+      `from manim import *
+
+class AmbiguousSpiral(Scene):
+    def construct(self):
+        child = Triangle().register()
+        group = VGroup(child)
+        self.play(SpiralIn(group))
+        self.play(FadeOut(group))
+`,
+      "scene.py",
+      "AmbiguousSpiral",
+    );
+
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#AmbiguousSpiral:child"]?.lifetime).toEqual(
+      [],
+    );
+    expect(imported?.runtimeSceneState.objectGraph.entities["source:scene.py#AmbiguousSpiral:group"]?.lifetime).toEqual(
+      [{ end: 2, start: 0 }],
+    );
+  });
+
   it("does not flatten group presence when a child also has independent scene ownership", () => {
     const imported = importManimScene(
       `from manim import *
