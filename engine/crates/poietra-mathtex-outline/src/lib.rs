@@ -8,11 +8,26 @@ mod compile;
 mod digest;
 mod fonts;
 mod outline;
+mod segmented;
 
 use poietra_scene_ir::{CubicPathV1, FillRuleV1};
 use serde::{Deserialize, Serialize};
 
 pub use compile::compile_mathtex_outline_v1;
+pub use segmented::{
+    MAX_SEGMENTED_TEX_CUBIC_SEGMENTS_V1, MAX_SEGMENTED_TEX_ENTITIES_V1,
+    MAX_SEGMENTED_TEX_FRAGMENTS_V1, MAX_SEGMENTED_TEX_PAINT_LITERAL_BYTES_V1,
+    MAX_SEGMENTED_TEX_PAINT_MATCHES_V1, MAX_SEGMENTED_TEX_SOURCE_BYTES_V1,
+    MAX_SEGMENTED_TEX_UNSUPPORTED_MESSAGE_BYTES_V1, SEGMENTED_TEX_OUTLINE_REQUEST_SCHEMA_V1,
+    SEGMENTED_TEX_OUTLINE_RESPONSE_SCHEMA_V1, SEGMENTED_TEX_OUTLINE_VERSION_V1, SegmentedTexModeV1,
+    SegmentedTexOutlineArtifactV1, SegmentedTexOutlineFragmentKindV1,
+    SegmentedTexOutlineFragmentV1, SegmentedTexOutlineRequestSchemaV1,
+    SegmentedTexOutlineRequestV1, SegmentedTexOutlineResultV1,
+    SegmentedTexOutlineUnsupportedCodeV1, SegmentedTexOutlineUnsupportedV1,
+    SegmentedTexPaintMatchV1, SegmentedTexPaintSpanV1, SegmentedTexSourceCorrelationV1,
+    SegmentedTexSourceKindV1, SegmentedTexWriteEntityStateV1, SegmentedTexWritePlanV1,
+    SegmentedTexWriteSampleV1, compile_segmented_tex_outline_v1, evaluate_segmented_tex_write_v1,
+};
 
 /// Exact request schema literal accepted by the v1 compiler.
 pub const MATHTEX_OUTLINE_REQUEST_SCHEMA_V1: &str = "poietra.mathtex-outline-request";

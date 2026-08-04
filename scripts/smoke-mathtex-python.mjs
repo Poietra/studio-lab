@@ -48,6 +48,7 @@ import json
 import poietra_mathtex_outline
 
 assert poietra_mathtex_outline.abi_version() == 1
+assert poietra_mathtex_outline.segmented_abi_version() == 1
 compiled_bytes = poietra_mathtex_outline.compile_mathtex_outline_v1(["E = mc^2"])
 assert isinstance(compiled_bytes, bytes)
 compiled = json.loads(compiled_bytes)
@@ -62,10 +63,59 @@ assert fraction["result"]["kind"] == "compiled"
 unsupported = json.loads(poietra_mathtex_outline.compile_mathtex_outline_v1([]))
 assert unsupported["result"]["kind"] == "unsupported"
 assert unsupported["result"]["code"] == "invalid-request"
+
+def segmented(request):
+    return json.loads(poietra_mathtex_outline.compile_segmented_tex_outline_v1(
+        json.dumps(request, separators=(",", ":")).encode("utf-8")
+    ))
+
+segmented_text = segmented({
+    "schema": "poietra.segmented-tex-outline-request",
+    "version": 1,
+    "mode": "tex-text",
+    "sourceKind": "literal",
+    "source": "This is a some text",
+    "paintMatches": [{
+        "literal": "text",
+        "paint": {"red": 1, "green": 1, "blue": 0, "alpha": 1},
+    }],
+})
+assert segmented_text["result"]["kind"] == "compiled"
+assert len(segmented_text["result"]["fragments"]) == 15
+assert [
+    fragment["order"]
+    for fragment in segmented_text["result"]["fragments"]
+    if fragment["paint"]["blue"] == 0
+] == [11, 12, 13, 14]
+
+segmented_math = segmented({
+    "schema": "poietra.segmented-tex-outline-request",
+    "version": 1,
+    "mode": "mathtex-math",
+    "sourceKind": "literal",
+    "source": r"\sum_{k=1}^\infty {1 \over k^2} = {\pi^2 \over 6}",
+    "paintMatches": [],
+})
+assert segmented_math["result"]["kind"] == "compiled"
+assert len(segmented_math["result"]["fragments"]) == 14
+assert sum(fragment["kind"] == "rule" for fragment in segmented_math["result"]["fragments"]) == 2
+
+dynamic = segmented({
+    "schema": "poietra.segmented-tex-outline-request",
+    "version": 1,
+    "mode": "tex-text",
+    "sourceKind": "dynamic",
+    "source": "make_text()",
+    "paintMatches": [],
+})
+assert dynamic["result"]["kind"] == "unsupported"
+assert dynamic["result"]["code"] == "dynamic-source-unsupported"
 print(json.dumps({
     "abiVersion": 1,
     "compiledSubpaths": len(compiled["result"]["path"]["subpaths"]),
     "fractionSubpaths": len(fraction["result"]["path"]["subpaths"]),
+    "segmentedFormulaFragments": len(segmented_math["result"]["fragments"]),
+    "segmentedTextFragments": len(segmented_text["result"]["fragments"]),
 }))
 `;
   const python = spawnSync(process.env.PYTHON ?? "python3", ["-c", pythonSource], {
@@ -81,6 +131,8 @@ print(json.dumps({
   assert.equal(evidence.abiVersion, 1);
   assert.ok(evidence.compiledSubpaths > 1);
   assert.ok(evidence.fractionSubpaths > 1);
+  assert.equal(evidence.segmentedFormulaFragments, 14);
+  assert.equal(evidence.segmentedTextFragments, 15);
   process.stdout.write(`${JSON.stringify(evidence)}\n`);
 } finally {
   await rm(fixtureRoot, { force: true, recursive: true });

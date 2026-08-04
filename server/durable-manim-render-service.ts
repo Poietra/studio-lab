@@ -11,6 +11,7 @@ import {
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
+import type { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import {
   renderCommitCorrelationKey,
@@ -32,6 +33,7 @@ import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./st
 export type DurableManimRenderServiceOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo">;
   blobs: SourceContentBlobStoreV1;
+  candidateVerifier?: Pick<ManimRenderCandidateVerifierV1, "verify">;
   execution: Readonly<{ cancel: (sessionId: string) => Promise<void>; wake: () => void }>;
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
@@ -90,6 +92,7 @@ function sessionView(
 export class DurableManimRenderServiceV1 {
   readonly #artifactReader: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo"> | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly #candidateVerifier: Pick<ManimRenderCandidateVerifierV1, "verify"> | undefined;
   readonly #execution: DurableManimRenderServiceOptionsV1["execution"];
   readonly #executionTimeoutMs: number;
   readonly #frame: Readonly<{ height: number; width: number }>;
@@ -108,6 +111,7 @@ export class DurableManimRenderServiceV1 {
     }
     this.#tenantId = tenant.data;
     this.#artifactReader = options.artifactReader;
+    this.#candidateVerifier = options.candidateVerifier;
     const executionTimeoutMs = options.executionTimeoutMs ?? 2 * 60 * 1_000;
     if (
       !Number.isSafeInteger(executionTimeoutMs) ||
@@ -155,13 +159,20 @@ export class DurableManimRenderServiceV1 {
     }
     const originalSource = await this.#blobs.readSource(this.#tenantId, originalHead.blob, signal);
     signal?.throwIfAborted();
-    const { lowered } = lowerManimRenderRequest({
+    const { lowered, renderRequest } = lowerManimRenderRequest({
       frame: this.#frame,
       originalSource,
       projectId: request.projectId,
       request,
     });
     signal?.throwIfAborted();
+    if (lowered.preflight) {
+      if (!this.#candidateVerifier) {
+        throw new HttpError("Edited Manim source candidate verification is unavailable.", 503);
+      }
+      await this.#candidateVerifier.verify(lowered, renderRequest, signal);
+      signal?.throwIfAborted();
+    }
     const patchedBlob = await this.#blobs.putSource(this.#tenantId, lowered.source, signal);
 
     let created: DurableRenderSessionV1;
