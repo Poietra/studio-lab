@@ -42,7 +42,7 @@ export const REAL_MANIM_CENSUS_FEATURES = [
 
 const corpusSchema = z.enum(["calibration", "compatibility"]);
 const featureSchema = z.enum(REAL_MANIM_CENSUS_FEATURES);
-const profileSchema = z.number().int().min(1).max(10);
+const profileSchema = z.number().int().min(1).max(11);
 const sceneSchema = z
   .object({
     features: z.array(featureSchema).max(32).optional(),
@@ -181,6 +181,24 @@ const manifestSchema = z
           context.addIssue({
             code: "custom",
             message: "Profile V10 is reserved for the exact pinned fast-manim LineJoints source.",
+            path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
+          });
+        }
+        if (
+          scene.profiles.includes(11) &&
+          !(
+            source.asset === undefined &&
+            source.corpus === "compatibility" &&
+            source.id === "fast-manim-basic" &&
+            source.path === "example_scenes/basic.py" &&
+            source.repository === "fast-manim" &&
+            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
+            scene.name === "SpiralInExample"
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Profile V11 is reserved for the exact pinned fast-manim SpiralInExample source.",
             path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
           });
         }

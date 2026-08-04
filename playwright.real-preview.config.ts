@@ -22,9 +22,10 @@ if (
   snapshotProfile !== "7" &&
   snapshotProfile !== "8" &&
   snapshotProfile !== "9" &&
-  snapshotProfile !== "10"
+  snapshotProfile !== "10" &&
+  snapshotProfile !== "11"
 ) {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, 5, 7, 8, 9, or 10.");
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, 5, 7, 8, 9, 10, or 11.");
 }
 const externalBaseUrl = (() => {
   const configured = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
@@ -113,37 +114,41 @@ export default defineConfig({
   projects: [
     {
       name:
-        snapshotProfile === "10"
-          ? "real-line-joints-preview-webgpu"
-          : snapshotProfile === "9"
-            ? "real-warp-square-preview-webgpu"
-            : snapshotProfile === "8"
-              ? "real-square-to-circle-preview-webgpu"
-              : snapshotProfile === "7"
-                ? "real-mixed-preview-webgpu"
-                : snapshotProfile === "5"
-                  ? "real-mathtex-morph-preview-webgpu"
-                  : snapshotProfile === "3"
-                    ? "real-mathtex-preview-webgpu"
-                    : snapshotProfile === "4"
-                      ? "real-image-preview-webgpu"
-                      : "real-preview-webgpu",
+        snapshotProfile === "11"
+          ? "real-spiral-in-preview-webgpu"
+          : snapshotProfile === "10"
+            ? "real-line-joints-preview-webgpu"
+            : snapshotProfile === "9"
+              ? "real-warp-square-preview-webgpu"
+              : snapshotProfile === "8"
+                ? "real-square-to-circle-preview-webgpu"
+                : snapshotProfile === "7"
+                  ? "real-mixed-preview-webgpu"
+                  : snapshotProfile === "5"
+                    ? "real-mathtex-morph-preview-webgpu"
+                    : snapshotProfile === "3"
+                      ? "real-mathtex-preview-webgpu"
+                      : snapshotProfile === "4"
+                        ? "real-image-preview-webgpu"
+                        : "real-preview-webgpu",
       testMatch:
-        snapshotProfile === "10"
-          ? "**/real-line-joints-preview.webgpu.ts"
-          : snapshotProfile === "9"
-            ? "**/real-warp-square-preview.webgpu.ts"
-            : snapshotProfile === "8"
-              ? "**/real-square-to-circle-preview.webgpu.ts"
-              : snapshotProfile === "7"
-                ? "**/real-mixed-preview.webgpu.ts"
-                : snapshotProfile === "5"
-                  ? "**/real-mathtex-morph-preview.webgpu.ts"
-                  : snapshotProfile === "3"
-                    ? "**/real-mathtex-preview.webgpu.ts"
-                    : snapshotProfile === "4"
-                      ? "**/real-image-preview.webgpu.ts"
-                      : "**/real-scene-preview.webgpu.ts",
+        snapshotProfile === "11"
+          ? "**/real-spiral-in-preview.webgpu.ts"
+          : snapshotProfile === "10"
+            ? "**/real-line-joints-preview.webgpu.ts"
+            : snapshotProfile === "9"
+              ? "**/real-warp-square-preview.webgpu.ts"
+              : snapshotProfile === "8"
+                ? "**/real-square-to-circle-preview.webgpu.ts"
+                : snapshotProfile === "7"
+                  ? "**/real-mixed-preview.webgpu.ts"
+                  : snapshotProfile === "5"
+                    ? "**/real-mathtex-morph-preview.webgpu.ts"
+                    : snapshotProfile === "3"
+                      ? "**/real-mathtex-preview.webgpu.ts"
+                      : snapshotProfile === "4"
+                        ? "**/real-image-preview.webgpu.ts"
+                        : "**/real-scene-preview.webgpu.ts",
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,

@@ -139,6 +139,23 @@ async function compile(scene: SceneIrV1, assets: AssetManifestV1, sampleTime: nu
 }
 
 describe("Poietra TypeScript reference evaluator v1", () => {
+  it("emits explicit Cairo compositing for imported Manim snapshot V11 only", async () => {
+    const assets = await emptyManifest();
+    const base = createScene(assets, { entities: [], requiredCapabilities: [] });
+    const importedSource = {
+      kind: "imported-manim-server-snapshot" as const,
+      runtimeConfigHash: SCENE_HASH,
+      snapshotHash: SCENE_HASH,
+      snapshotVersion: 11 as const,
+      sourceHash: SCENE_HASH,
+    };
+    const v11 = await compile({ ...base, source: importedSource }, assets, 0.5);
+    expect(v11.packet.compositing).toBe("manim-cairo-srgb");
+
+    const v10 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 10 as const } }, assets, 0.5);
+    expect("compositing" in v10.packet).toBe(false);
+  });
+
   it("lowers shape primitives to cubic RenderPacket draws in source order", async () => {
     const assets = await emptyManifest();
     const scene = createScene(assets, {

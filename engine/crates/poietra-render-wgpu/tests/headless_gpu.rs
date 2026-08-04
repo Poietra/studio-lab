@@ -16,8 +16,9 @@ use poietra_render_wgpu::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
-    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
-    SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, ViewportV1,
+    RenderCameraV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
+    RgbaColorV1, SceneIrBundleV1, SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1,
+    StrokeJoinV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -30,6 +31,7 @@ use support::{
 const BYTES_PER_PIXEL: u32 = 4;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const MANIM_CAIRO_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -409,6 +411,37 @@ const REAL_LINE_JOINTS_V10_EDITED_SNAPSHOT_HASH: &str =
 const REAL_LINE_JOINTS_V10_EDIT_ANCHOR: &str =
     "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)";
 const REAL_LINE_JOINTS_V10_EDIT_REPLACEMENT: &str = "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)";
+const REAL_SPIRAL_IN_V11_FIXTURE_ID: &str = "eng-v1-real-spiral-in-v11";
+const REAL_SPIRAL_IN_V11_FIXTURE_PATH: &str = "fixtures/engine-v1/real-spiral-in-v11.json";
+const REAL_SPIRAL_IN_V11_SOURCE_PATH: &str = "example_scenes/basic.py";
+const REAL_SPIRAL_IN_V11_SOURCE_MIRROR_PATH: &str =
+    "fixtures/real-preview-harness/example_scenes/basic.py";
+const REAL_SPIRAL_IN_V11_SOURCE_SHA256: &str =
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const REAL_SPIRAL_IN_V11_ENGINE_COMMIT: &str = "e5423a8cb79a8326d42337e204ed12784750cdf1";
+const REAL_SPIRAL_IN_V11_FAST_MANIM_COMMIT: &str = "4a6eaf1b4085ed643698da5116dd23814411eb5b";
+const REAL_SPIRAL_IN_V11_FAST_MANIM_TREE: &str = "6fad77addc72e1a97440265e27d02630cf5b37b4";
+const REAL_SPIRAL_IN_V11_PRODUCER_SNAPSHOT_DIGEST: &str =
+    "f10b64b47c0aa8d663a01dfb58a6d20057608a0c324f97b436a9c13becefcbea";
+const REAL_SPIRAL_IN_V11_SNAPSHOT_HASH: &str =
+    "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
+const REAL_SPIRAL_IN_V11_SAMPLES: [(&str, &str, f64); 7] = [
+    ("real-spiral-in-v11--start", "start", 0.0),
+    ("real-spiral-in-v11--early-reveal", "early-reveal", 0.1),
+    (
+        "real-spiral-in-v11--spiral-midpoint",
+        "spiral-midpoint",
+        0.5,
+    ),
+    ("real-spiral-in-v11--spiral-end", "spiral-end", 1.0),
+    ("real-spiral-in-v11--hold", "hold", 1.5),
+    (
+        "real-spiral-in-v11--group-fade-midpoint",
+        "group-fade-midpoint",
+        2.5,
+    ),
+    ("real-spiral-in-v11--end", "end", 3.0),
+];
 
 #[derive(Clone, Copy)]
 struct RealLineJointsV10Contract {
@@ -522,6 +555,16 @@ fn render_packet_semantic_digest(packet: &RenderPacketV1) -> String {
         "camera": packet.camera,
         "draws": packet.draws,
     });
+    if packet.compositing != RenderCompositingV1::LinearLight {
+        normalized
+            .as_object_mut()
+            .expect("frame semantics must remain an object")
+            .insert(
+                "compositing".to_owned(),
+                serde_json::to_value(packet.compositing)
+                    .expect("render compositing semantics must serialize"),
+            );
+    }
     normalize_semantic_numbers(&mut normalized);
     format!(
         "{:x}",
@@ -547,6 +590,7 @@ fn adapter_evidence(adapter_info: &wgpu::AdapterInfo) -> AdapterEvidence {
 fn emit_native_visual_parity_artifact(
     entry: &VisualParityCorpusEntry,
     adapter_info: &wgpu::AdapterInfo,
+    target_format: wgpu::TextureFormat,
     rgba: &[u8],
 ) -> bool {
     let Some(root) = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1) else {
@@ -610,7 +654,11 @@ fn emit_native_visual_parity_artifact(
         schema: "poietra.visual-parity-native-artifact",
         target: NativeVisualParityTarget {
             color_domain: "srgb-u8",
-            format: "Rgba8UnormSrgb",
+            format: match target_format {
+                wgpu::TextureFormat::Rgba8Unorm => "Rgba8Unorm",
+                wgpu::TextureFormat::Rgba8UnormSrgb => "Rgba8UnormSrgb",
+                _ => panic!("native visual parity artifacts require an RGBA8 target"),
+            },
         },
         version: 1,
     };
@@ -684,13 +732,15 @@ fn request_fallback_adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
 fn assert_target_format_support(adapter: &wgpu::Adapter) {
     let required_texture_usages =
         wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT;
-    let format_features = adapter.get_texture_format_features(TARGET_FORMAT);
-    assert!(
-        format_features
-            .allowed_usages
-            .contains(required_texture_usages),
-        "fallback adapter must support {TARGET_FORMAT:?} as a copyable render attachment"
-    );
+    for format in [TARGET_FORMAT, MANIM_CAIRO_TARGET_FORMAT] {
+        let format_features = adapter.get_texture_format_features(format);
+        assert!(
+            format_features
+                .allowed_usages
+                .contains(required_texture_usages),
+            "fallback adapter must support {format:?} as a copyable render attachment"
+        );
+    }
 }
 
 fn request_device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
@@ -750,13 +800,17 @@ fn render_prepared(
         height: height_px,
         width: width_px,
     };
+    let target_format = match prepared.compositing() {
+        RenderCompositingV1::LinearLight => TARGET_FORMAT,
+        RenderCompositingV1::ManimCairoSrgb => MANIM_CAIRO_TARGET_FORMAT,
+    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("poietra headless proof target"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: TARGET_FORMAT,
+        format: target_format,
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
@@ -766,7 +820,7 @@ fn render_prepared(
             device,
             queue,
             WgpuRenderTargetV1 {
-                format: TARGET_FORMAT,
+                format: target_format,
                 height_px,
                 view: &view,
                 width_px,
@@ -953,6 +1007,95 @@ fn renders_shared_fixture_with_fallback_adapter() {
     );
 }
 
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_manim_cairo_srgb_overlap_on_a_non_black_background() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let mut packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 4,
+            width_px: 8,
+        },
+        RenderCameraV1 {
+            bottom: -1.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.6,
+                green: 0.4,
+                red: 0.2,
+            },
+            kind: RenderCameraKindV1::Orthographic2d,
+            left: -2.0,
+            right: 2.0,
+            top: 1.0,
+        },
+    );
+    packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    packet.draws = vec![
+        solid_rectangle_draw(
+            "draw:cairo:red",
+            "entity:cairo:red",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -2.0,
+                right: 0.75,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.1,
+                green: 0.2,
+                red: 0.8,
+            },
+            0.5,
+            0,
+        ),
+        solid_rectangle_draw(
+            "draw:cairo:green",
+            "entity:cairo:green",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -0.75,
+                right: 2.0,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.3,
+                green: 0.8,
+                red: 0.1,
+            },
+            0.25,
+            1,
+        ),
+    ];
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 1, 2),
+        [128, 77, 89, 255],
+        [2, 2, 2, 0],
+    );
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 3, 2),
+        [102, 109, 86, 255],
+        [2, 2, 2, 0],
+    );
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 6, 2),
+        [45, 128, 134, 255],
+        [2, 2, 2, 0],
+    );
+}
+
 fn dynamic_fixture() -> (DynamicFixture, SceneIrBundleV1) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../../fixtures/engine-v1/dynamic-affine-camera.json");
@@ -1048,6 +1191,20 @@ fn real_warp_square_v9_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBun
         "scene": fixture.scene,
     }))
     .expect("real WarpSquare V9 fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_spiral_in_v11_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_SPIRAL_IN_V11_FIXTURE_PATH);
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("real SpiralIn V11 fixture must be readable"),
+    )
+    .expect("real SpiralIn V11 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real SpiralIn V11 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -1218,8 +1375,12 @@ fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
                 !artifact_emitted,
                 "visual parity artifact must be emitted once"
             );
-            artifact_emitted =
-                emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba);
+            artifact_emitted = emit_native_visual_parity_artifact(
+                &visual_parity_entry,
+                &adapter_info,
+                TARGET_FORMAT,
+                &rgba,
+            );
         }
         let bounds = non_background_bounds(&rgba, extent.width, extent.height);
         assert_eq!(
@@ -1446,7 +1607,7 @@ fn render_and_assert_shared_reference(
     if let Some(entry) = visual_parity_entry {
         let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
         assert_eq!(
-            emit_native_visual_parity_artifact(entry, &adapter_info, &rgba),
+            emit_native_visual_parity_artifact(entry, &adapter_info, TARGET_FORMAT, &rgba),
             artifact_requested,
             "the opt-in {evidence_name} native artifact must be emitted exactly once"
         );
@@ -1689,7 +1850,12 @@ fn renders_mathtex_nested_radical_fraction_with_fallback_adapter() {
 
     let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
     assert_eq!(
-        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        emit_native_visual_parity_artifact(
+            &visual_parity_entry,
+            &adapter_info,
+            TARGET_FORMAT,
+            &rgba,
+        ),
         artifact_requested,
         "the opt-in MathTex native artifact must be emitted exactly once"
     );
@@ -1925,6 +2091,7 @@ fn renders_real_mathtex_morph_v5_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2320,6 +2487,7 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2544,6 +2712,7 @@ fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2556,6 +2725,249 @@ fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
             0
         },
         "an opt-in WarpSquare V9 artifact request must emit all five frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // One temporal proof binds the exact V11 producer to seven full-frame GPU artifacts.
+fn renders_real_spiral_in_v11_samples_with_fallback_adapter() {
+    let (fixture, bundle) = real_spiral_in_v11_fixture();
+    assert_eq!(fixture.id, REAL_SPIRAL_IN_V11_FIXTURE_ID);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v11"
+    );
+    assert_eq!(
+        fixture.producer_reference.engine_commit,
+        REAL_SPIRAL_IN_V11_ENGINE_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_SPIRAL_IN_V11_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_tree.as_deref(),
+        Some(REAL_SPIRAL_IN_V11_FAST_MANIM_TREE)
+    );
+    assert_eq!(
+        fixture
+            .producer_reference
+            .producer_snapshot_digest
+            .as_deref(),
+        Some(REAL_SPIRAL_IN_V11_PRODUCER_SNAPSHOT_DIGEST)
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_SPIRAL_IN_V11_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_SPIRAL_IN_V11_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_SPIRAL_IN_V11_SOURCE_SHA256
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(repository_root().join(REAL_SPIRAL_IN_V11_SOURCE_MIRROR_PATH))
+                    .expect("the mirrored official SpiralIn source must remain readable")
+            )
+        ),
+        REAL_SPIRAL_IN_V11_SOURCE_SHA256,
+        "the mirrored Python source must match the sealed V11 provenance"
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real SpiralIn V11 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V11);
+    assert_eq!(snapshot_hash, REAL_SPIRAL_IN_V11_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_SPIRAL_IN_V11_SOURCE_SHA256);
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        REAL_SPIRAL_IN_V11_SNAPSHOT_HASH
+    );
+    assert_eq!(bundle.scene.duration.to_bits(), 3.0_f64.to_bits());
+    assert_eq!(bundle.scene.entities.len(), 6);
+    assert_eq!(bundle.scene.animation_channels.len(), 11);
+
+    let visual_parity_entries =
+        REAL_SPIRAL_IN_V11_SAMPLES.map(|(entry_id, _, _)| load_visual_parity_entry(entry_id));
+    let expected_viewport = ViewportV1 {
+        height_px: 360,
+        width_px: 640,
+    };
+    for (index, &(entry_id, sample_id, sample_time)) in
+        REAL_SPIRAL_IN_V11_SAMPLES.iter().enumerate()
+    {
+        let entry = &visual_parity_entries[index];
+        let sample = fixture
+            .samples
+            .iter()
+            .find(|sample| sample.id == sample_id)
+            .unwrap_or_else(|| panic!("SpiralIn V11 sample {sample_id} must exist"));
+        assert_eq!(entry.id, entry_id);
+        assert_eq!(entry.fixture.id, REAL_SPIRAL_IN_V11_FIXTURE_ID);
+        assert_eq!(entry.fixture.path, REAL_SPIRAL_IN_V11_FIXTURE_PATH);
+        assert_eq!(
+            entry.fixture.revision.kind,
+            "imported-manim-server-snapshot"
+        );
+        assert_eq!(
+            entry.fixture.revision.sha256,
+            REAL_SPIRAL_IN_V11_SNAPSHOT_HASH
+        );
+        assert_eq!(entry.sample.id, sample_id);
+        assert_eq!(entry.sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(entry.sample.viewport, expected_viewport);
+        assert_eq!(sample.packet_id, format!("real-spiral-in-v11:{sample_id}"));
+        assert_eq!(sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(sample.viewport, expected_viewport);
+        assert_eq!(
+            sample.expected.semantic_digest, entry.sample.semantic_digest,
+            "{sample_id} fixture and corpus semantics must stay pinned together"
+        );
+    }
+
+    let session =
+        EngineSessionV1::new(bundle).expect("real SpiralIn V11 fixture must install once");
+    let sampled_packets = REAL_SPIRAL_IN_V11_SAMPLES
+        .iter()
+        .map(|&(_, sample_id, _)| {
+            let sample = fixture
+                .samples
+                .iter()
+                .find(|sample| sample.id == sample_id)
+                .unwrap_or_else(|| panic!("SpiralIn V11 sample {sample_id} must exist"));
+            let packet = session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[fixture.id.clone(), sample.id.clone()],
+                    packet_id: &sample.packet_id,
+                    sample_time: sample.sample_time,
+                    viewport: sample.viewport.clone(),
+                })
+                .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+            assert_eq!(packet.packet_id, sample.packet_id);
+            assert_eq!(packet.sample_time.to_bits(), sample.sample_time.to_bits());
+            assert_eq!(packet.viewport, sample.viewport);
+            assert_eq!(packet.scene_revision_hash, REAL_SPIRAL_IN_V11_SNAPSHOT_HASH);
+            assert_eq!(packet.compositing, RenderCompositingV1::ManimCairoSrgb);
+            assert_eq!(
+                render_packet_semantic_digest(&packet),
+                sample.expected.semantic_digest,
+                "{} fixture semantic digest must match the native evaluator",
+                sample.id
+            );
+            assert!(
+                packet.draws.iter().all(|draw| matches!(
+                    draw,
+                    RenderDrawV1::Path {
+                        fill: Some(_),
+                        stroke: None,
+                        ..
+                    }
+                )),
+                "the logical VGroup must not draw and every SpiralIn leaf must stay fill-only"
+            );
+            (sample, packet)
+        })
+        .collect::<Vec<_>>();
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let mut frames_by_sample = std::collections::BTreeMap::new();
+
+    for (sample, packet) in &sampled_packets {
+        let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        assert_eq!(extent.width, sample.viewport.width_px);
+        assert_eq!(extent.height, sample.viewport.height_px);
+        assert!(
+            frames_by_sample.insert(sample.id.clone(), rgba).is_none(),
+            "SpiralIn V11 parity sample ids must be unique"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through all seven SpiralIn V11 readbacks"
+    );
+    assert_eq!(
+        frames_by_sample["start"], frames_by_sample["end"],
+        "fully transparent start and completed FadeOut must both be clear"
+    );
+    assert_ne!(frames_by_sample["early-reveal"], frames_by_sample["start"]);
+    assert_ne!(
+        frames_by_sample["spiral-midpoint"],
+        frames_by_sample["early-reveal"]
+    );
+    assert_ne!(
+        frames_by_sample["spiral-end"],
+        frames_by_sample["spiral-midpoint"]
+    );
+    assert_eq!(
+        frames_by_sample["spiral-end"], frames_by_sample["hold"],
+        "the completed SpiralIn frame must remain unchanged during the wait"
+    );
+    assert_ne!(
+        frames_by_sample["group-fade-midpoint"],
+        frames_by_sample["hold"]
+    );
+    assert_ne!(
+        frames_by_sample["group-fade-midpoint"],
+        frames_by_sample["end"]
+    );
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    let artifact_count = visual_parity_entries
+        .iter()
+        .map(|entry| {
+            usize::from(emit_native_visual_parity_artifact(
+                entry,
+                &adapter_info,
+                MANIM_CAIRO_TARGET_FORMAT,
+                &frames_by_sample[&entry.sample.id],
+            ))
+        })
+        .sum::<usize>();
+    assert_eq!(
+        artifact_count,
+        if artifact_requested {
+            REAL_SPIRAL_IN_V11_SAMPLES.len()
+        } else {
+            0
+        },
+        "an opt-in SpiralIn V11 artifact request must emit all seven frames"
     );
 }
 
@@ -2854,7 +3266,12 @@ fn renders_png_alpha_edge_camera_midpoint_with_fallback_adapter() {
 
     let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
     assert_eq!(
-        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        emit_native_visual_parity_artifact(
+            &visual_parity_entry,
+            &adapter_info,
+            TARGET_FORMAT,
+            &rgba,
+        ),
         artifact_requested,
         "the opt-in PNG native artifact must be emitted exactly once"
     );

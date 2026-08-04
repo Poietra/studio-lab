@@ -306,6 +306,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
         z.literal(8),
         z.literal(9),
         z.literal(10),
+        z.literal(11),
       ]),
       sourceHash: sha256V1Schema,
     })
@@ -809,6 +810,13 @@ export const sceneIrV1Schema = sceneIrV1BaseSchema.superRefine((scene, context) 
 
 export type SceneIrV1 = z.infer<typeof sceneIrV1Schema>;
 export type SceneEntityGeometryV1 = SceneEntityV1["geometry"];
+export type SceneSourceV1 = z.infer<typeof sceneSourceV1Schema>;
+
+export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
+  return source.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 11
+    ? ("manim-cairo-srgb" as const)
+    : ("linear-light" as const);
+}
 
 export function sceneIrSourceRevisionHash(scene: SceneIrV1) {
   return scene.source.kind === "studio-edit-program" ? scene.source.revisionHash : scene.source.snapshotHash;

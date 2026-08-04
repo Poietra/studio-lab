@@ -392,6 +392,32 @@ mod tests {
         )
     }
 
+    fn spiral_in_v11_session() -> (EngineWorkerSessionV1, Vec<String>) {
+        let fixture: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../fixtures/engine-v1/real-spiral-in-v11.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entity_ids = fixture["scene"]["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entity| entity["id"].as_str().unwrap().to_owned())
+            .collect();
+        let snapshot = serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap();
+        (
+            EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap(),
+            entity_ids,
+        )
+    }
+
     fn correlation() -> SampleRequestCorrelationV1 {
         SampleRequestCorrelationV1 {
             packet_id: "canvas:frame-7".to_owned(),
@@ -601,6 +627,53 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(bounds[0][2] < bounds[1][0] && bounds[1][2] < bounds[2][0]);
+    }
+
+    #[test]
+    fn spiral_in_v11_presents_only_five_leaf_bounds_until_the_lifetime_endpoint() {
+        let (session, entity_ids) = spiral_in_v11_session();
+        for sample_time in [0.0, 0.1, 0.5, 1.0, 1.5, 2.5, 3.0] {
+            let request = serde_json::to_vec(&json!({
+                "evidence": ["real SpiralIn V11 WASM canvas interaction"],
+                "interactionEntityIds": entity_ids,
+                "packetId": format!("canvas:spiral-in-v11:{sample_time}"),
+                "sampleTime": sample_time,
+                "schema": "poietra.engine-sample-request",
+                "version": 1,
+                "viewport": { "heightPx": 360, "widthPx": 640 },
+            }))
+            .unwrap();
+            let sampled = session.sample_packet_json(&request).unwrap();
+            let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
+            let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
+                prepared.clip_bounds_for_entity(entity_id)
+            });
+            let response =
+                presented_response_with_interaction(&sampled.correlation, false, interaction);
+            let value: Value = serde_json::from_slice(&response).unwrap();
+            let entries = value["result"]["interaction"]["entries"]
+                .as_array()
+                .unwrap();
+            assert_eq!(entries.len(), 6);
+
+            if sample_time < 3.0 {
+                assert_eq!(sampled.packet.draws.len(), 5);
+                assert_eq!(prepared.draws().len(), 5);
+                assert_eq!(entries[0]["status"], "empty");
+                assert!(entries[0].get("bounds").is_none());
+                for entry in &entries[1..] {
+                    assert_eq!(entry["status"], "present");
+                    assert_eq!(entry["bounds"].as_array().unwrap().len(), 4);
+                }
+            } else {
+                assert!(sampled.packet.draws.is_empty());
+                assert!(prepared.draws().is_empty());
+                for entry in entries {
+                    assert_eq!(entry["status"], "inactive");
+                    assert!(entry.get("bounds").is_none());
+                }
+            }
+        }
     }
 
     #[test]

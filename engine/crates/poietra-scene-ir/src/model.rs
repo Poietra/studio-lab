@@ -87,6 +87,7 @@ pub enum SnapshotProfileVersionV1 {
     V8,
     V9,
     V10,
+    V11,
 }
 
 impl Serialize for SnapshotProfileVersionV1 {
@@ -105,6 +106,7 @@ impl Serialize for SnapshotProfileVersionV1 {
             Self::V8 => 8,
             Self::V9 => 9,
             Self::V10 => 10,
+            Self::V11 => 11,
         })
     }
 }
@@ -125,8 +127,9 @@ impl<'de> Deserialize<'de> for SnapshotProfileVersionV1 {
             8 => Ok(Self::V8),
             9 => Ok(Self::V9),
             10 => Ok(Self::V10),
+            11 => Ok(Self::V11),
             version => Err(de::Error::custom(format!(
-                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, 3, 4, 5, 6, 7, 8, 9, or 10"
+                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, or 11"
             ))),
         }
     }
@@ -621,6 +624,24 @@ impl SceneSourceV1 {
             Self::ImportedManimServerSnapshot { snapshot_hash, .. } => snapshot_hash,
         }
     }
+
+    /// Returns the renderer compositing semantics required by this source profile.
+    ///
+    /// The V11 importer seals colors and opacity against Manim's Cairo output. Older
+    /// imported profiles and Studio-authored scenes retain the engine's original
+    /// linear-light contract.
+    #[must_use]
+    pub const fn render_compositing(&self) -> RenderCompositingV1 {
+        match self {
+            Self::ImportedManimServerSnapshot {
+                snapshot_version: SnapshotProfileVersionV1::V11,
+                ..
+            } => RenderCompositingV1::ManimCairoSrgb,
+            Self::StudioEditProgram { .. } | Self::ImportedManimServerSnapshot { .. } => {
+                RenderCompositingV1::LinearLight
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -980,7 +1001,11 @@ mod integer_wire_tests {
             serde_json::from_str::<SnapshotProfileVersionV1>("10.0").unwrap(),
             SnapshotProfileVersionV1::V10
         );
-        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("11.0").is_err());
+        assert_eq!(
+            serde_json::from_str::<SnapshotProfileVersionV1>("11.0").unwrap(),
+            SnapshotProfileVersionV1::V11
+        );
+        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("12.0").is_err());
     }
 }
 
@@ -991,11 +1016,34 @@ pub enum RenderPacketSchemaV1 {
     RenderPacket,
 }
 
+/// Color compositing semantics required by one render packet.
+///
+/// `LinearLight` remains the implicit v1 wire default so existing packet bytes stay
+/// stable. `ManimCairoSrgb` is emitted explicitly only for source profiles whose
+/// fidelity contract is sealed against Manim's Cairo renderer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RenderCompositingV1 {
+    #[default]
+    #[serde(rename = "linear-light")]
+    LinearLight,
+    #[serde(rename = "manim-cairo-srgb")]
+    ManimCairoSrgb,
+}
+
+impl RenderCompositingV1 {
+    #[must_use]
+    pub const fn is_linear_light(&self) -> bool {
+        matches!(self, Self::LinearLight)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenderPacketV1 {
     pub asset_manifest: AssetManifestReferenceV1,
     pub camera: RenderCameraV1,
+    #[serde(default, skip_serializing_if = "RenderCompositingV1::is_linear_light")]
+    pub compositing: RenderCompositingV1,
     pub coordinate_space: CoordinateSpaceV1,
     pub draws: Vec<RenderDrawV1>,
     pub evidence: Vec<String>,

@@ -94,6 +94,13 @@ describe("visual parity v1 contracts", () => {
       "real-warp-square-v9--midpoint",
       "real-warp-square-v9--target",
       "real-warp-square-v9--hold",
+      "real-spiral-in-v11--start",
+      "real-spiral-in-v11--early-reveal",
+      "real-spiral-in-v11--spiral-midpoint",
+      "real-spiral-in-v11--spiral-end",
+      "real-spiral-in-v11--hold",
+      "real-spiral-in-v11--group-fade-midpoint",
+      "real-spiral-in-v11--end",
       "real-line-joints-v10--static",
       "real-line-joints-v10-edited--static",
     ]);
@@ -566,6 +573,113 @@ describe("visual parity v1 contracts", () => {
     }
   });
 
+  it("pins the official SpiralIn V11 timeline to native/browser and independent Cairo gates", async () => {
+    const fixtureRevision = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      ["real-spiral-in-v11--start", "start", 0, "4a58d3347663fa01846422ac73cf1e530659f8e487e90545a7a3cc8a6db09a47"],
+      [
+        "real-spiral-in-v11--early-reveal",
+        "early-reveal",
+        0.1,
+        "9f1edd6f1c65d352b0995e870b4aa7f1dd611501a3aa91ae2ddd2d8da59fdcc7",
+      ],
+      [
+        "real-spiral-in-v11--spiral-midpoint",
+        "spiral-midpoint",
+        0.5,
+        "269e56232ec150380d5f8c204eed7674c892615130952c16124c2bb3aaef4d51",
+      ],
+      [
+        "real-spiral-in-v11--spiral-end",
+        "spiral-end",
+        1,
+        "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc",
+      ],
+      ["real-spiral-in-v11--hold", "hold", 1.5, "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc"],
+      [
+        "real-spiral-in-v11--group-fade-midpoint",
+        "group-fade-midpoint",
+        2.5,
+        "d3e732049a2025c84b1ed263e86aed2da07856fc0dd255c1b3e8ff6b0fb923d7",
+      ],
+      ["real-spiral-in-v11--end", "end", 3, "53313d7e0bfa86225f8b4f998f8dd91bb1574398f5b18172bdfb7fcf09faedb2"],
+    ] as const;
+    for (const [entryId, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The SpiralIn V11 corpus entry ${entryId} is missing.`);
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-spiral-in-v11",
+          path: "fixtures/engine-v1/real-spiral-in-v11.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-spiral-in-v11.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(128 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry", "logical-group", "opacity-animation"],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash: "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 11,
+        sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(6);
+    expect(bundle.scene.entities[0]?.geometry).toEqual({ kind: "group" });
+    expect(bundle.scene.entities.slice(1).every(({ geometry }) => geometry.kind === "cubic-path")).toBe(true);
+    expect(bundle.scene.animationChannels).toHaveLength(11);
+    expect(bundle.scene.animationChannels.map(({ kind }) => kind).sort()).toEqual([
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+    ]);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "e5423a8cb79a8326d42337e204ed12784750cdf1",
+      fastManimCommit: "4a6eaf1b4085ed643698da5116dd23814411eb5b",
+      fastManimTree: "6fad77addc72e1a97440265e27d02630cf5b37b4",
+      kind: "server-sealed-real-fast-manim-profile-v11",
+      producerSnapshotDigest: "f10b64b47c0aa8d663a01dfb58a6d20057608a0c324f97b436a9c13becefcbea",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+    for (const [, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      expect(fixture.samples).toContainEqual({
+        expected: { semanticDigest },
+        id: sampleId,
+        packetId: `real-spiral-in-v11:${sampleId}`,
+        sampleTime,
+        viewport: { heightPx: 360, widthPx: 640 },
+      });
+    }
+  });
+
   it("pins the server-sealed real LineJoints V10 scene to native/browser and independent Cairo gates", async () => {
     const fixtureRevision = "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
     const corpus = await corpusFixture();
@@ -812,6 +926,19 @@ describe("visual parity v1 contracts", () => {
       version: 1,
     };
     expect(visualParityReportV1Schema.safeParse(valid).success).toBe(true);
+    expect(
+      visualParityReportV1Schema.safeParse({
+        ...valid,
+        browser: { ...valid.browser, viewFormat: "Rgba8Unorm" },
+        native: { ...valid.native, format: "Rgba8Unorm" },
+      }).success,
+    ).toBe(true);
+    expect(
+      visualParityReportV1Schema.safeParse({
+        ...valid,
+        browser: { ...valid.browser, viewFormat: "Rgba8Unorm" },
+      }).success,
+    ).toBe(false);
     expect(visualParityReportV1Schema.safeParse({ ...valid, gate: { ...valid.gate, passed: false } }).success).toBe(
       false,
     );

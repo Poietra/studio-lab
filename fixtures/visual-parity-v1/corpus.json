@@ -392,6 +392,132 @@
       "thresholdException": null
     },
     {
+      "id": "real-spiral-in-v11--start",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "start",
+        "sampleTime": 0,
+        "semanticDigest": "4a58d3347663fa01846422ac73cf1e530659f8e487e90545a7a3cc8a6db09a47",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--early-reveal",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "early-reveal",
+        "sampleTime": 0.1,
+        "semanticDigest": "9f1edd6f1c65d352b0995e870b4aa7f1dd611501a3aa91ae2ddd2d8da59fdcc7",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--spiral-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "spiral-midpoint",
+        "sampleTime": 0.5,
+        "semanticDigest": "269e56232ec150380d5f8c204eed7674c892615130952c16124c2bb3aaef4d51",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--spiral-end",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "spiral-end",
+        "sampleTime": 1,
+        "semanticDigest": "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--hold",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "hold",
+        "sampleTime": 1.5,
+        "semanticDigest": "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--group-fade-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "group-fade-midpoint",
+        "sampleTime": 2.5,
+        "semanticDigest": "d3e732049a2025c84b1ed263e86aed2da07856fc0dd255c1b3e8ff6b0fb923d7",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-spiral-in-v11--end",
+      "fixture": {
+        "id": "eng-v1-real-spiral-in-v11",
+        "path": "fixtures/engine-v1/real-spiral-in-v11.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+        }
+      },
+      "sample": {
+        "id": "end",
+        "sampleTime": 3,
+        "semanticDigest": "53313d7e0bfa86225f8b4f998f8dd91bb1574398f5b18172bdfb7fcf09faedb2",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
       "id": "real-line-joints-v10--static",
       "fixture": {
         "id": "eng-v1-real-line-joints-v10",

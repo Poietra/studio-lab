@@ -39,6 +39,13 @@ const nativeTestByEntryId = new Map([
   ["real-warp-square-v9--midpoint", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
   ["real-warp-square-v9--target", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
   ["real-warp-square-v9--hold", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--start", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--early-reveal", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--spiral-midpoint", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--spiral-end", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--hold", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--group-fade-midpoint", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
+  ["real-spiral-in-v11--end", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
   ["real-line-joints-v10--static", "renders_real_line_joints_v10_static_with_fallback_adapter"],
   ["real-line-joints-v10-edited--static", "renders_real_line_joints_v10_edited_static_with_fallback_adapter"],
 ]);

@@ -234,7 +234,8 @@ pinned RaTeX/KaTeX outline module and normalized into the existing closed cubic
 path primitive; imported V3/V5 MathTex uses separately verified snapshot geometry.
 Unsupported source syntax remains on the semantic/server fallback. Adding clip,
 SVG/JPEG/WebP, gradient, dash, filter, 3D, perspective, or material semantics
-requires a new contract version after fixture-backed design.
+beyond the compositing modes defined below requires a new contract version after
+fixture-backed design.
 
 ## Color and image filtering
 
@@ -250,6 +251,15 @@ Before either nearest or bilinear sampling, a renderer:
 
 This order prevents transparent-edge color bleeding from differing between CPU and
 WebGPU implementations.
+
+The sequence above is the `linear-light` compositing mode and remains the implicit
+v1 wire default. A sealed imported-Manim source profile may instead require the
+explicit `manim-cairo-srgb` mode: vector RGB is premultiplied and blended in sRGB
+channel space through the matching base-Unorm target view, reproducing Cairo's
+observable output. Engine-frame integrity binds that choice to the source profile.
+Image draws fail closed in this mode, so the PNG decoding and filtering contract
+above remains exclusively linear-light until separate fixture-backed semantics are
+defined.
 
 ## Asset manifest v1
 

@@ -15,6 +15,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   type FastManimSnapshotProfileVersionV1,
   type FastManimSnapshotRuntimeConfigV1,
@@ -84,7 +85,7 @@ export const fastManimSnapshotProfileSelectionPolicyV1Schema = z
     candidates: z
       .array(fastManimSnapshotProfileCandidateV1Schema)
       .min(1)
-      .max(10)
+      .max(11)
       .refine(
         (candidates) =>
           candidates.every(
@@ -132,7 +133,9 @@ export function fastManimSnapshotRuntimeConfigForProfileV1(
               ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9
               : snapshotVersion === 10
                 ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10
-                : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
+                : snapshotVersion === 11
+                  ? FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11
+                  : FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1)),
     ],
     frame,
     randomSeed: 0,
@@ -171,11 +174,11 @@ export function createFastManimSnapshotProfileSelectionPolicyV1(
     fastManimSnapshotProfileCandidateV1(snapshotVersion, frame, options.capabilities),
   );
   if (options.pngAvailable) candidates.push(fastManimSnapshotProfileCandidateV1(4, frame));
-  for (const snapshotVersion of [8, 9, 10] as const) {
+  for (const snapshotVersion of [8, 9, 10, 11] as const) {
     try {
       candidates.push(fastManimSnapshotProfileCandidateV1(snapshotVersion, frame));
     } catch {
-      // V8-V10 have exact frame contracts. A server configured with another
+      // V8-V11 have exact frame contracts. A server configured with another
       // frame does not advertise a runtime configuration it cannot verify.
     }
   }

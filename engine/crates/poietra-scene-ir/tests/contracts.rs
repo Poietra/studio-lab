@@ -74,6 +74,7 @@ fn empty_packet() -> RenderPacketV1 {
             right: 8.0,
             top: 4.5,
         },
+        compositing: RenderCompositingV1::LinearLight,
         coordinate_space: CoordinateSpaceV1::default(),
         draws: Vec::new(),
         evidence: Vec::new(),
@@ -302,7 +303,7 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 }
 
 #[test]
-fn imported_snapshot_source_accepts_profiles_one_through_ten_only() {
+fn imported_snapshot_source_accepts_profiles_one_through_eleven_only() {
     for snapshot_version in [
         SnapshotProfileVersionV1::V1,
         SnapshotProfileVersionV1::V2,
@@ -314,6 +315,7 @@ fn imported_snapshot_source_accepts_profiles_one_through_ten_only() {
         SnapshotProfileVersionV1::V8,
         SnapshotProfileVersionV1::V9,
         SnapshotProfileVersionV1::V10,
+        SnapshotProfileVersionV1::V11,
     ] {
         let mut scene = empty_scene();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
@@ -322,6 +324,14 @@ fn imported_snapshot_source_accepts_profiles_one_through_ten_only() {
             snapshot_version,
             source_hash: REVISION.to_owned(),
         };
+        assert_eq!(
+            scene.source.render_compositing(),
+            if snapshot_version == SnapshotProfileVersionV1::V11 {
+                RenderCompositingV1::ManimCairoSrgb
+            } else {
+                RenderCompositingV1::LinearLight
+            }
+        );
         validate_scene_ir_v1(&scene).unwrap();
         assert_eq!(
             parse_scene_ir_json_v1(&serde_json::to_vec(&scene).unwrap()).unwrap(),
@@ -340,10 +350,77 @@ fn imported_snapshot_source_accepts_profiles_one_through_ten_only() {
         "kind": "imported-manim-server-snapshot",
         "runtimeConfigHash": REVISION,
         "snapshotHash": REVISION,
-        "snapshotVersion": 11.0,
+        "snapshotVersion": 12.0,
         "sourceHash": REVISION,
     });
     assert!(serde_json::from_value::<SceneIrV1>(invalid).is_err());
+}
+
+#[test]
+fn linear_compositing_keeps_the_existing_packet_wire_while_cairo_is_explicit() {
+    let packet = empty_packet();
+    assert_eq!(
+        serde_json::to_string(&packet).unwrap(),
+        concat!(
+            r#"{"assetManifest":{"manifestDigest":"8f2a9813bcfc60b693fc34b8046d64352004b50a17e224bb138daae7da9e941d","manifestId":"manifest-fixture"},"#,
+            r#""camera":{"bottom":-4.5,"clearColor":{"alpha":1.0,"blue":0.0,"green":0.0,"red":0.0},"kind":"orthographic-2d","left":-8.0,"right":8.0,"top":4.5},"#,
+            r#""coordinateSpace":{"cpuPrecision":"f64","kind":"cartesian-2d","origin":"center","unit":"scene-unit","xAxis":"right","yAxis":"up"},"#,
+            r#""draws":[],"evidence":[],"packetId":"packet:empty:1","requiredCapabilities":[],"sampleTime":1.0,"sceneDuration":2.0,"sceneId":"scene:empty","#,
+            r#""sceneRevisionHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","schema":"poietra.render-packet","sceneContractVersion":1,"version":1,"viewport":{"heightPx":90,"widthPx":160}}"#,
+        )
+    );
+    let implicit = serde_json::to_value(&packet).unwrap();
+    assert!(implicit.get("compositing").is_none());
+    assert_eq!(
+        serde_json::from_value::<RenderPacketV1>(implicit.clone()).unwrap(),
+        packet
+    );
+
+    let mut explicit_linear = implicit;
+    explicit_linear["compositing"] = json!("linear-light");
+    assert_eq!(
+        serde_json::from_value::<RenderPacketV1>(explicit_linear).unwrap(),
+        packet
+    );
+
+    let mut cairo = packet;
+    cairo.compositing = RenderCompositingV1::ManimCairoSrgb;
+    assert_eq!(
+        serde_json::to_value(&cairo).unwrap()["compositing"],
+        "manim-cairo-srgb"
+    );
+}
+
+#[test]
+fn cairo_compositing_rejects_image_draws() {
+    let mut packet = empty_packet();
+    packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    packet.draws.push(RenderDrawV1::Image {
+        asset: AssetReferenceV1 {
+            asset_id: "image:fixture".to_owned(),
+            sha256: REVISION.to_owned(),
+        },
+        draw_id: "draw:image".to_owned(),
+        entity_id: "image".to_owned(),
+        local_rect: ImageLocalRectV1 {
+            bottom: -1.0,
+            left: -1.0,
+            right: 1.0,
+            top: 1.0,
+        },
+        opacity: 1.0,
+        paint_order: 0,
+        sampler: ImageSamplerV1::Linear,
+        source_z_index: 0.0,
+        transform: AffineTransformV1::identity(),
+    });
+    packet.required_capabilities = vec![RenderCapabilityV1::PngImage];
+
+    let errors = validate_render_packet_v1(&packet).unwrap_err();
+    assert!(errors.issues().contains(&ValidationIssue {
+        message: "manim-cairo-srgb compositing does not support image draws".to_owned(),
+        path: "$.draws[0].kind".to_owned(),
+    }));
 }
 
 #[test]
@@ -387,6 +464,29 @@ fn engine_frame_checks_digest_and_cross_document_identity() {
             .unwrap_err()
             .contains_message("scene revision")
     );
+
+    let mut stale_compositing = frame.clone();
+    stale_compositing.packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    assert!(
+        validate_engine_frame_v1(&stale_compositing)
+            .unwrap_err()
+            .contains_message("compositing does not match scene source profile")
+    );
+
+    let mut v11 = frame.clone();
+    v11.scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+        runtime_config_hash: REVISION.to_owned(),
+        snapshot_hash: REVISION.to_owned(),
+        snapshot_version: SnapshotProfileVersionV1::V11,
+        source_hash: REVISION.to_owned(),
+    };
+    assert!(
+        validate_engine_frame_v1(&v11)
+            .unwrap_err()
+            .contains_message("compositing does not match scene source profile")
+    );
+    v11.packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    validate_engine_frame_v1(&v11).unwrap();
 
     let mut stale_digest = frame;
     stale_digest.assets.manifest_digest =

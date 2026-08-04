@@ -128,7 +128,7 @@ export const nativeVisualParityArtifactV1Schema = strictObject({
   schema: z.literal("poietra.visual-parity-native-artifact"),
   target: strictObject({
     colorDomain: z.literal("srgb-u8"),
-    format: z.literal("Rgba8UnormSrgb"),
+    format: z.enum(["Rgba8Unorm", "Rgba8UnormSrgb"]),
   }),
   version: z.literal(1),
 });
@@ -145,7 +145,7 @@ export const visualParityReportV1Schema = strictObject({
     rgbaByteLength: z.number().int().positive(),
     rgbaSha256: sha256,
     surfaceFormat: z.enum(["bgra8unorm", "rgba8unorm"]),
-    viewFormat: z.enum(["Bgra8UnormSrgb", "Rgba8UnormSrgb"]),
+    viewFormat: z.enum(["Bgra8Unorm", "Bgra8UnormSrgb", "Rgba8Unorm", "Rgba8UnormSrgb"]),
   }),
   corpus: strictObject({
     entryId: z.string().min(1),
@@ -176,7 +176,7 @@ export const visualParityReportV1Schema = strictObject({
   }),
   native: strictObject({
     adapter: nativeVisualParityArtifactV1Schema.shape.adapter,
-    format: z.literal("Rgba8UnormSrgb"),
+    format: z.enum(["Rgba8Unorm", "Rgba8UnormSrgb"]),
     metadataSha256: sha256,
     rgbaByteLength: z.number().int().positive(),
     rgbaSha256: sha256,
@@ -192,6 +192,11 @@ export const visualParityReportV1Schema = strictObject({
   }
   if (report.metrics.pixelCountAboveThreshold > report.metrics.pixelCount) {
     issue(["metrics", "pixelCountAboveThreshold"], "pixelCountAboveThreshold cannot exceed pixelCount");
+  }
+  const nativeUsesSrgbView = report.native.format.endsWith("Srgb");
+  const browserUsesSrgbView = report.browser.viewFormat.endsWith("Srgb");
+  if (nativeUsesSrgbView !== browserUsesSrgbView) {
+    issue(["browser", "viewFormat"], "browser and native artifacts must use the same compositing view class");
   }
   const expectedFraction = report.metrics.pixelCountAboveThreshold / report.metrics.pixelCount;
   if (Math.abs(report.metrics.pixelFractionAboveThreshold - expectedFraction) > Number.EPSILON) {

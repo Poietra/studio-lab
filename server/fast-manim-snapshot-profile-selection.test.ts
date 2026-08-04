@@ -73,28 +73,36 @@ function canonicalBytes(value: unknown) {
 }
 
 describe("fast-manim producer-owned profile selection", () => {
-  it("offers V1-V10 in canonical order and keeps the cross-runtime identities fixed", () => {
+  it("offers V1-V11 in canonical order and keeps the cross-runtime identities fixed", () => {
     const selectionRequest = request();
     const selected = selectionRequest.policy.candidates[0]!;
 
     expect(selectionRequest.policy.candidates.map(({ snapshotVersion }) => snapshotVersion)).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
     ]);
     expect(selectionRequest.policy.candidates.at(-1)).toMatchObject({
       runtimeConfig: {
-        capabilities: ["cubic-path-geometry", "logical-group", "shape-primitives"],
+        capabilities: [
+          "affine-transform-animation",
+          "cubic-path-geometry",
+          "logical-group",
+          "opacity-animation",
+          "shape-primitives",
+        ],
         frame: FRAME,
         randomSeed: 0,
-        snapshotVersion: 10,
+        snapshotVersion: 11,
       },
-      runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
-      snapshotVersion: 10,
+      snapshotVersion: 11,
     });
+    expect(selectionRequest.policy.candidates.at(-1)?.runtimeConfigHash).toBe(
+      "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+    );
     expect(selectionRequest.sourceHash).toBe("fca8ddecffa4a37ca4f97e7a9de9f6d3c9935b3e95d866bd41a1b67e9f91ad03");
-    expect(selectionRequest.policyHash).toBe("2df57c0e268fea952d80e941ddef0919286ba1aee6f9aa3a7378188250fc356b");
+    expect(selectionRequest.policyHash).toBe("144409cde8376917c361f9937a9e46e675dfdd1e86fab25e1c69206cf607b499");
     expect(selected.runtimeConfigHash).toBe("5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a");
     expect(createFastManimSnapshotSelectedProfileDigestV1(selectionRequest, selected)).toBe(
-      "a6ab1ecb55a5dd3903ed961047d622efcda05e63b24afc6060c1dabd5c00a8e1",
+      "9a9a5886d7712c3ef3870d47460f2d370f60b1c405243e6d2922c9b568df2434",
     );
   });
 
@@ -103,7 +111,7 @@ describe("fast-manim producer-owned profile selection", () => {
       createFastManimSnapshotProfileSelectionPolicyV1(FRAME, { pngAvailable: false }).candidates.map(
         ({ snapshotVersion }) => snapshotVersion,
       ),
-    ).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10]);
+    ).toEqual([1, 2, 3, 5, 6, 7, 8, 9, 10, 11]);
     expect(
       createFastManimSnapshotProfileSelectionPolicyV1({ height: 9, width: 16 }, { pngAvailable: true }).candidates.map(
         ({ snapshotVersion }) => snapshotVersion,

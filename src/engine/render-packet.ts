@@ -79,6 +79,8 @@ const imageDrawV1Schema = z
 
 const renderDrawV1Schema = z.discriminatedUnion("kind", [emptyDrawV1Schema, imageDrawV1Schema, pathDrawV1Schema]);
 const renderCapabilityV1Schema = z.enum(["cubic-path-fill", "cubic-path-stroke", "png-image"]);
+export const renderCompositingV1Schema = z.enum(["linear-light", "manim-cairo-srgb"]);
+export type RenderCompositingV1 = z.infer<typeof renderCompositingV1Schema>;
 
 const renderCameraV1Schema = z
   .object({
@@ -108,6 +110,7 @@ const renderPacketV1BaseSchema = z
   .object({
     assetManifest: assetManifestReferenceV1Schema,
     camera: renderCameraV1Schema,
+    compositing: renderCompositingV1Schema.optional(),
     coordinateSpace: z
       .object({
         cpuPrecision: z.literal("f64"),
@@ -134,6 +137,9 @@ const renderPacketV1BaseSchema = z
   .strict();
 
 type RenderPacketV1Input = z.infer<typeof renderPacketV1BaseSchema>;
+type CanonicalRenderPacketV1 = Omit<RenderPacketV1Input, "compositing"> & {
+  compositing?: RenderCompositingV1;
+};
 
 function requiredCapabilities(packet: RenderPacketV1Input) {
   const capabilities = new Set<z.infer<typeof renderCapabilityV1Schema>>();
@@ -145,7 +151,7 @@ function requiredCapabilities(packet: RenderPacketV1Input) {
   return [...capabilities].sort();
 }
 
-export const renderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet, context) => {
+const validatedRenderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet, context) => {
   if (packet.sampleTime > packet.sceneDuration) {
     context.addIssue({
       code: "custom",
@@ -199,6 +205,13 @@ export const renderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet
         context.addIssue({ code: "custom", message: "Path draws require a fill or stroke.", path: ["draws", index] });
       }
     }
+    if (draw.kind === "image" && packet.compositing === "manim-cairo-srgb") {
+      context.addIssue({
+        code: "custom",
+        message: "manim-cairo-srgb compositing does not support image draws",
+        path: ["draws", index, "kind"],
+      });
+    }
     if (
       draw.kind === "empty" &&
       draw.reason === "singular-affine-sample" &&
@@ -220,4 +233,15 @@ export const renderPacketV1Schema = renderPacketV1BaseSchema.superRefine((packet
   }
 });
 
+export const renderPacketV1Schema = validatedRenderPacketV1Schema.transform(
+  ({ compositing, ...packet }): CanonicalRenderPacketV1 =>
+    compositing === "manim-cairo-srgb" ? { ...packet, compositing } : packet,
+);
+
 export type RenderPacketV1 = z.infer<typeof renderPacketV1Schema>;
+
+export function renderPacketCompositingV1(
+  packet: Readonly<{ compositing?: RenderCompositingV1 }>,
+): RenderCompositingV1 {
+  return packet.compositing ?? "linear-light";
+}
