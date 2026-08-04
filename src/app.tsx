@@ -2712,6 +2712,7 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
+          ...(previewRenderer?.initialEditRuntimeAuthority ? { verifiedWarpSquareInitialAnchor: 0 as const } : {}),
           viewport: STUDIO_VIEWPORT,
         }
       : null;

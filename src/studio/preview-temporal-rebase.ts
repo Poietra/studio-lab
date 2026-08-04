@@ -1,4 +1,5 @@
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
+import { evaluateWorkingState } from "./evaluator";
 import type { Point, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
@@ -672,7 +673,22 @@ export function compileStudioPreviewTemporalRebaseV1(
   ) {
     return unsupported("camera-edit-unsupported", "Temporal rebase requires the exact verified camera frame.");
   }
-  const planned = planInitialTransformEdit(input);
+  const initialV9Authority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
+  const validationScene = projectStudioPreviewInitialValidationSceneV1(
+    input.proposedState.base.runtimeSceneState,
+    initialV9Authority,
+  );
+  // The conservative Python importer cannot infer WarpSquare's lifetime from
+  // ApplyPointwiseFunction. Direct manipulation validates against producer
+  // evidence when the draft is created, but the normal workspace projection
+  // intentionally revalidates every Program against the unmodified import.
+  // Re-run that validation here with the same exact, snapshot-gated evidence
+  // so the temporal compiler observes the operation it is about to authorize.
+  const proposedState =
+    validationScene === input.proposedState.base.runtimeSceneState
+      ? input.proposedState
+      : evaluateWorkingState({ ...input.proposedState.base, runtimeSceneState: validationScene });
+  const planned = planInitialTransformEdit({ proposedState, snapshot: input.snapshot });
   if (planned.kind !== "supported") return planned;
   const { edit, profile } = planned;
   const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);

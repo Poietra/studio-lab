@@ -785,6 +785,31 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
     expect(projectStudioPreviewInitialValidationSceneV1(ambiguousScene, authority)).toBe(ambiguousScene);
   });
 
+  it("revalidates the real import's empty lifetime only under exact V9 producer authority", async () => {
+    const input = await warpSquareInput("position");
+    const base = input.proposedState.base;
+    const entity = base.runtimeSceneState.objectGraph.entities[WARP_SQUARE_ENTITY_ID];
+    if (!entity) throw new Error("WarpSquare V9 lost its Studio Square.");
+    const runtimeSceneState: RuntimeSceneState = {
+      ...base.runtimeSceneState,
+      objectGraph: {
+        ...base.runtimeSceneState.objectGraph,
+        entities: { ...base.runtimeSceneState.objectGraph.entities, [entity.id]: { ...entity, lifetime: [] } },
+      },
+    };
+    const proposedState = evaluateWorkingState({ ...base, runtimeSceneState });
+    expect(proposedState.programs).toMatchObject([{ validation: { status: "invalid" } }]);
+
+    expect(compileWarpSquare({ ...input, proposedState }).kind).toBe("rebased");
+    expect(
+      compileWarpSquare({
+        ...input,
+        proposedState,
+        snapshot: { ...input.snapshot, sourceRuntimeIdentity: null },
+      }),
+    ).toMatchObject({ issue: { code: "identity-unverified" }, kind: "unsupported" });
+  });
+
   it.each([
     ["position", 1, 1, 1.4222222222222223, 0.7999999999999998],
     ["scale", 1.5, 1.5, 0, 0],
