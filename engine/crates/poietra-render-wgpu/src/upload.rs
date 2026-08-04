@@ -155,7 +155,11 @@ fn encode_ordered_vertices(
                 "draw references an unknown material",
             ))?;
         for &vertex in &frame.geometry_plan().vertices()[start..end] {
-            encode_vertex(vertex, material.premultiplied_linear_color(), output);
+            encode_vertex(
+                vertex,
+                material.color_for_compositing(frame.compositing()),
+                output,
+            );
         }
         next_vertex = end;
     }
@@ -199,5 +203,30 @@ mod tests {
                 required_bytes,
             })
         );
+    }
+
+    #[test]
+    fn selects_material_bytes_from_the_explicit_compositing_contract() {
+        let linear =
+            build_gpu_upload_plan_v1(&PreparedFrameV1::triangle_for_upload_test_with_compositing(
+                poietra_scene_ir::RenderCompositingV1::LinearLight,
+            ))
+            .unwrap();
+        let cairo =
+            build_gpu_upload_plan_v1(&PreparedFrameV1::triangle_for_upload_test_with_compositing(
+                poietra_scene_ir::RenderCompositingV1::ManimCairoSrgb,
+            ))
+            .unwrap();
+        let decode_first_color = |plan: &GpuUploadPlanV1| {
+            plan.vertex_bytes()
+                .chunks_exact(F32_BYTES)
+                .skip(POSITION_COMPONENTS)
+                .take(MATERIAL_COMPONENTS)
+                .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(decode_first_color(&linear), vec![0.5, 0.25, 0.0, 0.5]);
+        assert_eq!(decode_first_color(&cairo), vec![0.4, 0.3, 0.2, 0.5]);
     }
 }

@@ -16,8 +16,9 @@ use poietra_render_wgpu::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSubpathV1, ImageLocalRectV1, ImageSamplerV1, RenderCameraKindV1,
-    RenderCameraV1, RenderCapabilityV1, RenderDrawV1, RenderPacketV1, RgbaColorV1, SceneIrBundleV1,
-    SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, ViewportV1,
+    RenderCameraV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
+    RgbaColorV1, SceneIrBundleV1, SceneSourceV1, SnapshotProfileVersionV1, StrokeCapV1,
+    StrokeJoinV1, ViewportV1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -30,6 +31,7 @@ use support::{
 const BYTES_PER_PIXEL: u32 = 4;
 const GPU_TIMEOUT: Duration = Duration::from_secs(10);
 const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+const MANIM_CAIRO_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -416,7 +418,7 @@ const REAL_SPIRAL_IN_V11_SOURCE_MIRROR_PATH: &str =
     "fixtures/real-preview-harness/example_scenes/basic.py";
 const REAL_SPIRAL_IN_V11_SOURCE_SHA256: &str =
     "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
-const REAL_SPIRAL_IN_V11_ENGINE_COMMIT: &str = "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2";
+const REAL_SPIRAL_IN_V11_ENGINE_COMMIT: &str = "e5423a8cb79a8326d42337e204ed12784750cdf1";
 const REAL_SPIRAL_IN_V11_FAST_MANIM_COMMIT: &str = "4a6eaf1b4085ed643698da5116dd23814411eb5b";
 const REAL_SPIRAL_IN_V11_FAST_MANIM_TREE: &str = "6fad77addc72e1a97440265e27d02630cf5b37b4";
 const REAL_SPIRAL_IN_V11_PRODUCER_SNAPSHOT_DIGEST: &str =
@@ -553,6 +555,16 @@ fn render_packet_semantic_digest(packet: &RenderPacketV1) -> String {
         "camera": packet.camera,
         "draws": packet.draws,
     });
+    if packet.compositing != RenderCompositingV1::LinearLight {
+        normalized
+            .as_object_mut()
+            .expect("frame semantics must remain an object")
+            .insert(
+                "compositing".to_owned(),
+                serde_json::to_value(packet.compositing)
+                    .expect("render compositing semantics must serialize"),
+            );
+    }
     normalize_semantic_numbers(&mut normalized);
     format!(
         "{:x}",
@@ -578,6 +590,7 @@ fn adapter_evidence(adapter_info: &wgpu::AdapterInfo) -> AdapterEvidence {
 fn emit_native_visual_parity_artifact(
     entry: &VisualParityCorpusEntry,
     adapter_info: &wgpu::AdapterInfo,
+    target_format: wgpu::TextureFormat,
     rgba: &[u8],
 ) -> bool {
     let Some(root) = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1) else {
@@ -641,7 +654,11 @@ fn emit_native_visual_parity_artifact(
         schema: "poietra.visual-parity-native-artifact",
         target: NativeVisualParityTarget {
             color_domain: "srgb-u8",
-            format: "Rgba8UnormSrgb",
+            format: match target_format {
+                wgpu::TextureFormat::Rgba8Unorm => "Rgba8Unorm",
+                wgpu::TextureFormat::Rgba8UnormSrgb => "Rgba8UnormSrgb",
+                _ => panic!("native visual parity artifacts require an RGBA8 target"),
+            },
         },
         version: 1,
     };
@@ -715,13 +732,15 @@ fn request_fallback_adapter(instance: &wgpu::Instance) -> wgpu::Adapter {
 fn assert_target_format_support(adapter: &wgpu::Adapter) {
     let required_texture_usages =
         wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT;
-    let format_features = adapter.get_texture_format_features(TARGET_FORMAT);
-    assert!(
-        format_features
-            .allowed_usages
-            .contains(required_texture_usages),
-        "fallback adapter must support {TARGET_FORMAT:?} as a copyable render attachment"
-    );
+    for format in [TARGET_FORMAT, MANIM_CAIRO_TARGET_FORMAT] {
+        let format_features = adapter.get_texture_format_features(format);
+        assert!(
+            format_features
+                .allowed_usages
+                .contains(required_texture_usages),
+            "fallback adapter must support {format:?} as a copyable render attachment"
+        );
+    }
 }
 
 fn request_device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
@@ -781,13 +800,17 @@ fn render_prepared(
         height: height_px,
         width: width_px,
     };
+    let target_format = match prepared.compositing() {
+        RenderCompositingV1::LinearLight => TARGET_FORMAT,
+        RenderCompositingV1::ManimCairoSrgb => MANIM_CAIRO_TARGET_FORMAT,
+    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("poietra headless proof target"),
         size: extent,
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: TARGET_FORMAT,
+        format: target_format,
         usage: wgpu::TextureUsages::COPY_SRC | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
@@ -797,7 +820,7 @@ fn render_prepared(
             device,
             queue,
             WgpuRenderTargetV1 {
-                format: TARGET_FORMAT,
+                format: target_format,
                 height_px,
                 view: &view,
                 width_px,
@@ -981,6 +1004,95 @@ fn renders_shared_fixture_with_fallback_adapter() {
         padded_bytes_per_row,
         &rgba,
         [extent.width, extent.height],
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the dedicated CI step runs this proof"]
+fn renders_manim_cairo_srgb_overlap_on_a_non_black_background() {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let mut packet = empty_render_packet(
+        ViewportV1 {
+            height_px: 4,
+            width_px: 8,
+        },
+        RenderCameraV1 {
+            bottom: -1.0,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.6,
+                green: 0.4,
+                red: 0.2,
+            },
+            kind: RenderCameraKindV1::Orthographic2d,
+            left: -2.0,
+            right: 2.0,
+            top: 1.0,
+        },
+    );
+    packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    packet.draws = vec![
+        solid_rectangle_draw(
+            "draw:cairo:red",
+            "entity:cairo:red",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -2.0,
+                right: 0.75,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.1,
+                green: 0.2,
+                red: 0.8,
+            },
+            0.5,
+            0,
+        ),
+        solid_rectangle_draw(
+            "draw:cairo:green",
+            "entity:cairo:green",
+            &ImageLocalRectV1 {
+                bottom: -1.0,
+                left: -0.75,
+                right: 2.0,
+                top: 1.0,
+            },
+            RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.3,
+                green: 0.8,
+                red: 0.1,
+            },
+            0.25,
+            1,
+        ),
+    ];
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT).unwrap();
+    let (texture, extent) = render_packet(&device, &queue, &mut renderer, &packet);
+    let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 1, 2),
+        [128, 77, 89, 255],
+        [2, 2, 2, 0],
+    );
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 3, 2),
+        [102, 109, 86, 255],
+        [2, 2, 2, 0],
+    );
+    assert_pixel_close(
+        pixel(&rgba, extent.width, 6, 2),
+        [45, 128, 134, 255],
+        [2, 2, 2, 0],
     );
 }
 
@@ -1263,8 +1375,12 @@ fn renders_dynamic_affine_camera_samples_with_fallback_adapter() {
                 !artifact_emitted,
                 "visual parity artifact must be emitted once"
             );
-            artifact_emitted =
-                emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba);
+            artifact_emitted = emit_native_visual_parity_artifact(
+                &visual_parity_entry,
+                &adapter_info,
+                TARGET_FORMAT,
+                &rgba,
+            );
         }
         let bounds = non_background_bounds(&rgba, extent.width, extent.height);
         assert_eq!(
@@ -1491,7 +1607,7 @@ fn render_and_assert_shared_reference(
     if let Some(entry) = visual_parity_entry {
         let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
         assert_eq!(
-            emit_native_visual_parity_artifact(entry, &adapter_info, &rgba),
+            emit_native_visual_parity_artifact(entry, &adapter_info, TARGET_FORMAT, &rgba),
             artifact_requested,
             "the opt-in {evidence_name} native artifact must be emitted exactly once"
         );
@@ -1734,7 +1850,12 @@ fn renders_mathtex_nested_radical_fraction_with_fallback_adapter() {
 
     let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
     assert_eq!(
-        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        emit_native_visual_parity_artifact(
+            &visual_parity_entry,
+            &adapter_info,
+            TARGET_FORMAT,
+            &rgba,
+        ),
         artifact_requested,
         "the opt-in MathTex native artifact must be emitted exactly once"
     );
@@ -1970,6 +2091,7 @@ fn renders_real_mathtex_morph_v5_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2365,6 +2487,7 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2589,6 +2712,7 @@ fn renders_real_warp_square_v9_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -2737,6 +2861,7 @@ fn renders_real_spiral_in_v11_samples_with_fallback_adapter() {
             assert_eq!(packet.sample_time.to_bits(), sample.sample_time.to_bits());
             assert_eq!(packet.viewport, sample.viewport);
             assert_eq!(packet.scene_revision_hash, REAL_SPIRAL_IN_V11_SNAPSHOT_HASH);
+            assert_eq!(packet.compositing, RenderCompositingV1::ManimCairoSrgb);
             assert_eq!(
                 render_packet_semantic_digest(&packet),
                 sample.expected.semantic_digest,
@@ -2830,6 +2955,7 @@ fn renders_real_spiral_in_v11_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
+                MANIM_CAIRO_TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })
@@ -3140,7 +3266,12 @@ fn renders_png_alpha_edge_camera_midpoint_with_fallback_adapter() {
 
     let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
     assert_eq!(
-        emit_native_visual_parity_artifact(&visual_parity_entry, &adapter_info, &rgba),
+        emit_native_visual_parity_artifact(
+            &visual_parity_entry,
+            &adapter_info,
+            TARGET_FORMAT,
+            &rgba,
+        ),
         artifact_requested,
         "the opt-in PNG native artifact must be emitted exactly once"
     );

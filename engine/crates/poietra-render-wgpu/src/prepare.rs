@@ -12,8 +12,8 @@ use lyon_tessellation::{
 };
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, ImageLocalRectV1,
-    ImageSamplerV1, PointV1, RenderCameraV1, RenderDrawV1, RenderPacketV1, RgbaColorV1,
-    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
+    ImageSamplerV1, PointV1, RenderCameraV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
+    RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
 };
 
 use crate::DecodedPngAssetV1;
@@ -38,6 +38,8 @@ const MAX_FLATTEN_DEPTH_V1: u8 = 20;
 pub enum UnsupportedDrawReasonV1 {
     #[error("image draws require a verified decoded-asset resolver")]
     Image,
+    #[error("image draws are not implemented for manim-cairo-srgb compositing")]
+    ImageWithManimCairoSrgbCompositing,
     #[error("path draws must contain a solid fill or stroke")]
     MissingPaint,
     #[error("open subpaths are not implemented")]
@@ -132,16 +134,36 @@ impl PreparedGeometryVertexV1 {
     }
 }
 
-/// Premultiplied linear-light solid paint for one prepared paint phase.
+/// Both premultiplied representations of one prepared solid-paint phase.
+///
+/// Retaining both representations lets the upload boundary choose the packet's
+/// explicit compositing contract without duplicating geometry or material
+/// preparation. The linear-light representation is submitted through an sRGB
+/// target view; the Cairo-compatible representation is submitted through the
+/// corresponding base Unorm view.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedMaterialV1 {
     premultiplied_linear_color: [f32; 4],
+    premultiplied_srgb_color: [f32; 4],
 }
 
 impl PreparedMaterialV1 {
     #[must_use]
     pub const fn premultiplied_linear_color(&self) -> [f32; 4] {
         self.premultiplied_linear_color
+    }
+
+    #[must_use]
+    pub const fn premultiplied_srgb_color(&self) -> [f32; 4] {
+        self.premultiplied_srgb_color
+    }
+
+    #[must_use]
+    pub(crate) const fn color_for_compositing(&self, compositing: RenderCompositingV1) -> [f32; 4] {
+        match compositing {
+            RenderCompositingV1::LinearLight => self.premultiplied_linear_color,
+            RenderCompositingV1::ManimCairoSrgb => self.premultiplied_srgb_color,
+        }
     }
 }
 
@@ -294,6 +316,7 @@ pub struct OrderedDrawPlanV1 {
 /// Complete, fail-closed CPU output consumed by [`crate::WgpuPaintRendererV1`].
 #[derive(Debug, PartialEq)]
 pub struct PreparedFrameV1 {
+    compositing: RenderCompositingV1,
     geometry: PreparedGeometryPlanV1,
     materials: PreparedMaterialPlanV1,
     ordered_draws: OrderedDrawPlanV1,
@@ -301,6 +324,11 @@ pub struct PreparedFrameV1 {
 }
 
 impl PreparedFrameV1 {
+    #[must_use]
+    pub const fn compositing(&self) -> RenderCompositingV1 {
+        self.compositing
+    }
+
     #[must_use]
     pub const fn clear_color(&self) -> [f64; 4] {
         self.materials.clear_color
@@ -412,7 +440,15 @@ impl PreparedFrameV1 {
 
     #[cfg(test)]
     pub(crate) fn triangle_for_upload_test() -> Self {
+        Self::triangle_for_upload_test_with_compositing(RenderCompositingV1::LinearLight)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn triangle_for_upload_test_with_compositing(
+        compositing: RenderCompositingV1,
+    ) -> Self {
         Self {
+            compositing,
             geometry: PreparedGeometryPlanV1 {
                 indices: vec![0, 1, 2],
                 tessellation_calls: 1,
@@ -432,6 +468,7 @@ impl PreparedFrameV1 {
                 clear_color: [0.0, 0.0, 0.0, 1.0],
                 materials: vec![PreparedMaterialV1 {
                     premultiplied_linear_color: [0.5, 0.25, 0.0, 0.5],
+                    premultiplied_srgb_color: [0.4, 0.3, 0.2, 0.5],
                 }],
             },
             ordered_draws: OrderedDrawPlanV1 {
@@ -1163,14 +1200,39 @@ fn premultiplied_linear_color(
     ])
 }
 
-fn prepared_clear_color(color: &RgbaColorV1) -> Result<[f64; 4], PrepareFrameErrorV1> {
+fn premultiplied_srgb_color(
+    color: &RgbaColorV1,
+    opacity: f64,
+    draw_id: Option<&str>,
+) -> Result<[f32; 4], PrepareFrameErrorV1> {
+    let alpha = color.alpha * opacity;
+    Ok([
+        checked_f32(color.red * alpha, draw_id, "sRGB red")?,
+        checked_f32(color.green * alpha, draw_id, "sRGB green")?,
+        checked_f32(color.blue * alpha, draw_id, "sRGB blue")?,
+        checked_f32(alpha, draw_id, "alpha")?,
+    ])
+}
+
+fn prepared_clear_color(
+    color: &RgbaColorV1,
+    compositing: RenderCompositingV1,
+) -> Result<[f64; 4], PrepareFrameErrorV1> {
     let alpha = color.alpha;
-    let result = [
-        srgb_to_linear(color.red) * alpha,
-        srgb_to_linear(color.green) * alpha,
-        srgb_to_linear(color.blue) * alpha,
-        alpha,
-    ];
+    let result = match compositing {
+        RenderCompositingV1::LinearLight => [
+            srgb_to_linear(color.red) * alpha,
+            srgb_to_linear(color.green) * alpha,
+            srgb_to_linear(color.blue) * alpha,
+            alpha,
+        ],
+        RenderCompositingV1::ManimCairoSrgb => [
+            color.red * alpha,
+            color.green * alpha,
+            color.blue * alpha,
+            alpha,
+        ],
+    };
     for (index, value) in result.iter().enumerate() {
         checked_f32(
             *value,
@@ -1278,6 +1340,7 @@ fn prepare_material(
 ) -> Result<PreparedMaterialV1, PrepareFrameErrorV1> {
     Ok(PreparedMaterialV1 {
         premultiplied_linear_color: premultiplied_linear_color(color, opacity, Some(draw_id))?,
+        premultiplied_srgb_color: premultiplied_srgb_color(color, opacity, Some(draw_id))?,
     })
 }
 
@@ -2378,6 +2441,17 @@ fn tessellate_validated_frame_inner_v1(
     assets: Option<&dyn DecodedPngAssetResolverV1>,
 ) -> Result<PreparedFrameV1, PrepareFrameErrorV1> {
     let packet = validated.packet;
+    if packet.compositing == RenderCompositingV1::ManimCairoSrgb
+        && let Some(draw) = packet
+            .draws
+            .iter()
+            .find(|draw| matches!(draw, RenderDrawV1::Image { .. }))
+    {
+        return Err(PrepareFrameErrorV1::Unsupported {
+            draw_id: draw.draw_id().to_owned(),
+            reason: UnsupportedDrawReasonV1::ImageWithManimCairoSrgbCompositing,
+        });
+    }
     let phase_capacity = packet.draws.len().saturating_mul(2);
     let mut prepared = PreparedFrameAccumulatorV1::with_phase_capacity(phase_capacity);
     for draw in &packet.draws {
@@ -2426,13 +2500,14 @@ fn tessellate_validated_frame_inner_v1(
     }
 
     Ok(PreparedFrameV1 {
+        compositing: packet.compositing,
         geometry: PreparedGeometryPlanV1 {
             indices: prepared.indices,
             tessellation_calls: prepared.tessellation_calls,
             vertices: prepared.vertices,
         },
         materials: PreparedMaterialPlanV1 {
-            clear_color: prepared_clear_color(&packet.camera.clear_color)?,
+            clear_color: prepared_clear_color(&packet.camera.clear_color, packet.compositing)?,
             materials: prepared.materials,
         },
         ordered_draws: OrderedDrawPlanV1 {
@@ -2447,6 +2522,43 @@ fn tessellate_validated_frame_inner_v1(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepares_distinct_linear_and_cairo_srgb_premultiplied_colors() {
+        let assert_near = |actual: f64, expected: f64| {
+            assert!((actual - expected).abs() < 1.0e-7, "{actual} != {expected}");
+        };
+        let color = RgbaColorV1 {
+            alpha: 0.8,
+            blue: 0.0,
+            green: 0.25,
+            red: 0.5,
+        };
+        let material = prepare_material(&color, 0.5, "draw:test").unwrap();
+        let alpha = 0.4;
+
+        for (actual, expected) in material
+            .premultiplied_srgb_color()
+            .into_iter()
+            .zip([0.2, 0.1, 0.0, alpha])
+        {
+            assert_near(f64::from(actual), expected);
+        }
+        let linear = material.premultiplied_linear_color();
+        assert_near(f64::from(linear[0]), srgb_to_linear(0.5) * alpha);
+        assert_near(f64::from(linear[1]), srgb_to_linear(0.25) * alpha);
+        assert_near(f64::from(linear[2]), 0.0);
+        assert_near(f64::from(linear[3]), alpha);
+
+        let linear_clear = prepared_clear_color(&color, RenderCompositingV1::LinearLight).unwrap();
+        let cairo_clear =
+            prepared_clear_color(&color, RenderCompositingV1::ManimCairoSrgb).unwrap();
+        for (actual, expected) in cairo_clear.into_iter().zip([0.4, 0.2, 0.0, 0.8]) {
+            assert_near(actual, expected);
+        }
+        assert_near(linear_clear[3], cairo_clear[3]);
+        assert!((linear_clear[0] - cairo_clear[0]).abs() > 0.1);
+    }
 
     #[test]
     fn geometry_sanitization_drops_zero_area_triangles_but_keeps_valid_output() {

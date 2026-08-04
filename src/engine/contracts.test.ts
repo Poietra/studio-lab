@@ -8,10 +8,12 @@ import {
   engineFrameV1Schema,
   parseVerifiedEngineFrameV1,
   parseVerifiedSceneIrBundleV1,
+  renderPacketCompositingV1,
   renderPacketV1Schema,
   type SceneIrV1,
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
+  sceneSourceRenderCompositingV1,
   sceneSourceV1Schema,
 } from "./contracts";
 import { isSingularAffineTransform, MIN_AFFINE_DETERMINANT } from "./primitives";
@@ -249,8 +251,81 @@ describe("Poietra Engine v1 contracts", () => {
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 9 })).toEqual({ ...source, snapshotVersion: 9 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 10 })).toEqual({ ...source, snapshotVersion: 10 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 11 })).toEqual({ ...source, snapshotVersion: 11 });
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 10 })).toBe("linear-light");
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 11 })).toBe("manim-cairo-srgb");
     for (const unsupported of [0, 2.5, 12]) {
       expect(sceneSourceV1Schema.safeParse({ ...source, snapshotVersion: unsupported }).success).toBe(false);
+    }
+  });
+
+  it("keeps linear-light optional on the TypeScript wire without parse-time completion", async () => {
+    const assets = await manifest();
+    const renderPacket = packet(scene(assets), assets);
+    const parsed = renderPacketV1Schema.parse(renderPacket);
+
+    expect("compositing" in parsed).toBe(false);
+    expect(renderPacketCompositingV1(parsed)).toBe("linear-light");
+    const explicitLinear = renderPacketV1Schema.parse({ ...renderPacket, compositing: "linear-light" });
+    expect("compositing" in explicitLinear).toBe(false);
+    expect(renderPacketCompositingV1(explicitLinear)).toBe("linear-light");
+    expect(explicitLinear).toEqual(parsed);
+    expect(JSON.stringify(explicitLinear)).toBe(JSON.stringify(parsed));
+  });
+
+  it("rejects image draws under Manim Cairo compositing", async () => {
+    const assets = await manifest();
+    const renderPacket = packet(scene(assets), assets);
+    const result = renderPacketV1Schema.safeParse({ ...renderPacket, compositing: "manim-cairo-srgb" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues).toContainEqual(
+        expect.objectContaining({
+          message: "manim-cairo-srgb compositing does not support image draws",
+          path: ["draws", 2, "kind"],
+        }),
+      );
+    }
+  });
+
+  it("binds explicit Cairo compositing to imported Manim snapshot V11 only", async () => {
+    const assets = await manifest();
+    const baseScene = scene(assets);
+    const basePacket = packet(baseScene, assets);
+    const vectorScene = {
+      ...baseScene,
+      entities: baseScene.entities.filter((entity) => entity.geometry.kind !== "image"),
+      requiredCapabilities: baseScene.requiredCapabilities.filter((capability) => capability !== "png-image"),
+      source: {
+        kind: "imported-manim-server-snapshot" as const,
+        runtimeConfigHash: ZERO_HASH,
+        snapshotHash: ASSET_HASH,
+        snapshotVersion: 11 as const,
+        sourceHash: SCENE_HASH,
+      },
+    };
+    const cairoPacket = {
+      ...basePacket,
+      compositing: "manim-cairo-srgb" as const,
+      draws: basePacket.draws.filter((draw) => draw.kind !== "image"),
+      requiredCapabilities: basePacket.requiredCapabilities.filter((capability) => capability !== "png-image"),
+      sceneRevisionHash: ASSET_HASH,
+    };
+
+    expect(engineFrameV1Schema.safeParse({ assets, packet: cairoPacket, scene: vectorScene }).success).toBe(true);
+
+    const missingMode = { ...cairoPacket };
+    delete (missingMode as Partial<typeof missingMode>).compositing;
+    const mismatch = engineFrameV1Schema.safeParse({ assets, packet: missingMode, scene: vectorScene });
+    expect(mismatch.success).toBe(false);
+    if (!mismatch.success) {
+      expect(mismatch.error.issues.some((issue) => issue.message.includes("source profile"))).toBe(true);
+    }
+
+    const studioMismatch = engineFrameV1Schema.safeParse({ assets, packet: cairoPacket, scene: baseScene });
+    expect(studioMismatch.success).toBe(false);
+    if (!studioMismatch.success) {
+      expect(studioMismatch.error.issues.some((issue) => issue.message.includes("source profile"))).toBe(true);
     }
   });
 

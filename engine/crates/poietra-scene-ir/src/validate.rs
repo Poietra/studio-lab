@@ -5,9 +5,9 @@ use std::fmt;
 use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
-    KeyframeV1, PointV1, RenderCapabilityV1, RenderDrawV1, RenderEmptyReasonV1, RenderPacketV1,
-    RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1,
-    SceneIrV1, SceneSourceV1, StrokeStyleV1,
+    KeyframeV1, PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1,
+    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
+    SceneCapabilityV1, SceneGeometryV1, SceneIrV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -1473,6 +1473,12 @@ pub fn validate_render_packet_v1(packet: &RenderPacketV1) -> Result<(), Validati
                 transform,
                 ..
             } => {
+                if packet.compositing == RenderCompositingV1::ManimCairoSrgb {
+                    validator.issue(
+                        format!("{path}.kind"),
+                        "manim-cairo-srgb compositing does not support image draws",
+                    );
+                }
                 validate_asset_reference(asset, &format!("{path}.asset"), &mut validator);
                 validate_image_rect(local_rect, &format!("{path}.localRect"), &mut validator);
                 validate_transform(transform, &format!("{path}.transform"), &mut validator);

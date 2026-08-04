@@ -577,33 +577,33 @@ describe("visual parity v1 contracts", () => {
     const fixtureRevision = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
     const corpus = await corpusFixture();
     const expectedSamples = [
-      ["real-spiral-in-v11--start", "start", 0, "2a88992b0b6d392964c4189c59daecfad3c8010cd20a6b871423cd7f151bc713"],
+      ["real-spiral-in-v11--start", "start", 0, "4a58d3347663fa01846422ac73cf1e530659f8e487e90545a7a3cc8a6db09a47"],
       [
         "real-spiral-in-v11--early-reveal",
         "early-reveal",
         0.1,
-        "bdcfe6630ed39f143959a54abe437e2b0fcae1c88f542469c8468847ed91d4bb",
+        "9f1edd6f1c65d352b0995e870b4aa7f1dd611501a3aa91ae2ddd2d8da59fdcc7",
       ],
       [
         "real-spiral-in-v11--spiral-midpoint",
         "spiral-midpoint",
         0.5,
-        "24f32dbbb0dd1ba7d1e39c3a12f1d043cbd16e4d61e149b88bacec4f5c376587",
+        "269e56232ec150380d5f8c204eed7674c892615130952c16124c2bb3aaef4d51",
       ],
       [
         "real-spiral-in-v11--spiral-end",
         "spiral-end",
         1,
-        "13c53695117de4343966df9fcc1c750ea0e10503177fa4d7f632467533bab333",
+        "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc",
       ],
-      ["real-spiral-in-v11--hold", "hold", 1.5, "13c53695117de4343966df9fcc1c750ea0e10503177fa4d7f632467533bab333"],
+      ["real-spiral-in-v11--hold", "hold", 1.5, "d01cda09c83d16964eed3fa580672cc5ea0438f13d35536e0e354f4a37aeeddc"],
       [
         "real-spiral-in-v11--group-fade-midpoint",
         "group-fade-midpoint",
         2.5,
-        "530f3fa366f2a90cab8bc3da7cc8c4feb6a9dd25cb1f1fed4fd2821bbb25e61e",
+        "d3e732049a2025c84b1ed263e86aed2da07856fc0dd255c1b3e8ff6b0fb923d7",
       ],
-      ["real-spiral-in-v11--end", "end", 3, "9ffcc529e3ca4e953e7c10fea11c9cc1dd67aa1c06e3b345bd5b78caedd9e857"],
+      ["real-spiral-in-v11--end", "end", 3, "53313d7e0bfa86225f8b4f998f8dd91bb1574398f5b18172bdfb7fcf09faedb2"],
     ] as const;
     for (const [entryId, sampleId, sampleTime, semanticDigest] of expectedSamples) {
       const entry = corpus.entries.find(({ id }) => id === entryId);
@@ -660,7 +660,7 @@ describe("visual parity v1 contracts", () => {
       "opacity",
     ]);
     expect(fixture.producerReference).toEqual({
-      engineCommit: "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2",
+      engineCommit: "e5423a8cb79a8326d42337e204ed12784750cdf1",
       fastManimCommit: "4a6eaf1b4085ed643698da5116dd23814411eb5b",
       fastManimTree: "6fad77addc72e1a97440265e27d02630cf5b37b4",
       kind: "server-sealed-real-fast-manim-profile-v11",
@@ -926,6 +926,19 @@ describe("visual parity v1 contracts", () => {
       version: 1,
     };
     expect(visualParityReportV1Schema.safeParse(valid).success).toBe(true);
+    expect(
+      visualParityReportV1Schema.safeParse({
+        ...valid,
+        browser: { ...valid.browser, viewFormat: "Rgba8Unorm" },
+        native: { ...valid.native, format: "Rgba8Unorm" },
+      }).success,
+    ).toBe(true);
+    expect(
+      visualParityReportV1Schema.safeParse({
+        ...valid,
+        browser: { ...valid.browser, viewFormat: "Rgba8Unorm" },
+      }).success,
+    ).toBe(false);
     expect(visualParityReportV1Schema.safeParse({ ...valid, gate: { ...valid.gate, passed: false } }).success).toBe(
       false,
     );

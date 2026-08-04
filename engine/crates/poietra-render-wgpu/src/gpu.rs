@@ -9,6 +9,7 @@ use crate::{
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, PreparedFrameV1,
     PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
+use poietra_scene_ir::RenderCompositingV1;
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
@@ -36,6 +37,16 @@ const PREMULTIPLIED_ALPHA_BLEND: wgpu::BlendState = wgpu::BlendState {
         operation: wgpu::BlendOperation::Add,
     },
 };
+
+fn cairo_target_format_for_linear_view(
+    target_format: wgpu::TextureFormat,
+) -> Option<wgpu::TextureFormat> {
+    matches!(
+        target_format,
+        wgpu::TextureFormat::Rgba8UnormSrgb | wgpu::TextureFormat::Bgra8UnormSrgb
+    )
+    .then(|| target_format.remove_srgb_suffix())
+}
 
 /// Target view plus caller-provided format and extent evidence. WGPU does not
 /// expose these properties from a `TextureView`, so the renderer verifies the
@@ -71,6 +82,8 @@ pub enum RenderFrameErrorV1 {
         expected_height: u32,
         expected_width: u32,
     },
+    #[error("manim-cairo-srgb compositing does not support image draws")]
+    ManimCairoSrgbImagesUnsupported,
 }
 
 /// A target format cannot preserve the initial renderer's linear-light output.
@@ -279,6 +292,8 @@ fn record_ordered_draws_v1(
 #[derive(Debug)]
 pub struct WgpuFillRendererV1 {
     arena: GpuBufferArenaV1,
+    cairo_pipeline: wgpu::RenderPipeline,
+    cairo_target_format: wgpu::TextureFormat,
     image_pipeline: ImagePipelineV1,
     image_texture_cache: ImageTextureCacheV1,
     pipeline: wgpu::RenderPipeline,
@@ -319,7 +334,9 @@ pub enum RendererMemorySnapshotErrorV1 {
 }
 
 impl WgpuFillRendererV1 {
-    /// Creates a single-sample pipeline for the caller's target format.
+    /// Creates paired single-sample pipelines for one sRGB view and its base
+    /// Unorm view. Both pipelines share the retained geometry arena and image
+    /// cache; each frame selects exactly one through its compositing contract.
     ///
     /// # Errors
     ///
@@ -348,50 +365,57 @@ impl WgpuFillRendererV1 {
         target_format: wgpu::TextureFormat,
         image_texture_cache_limits: ImageTextureCacheLimitsV1,
     ) -> Result<Self, CreateRendererErrorV1> {
-        if !matches!(
-            target_format,
-            wgpu::TextureFormat::Rgba8UnormSrgb | wgpu::TextureFormat::Bgra8UnormSrgb
-        ) {
-            return Err(CreateRendererErrorV1::UnsupportedTargetFormat {
+        let cairo_target_format = cairo_target_format_for_linear_view(target_format).ok_or(
+            CreateRendererErrorV1::UnsupportedTargetFormat {
                 format: target_format,
-            });
-        }
+            },
+        )?;
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("poietra solid paint pipeline v1"),
-            layout: None,
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: VERTEX_STRIDE,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &VERTEX_ATTRIBUTES,
-                })],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..wgpu::PrimitiveState::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(PREMULTIPLIED_ALPHA_BLEND),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        let create_paint_pipeline = |label, format| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: None,
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &[Some(wgpu::VertexBufferLayout {
+                        array_stride: VERTEX_STRIDE,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &VERTEX_ATTRIBUTES,
+                    })],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..wgpu::PrimitiveState::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_main"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(PREMULTIPLIED_ALPHA_BLEND),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline =
+            create_paint_pipeline("poietra linear-light paint pipeline v1", target_format);
+        let cairo_pipeline = create_paint_pipeline(
+            "poietra Manim Cairo sRGB paint pipeline v1",
+            cairo_target_format,
+        );
         Ok(Self {
             arena: GpuBufferArenaV1::default(),
+            cairo_pipeline,
+            cairo_target_format,
             image_pipeline: ImagePipelineV1::new(device, target_format),
             image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
             pipeline,
@@ -427,6 +451,19 @@ impl WgpuFillRendererV1 {
     #[must_use]
     pub const fn target_format(&self) -> wgpu::TextureFormat {
         self.target_format
+    }
+
+    /// Returns the texture-view format required by one prepared frame's
+    /// explicit compositing contract.
+    #[must_use]
+    pub const fn target_format_for_compositing(
+        &self,
+        compositing: RenderCompositingV1,
+    ) -> wgpu::TextureFormat {
+        match compositing {
+            RenderCompositingV1::LinearLight => self.target_format,
+            RenderCompositingV1::ManimCairoSrgb => self.cairo_target_format,
+        }
     }
 
     /// Clears the target and submits all indexed triangle ranges in packet paint order.
@@ -480,11 +517,17 @@ impl WgpuFillRendererV1 {
                 expected_width,
             });
         }
-        if target.format != self.target_format {
+        let expected_target_format = self.target_format_for_compositing(frame.compositing());
+        if target.format != expected_target_format {
             return Err(RenderFrameErrorV1::TargetFormatMismatch {
                 actual: target.format,
-                expected: self.target_format,
+                expected: expected_target_format,
             });
+        }
+        if frame.compositing() == RenderCompositingV1::ManimCairoSrgb
+            && !frame.image_draws().is_empty()
+        {
+            return Err(RenderFrameErrorV1::ManimCairoSrgbImagesUnsupported);
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
@@ -580,9 +623,13 @@ impl WgpuFillRendererV1 {
             });
             if has_geometry {
                 let draw_record_started = stage_started(clock);
+                let paint_pipeline = match frame.compositing() {
+                    RenderCompositingV1::LinearLight => &self.pipeline,
+                    RenderCompositingV1::ManimCairoSrgb => &self.cairo_pipeline,
+                };
                 evidence.draw_calls = record_ordered_draws_v1(
                     &mut pass,
-                    &self.pipeline,
+                    paint_pipeline,
                     paint_buffers(&self.arena, frame)?,
                     &self.image_pipeline,
                     &self.image_texture_cache,
@@ -600,5 +647,26 @@ impl WgpuFillRendererV1 {
         let submission = queue.submit([command_buffer]);
         evidence.submit_ms = stage_elapsed(clock, submit_started);
         Ok((submission, evidence))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_supported_srgb_views_to_their_exact_base_unorm_format() {
+        assert_eq!(
+            cairo_target_format_for_linear_view(wgpu::TextureFormat::Rgba8UnormSrgb),
+            Some(wgpu::TextureFormat::Rgba8Unorm)
+        );
+        assert_eq!(
+            cairo_target_format_for_linear_view(wgpu::TextureFormat::Bgra8UnormSrgb),
+            Some(wgpu::TextureFormat::Bgra8Unorm)
+        );
+        assert_eq!(
+            cairo_target_format_for_linear_view(wgpu::TextureFormat::Rgba8Unorm),
+            None
+        );
     }
 }

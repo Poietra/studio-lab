@@ -1119,11 +1119,22 @@ impl PoietraCanvasEngineV1 {
                 return Err(failure);
             }
         };
+        let target_format = self
+            .renderer
+            .target_format_for_compositing(frame.compositing());
+        let view_label = match frame.compositing() {
+            poietra_scene_ir::RenderCompositingV1::LinearLight => {
+                "poietra canvas linear-light sRGB view v1"
+            }
+            poietra_scene_ir::RenderCompositingV1::ManimCairoSrgb => {
+                "poietra canvas Manim Cairo base Unorm view v1"
+            }
+        };
         let view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor {
-                label: Some("poietra canvas sRGB view v1"),
-                format: Some(self.view_format),
+                label: Some(view_label),
+                format: Some(target_format),
                 ..wgpu::TextureViewDescriptor::default()
             });
         record_surface_acquire(&mut recorder);
@@ -1135,7 +1146,7 @@ impl PoietraCanvasEngineV1 {
             &self.device,
             &self.queue,
             WgpuRenderTargetV1 {
-                format: self.view_format,
+                format: target_format,
                 height_px,
                 view: &view,
                 width_px,
