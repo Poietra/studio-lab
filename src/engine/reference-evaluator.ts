@@ -12,7 +12,7 @@ import {
   trimCubicPathV1,
 } from "./geometry";
 import { type CubicPathV1, type EngineAffineTransformV1, isSingularAffineTransform } from "./primitives";
-import { type SceneIrV1, sceneIrSourceRevisionHash } from "./scene-ir";
+import { type SceneIrV1, sceneIrSourceRevisionHash, sceneSourceRenderCompositingV1 } from "./scene-ir";
 
 type KeyframeV1<T> = Readonly<{
   at: number;
@@ -352,6 +352,7 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
       });
 
     const camera = sampleCamera(scene, sampleTime);
+    const compositing = sceneSourceRenderCompositingV1(scene.source);
     const packet = {
       assetManifest: scene.assetManifest,
       camera: {
@@ -362,6 +363,7 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
         right: camera.center.x + camera.frameWidth / 2,
         top: camera.center.y + camera.frameHeight / 2,
       },
+      ...(compositing === "manim-cairo-srgb" ? { compositing } : {}),
       coordinateSpace: scene.coordinateSpace,
       draws,
       evidence,

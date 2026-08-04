@@ -624,6 +624,24 @@ impl SceneSourceV1 {
             Self::ImportedManimServerSnapshot { snapshot_hash, .. } => snapshot_hash,
         }
     }
+
+    /// Returns the renderer compositing semantics required by this source profile.
+    ///
+    /// The V11 importer seals colors and opacity against Manim's Cairo output. Older
+    /// imported profiles and Studio-authored scenes retain the engine's original
+    /// linear-light contract.
+    #[must_use]
+    pub const fn render_compositing(&self) -> RenderCompositingV1 {
+        match self {
+            Self::ImportedManimServerSnapshot {
+                snapshot_version: SnapshotProfileVersionV1::V11,
+                ..
+            } => RenderCompositingV1::ManimCairoSrgb,
+            Self::StudioEditProgram { .. } | Self::ImportedManimServerSnapshot { .. } => {
+                RenderCompositingV1::LinearLight
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -998,11 +1016,34 @@ pub enum RenderPacketSchemaV1 {
     RenderPacket,
 }
 
+/// Color compositing semantics required by one render packet.
+///
+/// `LinearLight` remains the implicit v1 wire default so existing packet bytes stay
+/// stable. `ManimCairoSrgb` is emitted explicitly only for source profiles whose
+/// fidelity contract is sealed against Manim's Cairo renderer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub enum RenderCompositingV1 {
+    #[default]
+    #[serde(rename = "linear-light")]
+    LinearLight,
+    #[serde(rename = "manim-cairo-srgb")]
+    ManimCairoSrgb,
+}
+
+impl RenderCompositingV1 {
+    #[must_use]
+    pub const fn is_linear_light(&self) -> bool {
+        matches!(self, Self::LinearLight)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RenderPacketV1 {
     pub asset_manifest: AssetManifestReferenceV1,
     pub camera: RenderCameraV1,
+    #[serde(default, skip_serializing_if = "RenderCompositingV1::is_linear_light")]
+    pub compositing: RenderCompositingV1,
     pub coordinate_space: CoordinateSpaceV1,
     pub draws: Vec<RenderDrawV1>,
     pub evidence: Vec<String>,

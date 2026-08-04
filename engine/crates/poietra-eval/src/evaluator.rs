@@ -699,6 +699,7 @@ fn compile_render_packet_from_validated_v1(
             right: camera.center.x + camera.frame_width / 2.0,
             top: camera.center.y + camera.frame_height / 2.0,
         },
+        compositing: options.scene.source.render_compositing(),
         coordinate_space: options.scene.coordinate_space.clone(),
         required_capabilities: render_capabilities(&draws),
         draws,
@@ -769,9 +770,9 @@ mod tests {
     use super::*;
     use poietra_scene_ir::{
         AssetManifestReferenceV1, AssetManifestSchemaV1, CoordinateSpaceV1, FidelityV1, FillRuleV1,
-        FillStyleV1, IntervalV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
-        SceneCameraV1, SceneCapabilityV1, SceneIrSchemaV1, SceneSourceV1, StrokeCapV1,
-        StrokeJoinV1, StrokeStyleV1,
+        FillStyleV1, IntervalV1, ProvenanceOriginV1, ProvenanceRecordV1, RenderCompositingV1,
+        RgbaColorV1, SceneCameraV1, SceneCapabilityV1, SceneIrSchemaV1, SceneSourceV1,
+        SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
     };
 
     const EMPTY_MANIFEST_DIGEST: &str =
@@ -902,6 +903,54 @@ mod tests {
         };
         assert!((*opacity - 0.5).abs() < 1.0e-12);
         assert_eq!(path.subpaths[0].segments.len(), 4);
+    }
+
+    #[test]
+    fn emits_explicit_cairo_compositing_for_imported_v11_only() {
+        let (assets, mut scene) = fixture();
+        scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: "0".repeat(64),
+            snapshot_hash: "0".repeat(64),
+            snapshot_version: SnapshotProfileVersionV1::V11,
+            source_hash: "0".repeat(64),
+        };
+        let compile = |scene: &SceneIrV1, packet_id: &str| {
+            compile_render_packet_v1(CompileEngineFrameOptionsV1 {
+                assets: &assets,
+                evidence: &[],
+                packet_id,
+                sample_time: 1.0,
+                scene,
+                viewport: ViewportV1 {
+                    height_px: 900,
+                    width_px: 1600,
+                },
+            })
+            .unwrap()
+        };
+
+        let v11 = compile(&scene, "packet:v11");
+        assert_eq!(v11.compositing, RenderCompositingV1::ManimCairoSrgb);
+        assert_eq!(
+            serde_json::to_value(&v11).unwrap()["compositing"],
+            "manim-cairo-srgb"
+        );
+
+        let SceneSourceV1::ImportedManimServerSnapshot {
+            snapshot_version, ..
+        } = &mut scene.source
+        else {
+            unreachable!()
+        };
+        *snapshot_version = SnapshotProfileVersionV1::V10;
+        let v10 = compile(&scene, "packet:v10");
+        assert_eq!(v10.compositing, RenderCompositingV1::LinearLight);
+        assert!(
+            serde_json::to_value(&v10)
+                .unwrap()
+                .get("compositing")
+                .is_none()
+        );
     }
 
     #[test]

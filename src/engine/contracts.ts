@@ -6,8 +6,8 @@ import {
   EngineContractIntegrityError,
   hasValidAssetManifestDigestV1,
 } from "./asset-manifest";
-import { renderPacketV1Schema } from "./render-packet";
-import { type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "./scene-ir";
+import { renderPacketCompositingV1, renderPacketV1Schema } from "./render-packet";
+import { type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema, sceneSourceRenderCompositingV1 } from "./scene-ir";
 
 export * from "./asset-manifest";
 export * from "./primitives";
@@ -119,6 +119,13 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
       code: "custom",
       message: "Packet Scene revision does not match Scene IR source evidence.",
       path: ["packet", "sceneRevisionHash"],
+    });
+  }
+  if (renderPacketCompositingV1(frame.packet) !== sceneSourceRenderCompositingV1(frame.scene.source)) {
+    context.addIssue({
+      code: "custom",
+      message: "packet compositing does not match scene source profile",
+      path: ["packet", "compositing"],
     });
   }
 

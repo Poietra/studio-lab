@@ -153,8 +153,14 @@ reported separately by opt-in telemetry.
 
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and `TextureView` values, clears an extent-checked target, and draws premultiplied
-linear-light indexed path triangles and verified PNG quads in packet paint order.
-It accepts only `Rgba8UnormSrgb` and `Bgra8UnormSrgb` single-sample render targets.
+indexed path triangles and verified PNG quads in packet paint order. The implicit
+`linear-light` contract uses premultiplied linear values through an
+`Rgba8UnormSrgb` or `Bgra8UnormSrgb` view. Imported Manim V11 vector packets select
+the explicit `manim-cairo-srgb` contract instead: premultiplied sRGB values are
+blended through the matching base Unorm view. Cairo-mode image draws fail closed
+until their filtering semantics are defined. A renderer is constructed from the
+sRGB view format and retains the paired base-Unorm path pipeline for per-frame
+selection.
 Device creation, cross-worker/persistent texture caching, antialiasing, and
 clipping remain outside this slice. Native software-adapter and
 Chromium Worker readbacks share fixtures for generic fill topology and for animated
@@ -165,7 +171,9 @@ On `wasm32`, `PoietraCanvasEngineV1` owns an `OffscreenCanvas` WebGPU surface,
 device, queue, path/image renderer, and immutable digest-keyed PNG registry. Its
 asynchronous `create` method installs a validated snapshot and verified asset bytes,
 `replaceSnapshot` atomically replaces both authorities, and `render` consumes the
-existing bounded sample request. Render responses contain only presentation
+existing bounded sample request. Each frame creates the surface view required by
+its validated compositing contract, without retaining mode-specific session state.
+Render responses contain only presentation
 correlation metadata or a structured error; they never transfer a `RenderPacket`
 back to JavaScript.
 
