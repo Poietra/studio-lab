@@ -1,19 +1,18 @@
-import { Pool } from "pg";
-
 import { EDITOR_LIVE_PROTOCOL_VERSION_V1, editorLiveIdentitySchemaV1 } from "../src/collaboration/editor-live-contract";
-import { accountUserIdSchemaV1, organizationRoleAllowsV1 } from "./accounts/account-domain";
 import { accountSessionTokenHashV1 } from "./accounts/account-session-authenticator";
+import {
+  type EditorCollaborationAuthorizationGrantV1,
+  type EditorCollaborationAuthorizationLeaseV1,
+  editorCollaborationAuthorizationLeaseV1,
+} from "./editor-collaboration-authorization";
+import type { EditorCollaborationAuthorizationRepositoryV1 } from "./editor-collaboration-authorization-repository";
 import {
   EDITOR_LIVE_INTERNAL_HEADERS_V1,
   EDITOR_LIVE_INTERNAL_ORIGIN_V1,
   EDITOR_LIVE_INTERNAL_ROUTE_V1,
   EditorProjectRoomDurableObjectV1,
 } from "./editor-project-room-durable-object";
-import { MAX_EDITOR_REVISION_V1 } from "./storage/editor-document-repository";
-import { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
-import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
-import { PostgresOrganizationMembershipRepositoryV1 } from "./storage/postgres/postgres-organization-membership-repository";
-import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "./storage/postgres/postgres-repository-connection";
+import { PostgresEditorCollaborationAuthorizationRepositoryV1 } from "./storage/postgres/postgres-editor-collaboration-authorization-repository";
 
 export { EditorProjectRoomDurableObjectV1 };
 
@@ -46,12 +45,7 @@ export type CloudflareEditorCollaborationEnvironmentV1 = Readonly<{
 }>;
 
 export type EditorCollaborationAdmissionV1 =
-  | Readonly<{
-      canWrite: boolean;
-      kind: "authorized";
-      organizationId: string;
-      subjectId: string;
-    }>
+  | (EditorCollaborationAuthorizationGrantV1 & Readonly<{ kind: "authorized" }>)
   | Readonly<{ kind: "denied"; status: 401 | 403 | 503 }>;
 
 export type EditorCollaborationAuthorizeV1 = (
@@ -62,6 +56,7 @@ export type EditorCollaborationAuthorizeV1 = (
 
 export type CloudflareEditorCollaborationWorkerOptionsV1 = Readonly<{
   authorize?: EditorCollaborationAuthorizeV1;
+  now?: () => number;
 }>;
 
 const MAX_POSTGRES_CONNECTION_STRING_BYTES_V1 = 8 * 1_024;
@@ -217,17 +212,6 @@ function parseRoomRequestV1(request: Request, publicOrigin: string) {
     : ({ error: safeJsonResponse(400, "Editor live request is invalid.") } as const);
 }
 
-function requestPoolV1(connectionString: string) {
-  return new Pool({
-    connectionString,
-    connectionTimeoutMillis: POSTGRES_STATEMENT_TIMEOUT_MS_V1,
-    max: 1,
-    options: POSTGRES_REPOSITORY_OPTIONS_V1,
-    query_timeout: POSTGRES_STATEMENT_TIMEOUT_MS_V1,
-    statement_timeout: POSTGRES_STATEMENT_TIMEOUT_MS_V1,
-  });
-}
-
 async function authorizeWithPostgresV1(
   request: Request,
   room: Readonly<{ documentKey: string; epoch: string; projectId: string }>,
@@ -235,77 +219,39 @@ async function authorizeWithPostgresV1(
 ): Promise<EditorCollaborationAdmissionV1> {
   const sessionHash = accountSessionTokenHashV1(request.headers.get("cookie"));
   if (!sessionHash) return { kind: "denied", status: 401 };
-  let pool: Pool;
+  let repository: EditorCollaborationAuthorizationRepositoryV1;
   try {
-    pool = requestPoolV1(postgresConnectionStringV1(environment));
+    repository = new PostgresEditorCollaborationAuthorizationRepositoryV1({
+      poolConfig: { connectionString: postgresConnectionStringV1(environment), max: 1 },
+      statementTimeoutMs: POSTGRES_STATEMENT_TIMEOUT_MS_V1,
+    });
   } catch {
     return { kind: "denied", status: 503 };
   }
-  const sessions = new PostgresAccountSessionRepositoryV1({ pool });
-  const memberships = new PostgresOrganizationMembershipRepositoryV1({ pool });
-  const documents = new PostgresEditorDocumentRepositoryV1({ pool });
   try {
-    const session = await sessions.resolveActiveSession(sessionHash, request.signal);
-    if (!session) return { kind: "denied", status: 401 };
-    const membership = await memberships.resolveActiveMembership(
-      { issuer: session.issuer, subject: session.subject },
-      session.sessionOrganizationId,
-      request.signal,
-    );
-    if (
-      !membership ||
-      membership.organizationId !== session.sessionOrganizationId ||
-      !accountUserIdSchemaV1.safeParse(membership.userId).success ||
-      !organizationRoleAllowsV1(membership.role, "manim:read")
-    ) {
-      return { kind: "denied", status: 403 };
-    }
-    const document = await documents.readEventTail(
-      {
-        afterRevision: MAX_EDITOR_REVISION_V1,
-        documentKey: room.documentKey,
-        epoch: room.epoch,
-        limit: 1,
-        projectId: room.projectId,
-        tenantId: membership.organizationId,
-      },
-      request.signal,
-    );
-    if (
-      !document ||
-      document.document.tenantId !== membership.organizationId ||
-      document.document.projectId !== room.projectId ||
-      document.document.documentKey !== room.documentKey ||
-      document.document.epoch !== room.epoch ||
-      document.document.sealedAt !== null
-    ) {
-      return { kind: "denied", status: 403 };
-    }
-    return {
-      canWrite: organizationRoleAllowsV1(membership.role, "manim:write"),
-      kind: "authorized",
-      organizationId: membership.organizationId,
-      subjectId: membership.userId,
-    };
+    const result = await repository.authorizeSession(sessionHash, room, request.signal);
+    if (result.kind === "invalid-session") return { kind: "denied", status: 401 };
+    if (result.kind === "denied") return { kind: "denied", status: 403 };
+    return { ...result.grant, kind: "authorized" };
   } finally {
-    await pool.end();
+    await repository.close();
   }
 }
 
-function internalRoomRequestV1(
-  room: Readonly<{ documentKey: string; epoch: string; projectId: string }>,
-  admission: Extract<EditorCollaborationAdmissionV1, { kind: "authorized" }>,
-  signal: AbortSignal,
-) {
+function internalRoomRequestV1(lease: EditorCollaborationAuthorizationLeaseV1, signal: AbortSignal) {
   const headers = EDITOR_LIVE_INTERNAL_HEADERS_V1;
   return new Request(`${EDITOR_LIVE_INTERNAL_ORIGIN_V1}${EDITOR_LIVE_INTERNAL_ROUTE_V1}`, {
     headers: {
-      [headers.canWrite]: admission.canWrite ? "1" : "0",
-      [headers.documentKey]: room.documentKey,
-      [headers.epoch]: room.epoch,
-      [headers.organizationId]: admission.organizationId,
-      [headers.projectId]: room.projectId,
-      [headers.subjectId]: admission.subjectId,
+      [headers.authorizationId]: lease.authorizationId,
+      [headers.canWrite]: lease.canWrite ? "1" : "0",
+      [headers.documentKey]: lease.documentKey,
+      [headers.epoch]: lease.epoch,
+      [headers.leaseExpiresAtMs]: String(lease.leaseExpiresAtMs),
+      [headers.membershipVersion]: String(lease.membershipVersion),
+      [headers.organizationId]: lease.organizationId,
+      [headers.projectId]: lease.projectId,
+      [headers.sessionVersion]: String(lease.sessionVersion),
+      [headers.subjectId]: lease.subjectId,
       upgrade: "websocket",
     },
     signal,
@@ -317,6 +263,7 @@ export function createCloudflareEditorCollaborationWorkerV1(
   options: CloudflareEditorCollaborationWorkerOptionsV1 = {},
 ) {
   const authorize = options.authorize ?? authorizeWithPostgresV1;
+  const now = options.now ?? Date.now;
   return Object.freeze({
     async fetch(request: Request, environment: CloudflareEditorCollaborationEnvironmentV1) {
       let publicOrigin: string;
@@ -357,31 +304,32 @@ export function createCloudflareEditorCollaborationWorkerV1(
               : "Editor live access is temporarily unavailable.",
         );
       }
-      const identity = editorLiveIdentitySchemaV1.safeParse({
-        ...parsed.room,
-        organizationId: admission.organizationId,
-      });
-      if (!identity.success || !accountUserIdSchemaV1.safeParse(admission.subjectId).success) {
+      let lease: EditorCollaborationAuthorizationLeaseV1 | null;
+      try {
+        const { kind: _kind, ...grant } = admission;
+        lease = editorCollaborationAuthorizationLeaseV1(grant, now());
+      } catch {
+        lease = null;
+      }
+      if (!lease) {
         return safeJsonResponse(503, "Editor live access is temporarily unavailable.");
       }
+      const identity = editorLiveIdentitySchemaV1.parse({
+        documentKey: lease.documentKey,
+        epoch: lease.epoch,
+        organizationId: lease.organizationId,
+        projectId: lease.projectId,
+      });
       try {
         if (
-          !(await isAllowedV1(
-            connectLimiter,
-            `editor-connect:subject:${identity.data.organizationId}:${admission.subjectId}`,
-          ))
+          !(await isAllowedV1(connectLimiter, `editor-connect:subject:${identity.organizationId}:${lease.subjectId}`))
         ) {
           return rateLimitedResponseV1();
         }
-        const roomName = [
-          identity.data.organizationId,
-          identity.data.projectId,
-          identity.data.documentKey,
-          identity.data.epoch,
-        ].join("\0");
+        const roomName = [identity.organizationId, identity.projectId, identity.documentKey, identity.epoch].join("\0");
         const stub = rooms.get(rooms.idFromName(roomName));
         if (typeof stub?.fetch !== "function") throw new TypeError("Editor room stub is unavailable.");
-        return await stub.fetch(internalRoomRequestV1(parsed.room, admission, request.signal));
+        return await stub.fetch(internalRoomRequestV1(lease, request.signal));
       } catch {
         request.signal.throwIfAborted();
         return safeJsonResponse(503, "Editor live access is temporarily unavailable.");

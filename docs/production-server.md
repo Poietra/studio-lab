@@ -159,9 +159,23 @@ The collaboration Worker accepts only an exact WebSocket upgrade carrying the
 server-issued HttpOnly session cookie. It resolves the session's active
 Organization, revalidates the PostgreSQL membership and project, then routes
 the exact Organization/project/document/epoch tuple to one hibernatable Durable
-Object. Use a caching-disabled Hyperdrive configuration: revoked sessions,
-memberships, and deleted projects must not be admitted from a stale cache. The
-connect limiter is checked before PostgreSQL and again against the authenticated
+Object. Migration v26 gives each session a database-generated, non-secret UUID
+used only to revalidate an admitted socket; neither the raw cookie, session
+token, nor token hash enters a Durable Object header or attachment. Each socket
+attachment carries the exact room identity, subject, session and membership
+versions, capabilities, and an authorization lease of at most 60 seconds. The
+Durable Object schedules one alarm for the room's earliest lease and performs
+one bounded batch revalidation after hibernation. An expired sender cannot
+publish, and expired recipients are removed before head, presence, roster, or
+snapshot delivery. Logout, active-organization switching, inactive users or
+organizations, membership changes, project deletion, and document sealing are
+therefore observed within the lease bound. A missing, malformed, foreign, or
+unavailable revalidation result closes the affected sockets with a generic
+policy failure; it never extends the previous lease. Use a caching-disabled
+Hyperdrive configuration for both the edge Worker and Durable Object: revoked
+sessions, memberships, sealed documents, and deleted projects must not be
+admitted from a stale cache. The connect limiter is checked before PostgreSQL
+and again against the authenticated
 member; a separate head limiter bounds notification-to-tail-read amplification.
 The per-connection presence limiter separately bounds ephemeral cursor,
 selection, and playhead fanout without making a member's second tab consume the

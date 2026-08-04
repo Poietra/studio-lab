@@ -6,6 +6,7 @@ import {
   MAX_EDITOR_LIVE_PARTICIPANTS_V1,
   parseEditorLiveServerMessageV1,
 } from "../src/collaboration/editor-live-contract";
+import type { EditorCollaborationAuthorizationLeaseV1 } from "./editor-collaboration-authorization";
 import {
   type CloudflareRoomStateV1,
   type CloudflareRoomWebSocketPairV1,
@@ -25,6 +26,9 @@ const identity = {
 } as const;
 const subjectId = "22222222-2222-4222-8222-222222222222";
 const peerSubjectId = "44444444-4444-4444-8444-444444444444";
+const authorizationId = "55555555-5555-4555-8555-555555555555";
+const peerAuthorizationId = "66666666-6666-4666-8666-666666666666";
+const initialNow = 2_000_000_000_000;
 const presence: EditorLivePresenceV1 = {
   cursor: { x: 0.25, y: 0.75 },
   playheadSeconds: 12.5,
@@ -37,6 +41,18 @@ function deferred<T>() {
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+function grantFromLease(
+  value: EditorCollaborationAuthorizationLeaseV1,
+  overrides: Readonly<{ canWrite?: boolean; membershipVersion?: number; sessionVersion?: number }> = {},
+) {
+  const { leaseExpiresAtMs: _leaseExpiresAtMs, ...grant } = value;
+  return {
+    ...grant,
+    ...overrides,
+    sessionExpiresAtMs: initialNow + 180_000,
+  };
 }
 
 class FakeSocket implements CloudflareRoomWebSocketV1 {
@@ -60,23 +76,31 @@ class FakeSocket implements CloudflareRoomWebSocketV1 {
 function request(
   overrides: Readonly<{
     canWrite?: boolean;
+    authorizationId?: string;
     documentKey?: string;
     epoch?: string;
     organizationId?: string;
     projectId?: string;
     subjectId?: string;
+    leaseExpiresAtMs?: number;
   }> = {},
 ) {
   const value = { ...identity, ...overrides };
+  const requestSubjectId = overrides.subjectId ?? subjectId;
   const headers = EDITOR_LIVE_INTERNAL_HEADERS_V1;
   return new Request(`https://poietra-editor-room.internal${EDITOR_LIVE_INTERNAL_ROUTE_V1}`, {
     headers: {
+      [headers.authorizationId]:
+        overrides.authorizationId ?? (requestSubjectId === peerSubjectId ? peerAuthorizationId : authorizationId),
       [headers.canWrite]: (overrides.canWrite ?? true) ? "1" : "0",
       [headers.documentKey]: value.documentKey,
       [headers.epoch]: value.epoch,
+      [headers.leaseExpiresAtMs]: String(overrides.leaseExpiresAtMs ?? initialNow + 60_000),
+      [headers.membershipVersion]: "1",
       [headers.organizationId]: value.organizationId,
       [headers.projectId]: value.projectId,
-      [headers.subjectId]: overrides.subjectId ?? subjectId,
+      [headers.sessionVersion]: "1",
+      [headers.subjectId]: requestSubjectId,
       upgrade: "websocket",
     },
   });
@@ -85,9 +109,18 @@ function request(
 function harness() {
   const accepted: FakeSocket[] = [];
   const clients: FakeSocket[] = [];
+  let clock = initialNow;
+  let scheduledAlarm: number | null = null;
+  const setAlarm = vi.fn(async (value: number | Date) => {
+    scheduledAlarm = value instanceof Date ? value.valueOf() : value;
+  });
+  const deleteAlarm = vi.fn(async () => {
+    scheduledAlarm = null;
+  });
   const state: CloudflareRoomStateV1 = {
     acceptWebSocket: (socket) => accepted.push(socket as FakeSocket),
     getWebSockets: () => accepted,
+    storage: { deleteAlarm, setAlarm },
   };
   let nextConnection = 1;
   const room = (options: Parameters<typeof createEditorProjectRoomV1>[1] = {}) =>
@@ -98,10 +131,29 @@ function harness() {
         return pair;
       },
       createUpgradeResponse: () => new Response(null, { status: 200 }),
+      now: () => clock,
       randomUuid: () => `33333333-3333-4333-8333-${String(nextConnection++).padStart(12, "0")}`,
+      revalidateAuthorizations: async (leases) =>
+        leases.map(({ leaseExpiresAtMs: _leaseExpiresAtMs, ...lease }) => ({
+          ...lease,
+          sessionExpiresAtMs: clock + 120_000,
+        })),
       ...options,
     });
-  return { accepted, clients, room, state };
+  return {
+    accepted,
+    clients,
+    deleteAlarm,
+    get scheduledAlarm() {
+      return scheduledAlarm;
+    },
+    room,
+    setAlarm,
+    setNow(value: number) {
+      clock = value;
+    },
+    state,
+  };
 }
 
 async function connect(value: ReturnType<typeof harness>, input = request()) {
@@ -130,7 +182,8 @@ describe("Editor project Durable Object room", () => {
       publisherConnectionId: "33333333-3333-4333-8333-000000000001",
       revision: "9",
     });
-    expect(Object.keys(value.state)).toEqual(["acceptWebSocket", "getWebSockets"]);
+    expect(Object.keys(value.state)).toEqual(["acceptWebSocket", "getWebSockets", "storage"]);
+    expect(Object.keys(value.state.storage)).toEqual(["deleteAlarm", "setAlarm"]);
   });
 
   it("sends a server-attested canonical roster and collapses duplicate tabs", async () => {
@@ -224,7 +277,7 @@ describe("Editor project Durable Object room", () => {
     });
 
     peer.messages.length = 0;
-    value.room().webSocketClose(first);
+    await value.room().webSocketClose(first);
     expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({
       kind: "presence-update",
       participant: {
@@ -236,7 +289,7 @@ describe("Editor project Durable Object room", () => {
 
     value.accepted.splice(value.accepted.indexOf(first), 1);
     peer.messages.length = 0;
-    value.room().webSocketClose(second);
+    await value.room().webSocketClose(second);
     expect(parseEditorLiveServerMessageV1(peer.messages[0])).toMatchObject({
       kind: "presence-leave",
       memberId: subjectId,
@@ -278,6 +331,166 @@ describe("Editor project Durable Object room", () => {
     );
 
     expect(JSON.parse(peer.messages[0]!)).toMatchObject({ kind: "head", revision: "10" });
+  });
+
+  it("persists only bounded non-secret authorization control data and schedules the earliest lease alarm", async () => {
+    const value = harness();
+    const socket = await connect(value);
+
+    expect(socket.attachment).toMatchObject({
+      authorizationId,
+      leaseExpiresAtMs: initialNow + 60_000,
+      membershipVersion: 1,
+      sessionVersion: 1,
+    });
+    expect(value.scheduledAlarm).toBe(initialNow + 60_000);
+    const serialized = JSON.stringify(socket.attachment);
+    expect(serialized).not.toContain("cookie");
+    expect(serialized).not.toContain("sessionToken");
+    expect(serialized).not.toContain("session_token_hash");
+  });
+
+  it("does not rewrite an unchanged authorization alarm during hot room traffic", async () => {
+    const value = harness();
+    const room = value.room();
+    await expect(room.fetch(request())).resolves.toMatchObject({ status: 200 });
+    await expect(room.fetch(request())).resolves.toMatchObject({ status: 200 });
+    const sender = value.accepted[0]!;
+
+    await room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
+    );
+
+    expect(value.setAlarm).toHaveBeenCalledOnce();
+  });
+
+  it("revokes a logged-out socket at the bounded lease alarm without affecting another member", async () => {
+    const value = harness();
+    const revoked = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    value.setNow(initialNow + 60_000);
+    const revalidate = vi.fn(async (leases: readonly EditorCollaborationAuthorizationLeaseV1[]) =>
+      leases.map((lease) => (lease.authorizationId === authorizationId ? null : grantFromLease(lease))),
+    );
+    const rehydrated = value.room({ revalidateAuthorizations: revalidate });
+
+    await rehydrated.alarm();
+
+    expect(revalidate).toHaveBeenCalledOnce();
+    expect(revoked.close).toHaveBeenCalledWith(1008, "unavailable");
+    expect(peer.close).not.toHaveBeenCalledWith(1008, "unavailable");
+    expect(peer.attachment).toMatchObject({ leaseExpiresAtMs: initialNow + 120_000 });
+  });
+
+  it("revokes every tab bound to one session while leaving another session connected", async () => {
+    const value = harness();
+    const firstTab = await connect(value);
+    const secondTab = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    value.setNow(initialNow + 60_000);
+    const revalidate = vi.fn(async (leases: readonly EditorCollaborationAuthorizationLeaseV1[]) =>
+      leases.map((lease) => (lease.authorizationId === authorizationId ? null : grantFromLease(lease))),
+    );
+
+    await value.room({ revalidateAuthorizations: revalidate }).alarm();
+
+    expect(revalidate.mock.calls[0]![0]).toHaveLength(3);
+    expect(firstTab.close).toHaveBeenCalledWith(1008, "unavailable");
+    expect(secondTab.close).toHaveBeenCalledWith(1008, "unavailable");
+    expect(peer.close).not.toHaveBeenCalledWith(1008, "unavailable");
+  });
+
+  it("revalidates after hibernation and removes write permission before a publisher resumes", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    value.setNow(initialNow + 60_000);
+    const rehydrated = value.room({
+      revalidateAuthorizations: async (leases) =>
+        leases.map((lease) =>
+          grantFromLease(lease, {
+            canWrite: lease.authorizationId === authorizationId ? false : lease.canWrite,
+            membershipVersion: lease.membershipVersion + 1,
+          }),
+        ),
+    });
+
+    await rehydrated.alarm();
+    expect(sender.attachment).toMatchObject({ canWrite: false, membershipVersion: 2 });
+
+    await rehydrated.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "head", protocolVersion: 1, revision: "11" }),
+    );
+    expect(sender.close).toHaveBeenCalledWith(1008, "read-only");
+    expect(peer.messages).toEqual([]);
+  });
+
+  it("fails closed on revalidation outage, malformed output, or a changed session version", async () => {
+    for (const revalidateAuthorizations of [
+      async () => Promise.reject(new Error("PostgreSQL unavailable")),
+      async () => [],
+      async (leases: readonly EditorCollaborationAuthorizationLeaseV1[]) =>
+        leases.map((lease) => grantFromLease(lease, { sessionVersion: lease.sessionVersion + 1 })),
+    ]) {
+      const value = harness();
+      const sender = await connect(value);
+      value.setNow(initialNow + 60_000);
+
+      await value.room({ revalidateAuthorizations }).alarm();
+
+      expect(sender.close).toHaveBeenCalledWith(1008, "unavailable");
+    }
+  });
+
+  it("does not deliver a head to a recipient whose authorization expires before the sender", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ leaseExpiresAtMs: initialNow + 10, subjectId: peerSubjectId }));
+    sender.messages.length = 0;
+    peer.messages.length = 0;
+    value.setNow(initialNow + 10);
+    const room = value.room({
+      revalidateAuthorizations: async (leases) =>
+        leases.map((lease) => (lease.authorizationId === peerAuthorizationId ? null : grantFromLease(lease))),
+    });
+
+    await room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "head", protocolVersion: 1, revision: "12" }),
+    );
+
+    expect(peer.close).toHaveBeenCalledWith(1008, "unavailable");
+    expect(peer.messages.filter((message) => JSON.parse(message).kind === "head")).toEqual([]);
+  });
+
+  it("coalesces concurrent revocation with an in-flight publish and never emits the stale head", async () => {
+    const value = harness();
+    const sender = await connect(value);
+    const peer = await connect(value, request({ subjectId: peerSubjectId }));
+    peer.messages.length = 0;
+    const limiter = deferred<boolean>();
+    const room = value.room({
+      allowPublish: () => limiter.promise,
+      revalidateAuthorizations: async (leases) =>
+        leases.map((lease) => (lease.authorizationId === authorizationId ? null : grantFromLease(lease))),
+    });
+    const pending = room.webSocketMessage(
+      sender,
+      encodeEditorLiveClientMessageV1({ kind: "head", protocolVersion: 1, revision: "13" }),
+    );
+    await vi.waitFor(() => expect(value.scheduledAlarm).toBe(initialNow + 60_000));
+    value.setNow(initialNow + 60_000);
+
+    await room.alarm();
+    limiter.resolve(true);
+    await pending;
+
+    expect(sender.close).toHaveBeenCalledWith(1008, "unavailable");
+    expect(peer.messages.filter((message) => JSON.parse(message).kind === "head")).toEqual([]);
   });
 
   it("never broadcasts across a document, epoch, project, or organization identity", async () => {
@@ -473,7 +686,7 @@ describe("Editor project Durable Object room", () => {
       sender,
       encodeEditorLiveClientMessageV1({ kind: "presence-update", presence, protocolVersion: 1 }),
     );
-    room.webSocketClose(sender);
+    await room.webSocketClose(sender);
     gate.resolve(true);
     await pending;
 
@@ -493,6 +706,7 @@ describe("Editor project Durable Object room", () => {
     const runtime = new EditorProjectRoomDurableObjectV1(value.state, {
       EDITOR_HEAD_RATE_LIMITER: { limit: headLimit },
       EDITOR_PRESENCE_RATE_LIMITER: { limit: presenceLimit },
+      HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
     });
 
     await runtime.webSocketMessage(
