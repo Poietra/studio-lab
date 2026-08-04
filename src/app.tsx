@@ -75,6 +75,11 @@ import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import type { OperationOrigin } from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
+import {
+  projectStudioPreviewInitialEntityPresenceV1,
+  projectStudioPreviewInitialValidationSceneV1,
+  studioPreviewInitialEditTargetIsPresentV1,
+} from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import {
@@ -959,8 +964,27 @@ export function App({
       : {};
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
-  const visibleEntities = workspaceProjection?.visibleEntities ?? [];
-  const editableEntities = workspaceProjection?.editableEntities ?? [];
+  const retainedInitialEditDragAuthority =
+    (dragPreview !== null || scalePreview !== null) && currentTime === 0
+      ? previewRenderer?.initialEditRuntimeAuthority
+      : null;
+  const presentedInitialEditAuthority =
+    previewRenderer?.state.phase === "presented" && previewRenderer.syntheticInitialEditAnchor === 0
+      ? previewRenderer.initialEditRuntimeAuthority
+      : (retainedInitialEditDragAuthority ?? null);
+  const initialEditInteractionGeometry =
+    previewRenderer?.interactionGeometry ??
+    (retainedInitialEditDragAuthority ? new Map([[retainedInitialEditDragAuthority.runtimeEntityId, null]]) : null);
+  const visibleEntities = projectStudioPreviewInitialEntityPresenceV1(
+    workspaceProjection?.visibleEntities ?? [],
+    presentedInitialEditAuthority,
+    initialEditInteractionGeometry,
+  );
+  const editableEntities = projectStudioPreviewInitialEntityPresenceV1(
+    workspaceProjection?.editableEntities ?? [],
+    presentedInitialEditAuthority,
+    initialEditInteractionGeometry,
+  );
   const selectedSet = new Set(selectedObjectIds);
   const activeDuration =
     workspaceProjection?.proposedState.evaluatedScene.duration ?? projectedActiveScene?.runtimeSceneState.duration ?? 1;
@@ -1912,6 +1936,10 @@ export function App({
     const syntheticSourceAnchor = input.allowSyntheticPreviewAnchor
       ? previewRenderer?.syntheticInitialEditAnchor
       : undefined;
+    const runtimePresenceAuthority =
+      sourceAnchor === null && syntheticSourceAnchor === 0
+        ? (previewRenderer?.initialEditRuntimeAuthority ?? null)
+        : null;
     const anchor =
       sourceAnchor ??
       (syntheticSourceAnchor !== null && syntheticSourceAnchor !== undefined
@@ -1928,12 +1956,11 @@ export function App({
       return null;
     }
     const missingEntityId = input.targetEntityIds?.find((entityId) => {
-      const entity = input.scene.objectGraph.entities[entityId];
-      return (
-        !entity ||
-        !entity.lifetime.some(
-          (interval) => anchor.sourceTime >= interval.start - 0.0005 && anchor.sourceTime < interval.end,
-        )
+      return !studioPreviewInitialEditTargetIsPresentV1(
+        input.scene,
+        entityId,
+        anchor.sourceTime,
+        runtimePresenceAuthority,
       );
     });
     if (missingEntityId) {
@@ -2088,7 +2115,10 @@ export function App({
       entity.present &&
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
-    const shape = resizeKindForType(entity.type);
+    const shape =
+      previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id
+        ? null
+        : resizeKindForType(entity.type);
     const unknownGeometry = entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
     if (unknownGeometry) {
       setDraftError(`Studio cannot resize ${entityLabel(entity)} safely: ${unknownGeometry.reason}`);
@@ -2102,6 +2132,7 @@ export function App({
     );
     const anchor = manualAuthoringAnchor({
       action: "object resize",
+      allowSyntheticPreviewAnchor: shape === null && interactionMode === "position",
       requireAlignedPlayhead: true,
       scene: sourceScene,
       sourcePrograms: gestureContext.sourcePrograms,
@@ -2223,7 +2254,10 @@ export function App({
     if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
-    const shape = resizeKindForType(entity.type);
+    const shape =
+      previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id
+        ? null
+        : resizeKindForType(entity.type);
     if (
       shape &&
       entity.geometry.dimensions.kind === "known" &&
@@ -2388,12 +2422,16 @@ export function App({
       setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
       return false;
     }
+    const validationScene = projectStudioPreviewInitialValidationSceneV1(
+      sourceScene,
+      anchor.sourceTime === 0 ? (previewRenderer?.initialEditRuntimeAuthority ?? null) : null,
+    );
     try {
       const validation = createDirectManipulationScaleProgram({
         capturedPlayhead: anchor.sourceTime,
         interval: { end, start: anchor.sourceTime },
         scales: { [entityId]: { from: executionScale, to: targetScale } },
-        scene: sourceScene,
+        scene: validationScene,
         targetEntityIds: [entityId],
         transactionId,
       });
@@ -2419,6 +2457,10 @@ export function App({
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return false;
+    if (previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entityId) {
+      setDraftError("This runtime-backed object currently supports canvas drag and uniform scale only.");
+      return false;
+    }
     if (edits.position && entity.geometry.position.kind === "unknown") {
       setDraftError(`Studio cannot move ${entityLabel(entity)} safely: ${entity.geometry.position.reason}`);
       return false;
@@ -2440,8 +2482,6 @@ export function App({
     );
     const anchor = manualAuthoringAnchor({
       action: "Inspector edit",
-      allowSyntheticPreviewAnchor:
-        edits.position !== undefined && edits.content === undefined && edits.dimensions === undefined,
       requireAlignedPlayhead: true,
       scene: sourceScene,
       sourcePrograms: gestureContext.sourcePrograms,
@@ -2509,11 +2549,15 @@ export function App({
           })
         : { sourceTime: capturedSourceAnchor };
     if (!anchor) return;
+    const validationScene = projectStudioPreviewInitialValidationSceneV1(
+      sourceScene,
+      anchor.sourceTime === 0 ? (previewRenderer?.initialEditRuntimeAuthority ?? null) : null,
+    );
     const validation = createDirectManipulationPositionProgram({
       capturedPlayhead: anchor.sourceTime,
       delta,
       positions: projected.positions,
-      scene: sourceScene,
+      scene: validationScene,
       start: anchor.sourceTime,
       targetEntityIds: targetIds,
       transactionId,

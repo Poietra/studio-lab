@@ -6,7 +6,7 @@ import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../engine/reference-evaluator";
 import type { SceneIrV1 } from "../engine/scene-ir";
-import { evaluateWorkingState, programRecord } from "./evaluator";
+import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import {
   type ProgramRecord,
   type ProposedState,
@@ -23,6 +23,10 @@ import {
 } from "./preview-snapshot-provider";
 import {
   compileStudioPreviewTemporalRebaseV1,
+  projectStudioPreviewInitialEntityPresenceV1,
+  projectStudioPreviewInitialValidationSceneV1,
+  studioPreviewInitialEditRuntimeAuthorityV1,
+  studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
@@ -681,13 +685,111 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
         },
       }),
     ).toBeNull();
+    const editedSourceHash = "e".repeat(64);
+    const editedSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...input.snapshot,
+      correlation: {
+        ...input.snapshot.correlation,
+        context: { ...input.snapshot.correlation.context, sourceHash: editedSourceHash },
+      },
+      snapshot: {
+        ...input.snapshot.snapshot,
+        scene: {
+          ...input.snapshot.snapshot.scene,
+          source: { ...source, sourceHash: editedSourceHash },
+        },
+      },
+    };
+    expect(studioPreviewInitialEditRuntimeAuthorityV1(editedSnapshot)).toBeNull();
+    expect(studioPreviewSyntheticInitialEditAnchorV1(editedSnapshot)).toBeNull();
+    expect(
+      compileWarpSquare({
+        ...input,
+        proposedState: {
+          ...input.proposedState,
+          base: {
+            ...input.proposedState.base,
+            sourceSnapshot: { ...input.proposedState.base.sourceSnapshot, hash: `sha256:${editedSourceHash}` },
+          },
+        },
+        snapshot: editedSnapshot,
+      }),
+    ).toMatchObject({ issue: { code: "target-edit-unsupported" }, kind: "unsupported" });
+  });
+
+  it("bridges only the exact runtime-backed Square into UI presence and validation", async () => {
+    const input = await warpSquareInput("position");
+    const authority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
+    if (!authority) throw new Error("WarpSquare V9 lost its initial edit authority.");
+    const base = input.proposedState.base;
+    const entity = base.runtimeSceneState.objectGraph.entities[WARP_SQUARE_ENTITY_ID];
+    if (!entity) throw new Error("WarpSquare V9 lost its Studio Square.");
+    const absentRuntimeScene: RuntimeSceneState = {
+      ...base.runtimeSceneState,
+      objectGraph: {
+        ...base.runtimeSceneState.objectGraph,
+        entities: { ...base.runtimeSceneState.objectGraph.entities, [entity.id]: { ...entity, lifetime: [] } },
+      },
+    };
+    const absentProjection = projectProposedState(
+      evaluateWorkingState({ ...base, appliedPrograms: [], runtimeSceneState: absentRuntimeScene, stagedPrograms: [] }),
+      0,
+    ).canvas.entities;
+    expect(absentProjection).toMatchObject([{ id: authority.studioEntityId, present: false }]);
+
+    const geometry = new Map([[authority.runtimeEntityId, {}]]);
+    const presented = projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, geometry);
+    expect(presented).toMatchObject([{ id: authority.studioEntityId, present: true }]);
+    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, null)).toBe(absentProjection);
+    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, null, geometry)).toBe(absentProjection);
+
+    const validationScene = projectStudioPreviewInitialValidationSceneV1(absentRuntimeScene, authority);
+    expect(validationScene).not.toBe(absentRuntimeScene);
+    expect(validationScene.objectGraph.entities[entity.id]?.lifetime).toEqual([{ end: 4, start: 0 }]);
+    expect(absentRuntimeScene.objectGraph.entities[entity.id]?.lifetime).toEqual([]);
+    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 0, authority)).toBe(true);
+    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 0, null)).toBe(false);
+    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 1, authority)).toBe(false);
+    expect(
+      createDirectManipulationPositionProgram({
+        capturedPlayhead: 0,
+        delta: { x: 16, y: 8 },
+        positions: { [entity.id]: { x: 320, y: 180 } },
+        scene: validationScene,
+        start: 0,
+        targetEntityIds: [entity.id],
+        transactionId: "runtime-authorized-warp-square-position",
+      }).kind,
+    ).toBe("valid");
+    expect(
+      createDirectManipulationScaleProgram({
+        capturedPlayhead: 0,
+        interval: { end: 0, start: 0 },
+        scales: { [entity.id]: { from: 1, to: 1.25 } },
+        scene: validationScene,
+        targetEntityIds: [entity.id],
+        transactionId: "runtime-authorized-warp-square-scale",
+      }).kind,
+    ).toBe("valid");
+    expect(projectStudioPreviewInitialValidationSceneV1(absentRuntimeScene, null)).toBe(absentRuntimeScene);
+    const ambiguousScene: RuntimeSceneState = {
+      ...absentRuntimeScene,
+      objectGraph: {
+        ...absentRuntimeScene.objectGraph,
+        entities: {
+          ...absentRuntimeScene.objectGraph.entities,
+          [`${entity.id}:ambiguous`]: { ...entity, id: `${entity.id}:ambiguous` },
+        },
+      },
+    };
+    expect(projectStudioPreviewInitialValidationSceneV1(ambiguousScene, authority)).toBe(ambiguousScene);
   });
 
   it.each([
     ["position", 1, 1, 1.4222222222222223, 0.7999999999999998],
     ["scale", 1.5, 1.5, 0, 0],
     ["combined", 1.5, 1.5, 1.4222222222222223, 0.7999999999999998],
-  ] as const)("rebases a t=0 %s edit without changing the path morph", async (kind, m11, m22, tx, ty) => {
+  ] as const)("rebases a t=0 %s draft without changing the path morph", async (kind, m11, m22, tx, ty) => {
     const input = await warpSquareInput(kind);
     const importedScene = input.snapshot.snapshot.scene;
     const importedChannelBytes = canonicalJsonV1(importedScene.animationChannels);

@@ -35,6 +35,7 @@ import {
   createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
   type StudioPreviewSnapshotMetadataStateV1,
+  studioPreviewEditedV9SampleFallbackV1,
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
@@ -747,6 +748,18 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       kind: "display-only",
       reason: "temporal-rebase-unavailable",
     });
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 0)).toBeNull();
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, PRISTINE_WORKING_REVISION, 1.5)).toBeNull();
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 0.0001)).toEqual({
+      detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
+      phase: "fallback",
+      reason: "snapshot-uncorrelated",
+    });
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 1.5)).toEqual({
+      detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
+      phase: "fallback",
+      reason: "snapshot-uncorrelated",
+    });
   });
 
   it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {
@@ -1080,7 +1093,7 @@ describe("compileStudioPreviewSceneV1", () => {
     });
   });
 
-  it("compiles a WarpSquare V9 t=0 transform without reconstructing its path morph", async () => {
+  it("compiles the WarpSquare V9 t=0 draft without reconstructing its path morph", async () => {
     const fixture = await warpSquareV9PreviewInput();
     const importedScene = fixture.snapshot.snapshot.scene;
     const result = await compileStudioPreviewSceneV1({

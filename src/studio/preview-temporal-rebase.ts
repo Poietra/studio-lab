@@ -1,5 +1,5 @@
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
-import type { Point, ProposedState } from "./model";
+import type { Point, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -32,6 +32,16 @@ type AuthorizedEditV1 = Readonly<{
 }>;
 
 type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9;
+
+const OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+
+export type StudioPreviewInitialEditRuntimeAuthorityV1 = Readonly<{
+  duration: 4;
+  profile: "warp-square-v9";
+  runtimeEntityId: string;
+  studioEntityId: string;
+  studioSceneId: string;
+}>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -135,11 +145,119 @@ function isExactStableWarpSquareV9(scene: SceneIrV1, runtimeEntityId: string) {
 }
 
 /**
+ * Browser-authoring authority for the one pinned, unedited WarpSquare source.
+ * A producer-backed reimport changes the source hash, so this authority cannot
+ * accidentally open a second local edit against the edited Python.
+ */
+export function studioPreviewInitialEditRuntimeAuthorityV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+): StudioPreviewInitialEditRuntimeAuthorityV1 | null {
+  if (!snapshotCorrelationIsExact(snapshot)) return null;
+  const { context } = snapshot.correlation;
+  const source = snapshot.snapshot.scene.source;
+  const identity = snapshot.sourceRuntimeIdentity;
+  const mapping = identity?.get("square");
+  if (
+    source.kind !== "imported-manim-server-snapshot" ||
+    Number(source.snapshotVersion) !== 9 ||
+    source.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
+    context.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
+    context.sourcePath !== "example_scenes/basic.py" ||
+    context.sceneName !== "WarpSquare" ||
+    identity?.size !== 1 ||
+    !mapping ||
+    mapping.sourceName !== "square" ||
+    !isExactStableWarpSquareV9(snapshot.snapshot.scene, mapping.entityId)
+  ) {
+    return null;
+  }
+  return {
+    duration: 4,
+    profile: "warp-square-v9",
+    runtimeEntityId: mapping.entityId,
+    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:square`,
+    studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+  };
+}
+
+/** Projects only the exact runtime-backed Square into Studio's interaction UI. */
+export function projectStudioPreviewInitialEntityPresenceV1(
+  entities: readonly ProjectedEntity[],
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+  interactionGeometry: ReadonlyMap<string, unknown> | null,
+) {
+  if (!authority || !interactionGeometry?.has(authority.runtimeEntityId) || entities.length !== 1) return entities;
+  const [entity] = entities;
+  if (
+    !entity ||
+    entity.id !== authority.studioEntityId ||
+    entity.type !== "Square" ||
+    entity.provisional ||
+    entity.transactionId !== undefined ||
+    entity.sourceIdentity.kind !== "known" ||
+    entity.sourceIdentity.value !== "square" ||
+    entity.present
+  ) {
+    return entities;
+  }
+  return [{ ...entity, present: true }];
+}
+
+/**
+ * Supplies runtime-proven lifetime evidence only to validation of the exact
+ * initial edit. The imported base remains untouched.
+ */
+export function projectStudioPreviewInitialValidationSceneV1(
+  scene: RuntimeSceneState,
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+) {
+  if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
+  const entities = Object.values(scene.objectGraph.entities);
+  const [entity] = entities;
+  if (
+    entities.length !== 1 ||
+    !entity ||
+    entity.id !== authority.studioEntityId ||
+    entity.type !== "Square" ||
+    entity.provisional ||
+    entity.transactionId !== undefined ||
+    entity.sourceIdentity.kind !== "known" ||
+    entity.sourceIdentity.value !== "square"
+  ) {
+    return scene;
+  }
+  if (entity.lifetime.length === 1 && entity.lifetime[0]?.start === 0 && entity.lifetime[0]?.end === 4) return scene;
+  if (entity.lifetime.length !== 0) return scene;
+  return {
+    ...scene,
+    objectGraph: {
+      ...scene.objectGraph,
+      entities: { ...scene.objectGraph.entities, [entity.id]: { ...entity, lifetime: [{ end: 4, start: 0 }] } },
+    },
+  };
+}
+
+export function studioPreviewInitialEditTargetIsPresentV1(
+  scene: RuntimeSceneState,
+  entityId: string,
+  sourceTime: number,
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+) {
+  const projected = sourceTime === 0 ? projectStudioPreviewInitialValidationSceneV1(scene, authority) : scene;
+  return (
+    projected.objectGraph.entities[entityId]?.lifetime.some(
+      (interval) => sourceTime >= interval.start - 0.0005 && sourceTime < interval.end,
+    ) ?? false
+  );
+}
+
+/**
  * Returns the only synthetic authoring anchor accepted by the bounded V8/V9
  * preview profiles. This is preview authority, not a claim that the source
  * contains a lowerable `# poietra:anchor` marker.
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
+  if (studioPreviewInitialEditRuntimeAuthorityV1(snapshot)) return 0;
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
@@ -147,8 +265,7 @@ export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifi
   if (
     !mapping ||
     mapping.sourceName !== "square" ||
-    (!isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId) &&
-      !isExactStableWarpSquareV9(snapshot.snapshot.scene, mapping.entityId))
+    !isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId)
   ) {
     return null;
   }
@@ -242,6 +359,7 @@ function planInitialTransformEdit(
   }
   const profile = supportedTemporalRebaseProfileV1(scene);
   if (profile === null) return unsupported("profile-unsupported", "The snapshot profile cannot be temporally rebased.");
+  const initialV9Authority = profile === 9 ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot) : null;
   if (input.proposedState.evaluatedScene.duration !== scene.duration) {
     return unsupported(
       "channel-timing-edit-unsupported",
@@ -415,6 +533,7 @@ function planInitialTransformEdit(
         isExactStableSquareToCircleV8(scene, runtimeEntityId);
       const stableV9Target =
         profile === 9 &&
+        initialV9Authority?.runtimeEntityId === runtimeEntityId &&
         studioEntity?.type === "Square" &&
         studioEntity.sourceIdentity.kind === "known" &&
         studioEntity.sourceIdentity.value === "square" &&
@@ -532,7 +651,9 @@ function planInitialTransformEdit(
 /**
  * Rebase one bounded t=0 Studio transform directly onto a verified temporal
  * snapshot. The static Studio adapter is deliberately bypassed: untouched
- * dynamic semantic state is not reconstructed or flattened.
+ * dynamic semantic state is not reconstructed or flattened. For V9 this
+ * affine result is a t=0 draft only; the renderer hook rejects later samples
+ * until producer-backed reimport supplies the edited path-morph endpoint.
  */
 export function compileStudioPreviewTemporalRebaseV1(
   input: Readonly<{

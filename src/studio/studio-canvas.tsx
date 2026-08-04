@@ -475,10 +475,12 @@ export function StudioCanvas({
             };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const shape = resizeKindForType(entity.type);
+            const runtimeUniformScaleOnly = preview?.initialEditRuntimeAuthority?.studioEntityId === entity.id;
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
             const shapeResizeAvailable =
+              !runtimeUniformScaleOnly &&
               shape !== null &&
               entity.geometry.dimensions.kind === "known" &&
               hasShapeDimensions(shape, entity.geometry.dimensions.value) &&

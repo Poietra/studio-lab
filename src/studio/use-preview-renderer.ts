@@ -46,6 +46,8 @@ import {
 } from "./preview-snapshot-provider";
 import {
   compileStudioPreviewTemporalRebaseV1,
+  type StudioPreviewInitialEditRuntimeAuthorityV1,
+  studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
 
@@ -60,6 +62,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthorityV1;
+  /** Exact runtime authority for the pinned WarpSquare V9 initial edit. */
+  initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
   sourceLabel: string | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
   sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
@@ -178,6 +182,29 @@ export function studioPreviewInteractionAuthorityV1(
   return identity && identity.size > 0
     ? { kind: "interactive" }
     : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+}
+
+/** Local affine rebasing is truthful for WarpSquare V9 only at its source endpoint. */
+export function studioPreviewEditedV9SampleFallbackV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+  workingRevision: string | null | undefined,
+  sampleTime: number,
+): PreviewRendererHostStateV1 | null {
+  const source = snapshot?.snapshot.scene.source;
+  const unsupported =
+    source?.kind === "imported-manim-server-snapshot" &&
+    Number(source.snapshotVersion) === 9 &&
+    workingRevision !== null &&
+    workingRevision !== undefined &&
+    workingRevision !== PRISTINE_WORKING_REVISION &&
+    sampleTime !== 0;
+  return unsupported
+    ? {
+        detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
+        phase: "fallback",
+        reason: "snapshot-uncorrelated",
+      }
+    : null;
 }
 
 /** Selects only IDs admitted by the server-verified source/runtime map. */
@@ -765,6 +792,12 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
         reason: "snapshot-uncorrelated",
       };
     }
+    const editedV9SampleFallback = studioPreviewEditedV9SampleFallbackV1(
+      snapshot,
+      context?.workingRevision,
+      sampleTime,
+    );
+    if (editedV9SampleFallback) return editedV9SampleFallback;
     if (compilationError) {
       return {
         detail: compilationError,
@@ -819,6 +852,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     attachCanvas,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
+    initialEditRuntimeAuthority: snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null,
     interactionGeometry,
     interactionAuthority,
     sourceLabel: snapshot?.sourceLabel ?? null,
