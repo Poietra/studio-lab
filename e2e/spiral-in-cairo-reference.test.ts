@@ -65,9 +65,9 @@ describe("SpiralIn Cairo reference v1", () => {
       producer: {
         cairoLibrarySha256: "3144bd5935aee427d6c191b6b6d0ebf9010fb6320295a7f73edd276bc6993f2d",
         cairoVersion: "1.18.0",
-        fastManimCommit: "fdfa1a544fafe85fedc7e92b39f2ee16e827bb62",
-        fastManimTree: "2d763ec42d7da5029d1a4375c507512a43e16473",
-        identitySha256: "148f1e15a7e1aba990a26551d5d8ff9b8672825c0f4f53fe78a040d6149f3a81",
+        fastManimCommit: "842cdecc97a5ba32c2a30e0254c5f5dcd74382f0",
+        fastManimTree: "6fad77addc72e1a97440265e27d02630cf5b37b4",
+        identitySha256: "ec4495c605c8b6460599b778204237e290fef26ae6a950e8c333fede6491caed",
         manimVersion: "0.20.1",
         numpyVersion: "2.4.1",
         pillowImagingModuleSha256: "8a2c7efde4f6b0ef41e6a6197c00a2c19416c5939bf9bb43086f680cb54136a9",
@@ -147,7 +147,7 @@ describe("SpiralIn Cairo reference v1", () => {
           path: "fixtures/engine-v1/real-spiral-in-v11.json",
           revision: {
             kind: "imported-manim-server-snapshot",
-            sha256: "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7",
+            sha256: "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0",
           },
         },
         sample: { id: sampleId, sampleTime, viewport: { heightPx: 360, widthPx: 640 } },

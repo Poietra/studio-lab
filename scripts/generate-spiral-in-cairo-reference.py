@@ -27,8 +27,8 @@ from manim import tempconfig
 from PIL import Image
 
 
-FAST_MANIM_COMMIT = "fdfa1a544fafe85fedc7e92b39f2ee16e827bb62"
-FAST_MANIM_TREE = "2d763ec42d7da5029d1a4375c507512a43e16473"
+FAST_MANIM_COMMIT = "842cdecc97a5ba32c2a30e0254c5f5dcd74382f0"
+FAST_MANIM_TREE = "6fad77addc72e1a97440265e27d02630cf5b37b4"
 SOURCE_PATH = Path("example_scenes/basic.py")
 SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
 FRAME = {"height": 8, "width": 128.0 / 9.0}

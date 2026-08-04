@@ -1,8 +1,8 @@
 {
   "corpusDigest": "5971182c02795a06847bfdd429a9f1a180c433a28669d827ac24de0a8c3ba00f",
-  "manifestDigest": "f1931dc7347c9f2fab3439003a01df2192c7c9a6309b0775a1043e63a4749bd1",
+  "manifestDigest": "ed3280f0ee4c0bdfe566cf2f37665d7ffaa0d294ade0f18ebadfa38c2fd87595",
   "manifestVersion": 1,
-  "producerDigest": "1b9b792823749bdb85cd588fa710a416292d08f4277cd4e99fb0a1c4078fc76b",
+  "producerDigest": "f5548d2cf700ab046d2ce2d196cac9b06190b05954b3c9d10fed04c13bb9f326",
   "reasonCounts": {
     "failure:producer-exit": 1,
     "unsupported:animation-evidence-incomplete": 13,
@@ -145,7 +145,7 @@
     "fast-manim-basic/SpiralInExample/v11": {
       "outcome": "accepted",
       "reasons": [],
-      "snapshotHash": "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7"
+      "snapshotHash": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
     },
     "fast-manim-basic/SpiralInExample/v2": {
       "outcome": "fallback",

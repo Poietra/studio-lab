@@ -15,9 +15,9 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const ENGINE_COMMIT: &str = "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2";
-const FAST_MANIM_COMMIT: &str = "0b1aa3b303c58a33becaf31f822361e4292ce46f";
+const FAST_MANIM_COMMIT: &str = "4a6eaf1b4085ed643698da5116dd23814411eb5b";
 const FIXTURE_ID: &str = "eng-v1-real-spiral-in-v11";
-const SNAPSHOT_HASH: &str = "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7";
+const SNAPSHOT_HASH: &str = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
 const SOURCE_SHA256: &str = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 

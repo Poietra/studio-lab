@@ -136,11 +136,9 @@ test("opens official SpiralIn V11 in Studio and retains selection-only leaves wh
   }
 
   const circle = page.getByRole("button", { name: "Move circle", exact: true });
-  // The deliberately oversized pi glyph overlaps several leaf AABBs. Keyboard
-  // selection proves every retained target remains reachable without claiming
-  // pointer-drag edit authority for this selection-only profile.
-  await circle.focus();
-  await circle.press("Enter");
+  // The source-proven MathTex bounds must not cover the neighboring circle.
+  // A real pointer click catches regressions that keyboard-only selection hides.
+  await circle.click();
   await expect(circle).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: /Resize circle/ })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);

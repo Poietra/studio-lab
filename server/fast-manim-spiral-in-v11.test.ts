@@ -33,8 +33,8 @@ async function loadProducerFixture() {
   const manifest = JSON.parse(manifestText) as Record<string, unknown>;
   expect(manifest).toMatchObject({
     combinedWireSha256: createHash("sha256").update(wire, "utf8").digest("hex"),
-    fastManimCommit: "0b1aa3b303c58a33becaf31f822361e4292ce46f",
-    fastManimTree: "2d763ec42d7da5029d1a4375c507512a43e16473",
+    fastManimCommit: "4a6eaf1b4085ed643698da5116dd23814411eb5b",
+    fastManimTree: "6fad77addc72e1a97440265e27d02630cf5b37b4",
     runtimeConfigHash: RUNTIME_CONFIG_HASH,
     semanticSha256: FAST_MANIM_SPIRAL_IN_SEMANTICS_SHA256_V11,
     sourceSha256: FAST_MANIM_SPIRAL_IN_OFFICIAL_SOURCE_SHA256_V11,
@@ -72,6 +72,12 @@ describe("fast-manim SpiralIn snapshot profile V11", () => {
     expect(sealed.bundle.scene.entities).toHaveLength(6);
     expect(sealed.bundle.scene.animationChannels).toHaveLength(11);
     expect(sealed.bundle.scene.provenance).toHaveLength(18);
+    const leafOpacityChannels = sealed.bundle.scene.animationChannels.filter(
+      (channel, index) => channel.kind === "opacity" && index > 0,
+    );
+    expect(leafOpacityChannels).toHaveLength(5);
+    expect(leafOpacityChannels.map(({ keyframes }) => keyframes.at(-1)?.value)).toEqual([1, 1, 1, 1, 0]);
+    expect(leafOpacityChannels[4]?.keyframes.every(({ value }) => value === 0)).toBe(true);
     expect(
       sealed.bundle.scene.provenance.every(
         ({ evidence }) => canonicalJsonV1(evidence) === canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V11]),
@@ -142,7 +148,7 @@ describe("fast-manim SpiralIn snapshot profile V11", () => {
 
   it("pins the audited producer semantic generation", () => {
     expect(FAST_MANIM_SPIRAL_IN_SEMANTICS_SHA256_V11).toBe(
-      "89c4b3a36d9bbf6156920782ac4f579359dfb87771ae96af663218e8c68281a1",
+      "90def786b1509d018acf333fb5239059e6eaf108b3ff521be14ef3f87494be31",
     );
   });
 });

@@ -2296,7 +2296,7 @@ const FAST_MANIM_LINE_JOINTS_REQUIRED_CAPABILITIES_V10 = ["cubic-path-geometry",
 export const FAST_MANIM_SPIRAL_IN_OFFICIAL_SOURCE_SHA256_V11 = FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10;
 export const FAST_MANIM_SPIRAL_IN_SOURCE_PATH_V11 = "example_scenes/basic.py" as const;
 export const FAST_MANIM_SPIRAL_IN_SEMANTICS_SHA256_V11 =
-  "89c4b3a36d9bbf6156920782ac4f579359dfb87771ae96af663218e8c68281a1" as const;
+  "90def786b1509d018acf333fb5239059e6eaf108b3ff521be14ef3f87494be31" as const;
 const FAST_MANIM_SPIRAL_IN_REQUIRED_CAPABILITIES_V11 = [
   "affine-transform-animation",
   "cubic-path-geometry",
@@ -3470,6 +3470,7 @@ function assertSpiralInProducerProvenanceV11(scene: SceneIrBundleV1["scene"]) {
         "MathTex content digest 62967f8bac491feedca2406c710124ffa699cc8bd5ccc01a192bee27f9be2278",
         `MathTex toolchain digest ${MATHTEX_PROFILE_TOOLCHAIN_DIGEST_V3}`,
         `MathTex font digest ${MATHTEX_PROFILE_FONT_DIGEST_V3}`,
+        "official Cairo MathTex base root bounds 0.2689913 by 0.22017435 before source scale 7",
         "capability cubic-path-geometry: 40 cubic segments from the validated hermetic outline artifact",
       ],
     },
@@ -3569,7 +3570,7 @@ function assertSpiralInProfileV11(
   leaves.forEach((entity, index) => {
     const sceneOrder = index + 1;
     const expectedTransform =
-      index === 4 ? { m11: 7, m12: 0, m21: 0, m22: 7, tx: -2.2505640000000002, ty: 1.5 } : identityTransform;
+      index === 4 ? { m11: 7, m12: 0, m21: 0, m22: 7, tx: -2.25, ty: 1.5 } : identityTransform;
     if (
       entity.id !== fastManimSnapshotEntityIdV1(sceneId, sceneOrder) ||
       entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, sceneOrder) ||
@@ -3640,8 +3641,15 @@ function assertSpiralInProfileV11(
         profileViolation("SpiralIn profile V11 leaf samples must use the exact canonical 60 FPS linear grid.");
       }
     }
-    if (opacity.keyframes[0]?.value !== 0 || opacity.keyframes[60]?.value !== 1) {
-      profileViolation("SpiralIn profile V11 leaf opacity must reveal from zero to one.");
+    const expectedFinalOpacity = index === 4 ? 0 : 1;
+    if (
+      opacity.keyframes[0]?.value !== 0 ||
+      opacity.keyframes[60]?.value !== expectedFinalOpacity ||
+      (index === 4 && opacity.keyframes.some(({ value }) => value !== 0))
+    ) {
+      profileViolation(
+        "SpiralIn profile V11 leaf opacity must preserve the four visible shape ramps and transparent direct MathTex root.",
+      );
     }
   });
   if (fastManimSpiralInSemanticDigestV11(scene) !== FAST_MANIM_SPIRAL_IN_SEMANTICS_SHA256_V11) {

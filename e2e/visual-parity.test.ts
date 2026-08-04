@@ -574,34 +574,34 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the official SpiralIn V11 timeline to native/browser and independent Cairo gates", async () => {
-    const fixtureRevision = "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7";
+    const fixtureRevision = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
     const corpus = await corpusFixture();
     const expectedSamples = [
-      ["real-spiral-in-v11--start", "start", 0, "04367b003237fa58eb9eeaabf78ec0a047f0d0b6934627da0d06734e9763cb4f"],
+      ["real-spiral-in-v11--start", "start", 0, "2a88992b0b6d392964c4189c59daecfad3c8010cd20a6b871423cd7f151bc713"],
       [
         "real-spiral-in-v11--early-reveal",
         "early-reveal",
         0.1,
-        "496d2b60b004bbf5bdbae730265f6a2d95c86c237998033db75aaf140b678aba",
+        "bdcfe6630ed39f143959a54abe437e2b0fcae1c88f542469c8468847ed91d4bb",
       ],
       [
         "real-spiral-in-v11--spiral-midpoint",
         "spiral-midpoint",
         0.5,
-        "4922203e459aeae1b657afde10f4dd2f5292dc9e81c62f6bf43b990cfb15d3e2",
+        "24f32dbbb0dd1ba7d1e39c3a12f1d043cbd16e4d61e149b88bacec4f5c376587",
       ],
       [
         "real-spiral-in-v11--spiral-end",
         "spiral-end",
         1,
-        "a64d3d19a164c1a6b405bfddaf55b5954e0d50d199790dba54d236bf1501cd36",
+        "13c53695117de4343966df9fcc1c750ea0e10503177fa4d7f632467533bab333",
       ],
-      ["real-spiral-in-v11--hold", "hold", 1.5, "a64d3d19a164c1a6b405bfddaf55b5954e0d50d199790dba54d236bf1501cd36"],
+      ["real-spiral-in-v11--hold", "hold", 1.5, "13c53695117de4343966df9fcc1c750ea0e10503177fa4d7f632467533bab333"],
       [
         "real-spiral-in-v11--group-fade-midpoint",
         "group-fade-midpoint",
         2.5,
-        "7356a57f912f5b1c149b0f01affe30b095ad5f70545c92ee137930927d801ab9",
+        "530f3fa366f2a90cab8bc3da7cc8c4feb6a9dd25cb1f1fed4fd2821bbb25e61e",
       ],
       ["real-spiral-in-v11--end", "end", 3, "9ffcc529e3ca4e953e7c10fea11c9cc1dd67aa1c06e3b345bd5b78caedd9e857"],
     ] as const;
@@ -661,10 +661,10 @@ describe("visual parity v1 contracts", () => {
     ]);
     expect(fixture.producerReference).toEqual({
       engineCommit: "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2",
-      fastManimCommit: "0b1aa3b303c58a33becaf31f822361e4292ce46f",
-      fastManimTree: "2d763ec42d7da5029d1a4375c507512a43e16473",
+      fastManimCommit: "4a6eaf1b4085ed643698da5116dd23814411eb5b",
+      fastManimTree: "6fad77addc72e1a97440265e27d02630cf5b37b4",
       kind: "server-sealed-real-fast-manim-profile-v11",
-      producerSnapshotDigest: "000d40cae8f3ecfc9168d50244c2d8b2ada3f3b95248563f7cda1ecfd13e56cf",
+      producerSnapshotDigest: "f10b64b47c0aa8d663a01dfb58a6d20057608a0c324f97b436a9c13becefcbea",
       snapshotHash: fixtureRevision,
       sourcePath: "example_scenes/basic.py",
       sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
