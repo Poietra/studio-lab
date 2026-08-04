@@ -14,13 +14,17 @@ import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
 } from "./fast-manim-production-snapshot-runner-factory";
-import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
 import type { ManimRenderProductionSandboxClientOptionsV1 } from "./manim-render-production-sandbox-client";
 import { MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 } from "./manim-render-sandbox-contract";
 import {
   createProductionDurableManimRenderExecutorV1,
   type ProductionDurableManimRenderExecutorV1,
 } from "./production-durable-manim-render-executor";
+import type {
+  ProductionManimRuntimeAdapterV1,
+  ProductionManimRuntimeCellProvisionerV1,
+  ProductionRuntimeCellAssignmentV1,
+} from "./production-runtime-cell";
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
 import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifact-repository";
@@ -146,6 +150,25 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
   }>;
   tenantId: string;
 }>;
+
+export type DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1 = Omit<
+  DurablePostgresS3ProductionRuntimeOptionsV1,
+  "tenantId"
+>;
+
+/**
+ * Shared-process topology for the runtime-cell resolver. Every provisioned
+ * adapter receives only the tenant ID from a validated server-owned assignment;
+ * database, object-store, and sandbox endpoints remain deployment config.
+ */
+export function createDurablePostgresS3ProductionRuntimeCellProvisionerV1(
+  options: DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1,
+): ProductionManimRuntimeCellProvisionerV1 {
+  return Object.freeze({
+    provision: (assignment: ProductionRuntimeCellAssignmentV1, signal: AbortSignal) =>
+      createDurablePostgresS3ProductionRuntimeV1({ ...options, tenantId: assignment.tenantId }, signal),
+  });
+}
 
 function migrationTimeout(value: number | undefined) {
   const timeout = value ?? 30_000;
