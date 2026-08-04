@@ -409,8 +409,8 @@ export function evaluateSegmentedTexWriteV1(
       fill: {
         fillOpacity: fillProgress,
         pathTrimEnd: 1,
-        strokeOpacity: 1 - fillProgress,
-        strokeWidth: artifact.writePlan.outlineStrokeWidth,
+        strokeOpacity: 1,
+        strokeWidth: artifact.writePlan.outlineStrokeWidth * (1 - fillProgress),
         visible: started && local >= artifact.writePlan.phaseBoundary,
       },
       fragmentId: fragment.id,

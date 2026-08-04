@@ -167,16 +167,16 @@ fn write_phase_boundary_is_visually_continuous_across_separate_entities() {
     let second_half_midpoint = 0.75 / full_length;
     let midpoint = evaluate_segmented_tex_write_v1(&artifact, second_half_midpoint);
     assert_exact_float(midpoint[0].fill.fill_opacity, 0.5);
-    assert_exact_float(midpoint[0].fill.stroke_opacity, 0.5);
-    assert_exact_float(midpoint[0].fill.stroke_width, 2.0);
+    assert_exact_float(midpoint[0].fill.stroke_opacity, 1.0);
+    assert_exact_float(midpoint[0].fill.stroke_width, 1.0);
 
     let end = evaluate_segmented_tex_write_v1(&artifact, 1.0);
     assert!(end.iter().all(|sample| {
         !sample.outline.visible
             && sample.fill.visible
             && sample.fill.fill_opacity.to_bits() == 1.0f64.to_bits()
-            && sample.fill.stroke_opacity.to_bits() == 0.0f64.to_bits()
-            && sample.fill.stroke_width.to_bits() == 2.0f64.to_bits()
+            && sample.fill.stroke_opacity.to_bits() == 1.0f64.to_bits()
+            && sample.fill.stroke_width.to_bits() == 0.0f64.to_bits()
     }));
     assert!(evaluate_segmented_tex_write_v1(&artifact, f64::NAN).is_empty());
 }

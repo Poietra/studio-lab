@@ -20,7 +20,7 @@
       "expected": {
         "bounds": { "left": -5.640142, "right": 5.640142, "bottom": -0.5, "top": 0.5 },
         "contentDigest": "a12f5d1728e6f22f18ce431bb5aa98ef9eafdacfe88ce4d001fac5cc836642ae",
-        "toolchainDigest": "2c9884faf8bd0f2ac1469f0671b7a8327a8d112a57d95d3de9c2fa9c2643fc8b",
+        "toolchainDigest": "9a2c84502522f66564031995184e4bb707c2513e37feb1f7c77694e1bf8076c1",
         "fontDigest": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
         "fragmentCount": 15,
         "entityCount": 30,
@@ -91,7 +91,7 @@
           "expected": {
             "fragmentId": "fragment-0000",
             "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
-            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 0.5, "strokeWidth": 2 }
+            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 1 }
           }
         },
         {
@@ -101,7 +101,7 @@
           "expected": {
             "fragmentId": "fragment-0014",
             "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
-            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 0, "strokeWidth": 2 }
+            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 0 }
           }
         }
       ]
@@ -119,7 +119,7 @@
       "expected": {
         "bounds": { "left": -0.940237, "right": 0.940237, "bottom": -0.5, "top": 0.5 },
         "contentDigest": "0762997c70a0abe2280e1f8a798a19141ea29057fa0735ecc4dfd4f416cc5121",
-        "toolchainDigest": "2c9884faf8bd0f2ac1469f0671b7a8327a8d112a57d95d3de9c2fa9c2643fc8b",
+        "toolchainDigest": "9a2c84502522f66564031995184e4bb707c2513e37feb1f7c77694e1bf8076c1",
         "fontDigest": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
         "fragmentCount": 14,
         "entityCount": 28,
@@ -183,7 +183,7 @@
           "expected": {
             "fragmentId": "fragment-0000",
             "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
-            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 0.5, "strokeWidth": 2 }
+            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 1 }
           }
         },
         {
@@ -193,7 +193,7 @@
           "expected": {
             "fragmentId": "fragment-0013",
             "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
-            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 0, "strokeWidth": 2 }
+            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 0 }
           }
         }
       ]

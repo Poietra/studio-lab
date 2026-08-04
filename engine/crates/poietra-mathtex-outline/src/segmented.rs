@@ -643,7 +643,7 @@ fn segmented_toolchain_digest() -> String {
     update_frame(&mut digest, toolchain_digest_v1().as_bytes());
     update_frame(
         &mut digest,
-        b"display-item-order;shared-unit-height;exact-text-byte-ranges;expression-math-range;separate-write-entities",
+        b"display-item-order;shared-unit-height;exact-text-byte-ranges;expression-math-range;separate-write-entities;manim-stroke-width-transition",
     );
     format!("{:x}", digest.finalize())
 }
@@ -694,8 +694,8 @@ pub fn evaluate_segmented_tex_write_v1(
                     visible: started && local >= artifact.write_plan.phase_boundary,
                     fill_opacity: fill_progress,
                     path_trim_end: 1.0,
-                    stroke_opacity: 1.0 - fill_progress,
-                    stroke_width: artifact.write_plan.outline_stroke_width,
+                    stroke_opacity: 1.0,
+                    stroke_width: artifact.write_plan.outline_stroke_width * (1.0 - fill_progress),
                 },
             }
         })

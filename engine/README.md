@@ -49,7 +49,8 @@ provides exact UTF-8 source ranges, including deterministic literal paint
 matches; `mathtex-math` preserves expression-wide correlation rather than
 inventing glyph ranges for macros. Each fragment supplies separate outline and
 fill entity IDs plus a normalized two-phase Write plan: trimmed stroke reveal,
-then a full-path stroke-to-fill transition. The checked-in WriteStuff fixture
+then a full-path transition that raises fill opacity while shrinking stroke
+width to zero. The checked-in WriteStuff fixture
 covers the official text and summation expressions across Rust, TypeScript,
 WASM, and Python. This contract is outline evidence, not full Manim/Cairo scene
 parity; producer hierarchy, runtime admission, and final raster parity remain
