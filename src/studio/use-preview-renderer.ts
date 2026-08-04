@@ -62,7 +62,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthorityV1;
-  /** Exact runtime authority for the pinned WarpSquare V9 initial edit. */
+  /** Exact runtime authority for one bounded initial imported-Scene edit. */
   initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
   sourceLabel: string | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
@@ -144,10 +144,10 @@ type StudioPreviewHostInstallationV1 = Readonly<{
  * deliberately has aggregate morph lineage, while V9's pointwise-function
  * morph remains display-only unless the exact WarpSquare V9 temporal slice can
  * be truthfully rebased. V6 through V9 require server-verified source/runtime
- * bindings. V10 extends that complete identity requirement to the fixed
- * LineJoints hierarchy. Older
- * snapshot-only profiles retain their semantic interaction fallback; no
- * gesture guesses from Scene order.
+ * bindings. V10 additionally requires the sealed LineJoints hierarchy and
+ * admits mutation only for its runtime-proven center leaf. Older snapshot-only
+ * profiles retain their semantic interaction fallback; no gesture guesses
+ * from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
@@ -185,9 +185,11 @@ export function studioPreviewInteractionAuthorityV1(
       mappedEntityIds.size === entities.length &&
       entities.every(({ id }) => mappedEntityIds.has(id));
     if (!complete) return { kind: "display-only", reason: "source-runtime-identity-unverified" };
-    return Number(source.snapshotVersion) === 10
-      ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
-      : { kind: "interactive" };
+    if (Number(source.snapshotVersion) !== 10) return { kind: "interactive" };
+    const initialEditAuthority = snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null;
+    return initialEditAuthority?.profile === "line-joints-v10"
+      ? { kind: "interactive" }
+      : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
   }
   return identity && identity.size > 0
     ? { kind: "interactive" }
@@ -225,20 +227,23 @@ export function studioPreviewInteractionEntityIdsV1(
 ) {
   if (authority.kind === "display-only") return [];
   if (!identity) return [];
-  // Selection-only authority must be derived from the verified render graph:
-  // a logical group has source identity but no prepared pixels or honest hit
-  // bounds. Missing Scene evidence therefore admits no selection target.
-  const selectionEntityIds =
-    authority.kind === "selection-only"
-      ? new Set((entities ?? []).filter(({ geometry }) => geometry.kind !== "group").map(({ id }) => id))
-      : null;
+  // Canvas interaction must be derived from the verified render graph: a
+  // logical group has source identity but no prepared pixels or honest hit
+  // bounds. Missing Scene evidence is fail-closed for selection-only mode;
+  // interactive callers still omit groups whenever Scene evidence is present.
+  const drawableEntityIds =
+    entities === null
+      ? authority.kind === "selection-only"
+        ? new Set<string>()
+        : null
+      : new Set(entities.filter(({ geometry }) => geometry.kind !== "group").map(({ id }) => id));
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
     if (
       seen.has(mapping.entityId) ||
       !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||
-      (selectionEntityIds !== null && !selectionEntityIds.has(mapping.entityId))
+      (drawableEntityIds !== null && !drawableEntityIds.has(mapping.entityId))
     )
       continue;
     seen.add(mapping.entityId);
@@ -367,13 +372,17 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
-  if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
+  const importedSource = input.snapshot.snapshot.scene.source;
+  const importedProfile =
+    importedSource.kind === "imported-manim-server-snapshot" ? Number(importedSource.snapshotVersion) : null;
+  if (input.snapshot.snapshot.scene.animationChannels.length > 0 || importedProfile === 10) {
     const source = input.snapshot.snapshot.scene.source;
     if (
       source.kind !== "imported-manim-server-snapshot" ||
       (Number(source.snapshotVersion) !== 7 &&
         Number(source.snapshotVersion) !== 8 &&
-        Number(source.snapshotVersion) !== 9)
+        Number(source.snapshotVersion) !== 9 &&
+        Number(source.snapshotVersion) !== 10)
     ) {
       return {
         error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
@@ -406,7 +415,10 @@ export async function compileStudioPreviewSceneV1(
         bundle,
         engineRevisionHash,
         frame: { ...input.frame },
-        interactionEntityIds: rebased.scene.entities.map(({ id }) => id).slice(0, MAX_CANVAS_INTERACTION_ENTITY_IDS),
+        interactionEntityIds: rebased.scene.entities
+          .filter(({ geometry }) => geometry.kind !== "group")
+          .map(({ id }) => id)
+          .slice(0, MAX_CANVAS_INTERACTION_ENTITY_IDS),
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,

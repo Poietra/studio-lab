@@ -6,6 +6,7 @@ import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../engine/reference-evaluator";
 import type { SceneIrV1 } from "../engine/scene-ir";
+import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import {
   type ProgramRecord,
@@ -30,6 +31,11 @@ import {
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import {
+  compileStudioPreviewSceneV1,
+  studioPreviewInteractionAuthorityV1,
+  studioPreviewInteractionEntityIdsV1,
+} from "./use-preview-renderer";
 
 const FRAME = { height: 8, width: 14.222222222222221 } as const;
 const VIEWPORT = { height: 360, width: 640 } as const;
@@ -47,6 +53,7 @@ const WARP_SQUARE_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#WarpSquare`;
 const WARP_SQUARE_ENTITY_ID = `source:${WARP_SQUARE_SCENE_ID}:square`;
 const WARP_SQUARE_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const WARP_SQUARE_SNAPSHOT_HASH = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+const LINE_JOINTS_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#LineJoints`;
 
 type SquareToCircleFixtureFile = Readonly<{
   assets: unknown;
@@ -292,6 +299,112 @@ function editedState(base: WorkingState, kind: EditKind, entityId = STUDIO_ENTIT
     );
   }
   return evaluateWorkingState({ ...base, appliedPrograms: records });
+}
+
+async function lineJointsInput(kind: EditKind = "combined", targetSourceName: "t1" | "t2" | "t3" = "t2") {
+  const [fixtureText, sourceText] = await Promise.all([
+    readFile(new URL("../../fixtures/engine-v1/real-line-joints-v10.json", import.meta.url), "utf8"),
+    readFile(new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url), "utf8"),
+  ]);
+  const fixture = JSON.parse(fixtureText) as SquareToCircleFixtureFile;
+  const bundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+  const source = bundle.scene.source;
+  const imported = importManimScene(sourceText, WARP_SQUARE_SOURCE_PATH, "LineJoints", FRAME);
+  if (!imported || source.kind !== "imported-manim-server-snapshot") {
+    throw new Error("The LineJoints V10 source fixture is incomplete.");
+  }
+  const sourceNames = ["grp", "t1", "t2", "t3"] as const;
+  const sourceRuntimeIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>();
+  sourceNames.forEach((sourceName, index) => {
+    const runtimeEntity = bundle.scene.entities[index];
+    if (!runtimeEntity) throw new Error(`LineJoints V10 lost runtime entity ${index}.`);
+    sourceRuntimeIdentity.set(sourceName, {
+      bindingId: `binding:line-joints:${sourceName}`,
+      entityId: runtimeEntity.id,
+      sourceName,
+    });
+  });
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
+    correlation: {
+      assetsManifestDigest: bundle.assets.manifestDigest,
+      context: {
+        projectId: "demo",
+        sceneName: "LineJoints",
+        sourceDuration: 1,
+        sourceHash: source.sourceHash,
+        sourcePath: WARP_SQUARE_SOURCE_PATH,
+        workingRevision: PRISTINE_WORKING_REVISION,
+      },
+      engineRevisionHash: source.snapshotHash,
+      sceneDuration: 1,
+      sceneId: bundle.scene.sceneId,
+      serverPublicationRevision: 1,
+    },
+    duration: 1,
+    sceneId: bundle.scene.sceneId,
+    snapshot: bundle,
+    sourceLabel: `${WARP_SQUARE_SOURCE_PATH} · LineJoints`,
+    sourceRuntimeIdentity,
+  };
+  const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
+  if (authority?.profile !== "line-joints-v10") {
+    throw new Error("The sealed LineJoints V10 fixture did not grant its bounded edit authority.");
+  }
+  const targetEntityId = `source:${LINE_JOINTS_SCENE_ID}:${targetSourceName}`;
+  const runtimeSceneState: RuntimeSceneState = {
+    ...imported.runtimeSceneState,
+    duration: 1,
+  };
+  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, authority);
+  const inherited = workingState(runtimeSceneState);
+  const base: WorkingState = {
+    ...inherited,
+    editorContext: { ...inherited.editorContext, activeSceneId: LINE_JOINTS_SCENE_ID, selection: [targetEntityId] },
+    sourceSnapshot: {
+      configId: "sealed-line-joints-v10",
+      hash: `sha256:${WARP_SQUARE_SOURCE_HASH}`,
+      sourceId: WARP_SQUARE_SOURCE_PATH,
+      version: STUDIO_STATE_VERSION,
+    },
+    staticSemanticState: imported.staticSemanticState,
+  };
+  const records: ProgramRecord[] = [];
+  if (kind === "position" || kind === "combined") {
+    records.push(
+      validRecord(
+        createDirectManipulationPositionProgram({
+          capturedPlayhead: 0,
+          delta: { x: 64, y: -36 },
+          positions: { [targetEntityId]: authority.baseCenter },
+          scene: validationScene,
+          start: 0,
+          targetEntityIds: [targetEntityId],
+          transactionId: `move-line-joints-${targetSourceName}-at-zero`,
+        }),
+      ),
+    );
+  }
+  if (kind === "scale" || kind === "combined") {
+    records.push(
+      validRecord(
+        createDirectManipulationScaleProgram({
+          capturedPlayhead: 0,
+          interval: { end: 0, start: 0 },
+          scales: { [targetEntityId]: { from: 1, to: 1.5 } },
+          scene: validationScene,
+          targetEntityIds: [targetEntityId],
+          transactionId: `scale-line-joints-${targetSourceName}-at-zero`,
+        }),
+      ),
+    );
+  }
+  return {
+    authority,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: records }),
+    snapshot,
+    targetEntityId,
+  };
 }
 
 async function squareToCircleInput(kind: EditKind = "combined") {
@@ -854,5 +967,116 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
       },
     });
     expect(result).toMatchObject({ issue: { code: "target-edit-unsupported" }, kind: "unsupported" });
+  });
+});
+
+describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
+  function compileLineJoints(input: Awaited<ReturnType<typeof lineJointsInput>>) {
+    return compileStudioPreviewTemporalRebaseV1({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: WORKING_REVISION,
+    });
+  }
+
+  it("grants runtime geometry and lifetime evidence only to the exact center t2 identity", async () => {
+    const input = await lineJointsInput("position");
+    expect(input.authority).toEqual({
+      baseCenter: { x: 320, y: 180 },
+      duration: 1,
+      lifetime: { end: 1, start: 0 },
+      profile: "line-joints-v10",
+      relativeScale: 1,
+      runtimeEntityId: input.snapshot.snapshot.scene.entities[2]?.id,
+      studioEntityId: input.targetEntityId,
+      studioSceneId: LINE_JOINTS_SCENE_ID,
+    });
+    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthorityV1(input.snapshot);
+    expect(interactionAuthority).toEqual({ kind: "interactive" });
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        input.snapshot.sourceRuntimeIdentity,
+        interactionAuthority,
+        input.snapshot.snapshot.scene.entities,
+      ),
+    ).toEqual(input.snapshot.snapshot.scene.entities.slice(1).map(({ id }) => id));
+
+    const runtimeT2 = input.proposedState.base.runtimeSceneState.objectGraph.entities[input.targetEntityId];
+    if (!runtimeT2?.geometry) throw new Error("LineJoints Studio t2 lost its imported geometry evidence.");
+    const projectedT2 = {
+      ...runtimeT2,
+      geometry: runtimeT2.geometry,
+      opacity: 1,
+      position: { x: 0, y: 0 },
+      present: true,
+      scale: 1,
+    };
+    const projected = projectStudioPreviewInitialEntityPresenceV1(
+      [projectedT2],
+      input.authority,
+      new Map([[input.authority.runtimeEntityId, {}]]),
+    );
+    expect(projected[0]).toMatchObject({
+      geometry: { position: { kind: "known" }, scale: { kind: "known" } },
+      position: { x: 320, y: 180 },
+      scale: 1,
+    });
+  });
+
+  it("rebases a combined t=0 draft while preserving the group, sibling leaves, and joins", async () => {
+    const input = await lineJointsInput();
+    const importedScene = input.snapshot.snapshot.scene;
+    const result = await compileStudioPreviewSceneV1({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      workingRevision: WORKING_REVISION,
+      workspaceKey: "demo/example_scenes/basic.py/LineJoints",
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+
+    expect(scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(scene.entities[0]).toBe(importedScene.entities[0]);
+    expect(scene.entities[1]).toBe(importedScene.entities[1]);
+    expect(scene.entities[3]).toBe(importedScene.entities[3]);
+    expect(scene.entities[2]?.geometry).toBe(importedScene.entities[2]?.geometry);
+    expect(scene.entities[2]?.appearance).toBe(importedScene.entities[2]?.appearance);
+    expect(scene.entities[2]?.transform).toMatchObject({ m11: 1.5, m12: 0, m21: 0, m22: 1.5 });
+    expect(scene.entities[2]?.transform.tx).toBeCloseTo(1.4222222222222223, 12);
+    expect(scene.entities[2]?.transform.ty).toBeCloseTo(0.7999999999999998, 12);
+    expect(
+      scene.entities
+        .slice(1)
+        .map((entity) => (entity.appearance.kind === "vector" ? entity.appearance.stroke?.join : null)),
+    ).toEqual(["miter", "round", "bevel"]);
+    expect(result.scene.interactionEntityIds).toEqual(
+      input.snapshot.snapshot.scene.entities.slice(1).map(({ id }) => id),
+    );
+  });
+
+  it("fails closed for sibling mutation or any identity drift", async () => {
+    const siblingEdit = await lineJointsInput("position", "t1");
+    expect(compileLineJoints(siblingEdit)).toMatchObject({
+      issue: { code: "target-edit-unsupported" },
+      kind: "unsupported",
+    });
+
+    const input = await lineJointsInput("position");
+    const identity = new Map(input.snapshot.sourceRuntimeIdentity);
+    const t2 = identity.get("t2");
+    const t3 = identity.get("t3");
+    if (!t2 || !t3) throw new Error("LineJoints V10 identity fixture is incomplete.");
+    identity.set("t2", { ...t2, entityId: t3.entityId });
+    identity.set("t3", { ...t3, entityId: t2.entityId });
+    const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
+    expect(studioPreviewInitialEditRuntimeAuthorityV1(drifted)).toBeNull();
+    expect(compileLineJoints({ ...input, snapshot: drifted })).toMatchObject({
+      issue: { code: "target-edit-unsupported" },
+      kind: "unsupported",
+    });
   });
 });

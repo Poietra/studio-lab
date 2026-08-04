@@ -32,17 +32,38 @@ type AuthorizedEditV1 = Readonly<{
   scaleFactor: number | null;
 }>;
 
-type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9;
+type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9 | 10;
 
-const OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+const OFFICIAL_BASIC_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+const LINE_JOINTS_V10_PROFILE = {
+  leaves: [
+    { join: "miter", sceneOrder: 1, sourceName: "t1" },
+    { join: "round", sceneOrder: 2, sourceName: "t2" },
+    { join: "bevel", sceneOrder: 3, sourceName: "t3" },
+  ],
+  runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
+  snapshotHash: "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
+  sourceNames: ["grp", "t1", "t2", "t3"],
+} as const;
 
-export type StudioPreviewInitialEditRuntimeAuthorityV1 = Readonly<{
-  duration: 4;
-  profile: "warp-square-v9";
-  runtimeEntityId: string;
-  studioEntityId: string;
-  studioSceneId: string;
-}>;
+export type StudioPreviewInitialEditRuntimeAuthorityV1 =
+  | Readonly<{
+      duration: 4;
+      profile: "warp-square-v9";
+      runtimeEntityId: string;
+      studioEntityId: string;
+      studioSceneId: string;
+    }>
+  | Readonly<{
+      baseCenter: Point;
+      duration: 1;
+      lifetime: Readonly<{ end: 1; start: 0 }>;
+      profile: "line-joints-v10";
+      relativeScale: 1;
+      runtimeEntityId: string;
+      studioEntityId: string;
+      studioSceneId: string;
+    }>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -80,7 +101,7 @@ function supportedTemporalRebaseProfileV1(scene: SceneIrV1): SupportedTemporalRe
   const source = scene.source;
   if (source.kind !== "imported-manim-server-snapshot") return null;
   const version = Number(source.snapshotVersion);
-  return version === 7 || version === 8 || version === 9 ? version : null;
+  return version === 7 || version === 8 || version === 9 || version === 10 ? version : null;
 }
 
 function isExactManimSmoothInterval(channel: SceneIrV1["animationChannels"][number], start: number, end: number) {
@@ -145,10 +166,54 @@ function isExactStableWarpSquareV9(scene: SceneIrV1, runtimeEntityId: string) {
   );
 }
 
+function isExactStableLineJointsV10(
+  scene: SceneIrV1,
+  runtimeIds: Readonly<{ grp: string; t1: string; t2: string; t3: string }>,
+) {
+  // The verified snapshot hash seals full content; these checks pin the
+  // hierarchy facts consumed locally instead of reimplementing its producer.
+  const source = scene.source;
+  const [group] = scene.entities;
+  return (
+    source.kind === "imported-manim-server-snapshot" &&
+    supportedTemporalRebaseProfileV1(scene) === 10 &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    source.snapshotHash === LINE_JOINTS_V10_PROFILE.snapshotHash &&
+    source.runtimeConfigHash === LINE_JOINTS_V10_PROFILE.runtimeConfigHash &&
+    scene.duration === 1 &&
+    scene.animationChannels.length === 0 &&
+    scene.entities.length === 4 &&
+    scene.requiredCapabilities.length === 2 &&
+    scene.requiredCapabilities[0] === "cubic-path-geometry" &&
+    scene.requiredCapabilities[1] === "logical-group" &&
+    scene.camera.view.center.x === 0 &&
+    scene.camera.view.center.y === 0 &&
+    scene.camera.view.frameWidth === 14.222222222222221 &&
+    scene.camera.view.frameHeight === 8 &&
+    group?.id === runtimeIds.grp &&
+    group.geometry.kind === "group" &&
+    group.parentId === null &&
+    LINE_JOINTS_V10_PROFILE.leaves.every((profile, index) => {
+      const entity = scene.entities[index + 1];
+      return (
+        entity?.id === runtimeIds[profile.sourceName] &&
+        entity.parentId === runtimeIds.grp &&
+        entity.sceneOrder === profile.sceneOrder &&
+        entity.geometry.kind === "cubic-path" &&
+        entity.appearance.kind === "vector" &&
+        entity.appearance.stroke?.join === profile.join &&
+        entity.lifetimes.length === 1 &&
+        entity.lifetimes[0]?.start === 0 &&
+        entity.lifetimes[0]?.end === 1
+      );
+    })
+  );
+}
+
 /**
- * Browser-authoring authority for the one pinned, unedited WarpSquare source.
- * A producer-backed reimport changes the source hash, so this authority cannot
- * accidentally open a second local edit against the edited Python.
+ * Browser-authoring authority for a pinned, unedited producer fixture. A
+ * producer-backed reimport changes its source seal, so this cannot accidentally
+ * open a second local edit against edited Python.
  */
 export function studioPreviewInitialEditRuntimeAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1,
@@ -157,12 +222,64 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
   const { context } = snapshot.correlation;
   const source = snapshot.snapshot.scene.source;
   const identity = snapshot.sourceRuntimeIdentity;
+  if (
+    source.kind === "imported-manim-server-snapshot" &&
+    Number(source.snapshotVersion) === 10 &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourcePath === "example_scenes/basic.py" &&
+    context.sceneName === "LineJoints" &&
+    identity?.size === LINE_JOINTS_V10_PROFILE.sourceNames.length
+  ) {
+    const grp = identity.get("grp");
+    const t1 = identity.get("t1");
+    const t2 = identity.get("t2");
+    const t3 = identity.get("t3");
+    if (
+      grp?.sourceName === "grp" &&
+      t1?.sourceName === "t1" &&
+      t2?.sourceName === "t2" &&
+      t3?.sourceName === "t3" &&
+      new Set([grp.entityId, t1.entityId, t2.entityId, t3.entityId]).size ===
+        LINE_JOINTS_V10_PROFILE.sourceNames.length &&
+      isExactStableLineJointsV10(snapshot.snapshot.scene, {
+        grp: grp.entityId,
+        t1: t1.entityId,
+        t2: t2.entityId,
+        t3: t3.entityId,
+      })
+    ) {
+      const target = snapshot.snapshot.scene.entities.find(({ id }) => id === t2.entityId);
+      const localCenter = target ? localBoundaryCenter(target) : null;
+      const sourceTransform = target && localCenter ? uniformSourceTransform(target, localCenter) : null;
+      if (sourceTransform?.scale === 1) {
+        return {
+          baseCenter: scenePointToStudioPoint(
+            sourceTransform.worldCenter,
+            {
+              height: snapshot.snapshot.scene.camera.view.frameHeight,
+              width: snapshot.snapshot.scene.camera.view.frameWidth,
+            },
+            snapshot.snapshot.scene.camera.view.center,
+          ),
+          duration: 1,
+          lifetime: { end: 1, start: 0 },
+          profile: "line-joints-v10",
+          relativeScale: 1,
+          runtimeEntityId: t2.entityId,
+          studioEntityId: `source:${context.sourcePath}#${context.sceneName}:t2`,
+          studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+        };
+      }
+    }
+    return null;
+  }
   const mapping = identity?.get("square");
   if (
     source.kind !== "imported-manim-server-snapshot" ||
     Number(source.snapshotVersion) !== 9 ||
-    source.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
-    context.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
+    source.sourceHash !== OFFICIAL_BASIC_SOURCE_HASH ||
+    context.sourceHash !== OFFICIAL_BASIC_SOURCE_HASH ||
     context.sourcePath !== "example_scenes/basic.py" ||
     context.sceneName !== "WarpSquare" ||
     identity?.size !== 1 ||
@@ -181,26 +298,57 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
   };
 }
 
-/** Projects only the exact runtime-backed Square into Studio's interaction UI. */
+function studioInitialEditTargetMatches(
+  entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1,
+) {
+  const expected =
+    authority.profile === "line-joints-v10" ? { name: "t2", type: "Triangle" } : { name: "square", type: "Square" };
+  return (
+    entity?.id === authority.studioEntityId &&
+    entity.type === expected.type &&
+    !entity.provisional &&
+    entity.transactionId === undefined &&
+    entity.sourceIdentity.kind === "known" &&
+    entity.sourceIdentity.value === expected.name
+  );
+}
+
+/** Projects only the exact runtime-backed edit target into Studio's interaction UI. */
 export function projectStudioPreviewInitialEntityPresenceV1(
   entities: readonly ProjectedEntity[],
   authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
 ) {
-  if (!authority || !interactionGeometry?.has(authority.runtimeEntityId) || entities.length !== 1) return entities;
-  const [entity] = entities;
-  if (
-    !entity ||
-    entity.id !== authority.studioEntityId ||
-    entity.type !== "Square" ||
-    entity.provisional ||
-    entity.transactionId !== undefined ||
-    entity.sourceIdentity.kind !== "known" ||
-    entity.sourceIdentity.value !== "square" ||
-    entity.present
-  ) {
-    return entities;
+  if (!authority || !interactionGeometry?.has(authority.runtimeEntityId)) return entities;
+  if (authority.profile === "line-joints-v10") {
+    const target = entities.find(({ id }) => id === authority.studioEntityId);
+    if (!target || !studioInitialEditTargetMatches(target, authority)) return entities;
+    return entities.map((entity) =>
+      entity.id === target.id
+        ? {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              position:
+                entity.geometry.position.kind === "known"
+                  ? entity.geometry.position
+                  : { kind: "known" as const, value: authority.baseCenter },
+              scale:
+                entity.geometry.scale.kind === "known"
+                  ? entity.geometry.scale
+                  : { kind: "known" as const, value: authority.relativeScale },
+            },
+            position: entity.geometry.position.kind === "known" ? entity.position : authority.baseCenter,
+            present: true,
+            scale: entity.geometry.scale.kind === "known" ? entity.scale : authority.relativeScale,
+          }
+        : entity,
+    );
   }
+  if (entities.length !== 1) return entities;
+  const [entity] = entities;
+  if (!studioInitialEditTargetMatches(entity, authority) || entity.present) return entities;
   return [{ ...entity, present: true }];
 }
 
@@ -214,19 +362,52 @@ export function projectStudioPreviewInitialValidationSceneV1(
 ) {
   if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
   const entities = Object.values(scene.objectGraph.entities);
-  const [entity] = entities;
-  if (
-    entities.length !== 1 ||
-    !entity ||
-    entity.id !== authority.studioEntityId ||
-    entity.type !== "Square" ||
-    entity.provisional ||
-    entity.transactionId !== undefined ||
-    entity.sourceIdentity.kind !== "known" ||
-    entity.sourceIdentity.value !== "square"
-  ) {
-    return scene;
+  if (authority.profile === "line-joints-v10") {
+    const target = scene.objectGraph.entities[authority.studioEntityId];
+    if (!studioInitialEditTargetMatches(target, authority) || !target.geometry) return scene;
+    const projectedTarget: RuntimeSceneState["objectGraph"]["entities"][string] = {
+      ...target,
+      geometry: {
+        ...target.geometry,
+        position:
+          target.geometry.position.kind === "known"
+            ? target.geometry.position
+            : { kind: "known", value: authority.baseCenter },
+        scale:
+          target.geometry.scale.kind === "known"
+            ? target.geometry.scale
+            : { kind: "known", value: authority.relativeScale },
+      },
+      lifetime: [authority.lifetime],
+    };
+    const propertyChannels = Object.fromEntries(
+      Object.entries(scene.propertyChannels).map(([channelId, channel]) => {
+        if (channel.entityId !== target.id || (channel.key !== "position" && channel.key !== "scale")) {
+          return [channelId, channel];
+        }
+        const value = channel.key === "position" ? authority.baseCenter : authority.relativeScale;
+        return [
+          channelId,
+          {
+            ...channel,
+            samples: channel.samples.map((sample) =>
+              sample.operationId ? sample : { ...sample, knowledge: { kind: "known" as const, value }, value },
+            ),
+          },
+        ];
+      }),
+    );
+    return {
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: { ...scene.objectGraph.entities, [target.id]: projectedTarget },
+      },
+      propertyChannels,
+    };
   }
+  const [entity] = entities;
+  if (entities.length !== 1 || !studioInitialEditTargetMatches(entity, authority)) return scene;
   if (entity.lifetime.length === 1 && entity.lifetime[0]?.start === 0 && entity.lifetime[0]?.end === 4) return scene;
   if (entity.lifetime.length !== 0) return scene;
   return {
@@ -253,7 +434,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
 }
 
 /**
- * Returns the only synthetic authoring anchor accepted by the bounded V8/V9
+ * Returns the only synthetic authoring anchor accepted by the bounded V8-V10
  * preview profiles. This is preview authority, not a claim that the source
  * contains a lowerable `# poietra:anchor` marker.
  */
@@ -331,6 +512,17 @@ function studioPointToScenePoint(
   };
 }
 
+function scenePointToStudioPoint(
+  point: Point,
+  frame: Readonly<{ height: number; width: number }>,
+  cameraCenter: Point,
+) {
+  return {
+    x: ((point.x - cameraCenter.x) / frame.width + 0.5) * STUDIO_VIEWPORT.width,
+    y: (0.5 - (point.y - cameraCenter.y) / frame.height) * STUDIO_VIEWPORT.height,
+  };
+}
+
 function operationIssueCode(
   kind: ProposedState["programs"][number]["program"]["operations"][number]["kind"],
 ): StudioPreviewTemporalRebaseIssueCodeV1 {
@@ -360,7 +552,8 @@ function planInitialTransformEdit(
   }
   const profile = supportedTemporalRebaseProfileV1(scene);
   if (profile === null) return unsupported("profile-unsupported", "The snapshot profile cannot be temporally rebased.");
-  const initialV9Authority = profile === 9 ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot) : null;
+  const initialEditAuthority =
+    profile === 9 || profile === 10 ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot) : null;
   if (input.proposedState.evaluatedScene.duration !== scene.duration) {
     return unsupported(
       "channel-timing-edit-unsupported",
@@ -467,7 +660,9 @@ function planInitialTransformEdit(
             channel.kind === "path-morph" ||
             channel.kind === "vector-appearance" ||
             channel.kind === "path-trim"
-          : channel.kind === "path-morph";
+          : profile === 9
+            ? channel.kind === "path-morph"
+            : false;
     if (!supportedKind) {
       return unsupported("profile-unsupported", "Temporal preview found a channel outside its bounded profile.");
     }
@@ -534,14 +729,22 @@ function planInitialTransformEdit(
         isExactStableSquareToCircleV8(scene, runtimeEntityId);
       const stableV9Target =
         profile === 9 &&
-        initialV9Authority?.runtimeEntityId === runtimeEntityId &&
+        initialEditAuthority?.profile === "warp-square-v9" &&
+        initialEditAuthority.runtimeEntityId === runtimeEntityId &&
         studioEntity?.type === "Square" &&
         studioEntity.sourceIdentity.kind === "known" &&
         studioEntity.sourceIdentity.value === "square" &&
         isExactStableWarpSquareV9(scene, runtimeEntityId);
+      const stableV10Target =
+        profile === 10 &&
+        initialEditAuthority?.profile === "line-joints-v10" &&
+        initialEditAuthority.runtimeEntityId === runtimeEntityId &&
+        studioEntity?.type === "Triangle" &&
+        studioEntity.sourceIdentity.kind === "known" &&
+        studioEntity.sourceIdentity.value === "t2";
       const runtimeEntity = runtimeEntities.get(runtimeEntityId);
       if (
-        (!staticMathTex && !createTarget && !stableV8Target && !stableV9Target) ||
+        (!staticMathTex && !createTarget && !stableV8Target && !stableV9Target && !stableV10Target) ||
         runtimeEntity?.geometry.kind !== "cubic-path"
       ) {
         return unsupported(
@@ -673,10 +876,10 @@ export function compileStudioPreviewTemporalRebaseV1(
   ) {
     return unsupported("camera-edit-unsupported", "Temporal rebase requires the exact verified camera frame.");
   }
-  const initialV9Authority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
+  const initialEditAuthority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
   const validationScene = projectStudioPreviewInitialValidationSceneV1(
     input.proposedState.base.runtimeSceneState,
-    initialV9Authority,
+    initialEditAuthority,
   );
   // The conservative Python importer cannot infer WarpSquare's lifetime from
   // ApplyPointwiseFunction. Direct manipulation validates against producer

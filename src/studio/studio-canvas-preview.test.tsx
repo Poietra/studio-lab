@@ -509,14 +509,7 @@ describe("StudioCanvas retained preview layer", () => {
       ]),
     );
     const sourceRuntimeIdentity = new Map([
-      [
-        "grp",
-        {
-          bindingId: `source-binding:${"a".repeat(64)}`,
-          entityId: groupRuntimeId,
-          sourceName: "grp",
-        },
-      ],
+      ["grp", { bindingId: `source-binding:${"a".repeat(64)}`, entityId: groupRuntimeId, sourceName: "grp" }],
       ...triangles.map(
         (entity, index) =>
           [
@@ -605,6 +598,50 @@ describe("StudioCanvas retained preview layer", () => {
       expect(inspector).toContain(`<dd class="truncate text-zinc-300">${triangle.sourceIdentity.value}</dd>`);
       expect(inspector).toContain('<dd class="text-zinc-300">Triangle</dd>');
     }
+
+    const t2 = {
+      ...triangles[1]!,
+      geometry: {
+        ...triangles[1]!.geometry,
+        position: { kind: "known" as const, value: { x: 320, y: 180 } },
+        scale: { kind: "known" as const, value: 1 },
+      },
+    };
+    const beginAuthorizedMutation = vi.fn();
+    const interactiveProps: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [group, triangles[0]!, t2, triangles[2]!],
+      onEntityPointerDown: beginAuthorizedMutation,
+      preview: previewView(
+        props.preview!.state,
+        interactionGeometry,
+        sourceRuntimeIdentity,
+        { kind: "interactive" },
+        {
+          baseCenter: { x: 320, y: 180 },
+          duration: 1,
+          lifetime: { end: 1, start: 0 },
+          profile: "line-joints-v10",
+          relativeScale: 1,
+          runtimeEntityId: leafRuntimeIds[1],
+          studioEntityId: t2.id,
+          studioSceneId: "example_scenes/basic.py#LineJoints",
+        },
+      ),
+      selectedIds: new Set([t2.id]),
+    };
+    const interactiveTree = StudioCanvas(interactiveProps);
+    expect(findEntityButton(interactiveTree, triangles[0]!.id).props.onPointerMove).toBeUndefined();
+    const targetButton = findEntityButton(interactiveTree, t2.id);
+    expect(targetButton.props.onPointerMove).toBe(interactiveProps.onEntityPointerMove);
+    const targetPointerDown = targetButton.props.onPointerDown as ((event: unknown) => void) | undefined;
+    targetPointerDown?.({});
+    expect(beginAuthorizedMutation).toHaveBeenCalledWith({}, t2.id);
+
+    const interactiveMarkup = renderToStaticMarkup(<StudioCanvas {...interactiveProps} />);
+    expect(interactiveMarkup).not.toContain(`data-studio-entity="${group.id}"`);
+    expect(interactiveMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(interactiveMarkup).toContain(`data-studio-resize-handle="${t2.id}"`);
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

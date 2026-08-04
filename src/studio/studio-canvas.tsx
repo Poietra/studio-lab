@@ -343,6 +343,8 @@ export function StudioCanvas({
   const presentingCanvasPixels = preview?.state.phase === "presented";
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
+  const lineJointsInitialEditAuthority =
+    preview?.initialEditRuntimeAuthority?.profile === "line-joints-v10" ? preview.initialEditRuntimeAuthority : null;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -457,7 +459,10 @@ export function StudioCanvas({
               readOnly ||
               displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
-            const mutationLocked = selectionLocked || selectionOnlyPreview;
+            const runtimeMutationLocked =
+              lineJointsInitialEditAuthority !== null && entity.id !== lineJointsInitialEditAuthority.studioEntityId;
+            const selectionOnlyEntity = selectionOnlyPreview || runtimeMutationLocked;
+            const mutationLocked = selectionLocked || selectionOnlyEntity;
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
@@ -467,10 +472,14 @@ export function StudioCanvas({
                 ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
                 : null;
             // V10's logical VGroup has verified identity but no prepared
-            // pixels. A selection-only preview may expose only entities with
-            // correlated runtime bounds, so it cannot mint a semantic group
-            // hit target beside the WebGPU frame.
-            if (selectionOnlyPreview && presentingCanvasPixels && presentedIdentity === null) return null;
+            // pixels. Neither selection-only nor the bounded t2-edit profile
+            // may mint a semantic group hit target beside the WebGPU frame.
+            if (
+              (selectionOnlyPreview || lineJointsInitialEditAuthority !== null) &&
+              presentingCanvasPixels &&
+              presentedIdentity === null
+            )
+              return null;
             const presentedGeometry = presentedIdentity?.geometry ?? null;
             const moveLocked = selectionLocked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
@@ -525,7 +534,7 @@ export function StudioCanvas({
                       presentedGeometry ? "box-border p-0" : shape ? "p-0" : "px-3 py-2",
                       moveLocked
                         ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
-                        : selectionOnlyPreview
+                        : selectionOnlyEntity
                           ? "cursor-pointer"
                           : "cursor-grab active:cursor-grabbing",
                       selected
@@ -535,7 +544,7 @@ export function StudioCanvas({
                     data-studio-entity={entity.id}
                     disabled={moveLocked}
                     onKeyDown={(event) => {
-                      if (!selectionOnlyPreview) {
+                      if (!selectionOnlyEntity) {
                         onEntityKeyDown(event, entity.id);
                         return;
                       }
@@ -543,21 +552,21 @@ export function StudioCanvas({
                       event.preventDefault();
                       onSelectEntity(entity.id);
                     }}
-                    onLostPointerCapture={selectionOnlyPreview ? undefined : onEntityPointerCancel}
-                    onPointerCancel={selectionOnlyPreview ? undefined : onEntityPointerCancel}
+                    onLostPointerCapture={selectionOnlyEntity ? undefined : onEntityPointerCancel}
+                    onPointerCancel={selectionOnlyEntity ? undefined : onEntityPointerCancel}
                     onPointerDown={(event) => {
-                      if (!selectionOnlyPreview) {
+                      if (!selectionOnlyEntity) {
                         onEntityPointerDown(event, entity.id);
                         return;
                       }
                       event.stopPropagation();
                       onSelectEntity(entity.id);
                     }}
-                    onPointerMove={selectionOnlyPreview ? undefined : onEntityPointerMove}
-                    onPointerUp={selectionOnlyPreview ? undefined : onEntityPointerUp}
+                    onPointerMove={selectionOnlyEntity ? undefined : onEntityPointerMove}
+                    onPointerUp={selectionOnlyEntity ? undefined : onEntityPointerUp}
                     style={presentedGeometry ? entityDimensionStyle(previewGeometry.dimensions, frame) : undefined}
                     title={
-                      selectionOnlyPreview
+                      selectionOnlyEntity
                         ? "This verified object can be selected, but source rewriting is unavailable."
                         : positionUnknown
                           ? entity.geometry.position.reason
