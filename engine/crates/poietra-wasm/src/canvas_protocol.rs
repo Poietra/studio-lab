@@ -366,6 +366,32 @@ mod tests {
         EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap()
     }
 
+    fn line_joints_v10_session() -> (EngineWorkerSessionV1, Vec<String>) {
+        let fixture: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../fixtures/engine-v1/real-line-joints-v10.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entity_ids = fixture["scene"]["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entity| entity["id"].as_str().unwrap().to_owned())
+            .collect();
+        let snapshot = serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap();
+        (
+            EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap(),
+            entity_ids,
+        )
+    }
+
     fn correlation() -> SampleRequestCorrelationV1 {
         SampleRequestCorrelationV1 {
             packet_id: "canvas:frame-7".to_owned(),
@@ -527,6 +553,54 @@ mod tests {
         assert_eq!(entries[0]["status"], "empty");
         assert_eq!(entries[1]["status"], "inactive");
         assert_eq!(entries[2]["status"], "present");
+    }
+
+    #[test]
+    fn line_joints_v10_presents_three_leaf_bounds_and_no_group_hit_target() {
+        let (session, entity_ids) = line_joints_v10_session();
+        let request = serde_json::to_vec(&json!({
+            "evidence": ["real LineJoints V10 WASM canvas interaction"],
+            "interactionEntityIds": entity_ids,
+            "packetId": "canvas:line-joints-v10",
+            "sampleTime": 0.5,
+            "schema": "poietra.engine-sample-request",
+            "version": 1,
+            "viewport": { "heightPx": 360, "widthPx": 640 },
+        }))
+        .unwrap();
+        let sampled = session.sample_packet_json(&request).unwrap();
+        assert_eq!(sampled.packet.draws.len(), 3);
+        let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
+        assert_eq!(prepared.draws().len(), 3);
+        let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
+            prepared.clip_bounds_for_entity(entity_id)
+        });
+        let response =
+            presented_response_with_interaction(&sampled.correlation, false, interaction);
+        let value: Value = serde_json::from_slice(&response).unwrap();
+        let entries = value["result"]["interaction"]["entries"]
+            .as_array()
+            .unwrap();
+        assert_eq!(entries.len(), 4);
+        assert_eq!(entries[0]["status"], "empty");
+        assert!(entries[0].get("bounds").is_none());
+        for entry in &entries[1..] {
+            assert_eq!(entry["status"], "present");
+            let bounds = entry["bounds"].as_array().unwrap();
+            assert_eq!(bounds.len(), 4);
+        }
+        let bounds = entries[1..]
+            .iter()
+            .map(|entry| {
+                entry["bounds"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_f64().unwrap())
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert!(bounds[0][2] < bounds[1][0] && bounds[1][2] < bounds[2][0]);
     }
 
     #[test]
