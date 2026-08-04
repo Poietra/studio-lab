@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
+  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotBundleV1,
@@ -189,6 +190,75 @@ function createRealRunner(
 const realSeamEnabled = Boolean(producerCommand) && ManimSourceStore.supportsVerifiedRead;
 const officialV8ProjectRoot = process.env.POIETRA_FAST_MANIM_V8_PROJECT_ROOT?.trim();
 const officialV8SeamEnabled = realSeamEnabled && Boolean(officialV8ProjectRoot);
+
+describe.skipIf(!realSeamEnabled)("real fast-manim LineJoints V10 edited-source integration", () => {
+  it("reimports the committed central-leaf edit with the same hierarchical identity", {
+    timeout: 300_000,
+  }, async () => {
+    const sourcePath = "example_scenes/basic.py";
+    const official = await readFile(
+      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const source = official.replace(
+      "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
+      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)",
+    );
+    expect(source).not.toBe(official);
+
+    const projectRoot = await mkdtemp(join(tmpdir(), "poietra-real-snapshot-"));
+    temporaryRoots.push(projectRoot);
+    await mkdir(join(projectRoot, "example_scenes"));
+    await writeFile(join(projectRoot, sourcePath), source, "utf8");
+    const publicationStore = new FastManimSnapshotPublicationStore();
+    const runner = createRealRunner(projectRoot, "auto", undefined, publicationStore);
+    const view = fastManimSnapshotRunViewV1Schema.parse(
+      await runner.run({
+        projectId: "default",
+        requestId: "real-snapshot-edited-line-joints-v10",
+        sceneName: "LineJoints",
+        sourcePath,
+      }),
+    );
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified edited V10 snapshot, got ${JSON.stringify(view)}`);
+    }
+
+    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
+    expect(bundle.scene.source).toMatchObject({
+      snapshotVersion: 10,
+      sourceHash: createHash("sha256").update(source, "utf8").digest("hex"),
+    });
+    expect(
+      view.sourceRuntimeIdentity?.mappings.map(({ binding, familyPath }) => ({
+        familyPath,
+        name: binding.name,
+      })),
+    ).toEqual([
+      { familyPath: [], name: "grp" },
+      { familyPath: [0], name: "t1" },
+      { familyPath: [1], name: "t2" },
+      { familyPath: [2], name: "t3" },
+    ]);
+    const target = bundle.scene.entities[2];
+    if (!target || target.geometry.kind !== "cubic-path") throw new Error("Expected the edited central Triangle.");
+    const points = target.geometry.path.subpaths.flatMap((subpath) => [
+      subpath.start,
+      ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+    ]);
+    expect((Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2).toBeCloseTo(1.25, 12);
+    expect((Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2).toBeCloseTo(-0.5, 12);
+    expect(publicationStore.entriesOf(1)[0]?.[1].expected.lineJointsV10Plan).toEqual(
+      deriveLineJointsV10TransformPlan(source, "LineJoints"),
+    );
+
+    const fetched = await runner.snapshot({ sceneName: "LineJoints", sourcePath });
+    expect(fetched).toMatchObject({
+      sourceRuntimeIdentity: view.sourceRuntimeIdentity,
+      status: "verified",
+    });
+  });
+});
 
 describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", () => {
   it("seals and republishes the merged producer against the mirrored official example", {

@@ -727,30 +727,41 @@ export class ManimRenderManager {
     request: ProgramRenderRequest,
     signal?: AbortSignal,
   ) {
-    if (lowered.preflight?.kind !== "fast-manim-warp-square-v9") return;
+    const preflight = lowered.preflight;
+    if (!preflight) return;
+    const profile = preflight.kind;
+    if (profile !== "fast-manim-warp-square-v9" && profile !== "fast-manim-line-joints-v10") return;
+    const lineJointsV10 = profile === "fast-manim-line-joints-v10";
+    const expectedSnapshotVersion = lineJointsV10 ? 10 : 9;
+    const expectedSourceNames = lineJointsV10 ? (["grp", "t1", "t2", "t3"] as const) : (["square"] as const);
+    const profileLabel = lineJointsV10 ? "LineJoints" : "WarpSquare";
     const reject = (): never => {
       throw new HttpError(
-        "The edited WarpSquare source could not be verified against its exact runtime identity. Reimport and try again.",
+        `The edited ${profileLabel} source could not be verified against its exact runtime identity. Reimport and try again.`,
         409,
       );
     };
-    if (request.sourceHash !== lowered.preflight.baseSourceHash) reject();
+    if (request.sourceHash !== preflight.baseSourceHash) reject();
     const candidateHash = sourceHash(lowered.source);
     const candidateScene = sceneView(
       importSourceSnapshot(lowered.source, request.sourcePath, this.frame).view,
       request.sceneName,
     );
-    const sourceVariables = candidateScene ? Object.entries(candidateScene.sourceVariables) : [];
-    const binding = request.sourceBindings[0];
+    const sourceVariables = candidateScene ? new Map(Object.entries(candidateScene.sourceVariables)) : new Map();
+    const bindingsByName = new Map(
+      request.sourceBindings.map(({ entityId, sourceVariable }) => [sourceVariable, entityId]),
+    );
     if (
       !candidateScene ||
       candidateScene.sourceHash !== candidateHash ||
-      request.sourceBindings.length !== 1 ||
-      !binding ||
-      binding.sourceVariable !== "square" ||
-      sourceVariables.length !== 1 ||
-      sourceVariables[0]?.[0] !== binding.entityId ||
-      sourceVariables[0]?.[1] !== "square"
+      request.sourceBindings.length !== expectedSourceNames.length ||
+      bindingsByName.size !== expectedSourceNames.length ||
+      sourceVariables.size !== expectedSourceNames.length ||
+      new Set(request.sourceBindings.map(({ entityId }) => entityId)).size !== expectedSourceNames.length ||
+      expectedSourceNames.some((name) => {
+        const entityId = bindingsByName.get(name);
+        return entityId === undefined || sourceVariables.get(entityId) !== name;
+      })
     ) {
       reject();
     }
@@ -769,19 +780,20 @@ export class ManimRenderManager {
         );
       } catch {
         throwIfAborted(signal);
-        this.logger.warn("render.warp_square_v9_candidate_preflight_rejected", {
-          failure: "snapshot-run-rejected",
-          sourcePath: request.sourcePath,
-        });
+        this.logger.warn(
+          `render.${lineJointsV10 ? "line_joints_v10" : "warp_square_v9"}_candidate_preflight_rejected`,
+          {
+            failure: "snapshot-run-rejected",
+            sourcePath: request.sourcePath,
+          },
+        );
         return reject();
       }
     })();
     throwIfAborted(signal);
     const verifiedResult = result.status === "verified" ? result : reject();
     const scene = (await parseVerifiedSceneIrBundleV1(verifiedResult.snapshot.bundle).catch(() => reject())).scene;
-    const identity = verifiedResult.sourceRuntimeIdentity;
-    const entity = scene.entities[0];
-    const mapping = identity?.mappings[0];
+    const identity = verifiedResult.sourceRuntimeIdentity ?? reject();
     if (
       verifiedResult.projectId !== request.projectId ||
       verifiedResult.requestId !== renderRequestId(request) ||
@@ -789,27 +801,71 @@ export class ManimRenderManager {
       verifiedResult.sourcePath !== request.sourcePath ||
       verifiedResult.snapshot.sourceHash !== candidateHash ||
       scene.source.kind !== "imported-manim-server-snapshot" ||
-      scene.source.snapshotVersion !== 9 ||
+      scene.source.snapshotVersion !== expectedSnapshotVersion ||
       scene.source.sourceHash !== candidateHash ||
-      scene.entities.length !== 1 ||
-      !entity ||
-      entity.sceneOrder !== 0 ||
-      !identity ||
       identity.sourceHash !== candidateHash ||
       identity.sceneId !== scene.sceneId ||
       identity.runtimeConfigHash !== verifiedResult.runtimeConfigHash ||
-      identity.snapshotHash !== verifiedResult.snapshot.snapshotHash ||
-      identity.mappings.length !== 1 ||
-      !mapping ||
-      mapping.entityId !== entity.id ||
-      mapping.provenanceId !== entity.provenanceId ||
-      mapping.familyPath.length !== 0 ||
-      mapping.binding.name !== "square" ||
-      mapping.binding.ordinal !== 1 ||
-      mapping.binding.span.startLine !== 87 ||
-      mapping.binding.span.endLine !== 87 ||
-      mapping.binding.span.startColumn !== 8 ||
-      mapping.binding.span.endColumn !== 14
+      identity.snapshotHash !== verifiedResult.snapshot.snapshotHash
+    ) {
+      reject();
+    }
+    if (!lineJointsV10) {
+      const entity = scene.entities[0];
+      const mapping = identity.mappings[0];
+      if (
+        scene.entities.length !== 1 ||
+        !entity ||
+        entity.sceneOrder !== 0 ||
+        identity.mappings.length !== 1 ||
+        !mapping ||
+        mapping.entityId !== entity.id ||
+        mapping.provenanceId !== entity.provenanceId ||
+        mapping.familyPath.length !== 0 ||
+        mapping.binding.name !== "square" ||
+        mapping.binding.ordinal !== 1 ||
+        mapping.binding.span.startLine !== 87 ||
+        mapping.binding.span.endLine !== 87 ||
+        mapping.binding.span.startColumn !== 8 ||
+        mapping.binding.span.endColumn !== 14
+      ) {
+        reject();
+      }
+      return;
+    }
+
+    const [group, t1, t2, t3] = scene.entities;
+    const mappingsByName = new Map(identity.mappings.map((mapping) => [mapping.binding.name, mapping]));
+    const expectedMappings = [
+      { columnEnd: 11, entity: group, familyPath: [] as const, line: 173, name: "grp", ordinal: 4 },
+      { columnEnd: 10, entity: t1, familyPath: [0] as const, line: 169, name: "t1", ordinal: 1 },
+      { columnEnd: 10, entity: t2, familyPath: [1] as const, line: 170, name: "t2", ordinal: 2 },
+      { columnEnd: 10, entity: t3, familyPath: [2] as const, line: 171, name: "t3", ordinal: 3 },
+    ] as const;
+    if (
+      scene.entities.length !== 4 ||
+      identity.mappings.length !== 4 ||
+      mappingsByName.size !== 4 ||
+      !group ||
+      group.parentId !== null ||
+      expectedMappings.some(({ columnEnd, entity, familyPath, line, name, ordinal }, sceneOrder) => {
+        const mapping = mappingsByName.get(name);
+        return (
+          !entity ||
+          entity.sceneOrder !== sceneOrder ||
+          (sceneOrder > 0 && entity.parentId !== group.id) ||
+          !mapping ||
+          mapping.entityId !== entity.id ||
+          mapping.provenanceId !== entity.provenanceId ||
+          mapping.familyPath.length !== familyPath.length ||
+          mapping.familyPath.some((value, index) => value !== familyPath[index]) ||
+          mapping.binding.ordinal !== ordinal ||
+          mapping.binding.span.startLine !== line ||
+          mapping.binding.span.endLine !== line ||
+          mapping.binding.span.startColumn !== 8 ||
+          mapping.binding.span.endColumn !== columnEnd
+        );
+      })
     ) {
       reject();
     }
