@@ -77,6 +77,19 @@ const REAL_LINE_JOINTS_V10_ENTRY_ID = "real-line-joints-v10--static";
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
 );
+const FOCUSED_ENTRY_ID = process.env.POIETRA_VISUAL_PARITY_ENTRY_ID;
+const VISUAL_PARITY_ENTRIES = FOCUSED_ENTRY_ID
+  ? VISUAL_PARITY_CORPUS.entries.filter(({ id }) => id === FOCUSED_ENTRY_ID)
+  : VISUAL_PARITY_CORPUS.entries;
+if (FOCUSED_ENTRY_ID && VISUAL_PARITY_ENTRIES.length !== 1) {
+  throw new Error(`Unknown focused visual-parity corpus entry ${FOCUSED_ENTRY_ID}.`);
+}
+if (
+  FOCUSED_ENTRY_ID &&
+  (REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) || REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
+) {
+  throw new Error("Focused visual parity currently supports only independent single-frame entries.");
+}
 
 type FullRgbaProofV1 = Readonly<{
   capture: Readonly<{ policy: "exactly-one-render-submit"; renderSubmissionCount: 1 }>;
@@ -111,7 +124,7 @@ function requireArtifactRoot() {
 }
 
 test.beforeAll(async () => {
-  const expectedEntryIds = VISUAL_PARITY_CORPUS.entries.map(({ id }) => id).sort();
+  const expectedEntryIds = VISUAL_PARITY_ENTRIES.map(({ id }) => id).sort();
   const artifactEntryIds = (await readdir(requireArtifactRoot(), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
@@ -473,7 +486,7 @@ function expectRealWarpSquareRelations(
   }
 }
 
-for (const entry of VISUAL_PARITY_CORPUS.entries.filter(
+for (const entry of VISUAL_PARITY_ENTRIES.filter(
   ({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) && !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id),
 )) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
@@ -482,6 +495,10 @@ for (const entry of VISUAL_PARITY_CORPUS.entries.filter(
 }
 
 test("matches native full-RGBA across the real MathTex morph V5 timeline", async ({ page }, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the five-frame MathTex artifact set.",
+  );
   testInfo.setTimeout(120_000);
   const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
   for (const entryId of REAL_MATHTEX_MORPH_V5_ENTRY_IDS) {
@@ -491,6 +508,10 @@ test("matches native full-RGBA across the real MathTex morph V5 timeline", async
 });
 
 test("matches native full-RGBA across the real WarpSquare V9 timeline", async ({ page }, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the five-frame WarpSquare artifact set.",
+  );
   testInfo.setTimeout(120_000);
   const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
   for (const entryId of REAL_WARP_SQUARE_V9_ENTRY_IDS) {
