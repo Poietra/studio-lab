@@ -311,7 +311,12 @@ export function createCloudflareEditorCollaborationWorkerV1(
       } catch {
         lease = null;
       }
-      if (!lease) {
+      if (
+        !lease ||
+        lease.documentKey !== parsed.room.documentKey ||
+        lease.epoch !== parsed.room.epoch ||
+        lease.projectId !== parsed.room.projectId
+      ) {
         return safeJsonResponse(503, "Editor live access is temporarily unavailable.");
       }
       const identity = editorLiveIdentitySchemaV1.parse({

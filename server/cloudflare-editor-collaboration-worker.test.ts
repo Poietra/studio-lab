@@ -148,6 +148,34 @@ describe("Cloudflare Editor collaboration Worker", () => {
     expect(value.forwarded).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["project", { projectId: "project-b" }],
+    ["document", { documentKey: "b".repeat(64) }],
+    ["epoch", { epoch: "66666666-6666-4666-8666-666666666666" }],
+  ])("fails closed when authorization returns a foreign %s", async (_label, mismatch) => {
+    const value = harness();
+    value.authorize.mockResolvedValueOnce({
+      authorizationId,
+      canWrite: true,
+      documentKey,
+      epoch,
+      kind: "authorized",
+      membershipVersion: 3,
+      organizationId: "organization-a",
+      projectId: "project-a",
+      sessionExpiresAtMs: now + 120_000,
+      sessionVersion: 2,
+      subjectId,
+      ...mismatch,
+    });
+
+    const response = await value.worker.fetch(request(), value.environment);
+
+    expect(response.status).toBe(503);
+    expect(value.idFromName).not.toHaveBeenCalled();
+    expect(value.forwarded).not.toHaveBeenCalled();
+  });
+
   it("requires the Durable Object binding before authorization", async () => {
     const value = harness();
     const environment = { ...value.environment, EDITOR_ROOMS: undefined } as unknown as typeof value.environment;
