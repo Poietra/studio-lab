@@ -177,7 +177,7 @@ describe("segmented Tex/MathTex outline V1", () => {
     expect(segmentedTexOutlineResponseV1Schema.safeParse(zeroWidth).success).toBe(false);
   });
 
-  it("rejects duplicate, omitted, and wrong Tex glyph byte ranges", () => {
+  it("rejects duplicate, omitted, wrong, and non-glyph Tex correlations", () => {
     const duplicate = structuredClone(responseForCase(evidence.cases[0]!));
     if (duplicate.result.kind !== "compiled") throw new Error("text fixture must compile");
     duplicate.result.fragments[1]!.sourceCorrelation = structuredClone(
@@ -194,6 +194,11 @@ describe("segmented Tex/MathTex outline V1", () => {
     if (wrong.result.kind !== "compiled") throw new Error("text fixture must compile");
     wrong.result.fragments[0]!.sourceCorrelation = structuredClone(wrong.result.fragments[1]!.sourceCorrelation);
     expect(segmentedTexOutlineResponseV1Schema.safeParse(wrong).success).toBe(false);
+
+    const nonGlyph = structuredClone(responseForCase(evidence.cases[0]!));
+    if (nonGlyph.result.kind !== "compiled") throw new Error("text fixture must compile");
+    nonGlyph.result.fragments[0]!.kind = "rule";
+    expect(segmentedTexOutlineResponseV1Schema.safeParse(nonGlyph).success).toBe(false);
   });
 
   it("keeps the sibling ABI handshake independent and parses bounded wire responses", async () => {

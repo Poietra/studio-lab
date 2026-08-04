@@ -279,7 +279,12 @@ function validateCompiledArtifact(artifact: z.infer<typeof compiledSchema>, cont
     }
     const correlation = fragment.sourceCorrelation;
     const expectedTextRange = textGlyphs.ranges[index];
-    if (artifact.mode === "tex-text" && correlation.kind === "exact-byte-range" && expectedTextRange !== undefined) {
+    if (
+      artifact.mode === "tex-text" &&
+      fragment.kind === "glyph" &&
+      correlation.kind === "exact-byte-range" &&
+      expectedTextRange !== undefined
+    ) {
       if (
         !boundaries.has(correlation.sourceStartByte) ||
         !boundaries.has(correlation.sourceEndByte) ||
