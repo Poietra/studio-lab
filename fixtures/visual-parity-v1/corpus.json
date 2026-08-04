@@ -300,6 +300,96 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-warp-square-v9--source",
+      "fixture": {
+        "id": "eng-v1-real-warp-square-v9",
+        "path": "fixtures/engine-v1/real-warp-square-v9.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+        }
+      },
+      "sample": {
+        "id": "source",
+        "sampleTime": 0,
+        "semanticDigest": "d24ea70236f94d36ed65366c08d6bbadd8fe30b1b72e056bc82de9c4e947f153",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-warp-square-v9--quarter",
+      "fixture": {
+        "id": "eng-v1-real-warp-square-v9",
+        "path": "fixtures/engine-v1/real-warp-square-v9.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+        }
+      },
+      "sample": {
+        "id": "quarter",
+        "sampleTime": 0.75,
+        "semanticDigest": "9dae6e42538f0e050f58d26c8c5515d2d5320734fa3feda3df6f36b3995892e6",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-warp-square-v9--midpoint",
+      "fixture": {
+        "id": "eng-v1-real-warp-square-v9",
+        "path": "fixtures/engine-v1/real-warp-square-v9.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+        }
+      },
+      "sample": {
+        "id": "midpoint",
+        "sampleTime": 1.5,
+        "semanticDigest": "2cfbcd7131ac221ec9be671f5dd54ede561de6be85b85051ef93ce7868d5ab78",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-warp-square-v9--target",
+      "fixture": {
+        "id": "eng-v1-real-warp-square-v9",
+        "path": "fixtures/engine-v1/real-warp-square-v9.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+        }
+      },
+      "sample": {
+        "id": "target",
+        "sampleTime": 3,
+        "semanticDigest": "611374aa721b2dd289b9cbf55e692777656549e941faf0ff22aa7138f2e71e90",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-warp-square-v9--hold",
+      "fixture": {
+        "id": "eng-v1-real-warp-square-v9",
+        "path": "fixtures/engine-v1/real-warp-square-v9.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+        }
+      },
+      "sample": {
+        "id": "hold",
+        "sampleTime": 3.5,
+        "semanticDigest": "611374aa721b2dd289b9cbf55e692777656549e941faf0ff22aa7138f2e71e90",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }

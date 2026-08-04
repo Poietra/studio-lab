@@ -34,6 +34,11 @@ const nativeTestByEntryId = new Map([
   ["real-square-to-circle-v8--analytic-winding-root", "renders_real_square_to_circle_v8_samples_with_fallback_adapter"],
   ["real-square-to-circle-v8--circle", "renders_real_square_to_circle_v8_samples_with_fallback_adapter"],
   ["real-square-to-circle-v8--fade-midpoint", "renders_real_square_to_circle_v8_samples_with_fallback_adapter"],
+  ["real-warp-square-v9--source", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
+  ["real-warp-square-v9--quarter", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
+  ["real-warp-square-v9--midpoint", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
+  ["real-warp-square-v9--target", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
+  ["real-warp-square-v9--hold", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
 ]);
 const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
 const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();

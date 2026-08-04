@@ -89,6 +89,11 @@ describe("visual parity v1 contracts", () => {
       "real-square-to-circle-v8--analytic-winding-root",
       "real-square-to-circle-v8--circle",
       "real-square-to-circle-v8--fade-midpoint",
+      "real-warp-square-v9--source",
+      "real-warp-square-v9--quarter",
+      "real-warp-square-v9--midpoint",
+      "real-warp-square-v9--target",
+      "real-warp-square-v9--hold",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -471,6 +476,92 @@ describe("visual parity v1 contracts", () => {
         viewport: { heightPx: 360, widthPx: 640 },
       })),
     );
+  });
+
+  it("pins the server-sealed real WarpSquare V9 timeline to the default full-RGBA gate", async () => {
+    const fixtureRevision = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      ["real-warp-square-v9--source", "source", 0, "d24ea70236f94d36ed65366c08d6bbadd8fe30b1b72e056bc82de9c4e947f153"],
+      [
+        "real-warp-square-v9--quarter",
+        "quarter",
+        0.75,
+        "9dae6e42538f0e050f58d26c8c5515d2d5320734fa3feda3df6f36b3995892e6",
+      ],
+      [
+        "real-warp-square-v9--midpoint",
+        "midpoint",
+        1.5,
+        "2cfbcd7131ac221ec9be671f5dd54ede561de6be85b85051ef93ce7868d5ab78",
+      ],
+      ["real-warp-square-v9--target", "target", 3, "611374aa721b2dd289b9cbf55e692777656549e941faf0ff22aa7138f2e71e90"],
+      ["real-warp-square-v9--hold", "hold", 3.5, "611374aa721b2dd289b9cbf55e692777656549e941faf0ff22aa7138f2e71e90"],
+    ] as const;
+    const entries = expectedSamples.map(([entryId]) => {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The WarpSquare V9 corpus entry ${entryId} is missing.`);
+      return entry;
+    });
+    for (const [index, entry] of entries.entries()) {
+      const [entryId, sampleId, sampleTime, semanticDigest] = expectedSamples[index]!;
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-warp-square-v9",
+          path: "fixtures/engine-v1/real-warp-square-v9.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        id: entryId,
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-warp-square-v9.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 4,
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash: "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 9,
+        sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(1);
+    expect(bundle.scene.animationChannels.map(({ kind }) => kind)).toEqual(["path-morph"]);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "0b331ce781411f38185dcabccdffdccee02d4376",
+      fastManimCommit: "2c1e56287193e3acddbe6779f6ecd4bd91094588",
+      kind: "server-sealed-real-fast-manim-profile-v9",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+    expect(
+      sha256(new Uint8Array(await readFile(`fixtures/real-preview-harness/${fixture.producerReference.sourcePath}`))),
+    ).toBe(fixture.producerReference.sourceSha256);
+    for (const [, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      expect(fixture.samples).toContainEqual({
+        expected: { semanticDigest },
+        id: sampleId,
+        packetId: `real-warp-square-v9:${sampleId}`,
+        sampleTime,
+        viewport: { heightPx: 360, widthPx: 640 },
+      });
+    }
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {
