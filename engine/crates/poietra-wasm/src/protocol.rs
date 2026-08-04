@@ -573,6 +573,17 @@ mod tests {
         serde_json::to_vec(&producer_snapshot["bundle"]).unwrap()
     }
 
+    fn real_warp_square_v9_snapshot() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/engine-v1/real-warp-square-v9.json");
+        let fixture: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap()
+    }
+
     fn snapshot(fixture: &Value) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "assets": fixture["assets"],
@@ -767,6 +778,92 @@ mod tests {
                 assert_eq!(path.subpaths[0].segments.len(), 8);
             }
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the audited fixture enumerates exact WarpSquare V9 boundary times"
+    )]
+    fn retained_wasm_protocol_samples_real_warp_square_v9_across_unordered_seeks() {
+        let session =
+            EngineWorkerSessionV1::from_snapshot_json(&real_warp_square_v9_snapshot()).unwrap();
+        let installed_index = session.session.retained_index_stats();
+        let forward_samples: [f64; 8] = [0.0, 0.25, 0.75, 1.5, 2.75, 3.0, 3.5, 4.0];
+        let non_monotonic_samples: [f64; 10] =
+            [3.5, 0.25, 3.0, 0.75, 1.5, 4.0, 0.0, 2.75, 3.5, 0.25];
+        let mut draws_by_time = std::collections::BTreeMap::new();
+
+        for (seek_index, sample_time) in forward_samples
+            .into_iter()
+            .chain(non_monotonic_samples)
+            .enumerate()
+        {
+            let packet_id = format!("wasm:warp-square-v9:{seek_index}:{sample_time}");
+            let request = serde_json::to_vec(&json!({
+                "evidence": ["real fast-manim WarpSquare V9 WASM protocol"],
+                "packetId": packet_id,
+                "sampleTime": sample_time,
+                "schema": "poietra.engine-sample-request",
+                "version": 1,
+                "viewport": { "heightPx": 360, "widthPx": 640 },
+            }))
+            .unwrap();
+            let sampled = session
+                .sample_packet_json(&request)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "V9 WASM protocol sample {sample_time} failed: {}",
+                        error.message
+                    )
+                });
+            assert_eq!(sampled.correlation.packet_id, packet_id);
+            assert_eq!(
+                sampled.correlation.sample_time.to_bits(),
+                sample_time.to_bits()
+            );
+            assert_eq!(sampled.correlation.viewport.width_px, 640);
+            assert_eq!(sampled.correlation.viewport.height_px, 360);
+            assert_eq!(sampled.packet.packet_id, sampled.correlation.packet_id);
+            assert_eq!(sampled.packet.viewport, sampled.correlation.viewport);
+
+            if let Some(previous) =
+                draws_by_time.insert(sample_time.to_bits(), sampled.packet.draws.clone())
+            {
+                assert_eq!(
+                    sampled.packet.draws, previous,
+                    "unordered WASM seek changed sample {sample_time}"
+                );
+            }
+            if sample_time < 4.0 {
+                let [
+                    poietra_scene_ir::RenderDrawV1::Path {
+                        fill: None,
+                        path,
+                        stroke: Some(_),
+                        ..
+                    },
+                ] = sampled.packet.draws.as_slice()
+                else {
+                    panic!("V9 WASM sample {sample_time} must retain one stroke-only path");
+                };
+                assert_eq!(path.subpaths.len(), 1);
+                assert!(path.subpaths[0].closed);
+                assert_eq!(path.subpaths[0].segments.len(), 4);
+            } else {
+                assert!(
+                    sampled.packet.draws.is_empty(),
+                    "duration-end must be inactive"
+                );
+            }
+            assert_eq!(session.session.retained_index_stats(), installed_index);
+        }
+
+        assert_eq!(
+            draws_by_time[&3.0_f64.to_bits()],
+            draws_by_time[&3.5_f64.to_bits()],
+            "the final target must remain visible during the one-second wait"
+        );
     }
 
     #[test]
