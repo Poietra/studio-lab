@@ -1,0 +1,122 @@
+{
+  "schema": "poietra.mathtex-manim-source-profile",
+  "version": 1,
+  "profile": "core-ams",
+  "referenceProducer": {
+    "kind": "manim-default-mathtex-compile",
+    "dockerImage": "manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b",
+    "manimVersion": "0.20.1",
+    "latexVersion": "pdfTeX 3.141592653-2.6-1.40.28 (TeX Live 2025)",
+    "dvisvgmVersion": "dvisvgm 3.4.3",
+    "texCompiler": "latex",
+    "texTemplateSha256": "c57ab64a4878840f001d5a474b2b52f0d3b99d81bfc2b032f98735d2e85f1a2e",
+    "generationCommand": "node scripts/regenerate-mathtex-manim-parity.mjs"
+  },
+  "cases": [
+    {
+      "id": "greek-lowercase-core",
+      "texParts": [
+        "\\alpha+\\beta+\\gamma+\\delta+\\varepsilon+\\theta+\\lambda+\\mu+\\rho+\\sigma+\\tau+\\phi+\\psi+\\omega"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "greek-uppercase-core",
+      "texParts": [
+        "\\Gamma+\\Delta+\\Theta+\\Lambda+\\Sigma+\\Phi+\\Psi+\\Omega"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "calculus-and-large-operators",
+      "texParts": [
+        "\\lim_{x\\to0}\\frac{\\sin x}{x}=1,\\quad \\int_0^\\infty e^{-x}\\,dx=1,\\quad \\sum_{n=1}^\\infty\\frac{1}{n^2},\\quad \\prod_{k=1}^n k,\\quad \\oint_\\gamma f(z)\\,dz"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "vector-fields-and-accents",
+      "texParts": [
+        "\\nabla\\cdot\\mathbf{E}=\\frac{\\rho}{\\varepsilon_0},\\quad \\nabla\\times\\mathbf{B}=\\mu_0\\frac{\\partial\\mathbf{E}}{\\partial t},\\quad \\hat{x}+\\vec{v}+90^{\\circ}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "core-fonts-and-named-operator",
+      "texParts": [
+        "\\mathbb{R}\\subseteq\\mathrm{dom}(A),\\quad \\operatorname{rank}(A)+\\operatorname*{arg\\,max}_x f(x)+\\textbf{bold}+\\text{ text}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "sets-relations-and-logic",
+      "texParts": [
+        "\\forall x\\in A\\cup B,\\;\\exists y\\notin A\\cap B:\\;x\\neq y\\Rightarrow x\\leq y\\Leftrightarrow y\\geq x,\\quad x\\approx y,\\quad x\\mapsto y"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "trigonometric-and-log-operators",
+      "texParts": [
+        "\\sin x+\\cos x+\\log x+\\ln x"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "fractions-radicals-over-and-delimiters",
+      "texParts": [
+        "\\left\\{\\frac{a}{b}+\\sqrt{x}+{1\\over n}\\right\\}+\\left(x\\right)+\\left[x\\right]"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "safe-control-symbol-escapes",
+      "texParts": [
+        "\\#\\;\\%\\;\\$\\;\\_\\;\\&\\;\\{\\}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "array-inner-environment",
+      "texParts": [
+        "\\begin{array}{cc}a&b\\\\c&d\\end{array}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "matrix-inner-environment",
+      "texParts": [
+        "\\begin{matrix}a&b\\\\c&d\\end{matrix}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "bmatrix-inner-environment",
+      "texParts": [
+        "\\begin{bmatrix}a&b\\\\c&d\\end{bmatrix}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "pmatrix-inner-environment",
+      "texParts": [
+        "\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "cases-inner-environment",
+      "texParts": [
+        "|x|=\\begin{cases}x&\\text{if }x\\geq0\\\\-x&\\text{if }x<0\\end{cases}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    },
+    {
+      "id": "aligned-inner-environment",
+      "texParts": [
+        "\\begin{aligned}x&=a+b\\\\y&=c+d\\end{aligned}"
+      ],
+      "expectedOutcome": "latex-compile-success"
+    }
+  ]
+}

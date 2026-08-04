@@ -2,7 +2,8 @@
   "schema": "poietra.mathtex-fast-manim-callsite-corpus",
   "version": 1,
   "repository": "https://github.com/Poietra/fast-manim",
-  "sourceCommit": "4d2a80abe1dbb0d800fd74c36d8a442afdb8efb6",
+  "sourceCommit": "bc8f847b7f3b6839c663e2e673e40cc6449e8e5e",
+  "extractionCommand": "python3 scripts/verify-fast-manim-mathtex-callsite-corpus.py --repository ../fast-manim",
   "extractionRule": "All MathTex calls with one or more literal positional string/number arguments under example_scenes, tests, and manim; calls with an explicit tex_template keyword are excluded. Duplicate expressions remain because this is a call-site census, not a syntax showcase.",
   "cases": [
     {

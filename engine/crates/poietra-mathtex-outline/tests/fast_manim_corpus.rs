@@ -15,6 +15,7 @@ struct CorpusV1 {
     version: u32,
     repository: String,
     source_commit: String,
+    extraction_command: String,
     extraction_rule: String,
     cases: Vec<CorpusCaseV1>,
 }
@@ -36,7 +37,14 @@ fn literal_fast_manim_callsites_meet_the_support_floor() {
     assert_eq!(corpus.schema, "poietra.mathtex-fast-manim-callsite-corpus");
     assert_eq!(corpus.version, 1);
     assert_eq!(corpus.repository, "https://github.com/Poietra/fast-manim");
-    assert_eq!(corpus.source_commit.len(), 40);
+    assert_eq!(
+        corpus.source_commit,
+        "bc8f847b7f3b6839c663e2e673e40cc6449e8e5e"
+    );
+    assert_eq!(
+        corpus.extraction_command,
+        "python3 scripts/verify-fast-manim-mathtex-callsite-corpus.py --repository ../fast-manim"
+    );
     assert!(
         corpus
             .extraction_rule

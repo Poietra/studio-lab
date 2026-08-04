@@ -345,6 +345,195 @@
   ],
   "unsupportedCases": [
     {
+      "id": "hat-control-symbol-argument",
+      "texParts": [
+        "\\hat\\\\"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "hat-braced-line-break-argument",
+      "texParts": [
+        "\\hat{\\\\}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "vec-control-symbol-argument",
+      "texParts": [
+        "\\vec\\\\"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "vec-braced-line-break-argument",
+      "texParts": [
+        "\\vec{\\\\}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "radical-closing-brace-argument",
+      "texParts": [
+        "\\sqrt}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "radical-environment-argument",
+      "texParts": [
+        "\\sqrt\\begin{matrix}x\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "radical-alignment-argument",
+      "texParts": [
+        "\\sqrt&"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "radical-braced-line-break-argument",
+      "texParts": [
+        "\\sqrt{\\\\}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "left-invalid-delimiter",
+      "texParts": [
+        "\\left x \\right)"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "right-invalid-delimiter",
+      "texParts": [
+        "\\left( x \\right y"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "sized-delimiter-bare-line-break",
+      "texParts": [
+        "\\left(x\\\\y\\right)"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "matrix-local-sized-delimiter-line-break",
+      "texParts": [
+        "\\begin{matrix}\\left(x\\\\y\\right)\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "array-local-sized-delimiter-line-break",
+      "texParts": [
+        "\\begin{array}{c}\\left(x\\\\y\\right)\\end{array}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "text-environment-argument",
+      "texParts": [
+        "\\text{\\begin{matrix}x\\end{matrix}}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "text-environment-line-break-argument",
+      "texParts": [
+        "\\text{\\begin{matrix}x\\\\y\\end{matrix}}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "textbf-environment-argument",
+      "texParts": [
+        "\\textbf{\\begin{matrix}x\\end{matrix}}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "textbf-environment-line-break-argument",
+      "texParts": [
+        "\\textbf{\\begin{matrix}x\\\\y\\end{matrix}}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "fraction-line-break-numerator",
+      "texParts": [
+        "\\frac{\\\\}{b}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "fraction-line-break-denominator",
+      "texParts": [
+        "\\frac{a}{\\\\}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "superscript-closing-brace",
+      "texParts": [
+        "x^}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "subscript-closing-brace",
+      "texParts": [
+        "x_}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "superscript-alignment",
+      "texParts": [
+        "x^&"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "subscript-alignment",
+      "texParts": [
+        "x_&"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "superscript-environment",
+      "texParts": [
+        "x^\\begin{matrix}x\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "subscript-environment",
+      "texParts": [
+        "x_\\begin{matrix}x\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "superscript-environment-line-break",
+      "texParts": [
+        "x^\\begin{matrix}x\\\\y\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
+      "id": "subscript-environment-line-break",
+      "texParts": [
+        "x_\\begin{matrix}x\\\\y\\end{matrix}"
+      ],
+      "expectedFailure": "latex-compile-error"
+    },
+    {
       "id": "katex-html",
       "texParts": [
         "\\htmlStyle{font-size:2em}{x}"

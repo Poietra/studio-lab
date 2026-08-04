@@ -41,10 +41,156 @@ CASES = (
     },
 )
 
+# Compile-only evidence for the browser source profile. Keep this deliberately
+# separate from CASES: only the three representative visual references above
+# carry checked-in SVG/mask goldens. Every entry here must compile with the
+# pinned image's runtime config.tex_template before its tokens may enter the
+# RaTeX-backed browser profile.
+SOURCE_PROFILE_CASES = (
+    {
+        "id": "greek-lowercase-core",
+        "texParts": [
+            r"\alpha+\beta+\gamma+\delta+\varepsilon+\theta+\lambda+\mu+\rho+\sigma+\tau+\phi+\psi+\omega"
+        ],
+    },
+    {
+        "id": "greek-uppercase-core",
+        "texParts": [
+            r"\Gamma+\Delta+\Theta+\Lambda+\Sigma+\Phi+\Psi+\Omega"
+        ],
+    },
+    {
+        "id": "calculus-and-large-operators",
+        "texParts": [
+            r"\lim_{x\to0}\frac{\sin x}{x}=1,\quad \int_0^\infty e^{-x}\,dx=1,\quad \sum_{n=1}^\infty\frac{1}{n^2},\quad \prod_{k=1}^n k,\quad \oint_\gamma f(z)\,dz"
+        ],
+    },
+    {
+        "id": "vector-fields-and-accents",
+        "texParts": [
+            r"\nabla\cdot\mathbf{E}=\frac{\rho}{\varepsilon_0},\quad \nabla\times\mathbf{B}=\mu_0\frac{\partial\mathbf{E}}{\partial t},\quad \hat{x}+\vec{v}+90^{\circ}"
+        ],
+    },
+    {
+        "id": "core-fonts-and-named-operator",
+        "texParts": [
+            r"\mathbb{R}\subseteq\mathrm{dom}(A),\quad \operatorname{rank}(A)+\operatorname*{arg\,max}_x f(x)+\textbf{bold}+\text{ text}"
+        ],
+    },
+    {
+        "id": "sets-relations-and-logic",
+        "texParts": [
+            r"\forall x\in A\cup B,\;\exists y\notin A\cap B:\;x\neq y\Rightarrow x\leq y\Leftrightarrow y\geq x,\quad x\approx y,\quad x\mapsto y"
+        ],
+    },
+    {
+        "id": "trigonometric-and-log-operators",
+        "texParts": [r"\sin x+\cos x+\log x+\ln x"],
+    },
+    {
+        "id": "fractions-radicals-over-and-delimiters",
+        "texParts": [
+            r"\left\{\frac{a}{b}+\sqrt{x}+{1\over n}\right\}+\left(x\right)+\left[x\right]"
+        ],
+    },
+    {
+        "id": "safe-control-symbol-escapes",
+        "texParts": [r"\#\;\%\;\$\;\_\;\&\;\{\}"],
+    },
+    {
+        "id": "array-inner-environment",
+        "texParts": [r"\begin{array}{cc}a&b\\c&d\end{array}"],
+    },
+    {
+        "id": "matrix-inner-environment",
+        "texParts": [r"\begin{matrix}a&b\\c&d\end{matrix}"],
+    },
+    {
+        "id": "bmatrix-inner-environment",
+        "texParts": [r"\begin{bmatrix}a&b\\c&d\end{bmatrix}"],
+    },
+    {
+        "id": "pmatrix-inner-environment",
+        "texParts": [r"\begin{pmatrix}a&b\\c&d\end{pmatrix}"],
+    },
+    {
+        "id": "cases-inner-environment",
+        "texParts": [
+            r"|x|=\begin{cases}x&\text{if }x\geq0\\-x&\text{if }x<0\end{cases}"
+        ],
+    },
+    {
+        "id": "aligned-inner-environment",
+        "texParts": [
+            r"\begin{aligned}x&=a+b\\y&=c+d\end{aligned}"
+        ],
+    },
+)
+
 # RaTeX intentionally supports these KaTeX/package commands, while Manim's
 # pinned default template does not. The generator must observe a real LaTeX
 # compile failure before the browser compiler may claim a structured fallback.
 UNSUPPORTED_CASES = (
+    {"id": "hat-control-symbol-argument", "texParts": [r"\hat\\"]},
+    {"id": "hat-braced-line-break-argument", "texParts": [r"\hat{\\}"]},
+    {"id": "vec-control-symbol-argument", "texParts": [r"\vec\\"]},
+    {"id": "vec-braced-line-break-argument", "texParts": [r"\vec{\\}"]},
+    {"id": "radical-closing-brace-argument", "texParts": [r"\sqrt}"]},
+    {
+        "id": "radical-environment-argument",
+        "texParts": [r"\sqrt\begin{matrix}x\end{matrix}"],
+    },
+    {"id": "radical-alignment-argument", "texParts": [r"\sqrt&"]},
+    {"id": "radical-braced-line-break-argument", "texParts": [r"\sqrt{\\}"]},
+    {"id": "left-invalid-delimiter", "texParts": [r"\left x \right)"]},
+    {"id": "right-invalid-delimiter", "texParts": [r"\left( x \right y"]},
+    {"id": "sized-delimiter-bare-line-break", "texParts": [r"\left(x\\y\right)"]},
+    {
+        "id": "matrix-local-sized-delimiter-line-break",
+        "texParts": [r"\begin{matrix}\left(x\\y\right)\end{matrix}"],
+    },
+    {
+        "id": "array-local-sized-delimiter-line-break",
+        "texParts": [r"\begin{array}{c}\left(x\\y\right)\end{array}"],
+    },
+    {
+        "id": "text-environment-argument",
+        "texParts": [r"\text{\begin{matrix}x\end{matrix}}"],
+    },
+    {
+        "id": "text-environment-line-break-argument",
+        "texParts": [r"\text{\begin{matrix}x\\y\end{matrix}}"],
+    },
+    {
+        "id": "textbf-environment-argument",
+        "texParts": [r"\textbf{\begin{matrix}x\end{matrix}}"],
+    },
+    {
+        "id": "textbf-environment-line-break-argument",
+        "texParts": [r"\textbf{\begin{matrix}x\\y\end{matrix}}"],
+    },
+    {"id": "fraction-line-break-numerator", "texParts": [r"\frac{\\}{b}"]},
+    {"id": "fraction-line-break-denominator", "texParts": [r"\frac{a}{\\}"]},
+    {"id": "superscript-closing-brace", "texParts": [r"x^}"]},
+    {"id": "subscript-closing-brace", "texParts": [r"x_}"]},
+    {"id": "superscript-alignment", "texParts": [r"x^&"]},
+    {"id": "subscript-alignment", "texParts": [r"x_&"]},
+    {
+        "id": "superscript-environment",
+        "texParts": [r"x^\begin{matrix}x\end{matrix}"],
+    },
+    {
+        "id": "subscript-environment",
+        "texParts": [r"x_\begin{matrix}x\end{matrix}"],
+    },
+    {
+        "id": "superscript-environment-line-break",
+        "texParts": [r"x^\begin{matrix}x\\y\end{matrix}"],
+    },
+    {
+        "id": "subscript-environment-line-break",
+        "texParts": [r"x_\begin{matrix}x\\y\end{matrix}"],
+    },
     {"id": "katex-html", "texParts": [r"\htmlStyle{font-size:2em}{x}"]},
     {"id": "hyperref-href", "texParts": [r"\href{https://example.test}{x}"]},
     {"id": "hyperref-url", "texParts": [r"\url{https://example.test}"]},
@@ -95,6 +241,14 @@ def command_version(command: str) -> str:
         text=True,
     ).stdout
     return output.splitlines()[0].strip()
+
+
+def runtime_tex_template_digest() -> str:
+    sentinel = "POIETRA_MATHTEX_SOURCE_PROFILE_SENTINEL"
+    source = config.tex_template.get_texcode_for_expression(sentinel)
+    if source.count(sentinel) != 1:
+        raise ValueError("runtime config.tex_template did not preserve the sentinel")
+    return hashlib.sha256(source.encode("utf-8")).hexdigest()
 
 
 def cubic_value(points: list[float], time: float) -> float:
@@ -379,6 +533,13 @@ def generate(output: Path) -> None:
                 {**case, "expectedRelation": "normalized-outline-identical"}
             )
 
+        generated_source_profile_cases = []
+        for case in SOURCE_PROFILE_CASES:
+            MathTex(*case["texParts"])
+            generated_source_profile_cases.append(
+                {**case, "expectedOutcome": "latex-compile-success"}
+            )
+
         corpus = {
             "schema": "poietra.mathtex-manim-visual-parity",
             "version": 1,
@@ -436,6 +597,26 @@ def generate(output: Path) -> None:
         }
         (output / "corpus.json").write_text(
             json.dumps(corpus, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        source_profile = {
+            "schema": "poietra.mathtex-manim-source-profile",
+            "version": 1,
+            "profile": "core-ams",
+            "referenceProducer": {
+                "kind": "manim-default-mathtex-compile",
+                "dockerImage": os.environ["POIETRA_MANIM_REFERENCE_IMAGE"],
+                "manimVersion": manim.__version__,
+                "latexVersion": command_version("latex"),
+                "dvisvgmVersion": command_version("dvisvgm"),
+                "texCompiler": config.tex_template.tex_compiler,
+                "texTemplateSha256": runtime_tex_template_digest(),
+                "generationCommand": "node scripts/regenerate-mathtex-manim-parity.mjs",
+            },
+            "cases": generated_source_profile_cases,
+        }
+        (output / "source-profile.json").write_text(
+            json.dumps(source_profile, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
     finally:
