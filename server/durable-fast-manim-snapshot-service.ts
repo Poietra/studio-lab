@@ -5,6 +5,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
@@ -305,12 +306,14 @@ export class DurableFastManimSnapshotServiceV1 {
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
+    let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
     if (
       scene.source.snapshotVersion === 3 ||
       scene.source.snapshotVersion === 4 ||
       scene.source.snapshotVersion === 5 ||
       scene.source.snapshotVersion === 7 ||
-      scene.source.snapshotVersion === 9
+      scene.source.snapshotVersion === 9 ||
+      scene.source.snapshotVersion === 10
     ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
@@ -330,8 +333,10 @@ export class DurableFastManimSnapshotServiceV1 {
         hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, view.sceneName);
       } else if (scene.source.snapshotVersion === 7) {
         hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, view.sceneName);
-      } else {
+      } else if (scene.source.snapshotVersion === 9) {
         warpSquareV9Plan = deriveWarpSquareV9TransformPlan(source, view.sceneName);
+      } else {
+        lineJointsV10Plan = deriveLineJointsV10TransformPlan(source, view.sceneName);
       }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
@@ -339,6 +344,7 @@ export class DurableFastManimSnapshotServiceV1 {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
+      ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,

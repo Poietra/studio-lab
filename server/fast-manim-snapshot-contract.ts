@@ -160,6 +160,14 @@ const warpSquareV9TransformPlanSchema = z
   .strict();
 export type WarpSquareV9TransformPlan = z.infer<typeof warpSquareV9TransformPlanSchema>;
 
+const lineJointsV10TransformPlanSchema = z
+  .object({
+    moveTo: z.object({ x: hermeticPngV4NumberSchema, y: hermeticPngV4NumberSchema }).strict().nullable(),
+    scale: hermeticPngV4NumberSchema.positive().nullable(),
+  })
+  .strict();
+export type LineJointsV10TransformPlan = z.infer<typeof lineJointsV10TransformPlanSchema>;
+
 /**
  * The minimal expected boundary the server holds against a result: the wire
  * correlation fields plus the runtime frame the request was issued for, so
@@ -187,6 +195,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // producer accepts. The server derives this from the exact source bytes;
     // it is verification state, never producer-authored evidence.
     warpSquareV9Plan: warpSquareV9TransformPlanSchema.optional(),
+    // V10 admits one bounded initial edit of the central Triangle. As with
+    // V9, this is derived from server-held Python and retained only so sealed
+    // publications can be revalidated without keeping source bytes inline.
+    lineJointsV10Plan: lineJointsV10TransformPlanSchema.optional(),
     // Durable V1 publications predate this correlation field. Treat only an
     // omitted stored value as V1; an explicit unsupported value still fails.
     snapshotVersion: fastManimSnapshotProfileVersionV1Schema.default(1),
@@ -219,6 +231,13 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         code: "custom",
         message: "WarpSquare transform evidence is valid only for snapshot profile V9.",
         path: ["warpSquareV9Plan"],
+      });
+    }
+    if (value.snapshotVersion !== 10 && value.lineJointsV10Plan !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "LineJoints transform evidence is valid only for snapshot profile V10.",
+        path: ["lineJointsV10Plan"],
       });
     }
   });
@@ -2273,6 +2292,7 @@ export const FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10 =
 const FAST_MANIM_LINE_JOINTS_REQUIRED_CAPABILITIES_V10 = ["cubic-path-geometry", "logical-group"] as const;
 const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
 const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
+const LINE_JOINTS_V10_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies LineJointsV10TransformPlan;
 
 function warpSquareV9CanonicalNumber(source: string, positive = false) {
   if (!WARP_SQUARE_V9_CANONICAL_NUMBER.test(source)) return null;
@@ -2369,6 +2389,93 @@ export function deriveWarpSquareV9TransformPlan(source: string, sceneName: strin
     profileViolation("Removing the bounded WarpSquare V9 edits must reconstruct the exact official source bytes.");
   }
   return warpSquareV9TransformPlanSchema.parse({ moveTo, scale });
+}
+
+/**
+ * Derives the only Studio-authored edit admitted by LineJoints V10.
+ *
+ * The target is deliberately fixed to the central `t2` leaf. Optional
+ * canonical move/scale statements must sit after the final group layout and
+ * before `self.add(grp)`. Removing them must reconstruct the byte-exact
+ * official source, so this never grows into a second general Python parser.
+ */
+export function deriveLineJointsV10TransformPlan(source: string, sceneName: string): LineJointsV10TransformPlan {
+  if (sceneName !== "LineJoints") {
+    profileViolation("LineJoints profile V10 source verification requires the exact selected Scene name.");
+  }
+  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
+  if (sourceDigest === FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10) return LINE_JOINTS_V10_EMPTY_PLAN;
+
+  const analysis = analyzePythonSource(source);
+  let statements: ReturnType<typeof findSourceSceneStatements>;
+  try {
+    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10);
+  } catch (cause) {
+    throw new FastManimSnapshotContractError(
+      "profile-violation",
+      "LineJoints profile V10 source does not identify one unambiguous selected Scene.",
+      { cause },
+    );
+  }
+  const fixedPrefix = [
+    "t1 = Triangle()",
+    "t2 = Triangle(joint_type=LineJointType.ROUND)",
+    "t3 = Triangle(joint_type=LineJointType.BEVEL)",
+    "grp = VGroup(t1, t2, t3).arrange(RIGHT)",
+    "grp.set(width=config.frame_width - 1)",
+  ] as const;
+  if (!analysis.valid || fixedPrefix.some((text, index) => statements[index]?.text !== text)) {
+    profileViolation("LineJoints profile V10 edits require the exact official VGroup layout prefix.");
+  }
+
+  const sourceLines = source.split("\n");
+  const removedLines = new Set<number>();
+  let statementIndex = fixedPrefix.length;
+  let moveTo: LineJointsV10TransformPlan["moveTo"] = null;
+  let scale: number | null = null;
+
+  const moveStatement = statements[statementIndex];
+  const moveMatch = moveStatement?.text.match(
+    /^t2\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
+  );
+  if (moveStatement && moveMatch) {
+    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
+    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
+    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
+      profileViolation("LineJoints profile V10 move_to must use bounded canonical Studio literals.");
+    }
+    moveTo = { x, y };
+    removedLines.add(moveStatement.line);
+    statementIndex += 1;
+  }
+
+  const scaleStatement = statements[statementIndex];
+  const scaleMatch = scaleStatement?.text.match(/^t2\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/);
+  if (scaleStatement && scaleMatch) {
+    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
+    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
+      profileViolation("LineJoints profile V10 scale must use one bounded canonical positive Studio literal.");
+    }
+    scale = factor;
+    removedLines.add(scaleStatement.line);
+    statementIndex += 1;
+  }
+
+  if (
+    removedLines.size === 0 ||
+    statements.length !== statementIndex + 1 ||
+    statements[statementIndex]?.text !== "self.add(grp)"
+  ) {
+    profileViolation("LineJoints profile V10 source is not the official generation or one bounded central-leaf edit.");
+  }
+  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
+  if (
+    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
+    FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10
+  ) {
+    profileViolation("Removing the bounded LineJoints V10 edits must reconstruct the exact official source bytes.");
+  }
+  return lineJointsV10TransformPlanSchema.parse({ moveTo, scale });
 }
 
 type WarpSquarePointV9 = { x: number; y: number };
@@ -3011,6 +3118,65 @@ function fastManimLineJointsSemanticDigestV10(scene: SceneIrBundleV1["scene"]) {
     .digest("hex");
 }
 
+const FAST_MANIM_LINE_JOINTS_NORMALIZED_GEOMETRY_SHA256_V10 =
+  "1d358be5ba99e776ce747cb07d0ad42bb32665347cbdf0533af12ea746178ce0" as const;
+
+function lineJointsRoundedCoordinateV10(value: number) {
+  const rounded = Number(value.toFixed(12));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function lineJointsPathCenterV10(path: Extract<StaticProfileEntity["geometry"], { kind: "cubic-path" }>["path"]) {
+  const points = path.subpaths.flatMap((subpath) => [subpath.start, ...subpath.segments.map(({ end }) => end)]);
+  if (points.length === 0) profileViolation("LineJoints profile V10 Triangle geometry cannot be empty.");
+  const xs = points.map(({ x }) => x);
+  const ys = points.map(({ y }) => y);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}
+
+function lineJointsGeometryDigestV10(scene: SceneIrBundleV1["scene"], plan: LineJointsV10TransformPlan) {
+  const target = scene.entities[2];
+  if (!target || target.geometry.kind !== "cubic-path") {
+    profileViolation("LineJoints profile V10 central Triangle geometry is unavailable.");
+  }
+  const center = lineJointsPathCenterV10(target.geometry.path);
+  const expectedCenter = plan.moveTo ?? { x: 0, y: 0 };
+  const tolerance = 1e-9 * Math.max(1, Math.abs(expectedCenter.x), Math.abs(expectedCenter.y));
+  if (Math.abs(center.x - expectedCenter.x) > tolerance || Math.abs(center.y - expectedCenter.y) > tolerance) {
+    profileViolation("LineJoints profile V10 central Triangle center does not match its source-derived edit plan.");
+  }
+  const scale = plan.scale ?? 1;
+  const normalizePoint = (point: Readonly<{ x: number; y: number }>, edited: boolean) => ({
+    x: lineJointsRoundedCoordinateV10(edited ? (point.x - expectedCenter.x) / scale : point.x),
+    y: lineJointsRoundedCoordinateV10(edited ? (point.y - expectedCenter.y) / scale : point.y),
+  });
+  const geometries = scene.entities.map(({ geometry }, entityIndex) => {
+    if (geometry.kind === "group") return { kind: "group" } as const;
+    if (geometry.kind !== "cubic-path") {
+      profileViolation("LineJoints profile V10 admits only group and cubic-path geometry.");
+    }
+    const edited = entityIndex === 2;
+    return {
+      kind: "cubic-path" as const,
+      path: {
+        subpaths: geometry.path.subpaths.map((subpath) => ({
+          closed: subpath.closed,
+          segments: subpath.segments.map((segment) => ({
+            control1: normalizePoint(segment.control1, edited),
+            control2: normalizePoint(segment.control2, edited),
+            end: normalizePoint(segment.end, edited),
+          })),
+          start: normalizePoint(subpath.start, edited),
+        })),
+      },
+    };
+  });
+  return createHash("sha256").update(canonicalJsonV1(geometries), "utf8").digest("hex");
+}
+
 function assertLineJointsProducerProvenanceV10(scene: SceneIrBundleV1["scene"]) {
   const [sceneRecord, groupRecord, ...triangleRecords] = scene.provenance;
   const sceneEvidence = sceneRecord?.evidence;
@@ -3066,15 +3232,23 @@ function assertLineJointsProfileV10(
   expectedFrame: Readonly<{ height: number; width: number }>,
   mode: "producer" | "sealed",
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+  transformPlan: LineJointsV10TransformPlan | undefined,
 ) {
   const { scene } = bundle;
   const { sceneId } = scene;
+  const plan = transformPlan ?? LINE_JOINTS_V10_EMPTY_PLAN;
+  const edited = plan.moveTo !== null || plan.scale !== null;
   if (
     expectedIdentity.sceneName !== "LineJoints" ||
-    expectedIdentity.sourcePath !== FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10 ||
-    expectedIdentity.sourceHash !== FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10
+    expectedIdentity.sourcePath !== FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10
   ) {
-    profileViolation("Snapshot profile V10 is reserved for the pinned official LineJoints source generation.");
+    profileViolation("Snapshot profile V10 is reserved for the pinned official LineJoints source family.");
+  }
+  if (
+    (expectedIdentity.sourceHash === FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 && edited) ||
+    (expectedIdentity.sourceHash !== FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 && !edited)
+  ) {
+    profileViolation("LineJoints profile V10 source identity does not match its retained transform plan.");
   }
   if (
     expectedFrame.height !== FAST_MANIM_LINE_JOINTS_FRAME_V10.height ||
@@ -3152,9 +3326,12 @@ function assertLineJointsProfileV10(
       profileViolation("LineJoints profile V10 Triangle leaves differ from the pinned Cairo paint-state contract.");
     }
   });
-  if (fastManimLineJointsSemanticDigestV10(scene) !== FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10) {
+  if (
+    lineJointsGeometryDigestV10(scene, plan) !== FAST_MANIM_LINE_JOINTS_NORMALIZED_GEOMETRY_SHA256_V10 ||
+    (!edited && fastManimLineJointsSemanticDigestV10(scene) !== FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10)
+  ) {
     profileViolation(
-      "The official LineJoints profile V10 hierarchy or renderer semantics differ from its producer fixture.",
+      "The LineJoints profile V10 hierarchy or source-derived geometry differs from its producer fixture.",
     );
   }
   const expectedProvenanceIds = [
@@ -3201,10 +3378,11 @@ function assertFastManimSnapshotProfileV1(
   hermeticPngV4Plan: HermeticPngV4TransformPlan | undefined,
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
   warpSquareV9Plan: WarpSquareV9TransformPlan | undefined,
+  lineJointsV10Plan: LineJointsV10TransformPlan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
   if (snapshotVersion === 10) {
-    assertLineJointsProfileV10(bundle, expectedFrame, mode, expectedIdentity);
+    assertLineJointsProfileV10(bundle, expectedFrame, mode, expectedIdentity, lineJointsV10Plan);
     return;
   }
   if (snapshotVersion === 9) {
@@ -3572,6 +3750,7 @@ async function parseFastManimSnapshotResultV1(
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
   let warpSquareV9Plan = expected.warpSquareV9Plan;
+  let lineJointsV10Plan = expected.lineJointsV10Plan;
   if (
     (expected.snapshotVersion === 3 ||
       expected.snapshotVersion === 4 ||
@@ -3604,6 +3783,13 @@ async function parseFastManimSnapshotResultV1(
       profileViolation("The retained WarpSquare transform plan does not match the server-held source.");
     }
     warpSquareV9Plan = derivedPlan;
+  }
+  if (expected.snapshotVersion === 10 && mode === "producer" && sourceText !== undefined) {
+    const derivedPlan = deriveLineJointsV10TransformPlan(sourceText, expected.sceneName);
+    if (lineJointsV10Plan && canonicalJsonV1(lineJointsV10Plan) !== canonicalJsonV1(derivedPlan)) {
+      profileViolation("The retained LineJoints transform plan does not match the server-held source.");
+    }
+    lineJointsV10Plan = derivedPlan;
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
@@ -3652,6 +3838,7 @@ async function parseFastManimSnapshotResultV1(
     hermeticPngV4Plan,
     hermeticMathTexMorphV5Plan,
     warpSquareV9Plan,
+    lineJointsV10Plan,
     expected,
   );
   const mixedDynamicMathTexProvenanceId =

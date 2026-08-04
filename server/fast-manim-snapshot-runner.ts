@@ -21,6 +21,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
@@ -930,12 +931,14 @@ export class FastManimSnapshotRunner {
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
+    let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
     if (
       snapshotVersion === 3 ||
       snapshotVersion === 4 ||
       snapshotVersion === 5 ||
       snapshotVersion === 7 ||
-      snapshotVersion === 9
+      snapshotVersion === 9 ||
+      snapshotVersion === 10
     ) {
       try {
         if (snapshotVersion === 3) {
@@ -946,8 +949,10 @@ export class FastManimSnapshotRunner {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
         } else if (snapshotVersion === 7) {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
-        } else {
+        } else if (snapshotVersion === 9) {
           warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
+        } else {
+          lineJointsV10Plan = deriveLineJointsV10TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -960,6 +965,7 @@ export class FastManimSnapshotRunner {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
+      ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
