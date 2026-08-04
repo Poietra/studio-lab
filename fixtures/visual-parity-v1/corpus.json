@@ -74,7 +74,7 @@
         "path": "fixtures/engine-v1/mathtex-nested-radical-fraction.json",
         "revision": {
           "kind": "studio-edit-program",
-          "sha256": "ed9a992e754a09f9bd0bac9e58eeb6e6d08615c6b4a957e5b9ef61929eaa2467"
+          "sha256": "43fa43f9445110f25284bce82d11982379f82a05c6d6621864725edd806451e0"
         }
       },
       "sample": {
