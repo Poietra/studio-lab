@@ -113,6 +113,7 @@ const SUPPORTED_TYPES = new Set([
   "Square",
   "SurroundingRectangle",
   "Text",
+  "Triangle",
   "VGroup",
 ]);
 const ENTITY_MARKER_PATTERN = /^\s*#\s*poietra:entity\s+(.+)\s*$/;
@@ -1004,6 +1005,68 @@ function referencedPresenceVariables(argumentsSource: string, variables: Readonl
   return new Set(analysis.lines.flatMap((line) => referencedPythonReferences(line, variables)));
 }
 
+function expandDirectGroupPresence(
+  references: ReadonlySet<string>,
+  directGroupMembers: ReadonlyMap<string, readonly string[]>,
+) {
+  const expanded = new Set(references);
+  const pending = [...references];
+  while (pending.length > 0) {
+    const group = pending.pop();
+    if (!group) continue;
+    for (const member of directGroupMembers.get(group) ?? []) {
+      if (expanded.has(member)) continue;
+      expanded.add(member);
+      pending.push(member);
+    }
+  }
+  return expanded;
+}
+
+function unambiguousDirectGroupPresence(
+  statements: readonly SourceStatement[],
+  directGroupMembers: ReadonlyMap<string, readonly string[]>,
+  initializationByVariable: ReadonlyMap<string, string>,
+) {
+  return new Map(
+    [...directGroupMembers].filter(([group, members]) => {
+      if (members.some((member) => directGroupMembers.has(member))) return false;
+      const escaped = group.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const groupInitialization = initializationByVariable.get(group);
+      const groupAssignment = groupInitialization ? parseEntityAssignment(groupInitialization) : null;
+      if (
+        !groupAssignment ||
+        groupAssignment.type !== "VGroup" ||
+        !["", ".arrange(RIGHT)"].includes(groupAssignment.suffix.replace(/\s/g, "")) ||
+        members.some((member) => {
+          const initialization = initializationByVariable.get(member);
+          const assignment = initialization ? parseEntityAssignment(initialization) : null;
+          return !assignment || assignment.suffix.trim() !== "";
+        })
+      ) {
+        return false;
+      }
+      const closure = [group, ...members];
+      const initializations = new Set(
+        closure.flatMap((variable) => {
+          const initialization = initializationByVariable.get(variable);
+          return initialization ? [initialization] : [];
+        }),
+      );
+      return statements.every(({ text }) => {
+        const referencesClosure = closure.some((variable) =>
+          new RegExp(`\\b${variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(text),
+        );
+        if (!referencesClosure || initializations.has(text)) return true;
+        if (new RegExp(`^${escaped}\\.set\\(\\s*width\\s*=\\s*config\\.frame_width\\s*-\\s*1\\s*\\)$`).test(text)) {
+          return true;
+        }
+        return new RegExp(`^self\\.(?:add|remove)\\(\\s*${escaped}\\s*\\)$`, "s").test(text);
+      });
+    }),
+  );
+}
+
 function durationFrom(statement: string, fallback = 1) {
   const match = statement.match(new RegExp(`\\brun_time\\s*=\\s*(${UNSIGNED_NUMBER_LITERAL})(?![A-Za-z0-9_.])`));
   return match ? (unsignedNumberLiteral(match[1]) ?? fallback) : fallback;
@@ -1564,7 +1627,52 @@ export function importManimScene(
     }
   }
 
+  // A directly constructed VGroup has a bounded, source-visible membership
+  // edge even though the static importer cannot replay Manim layout. Preserve
+  // that edge for presence only; any group layout mutation makes each member's
+  // authoring geometry and style explicitly runtime-dependent instead of
+  // publishing the importer's approximate defaults as facts.
+  const directGroupMembers = new Map<string, readonly string[]>();
+  for (const group of mutableEntities) {
+    const assignment = parseEntityAssignment(group.initialization);
+    if (!assignment || (assignment.type !== "Group" && assignment.type !== "VGroup")) continue;
+    const { keywords, positional } = constructorArguments(assignment.argumentsSource);
+    if (
+      keywords.size > 0 ||
+      positional.length === 0 ||
+      positional.some((member) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(member) || !byVariable.has(member))
+    ) {
+      continue;
+    }
+    directGroupMembers.set(group.sourceVariable, positional);
+    const escaped = group.sourceVariable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const layoutStatements = statements
+      .map(({ text }) => text)
+      .filter(
+        (text) =>
+          new RegExp(`^${escaped}\\.(?:arrange|scale|stretch)\\s*\\(`).test(text) ||
+          new RegExp(`^${escaped}\\.set\\s*\\(\\s*(?:height|width)\\s*=`).test(text),
+      );
+    if (/\.(?:arrange|scale|stretch)\s*\(/.test(assignment.suffix)) {
+      layoutStatements.unshift(group.initialization);
+    }
+    if (layoutStatements.length === 0) continue;
+    for (const memberName of positional) {
+      const member = byVariable.get(memberName)!;
+      const evidence = [`${group.sourceVariable} controls ${memberName}`, ...layoutStatements];
+      member.dimensions = unknown("Nested dimensions depend on Manim VGroup runtime layout.", evidence);
+      member.positionKnowledge = unknown("Nested position depends on Manim VGroup runtime layout.", evidence);
+      member.scaleKnowledge = unknown("Nested scale depends on Manim VGroup runtime layout.", evidence);
+      member.style = unknown("Nested style depends on effective Manim runtime paint state.", evidence);
+    }
+  }
+
   const presenceVariables = new Set(mutableEntities.map((entity) => entity.sourceVariable));
+  const directPresenceGroupMembers = unambiguousDirectGroupPresence(
+    statements,
+    directGroupMembers,
+    new Map(mutableEntities.map((entity) => [entity.sourceVariable, entity.initialization])),
+  );
   const cubicBezierBindings = directCubicBezierBindings(statements);
   let cursor = 0;
   let firstPlayEnd: number | null = null;
@@ -1881,7 +1989,10 @@ export function importManimScene(
     }
     const add = statement.text.match(/^self\.add\((.*)\)$/s)?.[1];
     if (add) {
-      const references = referencedPresenceVariables(add, presenceVariables);
+      const references = expandDirectGroupPresence(
+        new Set(referencedPresenceVariables(add, presenceVariables)),
+        directPresenceGroupMembers,
+      );
       for (const entity of mutableEntities) {
         if (references.has(entity.sourceVariable)) beginPresence(entity, cursor);
       }
@@ -1889,7 +2000,10 @@ export function importManimScene(
     }
     const remove = statement.text.match(/^self\.remove\((.*)\)$/s)?.[1];
     if (remove) {
-      const references = referencedPresenceVariables(remove, presenceVariables);
+      const references = expandDirectGroupPresence(
+        new Set(referencedPresenceVariables(remove, presenceVariables)),
+        directPresenceGroupMembers,
+      );
       for (const entity of mutableEntities) {
         if (references.has(entity.sourceVariable)) endPresence(entity, cursor);
       }

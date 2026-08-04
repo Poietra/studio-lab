@@ -143,7 +143,8 @@ type StudioPreviewHostInstallationV1 = Readonly<{
  * deliberately has aggregate morph lineage, while V9's pointwise-function
  * morph remains display-only unless the exact WarpSquare V9 temporal slice can
  * be truthfully rebased. V6 through V9 require server-verified source/runtime
- * bindings. Older
+ * bindings. V10 extends that complete identity requirement to the fixed
+ * LineJoints hierarchy. Older
  * snapshot-only profiles retain their semantic interaction fallback; no
  * gesture guesses from Scene order.
  */
@@ -163,12 +164,17 @@ export function studioPreviewInteractionAuthorityV1(
   if (
     Number(source.snapshotVersion) !== 6 &&
     Number(source.snapshotVersion) !== 7 &&
-    Number(source.snapshotVersion) !== 8
+    Number(source.snapshotVersion) !== 8 &&
+    Number(source.snapshotVersion) !== 10
   ) {
     return { kind: "interactive" };
   }
   const identity = snapshot?.sourceRuntimeIdentity;
-  if (Number(source.snapshotVersion) === 7 || Number(source.snapshotVersion) === 8) {
+  if (
+    Number(source.snapshotVersion) === 7 ||
+    Number(source.snapshotVersion) === 8 ||
+    Number(source.snapshotVersion) === 10
+  ) {
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
     const complete =

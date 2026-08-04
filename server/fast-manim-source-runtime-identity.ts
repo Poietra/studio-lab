@@ -172,6 +172,7 @@ const STUDIO_SUPPORTED_CONSTRUCTORS_V6 = new Set([
 
 const STUDIO_SUPPORTED_CONSTRUCTORS_V7 = new Set(["Circle", "Line", "MathTex", "Rectangle"]);
 const STUDIO_SUPPORTED_CONSTRUCTORS_V8_V9 = new Set(["Square"]);
+const STUDIO_SUPPORTED_CONSTRUCTORS_V10 = new Set(["Triangle", "VGroup"]);
 
 /**
  * Exact producer-owned runtime classes admitted by mixed dynamic V7.
@@ -189,6 +190,12 @@ const STUDIO_RUNTIME_TYPES_BY_CONSTRUCTOR_V7: ReadonlyMap<string, string> = new 
   ["Rectangle", "manim.mobject.geometry.polygram.Rectangle"],
 ] as const);
 const STUDIO_SQUARE_RUNTIME_TYPE_V8_V9 = "manim.mobject.geometry.polygram.Square" as const;
+const STUDIO_VGROUP_RUNTIME_TYPE_V10 = "manim.mobject.types.vectorized_mobject.VGroup" as const;
+const STUDIO_TRIANGLE_RUNTIME_TYPE_V10 = "manim.mobject.geometry.polygram.Triangle" as const;
+
+function lineJointsFamilyPathV10(sceneOrder: number): readonly number[] {
+  return sceneOrder === 0 ? [] : [sceneOrder - 1];
+}
 
 function studioSupportsConstructor(
   constructor: string,
@@ -202,6 +209,7 @@ function studioSupportsConstructor(
   if (snapshotVersion === 6) return STUDIO_SUPPORTED_CONSTRUCTORS_V6.has(constructor);
   if (snapshotVersion === 7) return STUDIO_SUPPORTED_CONSTRUCTORS_V7.has(constructor);
   if (snapshotVersion === 8 || snapshotVersion === 9) return STUDIO_SUPPORTED_CONSTRUCTORS_V8_V9.has(constructor);
+  if (snapshotVersion === 10) return STUDIO_SUPPORTED_CONSTRUCTORS_V10.has(constructor);
   return STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor);
 }
 
@@ -327,7 +335,13 @@ function buildSourceBindingLookup(
     const line = analysis.lines[lineIndex];
     if (!line || !isPythonStatementStart(line)) continue;
     let code = line.code;
-    if (snapshotVersion === 6 || snapshotVersion === 7 || snapshotVersion === 8 || snapshotVersion === 9) {
+    if (
+      snapshotVersion === 6 ||
+      snapshotVersion === 7 ||
+      snapshotVersion === 8 ||
+      snapshotVersion === 9 ||
+      snapshotVersion === 10
+    ) {
       const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
       if (continuedCode === null) {
         proofComplete = false;
@@ -355,6 +369,7 @@ function buildSourceBindingLookup(
         snapshotVersion !== 7 &&
         snapshotVersion !== 8 &&
         snapshotVersion !== 9 &&
+        snapshotVersion !== 10 &&
         (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
     ) {
       proofComplete = false;
@@ -520,10 +535,17 @@ function validatePublishedMap(
   const names = new Set<string>();
   const bindings = new Set<string>();
   const entityIds = new Set<string>();
+  const source = snapshot.bundle.scene.source;
   for (const mapping of map.mappings) {
     const entity = entities.get(mapping.entityId);
+    const expectedFamilyPath =
+      source.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 10
+        ? lineJointsFamilyPathV10(entity?.sceneOrder ?? -1)
+        : [];
     requireIdentity(
-      entity !== undefined && entity.provenanceId === mapping.provenanceId && mapping.familyPath.length === 0,
+      entity !== undefined &&
+        entity.provenanceId === mapping.provenanceId &&
+        JSON.stringify(mapping.familyPath) === JSON.stringify(expectedFamilyPath),
       "A source/runtime mapping does not name one exact snapshot entity.",
     );
     requireIdentity(!names.has(mapping.binding.name), "One source name appears in several published mappings.");
@@ -533,14 +555,16 @@ function validatePublishedMap(
     bindings.add(mapping.binding.id);
     entityIds.add(mapping.entityId);
   }
-  const source = snapshot.bundle.scene.source;
   if (
     source?.kind === "imported-manim-server-snapshot" &&
-    (source.snapshotVersion === 7 || source.snapshotVersion === 8 || source.snapshotVersion === 9)
+    (source.snapshotVersion === 7 ||
+      source.snapshotVersion === 8 ||
+      source.snapshotVersion === 9 ||
+      source.snapshotVersion === 10)
   ) {
     requireIdentity(
       entityIds.size === entities.size,
-      "Snapshot profiles V7 through V9 require one verified source/runtime mapping for every Scene entity.",
+      "Snapshot profiles V7 through V10 require one verified source/runtime mapping for every Scene entity.",
     );
   }
   return map;
@@ -564,13 +588,14 @@ export function assertFastManimSnapshotIdentityAuthorityV1(
     snapshot.bundle.scene.source.kind !== "imported-manim-server-snapshot" ||
     (snapshot.bundle.scene.source.snapshotVersion !== 7 &&
       snapshot.bundle.scene.source.snapshotVersion !== 8 &&
-      snapshot.bundle.scene.source.snapshotVersion !== 9)
+      snapshot.bundle.scene.source.snapshotVersion !== 9 &&
+      snapshot.bundle.scene.source.snapshotVersion !== 10)
   ) {
     return;
   }
   requireIdentity(
     identity !== null,
-    "Snapshot profiles V7 through V9 require complete source/runtime identity evidence before publication.",
+    "Snapshot profiles V7 through V10 require complete source/runtime identity evidence before publication.",
   );
   validatePublishedMap(identity, snapshot);
 }
@@ -631,6 +656,12 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     requireIdentity(
       complete && records.length === 1,
       `${input.expected.snapshotVersion === 8 ? "SquareToCircle profile V8" : "WarpSquare profile V9"} requires one complete runtime identity record.`,
+    );
+  }
+  if (input.expected.snapshotVersion === 10 && input.snapshot.kind === "compiled") {
+    requireIdentity(
+      complete && records.length === 4,
+      "LineJoints profile V10 requires four complete runtime identity records.",
     );
   }
   const sourceAnalysis = analyzePythonSource(input.sourceText);
@@ -771,6 +802,19 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         "WarpSquare profile V9 requires the exact stable Square add lifecycle.",
       );
     }
+    if (input.expected.snapshotVersion === 10) {
+      const [added] = recordValue.lifecycle;
+      const exactLifecycle =
+        sceneOrder === 0
+          ? recordValue.lifecycle.length === 1 && isPlainObject(added) && added.action === "add" && added.sequence === 6
+          : recordValue.lifecycle.length === 0;
+      requireIdentity(
+        sceneOrder <= 3 &&
+          JSON.stringify(familyPath) === JSON.stringify(lineJointsFamilyPathV10(sceneOrder)) &&
+          exactLifecycle,
+        "LineJoints profile V10 requires the exact VGroup-family lifecycle and membership.",
+      );
+    }
 
     requireIdentity(
       Array.isArray(recordValue.bindings) && recordValue.bindings.length <= MAX_BINDINGS_PER_ENTITY,
@@ -881,6 +925,26 @@ export function verifyFastManimSourceRuntimeIdentityV1(
           "WarpSquare profile V9 must map only the exact source Square binding to its exact runtime type.",
         );
       }
+      if (input.expected.snapshotVersion === 10 && input.snapshot.kind === "compiled") {
+        const expectedName = sceneOrder === 0 ? "grp" : `t${sceneOrder}`;
+        const expectedConstructor = sceneOrder === 0 ? "VGroup" : "Triangle";
+        const expectedRuntimeType =
+          sceneOrder === 0 ? STUDIO_VGROUP_RUNTIME_TYPE_V10 : STUDIO_TRIANGLE_RUNTIME_TYPE_V10;
+        const claim = recordValue.bindings[0] as PlainObject | undefined;
+        requireIdentity(
+          sceneOrder <= 3 &&
+            activeClaim.studioSupported &&
+            activeClaim.constructor === expectedConstructor &&
+            binding.name === expectedName &&
+            binding.ordinal === (sceneOrder === 0 ? 4 : sceneOrder) &&
+            recordValue.bindings.length === 1 &&
+            claim?.boundSequence === (sceneOrder === 0 ? 4 : sceneOrder) &&
+            claim?.releasedSequence === null &&
+            runtimeType === expectedRuntimeType &&
+            JSON.stringify(familyPath) === JSON.stringify(lineJointsFamilyPathV10(sceneOrder)),
+          "LineJoints profile V10 must map only the exact VGroup and Triangle source bindings.",
+        );
+      }
       requireIdentity(!activeMappedBindings.has(binding.id), "One source binding maps to several runtime entities.");
       activeMappedBindings.add(binding.id);
       if (activeClaim.studioSupported) mappings.push({ binding, entityId, familyPath, provenanceId });
@@ -930,10 +994,11 @@ export function verifyFastManimSourceRuntimeIdentityV1(
   if (
     (input.expected.snapshotVersion === 7 ||
       input.expected.snapshotVersion === 8 ||
-      input.expected.snapshotVersion === 9) &&
+      input.expected.snapshotVersion === 9 ||
+      input.expected.snapshotVersion === 10) &&
     input.snapshot.kind === "compiled"
   ) {
-    requireIdentity(complete, "Snapshot profiles V7 through V9 require complete source/runtime identity evidence.");
+    requireIdentity(complete, "Snapshot profiles V7 through V10 require complete source/runtime identity evidence.");
   }
   if (!complete) return null;
   requireIdentity(input.snapshot.kind === "compiled", "Complete identity evidence requires a compiled snapshot.");
@@ -945,9 +1010,10 @@ export function verifyFastManimSourceRuntimeIdentityV1(
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index] as PlainObject;
     const entity = snapshotEntities[index]!;
+    const expectedFamilyPath = input.expected.snapshotVersion === 10 ? lineJointsFamilyPathV10(entity.sceneOrder) : [];
     requireIdentity(
       Array.isArray(record.familyPath) &&
-        record.familyPath.length === 0 &&
+        JSON.stringify(record.familyPath) === JSON.stringify(expectedFamilyPath) &&
         record.entityId === entity.id &&
         record.provenanceId === entity.provenanceId,
       "Complete identity evidence does not correspond one-to-one with snapshot provenance.",
@@ -975,6 +1041,17 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     requireIdentity(
       mappings.length === 1 && mappings[0]?.binding.name === "square",
       "WarpSquare profile V9 must publish exactly one verified Square mapping.",
+    );
+  }
+  if (input.expected.snapshotVersion === 10) {
+    requireIdentity(
+      mappings.length === 4 &&
+        mappings.every(
+          (mapping, index) =>
+            mapping.binding.name === (index === 0 ? "grp" : `t${index}`) &&
+            JSON.stringify(mapping.familyPath) === JSON.stringify(lineJointsFamilyPathV10(index)),
+        ),
+      "LineJoints profile V10 must publish the exact group and three Triangle mappings.",
     );
   }
   const map = {

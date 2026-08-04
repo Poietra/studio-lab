@@ -1,0 +1,15 @@
+{
+  "combinedWireSha256": "4c2d581f7fb0e9f27b98f74f6915e670882a8a815783ca7d6b74949412c541f9",
+  "fastManimCommit": "29d21a2bd213df8ffeed0454278aa86289d190b8",
+  "fastManimTree": "d486d57ba637da1e915a5b29d6bda2d967570a54",
+  "fixtureKind": "actual-combined-producer-output",
+  "producerModule": "manim.renderer.source_runtime_identity",
+  "regeneration": "From fast-manim commit 29d21a2b, call tests.helpers.scene_snapshot.request_document for example_scenes/basic.py / LineJoints with snapshotVersion 10 and capabilities cubic-path-geometry, logical-group, shape-primitives; parse it and canonicalize export_source_runtime_identity under PYTHONHASHSEED=0.",
+  "runtimeConfigHash": "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
+  "sealedSnapshotHash": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
+  "semanticSha256": "b6ffabc679f939f5fbbd9d3265c785edb0064d327df3a94c1fedcc79efd7a8cd",
+  "snapshotDigest": "4a8c02d31f85a0876e3b88d46c648a74726171a26e551c1d0e0f95535592fd88",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  "version": 1
+}

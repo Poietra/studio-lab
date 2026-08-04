@@ -17,6 +17,7 @@ import type {
 import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
   FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
   type FastManimSnapshotProfileVersionV1,
   type FastManimSnapshotRuntimeCapabilityV1,
@@ -321,7 +322,9 @@ export function runtimeConfig(
         ? ["png-image"]
         : snapshotVersion === 9
           ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9]
-          : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+          : snapshotVersion === 10
+            ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10]
+            : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
     frame: { height: 8, width: 14.222222222222221 },
     randomSeed: 0,
     schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,
