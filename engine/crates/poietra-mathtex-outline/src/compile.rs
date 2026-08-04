@@ -1,6 +1,7 @@
 use poietra_scene_ir::FillRuleV1;
 use ratex_layout::{LayoutOptions, layout, to_display_list};
 use ratex_lexer::Lexer;
+use sha2::{Digest, Sha256};
 
 use crate::digest::{content_digest_v1, toolchain_digest_v1};
 use crate::outline::{OutlineFailureV1, extract_normalized_outline_v1};
@@ -131,43 +132,138 @@ fn validate_transport_characters(source: &str) -> Result<(), CompileFailureV1> {
 // tokens and punctuation remain unrestricted and are validated by RaTeX
 // itself. Raw non-ASCII math is excluded because the pinned pdfLaTeX template
 // rejects it.
+const MANIM_DEFAULT_SOURCE_PROFILE_DIGEST_DOMAIN_V1: &[u8] =
+    b"poietra.mathtex-outline.manim-source-profile.v1\0";
+const MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1: &str = "core-ams-v1";
 const MANIM_DEFAULT_CONTROL_SEQUENCES_V1: &[&str] = &[
+    r"\#",
+    r"\$",
+    r"\%",
+    r"\&",
+    r"\,",
+    r"\;",
     r"\\",
+    r"\Delta",
+    r"\Gamma",
+    r"\Lambda",
+    r"\Leftrightarrow",
+    r"\Omega",
+    r"\Phi",
+    r"\Psi",
+    r"\Rightarrow",
+    r"\Sigma",
+    r"\Theta",
+    r"\_",
     r"\{",
     r"\}",
     r"\alpha",
+    r"\approx",
     r"\begin",
+    r"\beta",
+    r"\cap",
     r"\cdot",
     r"\circ",
     r"\cos",
+    r"\cup",
+    r"\delta",
     r"\end",
+    r"\exists",
+    r"\forall",
     r"\frac",
     r"\gamma",
+    r"\geq",
     r"\hat",
+    r"\in",
     r"\infty",
     r"\int",
+    r"\lambda",
+    r"\leq",
     r"\left",
+    r"\lim",
+    r"\ln",
+    r"\log",
+    r"\mapsto",
+    r"\mathbb",
     r"\mathbf",
+    r"\mathrm",
     r"\mu",
     r"\nabla",
+    r"\neq",
+    r"\notin",
+    r"\omega",
     r"\oint",
+    r"\operatorname",
     r"\over",
     r"\partial",
+    r"\phi",
     r"\pi",
+    r"\prod",
+    r"\psi",
+    r"\quad",
     r"\rho",
     r"\right",
+    r"\sigma",
     r"\sin",
     r"\sqrt",
+    r"\subseteq",
     r"\sum",
     r"\tau",
     r"\text",
     r"\textbf",
+    r"\theta",
     r"\times",
     r"\to",
     r"\varepsilon",
     r"\vec",
 ];
-const MANIM_DEFAULT_ENVIRONMENTS_V1: &[&str] = &["array", "bmatrix"];
+const MANIM_DEFAULT_ENVIRONMENTS_V1: &[&str] =
+    &["aligned", "array", "bmatrix", "cases", "matrix", "pmatrix"];
+
+/// Returns a canonical digest of the executable default-Manim source profile.
+///
+/// The allowlisted control sequences and environments are sorted and deduplicated before
+/// length-framing, so source ordering does not affect the identity. This digest is kept separate
+/// from the toolchain digest until the pending font/toolchain update is integrated once.
+#[must_use]
+pub fn manim_default_source_profile_digest_v1() -> String {
+    source_profile_digest_v1(
+        MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+        MANIM_DEFAULT_CONTROL_SEQUENCES_V1,
+        MANIM_DEFAULT_ENVIRONMENTS_V1,
+    )
+}
+
+fn source_profile_digest_v1(
+    policy_revision: &str,
+    control_sequences: &[&str],
+    environments: &[&str],
+) -> String {
+    fn update_frame(hasher: &mut Sha256, value: &[u8]) {
+        hasher.update(u64::try_from(value.len()).unwrap_or(u64::MAX).to_be_bytes());
+        hasher.update(value);
+    }
+
+    fn update_set(hasher: &mut Sha256, values: &[&str]) {
+        let mut canonical = values.to_vec();
+        canonical.sort_unstable();
+        canonical.dedup();
+        hasher.update(
+            u64::try_from(canonical.len())
+                .unwrap_or(u64::MAX)
+                .to_be_bytes(),
+        );
+        for value in canonical {
+            update_frame(hasher, value.as_bytes());
+        }
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(MANIM_DEFAULT_SOURCE_PROFILE_DIGEST_DOMAIN_V1);
+    update_frame(&mut hasher, policy_revision.as_bytes());
+    update_set(&mut hasher, control_sequences);
+    update_set(&mut hasher, environments);
+    format!("{:x}", hasher.finalize())
+}
 
 fn validate_manim_default_source_profile(source: &str) -> Result<(), CompileFailureV1> {
     // Manim inserts each MathTex fragment before a same-line dvisvgm marker.
@@ -175,18 +271,20 @@ fn validate_manim_default_source_profile(source: &str) -> Result<(), CompileFail
     // both fail in the pinned default template even when RaTeX accepts them.
     // Manim already wraps MathTex in a math environment, so raw `$` delimiters
     // fail there even though RaTeX strips them as a convenience.
-    if source
-        .bytes()
-        .any(|byte| matches!(byte, b'#' | b'%' | b'$'))
-    {
+    if contains_unescaped_template_marker(source) {
         return Err(syntax_unsupported());
     }
     let mut lexer = Lexer::new(source);
+    let mut environment_stack = Vec::new();
     let mut bare_line_break_end = None;
     loop {
         let token = lexer.lex();
         if token.is_eof() {
-            return Ok(());
+            return if environment_stack.is_empty() {
+                Ok(())
+            } else {
+                Err(syntax_unsupported())
+            };
         }
         // The pinned corpus covers only a bare `\\`. LaTeX consumes an
         // adjacent `*`, while RaTeX renders it, and the two implementations
@@ -198,7 +296,13 @@ fn validate_manim_default_source_profile(source: &str) -> Result<(), CompileFail
         }
         bare_line_break_end = None;
         if matches!(token.text.as_str(), r"\begin" | r"\end") {
-            validate_manim_default_environment(&mut lexer, token.text == r"\begin")?;
+            let is_begin = token.text == r"\begin";
+            let name = validate_manim_default_environment(&mut lexer, is_begin)?;
+            if is_begin {
+                environment_stack.push(name);
+            } else if environment_stack.pop().as_deref() != Some(name.as_str()) {
+                return Err(syntax_unsupported());
+            }
         } else if !token.text.is_ascii()
             || (token.text.starts_with('\\')
                 && !MANIM_DEFAULT_CONTROL_SEQUENCES_V1.contains(&token.text.as_str()))
@@ -211,10 +315,25 @@ fn validate_manim_default_source_profile(source: &str) -> Result<(), CompileFail
     }
 }
 
+fn contains_unescaped_template_marker(source: &str) -> bool {
+    let mut preceding_backslashes = 0usize;
+    for byte in source.bytes() {
+        if byte == b'\\' {
+            preceding_backslashes += 1;
+            continue;
+        }
+        if matches!(byte, b'#' | b'%' | b'$') && preceding_backslashes.is_multiple_of(2) {
+            return true;
+        }
+        preceding_backslashes = 0;
+    }
+    false
+}
+
 fn validate_manim_default_environment(
     lexer: &mut Lexer<'_>,
     is_begin: bool,
-) -> Result<(), CompileFailureV1> {
+) -> Result<String, CompileFailureV1> {
     let open = lexer.lex();
     if open.text != "{" {
         return Err(syntax_unsupported());
@@ -239,7 +358,7 @@ fn validate_manim_default_environment(
     if is_begin && name == "array" {
         validate_manim_default_array_columns(lexer)?;
     }
-    Ok(())
+    Ok(name)
 }
 
 fn validate_manim_default_array_columns(lexer: &mut Lexer<'_>) -> Result<(), CompileFailureV1> {
@@ -285,7 +404,58 @@ fn map_outline_failure(failure: OutlineFailureV1) -> CompileFailureV1 {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
+    use serde::Deserialize;
+
     use super::*;
+
+    const MANIM_CALLSITE_CORPUS_JSON: &str =
+        include_str!("../../../../fixtures/mathtex-v1/manim-corpus.json");
+    const MANIM_SOURCE_PROFILE_JSON: &str =
+        include_str!("../../../../fixtures/mathtex-manim-parity-v1/source-profile.json");
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvidenceCorpusV1 {
+        cases: Vec<EvidenceCaseV1>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct EvidenceCaseV1 {
+        tex_parts: Vec<String>,
+    }
+
+    fn collect_evidenced_profile_tokens(
+        source: &str,
+        control_sequences: &mut BTreeSet<String>,
+        environments: &mut BTreeSet<String>,
+    ) {
+        let mut lexer = Lexer::new(source);
+        loop {
+            let token = lexer.lex();
+            if token.is_eof() {
+                return;
+            }
+            if token.text.starts_with('\\') {
+                control_sequences.insert(token.text.clone());
+            }
+            if matches!(token.text.as_str(), r"\begin" | r"\end") {
+                assert_eq!(lexer.lex().text, "{", "evidence environment must open");
+                let mut name = String::new();
+                loop {
+                    let name_token = lexer.lex();
+                    assert!(!name_token.is_eof(), "evidence environment must close");
+                    if name_token.text == "}" {
+                        break;
+                    }
+                    name.push_str(&name_token.text);
+                }
+                environments.insert(name);
+            }
+        }
+    }
 
     #[test]
     fn raw_part_boundaries_and_whitespace_are_preserved_for_digesting() {
@@ -428,6 +598,18 @@ mod tests {
     }
 
     #[test]
+    fn pinned_control_symbol_escapes_do_not_become_raw_template_markers() {
+        validate_manim_default_source_profile(r"\#\;\%\;\$\;\_\;\&")
+            .expect("pinned control-symbol escapes");
+        for source in [r"\\#", r"\\%", r"\\$", r"\\\\#"] {
+            assert!(
+                validate_manim_default_source_profile(source).is_err(),
+                "an even backslash run leaves a raw template marker: {source}"
+            );
+        }
+    }
+
+    #[test]
     fn only_bare_pinned_line_breaks_are_accepted() {
         validate_manim_default_source_profile(r"a\\b").expect("pinned bare line break");
         validate_manim_default_source_profile(r"a\\ *b")
@@ -445,6 +627,16 @@ mod tests {
             .expect("pinned ruled array columns");
         validate_manim_default_source_profile(r"\begin{bmatrix}a & b\end{bmatrix}")
             .expect("pinned bmatrix environment");
+        validate_manim_default_source_profile(r"\begin{matrix}a & b\end{matrix}")
+            .expect("pinned matrix environment");
+        validate_manim_default_source_profile(r"\begin{pmatrix}a & b\end{pmatrix}")
+            .expect("pinned pmatrix environment");
+        validate_manim_default_source_profile(
+            r"\begin{cases}x & \text{if }x>0\\-x & \text{if }x<0\end{cases}",
+        )
+        .expect("pinned cases environment");
+        validate_manim_default_source_profile(r"\begin{aligned}x&=1\\y&=2\end{aligned}")
+            .expect("pinned aligned environment");
         for source in [
             r"\begin{prooftree}\end{prooftree}",
             r"\begin{align}a=b\end{align}",
@@ -455,5 +647,117 @@ mod tests {
         ] {
             assert!(validate_manim_default_source_profile(source).is_err());
         }
+    }
+
+    #[test]
+    fn every_allowlisted_profile_token_has_checked_in_manim_evidence() {
+        let callsites: EvidenceCorpusV1 = serde_json::from_str(MANIM_CALLSITE_CORPUS_JSON)
+            .expect("Manim call-site corpus must be valid JSON");
+        let profile: EvidenceCorpusV1 = serde_json::from_str(MANIM_SOURCE_PROFILE_JSON)
+            .expect("Manim source-profile evidence must be valid JSON");
+        let mut control_sequences = BTreeSet::new();
+        let mut environments = BTreeSet::new();
+        for case in callsites.cases.into_iter().chain(profile.cases) {
+            collect_evidenced_profile_tokens(
+                &case.tex_parts.join(" "),
+                &mut control_sequences,
+                &mut environments,
+            );
+        }
+
+        let missing_controls = MANIM_DEFAULT_CONTROL_SEQUENCES_V1
+            .iter()
+            .copied()
+            .filter(|control| !control_sequences.contains(*control))
+            .collect::<Vec<_>>();
+        assert!(
+            missing_controls.is_empty(),
+            "allowlisted controls without pinned Manim evidence: {missing_controls:?}"
+        );
+        let missing_environments = MANIM_DEFAULT_ENVIRONMENTS_V1
+            .iter()
+            .copied()
+            .filter(|environment| !environments.contains(*environment))
+            .collect::<Vec<_>>();
+        assert!(
+            missing_environments.is_empty(),
+            "allowlisted environments without pinned Manim evidence: {missing_environments:?}"
+        );
+    }
+
+    #[test]
+    fn source_profile_digest_tracks_policy_controls_and_environments_canonically() {
+        let baseline = manim_default_source_profile_digest_v1();
+        assert_eq!(baseline.len(), 64);
+        assert!(baseline.bytes().all(|byte| byte.is_ascii_hexdigit()));
+
+        let mut reordered_controls = MANIM_DEFAULT_CONTROL_SEQUENCES_V1.to_vec();
+        reordered_controls.reverse();
+        let mut reordered_environments = MANIM_DEFAULT_ENVIRONMENTS_V1.to_vec();
+        reordered_environments.reverse();
+        assert_eq!(
+            baseline,
+            source_profile_digest_v1(
+                MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+                &reordered_controls,
+                &reordered_environments,
+            ),
+            "source order is not part of the canonical profile identity"
+        );
+
+        let controls_without_last =
+            &MANIM_DEFAULT_CONTROL_SEQUENCES_V1[..MANIM_DEFAULT_CONTROL_SEQUENCES_V1.len() - 1];
+        assert_ne!(
+            baseline,
+            source_profile_digest_v1(
+                MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+                controls_without_last,
+                MANIM_DEFAULT_ENVIRONMENTS_V1,
+            ),
+            "removing a control sequence must invalidate the profile identity"
+        );
+        let mut controls_with_addition = MANIM_DEFAULT_CONTROL_SEQUENCES_V1.to_vec();
+        controls_with_addition.push(r"\zeta");
+        assert_ne!(
+            baseline,
+            source_profile_digest_v1(
+                MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+                &controls_with_addition,
+                MANIM_DEFAULT_ENVIRONMENTS_V1,
+            ),
+            "adding a control sequence must invalidate the profile identity"
+        );
+
+        let environments_without_last =
+            &MANIM_DEFAULT_ENVIRONMENTS_V1[..MANIM_DEFAULT_ENVIRONMENTS_V1.len() - 1];
+        assert_ne!(
+            baseline,
+            source_profile_digest_v1(
+                MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+                MANIM_DEFAULT_CONTROL_SEQUENCES_V1,
+                environments_without_last,
+            ),
+            "removing an environment must invalidate the profile identity"
+        );
+        let mut environments_with_addition = MANIM_DEFAULT_ENVIRONMENTS_V1.to_vec();
+        environments_with_addition.push("gathered");
+        assert_ne!(
+            baseline,
+            source_profile_digest_v1(
+                MANIM_DEFAULT_SOURCE_PROFILE_REVISION_V1,
+                MANIM_DEFAULT_CONTROL_SEQUENCES_V1,
+                &environments_with_addition,
+            ),
+            "adding an environment must invalidate the profile identity"
+        );
+        assert_ne!(
+            baseline,
+            source_profile_digest_v1(
+                "core-ams-v2",
+                MANIM_DEFAULT_CONTROL_SEQUENCES_V1,
+                MANIM_DEFAULT_ENVIRONMENTS_V1,
+            ),
+            "policy revision must invalidate the profile identity"
+        );
     }
 }
