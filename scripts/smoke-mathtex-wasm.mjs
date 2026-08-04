@@ -38,12 +38,50 @@ assert.equal(corpus.version, 1);
 assert.equal(corpus.cases.length, 25);
 
 const compiledRequests = corpus.cases.map(({ texParts }) => encodeRequest(texParts));
+const sourceProfile = JSON.parse(
+  await readFile(new URL("../fixtures/mathtex-manim-parity-v1/source-profile.json", import.meta.url), "utf8"),
+);
+assert.equal(sourceProfile.schema, "poietra.mathtex-manim-source-profile");
+assert.equal(sourceProfile.version, 1);
+assert.equal(sourceProfile.profile, "core-ams");
+assert.equal(sourceProfile.cases.length, 15);
+const sourceProfileCompiledRequests = sourceProfile.cases.map(({ expectedOutcome, texParts }) => {
+  assert.equal(expectedOutcome, "latex-compile-success");
+  return encodeRequest(texParts);
+});
 const macroAmplifier = `\\def\\a#1{${"#1".repeat(300)}}\\a{${"x".repeat(250)}}`;
 assert.equal(encoder.encode(macroAmplifier).byteLength, 864);
 const macroRequests = [macroAmplifier, `\\url{${macroAmplifier}}`, `\\href{${macroAmplifier}}{x}`].map((source) =>
   encodeRequest([source]),
 );
-const sourceProfileRequests = [
+const excludedSourceProfileRequests = [
+  String.raw`\hat\\`,
+  String.raw`\hat{\\}`,
+  String.raw`\vec\\`,
+  String.raw`\vec{\\}`,
+  String.raw`\sqrt}`,
+  String.raw`\sqrt\begin{matrix}x\end{matrix}`,
+  String.raw`\sqrt&`,
+  String.raw`\sqrt{\\}`,
+  String.raw`\left x \right)`,
+  String.raw`\left( x \right y`,
+  String.raw`\left(x\\y\right)`,
+  String.raw`\begin{matrix}\left(x\\y\right)\end{matrix}`,
+  String.raw`\begin{array}{c}\left(x\\y\right)\end{array}`,
+  String.raw`\text{\begin{matrix}x\end{matrix}}`,
+  String.raw`\text{\begin{matrix}x\\y\end{matrix}}`,
+  String.raw`\textbf{\begin{matrix}x\end{matrix}}`,
+  String.raw`\textbf{\begin{matrix}x\\y\end{matrix}}`,
+  String.raw`\frac{\\}{b}`,
+  String.raw`\frac{a}{\\}`,
+  String.raw`x^}`,
+  String.raw`x_}`,
+  String.raw`x^&`,
+  String.raw`x_&`,
+  String.raw`x^\begin{matrix}x\end{matrix}`,
+  String.raw`x_\begin{matrix}x\end{matrix}`,
+  String.raw`x^\begin{matrix}x\\y\end{matrix}`,
+  String.raw`x_\begin{matrix}x\\y\end{matrix}`,
   String.raw`\htmlStyle{font-size:2em}{x}`,
   String.raw`\href{https://example.test}{x}`,
   String.raw`\url{https://example.test}`,
@@ -63,7 +101,13 @@ const sourceProfileRequests = [
   String.raw`a\\*b`,
   String.raw`a\\[1mu]b`,
 ].map((source) => encodeRequest([source]));
-const requests = [...compiledRequests, ...macroRequests, ...sourceProfileRequests, encodeRequest([])];
+const requests = [
+  ...compiledRequests,
+  ...sourceProfileCompiledRequests,
+  ...macroRequests,
+  ...excludedSourceProfileRequests,
+  encodeRequest([]),
+];
 const wasmResponses = requests.map(compileWasm);
 const nativeOutput = execFileSync(
   "cargo",
@@ -97,6 +141,16 @@ for (const [index, wasmResponse] of wasmResponses.entries()) {
 for (const [index, response] of wasmResponses.slice(0, compiledRequests.length).entries()) {
   const result = JSON.parse(decoder.decode(response));
   assert.equal(result.result.kind, "compiled", `${corpus.cases[index].id} must compile in the WASM acceptance corpus`);
+}
+for (const [index, response] of wasmResponses
+  .slice(compiledRequests.length, compiledRequests.length + sourceProfileCompiledRequests.length)
+  .entries()) {
+  const result = JSON.parse(decoder.decode(response));
+  assert.equal(
+    result.result.kind,
+    "compiled",
+    `${sourceProfile.cases[index].id} must compile in the pinned Manim source profile`,
+  );
 }
 
 function assertExactKeys(value, expected) {
@@ -157,7 +211,10 @@ for (const subpath of representative.result.path.subpaths) {
 assert.ok(segmentCount > 0 && segmentCount <= 2048);
 
 const macroFallbacks = wasmResponses
-  .slice(compiledRequests.length, compiledRequests.length + macroRequests.length)
+  .slice(
+    compiledRequests.length + sourceProfileCompiledRequests.length,
+    compiledRequests.length + sourceProfileCompiledRequests.length + macroRequests.length,
+  )
   .map((response) => JSON.parse(decoder.decode(response)));
 for (const macroFallback of macroFallbacks) {
   assertExactKeys(macroFallback, ["result", "schema", "version"]);
@@ -167,8 +224,11 @@ for (const macroFallback of macroFallbacks) {
 
 const sourceProfileFallbacks = wasmResponses
   .slice(
-    compiledRequests.length + macroRequests.length,
-    compiledRequests.length + macroRequests.length + sourceProfileRequests.length,
+    compiledRequests.length + sourceProfileCompiledRequests.length + macroRequests.length,
+    compiledRequests.length +
+      sourceProfileCompiledRequests.length +
+      macroRequests.length +
+      excludedSourceProfileRequests.length,
   )
   .map((response) => JSON.parse(decoder.decode(response)));
 for (const sourceProfileFallback of sourceProfileFallbacks) {
@@ -197,6 +257,7 @@ console.log(
     segmentCount,
     macroUnsupportedCases: macroFallbacks.length,
     macroUnsupportedCode: macroFallbacks[0].result.code,
+    sourceProfileCompiledCases: sourceProfileCompiledRequests.length,
     sourceProfileUnsupportedCases: sourceProfileFallbacks.length,
     sourceProfileUnsupportedCode: sourceProfileFallbacks[0].result.code,
     unsupportedCode: unsupported.result.code,

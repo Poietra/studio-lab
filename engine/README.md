@@ -32,10 +32,11 @@ pinned pdfLaTeX template, user-defined macros, unavailable glyphs, non-default
 paint, and geometry above the public bounds return a structured fallback. Its
 checked-in acceptance corpus contains 25 representative Manim expressions,
 including fractions, radicals, text, accents, stretchy delimiters, matrices,
-and multi-part formulas. A separate 31-call-site census pinned to a fast-manim
-commit guards the measured support
-floor (30/31; the remaining call requires a custom TeX package). Three pinned
-real-Manim SVG references separately measure normalized outline similarity:
+and multi-part formulas. A separate 15-case compile-only
+[`core-ams` evidence matrix](../docs/mathtex-source-profile.md) expands that profile only where the
+pinned default Manim template and RaTeX both succeed. A 31-call-site census pinned to a fast-manim
+commit guards the measured support floor (30/31; the remaining call requires a custom TeX package).
+Three pinned real-Manim SVG references separately measure normalized outline similarity:
 
 ```sh
 node scripts/regenerate-mathtex-manim-parity.mjs
