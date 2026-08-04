@@ -8,6 +8,7 @@ import { HttpError } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import {
   ACCOUNT_SESSION_COOKIE_NAME_V1,
+  BoundedProductionManimRuntimeCellResolverV1,
   createAccountSessionIdentityAuthenticatorV1,
   createOrganizationMembershipProductionAdmissionV1,
   type ProductionManimServer,
@@ -234,6 +235,121 @@ describe("standalone production Manim HTTP adapter", () => {
     );
   });
 
+  it("routes two authorized Organizations through server-owned runtime assignments without a restart", async () => {
+    const order: string[] = [];
+    const assignments = new Map<string, unknown>([
+      ["tenant-a", { cellId: "cell-a", generation: 1, state: "active", tenantId: "tenant-a" }],
+    ]);
+    const provisioned = new Map<string, ReturnType<typeof createRuntime>>();
+    const runtimeResolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: {
+        ready: async () => true,
+        resolve: async (tenantId) => {
+          order.push(`cell:${tenantId}`);
+          return assignments.get(tenantId) ?? null;
+        },
+      },
+      maxCells: 2,
+      provisioner: {
+        provision: async ({ tenantId }) => {
+          order.push(`provision:${tenantId}`);
+          const base = createRuntime();
+          const selected = {
+            ...base,
+            api: {
+              ...base.api,
+              projects: async () => ({
+                defaultProjectId: `${tenantId}-project`,
+                projects: [{ id: `${tenantId}-project`, kind: "managed", name: tenantId }],
+              }),
+              tenantId,
+              workspace: async (projectId?: string) => {
+                if (projectId !== undefined && projectId !== `${tenantId}-project`) {
+                  throw new HttpError("Project not found.", 404);
+                }
+                return { projectId: `${tenantId}-project`, projectName: tenantId, sources: [] };
+              },
+            } as unknown as ManimApi,
+          };
+          provisioned.set(tenantId, selected);
+          return selected;
+        },
+      },
+    });
+    const server = await startProductionManimServer({
+      admission: createOrganizationMembershipProductionAdmissionV1({
+        identities: {
+          authenticate: async ({ credentials }) => {
+            const subject = credentials.authorization?.replace("Bearer ", "");
+            return subject === "user-a" || subject === "user-b" || subject === "user-c"
+              ? { issuer: "https://identity.example", subject }
+              : null;
+          },
+          ready: async () => true,
+        },
+        memberships: {
+          close: async () => undefined,
+          ready: async () => true,
+          resolveActiveMembership: async ({ subject }, organizationId) => {
+            order.push(`membership:${organizationId}`);
+            const expected = `tenant-${subject.slice(-1)}`;
+            return organizationId === expected
+              ? {
+                  organizationId,
+                  role: "member" as const,
+                  userId: `00000000-0000-4000-8000-00000000000${subject.slice(-1).charCodeAt(0) - 96}`,
+                  version: 1n,
+                }
+              : null;
+          },
+        },
+      }),
+      config: await startConfig(),
+      runtimeResolver,
+    });
+    servers.push(server);
+
+    const tenantA = await send(server, "/api/manim/projects?runtimeCell=cell-b", {
+      headers: {
+        authorization: "Bearer user-a",
+        "x-poietra-organization-id": "tenant-a",
+        "x-poietra-runtime-cell": "cell-b",
+      },
+    });
+    expect(tenantA.status).toBe(200);
+    expect(JSON.parse(tenantA.body).defaultProjectId).toBe("tenant-a-project");
+    expect(order.indexOf("membership:tenant-a")).toBeLessThan(order.indexOf("cell:tenant-a"));
+
+    assignments.set("tenant-b", { cellId: "cell-b", generation: 1, state: "active", tenantId: "tenant-b" });
+    const [tenantAConcurrent, tenantB] = await Promise.all([
+      send(server, "/api/manim/projects", {
+        headers: { authorization: "Bearer user-a", "x-poietra-organization-id": "tenant-a" },
+      }),
+      send(server, "/api/manim/projects", {
+        headers: { authorization: "Bearer user-b", "x-poietra-organization-id": "tenant-b" },
+      }),
+    ]);
+    expect(JSON.parse(tenantAConcurrent.body).defaultProjectId).toBe("tenant-a-project");
+    expect(JSON.parse(tenantB.body).defaultProjectId).toBe("tenant-b-project");
+    expect(provisioned.size).toBe(2);
+
+    const crossTenantProject = await send(server, "/api/manim/projects/tenant-b-project/workspace", {
+      headers: { authorization: "Bearer user-a", "x-poietra-organization-id": "tenant-a" },
+    });
+    expect(crossTenantProject.status).toBe(404);
+
+    const missingAssignment = await send(server, "/api/manim/projects", {
+      headers: { authorization: "Bearer user-c", "x-poietra-organization-id": "tenant-c" },
+    });
+    expect(missingAssignment.status).toBe(503);
+    expect(JSON.parse(missingAssignment.body)).toEqual({ error: "Tenant access is temporarily unavailable." });
+
+    const forgedMembership = await send(server, "/api/manim/projects", {
+      headers: { authorization: "Bearer user-a", "x-poietra-organization-id": "tenant-b" },
+    });
+    expect(forgedMembership.status).toBe(403);
+  });
+
   it("admits a browser-native cookie request through its verified session organization", async () => {
     const resolveActiveMembership = vi.fn(async (_identity: unknown, organizationId: string) => ({
       organizationId,
@@ -286,6 +402,55 @@ describe("standalone production Manim HTTP adapter", () => {
         runtime: { ...createRuntime(), ready: undefined } as never,
       }),
     ).rejects.toThrow(/runtime adapter is incomplete/i);
+  });
+
+  it("requires exactly one pinned runtime or dynamic runtime resolver", async () => {
+    const runtime = createRuntime();
+    const runtimeResolver = {
+      acquire: async () => ({ release: () => undefined, runtime }),
+      close: async () => undefined,
+      ready: async () => true,
+    };
+    await expect(
+      startProductionManimServer({
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+        config: await startConfig(),
+      }),
+    ).rejects.toThrow(/exactly one runtime/i);
+    await expect(
+      startProductionManimServer({
+        admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+        config: await startConfig(),
+        runtime,
+        runtimeResolver,
+      }),
+    ).rejects.toThrow(/exactly one runtime/i);
+  });
+
+  it("fails closed when a custom resolver returns a runtime for another tenant", async () => {
+    const release = vi.fn();
+    const foreignRuntime = createRuntime();
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtimeResolver: {
+        acquire: async () => ({
+          release,
+          runtime: {
+            ...foreignRuntime,
+            api: { ...foreignRuntime.api, tenantId: "tenant-b" } as unknown as ManimApi,
+          },
+        }),
+        close: async () => undefined,
+        ready: async () => true,
+      },
+    });
+    servers.push(server);
+
+    const response = await send(server, "/api/manim/projects");
+    expect(response.status).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ error: "Tenant access is temporarily unavailable." });
+    expect(release).toHaveBeenCalledOnce();
   });
 
   it("rejects an editor adapter that omits the private-session methods before listening", async () => {

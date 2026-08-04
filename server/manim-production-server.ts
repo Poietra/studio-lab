@@ -12,7 +12,6 @@ import { handleEditorDocumentRequest, isEditorDocumentRequest } from "./editor-d
 import { HttpError, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import {
-  authenticateManimRequestContext,
   handleManimRequest,
   isManimBrowserProjectImportRequest,
   isManimRenderStartRequest,
@@ -20,9 +19,16 @@ import {
   isManimWorkspaceBootstrapRequest,
   type ManimApi,
 } from "./manim-render-http";
-import { isReservedLocalManimTenantId, type ManimPrincipalAuthenticator } from "./manim-request-principal";
+import { authenticateManimPrincipal, type ManimPrincipalAuthenticator } from "./manim-request-principal";
 import { ManimTenantRegistry } from "./manim-tenant-registry";
-import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
+import {
+  assertProductionManimRuntimeCellLeaseV1,
+  assertProductionManimRuntimeCellResolverV1,
+  createPinnedProductionManimRuntimeCellResolverV1,
+  type ProductionManimRuntimeAdapterV1,
+  type ProductionManimRuntimeCellLeaseV1,
+  type ProductionManimRuntimeCellResolverV1,
+} from "./production-runtime-cell";
 
 export {
   ACCOUNT_SESSION_COOKIE_NAME_V1,
@@ -39,7 +45,9 @@ export type {
   ResolvedOrganizationMembershipV1,
 } from "./accounts/organization-membership-repository";
 export {
+  createDurablePostgresS3ProductionRuntimeCellProvisionerV1,
   createDurablePostgresS3ProductionRuntimeV1,
+  type DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1,
   type DurablePostgresS3ProductionRuntimeOptionsV1,
 } from "./durable-manim-production-composition";
 export {
@@ -47,6 +55,21 @@ export {
   createDurableProductionManimRuntimeAdapterV1,
   DurableManimRuntimeV1,
 } from "./durable-manim-runtime";
+export type {
+  ProductionManimRuntimeAdapterV1,
+  ProductionManimRuntimeCellLeaseV1,
+  ProductionManimRuntimeCellProvisionerV1,
+  ProductionManimRuntimeCellResolverV1,
+  ProductionRuntimeCellAssignmentSourceV1,
+  ProductionRuntimeCellAssignmentV1,
+  ProductionRuntimeReadinessV1,
+} from "./production-runtime-cell";
+export {
+  assertProductionManimRuntimeCellLeaseV1,
+  BoundedProductionManimRuntimeCellResolverV1,
+  createPinnedProductionManimRuntimeCellResolverV1,
+  productionRuntimeCellIdSchemaV1,
+} from "./production-runtime-cell";
 export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
@@ -182,34 +205,6 @@ export type ProductionEditSuggestionAdapterV1 = Readonly<{
   admission?: EditSuggestionAdmissionController;
   generationTimeoutMs?: number;
   generator: EditSuggestionGenerator;
-}>;
-
-export type ProductionRuntimeReadinessV1 =
-  | Readonly<{ ready: false }>
-  | Readonly<{
-      executionBoundary: "adapter-attests-external-sandbox";
-      ready: true;
-      storageBoundary: "shared-durable";
-      tenantBoundary: "server-owned-tenant-key";
-    }>;
-
-/**
- * This in-process adapter is trusted code. Its readiness result is an
- * operational assertion made after the adapter verifies its external sandbox;
- * it is not proof created or verified by this HTTP server. The current
- * host-spawn ManimProjectRegistry must not implement this contract (#117).
- */
-export type ProductionManimRuntimeAdapterV1 = Readonly<{
-  api: ManimApi;
-  close: () => Promise<void>;
-  editorDocuments?: EditorDocumentRepositoryV1;
-  editorReady?: (signal: AbortSignal) => Promise<boolean>;
-  /** Covers fresh sandbox attestation plus PostgreSQL/S3 durable probes. */
-  ready: (signal: AbortSignal) => Promise<ProductionRuntimeReadinessV1>;
-  /** Covers the exact source, sandbox, session, and media dependencies required to start a render. */
-  renderReady: (signal: AbortSignal) => Promise<boolean>;
-  /** Covers the durable source workspace required to serve the editor shell. */
-  workspaceReady: (signal: AbortSignal) => Promise<boolean>;
 }>;
 
 export type ProductionManimServer = Readonly<{
@@ -391,36 +386,18 @@ export async function startProductionManimServer(
     config: unknown;
     editSuggestions?: ProductionEditSuggestionAdapterV1;
     logger?: StructuredLogger;
-    runtime: ProductionManimRuntimeAdapterV1;
+    /** Migration/rollback path for a deployment pinned to one Organization. */
+    runtime?: ProductionManimRuntimeAdapterV1;
+    /** Server-owned dynamic Organization-to-cell routing path. */
+    runtimeResolver?: ProductionManimRuntimeCellResolverV1;
   }>,
 ): Promise<ProductionManimServer> {
   const config = parseProductionManimServerConfig(options.config);
-  if (
-    typeof options.runtime !== "object" ||
-    options.runtime === null ||
-    typeof options.runtime.api !== "object" ||
-    options.runtime.api === null ||
-    typeof options.runtime.ready !== "function" ||
-    typeof options.runtime.renderReady !== "function" ||
-    typeof options.runtime.workspaceReady !== "function" ||
-    typeof options.runtime.close !== "function"
-  ) {
-    throw new TypeError("Production Manim runtime adapter is incomplete.");
+  if ((options.runtime === undefined) === (options.runtimeResolver === undefined)) {
+    throw new TypeError("Production server requires exactly one runtime or runtime cell resolver.");
   }
-  if (
-    (options.runtime.editorDocuments === undefined) !== (options.runtime.editorReady === undefined) ||
-    (options.runtime.editorDocuments !== undefined &&
-      (typeof options.runtime.editorDocuments !== "object" ||
-        options.runtime.editorDocuments === null ||
-        typeof options.runtime.editorDocuments.openDocument !== "function" ||
-        typeof options.runtime.editorDocuments.commitMutation !== "function" ||
-        typeof options.runtime.editorDocuments.putSessionSnapshot !== "function" ||
-        typeof options.runtime.editorDocuments.readEventTail !== "function" ||
-        typeof options.runtime.editorDocuments.readSessionSnapshot !== "function" ||
-        typeof options.runtime.editorReady !== "function"))
-  ) {
-    throw new TypeError("Production editor document adapter is incomplete.");
-  }
+  const runtimeResolver = options.runtimeResolver ?? createPinnedProductionManimRuntimeCellResolverV1(options.runtime!);
+  assertProductionManimRuntimeCellResolverV1(runtimeResolver);
   if (
     typeof options.admission !== "object" ||
     options.admission === null ||
@@ -442,12 +419,6 @@ export async function startProductionManimServer(
   ) {
     throw new TypeError("Production edit-suggestion adapter is incomplete.");
   }
-  if (isReservedLocalManimTenantId((options.runtime.api as Readonly<{ tenantId?: unknown }>).tenantId)) {
-    throw new TypeError("Production runtime tenant ID must not use a reserved local identity.");
-  }
-  if (options.runtime.api.storageBoundary?.kind !== "shared-durable") {
-    throw new TypeError("Production runtime storage must use a tenant-keyed shared durable boundary.");
-  }
   const logger = options.logger ?? nullLogger;
   const editSuggestionHandler = options.editSuggestions
     ? createEditSuggestionRequestHandler({
@@ -457,14 +428,13 @@ export async function startProductionManimServer(
         logger: logger.child({ component: "edit-suggestions-api" }),
       })
     : null;
-  const tenants = new ManimTenantRegistry<ManimApi>([options.runtime.api]);
   const trustedProxyAddresses = new Set(config.trustedProxyAddresses);
   const activeRequests = new Set<AbortController>();
   const activeTasks = new Set<Promise<void>>();
   const activeRuntimeTasks = new Set<Promise<unknown>>();
   let lifecycle: "accepting" | "draining" | "closed" = "accepting";
   let admissionCloseRequest: Promise<void> | null = null;
-  let runtimeCloseRequest: Promise<void> | null = null;
+  let runtimeResolverCloseRequest: Promise<void> | null = null;
 
   const trackRuntimeTask = <T>(operation: () => Promise<T>) => {
     const task = Promise.resolve().then(operation);
@@ -475,9 +445,9 @@ export async function startProductionManimServer(
     );
     return task;
   };
-  const closeRuntime = () => {
-    runtimeCloseRequest ??= Promise.resolve().then(() => options.runtime.close());
-    return runtimeCloseRequest;
+  const closeRuntimeResolver = () => {
+    runtimeResolverCloseRequest ??= Promise.resolve().then(() => runtimeResolver.close());
+    return runtimeResolverCloseRequest;
   };
   const closeAdmission = () => {
     admissionCloseRequest ??= options.admission.close
@@ -486,7 +456,7 @@ export async function startProductionManimServer(
     return admissionCloseRequest;
   };
   const closeOwnedAdapters = async () => {
-    const results = await Promise.allSettled([closeAdmission(), closeRuntime()]);
+    const results = await Promise.allSettled([closeAdmission(), closeRuntimeResolver()]);
     const errors = results.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
     if (errors.length > 0) throw new AggregateError(errors, "Production adapter cleanup failed.");
   };
@@ -506,10 +476,25 @@ export async function startProductionManimServer(
     }
   };
 
-  const runtimeIsReady = async (signal: AbortSignal) => {
+  const runtimeResolverIsReady = async (signal: AbortSignal) => {
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => runtimeResolver.ready(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.runtime_resolver_readiness_probe_failed");
+      return false;
+    }
+  };
+
+  const runtimeIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
     try {
       const runtimeReady = await waitForProbe(
-        (probeSignal) => trackRuntimeTask(() => options.runtime.ready(probeSignal)),
+        (probeSignal) => trackRuntimeTask(() => runtime.ready(probeSignal)),
         signal,
         config.limits.readinessTimeoutMs,
       );
@@ -526,11 +511,11 @@ export async function startProductionManimServer(
     }
   };
 
-  const runtimeWorkspaceIsReady = async (signal: AbortSignal) => {
+  const runtimeWorkspaceIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
     try {
       return (
         (await waitForProbe(
-          (probeSignal) => trackRuntimeTask(() => options.runtime.workspaceReady(probeSignal)),
+          (probeSignal) => trackRuntimeTask(() => runtime.workspaceReady(probeSignal)),
           signal,
           config.limits.readinessTimeoutMs,
         )) === true
@@ -541,11 +526,11 @@ export async function startProductionManimServer(
     }
   };
 
-  const runtimeRenderIsReady = async (signal: AbortSignal) => {
+  const runtimeRenderIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
     try {
       return (
         (await waitForProbe(
-          (probeSignal) => trackRuntimeTask(() => options.runtime.renderReady(probeSignal)),
+          (probeSignal) => trackRuntimeTask(() => runtime.renderReady(probeSignal)),
           signal,
           config.limits.readinessTimeoutMs,
         )) === true
@@ -556,12 +541,12 @@ export async function startProductionManimServer(
     }
   };
 
-  const runtimeEditorIsReady = async (signal: AbortSignal) => {
-    if (!options.runtime.editorReady) return false;
+  const runtimeEditorIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
+    if (!runtime.editorReady) return false;
     try {
       return (
         (await waitForProbe(
-          (probeSignal) => trackRuntimeTask(() => options.runtime.editorReady!(probeSignal)),
+          (probeSignal) => trackRuntimeTask(() => runtime.editorReady!(probeSignal)),
           signal,
           config.limits.readinessTimeoutMs,
         )) === true
@@ -573,12 +558,11 @@ export async function startProductionManimServer(
   };
 
   const dependenciesReady = async (signal: AbortSignal) => {
-    const [admissionReady, workspaceReady, editorReady] = await Promise.all([
+    const [admissionReady, resolverReady] = await Promise.all([
       admissionIsReady(signal),
-      runtimeWorkspaceIsReady(signal),
-      options.runtime.editorReady ? runtimeEditorIsReady(signal) : Promise.resolve(true),
+      runtimeResolverIsReady(signal),
     ]);
-    return admissionReady && workspaceReady && editorReady;
+    return admissionReady && resolverReady;
   };
 
   const serve = async (request: IncomingMessage, response: ServerResponse) => {
@@ -603,6 +587,7 @@ export async function startProductionManimServer(
     };
     armHandlerTimeout(config.limits.handlerTimeoutMs);
     let accessBoundary: "authentication" | "tenant" | null = null;
+    let runtimeLease: ProductionManimRuntimeCellLeaseV1 | null = null;
 
     try {
       const transport = validateTransportRequest(request, config, trustedProxyAddresses);
@@ -643,9 +628,9 @@ export async function startProductionManimServer(
         throw new TransportError("The organization selector must be a single header value.", 400);
       }
       const requestedOrganizationHeader = requestedOrganizationHeaders?.[0];
-      const context = await raceWithSignal(
+      const principal = await raceWithSignal(
         () =>
-          authenticateManimRequestContext(
+          authenticateManimPrincipal(
             options.admission,
             {
               credentials: {
@@ -665,14 +650,43 @@ export async function startProductionManimServer(
                 ? {}
                 : { requestedOrganizationId: requestedOrganizationHeader }),
             },
-            tenants,
             controller.signal,
           ),
         controller.signal,
       );
-      if (context === ABORTED || controller.signal.aborted) return;
+      if (principal === ABORTED || controller.signal.aborted) return;
       if (lifecycle !== "accepting") throw new TransportError("Production service is draining.", 503);
       accessBoundary = "tenant";
+      const resolvedLease = await raceWithSignal(
+        () =>
+          trackRuntimeTask(async () => {
+            const acquired = await runtimeResolver.acquire(principal, controller.signal);
+            try {
+              assertProductionManimRuntimeCellLeaseV1(acquired, principal.tenantId);
+            } catch {
+              try {
+                acquired?.release?.();
+              } catch {
+                // The resolver owns final cleanup; HTTP still fails closed.
+              }
+              throw new HttpError("Tenant runtime cell is temporarily unavailable.", 503);
+            }
+            if (controller.signal.aborted || lifecycle !== "accepting") {
+              acquired.release();
+              controller.signal.throwIfAborted();
+              throw new TransportError("Production service is draining.", 503);
+            }
+            return acquired;
+          }),
+        controller.signal,
+      );
+      if (resolvedLease === ABORTED || controller.signal.aborted) return;
+      runtimeLease = resolvedLease;
+      const runtime = runtimeLease.runtime;
+      const context = {
+        principal,
+        tenants: new ManimTenantRegistry<ManimApi>([runtime.api]),
+      };
       context.tenants.forPrincipal(context.principal);
       accessBoundary = null;
       if (isEditSuggestionRequest && editSuggestionHandler) {
@@ -685,12 +699,12 @@ export async function startProductionManimServer(
         return;
       }
       if (isEditorRequest) {
-        if (!options.runtime.editorDocuments || !options.runtime.editorReady) {
+        if (!runtime.editorDocuments || !runtime.editorReady) {
           throw new TransportError("Production editor storage is not configured.", 503);
         }
         const [workspaceReady, editorReady] = await Promise.all([
-          runtimeWorkspaceIsReady(controller.signal),
-          runtimeEditorIsReady(controller.signal),
+          runtimeWorkspaceIsReady(runtime, controller.signal),
+          runtimeEditorIsReady(runtime, controller.signal),
         ]);
         if (!workspaceReady || !editorReady) {
           throw new TransportError("Production editor storage is not ready.", 503);
@@ -700,7 +714,7 @@ export async function startProductionManimServer(
         await raceWithSignal(
           () =>
             trackRuntimeTask(() =>
-              handleEditorDocumentRequest(options.runtime.editorDocuments!, context.principal, request, response, {
+              handleEditorDocumentRequest(runtime.editorDocuments!, context.principal, request, response, {
                 expectedMutationOrigin: config.publicOrigin,
                 maxJsonBodyBytes: config.limits.maxBodyBytes,
                 requestSignal: controller.signal,
@@ -717,10 +731,10 @@ export async function startProductionManimServer(
       const requestRuntimeReady =
         isManimWorkspaceBootstrapRequest(request.method, pathname) ||
         isManimBrowserProjectImportRequest(request.method, pathname)
-          ? await runtimeWorkspaceIsReady(controller.signal)
+          ? await runtimeWorkspaceIsReady(runtime, controller.signal)
           : isManimRenderStartRequest(request.method, pathname)
-            ? await runtimeRenderIsReady(controller.signal)
-            : await runtimeIsReady(controller.signal);
+            ? await runtimeRenderIsReady(runtime, controller.signal)
+            : await runtimeIsReady(runtime, controller.signal);
       if (!requestRuntimeReady) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
@@ -753,6 +767,8 @@ export async function startProductionManimServer(
           logger.warn("production.authentication_rejected");
         } else if (accessBoundary === "tenant" && error.status === 403) {
           logger.warn("production.foreign_tenant_rejected");
+        } else if (accessBoundary === "tenant" && error.status === 503) {
+          logger.warn("production.tenant_runtime_unavailable");
         }
         request.resume();
         response.setHeader("connection", "close");
@@ -766,6 +782,7 @@ export async function startProductionManimServer(
       response.setHeader("connection", "close");
       sendJson(response, 500, { error: "Production request failed." });
     } finally {
+      runtimeLease?.release();
       if (handlerTimeout) clearTimeout(handlerTimeout);
       response.removeListener("close", abortOnClose);
       activeRequests.delete(controller);

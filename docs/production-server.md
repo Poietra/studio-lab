@@ -2,29 +2,35 @@
 
 `pnpm build:server` emits `dist-server/manim-production-server.mjs`. The module
 exports `startProductionManimServer`; it does not start a listener when imported.
-The deploying service must supply both of these adapters:
+The deploying service must supply request admission and exactly one runtime
+selection path:
 
 - `ProductionRequestAdmission`, whose `ready` probe covers the authentication
   provider and whose `authenticate` method returns server-verified principal
   claims for authenticated API requests.
-- `ProductionManimRuntimeAdapterV1`, whose `workspaceReady` probe covers the
-  durable source workspace and whose `ready` probe additionally covers media,
-  snapshots, and a fresh external-sandbox attestation.
+- `ProductionManimRuntimeCellResolverV1`, which resolves a branded, verified
+  Organization principal through a durable server-owned assignment and returns
+  a tenant-fixed `ProductionManimRuntimeAdapterV1` lease. During migration or
+  rollback, `runtime` supplies one pinned adapter and is wrapped by the same
+  resolver contract.
 
 There is intentionally no environment-only or unauthenticated CLI. The current
 `ManimProjectRegistry` launches Manim on the host and is therefore not a
 production runtime adapter. The injected in-process adapter is trusted code:
 its structured readiness result is an operational assertion after it verifies
 the external sandbox, not an isolation proof verified by this HTTP layer. The
-current runtime contract is limited to one deployment-isolated tenant. The shipped
-source-only render adapter and its trusted durable-media publisher use the
+shipped source-only render adapter and its trusted durable-media publisher use the
 separate broker described in
-[production-render-sandbox.md](./production-render-sandbox.md). Issue #298 owns
-multi-organization account selection and edge-to-cell routing, while
-digest-bounded input assets remain
-follow-up work. The load-balancer readiness probe depends on authentication and
-the durable source workspace, so a render outage can still be reported inside
-Studio. Render, snapshot, and media routes remain unavailable unless their
+[production-render-sandbox.md](./production-render-sandbox.md). The dynamic
+resolver validates an opaque assignment on every acquire, bounds constructed
+cells, and provisions only from deployment-owned database, object-store, and
+sandbox configuration. The untrusted Organization selector is consumed only by
+membership admission; it is never a runtime URL, cell ID, or provisioner input.
+Digest-bounded input assets remain follow-up work. The load-balancer readiness
+probe covers admission and the resolver control plane without enumerating or
+provisioning every Organization. Each authenticated request separately checks
+the selected cell's exact workspace, editor, render, or full boundary. Render,
+snapshot, and media routes remain unavailable unless their
 durable stores, staging-root correlation, and external sandbox brokers pass the
 full runtime probe.
 
@@ -81,7 +87,7 @@ client authentication method, and client credentials are
 trusted startup configuration; the redirect URI is always derived from
 `publicOrigin`, and the post-login redirect is fixed to `/`. The OIDC routes are
 exposed only through the account-control-plane Fetch handler; Vite, Electron,
-and the single-tenant Node render server do not host them. The account bootstrap
+and the Node render server do not host them. The account bootstrap
 reads the opaque cookie through a separate request-scoped PostgreSQL adapter,
 returns only the user display identity plus bounded active organization
 memberships, and does not consult OIDC discovery, its rate limits, or
@@ -227,23 +233,49 @@ logs, traces, request-body logging, and raw Tail/Logpush disabled for this
 deployment. The Stripe key, webhook secret, signature header, and webhook body
 must never enter application logs or error responses.
 
-Each server instance remains a single-tenant cell: its runtime API declares one
-server-owned tenant ID and at least one bounded absolute storage root. A
-verified principal must resolve to that same tenant. Foreign tenants receive a
-generic 403, and the development-only `studio-local` and `local-*` identities
-are rejected by both production authentication and runtime startup. Existing-
-folder workspace registration is disabled in production so a request cannot
-attach another tenant's host path. Authentication readiness and principal
-verification run
-before full runtime readiness, preventing unauthenticated API traffic from
-probing the render/storage adapter. The public `/readyz` probe checks admission
-and durable workspace readiness; authenticated project/workspace GETs can then
-surface a bounded render-capability outage while mutations and execution routes
-continue to require full readiness. The shipped production composition stores
-tenant-scoped source, session, snapshot, video, and thumbnail state in
-PostgreSQL plus a private, versioned S3-compatible bucket. Filesystem-backed
-catalogs and process-local publication stores remain confined to the
-Vite/Electron development paths.
+## Runtime cell routing
+
+Every runtime API remains tenant-fixed, but one server may now own a bounded
+pool of those cells. `BoundedProductionManimRuntimeCellResolverV1` accepts only
+the branded principal returned after membership authorization. It passes that
+principal's tenant ID to `ProductionRuntimeCellAssignmentSourceV1`, validates
+the returned tenant, opaque cell ID, monotonic generation, and active state,
+then calls `ProductionManimRuntimeCellProvisionerV1`. Request headers, URL
+paths, project IDs, query parameters, and browser state are unavailable to both
+contracts.
+
+The first shipped topology is a shared multi-tenant process with a bounded
+tenant-fixed runtime cache. `createDurablePostgresS3ProductionRuntimeCellProvisionerV1`
+reuses deployment-owned PostgreSQL, private object-storage, and sandbox
+configuration while injecting only the validated assignment tenant ID. It does
+not select regions, runtime URLs, credentials, or storage endpoints. Assignment
+lookup runs on every acquire; a higher generation constructs a replacement and
+drains the old cell after its last request lease. Missing, disabled, malformed,
+stale, cross-tenant, conflicting, or over-capacity assignments return the same
+bounded tenant-unavailable response. Idle cells are evicted least-recently used;
+an active cell is never torn down to admit another request.
+
+Existing single-cell deployments pass `runtime` as before. The server wraps it
+with `createPinnedProductionManimRuntimeCellResolverV1`, preserving the former
+foreign-tenant 403 and readiness behavior. To migrate, first create a durable
+generation-1 assignment for the existing Organization, deploy the dynamic
+resolver with a capacity of at least two, verify two Organization principals
+through one origin, and only then add further assignments. Rollback stops new
+assignments, drains dynamic leases, and redeploys the pinned `runtime`; it must
+not rewrite tenant IDs or redirect requests with a client-visible cell route.
+
+The development-only `studio-local` and `local-*` identities are rejected by
+both production authentication and every provisioned runtime. Existing-folder
+workspace registration is disabled in production so a request cannot attach
+another tenant's host path. Authentication and membership verification run
+before cell resolution, preventing unauthenticated traffic from probing the
+assignment or render/storage adapter. The public `/readyz` probe checks
+admission and resolver control-plane readiness; authenticated requests then
+probe only their selected cell. The shipped production composition stores
+tenant-scoped source, editor, render session, snapshot, video, and thumbnail
+state in PostgreSQL plus private object storage. Filesystem-backed catalogs and
+process-local publication stores remain confined to Vite/Electron development
+paths.
 
 ## Billing-entitlement rollout
 
