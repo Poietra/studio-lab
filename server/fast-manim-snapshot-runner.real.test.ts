@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
   deriveMixedDynamicMathTexV7TransformPlan,
+  deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotBundleV1,
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
@@ -23,6 +24,7 @@ import {
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   fastManimSnapshotSceneProvenanceIdV1,
+  parseVerifiedFastManimSnapshotResultV1,
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
@@ -31,7 +33,7 @@ import {
   FastManimSnapshotRunner,
 } from "./fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "./manim-render-config";
-import { ManimSourceStore } from "./manim-source-store";
+import { type ManimSourceReadHooks, ManimSourceStore } from "./manim-source-store";
 
 /**
  * Real integration harness for the upstream fast-manim exporter
@@ -147,6 +149,7 @@ function createRealRunner(
   snapshotVersion: 1 | 2 | 4 | 7 | 8 | 9 = 1,
   pngProvider?: Readonly<{ readVerified: () => Promise<{ bytes: Uint8Array; versionToken: string }> }>,
   publicationStore = new FastManimSnapshotPublicationStore(),
+  sourceReadHooks?: ManimSourceReadHooks,
 ) {
   if (!producerCommand) throw new Error("Unreachable: the real producer command gate failed.");
   const backend = new LocalProcessFastManimSandboxBackendV1({
@@ -165,6 +168,7 @@ function createRealRunner(
     ...(pngProvider === undefined ? {} : { pngProvider }),
     publicationStore,
     snapshotVersion,
+    sourceReadHooks,
     tenantId: "test-tenant",
     timeoutMs: 120_000,
   });
@@ -237,6 +241,85 @@ describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", (
       expect(fetched.snapshot).toEqual(view.snapshot);
       expect(fetched.sourceRuntimeIdentity).toEqual(view.sourceRuntimeIdentity);
     }
+  });
+
+  it("preflights edited candidate bytes through the real producer without publishing project source", {
+    timeout: 300_000,
+  }, async () => {
+    const projectRoot = fileURLToPath(new URL("../fixtures/real-preview-harness/", import.meta.url));
+    const sourcePath = "example_scenes/basic.py";
+    const official = await readFile(join(projectRoot, sourcePath), "utf8");
+    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
+    const sourceText = official.replace(
+      anchor,
+      `${anchor}        square.move_to((1.25, -0.5, 0))\n        square.scale(1.5)\n`,
+    );
+    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    expect(sourceHash).not.toBe(FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9);
+
+    const runner = createRealRunner(projectRoot, 9, undefined, new FastManimSnapshotPublicationStore(), {
+      beforeOpen: () => {
+        throw new Error("Candidate preflight must not read project source.");
+      },
+    });
+    const view = await runner.runCandidateUnpublished(sourceText, {
+      projectId: "default",
+      requestId: "real-snapshot-request-v9-edited-candidate",
+      sceneName: "WarpSquare",
+      sourcePath,
+    });
+    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
+      throw new Error(`Expected a verified edited V9 candidate, got ${JSON.stringify(view)}`);
+    }
+    expect(view.snapshot.sourceHash).toBe(sourceHash);
+    const scene = (view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0]).scene;
+    const channel = scene.animationChannels[0];
+    if (channel?.kind !== "path-morph") throw new Error("Expected the edited candidate path morph.");
+    const start = channel.keyframes[0]!.value.subpaths[0]!.start;
+    const target = channel.keyframes[1]!.value.subpaths[0]!.start;
+    expect(start).toEqual({ x: 2.75, y: 1 });
+    const magnitude = Math.exp(start.x);
+    expect(target).toEqual({
+      x: expect.closeTo(magnitude * Math.cos(start.y), 12),
+      y: expect.closeTo(magnitude * Math.sin(start.y), 12),
+    });
+    expect(view.sourceRuntimeIdentity?.mappings).toEqual([
+      expect.objectContaining({ binding: expect.objectContaining({ name: "square", ordinal: 1 }), familyPath: [] }),
+    ]);
+    const expected = {
+      frame: REAL_FRAME,
+      projectId: "default",
+      requestId: "real-snapshot-request-v9-edited-candidate",
+      runtimeConfigHash: view.runtimeConfigHash,
+      sceneId: view.snapshot.sceneId,
+      sceneName: "WarpSquare",
+      snapshotVersion: 9,
+      sourceHash,
+      sourcePath,
+      warpSquareV9Plan: deriveWarpSquareV9TransformPlan(sourceText, "WarpSquare"),
+    } as const;
+    await expect(parseVerifiedFastManimSnapshotResultV1(view.snapshot, expected)).resolves.toEqual(view.snapshot);
+
+    const tampered = structuredClone(view.snapshot) as typeof view.snapshot & {
+      bundle: {
+        scene: {
+          animationChannels: Array<{
+            keyframes: Array<{ value: { subpaths: Array<{ start: { x: number } }> } }>;
+          }>;
+        };
+      };
+    };
+    tampered.bundle.scene.animationChannels[0]!.keyframes[1]!.value.subpaths[0]!.start.x += 0.001;
+    await expect(parseVerifiedFastManimSnapshotResultV1(tampered, expected)).rejects.toMatchObject({
+      code: "profile-violation",
+    });
+    await expect(
+      parseVerifiedFastManimSnapshotResultV1(view.snapshot, {
+        ...expected,
+        warpSquareV9Plan: { ...expected.warpSquareV9Plan, scale: 1.6 },
+      }),
+    ).rejects.toMatchObject({ code: "profile-violation" });
+    await expect(runner.snapshot({ sceneName: "WarpSquare", sourcePath })).rejects.toMatchObject({ status: 404 });
   });
 });
 
