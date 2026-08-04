@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import type { FastManimSandboxBackendV1 } from "./fast-manim-sandbox-backend";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10,
@@ -13,11 +14,17 @@ import {
   parseVerifiedFastManimSnapshotResultV1,
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
+import {
+  createFastManimSnapshotSelectedProfileDigestV1,
+  fastManimSnapshotProfileSelectionRequestV1Schema,
+} from "./fast-manim-snapshot-profile-selection";
+import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { parseFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
 import {
   assertFastManimSnapshotIdentityAuthorityV1,
   verifyFastManimSourceRuntimeIdentityV1,
 } from "./fast-manim-source-runtime-identity";
+import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
 
 const SOURCE_PATH = "example_scenes/basic.py";
 
@@ -66,7 +73,7 @@ async function loadProducerFixture() {
     sourceHash: FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10,
     sourcePath: SOURCE_PATH,
   } as const satisfies ExpectedFastManimSnapshotCorrelationV1;
-  return { combined, envelope, expected, manifest, producer, sourceText };
+  return { combined, envelope, expected, manifest, producer, sourceText, wire };
 }
 
 describe("fast-manim LineJoints snapshot profile V10", () => {
@@ -116,6 +123,113 @@ describe("fast-manim LineJoints snapshot profile V10", () => {
       { binding: { name: "t3", ordinal: 3 }, entityId: `${expected.sceneId}/entity:3`, familyPath: [2] },
     ]);
     expect(() => assertFastManimSnapshotIdentityAuthorityV1(sealed, identity)).not.toThrow();
+  });
+
+  it("auto-selects V10 once, seals it, and reads the same publication by runtime identity", async () => {
+    const { manifest, sourceText, wire } = await loadProducerFixture();
+    let starts = 0;
+    const backend: FastManimSandboxBackendV1 = {
+      async close() {},
+      start(request, context) {
+        starts += 1;
+        const selectionRequest = fastManimSnapshotProfileSelectionRequestV1Schema.parse(
+          JSON.parse(Buffer.from(request.copyProducerRequestBytes()).toString("utf8")),
+        );
+        const selected = selectionRequest.policy.candidates.find(({ snapshotVersion }) => snapshotVersion === 10);
+        if (!selected) throw new Error("AUTO did not offer the exact LineJoints V10 profile.");
+        expect(selected.runtimeConfigHash).toBe("b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec");
+        const producerDocumentBytes = Buffer.from(wire, "utf8");
+        const resultBytes = Buffer.from(
+          `${canonicalJsonV1({
+            kind: "selected",
+            policyHash: selectionRequest.policyHash,
+            producerDocumentBase64: producerDocumentBytes.toString("base64"),
+            producerDocumentDigest: createHash("sha256").update(producerDocumentBytes).digest("hex"),
+            projectId: selectionRequest.projectId,
+            requestId: selectionRequest.requestId,
+            sceneId: selectionRequest.sceneId,
+            sceneName: selectionRequest.sceneName,
+            schema: "poietra.fast-manim-snapshot-profile-selection-result",
+            selected: {
+              runtimeConfigHash: selected.runtimeConfigHash,
+              snapshotVersion: selected.snapshotVersion,
+            },
+            selectionDigest: createFastManimSnapshotSelectedProfileDigestV1(selectionRequest, selected),
+            sourceHash: selectionRequest.sourceHash,
+            sourcePath: selectionRequest.sourcePath,
+            version: 1,
+          })}\n`,
+          "utf8",
+        );
+        return {
+          abort() {},
+          result: Promise.resolve({
+            attestationDigest: context.attestationDigest,
+            kind: "ok" as const,
+            requestDigest: request.requestDigest,
+            resultBytes: Uint8Array.from(resultBytes),
+          }),
+        };
+      },
+      async status() {
+        return localSandboxReadyStatus();
+      },
+    };
+    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    const runner = new FastManimSnapshotRunner({
+      backend,
+      deployment: "test",
+      frame: { height: 8, width: 14.222222222222221 },
+      projectId: "demo",
+      sourceProvider: {
+        async readVerified(sourcePath) {
+          expect(sourcePath).toBe(SOURCE_PATH);
+          return { hash: sourceHash, source: sourceText, versionToken: sourceHash };
+        },
+      },
+      tenantId: "test-tenant",
+    });
+
+    try {
+      const published = await runner.run({
+        projectId: "demo",
+        requestId: "req-1",
+        sceneName: "LineJoints",
+        sourcePath: SOURCE_PATH,
+      });
+      expect(starts).toBe(1);
+      expect(published).toMatchObject({
+        revision: 1,
+        runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
+        status: "verified",
+      });
+      if (published.status !== "verified" || published.snapshot.kind !== "compiled") {
+        throw new Error("Expected one verified AUTO-selected V10 snapshot.");
+      }
+      expect(published.snapshot.snapshotHash).toBe(manifest.sealedSnapshotHash);
+      expect(
+        (published.snapshot.bundle as { scene: { source: { snapshotVersion: number } } }).scene.source.snapshotVersion,
+      ).toBe(10);
+      expect(published.sourceRuntimeIdentity?.mappings).toHaveLength(4);
+
+      await expect(
+        runner.snapshot({
+          runtimeConfigHash: published.runtimeConfigHash,
+          sceneName: "LineJoints",
+          sourcePath: SOURCE_PATH,
+        }),
+      ).resolves.toEqual(published);
+      expect(starts).toBe(1);
+      await expect(
+        runner.snapshot({
+          runtimeConfigHash: "f".repeat(64),
+          sceneName: "LineJoints",
+          sourcePath: SOURCE_PATH,
+        }),
+      ).rejects.toMatchObject({ status: 404 });
+    } finally {
+      await runner.close();
+    }
   });
 
   it.each([

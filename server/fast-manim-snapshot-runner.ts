@@ -679,7 +679,8 @@ export class FastManimSnapshotRunner {
     return fastManimSnapshotRuntimeConfigForProfileV1(
       snapshotVersion,
       this.frame,
-      this.snapshotVersion === undefined && (snapshotVersion === 4 || snapshotVersion === 8 || snapshotVersion === 9)
+      this.snapshotVersion === undefined &&
+        (snapshotVersion === 4 || snapshotVersion === 8 || snapshotVersion === 9 || snapshotVersion === 10)
         ? undefined
         : this.capabilities,
     );
