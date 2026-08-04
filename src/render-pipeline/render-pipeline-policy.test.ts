@@ -113,9 +113,9 @@ function policy(
 }
 
 describe("render pipeline lifecycle policy", () => {
-  it("uses the exact producer-backed WarpSquare t=0 authority without claiming a source marker", () => {
+  it("uses an exact producer-backed t=0 authority without claiming a source marker", () => {
     const withoutAuthority = candidate({ anchors: [] });
-    const withAuthority = candidate({ anchors: [], verifiedWarpSquareInitialAnchor: 0 });
+    const withAuthority = candidate({ anchors: [], verifiedInitialEditAnchor: 0 });
     const initialProgram = {
       ...withAuthority.program,
       anchor: {
@@ -129,7 +129,7 @@ describe("render pipeline lifecycle policy", () => {
 
     expect(renderCandidateMissingAnchor(withoutAuthority)).toBe(1);
     expect(renderCandidateMissingAnchor(exact)).toBeNull();
-    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedWarpSquareInitialAnchor");
+    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedInitialEditAnchor");
   });
 
   it.each([
