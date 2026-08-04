@@ -39,7 +39,7 @@ fn literal_fast_manim_callsites_meet_the_support_floor() {
     assert_eq!(corpus.repository, "https://github.com/Poietra/fast-manim");
     assert_eq!(
         corpus.source_commit,
-        "499148963dd629057c4bbbafc7e1f82bdcf51e7a"
+        "bc8f847b7f3b6839c663e2e673e40cc6449e8e5e"
     );
     assert_eq!(
         corpus.extraction_command,
