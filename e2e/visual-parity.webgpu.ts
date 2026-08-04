@@ -13,9 +13,9 @@ import {
 } from "./line-joints-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
+  readSpiralInCairoReferenceForEntryV1,
   SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1,
   SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1,
-  readSpiralInCairoReferenceForEntryV1,
 } from "./spiral-in-cairo-reference";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -416,6 +416,16 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     );
   }
   await Promise.all(artifactWrites);
+  for (const [comparison, comparisonMetrics] of spiralInCairoComparisons ?? []) {
+    expect(
+      comparisonMetrics.ssim,
+      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeGreaterThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+    expect(
+      comparisonMetrics.pixelFractionAboveThreshold,
+      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeLessThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
+  }
   const report = visualParityReportV1Schema.parse({
     artifacts: { actualPng: "actual.png", diffPng: "diff.png", expectedPng: "expected.png" },
     browser: {
@@ -460,16 +470,6 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     metrics.pixelFractionAboveThreshold,
     `visual parity report: ${join(outputDirectory, "report.json")}`,
   ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
-  for (const [comparison, comparisonMetrics] of spiralInCairoComparisons ?? []) {
-    expect(
-      comparisonMetrics.ssim,
-      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
-    ).toBeGreaterThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
-    expect(
-      comparisonMetrics.pixelFractionAboveThreshold,
-      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
-    ).toBeLessThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
-  }
 
   return { actualRgba, expectedRgba };
 }
