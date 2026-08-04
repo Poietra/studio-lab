@@ -2507,7 +2507,10 @@ class ExampleScene(Scene):
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 10 }).snapshotVersion).toBe(
       10,
     );
-    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 11 })).toThrow();
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 11 }).snapshotVersion).toBe(
+      11,
+    );
+    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 12 })).toThrow();
     expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,
@@ -2527,7 +2530,7 @@ class ExampleScene(Scene):
         snapshotVersion: 5,
       }).hermeticMathTexMorphV5Plan,
     ).toEqual(hermeticMathTexMorphV5Plan);
-    for (const snapshotVersion of [1, 2, 3, 5, 6, 7, 8, 9, 10] as const) {
+    for (const snapshotVersion of [1, 2, 3, 5, 6, 7, 8, 9, 10, 11] as const) {
       expect(() =>
         expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion }),
       ).toThrow(/only for snapshot profile V4/i);

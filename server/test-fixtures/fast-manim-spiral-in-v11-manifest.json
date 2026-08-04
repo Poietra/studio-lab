@@ -1,0 +1,15 @@
+{
+  "combinedWireSha256": "e60d301207232fad38373cf8ac39279e21156c9f05e320f242a9bdc65d3735d0",
+  "fastManimCommit": "0b1aa3b303c58a33becaf31f822361e4292ce46f",
+  "fastManimTree": "2d763ec42d7da5029d1a4375c507512a43e16473",
+  "fixtureKind": "actual-combined-producer-output",
+  "producerModule": "manim.renderer.source_runtime_identity",
+  "regeneration": "From fast-manim commit 0b1aa3b3, call tests.helpers.scene_snapshot.request_document for example_scenes/basic.py / SpiralInExample with snapshotVersion 11 and capabilities affine-transform-animation, cubic-path-geometry, logical-group, opacity-animation, shape-primitives; parse it and canonicalize export_source_runtime_identity under PYTHONHASHSEED=0.",
+  "runtimeConfigHash": "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+  "sealedSnapshotHash": "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7",
+  "semanticSha256": "89c4b3a36d9bbf6156920782ac4f579359dfb87771ae96af663218e8c68281a1",
+  "snapshotDigest": "000d40cae8f3ecfc9168d50244c2d8b2ada3f3b95248563f7cda1ecfd13e56cf",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  "version": 1
+}

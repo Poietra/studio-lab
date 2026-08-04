@@ -8,6 +8,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11,
   type FastManimSnapshotRuntimeConfigV1,
   fastManimSnapshotProducerRequestV1Schema,
   fastManimSnapshotProfileVersionV1Schema,
@@ -73,7 +74,7 @@ describe("fast-manim snapshot runtime config", () => {
     ).toThrow(/sorted/i);
   });
 
-  it("keeps V1-V9 canonical runtime digests frozen while negotiating V10 separately", () => {
+  it("keeps V1-V11 canonical runtime digests frozen", () => {
     const config = runtimeConfig();
     const expected = [
       [1, "5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a"],
@@ -140,7 +141,8 @@ describe("fast-manim snapshot runtime config", () => {
       }),
     ).toThrow(/exact canonical demo frame/i);
     expect(fastManimSnapshotProfileVersionV1Schema.safeParse(10).success).toBe(true);
-    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(11).success).toBe(false);
+    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(11).success).toBe(true);
+    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(12).success).toBe(false);
   });
 
   it("pins the canonical randomSeed to exactly 0 in the runtime config contract", () => {
@@ -211,6 +213,11 @@ describe("fast-manim snapshot runtime config", () => {
       snapshotVersion: 9 as const,
     };
     expect(fastManimSnapshotProducerRequestV1Schema.parse(v9Request)).toEqual(v9Request);
+    const v11Config = runtimeConfig(11);
+    expect(v11Config.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11);
+    expect(digestFastManimSnapshotRuntimeConfigV1(v11Config)).toBe(
+      "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+    );
     expect(() =>
       fastManimSnapshotProducerRequestV1Schema.parse({
         ...v9Request,
