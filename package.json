@@ -38,6 +38,7 @@
     "test:e2e:preview:real:square-to-circle": "POIETRA_E2E_REAL_PREVIEW_PROFILE=8 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:warp-square": "POIETRA_E2E_REAL_PREVIEW_PROFILE=9 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:line-joints": "POIETRA_E2E_REAL_PREVIEW_PROFILE=10 playwright test --config playwright.real-preview.config.ts",
+    "test:e2e:preview:real:spiral-in": "POIETRA_E2E_REAL_PREVIEW_PROFILE=11 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:visual-parity": "playwright test --config playwright.visual-parity.config.ts",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
     "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",
