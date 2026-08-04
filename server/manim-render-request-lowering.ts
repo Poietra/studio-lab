@@ -2,6 +2,7 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
+  lowerWarpSquareInitialTransformSourceV9,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
@@ -48,6 +49,19 @@ export function lowerManimRenderRequest({
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
   if (orderedPrograms.some(({ program }) => program.loweringStatus !== "supported")) {
     throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
+  }
+  try {
+    const warpSquareV9 = lowerWarpSquareInitialTransformSourceV9(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (warpSquareV9) return { lowered: warpSquareV9, renderRequest: request };
+  } catch (error) {
+    if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
+    throw error;
   }
   const evaluated = evaluateWorkingState({
     appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),

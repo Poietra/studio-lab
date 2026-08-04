@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
+import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import {
   MANIM_PROJECT_ID_PATTERN,
   type ManimProjectListView,
@@ -20,6 +21,7 @@ import {
   renderRequestId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
+import type { LoweredProgramBatchSource } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import type {
   FastManimSandboxAttestationVerifierV1,
@@ -36,7 +38,7 @@ import {
   readFastManimSnapshotPngV1,
   sameFastManimSnapshotPngReadV1,
 } from "./fast-manim-snapshot-png-provider";
-import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
+import { FastManimSnapshotRunner, type FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
@@ -66,7 +68,7 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
-import { discoverPythonSources } from "./manim-workspace";
+import { discoverPythonSources, importSourceSnapshot, sceneView } from "./manim-workspace";
 
 type RenderSession = {
   batchId: string;
@@ -720,6 +722,99 @@ export class ManimRenderManager {
     return { lowered, renderRequest, sourceSnapshot };
   }
 
+  private async preflightLoweredCandidate(
+    lowered: LoweredProgramBatchSource,
+    request: ProgramRenderRequest,
+    signal?: AbortSignal,
+  ) {
+    if (lowered.preflight?.kind !== "fast-manim-warp-square-v9") return;
+    const reject = (): never => {
+      throw new HttpError(
+        "The edited WarpSquare source could not be verified against its exact runtime identity. Reimport and try again.",
+        409,
+      );
+    };
+    if (request.sourceHash !== lowered.preflight.baseSourceHash) reject();
+    const candidateHash = sourceHash(lowered.source);
+    const candidateScene = sceneView(
+      importSourceSnapshot(lowered.source, request.sourcePath, this.frame).view,
+      request.sceneName,
+    );
+    const sourceVariables = candidateScene ? Object.entries(candidateScene.sourceVariables) : [];
+    const binding = request.sourceBindings[0];
+    if (
+      !candidateScene ||
+      candidateScene.sourceHash !== candidateHash ||
+      request.sourceBindings.length !== 1 ||
+      !binding ||
+      binding.sourceVariable !== "square" ||
+      sourceVariables.length !== 1 ||
+      sourceVariables[0]?.[0] !== binding.entityId ||
+      sourceVariables[0]?.[1] !== "square"
+    ) {
+      reject();
+    }
+
+    const result: FastManimUnpublishedSnapshotRunViewV1 = await (async () => {
+      try {
+        return await this.snapshotRunner.runCandidateUnpublished(
+          lowered.source,
+          {
+            projectId: request.projectId,
+            requestId: renderRequestId(request),
+            sceneName: request.sceneName,
+            sourcePath: request.sourcePath,
+          },
+          signal,
+        );
+      } catch {
+        throwIfAborted(signal);
+        this.logger.warn("render.warp_square_v9_candidate_preflight_rejected", {
+          failure: "snapshot-run-rejected",
+          sourcePath: request.sourcePath,
+        });
+        return reject();
+      }
+    })();
+    throwIfAborted(signal);
+    const verifiedResult = result.status === "verified" ? result : reject();
+    const scene = (await parseVerifiedSceneIrBundleV1(verifiedResult.snapshot.bundle).catch(() => reject())).scene;
+    const identity = verifiedResult.sourceRuntimeIdentity;
+    const entity = scene.entities[0];
+    const mapping = identity?.mappings[0];
+    if (
+      verifiedResult.projectId !== request.projectId ||
+      verifiedResult.requestId !== renderRequestId(request) ||
+      verifiedResult.sceneName !== request.sceneName ||
+      verifiedResult.sourcePath !== request.sourcePath ||
+      verifiedResult.snapshot.sourceHash !== candidateHash ||
+      scene.source.kind !== "imported-manim-server-snapshot" ||
+      scene.source.snapshotVersion !== 9 ||
+      scene.source.sourceHash !== candidateHash ||
+      scene.entities.length !== 1 ||
+      !entity ||
+      entity.sceneOrder !== 0 ||
+      !identity ||
+      identity.sourceHash !== candidateHash ||
+      identity.sceneId !== scene.sceneId ||
+      identity.runtimeConfigHash !== verifiedResult.runtimeConfigHash ||
+      identity.snapshotHash !== verifiedResult.snapshot.snapshotHash ||
+      identity.mappings.length !== 1 ||
+      !mapping ||
+      mapping.entityId !== entity.id ||
+      mapping.provenanceId !== entity.provenanceId ||
+      mapping.familyPath.length !== 0 ||
+      mapping.binding.name !== "square" ||
+      mapping.binding.ordinal !== 1 ||
+      mapping.binding.span.startLine !== 87 ||
+      mapping.binding.span.endLine !== 87 ||
+      mapping.binding.span.startColumn !== 8 ||
+      mapping.binding.span.endColumn !== 14
+    ) {
+      reject();
+    }
+  }
+
   private async prepareRender(
     request: ProgramRenderRequest,
     reservation: RenderStartReservation,
@@ -729,6 +824,7 @@ export class ManimRenderManager {
     let tempRoot: string | null = null;
     try {
       const { lowered, renderRequest, sourceSnapshot } = await this.lowerRequest(request, signal);
+      await this.preflightLoweredCandidate(lowered, renderRequest, signal);
       const sourcePath = sourceSnapshot.absolutePath;
       const originalSource = sourceSnapshot.source;
       throwIfAborted(signal);

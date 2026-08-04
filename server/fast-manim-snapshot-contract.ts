@@ -28,7 +28,7 @@ import {
   HERMETIC_MATHTEX_MORPH_MAX_DURATION_SECONDS_V5,
 } from "../src/render-pipeline/mathtex-morph-source-v5";
 import { analyzePythonSource, isPythonStatementStart } from "../src/render-pipeline/python-source-analysis";
-import { findSourceSceneBlock } from "../src/render-pipeline/source-import";
+import { findSourceSceneBlock, findSourceSceneStatements } from "../src/render-pipeline/source-import";
 
 export const FAST_MANIM_SNAPSHOT_SCHEMA_V1 = "poietra.fast-manim-snapshot-result" as const;
 export const FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1 = "poietra.fast-manim-snapshot-producer-request" as const;
@@ -145,6 +145,14 @@ const hermeticMathTexMorphV5PlanSchema = z
   });
 export type HermeticMathTexMorphV5Plan = z.infer<typeof hermeticMathTexMorphV5PlanSchema>;
 
+const warpSquareV9TransformPlanSchema = z
+  .object({
+    moveTo: z.object({ x: hermeticPngV4NumberSchema, y: hermeticPngV4NumberSchema }).strict().nullable(),
+    scale: hermeticPngV4NumberSchema.positive().nullable(),
+  })
+  .strict();
+export type WarpSquareV9TransformPlan = z.infer<typeof warpSquareV9TransformPlanSchema>;
+
 /**
  * The minimal expected boundary the server holds against a result: the wire
  * correlation fields plus the runtime frame the request was issued for, so
@@ -168,6 +176,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // V5 retains only server-derived digests and timing. Exact TeX source
     // remains in the versioned source blob and never enters publication JSON.
     hermeticMathTexMorphV5Plan: hermeticMathTexMorphV5PlanSchema.optional(),
+    // V9 retains the only two Studio-authored base edits that its bounded
+    // producer accepts. The server derives this from the exact source bytes;
+    // it is verification state, never producer-authored evidence.
+    warpSquareV9Plan: warpSquareV9TransformPlanSchema.optional(),
     // Durable V1 publications predate this correlation field. Treat only an
     // omitted stored value as V1; an explicit unsupported value still fails.
     snapshotVersion: fastManimSnapshotProfileVersionV1Schema.default(1),
@@ -193,6 +205,13 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         code: "custom",
         message: "Hermetic MathTex morph evidence is valid only for snapshot profile V5.",
         path: ["hermeticMathTexMorphV5Plan"],
+      });
+    }
+    if (value.snapshotVersion !== 9 && value.warpSquareV9Plan !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "WarpSquare transform evidence is valid only for snapshot profile V9.",
+        path: ["warpSquareV9Plan"],
       });
     }
   });
@@ -2229,10 +2248,270 @@ const FAST_MANIM_WARP_SQUARE_FRAME_V9 = {
  */
 export const FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+export const FAST_MANIM_WARP_SQUARE_SOURCE_PATH_V9 = "example_scenes/basic.py" as const;
 export const FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9 =
   "8f683bf4dad38a06ef75e8bfd6066d7426f8941e011191c1a53243a7069b9825" as const;
 
 const FAST_MANIM_WARP_SQUARE_REQUIRED_CAPABILITIES_V9 = ["cubic-path-geometry", "path-morph-animation"] as const;
+const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
+const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
+
+function warpSquareV9CanonicalNumber(source: string, positive = false) {
+  if (!WARP_SQUARE_V9_CANONICAL_NUMBER.test(source)) return null;
+  const value = Number(source);
+  if (
+    !Number.isFinite(value) ||
+    Object.is(value, -0) ||
+    Math.abs(value) > MAX_COORDINATE ||
+    value.toString() !== source ||
+    (positive && value <= 0)
+  ) {
+    return null;
+  }
+  return value;
+}
+
+/**
+ * Derives the complete bounded V9 base-edit plan without executing Python.
+ *
+ * Studio may insert only these exact, single-line statements immediately
+ * after the official `square = Square()` assignment:
+ *
+ *     square.move_to((x, y, 0))
+ *     square.scale(factor)
+ *
+ * Removing the admitted lines must reconstruct the byte-exact audited
+ * official source. This makes the edit plan a narrow source proof, not a
+ * second Python parser or producer-authored geometry claim.
+ */
+export function deriveWarpSquareV9TransformPlan(source: string, sceneName: string): WarpSquareV9TransformPlan {
+  if (sceneName !== "WarpSquare") {
+    profileViolation("WarpSquare profile V9 source verification requires the exact selected Scene name.");
+  }
+  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
+  if (sourceDigest === FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9) return WARP_SQUARE_V9_EMPTY_PLAN;
+
+  const analysis = analyzePythonSource(source);
+  let statements: ReturnType<typeof findSourceSceneStatements>;
+  try {
+    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_WARP_SQUARE_SOURCE_PATH_V9);
+  } catch (cause) {
+    throw new FastManimSnapshotContractError(
+      "profile-violation",
+      "WarpSquare profile V9 source does not identify one unambiguous selected Scene.",
+      { cause },
+    );
+  }
+  if (!analysis.valid || statements[0]?.text !== "square = Square()") {
+    profileViolation("WarpSquare profile V9 edits require the exact official Square assignment.");
+  }
+
+  const sourceLines = source.split("\n");
+  const removedLines = new Set<number>();
+  let statementIndex = 1;
+  let moveTo: WarpSquareV9TransformPlan["moveTo"] = null;
+  let scale: number | null = null;
+
+  const moveStatement = statements[statementIndex];
+  const moveMatch = moveStatement?.text.match(
+    /^square\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
+  );
+  if (moveStatement && moveMatch) {
+    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
+    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
+    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
+      profileViolation("WarpSquare profile V9 move_to must use bounded canonical Studio literals.");
+    }
+    moveTo = { x, y };
+    removedLines.add(moveStatement.line);
+    statementIndex += 1;
+  }
+
+  const scaleStatement = statements[statementIndex];
+  const scaleMatch = scaleStatement?.text.match(
+    /^square\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/,
+  );
+  if (scaleStatement && scaleMatch) {
+    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
+    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
+      profileViolation("WarpSquare profile V9 scale must use one bounded canonical positive Studio literal.");
+    }
+    scale = factor;
+    removedLines.add(scaleStatement.line);
+  }
+
+  if (removedLines.size === 0) {
+    profileViolation("WarpSquare profile V9 source is not the official generation or one bounded Studio edit of it.");
+  }
+  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
+  if (
+    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
+    FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9
+  ) {
+    profileViolation("Removing the bounded WarpSquare V9 edits must reconstruct the exact official source bytes.");
+  }
+  return warpSquareV9TransformPlanSchema.parse({ moveTo, scale });
+}
+
+type WarpSquarePointV9 = { x: number; y: number };
+
+// Pinned Manim 0.20.1 Square points. Consecutive curves intentionally retain
+// their duplicate boundary anchors because the producer's pointwise oracle
+// applies handle conditioning to the same 16-point array before serialization.
+const WARP_SQUARE_BASE_POINTS_V9: readonly (readonly [number, number])[] = [
+  [1, 1],
+  [0.3333333333333334, 1],
+  [-0.33333333333333326, 1],
+  [-1, 1],
+  [-1, 1],
+  [-1, 0.3333333333333334],
+  [-1, -0.33333333333333326],
+  [-1, -1],
+  [-1, -1],
+  [-0.3333333333333334, -1],
+  [0.33333333333333326, -1],
+  [1, -1],
+  [1, -1],
+  [1, -0.3333333333333334],
+  [1, 0.33333333333333326],
+  [1, 1],
+] as const;
+
+const WARP_SQUARE_APPEARANCE_V9 = {
+  fill: null,
+  kind: "vector",
+  opacity: 1,
+  stroke: {
+    cap: "butt",
+    color: { alpha: 1, blue: 1, green: 1, red: 1 },
+    join: "miter",
+    miterLimit: 10,
+    widthWorld: 0.04,
+  },
+} as const;
+
+function warpSquareBoundaryCenterV9(points: readonly WarpSquarePointV9[]) {
+  const xs = points.map(({ x }) => x);
+  const ys = points.map(({ y }) => y);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}
+
+function warpSquareSourcePointsV9(plan: WarpSquareV9TransformPlan) {
+  let points = WARP_SQUARE_BASE_POINTS_V9.map(([x, y]) => ({ x, y }));
+  if (plan.moveTo) {
+    const center = warpSquareBoundaryCenterV9(points);
+    const dx = plan.moveTo.x - center.x;
+    const dy = plan.moveTo.y - center.y;
+    points = points.map(({ x, y }) => ({ x: x + dx, y: y + dy }));
+  }
+  if (plan.scale !== null) {
+    const scale = plan.scale;
+    const center = warpSquareBoundaryCenterV9(points);
+    points = points.map(({ x, y }) => ({
+      x: (x - center.x) * scale + center.x,
+      y: (y - center.y) * scale + center.y,
+    }));
+  }
+  return points;
+}
+
+function warpSquareTargetPointsV9(sourcePoints: readonly WarpSquarePointV9[]) {
+  let points = sourcePoints.map(({ x, y }) => ({ x, y }));
+  for (let curve = 0; curve < points.length; curve += 4) {
+    const start = points[curve]!;
+    const control1 = points[curve + 1]!;
+    const control2 = points[curve + 2]!;
+    const end = points[curve + 3]!;
+    points[curve + 1] = {
+      x: start.x + 0.01 * (control1.x - start.x),
+      y: start.y + 0.01 * (control1.y - start.y),
+    };
+    points[curve + 2] = {
+      x: end.x + 0.01 * (control2.x - end.x),
+      y: end.y + 0.01 * (control2.y - end.y),
+    };
+  }
+  points = points.map(({ x, y }) => {
+    const magnitude = Math.exp(x);
+    return { x: magnitude * Math.cos(y), y: magnitude * Math.sin(y) };
+  });
+  for (let curve = 0; curve < points.length; curve += 4) {
+    const start = points[curve]!;
+    const control1 = points[curve + 1]!;
+    const control2 = points[curve + 2]!;
+    const end = points[curve + 3]!;
+    points[curve + 1] = {
+      x: start.x + 100 * (control1.x - start.x),
+      y: start.y + 100 * (control1.y - start.y),
+    };
+    points[curve + 2] = {
+      x: end.x + 100 * (control2.x - end.x),
+      y: end.y + 100 * (control2.y - end.y),
+    };
+  }
+  if (points.some(({ x, y }) => !Number.isFinite(x) || !Number.isFinite(y))) {
+    profileViolation("WarpSquare profile V9 edits produce a non-finite exponential target.");
+  }
+  return points;
+}
+
+type WarpSquarePathV9 = Extract<StaticProfileEntity["geometry"], { kind: "cubic-path" }>["path"];
+
+function warpSquarePathPointsV9(path: WarpSquarePathV9) {
+  const subpath = path.subpaths[0]!;
+  const points: WarpSquarePointV9[] = [];
+  let start = subpath.start;
+  for (const segment of subpath.segments) {
+    points.push(start, segment.control1, segment.control2, segment.end);
+    start = segment.end;
+  }
+  return points;
+}
+
+function warpSquarePointsMatchV9(
+  actual: readonly WarpSquarePointV9[],
+  expected: readonly WarpSquarePointV9[],
+  roundoffMultiplier: number,
+) {
+  return (
+    actual.length === expected.length &&
+    actual.every((point, index) => {
+      const target = expected[index]!;
+      const close = (value: number, expectedValue: number) =>
+        Math.abs(value - expectedValue) <=
+        Number.EPSILON * roundoffMultiplier * Math.max(1, Math.abs(value), Math.abs(expectedValue));
+      return close(point.x, target.x) && close(point.y, target.y);
+    })
+  );
+}
+
+function assertWarpSquareGeometryV9(
+  entity: StaticProfileEntity,
+  pathMorph: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>,
+  plan: WarpSquareV9TransformPlan,
+) {
+  if (
+    canonicalJsonV1(entity.appearance) !== canonicalJsonV1(WARP_SQUARE_APPEARANCE_V9) ||
+    entity.geometry.kind !== "cubic-path" ||
+    pathMorph.keyframes[0]!.value.subpaths.length !== 1 ||
+    pathMorph.keyframes[1]!.value.subpaths.length !== 1 ||
+    !pathMorph.keyframes[0]!.value.subpaths[0]!.closed ||
+    !pathMorph.keyframes[1]!.value.subpaths[0]!.closed
+  ) {
+    profileViolation("WarpSquare profile V9 appearance or path structure differs from its pinned Square contract.");
+  }
+  const sourcePoints = warpSquareSourcePointsV9(plan);
+  const targetPoints = warpSquareTargetPointsV9(sourcePoints);
+  if (
+    !warpSquarePointsMatchV9(warpSquarePathPointsV9(pathMorph.keyframes[0]!.value), sourcePoints, 256) ||
+    !warpSquarePointsMatchV9(warpSquarePathPointsV9(pathMorph.keyframes[1]!.value), targetPoints, 16_384)
+  ) {
+    profileViolation("WarpSquare profile V9 geometry does not match the independently replayed source transform.");
+  }
+}
 
 function fastManimWarpSquareSemanticDigestV9(
   entity: StaticProfileEntity,
@@ -2293,15 +2572,27 @@ function assertWarpSquareProfileV9(
   expectedFrame: Readonly<{ height: number; width: number }>,
   mode: "producer" | "sealed",
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+  expectedPlan: WarpSquareV9TransformPlan | undefined,
 ) {
   const { scene } = bundle;
   const { sceneId } = scene;
+  const plan =
+    expectedPlan ??
+    (expectedIdentity.sourceHash === FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9
+      ? WARP_SQUARE_V9_EMPTY_PLAN
+      : profileViolation("Edited WarpSquare profile V9 publications require their server-derived transform plan."));
   if (
     expectedIdentity.sceneName !== "WarpSquare" ||
-    expectedIdentity.sourcePath !== "example_scenes/basic.py" ||
+    expectedIdentity.sourcePath !== FAST_MANIM_WARP_SQUARE_SOURCE_PATH_V9
+  ) {
+    profileViolation("Snapshot profile V9 is reserved for the pinned WarpSquare source path and selected Scene.");
+  }
+  if (
+    plan.moveTo === null &&
+    plan.scale === null &&
     expectedIdentity.sourceHash !== FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9
   ) {
-    profileViolation("Snapshot profile V9 is reserved for the pinned official WarpSquare source generation.");
+    profileViolation("An unedited WarpSquare profile V9 plan requires the exact official source generation.");
   }
   if (
     expectedFrame.height !== FAST_MANIM_WARP_SQUARE_FRAME_V9.height ||
@@ -2360,10 +2651,17 @@ function assertWarpSquareProfileV9(
     canonicalJsonV1(pathMorph.keyframes[0]!.easingToNext) !== canonicalJsonV1({ kind: "manim-smooth" }) ||
     pathMorph.keyframes[1]!.at !== 3 ||
     pathMorph.keyframes[1]!.easingToNext !== null ||
-    canonicalJsonV1(entity.geometry.path) !== canonicalJsonV1(pathMorph.keyframes[0]!.value) ||
-    fastManimWarpSquareSemanticDigestV9(entity, pathMorph) !== FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9
+    canonicalJsonV1(entity.geometry.path) !== canonicalJsonV1(pathMorph.keyframes[0]!.value)
   ) {
     profileViolation("WarpSquare profile V9 path morph differs from its pinned Manim timeline or endpoints.");
+  }
+  assertWarpSquareGeometryV9(entity, pathMorph, plan);
+  if (
+    plan.moveTo === null &&
+    plan.scale === null &&
+    fastManimWarpSquareSemanticDigestV9(entity, pathMorph) !== FAST_MANIM_WARP_SQUARE_SEMANTICS_SHA256_V9
+  ) {
+    profileViolation("The official WarpSquare profile V9 semantics differ from their pinned producer fixture.");
   }
 
   const expectedProvenanceIds = [
@@ -2696,10 +2994,11 @@ function assertFastManimSnapshotProfileV1(
   hermeticMathTexV3Plan: HermeticMathTexV3TransformPlan | undefined,
   hermeticPngV4Plan: HermeticPngV4TransformPlan | undefined,
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
+  warpSquareV9Plan: WarpSquareV9TransformPlan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
   if (snapshotVersion === 9) {
-    assertWarpSquareProfileV9(bundle, expectedFrame, mode, expectedIdentity);
+    assertWarpSquareProfileV9(bundle, expectedFrame, mode, expectedIdentity, warpSquareV9Plan);
     return;
   }
   if (snapshotVersion === 8) {
@@ -3059,6 +3358,7 @@ async function parseFastManimSnapshotResultV1(
   let hermeticMathTexV3Plan = expected.hermeticMathTexV3Plan;
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
+  let warpSquareV9Plan = expected.warpSquareV9Plan;
   if (
     (expected.snapshotVersion === 3 ||
       expected.snapshotVersion === 4 ||
@@ -3080,6 +3380,13 @@ async function parseFastManimSnapshotResultV1(
   }
   if (expected.snapshotVersion === 9 && mode === "producer" && sourceText === undefined) {
     profileViolation("WarpSquare profile V9 requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 9 && mode === "producer" && sourceText !== undefined) {
+    const derivedPlan = deriveWarpSquareV9TransformPlan(sourceText, expected.sceneName);
+    if (warpSquareV9Plan && canonicalJsonV1(warpSquareV9Plan) !== canonicalJsonV1(derivedPlan)) {
+      profileViolation("The retained WarpSquare transform plan does not match the server-held source.");
+    }
+    warpSquareV9Plan = derivedPlan;
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
@@ -3127,6 +3434,7 @@ async function parseFastManimSnapshotResultV1(
     hermeticMathTexV3Plan,
     hermeticPngV4Plan,
     hermeticMathTexMorphV5Plan,
+    warpSquareV9Plan,
     expected,
   );
   const mixedDynamicMathTexProvenanceId =

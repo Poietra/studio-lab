@@ -4,6 +4,7 @@ import type { CanonicalEditProgram } from "../studio/operations";
 import { type ManimWorkspaceView, type RenderSessionView, renderProgramBatchId, renderRequestId } from "./contracts";
 import {
   type RenderProgramCandidate,
+  renderCandidateMissingAnchor,
   renderCandidateRequest,
   renderCapabilityBlocker,
   renderPipelineActionBlocker,
@@ -112,6 +113,25 @@ function policy(
 }
 
 describe("render pipeline lifecycle policy", () => {
+  it("uses the exact producer-backed WarpSquare t=0 authority without claiming a source marker", () => {
+    const withoutAuthority = candidate({ anchors: [] });
+    const withAuthority = candidate({ anchors: [], verifiedWarpSquareInitialAnchor: 0 });
+    const initialProgram = {
+      ...withAuthority.program,
+      anchor: {
+        ...withAuthority.program.anchor,
+        capturedPlayhead: 0,
+        resolvedSeconds: 0,
+        source: { kind: "playhead" as const, referenceSeconds: 0 },
+      },
+    };
+    const exact = { ...withAuthority, program: initialProgram, programs: [initialProgram] };
+
+    expect(renderCandidateMissingAnchor(withoutAuthority)).toBe(1);
+    expect(renderCandidateMissingAnchor(exact)).toBeNull();
+    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedWarpSquareInitialAnchor");
+  });
+
   it.each([
     ["local-command-unavailable", "The configured Manim command is unavailable."],
     ["durable-render-unconfigured", "Durable rendering is not configured for this workspace."],

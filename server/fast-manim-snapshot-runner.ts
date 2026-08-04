@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 import {
@@ -21,6 +22,7 @@ import {
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
+  deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -43,6 +45,7 @@ import {
   fastManimSnapshotRunRequestV1Schema,
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
+  MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
   MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
   parseVerifiedFastManimSnapshotResultV1,
@@ -684,10 +687,49 @@ export class FastManimSnapshotRunner {
     return this.runRequest(requestValue, false, signal) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
   }
 
+  /**
+   * Verifies immutable candidate bytes without reading or publishing project
+   * source. This is the server-internal V9 Apply preflight: candidate bytes
+   * become the correlated producer input and must pass the same seal plus
+   * complete source/runtime identity authority as a normal unpublished run.
+   */
+  async runCandidateUnpublished(
+    sourceText: string,
+    requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
+    signal?: AbortSignal,
+  ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
+    if (this.snapshotVersion !== 9) {
+      throw new TypeError("Candidate source preflight is available only for snapshot profile V9.");
+    }
+    if (
+      typeof sourceText !== "string" ||
+      Buffer.byteLength(sourceText, "utf8") > MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES
+    ) {
+      throw new RangeError(`Candidate source accepts at most ${MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES} UTF-8 bytes.`);
+    }
+    // Candidate preflight is an internal fail-closed seam. Reject bytes that
+    // cannot be reduced to the audited WarpSquare source before reserving any
+    // producer or sandbox capacity.
+    deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
+    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+    const candidate = Object.freeze({
+      hash: sourceHash,
+      source: sourceText,
+      versionToken: `candidate:${sourceHash}`,
+    }) satisfies FastManimSnapshotSourceReadV1;
+    return this.runRequest(
+      { ...requestValue, sourceHash },
+      false,
+      signal,
+      candidate,
+    ) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
+  }
+
   private async runRequest(
     requestValue: FastManimSnapshotRunRequestV1,
     publishLocally: boolean,
     signal?: AbortSignal,
+    candidateSource?: FastManimSnapshotSourceReadV1,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const request = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
     signal?.throwIfAborted();
@@ -701,7 +743,7 @@ export class FastManimSnapshotRunner {
       throw new HttpError("Too many concurrent Scene snapshot runs.", 429);
     }
     this.activeKeys.add(key);
-    const pending = this.runLocked(request, publishLocally, signal);
+    const pending = this.runLocked(request, publishLocally, signal, candidateSource);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
@@ -716,6 +758,7 @@ export class FastManimSnapshotRunner {
     request: FastManimSnapshotRunRequestV1,
     publishLocally: boolean,
     signal?: AbortSignal,
+    candidateSource?: FastManimSnapshotSourceReadV1,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const throwIfHalted = () => {
       if (signal?.aborted || this.closing) throw abortError();
@@ -772,11 +815,15 @@ export class FastManimSnapshotRunner {
     // root, immune to validate-then-open pathname swaps. Platforms that
     // cannot prove this fail closed (HTTP 501) before any Python runs.
     let before: FastManimSnapshotSourceReadV1;
-    try {
-      before = await this.sourceProvider.readVerified(request.sourcePath, signal);
-    } catch (error) {
-      throwIfHalted();
-      throw error;
+    if (candidateSource) {
+      before = candidateSource;
+    } else {
+      try {
+        before = await this.sourceProvider.readVerified(request.sourcePath, signal);
+      } catch (error) {
+        throwIfHalted();
+        throw error;
+      }
     }
     throwIfHalted();
     if (request.sourceHash !== undefined && request.sourceHash !== before.hash) {
@@ -798,11 +845,13 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
+    let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
     if (
       this.snapshotVersion === 3 ||
       this.snapshotVersion === 4 ||
       this.snapshotVersion === 5 ||
-      this.snapshotVersion === 7
+      this.snapshotVersion === 7 ||
+      this.snapshotVersion === 9
     ) {
       try {
         if (this.snapshotVersion === 3) {
@@ -811,8 +860,10 @@ export class FastManimSnapshotRunner {
           hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
         } else if (this.snapshotVersion === 5) {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
-        } else {
+        } else if (this.snapshotVersion === 7) {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
+        } else {
+          warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -825,6 +876,7 @@ export class FastManimSnapshotRunner {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
+      ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
@@ -846,6 +898,7 @@ export class FastManimSnapshotRunner {
       hermeticMathTexV3Plan: _serverHermeticMathTexV3Plan,
       hermeticMathTexMorphV5Plan: _serverHermeticMathTexMorphV5Plan,
       hermeticPngV4Plan: _serverHermeticPngV4Plan,
+      warpSquareV9Plan: _serverWarpSquareV9Plan,
       snapshotVersion,
       ...wireCorrelation
     } = expected;
@@ -922,11 +975,15 @@ export class FastManimSnapshotRunner {
     // Filesystem providers retain hash-only change-and-restore semantics;
     // durable providers bind the source generation as well as its digest.
     let after: FastManimSnapshotSourceReadV1;
-    try {
-      after = await this.sourceProvider.readVerified(request.sourcePath, signal);
-    } catch {
-      throwIfHalted();
-      return failed("source-changed");
+    if (candidateSource) {
+      after = candidateSource;
+    } else {
+      try {
+        after = await this.sourceProvider.readVerified(request.sourcePath, signal);
+      } catch {
+        throwIfHalted();
+        return failed("source-changed");
+      }
     }
     throwIfHalted();
     if (after.hash !== expected.sourceHash || after.versionToken !== before.versionToken)

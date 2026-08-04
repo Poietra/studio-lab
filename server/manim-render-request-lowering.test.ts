@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { describe, expect, it } from "vitest";
 
@@ -9,6 +10,12 @@ import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 const frame = { height: 8, width: 14.222 } as const;
 const sourcePath = "scene.py";
 const entityId = "source:scene.py#GroupedEquation:equation";
+const warpSquareSourcePath = "example_scenes/basic.py";
+const warpSquareEntityId = `source:${warpSquareSourcePath}#WarpSquare:square`;
+const warpSquareSource = readFileSync(
+  new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+  "utf8",
+);
 const sceneSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -110,6 +117,54 @@ function lower(renderRequest: ProgramRenderRequest, originalSource = sceneSource
 }
 
 describe("Manim render request lowering", () => {
+  it("routes one source-time-zero WarpSquare V9 transform through the bounded early lowerer", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: warpSquareEntityId,
+      id: "warp-square-position",
+      interval: { end: 0, start: 0 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: ["verified WarpSquare V9 source-time zero"], origin: "direct-manipulation" },
+      value: { x: 410, y: 135 },
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["verified WarpSquare V9 source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["WarpSquare V9 initial edit"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: "warp-square-v9-initial-transform",
+      version: 1,
+    };
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 14.222222222222221 },
+      originalSource: warpSquareSource,
+      projectId: "default",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "default",
+        sceneName: "WarpSquare",
+        sourceBindings: [{ entityId: warpSquareEntityId, sourceVariable: "square" }],
+        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
+        sourcePath: warpSquareSourcePath,
+        viewport: { height: 360, width: 640 },
+      },
+    });
+
+    expect(result.lowered.preflight?.kind).toBe("fast-manim-warp-square-v9");
+    expect(result.lowered.source).toContain("        square.move_to((2, 1, 0))\n        self.play(");
+  });
+
   it("evaluates an out-of-order batch in source-anchor order without mutating the input", () => {
     const later = motionProgram(7, "batch-later");
     const earlier = motionProgram(5, "batch-earlier");

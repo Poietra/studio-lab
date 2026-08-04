@@ -1,5 +1,6 @@
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
-import type { Point, ProposedState } from "./model";
+import { evaluateWorkingState } from "./evaluator";
+import type { Point, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -31,7 +32,17 @@ type AuthorizedEditV1 = Readonly<{
   scaleFactor: number | null;
 }>;
 
-type SupportedTemporalRebaseProfileV1 = 7 | 8;
+type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9;
+
+const OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+
+export type StudioPreviewInitialEditRuntimeAuthorityV1 = Readonly<{
+  duration: 4;
+  profile: "warp-square-v9";
+  runtimeEntityId: string;
+  studioEntityId: string;
+  studioSceneId: string;
+}>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -69,7 +80,7 @@ function supportedTemporalRebaseProfileV1(scene: SceneIrV1): SupportedTemporalRe
   const source = scene.source;
   if (source.kind !== "imported-manim-server-snapshot") return null;
   const version = Number(source.snapshotVersion);
-  return version === 7 || version === 8 ? version : null;
+  return version === 7 || version === 8 || version === 9 ? version : null;
 }
 
 function isExactManimSmoothInterval(channel: SceneIrV1["animationChannels"][number], start: number, end: number) {
@@ -115,19 +126,148 @@ function isExactStableSquareToCircleV8(scene: SceneIrV1, runtimeEntityId: string
   );
 }
 
+function isExactStableWarpSquareV9(scene: SceneIrV1, runtimeEntityId: string) {
+  const [entity] = scene.entities;
+  const [pathMorph] = scene.animationChannels;
+  return (
+    supportedTemporalRebaseProfileV1(scene) === 9 &&
+    scene.duration === 4 &&
+    scene.entities.length === 1 &&
+    entity?.id === runtimeEntityId &&
+    entity.geometry.kind === "cubic-path" &&
+    entity.lifetimes.length === 1 &&
+    entity.lifetimes[0]?.start === 0 &&
+    entity.lifetimes[0]?.end === 4 &&
+    scene.animationChannels.length === 1 &&
+    pathMorph?.kind === "path-morph" &&
+    pathMorph.entityId === runtimeEntityId &&
+    isExactManimSmoothInterval(pathMorph, 0, 3)
+  );
+}
+
 /**
- * Returns the only synthetic authoring anchor accepted by the bounded V8
- * preview profile. This is preview authority, not a claim that the source
+ * Browser-authoring authority for the one pinned, unedited WarpSquare source.
+ * A producer-backed reimport changes the source hash, so this authority cannot
+ * accidentally open a second local edit against the edited Python.
+ */
+export function studioPreviewInitialEditRuntimeAuthorityV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+): StudioPreviewInitialEditRuntimeAuthorityV1 | null {
+  if (!snapshotCorrelationIsExact(snapshot)) return null;
+  const { context } = snapshot.correlation;
+  const source = snapshot.snapshot.scene.source;
+  const identity = snapshot.sourceRuntimeIdentity;
+  const mapping = identity?.get("square");
+  if (
+    source.kind !== "imported-manim-server-snapshot" ||
+    Number(source.snapshotVersion) !== 9 ||
+    source.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
+    context.sourceHash !== OFFICIAL_WARP_SQUARE_SOURCE_HASH_V9 ||
+    context.sourcePath !== "example_scenes/basic.py" ||
+    context.sceneName !== "WarpSquare" ||
+    identity?.size !== 1 ||
+    !mapping ||
+    mapping.sourceName !== "square" ||
+    !isExactStableWarpSquareV9(snapshot.snapshot.scene, mapping.entityId)
+  ) {
+    return null;
+  }
+  return {
+    duration: 4,
+    profile: "warp-square-v9",
+    runtimeEntityId: mapping.entityId,
+    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:square`,
+    studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+  };
+}
+
+/** Projects only the exact runtime-backed Square into Studio's interaction UI. */
+export function projectStudioPreviewInitialEntityPresenceV1(
+  entities: readonly ProjectedEntity[],
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+  interactionGeometry: ReadonlyMap<string, unknown> | null,
+) {
+  if (!authority || !interactionGeometry?.has(authority.runtimeEntityId) || entities.length !== 1) return entities;
+  const [entity] = entities;
+  if (
+    !entity ||
+    entity.id !== authority.studioEntityId ||
+    entity.type !== "Square" ||
+    entity.provisional ||
+    entity.transactionId !== undefined ||
+    entity.sourceIdentity.kind !== "known" ||
+    entity.sourceIdentity.value !== "square" ||
+    entity.present
+  ) {
+    return entities;
+  }
+  return [{ ...entity, present: true }];
+}
+
+/**
+ * Supplies runtime-proven lifetime evidence only to validation of the exact
+ * initial edit. The imported base remains untouched.
+ */
+export function projectStudioPreviewInitialValidationSceneV1(
+  scene: RuntimeSceneState,
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+) {
+  if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
+  const entities = Object.values(scene.objectGraph.entities);
+  const [entity] = entities;
+  if (
+    entities.length !== 1 ||
+    !entity ||
+    entity.id !== authority.studioEntityId ||
+    entity.type !== "Square" ||
+    entity.provisional ||
+    entity.transactionId !== undefined ||
+    entity.sourceIdentity.kind !== "known" ||
+    entity.sourceIdentity.value !== "square"
+  ) {
+    return scene;
+  }
+  if (entity.lifetime.length === 1 && entity.lifetime[0]?.start === 0 && entity.lifetime[0]?.end === 4) return scene;
+  if (entity.lifetime.length !== 0) return scene;
+  return {
+    ...scene,
+    objectGraph: {
+      ...scene.objectGraph,
+      entities: { ...scene.objectGraph.entities, [entity.id]: { ...entity, lifetime: [{ end: 4, start: 0 }] } },
+    },
+  };
+}
+
+export function studioPreviewInitialEditTargetIsPresentV1(
+  scene: RuntimeSceneState,
+  entityId: string,
+  sourceTime: number,
+  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+) {
+  const projected = sourceTime === 0 ? projectStudioPreviewInitialValidationSceneV1(scene, authority) : scene;
+  return (
+    projected.objectGraph.entities[entityId]?.lifetime.some(
+      (interval) => sourceTime >= interval.start - 0.0005 && sourceTime < interval.end,
+    ) ?? false
+  );
+}
+
+/**
+ * Returns the only synthetic authoring anchor accepted by the bounded V8/V9
+ * preview profiles. This is preview authority, not a claim that the source
  * contains a lowerable `# poietra:anchor` marker.
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
+  if (studioPreviewInitialEditRuntimeAuthorityV1(snapshot)) return 0;
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
-  const [entry] = identity;
-  if (!entry) return null;
-  const [sourceName, mapping] = entry;
-  if (mapping.sourceName !== sourceName || !isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId)) {
+  const mapping = identity.get("square");
+  if (
+    !mapping ||
+    mapping.sourceName !== "square" ||
+    !isExactStableSquareToCircleV8(snapshot.snapshot.scene, mapping.entityId)
+  ) {
     return null;
   }
   return 0;
@@ -220,6 +360,7 @@ function planInitialTransformEdit(
   }
   const profile = supportedTemporalRebaseProfileV1(scene);
   if (profile === null) return unsupported("profile-unsupported", "The snapshot profile cannot be temporally rebased.");
+  const initialV9Authority = profile === 9 ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot) : null;
   if (input.proposedState.evaluatedScene.duration !== scene.duration) {
     return unsupported(
       "channel-timing-edit-unsupported",
@@ -321,10 +462,12 @@ function planInitialTransformEdit(
     const supportedKind =
       profile === 7
         ? channel.kind === "path-trim" || channel.kind === "motion-path"
-        : channel.kind === "opacity" ||
-          channel.kind === "path-morph" ||
-          channel.kind === "vector-appearance" ||
-          channel.kind === "path-trim";
+        : profile === 8
+          ? channel.kind === "opacity" ||
+            channel.kind === "path-morph" ||
+            channel.kind === "vector-appearance" ||
+            channel.kind === "path-trim"
+          : channel.kind === "path-morph";
     if (!supportedKind) {
       return unsupported("profile-unsupported", "Temporal preview found a channel outside its bounded profile.");
     }
@@ -389,8 +532,18 @@ function planInitialTransformEdit(
         studioEntity.sourceIdentity.kind === "known" &&
         studioEntity.sourceIdentity.value === "square" &&
         isExactStableSquareToCircleV8(scene, runtimeEntityId);
+      const stableV9Target =
+        profile === 9 &&
+        initialV9Authority?.runtimeEntityId === runtimeEntityId &&
+        studioEntity?.type === "Square" &&
+        studioEntity.sourceIdentity.kind === "known" &&
+        studioEntity.sourceIdentity.value === "square" &&
+        isExactStableWarpSquareV9(scene, runtimeEntityId);
       const runtimeEntity = runtimeEntities.get(runtimeEntityId);
-      if ((!staticMathTex && !createTarget && !stableV8Target) || runtimeEntity?.geometry.kind !== "cubic-path") {
+      if (
+        (!staticMathTex && !createTarget && !stableV8Target && !stableV9Target) ||
+        runtimeEntity?.geometry.kind !== "cubic-path"
+      ) {
         return unsupported(
           "target-edit-unsupported",
           "The temporal profile does not authorize this imported animation target.",
@@ -499,7 +652,9 @@ function planInitialTransformEdit(
 /**
  * Rebase one bounded t=0 Studio transform directly onto a verified temporal
  * snapshot. The static Studio adapter is deliberately bypassed: untouched
- * dynamic semantic state is not reconstructed or flattened.
+ * dynamic semantic state is not reconstructed or flattened. For V9 this
+ * affine result is a t=0 draft only; the renderer hook rejects later samples
+ * until producer-backed reimport supplies the edited path-morph endpoint.
  */
 export function compileStudioPreviewTemporalRebaseV1(
   input: Readonly<{
@@ -518,7 +673,22 @@ export function compileStudioPreviewTemporalRebaseV1(
   ) {
     return unsupported("camera-edit-unsupported", "Temporal rebase requires the exact verified camera frame.");
   }
-  const planned = planInitialTransformEdit(input);
+  const initialV9Authority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
+  const validationScene = projectStudioPreviewInitialValidationSceneV1(
+    input.proposedState.base.runtimeSceneState,
+    initialV9Authority,
+  );
+  // The conservative Python importer cannot infer WarpSquare's lifetime from
+  // ApplyPointwiseFunction. Direct manipulation validates against producer
+  // evidence when the draft is created, but the normal workspace projection
+  // intentionally revalidates every Program against the unmodified import.
+  // Re-run that validation here with the same exact, snapshot-gated evidence
+  // so the temporal compiler observes the operation it is about to authorize.
+  const proposedState =
+    validationScene === input.proposedState.base.runtimeSceneState
+      ? input.proposedState
+      : evaluateWorkingState({ ...input.proposedState.base, runtimeSceneState: validationScene });
+  const planned = planInitialTransformEdit({ proposedState, snapshot: input.snapshot });
   if (planned.kind !== "supported") return planned;
   const { edit, profile } = planned;
   const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);

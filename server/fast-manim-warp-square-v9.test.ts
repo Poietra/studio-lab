@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
+  deriveWarpSquareV9TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9,
   FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9,
@@ -62,6 +63,57 @@ async function loadProducerFixture() {
 }
 
 describe("fast-manim WarpSquare snapshot profile V9", () => {
+  it("derives only the canonical bounded Studio base edits after reconstructing the official bytes", async () => {
+    const { sourceText } = await loadProducerFixture();
+    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
+    const edited = (lines: readonly string[]) => sourceText.replace(anchor, `${anchor}${lines.join("\n")}\n`);
+
+    expect(deriveWarpSquareV9TransformPlan(sourceText, "WarpSquare")).toEqual({ moveTo: null, scale: null });
+    expect(
+      deriveWarpSquareV9TransformPlan(
+        edited(["        square.move_to((1.25, -0.5, 0))", "        square.scale(1.5)"]),
+        "WarpSquare",
+      ),
+    ).toEqual({ moveTo: { x: 1.25, y: -0.5 }, scale: 1.5 });
+    expect(deriveWarpSquareV9TransformPlan(edited(["        square.move_to((0, 0, 0))"]), "WarpSquare")).toEqual({
+      moveTo: { x: 0, y: 0 },
+      scale: null,
+    });
+    expect(deriveWarpSquareV9TransformPlan(edited(["        square.scale(1)"]), "WarpSquare")).toEqual({
+      moveTo: null,
+      scale: 1,
+    });
+  });
+
+  it.each([
+    ["repeated move", ["        square.move_to((1, 2, 0))", "        square.move_to((2, 1, 0))"]],
+    ["repeated scale", ["        square.scale(2)", "        square.scale(0.5)"]],
+    ["reversed order", ["        square.scale(1.5)", "        square.move_to((1.25, -0.5, 0))"]],
+    ["dynamic coordinate", ["        square.move_to((position(), -0.5, 0))"]],
+    ["negative scale", ["        square.scale(-1)"]],
+    ["noncanonical numeric spelling", ["        square.scale(1.0)"]],
+    ["noncanonical spacing", ["        square.move_to((1.25,-0.5,0))"]],
+  ])("rejects a %s source edit before producer geometry can become authority", async (_label, lines) => {
+    const { sourceText } = await loadProducerFixture();
+    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
+    const edited = sourceText.replace(anchor, `${anchor}${lines.join("\n")}\n`);
+    expect(() => deriveWarpSquareV9TransformPlan(edited, "WarpSquare")).toThrowError(
+      expect.objectContaining({ code: "profile-violation" }),
+    );
+  });
+
+  it("rejects a canonical-looking edit after the V9 timeline starts", async () => {
+    const { sourceText } = await loadProducerFixture();
+    const tail = "        )\n        self.wait()\n\n\nclass WriteStuff";
+    const edited = sourceText.replace(
+      tail,
+      "        )\n        square.scale(2)\n        self.wait()\n\n\nclass WriteStuff",
+    );
+    expect(() => deriveWarpSquareV9TransformPlan(edited, "WarpSquare")).toThrowError(
+      expect.objectContaining({ code: "profile-violation" }),
+    );
+  });
+
   it("accepts, seals, and identity-maps the frozen official producer output", async () => {
     const { combined, expected, manifest, producer, sourceText } = await loadProducerFixture();
     expect(expected.sourceHash).toBe(FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9);

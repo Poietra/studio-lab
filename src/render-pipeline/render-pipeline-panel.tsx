@@ -29,6 +29,7 @@ import {
   type RenderPipelineAction,
   type RenderProgramCandidate,
   type RenderSourceRefreshTarget,
+  renderCandidateMissingAnchor,
   renderCandidateRequest,
   renderCandidateRequestKey,
   renderPipelineActionBlocker,
@@ -217,10 +218,7 @@ export function RenderPipelinePanel({
     };
   }, [pendingAction, session?.actionInProgress, session?.id, session?.projectId, session?.status]);
 
-  const missingAnchor =
-    candidate?.programs.find(
-      (program) => !candidate.anchors.some((anchor) => Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005),
-    )?.anchor.resolvedSeconds ?? null;
+  const missingAnchor = renderCandidateMissingAnchor(candidate);
   const unsupportedProgram = candidate?.programs.find((program) => program.loweringStatus !== "supported") ?? null;
   const candidateBlocker = useMemo(() => {
     if (!workspace) return "Inspecting the Manim workspace…";

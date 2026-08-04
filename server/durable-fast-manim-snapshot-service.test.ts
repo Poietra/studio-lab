@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -11,6 +12,7 @@ import {
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
+  deriveWarpSquareV9TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   type FastManimSnapshotRunViewV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
@@ -146,20 +148,25 @@ const verifiedView = {
   version: 1,
 } as const satisfies FastManimUnpublishedSnapshotRunViewV1;
 
-const v9VerifiedView = {
-  ...verifiedView,
-  runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
-  snapshot: {
-    ...compiledSnapshot,
-    bundle: {
-      ...compiledSnapshot.bundle,
-      scene: {
-        ...compiledSnapshot.bundle.scene,
-        source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 9 },
+function v9VerifiedView(sourceHash: string) {
+  return {
+    ...verifiedView,
+    runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
+    sceneName: "WarpSquare",
+    snapshot: {
+      ...compiledSnapshot,
+      bundle: {
+        ...compiledSnapshot.bundle,
+        scene: {
+          ...compiledSnapshot.bundle.scene,
+          source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 9, sourceHash },
+        },
       },
-    },
-  } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
-} satisfies FastManimUnpublishedSnapshotRunViewV1;
+      sourceHash,
+    } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
+    sourcePath: "example_scenes/basic.py",
+  } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
 
 const artifact = {
   byteSize: 256,
@@ -429,23 +436,47 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     });
   });
 
-  it("preserves V9 and its runtime-config cache identity at the durable publication boundary", async () => {
-    const fixture = harness(v9VerifiedView, RELEASE_RUNTIME_DIGEST, V9_RUNTIME_CONFIG_HASH);
+  it("retains the server-derived edited V9 plan at the durable publication boundary", async () => {
+    const official = await readFile(
+      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
+    const source = official.replace(
+      anchor,
+      `${anchor}        square.move_to((1.25, -0.5, 0))\n        square.scale(1.5)\n`,
+    );
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const view = v9VerifiedView(sourceHash);
+    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V9_RUNTIME_CONFIG_HASH);
+    const head = {
+      ...sourceHead(7n, sourceHash),
+      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
+      sourcePath: "example_scenes/basic.py",
+    };
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(source);
+    const v9Request = {
+      ...request,
+      sceneName: "WarpSquare",
+      sourcePath: "example_scenes/basic.py",
+    };
 
-    await expect(fixture.service.run(request)).resolves.toMatchObject({ status: "verified" });
+    await expect(fixture.service.run(v9Request)).resolves.toMatchObject({ status: "verified" });
 
     expect(fixture.publish).toHaveBeenCalledOnce();
     expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
       expected: {
         runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
         snapshotVersion: 9,
+        warpSquareV9Plan: deriveWarpSquareV9TransformPlan(source, "WarpSquare"),
       },
       runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
-      snapshot: v9VerifiedView.snapshot,
+      snapshot: view.snapshot,
     });
 
     await expect(
-      fixture.service.snapshot(PROJECT, { sceneName: SCENE_NAME, sourcePath: SOURCE_PATH }),
+      fixture.service.snapshot(PROJECT, { sceneName: "WarpSquare", sourcePath: "example_scenes/basic.py" }),
     ).rejects.toMatchObject({ status: 404 });
     expect(fixture.readCurrent).toHaveBeenCalledWith(
       expect.objectContaining({ runtimeConfigHash: V9_RUNTIME_CONFIG_HASH }),

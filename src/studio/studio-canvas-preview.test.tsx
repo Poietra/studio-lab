@@ -60,11 +60,13 @@ function previewView(
   interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
   sourceRuntimeIdentity: StudioPreviewRendererViewV1["sourceRuntimeIdentity"] = null,
   interactionAuthority: StudioPreviewRendererViewV1["interactionAuthority"] = { kind: "interactive" },
+  initialEditRuntimeAuthority: StudioPreviewRendererViewV1["initialEditRuntimeAuthority"] = null,
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
+    initialEditRuntimeAuthority,
     interactionGeometry,
     interactionAuthority,
     sourceLabel: "verified fixture",
@@ -143,6 +145,56 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-semantic-paint="deferred-to-canvas"');
     expect(markup).toContain('data-studio-entity="entity:circle_1"');
     expect(markup).toContain("Move circle_1");
+  });
+
+  it("offers the exact WarpSquare runtime target one uniform-scale handle instead of shape geometry handles", () => {
+    const studioEntityId = "source:example_scenes/basic.py#WarpSquare:square";
+    const runtimeEntityId = "scene:warp-square/entity:0";
+    const square: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "known", value: { height: 2, width: 2 } },
+      },
+      id: studioEntityId,
+      sourceIdentity: { kind: "known", value: "square" },
+      type: "Square",
+    };
+    const markup = renderToStaticMarkup(
+      <StudioCanvas
+        {...baseProps()}
+        entities={[square]}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:warp-square",
+              revision: "a".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 90, widthPx: 160 },
+            },
+            phase: "presented",
+          },
+          new Map([[runtimeEntityId, { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } }]]),
+          new Map([
+            [
+              "square",
+              { bindingId: `source-binding:${"b".repeat(64)}`, entityId: runtimeEntityId, sourceName: "square" },
+            ],
+          ]),
+          { kind: "interactive" },
+          {
+            duration: 4,
+            profile: "warp-square-v9",
+            runtimeEntityId,
+            studioEntityId,
+            studioSceneId: "example_scenes/basic.py#WarpSquare",
+          },
+        )}
+        selectedIds={new Set([studioEntityId])}
+      />,
+    );
+    expect(markup).toContain('aria-label="Resize square from bottom-right corner"');
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
   });
 
   it("presents display-only runtime pixels without enabling guessed authoring gestures", () => {

@@ -63,7 +63,7 @@ function resolveManimCommand() {
 }
 
 const manimCommand = resolveManimCommand();
-if ((snapshotProfile === "4" || snapshotProfile === "7") && !manimCommand) {
+if ((snapshotProfile === "4" || snapshotProfile === "7" || snapshotProfile === "9") && !manimCommand) {
   throw new Error(
     "The real editable Scene E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
   );
@@ -81,7 +81,7 @@ const officialV8ProjectRoot = process.env.POIETRA_FAST_MANIM_V8_PROJECT_ROOT?.tr
 if (snapshotProfile === "8" && !externalBaseUrl && !officialV8ProjectRoot) {
   throw new Error("The real SquareToCircle V8 E2E requires POIETRA_FAST_MANIM_V8_PROJECT_ROOT.");
 }
-const mutableHarness = snapshotProfile === "4" || snapshotProfile === "7";
+const mutableHarness = snapshotProfile === "4" || snapshotProfile === "7" || snapshotProfile === "9";
 const harnessRoot = mutableHarness
   ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
   : join(process.cwd(), "fixtures", "real-preview-harness");

@@ -35,6 +35,7 @@ import {
   createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
   type StudioPreviewSnapshotMetadataStateV1,
+  studioPreviewEditedV9SampleFallbackV1,
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
@@ -578,6 +579,109 @@ async function mixedV7EditedMathTexPreviewInput(
   };
 }
 
+async function warpSquareV9PreviewInput() {
+  const [fixtureText, sourceText] = await Promise.all([
+    readFile(new URL("../../fixtures/engine-v1/real-warp-square-v9.json", import.meta.url), "utf8"),
+    readFile(new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url), "utf8"),
+  ]);
+  const fixture = JSON.parse(fixtureText) as Readonly<{ assets: unknown; scene: unknown }>;
+  const snapshotBundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+  const imported = importManimScene(sourceText, "example_scenes/basic.py", "WarpSquare", MIXED_V7_FRAME);
+  const runtimeEntity = snapshotBundle.scene.entities[0];
+  const source = snapshotBundle.scene.source;
+  if (!imported || !runtimeEntity || source.kind !== "imported-manim-server-snapshot") {
+    throw new Error("WarpSquare V9 preview fixture is incomplete.");
+  }
+  const entityId = "source:example_scenes/basic.py#WarpSquare:square";
+  const baseEntity = imported.runtimeSceneState.objectGraph.entities[entityId];
+  if (!baseEntity) throw new Error("WarpSquare V9 static import lost its Square.");
+  // V9 runtime evidence supplies the exact lifetime/duration that the
+  // conservative source importer cannot infer from ApplyPointwiseFunction.
+  const runtimeSceneState: RuntimeSceneState = {
+    ...imported.runtimeSceneState,
+    duration: 4,
+    objectGraph: {
+      ...imported.runtimeSceneState.objectGraph,
+      entities: {
+        ...imported.runtimeSceneState.objectGraph.entities,
+        [entityId]: { ...baseEntity, lifetime: [{ end: 4, start: 0 }] },
+      },
+    },
+  };
+  const workingState: WorkingState = {
+    appliedPrograms: [],
+    editorContext: {
+      activeSceneId: imported.runtimeSceneState.sceneId,
+      playhead: 0,
+      selection: [entityId],
+      version: STUDIO_STATE_VERSION,
+      viewport: { height: 360, width: 640 },
+    },
+    runtimeSceneState,
+    sourceSnapshot: {
+      configId: "sealed-warp-square-v9",
+      hash: `sha256:${source.sourceHash}`,
+      sourceId: "example_scenes/basic.py",
+      version: STUDIO_STATE_VERSION,
+    },
+    stagedPrograms: [],
+    staticSemanticState: imported.staticSemanticState,
+    version: STUDIO_STATE_VERSION,
+  };
+  const position = createDirectManipulationPositionProgram({
+    capturedPlayhead: 0,
+    delta: { x: 64, y: -36 },
+    positions: { [entityId]: { x: 320, y: 180 } },
+    scene: workingState.runtimeSceneState,
+    start: 0,
+    targetEntityIds: [entityId],
+    transactionId: "move-warp-square-at-zero",
+  });
+  const scale = createDirectManipulationScaleProgram({
+    capturedPlayhead: 0,
+    interval: { end: 0, start: 0 },
+    scales: { [entityId]: { from: 1, to: 1.5 } },
+    scene: workingState.runtimeSceneState,
+    targetEntityIds: [entityId],
+    transactionId: "scale-warp-square-at-zero",
+  });
+  if (position.kind !== "valid" || scale.kind !== "valid") {
+    throw new Error(`WarpSquare V9 transform programs are invalid: ${JSON.stringify([position.issues, scale.issues])}`);
+  }
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
+    correlation: {
+      assetsManifestDigest: snapshotBundle.assets.manifestDigest,
+      context: {
+        projectId: "project-a",
+        sceneName: "WarpSquare",
+        sourceDuration: 4,
+        sourceHash: source.sourceHash,
+        sourcePath: "example_scenes/basic.py",
+        workingRevision: PRISTINE_WORKING_REVISION,
+      },
+      engineRevisionHash: source.snapshotHash,
+      sceneDuration: 4,
+      sceneId: snapshotBundle.scene.sceneId,
+      serverPublicationRevision: 1,
+    },
+    duration: 4,
+    sceneId: snapshotBundle.scene.sceneId,
+    snapshot: snapshotBundle,
+    sourceLabel: "example_scenes/basic.py · WarpSquare",
+    sourceRuntimeIdentity: new Map([
+      ["square", { bindingId: "binding:warp-square", entityId: runtimeEntity.id, sourceName: "square" }],
+    ]),
+  };
+  return {
+    edited: evaluateWorkingState({
+      ...workingState,
+      appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
+    }),
+    snapshot,
+  };
+}
+
 describe("claimStudioPreviewCanvasV1", () => {
   it("claims a canvas exactly once so StrictMode remounts must mint a fresh element", () => {
     const canvas = {};
@@ -630,6 +734,32 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     const authority = studioPreviewInteractionAuthorityV1(v9);
     expect(authority).toEqual({ kind: "display-only", reason: "temporal-rebase-unavailable" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
+  });
+
+  it("makes only the exact correlated WarpSquare V9 identity interactive", async () => {
+    const { snapshot } = await warpSquareV9PreviewInput();
+    const runtimeEntityId = snapshot.snapshot.scene.entities[0]?.id;
+    if (!runtimeEntityId) throw new Error("WarpSquare V9 has no runtime entity.");
+
+    const authority = studioPreviewInteractionAuthorityV1(snapshot);
+    expect(authority).toEqual({ kind: "interactive" });
+    expect(studioPreviewInteractionEntityIdsV1(snapshot.sourceRuntimeIdentity, authority)).toEqual([runtimeEntityId]);
+    expect(studioPreviewInteractionAuthorityV1({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
+      kind: "display-only",
+      reason: "temporal-rebase-unavailable",
+    });
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 0)).toBeNull();
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, PRISTINE_WORKING_REVISION, 1.5)).toBeNull();
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 0.0001)).toEqual({
+      detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
+      phase: "fallback",
+      reason: "snapshot-uncorrelated",
+    });
+    expect(studioPreviewEditedV9SampleFallbackV1(snapshot, "studio-working-v1:warp-square-edit", 1.5)).toEqual({
+      detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
+      phase: "fallback",
+      reason: "snapshot-uncorrelated",
+    });
   });
 
   it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {
@@ -961,6 +1091,27 @@ describe("compileStudioPreviewSceneV1", () => {
       kind: "studio-edit-program",
       revisionHash: result.scene.engineRevisionHash,
     });
+  });
+
+  it("compiles the WarpSquare V9 t=0 draft without reconstructing its path morph", async () => {
+    const fixture = await warpSquareV9PreviewInput();
+    const importedScene = fixture.snapshot.snapshot.scene;
+    const result = await compileStudioPreviewSceneV1({
+      frame: MIXED_V7_FRAME,
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:warp-square-v9-transform",
+      workspaceKey: "project-a/example_scenes/basic.py/WarpSquare",
+    });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+
+    expect(scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(importedScene.animationChannels));
+    expect(scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
+    expect(scene.entities[0]?.transform).toMatchObject({ m11: 1.5, m12: 0, m21: 0, m22: 1.5 });
+    expect(scene.entities[0]?.transform.tx).toBeCloseTo(1.4222222222222223, 12);
+    expect(scene.entities[0]?.transform.ty).toBeCloseTo(0.8, 12);
   });
 
   it("keeps V7 fail-closed when Studio contains an unmapped semantic entity", async () => {
