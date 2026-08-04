@@ -5,7 +5,6 @@ import { lstat, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
-import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import {
   MANIM_PROJECT_ID_PATTERN,
   type ManimProjectListView,
@@ -21,7 +20,6 @@ import {
   renderRequestId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
-import type { LoweredProgramBatchSource } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import type {
   FastManimSandboxAttestationVerifierV1,
@@ -38,10 +36,11 @@ import {
   readFastManimSnapshotPngV1,
   sameFastManimSnapshotPngReadV1,
 } from "./fast-manim-snapshot-png-provider";
-import { FastManimSnapshotRunner, type FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
+import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
+import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import {
   beginRenderSessionAction,
   createRenderMutationTransactionState,
@@ -69,7 +68,7 @@ import { manimTenantIdSchema } from "./manim-request-principal";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
-import { discoverPythonSources, importSourceSnapshot, sceneView } from "./manim-workspace";
+import { discoverPythonSources } from "./manim-workspace";
 
 type RenderSession = {
   batchId: string;
@@ -196,6 +195,7 @@ export class ManimRenderManager {
   private pendingStarts = 0;
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
+  private readonly candidateVerifier: ManimRenderCandidateVerifierV1;
   private readonly sessionRetentionMs: number;
   private readonly staticVideoCommand: readonly string[];
   private readonly sessions = new Map<string, RenderSession>();
@@ -308,6 +308,11 @@ export class ManimRenderManager {
       snapshotVersion: options.snapshotVersion,
       tenantId: this.tenantId,
       timeoutMs: options.snapshotTimeoutMs,
+    });
+    this.candidateVerifier = new ManimRenderCandidateVerifierV1({
+      frame: this.frame,
+      logger: this.logger,
+      runner: this.snapshotRunner,
     });
     const thumbnailCacheRoot = options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails");
     this.storageRoots = normalizeManimStorageRoots([this.projectRoot, thumbnailCacheRoot]);
@@ -730,155 +735,6 @@ export class ManimRenderManager {
     return { lowered, renderRequest, sourceSnapshot };
   }
 
-  private async preflightLoweredCandidate(
-    lowered: LoweredProgramBatchSource,
-    request: ProgramRenderRequest,
-    signal?: AbortSignal,
-  ) {
-    const preflight = lowered.preflight;
-    if (!preflight) return;
-    const profile = preflight.kind;
-    if (profile !== "fast-manim-warp-square-v9" && profile !== "fast-manim-line-joints-v10") return;
-    const lineJointsV10 = profile === "fast-manim-line-joints-v10";
-    const expectedSnapshotVersion = lineJointsV10 ? 10 : 9;
-    const expectedSourceNames = lineJointsV10 ? (["grp", "t1", "t2", "t3"] as const) : (["square"] as const);
-    const profileLabel = lineJointsV10 ? "LineJoints" : "WarpSquare";
-    const reject = (): never => {
-      throw new HttpError(
-        `The edited ${profileLabel} source could not be verified against its exact runtime identity. Reimport and try again.`,
-        409,
-      );
-    };
-    if (request.sourceHash !== preflight.baseSourceHash) reject();
-    const candidateHash = sourceHash(lowered.source);
-    const candidateScene = sceneView(
-      importSourceSnapshot(lowered.source, request.sourcePath, this.frame).view,
-      request.sceneName,
-    );
-    const sourceVariables = candidateScene ? new Map(Object.entries(candidateScene.sourceVariables)) : new Map();
-    const bindingsByName = new Map(
-      request.sourceBindings.map(({ entityId, sourceVariable }) => [sourceVariable, entityId]),
-    );
-    if (
-      !candidateScene ||
-      candidateScene.sourceHash !== candidateHash ||
-      request.sourceBindings.length !== expectedSourceNames.length ||
-      bindingsByName.size !== expectedSourceNames.length ||
-      sourceVariables.size !== expectedSourceNames.length ||
-      new Set(request.sourceBindings.map(({ entityId }) => entityId)).size !== expectedSourceNames.length ||
-      expectedSourceNames.some((name) => {
-        const entityId = bindingsByName.get(name);
-        return entityId === undefined || sourceVariables.get(entityId) !== name;
-      })
-    ) {
-      reject();
-    }
-
-    const result: FastManimUnpublishedSnapshotRunViewV1 = await (async () => {
-      try {
-        return await this.snapshotRunner.runCandidateUnpublished(
-          lowered.source,
-          {
-            projectId: request.projectId,
-            requestId: renderRequestId(request),
-            sceneName: request.sceneName,
-            sourcePath: request.sourcePath,
-          },
-          signal,
-        );
-      } catch {
-        throwIfAborted(signal);
-        this.logger.warn(
-          `render.${lineJointsV10 ? "line_joints_v10" : "warp_square_v9"}_candidate_preflight_rejected`,
-          {
-            failure: "snapshot-run-rejected",
-            sourcePath: request.sourcePath,
-          },
-        );
-        return reject();
-      }
-    })();
-    throwIfAborted(signal);
-    const verifiedResult = result.status === "verified" ? result : reject();
-    const scene = (await parseVerifiedSceneIrBundleV1(verifiedResult.snapshot.bundle).catch(() => reject())).scene;
-    const identity = verifiedResult.sourceRuntimeIdentity ?? reject();
-    if (
-      verifiedResult.projectId !== request.projectId ||
-      verifiedResult.requestId !== renderRequestId(request) ||
-      verifiedResult.sceneName !== request.sceneName ||
-      verifiedResult.sourcePath !== request.sourcePath ||
-      verifiedResult.snapshot.sourceHash !== candidateHash ||
-      scene.source.kind !== "imported-manim-server-snapshot" ||
-      scene.source.snapshotVersion !== expectedSnapshotVersion ||
-      scene.source.sourceHash !== candidateHash ||
-      identity.sourceHash !== candidateHash ||
-      identity.sceneId !== scene.sceneId ||
-      identity.runtimeConfigHash !== verifiedResult.runtimeConfigHash ||
-      identity.snapshotHash !== verifiedResult.snapshot.snapshotHash
-    ) {
-      reject();
-    }
-    if (!lineJointsV10) {
-      const entity = scene.entities[0];
-      const mapping = identity.mappings[0];
-      if (
-        scene.entities.length !== 1 ||
-        !entity ||
-        entity.sceneOrder !== 0 ||
-        identity.mappings.length !== 1 ||
-        !mapping ||
-        mapping.entityId !== entity.id ||
-        mapping.provenanceId !== entity.provenanceId ||
-        mapping.familyPath.length !== 0 ||
-        mapping.binding.name !== "square" ||
-        mapping.binding.ordinal !== 1 ||
-        mapping.binding.span.startLine !== 87 ||
-        mapping.binding.span.endLine !== 87 ||
-        mapping.binding.span.startColumn !== 8 ||
-        mapping.binding.span.endColumn !== 14
-      ) {
-        reject();
-      }
-      return;
-    }
-
-    const [group, t1, t2, t3] = scene.entities;
-    const mappingsByName = new Map(identity.mappings.map((mapping) => [mapping.binding.name, mapping]));
-    const expectedMappings = [
-      { columnEnd: 11, entity: group, familyPath: [] as const, line: 173, name: "grp", ordinal: 4 },
-      { columnEnd: 10, entity: t1, familyPath: [0] as const, line: 169, name: "t1", ordinal: 1 },
-      { columnEnd: 10, entity: t2, familyPath: [1] as const, line: 170, name: "t2", ordinal: 2 },
-      { columnEnd: 10, entity: t3, familyPath: [2] as const, line: 171, name: "t3", ordinal: 3 },
-    ] as const;
-    if (
-      scene.entities.length !== 4 ||
-      identity.mappings.length !== 4 ||
-      mappingsByName.size !== 4 ||
-      !group ||
-      group.parentId !== null ||
-      expectedMappings.some(({ columnEnd, entity, familyPath, line, name, ordinal }, sceneOrder) => {
-        const mapping = mappingsByName.get(name);
-        return (
-          !entity ||
-          entity.sceneOrder !== sceneOrder ||
-          (sceneOrder > 0 && entity.parentId !== group.id) ||
-          !mapping ||
-          mapping.entityId !== entity.id ||
-          mapping.provenanceId !== entity.provenanceId ||
-          mapping.familyPath.length !== familyPath.length ||
-          mapping.familyPath.some((value, index) => value !== familyPath[index]) ||
-          mapping.binding.ordinal !== ordinal ||
-          mapping.binding.span.startLine !== line ||
-          mapping.binding.span.endLine !== line ||
-          mapping.binding.span.startColumn !== 8 ||
-          mapping.binding.span.endColumn !== columnEnd
-        );
-      })
-    ) {
-      reject();
-    }
-  }
-
   private async prepareRender(
     request: ProgramRenderRequest,
     reservation: RenderStartReservation,
@@ -888,7 +744,7 @@ export class ManimRenderManager {
     let tempRoot: string | null = null;
     try {
       const { lowered, renderRequest, sourceSnapshot } = await this.lowerRequest(request, signal);
-      await this.preflightLoweredCandidate(lowered, renderRequest, signal);
+      await this.candidateVerifier.verify(lowered, renderRequest, signal);
       const sourcePath = sourceSnapshot.absolutePath;
       const originalSource = sourceSnapshot.source;
       throwIfAborted(signal);
