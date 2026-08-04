@@ -145,9 +145,10 @@ type StudioPreviewHostInstallationV1 = Readonly<{
  * morph remains display-only unless the exact WarpSquare V9 temporal slice can
  * be truthfully rebased. V6 through V9 require server-verified source/runtime
  * bindings. V10 additionally requires the sealed LineJoints hierarchy and
- * admits mutation only for its runtime-proven center leaf. Older snapshot-only
- * profiles retain their semantic interaction fallback; no gesture guesses
- * from Scene order.
+ * admits mutation only for its runtime-proven center leaf. V11 requires its
+ * complete SpiralIn hierarchy but remains selection-only because it has no
+ * source rewrite contract. Older snapshot-only profiles retain their semantic
+ * interaction fallback; no gesture guesses from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
@@ -166,7 +167,8 @@ export function studioPreviewInteractionAuthorityV1(
     Number(source.snapshotVersion) !== 6 &&
     Number(source.snapshotVersion) !== 7 &&
     Number(source.snapshotVersion) !== 8 &&
-    Number(source.snapshotVersion) !== 10
+    Number(source.snapshotVersion) !== 10 &&
+    Number(source.snapshotVersion) !== 11
   ) {
     return { kind: "interactive" };
   }
@@ -174,7 +176,8 @@ export function studioPreviewInteractionAuthorityV1(
   if (
     Number(source.snapshotVersion) === 7 ||
     Number(source.snapshotVersion) === 8 ||
-    Number(source.snapshotVersion) === 10
+    Number(source.snapshotVersion) === 10 ||
+    Number(source.snapshotVersion) === 11
   ) {
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
@@ -185,7 +188,12 @@ export function studioPreviewInteractionAuthorityV1(
       mappedEntityIds.size === entities.length &&
       entities.every(({ id }) => mappedEntityIds.has(id));
     if (!complete) return { kind: "display-only", reason: "source-runtime-identity-unverified" };
-    if (Number(source.snapshotVersion) !== 10) return { kind: "interactive" };
+    if (Number(source.snapshotVersion) !== 10 && Number(source.snapshotVersion) !== 11) {
+      return { kind: "interactive" };
+    }
+    if (Number(source.snapshotVersion) === 11) {
+      return { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
+    }
     const initialEditAuthority = snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null;
     return initialEditAuthority?.profile === "line-joints-v10"
       ? { kind: "interactive" }

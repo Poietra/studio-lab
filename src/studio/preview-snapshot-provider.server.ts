@@ -259,7 +259,11 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
     for (const mapping of verified.mappings) {
       const entity = entities.get(mapping.entityId);
       const expectedFamilyPath =
-        source.snapshotVersion === 10 && entity ? (entity.sceneOrder === 0 ? [] : [entity.sceneOrder - 1]) : [];
+        (source.snapshotVersion === 10 || source.snapshotVersion === 11) && entity
+          ? entity.sceneOrder === 0
+            ? []
+            : [entity.sceneOrder - 1]
+          : [];
       if (
         !entity ||
         entity.provenanceId !== mapping.provenanceId ||
