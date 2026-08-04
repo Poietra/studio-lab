@@ -177,6 +177,25 @@ describe("segmented Tex/MathTex outline V1", () => {
     expect(segmentedTexOutlineResponseV1Schema.safeParse(zeroWidth).success).toBe(false);
   });
 
+  it("rejects duplicate, omitted, and wrong Tex glyph byte ranges", () => {
+    const duplicate = structuredClone(responseForCase(evidence.cases[0]!));
+    if (duplicate.result.kind !== "compiled") throw new Error("text fixture must compile");
+    duplicate.result.fragments[1]!.sourceCorrelation = structuredClone(
+      duplicate.result.fragments[0]!.sourceCorrelation,
+    );
+    expect(segmentedTexOutlineResponseV1Schema.safeParse(duplicate).success).toBe(false);
+
+    const omitted = structuredClone(responseForCase(evidence.cases[0]!));
+    if (omitted.result.kind !== "compiled") throw new Error("text fixture must compile");
+    omitted.result.fragments.pop();
+    expect(segmentedTexOutlineResponseV1Schema.safeParse(omitted).success).toBe(false);
+
+    const wrong = structuredClone(responseForCase(evidence.cases[0]!));
+    if (wrong.result.kind !== "compiled") throw new Error("text fixture must compile");
+    wrong.result.fragments[0]!.sourceCorrelation = structuredClone(wrong.result.fragments[1]!.sourceCorrelation);
+    expect(segmentedTexOutlineResponseV1Schema.safeParse(wrong).success).toBe(false);
+  });
+
   it("keeps the sibling ABI handshake independent and parses bounded wire responses", async () => {
     const candidate = {
       compileSegmentedTexOutlineV1: (bytes: Uint8Array) => bytes,

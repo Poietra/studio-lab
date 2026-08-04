@@ -186,6 +186,21 @@ function byteBoundaries(source: string) {
   return { boundaries, byteLength: offset };
 }
 
+function exactTexTextGlyphRanges(source: string) {
+  const ranges: { sourceEndByte: number; sourceStartByte: number }[] = [];
+  let byteOffset = 0;
+  let sourceIsSupported = true;
+  for (const character of source) {
+    const sourceStartByte = byteOffset;
+    byteOffset += encoder.encode(character).byteLength;
+    if (!/^[\x20-\x7e]$/u.test(character) || /[\\{}%#$&^_~]/u.test(character)) {
+      sourceIsSupported = false;
+    }
+    if (character !== " ") ranges.push({ sourceEndByte: byteOffset, sourceStartByte });
+  }
+  return { ranges, sourceIsSupported };
+}
+
 function equalPaint(
   left: Readonly<{ alpha: number; blue: number; green: number; red: number }>,
   right: Readonly<{ alpha: number; blue: number; green: number; red: number }>,
@@ -197,8 +212,18 @@ const WHITE = { alpha: 1, blue: 1, green: 1, red: 1 } as const;
 
 function validateCompiledArtifact(artifact: z.infer<typeof compiledSchema>, context: z.RefinementCtx) {
   const { boundaries, byteLength } = byteBoundaries(artifact.source);
+  const textGlyphs = exactTexTextGlyphRanges(artifact.source);
   if (byteLength > MAX_SOURCE_BYTES) {
     context.addIssue({ code: "custom", message: "Segmented Tex source exceeds 256 UTF-8 bytes." });
+  }
+  if (
+    artifact.mode === "tex-text" &&
+    (!textGlyphs.sourceIsSupported || textGlyphs.ranges.length !== artifact.fragments.length)
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Tex text fragments must map one-to-one to the bounded literal source glyphs.",
+    });
   }
   if (
     Math.abs(artifact.bounds.top - artifact.bounds.bottom - 1) > NORMALIZATION_TOLERANCE ||
@@ -234,7 +259,6 @@ function validateCompiledArtifact(artifact: z.infer<typeof compiledSchema>, cont
     previousSpanEnd = span.sourceEndByte;
   }
 
-  let previousExactStart = 0;
   for (const [index, fragment] of artifact.fragments.entries()) {
     const expectedId = `fragment-${index.toString().padStart(4, "0")}`;
     if (
@@ -254,17 +278,19 @@ function validateCompiledArtifact(artifact: z.infer<typeof compiledSchema>, cont
       context.addIssue({ code: "custom", message: "Segmented Tex fragment bounds must stay within aggregate bounds." });
     }
     const correlation = fragment.sourceCorrelation;
-    if (artifact.mode === "tex-text" && correlation.kind === "exact-byte-range") {
+    const expectedTextRange = textGlyphs.ranges[index];
+    if (artifact.mode === "tex-text" && correlation.kind === "exact-byte-range" && expectedTextRange !== undefined) {
       if (
         !boundaries.has(correlation.sourceStartByte) ||
         !boundaries.has(correlation.sourceEndByte) ||
-        correlation.sourceStartByte >= correlation.sourceEndByte ||
-        correlation.sourceStartByte < previousExactStart ||
-        correlation.sourceEndByte > byteLength
+        correlation.sourceStartByte !== expectedTextRange.sourceStartByte ||
+        correlation.sourceEndByte !== expectedTextRange.sourceEndByte
       ) {
-        context.addIssue({ code: "custom", message: "Tex glyph correlation must use ordered UTF-8 byte ranges." });
+        context.addIssue({
+          code: "custom",
+          message: "Tex glyph correlation must exactly match its non-whitespace source code point.",
+        });
       }
-      previousExactStart = correlation.sourceStartByte;
       const span = artifact.paintSpans.find(
         ({ sourceEndByte, sourceStartByte }) =>
           sourceStartByte <= correlation.sourceStartByte && correlation.sourceEndByte <= sourceEndByte,
