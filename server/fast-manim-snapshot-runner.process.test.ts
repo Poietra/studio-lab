@@ -202,6 +202,46 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     await compiledRunner.close();
   });
 
+  it.each([
+    ["explicit", producerCommand("--mode=unsupported"), { snapshotVersion: 10 }],
+    ["automatic", producerCommand("--mode=unsupported", "--select-version=10"), { automaticProfileSelection: true }],
+  ] as const)(
+    "admits exact LineJoints V10 candidate bytes through %s profile selection",
+    async (kind, command, options) => {
+      const root = await projectRoot();
+      const official = await readFile(
+        new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+        "utf8",
+      );
+      const sourceText = official.replace(
+        "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
+        "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)",
+      );
+      expect(sourceText).not.toBe(official);
+      const runner = createRunner(root, command, {
+        ...options,
+        sourceReadHooks: {
+          beforeOpen: () => {
+            throw new Error("Candidate preflight must not read project source.");
+          },
+        },
+      });
+
+      const result = await runner.runCandidateUnpublished(sourceText, {
+        projectId: "default",
+        requestId: `snapshot-request-v10-candidate-${kind}`,
+        sceneName: "LineJoints",
+        sourcePath: "example_scenes/basic.py",
+      });
+
+      expect(result).toMatchObject({
+        requestId: `snapshot-request-v10-candidate-${kind}`,
+        status: "unsupported",
+      });
+      expect(result.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(10)));
+    },
+  );
+
   it("verifies and republishes the current snapshotJson source/runtime identity map", async () => {
     const runner = createRunner(await projectRoot(), producerCommand("--mode=combined-identity"));
     const first = await runner.run(runRequest());
