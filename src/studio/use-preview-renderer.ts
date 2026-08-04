@@ -76,7 +76,7 @@ export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive" }>
   | Readonly<{
       kind: "display-only";
-      reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified";
+      reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
     }>;
 
 export type UseStudioPreviewRendererInputV1 = Readonly<{
@@ -136,9 +136,11 @@ type StudioPreviewHostInstallationV1 = Readonly<{
 
 /**
  * Runtime pixels may be presented without source interaction authority. V5
- * deliberately has aggregate morph lineage, while V6 through V8 require
- * server-verified source/runtime bindings. Older snapshot-only profiles retain
- * their semantic interaction fallback; no gesture guesses from Scene order.
+ * deliberately has aggregate morph lineage, while V9's pointwise-function
+ * morph is display-only until Studio can truthfully rebase that semantic edit.
+ * V6 through V8 require server-verified source/runtime bindings. Older
+ * snapshot-only profiles retain their semantic interaction fallback; no
+ * gesture guesses from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
@@ -147,6 +149,9 @@ export function studioPreviewInteractionAuthorityV1(
   if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
+  }
+  if (Number(source.snapshotVersion) === 9) {
+    return { kind: "display-only", reason: "temporal-rebase-unavailable" };
   }
   if (
     Number(source.snapshotVersion) !== 6 &&
