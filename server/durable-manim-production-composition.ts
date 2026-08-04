@@ -14,6 +14,7 @@ import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
 } from "./fast-manim-production-snapshot-runner-factory";
+import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import type { ManimRenderProductionSandboxClientOptionsV1 } from "./manim-render-production-sandbox-client";
 import { MANIM_RENDER_CANONICAL_SCENE_FRAME_V1 } from "./manim-render-sandbox-contract";
 import {
@@ -451,6 +452,23 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let publisher: SnapshotArtifactPublisherV1 | undefined;
   let snapshots: DurableFastManimSnapshotServiceV1 | undefined;
   try {
+    snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
+      client: options.snapshot.sandbox,
+      frame,
+      projectPngRepository,
+      projectPngs,
+      ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
+      tenantId: options.tenantId,
+      ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
+    });
+    publisher = new SnapshotArtifactPublisherV1({ artifacts, publications: snapshotRepository });
+    snapshots = new DurableFastManimSnapshotServiceV1({
+      blobs,
+      factory: snapshotFactory,
+      publisher,
+      sourceRepository: repository,
+      tenantId: options.tenantId,
+    });
     renderExecutor = await createProductionDurableManimRenderExecutorV1({
       blobs,
       client: { ...options.renderSandbox, stagingRoot: options.renderArtifacts.stagingRoot },
@@ -510,9 +528,11 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       tenantId: options.tenantId,
       wake: () => renderCancellationRelay?.wake(),
     });
+    const candidateVerifier = new ManimRenderCandidateVerifierV1({ frame, runner: snapshots });
     renders = new DurableManimRenderServiceV1({
       artifactReader,
       blobs,
+      candidateVerifier,
       ...(options.renderWorker.executionTimeoutMs === undefined
         ? {}
         : { executionTimeoutMs: options.renderWorker.executionTimeoutMs }),
@@ -522,23 +542,6 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       },
       frame,
       repository: renderRepository,
-      sourceRepository: repository,
-      tenantId: options.tenantId,
-    });
-    snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
-      client: options.snapshot.sandbox,
-      frame,
-      projectPngRepository,
-      projectPngs,
-      ...(options.snapshot.snapshotVersion === undefined ? {} : { snapshotVersion: options.snapshot.snapshotVersion }),
-      tenantId: options.tenantId,
-      ...(options.snapshot.timeoutMs === undefined ? {} : { timeoutMs: options.snapshot.timeoutMs }),
-    });
-    publisher = new SnapshotArtifactPublisherV1({ artifacts, publications: snapshotRepository });
-    snapshots = new DurableFastManimSnapshotServiceV1({
-      blobs,
-      factory: snapshotFactory,
-      publisher,
       sourceRepository: repository,
       tenantId: options.tenantId,
     });
