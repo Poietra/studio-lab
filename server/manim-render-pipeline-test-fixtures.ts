@@ -183,6 +183,7 @@ export async function fixture(
     maxRetainedSessions?: number;
     renderTimeoutMs?: number;
     sourceStoreHooks?: ManimSourceReadHooks;
+    staticVideoCommand?: readonly string[];
   }> = {},
 ) {
   const projectRoot = await mkdtemp(join(tmpdir(), "poietra-render-test-"));

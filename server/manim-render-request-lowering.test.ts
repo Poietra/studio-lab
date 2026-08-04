@@ -16,6 +16,13 @@ const warpSquareSource = readFileSync(
   new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
   "utf8",
 );
+const lineJointsSourcePath = "example_scenes/basic.py";
+const lineJointsSceneName = "LineJoints";
+const lineJointsEntityId = `source:${lineJointsSourcePath}#${lineJointsSceneName}:t2`;
+const lineJointsSourceBindings = ["t1", "t2", "t3", "grp"].map((sourceVariable) => ({
+  entityId: `source:${lineJointsSourcePath}#${lineJointsSceneName}:${sourceVariable}`,
+  sourceVariable,
+}));
 const sceneSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -163,6 +170,56 @@ describe("Manim render request lowering", () => {
 
     expect(result.lowered.preflight?.kind).toBe("fast-manim-warp-square-v9");
     expect(result.lowered.source).toContain("        square.move_to((2, 1, 0))\n        self.play(");
+  });
+
+  it("routes one source-time-zero LineJoints V10 leaf transform through the bounded early lowerer", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: lineJointsEntityId,
+      id: "line-joints-position",
+      interval: { end: 0, start: 0 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: ["verified LineJoints V10 source-time zero"], origin: "direct-manipulation" },
+      value: { x: 410, y: 135 },
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["verified LineJoints V10 source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["LineJoints V10 central-leaf edit"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: "line-joints-v10-initial-transform",
+      version: 1,
+    };
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 14.222222222222221 },
+      originalSource: warpSquareSource,
+      projectId: "default",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "default",
+        sceneName: lineJointsSceneName,
+        sourceBindings: lineJointsSourceBindings,
+        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
+        sourcePath: lineJointsSourcePath,
+        viewport: { height: 360, width: 640 },
+      },
+    });
+
+    expect(result.lowered.preflight?.kind).toBe("fast-manim-line-joints-v10");
+    expect(result.lowered.source).toContain(
+      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((2, 1, 0))\n\n        self.add(grp)",
+    );
   });
 
   it("evaluates an out-of-order batch in source-anchor order without mutating the input", () => {

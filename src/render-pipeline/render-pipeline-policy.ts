@@ -19,8 +19,8 @@ export type RenderProgramCandidate = Readonly<{
   sourceBindings: ProgramRenderRequest["sourceBindings"];
   sourceHash: string;
   sourcePath: string;
-  /** Producer-backed t=0 authority for the one exact WarpSquare V9 slice. */
-  verifiedWarpSquareInitialAnchor?: 0;
+  /** Producer-backed t=0 authority for one exact initial-edit slice. */
+  verifiedInitialEditAnchor?: 0;
   viewport: ProgramRenderRequest["viewport"];
 }>;
 
@@ -64,7 +64,7 @@ export function renderCandidateRequestKey(candidate: RenderProgramCandidate) {
   return JSON.stringify({
     anchors: candidate.anchors,
     request: renderCandidateRequest(candidate),
-    verifiedWarpSquareInitialAnchor: candidate.verifiedWarpSquareInitialAnchor ?? null,
+    verifiedInitialEditAnchor: candidate.verifiedInitialEditAnchor ?? null,
   });
 }
 
@@ -73,7 +73,7 @@ export function renderCandidateMissingAnchor(candidate: RenderProgramCandidate |
     candidate?.programs.find(
       (program) =>
         !candidate.anchors.some((anchor) => Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005) &&
-        candidate.verifiedWarpSquareInitialAnchor !== program.anchor.resolvedSeconds,
+        candidate.verifiedInitialEditAnchor !== program.anchor.resolvedSeconds,
     )?.anchor.resolvedSeconds ?? null
   );
 }

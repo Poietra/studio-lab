@@ -253,9 +253,9 @@ class TransformedImageScene(Scene):
 ] as const);
 
 const TRUSTED_IMAGE_LABELS = Object.freeze({
-  "io.poietra.fast-manim.archive-sha256": "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6",
-  "io.poietra.fast-manim.commit": "29d21a2bd213df8ffeed0454278aa86289d190b8",
-  "io.poietra.fast-manim.tree": "d486d57ba637da1e915a5b29d6bda2d967570a54",
+  "io.poietra.fast-manim.archive-sha256": "8eefa2a939cfa4670f4945537ba152b9a54906efafeaee338ddbb6624661c16b",
+  "io.poietra.fast-manim.commit": "cd0cb237606b240a3c795b1171d61eeb3cef5305",
+  "io.poietra.fast-manim.tree": "8007d53a31d2918e81116c675c352edc761a6ef2",
   "io.poietra.mathtex-outline.abi-version": "1",
   "io.poietra.mathtex-outline.artifact-sha256": "0".repeat(64),
   "io.poietra.mathtex-outline.engine-archive-sha256":

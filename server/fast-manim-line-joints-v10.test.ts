@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { FastManimSandboxBackendV1 } from "./fast-manim-sandbox-backend";
 import {
+  deriveLineJointsV10TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10,
   FAST_MANIM_LINE_JOINTS_SEMANTICS_SHA256_V10,
@@ -77,6 +78,34 @@ async function loadProducerFixture() {
 }
 
 describe("fast-manim LineJoints snapshot profile V10", () => {
+  it("derives only the canonical central-leaf transform tail", async () => {
+    const { sourceText } = await loadProducerFixture();
+    const edited = sourceText.replace(
+      "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
+      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((2, 1, 0))\n        t2.scale(1.5)\n\n        self.add(grp)",
+    );
+    expect(deriveLineJointsV10TransformPlan(sourceText, "LineJoints")).toEqual({ moveTo: null, scale: null });
+    expect(deriveLineJointsV10TransformPlan(edited, "LineJoints")).toEqual({
+      moveTo: { x: 2, y: 1 },
+      scale: 1.5,
+    });
+    expect(() =>
+      deriveLineJointsV10TransformPlan(edited.replace("t2.move_to", "t1.move_to"), "LineJoints"),
+    ).toThrowError(/bounded central-leaf edit/);
+    expect(() =>
+      deriveLineJointsV10TransformPlan(
+        edited.replace(
+          "        t2.move_to((2, 1, 0))\n        t2.scale(1.5)",
+          "        t2.scale(1.5)\n        t2.move_to((2, 1, 0))",
+        ),
+        "LineJoints",
+      ),
+    ).toThrowError(/bounded central-leaf edit/);
+    expect(() =>
+      deriveLineJointsV10TransformPlan(edited.replace("t2.scale(1.5)", "t2.scale(-1)"), "LineJoints"),
+    ).toThrowError(/positive Studio literal/);
+  });
+
   it("accepts, seals, and identity-maps the actual group plus three Triangle leaves", async () => {
     const { combined, expected, manifest, producer, sourceText } = await loadProducerFixture();
     const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producer.snapshotJson, expected, sourceText);
@@ -123,6 +152,57 @@ describe("fast-manim LineJoints snapshot profile V10", () => {
       { binding: { name: "t3", ordinal: 3 }, entityId: `${expected.sceneId}/entity:3`, familyPath: [2] },
     ]);
     expect(() => assertFastManimSnapshotIdentityAuthorityV1(sealed, identity)).not.toThrow();
+  });
+
+  it("verifies edited central-leaf geometry against the independently derived source plan", async () => {
+    const { envelope, expected, sourceText } = await loadProducerFixture();
+    const editedSource = sourceText.replace(
+      "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
+      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((2, 1, 0))\n        t2.scale(1.5)\n\n        self.add(grp)",
+    );
+    const sourceHash = createHash("sha256").update(editedSource, "utf8").digest("hex");
+    const editedEnvelope = structuredClone(envelope) as unknown as LineJointsEnvelope;
+    editedEnvelope.sourceHash = sourceHash;
+    editedEnvelope.bundle.scene.source.sourceHash = sourceHash;
+    const geometry = editedEnvelope.bundle.scene.entities[2]!.geometry;
+    if (geometry.kind !== "cubic-path") throw new Error("Expected central Triangle geometry.");
+    const transform = (point: { x: number; y: number }) => {
+      point.x = point.x * 1.5 + 2;
+      point.y = point.y * 1.5 + 1;
+    };
+    for (const subpath of geometry.path.subpaths) {
+      transform(subpath.start);
+      for (const segment of subpath.segments) {
+        transform(segment.control1);
+        transform(segment.control2);
+        transform(segment.end);
+      }
+    }
+    const editedExpected = {
+      ...expected,
+      lineJointsV10Plan: deriveLineJointsV10TransformPlan(editedSource, "LineJoints"),
+      sourceHash,
+    } satisfies ExpectedFastManimSnapshotCorrelationV1;
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(editedEnvelope), editedExpected, editedSource),
+    ).resolves.toMatchObject({ kind: "compiled", sourceHash });
+
+    for (const subpath of geometry.path.subpaths) {
+      subpath.start.x += 1e-9;
+      for (const segment of subpath.segments) {
+        segment.control1.x += 1e-9;
+        segment.control2.x += 1e-9;
+        segment.end.x += 1e-9;
+      }
+    }
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(editedEnvelope), editedExpected, editedSource),
+    ).rejects.toMatchObject({ code: "profile-violation" });
+
+    geometry.path.subpaths[0]!.start.x += 0.01;
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(editedEnvelope), editedExpected, editedSource),
+    ).rejects.toMatchObject({ code: "profile-violation" });
   });
 
   it("auto-selects V10 once, seals it, and reads the same publication by runtime identity", async () => {
@@ -304,11 +384,25 @@ type LineJointsEnvelope = {
           | { kind: "vector"; stroke: null | { join: "bevel" | "miter" | "round" } };
         geometry:
           | { kind: "group" }
-          | { kind: "cubic-path"; path: { subpaths: Array<{ start: { x: number; y: number } }> } };
+          | {
+              kind: "cubic-path";
+              path: {
+                subpaths: Array<{
+                  segments: Array<{
+                    control1: { x: number; y: number };
+                    control2: { x: number; y: number };
+                    end: { x: number; y: number };
+                  }>;
+                  start: { x: number; y: number };
+                }>;
+              };
+            };
         parentId: string | null;
       }>;
+      source: { sourceHash: string };
     };
   };
+  sourceHash: string;
 };
 
 type LineJointsCombinedDocument = {

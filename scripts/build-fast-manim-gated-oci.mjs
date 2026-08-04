@@ -17,9 +17,9 @@ const profiles = {
     tree: "b86e2ec81f257cae20669e3c5c33080facfbd610",
   },
   snapshot: {
-    archiveSha256: "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6",
+    archiveSha256: "8eefa2a939cfa4670f4945537ba152b9a54906efafeaee338ddbb6624661c16b",
     assetDirectory: "fast-manim-gated-oci",
-    commit: "29d21a2bd213df8ffeed0454278aa86289d190b8",
+    commit: "cd0cb237606b240a3c795b1171d61eeb3cef5305",
     engineArchiveSha256: "2aa42246977322bae54862f49ce28b3e61bf8b472a93800b2fdda8e344173d32",
     engineCommit: "be671c1ddcfc8466548c8822956e19579256e581",
     engineTree: "d0f6d72213c65527ae9b7a4717390b48db1e9256",
@@ -28,8 +28,8 @@ const profiles = {
     // builder produces the double-clean native artifact digest for this tree.
     mathtexExtensionSha256: PENDING_MATHTEX_ARTIFACT_SHA256,
     platform: "linux/amd64",
-    tag: "poietra-fast-manim-gated:29d21a2",
-    tree: "d486d57ba637da1e915a5b29d6bda2d967570a54",
+    tag: "poietra-fast-manim-gated:cd0cb23",
+    tree: "8007d53a31d2918e81116c675c352edc761a6ef2",
     verifier: "verify-mathtex-provider.py",
   },
 };

@@ -6,7 +6,11 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
-import { LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1, readLineJointsCairoReferenceV1 } from "./line-joints-cairo-reference";
+import {
+  LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1,
+  LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1,
+  readLineJointsCairoReferenceForEntryV1,
+} from "./line-joints-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -72,7 +76,7 @@ const REAL_WARP_SQUARE_V9_ENTRY_IDS = [
   "real-warp-square-v9--hold",
 ] as const;
 const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENTRY_IDS);
-const REAL_LINE_JOINTS_V10_ENTRY_ID = "real-line-joints-v10--static";
+const REAL_LINE_JOINTS_V10_ENTRY_ID_SET = new Set<string>(LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -325,10 +329,10 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
     );
   }
-  if (entry.id === REAL_LINE_JOINTS_V10_ENTRY_ID) {
-    const cairo = await readLineJointsCairoReferenceV1();
+  if (REAL_LINE_JOINTS_V10_ENTRY_ID_SET.has(entry.id)) {
+    const cairo = await readLineJointsCairoReferenceForEntryV1(entry.id);
     if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
-      throw new Error("The LineJoints V10 Cairo comparison requires an imported Manim snapshot.");
+      throw new Error("LineJoints V10 Cairo comparisons require imported Manim snapshots.");
     }
     expect(cairo.reference.frame.viewport).toEqual(entry.sample.viewport);
     expect(cairo.reference.frame.sampleTime).toBe(0);

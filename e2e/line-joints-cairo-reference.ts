@@ -11,6 +11,11 @@ const COMMIT_SHA = z.string().regex(/^[0-9a-f]{40}$/);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 
 export const LINE_JOINTS_CAIRO_REFERENCE_ROOT_V1 = "fixtures/line-joints-cairo-reference-v1";
+export const LINE_JOINTS_EDITED_CAIRO_REFERENCE_ROOT_V1 = "fixtures/line-joints-cairo-reference-v1-edited";
+export const LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1 = [
+  "real-line-joints-v10--static",
+  "real-line-joints-v10-edited--static",
+] as const;
 export const LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1 = {
   maximumPixelFractionAboveThreshold: 0.02,
   minimumSsim: 0.994,
@@ -121,4 +126,12 @@ export async function readLineJointsCairoReferenceV1(root = LINE_JOINTS_CAIRO_RE
   }
   requireDigest(sha256(rgba), reference.png.rgbaSha256, "the top-to-bottom Cairo RGBA frame");
   return { png, reference, rgba } as const;
+}
+
+export function readLineJointsCairoReferenceForEntryV1(entryId: string) {
+  if (entryId === LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1[0]) return readLineJointsCairoReferenceV1();
+  if (entryId === LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1[1]) {
+    return readLineJointsCairoReferenceV1(LINE_JOINTS_EDITED_CAIRO_REFERENCE_ROOT_V1);
+  }
+  throw new Error(`Visual-parity entry ${entryId} has no independent LineJoints Cairo reference.`);
 }

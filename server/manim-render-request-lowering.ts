@@ -2,6 +2,7 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
+  lowerLineJointsInitialTransformSourceV10,
   lowerWarpSquareInitialTransformSourceV9,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
@@ -59,6 +60,14 @@ export function lowerManimRenderRequest({
       null,
     );
     if (warpSquareV9) return { lowered: warpSquareV9, renderRequest: request };
+    const lineJointsV10 = lowerLineJointsInitialTransformSourceV10(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (lineJointsV10) return { lowered: lineJointsV10, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

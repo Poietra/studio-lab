@@ -56,7 +56,7 @@ export type LoweredProgramBatchSource = Readonly<{
   insertedCode: string;
   preflight?: Readonly<{
     baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
-    kind: "fast-manim-warp-square-v9";
+    kind: "fast-manim-line-joints-v10" | "fast-manim-warp-square-v9";
   }>;
   source: string;
 }>;
@@ -103,6 +103,9 @@ const WARP_SQUARE_OFFICIAL_SOURCE_PATH_V9 = "example_scenes/basic.py";
 const WARP_SQUARE_SCENE_NAME_V9 = "WarpSquare";
 const WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+const LINE_JOINTS_OFFICIAL_SOURCE_PATH_V10 = "example_scenes/basic.py";
+const LINE_JOINTS_SCENE_NAME_V10 = "LineJoints";
+const LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
 
 type TemporalSourceMarker =
   | Readonly<{
@@ -1810,6 +1813,93 @@ function warpSquareV9LoweringError(message: string): never {
   throw new ProgramLoweringError("operation-unsupported", `WarpSquare V9 initial transform: ${message}`);
 }
 
+function boundedInitialTransformPlan(
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  targetEntityId: string,
+  targetLabel: string,
+  fail: (message: string) => never,
+) {
+  const programs = renderRequestPrograms(request);
+  if (
+    programs.length < 1 ||
+    programs.length > 2 ||
+    entries.length !== programs.length ||
+    programs.some((program, index) => JSON.stringify(program) !== JSON.stringify(entries[index]?.program))
+  ) {
+    fail("one or two correlated initial-transform Programs are accepted.");
+  }
+  for (const { program, sourceAnchor } of entries) {
+    const operation = program.operations[0];
+    if (
+      sourceAnchor !== 0 ||
+      program.version !== EDIT_OPERATION_VERSION ||
+      program.anchor.capturedPlayhead !== 0 ||
+      program.anchor.resolvedSeconds !== 0 ||
+      program.intentCount !== 1 ||
+      program.loweringStatus !== "supported" ||
+      program.provenance.origin !== "direct-manipulation" ||
+      program.requestedExecution !== "parallel" ||
+      program.operations.length !== 1 ||
+      !operation ||
+      operation.dependsOn.length !== 0 ||
+      operation.provenance.origin !== "direct-manipulation" ||
+      program.schedule.mode !== "parallel" ||
+      program.schedule.edges.length !== 0 ||
+      program.schedule.order.length !== 1 ||
+      program.schedule.order[0] !== operation.id
+    ) {
+      fail("each edit must be one exact direct-manipulation Program at source time zero.");
+    }
+  }
+
+  let position: Readonly<{ x: number; y: number }> | null = null;
+  let scale: number | null = null;
+  for (const operation of entries.flatMap(({ program }) => program.operations)) {
+    if (operation.interval.start !== 0 || operation.interval.end !== 0) {
+      fail("the Program and every edit must be instantaneous at source time zero.");
+    }
+    if (!("entityId" in operation) || operation.entityId !== targetEntityId) {
+      fail(`every operation must target the one verified ${targetLabel} binding.`);
+    }
+    if (operation.kind === "SetProperty" && operation.key === "position") {
+      if (
+        position !== null ||
+        !isPoint(operation.value) ||
+        !Number.isFinite(operation.value.x) ||
+        !Number.isFinite(operation.value.y)
+      ) {
+        fail("position must be one finite absolute point.");
+      }
+      position = { x: operation.value.x, y: operation.value.y };
+      continue;
+    }
+    if (
+      operation.kind === "AnimateProperty" &&
+      operation.key === "scale" &&
+      operation.control === undefined &&
+      typeof operation.from === "number" &&
+      typeof operation.to === "number" &&
+      typeof operation.relativeFactor === "number" &&
+      Number.isFinite(operation.from) &&
+      Number.isFinite(operation.to) &&
+      Number.isFinite(operation.relativeFactor) &&
+      operation.from > 0 &&
+      operation.to > 0 &&
+      operation.relativeFactor > 0 &&
+      Math.abs(operation.from - 1) < 0.000001 &&
+      Math.abs(operation.to / operation.from - operation.relativeFactor) < 0.000001
+    ) {
+      if (scale !== null) fail("scale may be changed only once.");
+      scale = operation.relativeFactor;
+      continue;
+    }
+    fail("only one finite position and/or one positive uniform relative scale is accepted.");
+  }
+  if (position === null && scale === null) fail("the Program contains no supported initial transform.");
+  return { position, scale } as const;
+}
+
 export function lowerWarpSquareInitialTransformSourceV9(
   source: string,
   request: ProgramRenderRequest,
@@ -1852,39 +1942,6 @@ export function lowerWarpSquareInitialTransformSourceV9(
     warpSquareV9LoweringError("the pinned static camera must remain centered.");
   }
 
-  const programs = renderRequestPrograms(request);
-  if (
-    programs.length < 1 ||
-    programs.length > 2 ||
-    entries.length !== programs.length ||
-    programs.some((program, index) => JSON.stringify(program) !== JSON.stringify(entries[index]?.program))
-  ) {
-    warpSquareV9LoweringError("one or two correlated initial-transform Programs are accepted.");
-  }
-  for (const { program, sourceAnchor } of entries) {
-    const operation = program.operations[0];
-    if (
-      sourceAnchor !== 0 ||
-      program.version !== EDIT_OPERATION_VERSION ||
-      program.anchor.capturedPlayhead !== 0 ||
-      program.anchor.resolvedSeconds !== 0 ||
-      program.intentCount !== 1 ||
-      program.loweringStatus !== "supported" ||
-      program.provenance.origin !== "direct-manipulation" ||
-      program.requestedExecution !== "parallel" ||
-      program.operations.length !== 1 ||
-      !operation ||
-      operation.dependsOn.length !== 0 ||
-      operation.provenance.origin !== "direct-manipulation" ||
-      program.schedule.mode !== "parallel" ||
-      program.schedule.edges.length !== 0 ||
-      program.schedule.order.length !== 1 ||
-      program.schedule.order[0] !== operation.id
-    ) {
-      warpSquareV9LoweringError("each edit must be one exact direct-manipulation Program at source time zero.");
-    }
-  }
-
   if (request.sourceBindings.length !== 1 || request.sourceBindings[0]!.sourceVariable !== "square") {
     warpSquareV9LoweringError("exactly one imported `square` source binding is required.");
   }
@@ -1893,52 +1950,13 @@ export function lowerWarpSquareInitialTransformSourceV9(
     warpSquareV9LoweringError("the target does not match the pinned imported Square identity.");
   }
 
-  let position: Readonly<{ x: number; y: number }> | null = null;
-  let scale: number | null = null;
-  for (const operation of entries.flatMap(({ program }) => program.operations)) {
-    if (operation.interval.start !== 0 || operation.interval.end !== 0) {
-      warpSquareV9LoweringError("the Program and every edit must be instantaneous at source time zero.");
-    }
-    if (!("entityId" in operation) || operation.entityId !== binding.entityId) {
-      warpSquareV9LoweringError("every operation must target the one verified `square` binding.");
-    }
-    if (operation.kind === "SetProperty" && operation.key === "position") {
-      if (
-        position !== null ||
-        !isPoint(operation.value) ||
-        !Number.isFinite(operation.value.x) ||
-        !Number.isFinite(operation.value.y)
-      ) {
-        warpSquareV9LoweringError("position must be one finite absolute point.");
-      }
-      position = { x: operation.value.x, y: operation.value.y };
-      continue;
-    }
-    if (
-      operation.kind === "AnimateProperty" &&
-      operation.key === "scale" &&
-      operation.control === undefined &&
-      typeof operation.from === "number" &&
-      typeof operation.to === "number" &&
-      typeof operation.relativeFactor === "number" &&
-      Number.isFinite(operation.from) &&
-      Number.isFinite(operation.to) &&
-      Number.isFinite(operation.relativeFactor) &&
-      operation.from > 0 &&
-      operation.to > 0 &&
-      operation.relativeFactor > 0 &&
-      Math.abs(operation.from - 1) < 0.000001 &&
-      Math.abs(operation.to / operation.from - operation.relativeFactor) < 0.000001
-    ) {
-      if (scale !== null) warpSquareV9LoweringError("scale may be changed only once.");
-      scale = operation.relativeFactor;
-      continue;
-    }
-    warpSquareV9LoweringError("only one finite position and/or one positive uniform relative scale is accepted.");
-  }
-  if (position === null && scale === null) {
-    warpSquareV9LoweringError("the Program contains no supported initial transform.");
-  }
+  const { position, scale } = boundedInitialTransformPlan(
+    request,
+    entries,
+    binding.entityId,
+    "`square`",
+    warpSquareV9LoweringError,
+  );
 
   const statements = findSourceSceneStatements(source, request.sceneName, request.sourcePath);
   const assignments = statements.filter((statement) => statement.text === "square = Square()");
@@ -1973,6 +1991,117 @@ export function lowerWarpSquareInitialTransformSourceV9(
   };
 }
 
+function lineJointsV10LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `LineJoints V10 central-leaf transform: ${message}`);
+}
+
+export function lowerLineJointsInitialTransformSourceV10(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramBatchSource | null {
+  if (request.sourcePath !== LINE_JOINTS_OFFICIAL_SOURCE_PATH_V10 || request.sceneName !== LINE_JOINTS_SCENE_NAME_V10) {
+    return null;
+  }
+  if (request.sourceHash !== LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10) {
+    lineJointsV10LoweringError("the edit must be rebased from the pinned official source generation.");
+  }
+  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
+  if (!imported || imported.sourceHash !== LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10) {
+    lineJointsV10LoweringError("the current source bytes are not the pinned official source generation.");
+  }
+  if (incoming !== null || request.destination !== null) {
+    lineJointsV10LoweringError("Scene transitions are outside this bounded round-trip profile.");
+  }
+  if (
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0
+  ) {
+    lineJointsV10LoweringError("the Studio frame and viewport must be finite and positive.");
+  }
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  if (
+    !Number.isFinite(cameraCenter.x) ||
+    !Number.isFinite(cameraCenter.y) ||
+    cameraCenter.x !== 0 ||
+    cameraCenter.y !== 0
+  ) {
+    lineJointsV10LoweringError("the pinned static camera must remain centered.");
+  }
+
+  const expectedVariables = new Set(["grp", "t1", "t2", "t3"]);
+  if (
+    Object.keys(imported.sourceVariables).length !== expectedVariables.size ||
+    request.sourceBindings.length !== expectedVariables.size ||
+    new Set(request.sourceBindings.map(({ sourceVariable }) => sourceVariable)).size !== expectedVariables.size ||
+    request.sourceBindings.some(
+      ({ entityId, sourceVariable }) =>
+        !expectedVariables.has(sourceVariable) || imported.sourceVariables[entityId] !== sourceVariable,
+    )
+  ) {
+    lineJointsV10LoweringError("the exact imported `grp`, `t1`, `t2`, and `t3` source bindings are required.");
+  }
+  const binding = request.sourceBindings.find(({ sourceVariable }) => sourceVariable === "t2");
+  if (!binding) lineJointsV10LoweringError("the central `t2` source binding is unavailable.");
+  const { position, scale } = boundedInitialTransformPlan(
+    request,
+    entries,
+    binding.entityId,
+    "central `t2`",
+    lineJointsV10LoweringError,
+  );
+
+  const statements = findSourceSceneStatements(source, request.sceneName, request.sourcePath);
+  const t2Assignments = statements.filter(({ text }) => text === "t2 = Triangle(joint_type=LineJointType.ROUND)");
+  const groupLayouts = statements.filter(({ text }) => text === "grp.set(width=config.frame_width - 1)");
+  const additions = statements.filter(({ text }) => text === "self.add(grp)");
+  const t2Assignment = t2Assignments[0];
+  const groupLayout = groupLayouts[0];
+  const addition = additions[0];
+  if (
+    t2Assignments.length !== 1 ||
+    groupLayouts.length !== 1 ||
+    additions.length !== 1 ||
+    !t2Assignment ||
+    !groupLayout ||
+    !addition ||
+    t2Assignment.line >= groupLayout.line ||
+    groupLayout.line >= addition.line
+  ) {
+    lineJointsV10LoweringError("the pinned `t2` assignment and post-layout source boundary are unavailable.");
+  }
+
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const indentation = lines[groupLayout.line]?.match(/^\s*/)?.[0] ?? "";
+  if (indentation !== "        ") {
+    lineJointsV10LoweringError("the pinned group layout indentation changed.");
+  }
+  const insertedLines = [
+    ...(position === null ? [] : [`${indentation}t2.move_to(${pointExpression(position, frame, request.viewport)})`]),
+    ...(scale === null ? [] : [`${indentation}t2.scale(${formatPositiveAmount(scale)})`]),
+  ];
+  lines.splice(groupLayout.line + 1, 0, ...insertedLines);
+  return {
+    anchorLine: groupLayout.line + 1,
+    anchorLines: [groupLayout.line + 1],
+    insertedCode: insertedLines.join(newline),
+    preflight: {
+      baseSourceHash: LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10,
+      kind: "fast-manim-line-joints-v10",
+    },
+    source: lines.join(newline),
+  };
+}
+
 /**
  * Lowers validated Programs as one atomic source export. Entries carry both
  * their rebased runtime Program and the immutable source anchor that selected
@@ -1988,6 +2117,8 @@ export function lowerCanonicalProgramBatchSource(
 ): LoweredProgramBatchSource {
   const warpSquareV9 = lowerWarpSquareInitialTransformSourceV9(source, request, entries, frame, incoming);
   if (warpSquareV9) return warpSquareV9;
+  const lineJointsV10 = lowerLineJointsInitialTransformSourceV10(source, request, entries, frame, incoming);
+  if (lineJointsV10) return lineJointsV10;
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
   }

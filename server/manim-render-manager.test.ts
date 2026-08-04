@@ -83,6 +83,96 @@ describe("Manim render manager", () => {
     });
   });
 
+  it("converts a zero-animation Scene image to an MP4 before allowing Commit", async () => {
+    const { manager, projectRoot } = await fixture({
+      command: [process.execPath, fakeRenderer, "--static-render"],
+      staticVideoCommand: [process.execPath, fakeRenderer, "--convert-static"],
+    });
+
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+
+    expect(rendered).toMatchObject({ canCommit: true, progress: 1, status: "ready" });
+    expect(rendered.logTail).toContain("Converted static preview");
+    expect(await readFile(manager.videoPath(started.id), "utf8")).toBe("fake-static-mp4-preview");
+    expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(sceneSource);
+
+    await expect(manager.commit(started.id, commitRequest(started))).resolves.toMatchObject({ status: "committed" });
+  });
+
+  it("does not invoke static conversion when Manim produced an MP4", async () => {
+    const markerRoot = await mkdtemp(join(tmpdir(), "poietra-static-converter-marker-"));
+    temporaryRoots.push(markerRoot);
+    const marker = join(markerRoot, "unexpected-static-converter");
+    const { manager: guardedManager } = await fixture({
+      staticVideoCommand: [process.execPath, fakeRenderer, "--convert-static", "--converter-marker", marker],
+    });
+
+    const started = await guardedManager.start(request());
+    await expect(waitForTerminal(guardedManager, started.id)).resolves.toMatchObject({ status: "ready" });
+    await expect(access(marker)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("cancels a running static preview converter without a late ready transition", async () => {
+    const markerRoot = await mkdtemp(join(tmpdir(), "poietra-static-converter-marker-"));
+    temporaryRoots.push(markerRoot);
+    const marker = join(markerRoot, "static-converter-pid");
+    const { manager: convertingManager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--static-render"],
+      staticVideoCommand: [
+        process.execPath,
+        fakeRenderer,
+        "--convert-static",
+        "--slow-converter",
+        "--converter-marker",
+        marker,
+      ],
+    });
+    const started = await convertingManager.start(request());
+    await waitUntil(
+      () =>
+        access(marker).then(
+          () => true,
+          () => false,
+        ),
+      "The static preview converter did not start.",
+    );
+    const converterPid = Number(await readFile(marker, "utf8"));
+    expect(Number.isSafeInteger(converterPid)).toBe(true);
+
+    await expect(convertingManager.cancel(started.id)).resolves.toMatchObject({
+      status: "cancelled",
+    });
+    await waitUntil(() => {
+      try {
+        process.kill(converterPid, 0);
+        return false;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+        throw error;
+      }
+    }, "The cancelled static preview converter was not reaped.");
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(convertingManager.view(started.id).status).toBe("cancelled");
+  });
+
+  it("fails closed when static conversion produces an empty MP4", async () => {
+    const { manager } = await fixture({
+      command: [process.execPath, fakeRenderer, "--static-render"],
+      staticVideoCommand: [process.execPath, fakeRenderer, "--convert-static", "--empty-converter-output"],
+    });
+
+    const started = await manager.start(request());
+    const rendered = await waitForTerminal(manager, started.id);
+
+    expect(rendered).toMatchObject({
+      canCommit: false,
+      error: "Static preview conversion completed without producing a valid MP4 preview.",
+      status: "failed",
+      videoUrl: null,
+    });
+  });
+
   it("rejects a Commit that is not correlated with the rendered candidate", async () => {
     const { manager, projectRoot } = await fixture();
     const started = await manager.start(request());

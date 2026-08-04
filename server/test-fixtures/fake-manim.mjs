@@ -17,6 +17,30 @@ if (process.argv.includes("--version")) {
   process.exit(0);
 }
 
+if (process.argv.includes("--convert-static")) {
+  const inputIndex = process.argv.indexOf("-i");
+  const input = inputIndex >= 0 ? process.argv[inputIndex + 1] : null;
+  const output = process.argv.at(-1);
+  if (!input || !output) {
+    process.stderr.write("Missing static conversion input or output\n");
+    process.exit(2);
+  }
+  const markerIndex = process.argv.indexOf("--converter-marker");
+  if (markerIndex >= 0 && process.argv[markerIndex + 1]) {
+    await writeFile(process.argv[markerIndex + 1], String(process.pid), "utf8");
+  }
+  if (process.argv.includes("--slow-converter")) {
+    await new Promise(() => setInterval(() => undefined, 1_000));
+  }
+  await readFile(input);
+  await writeFile(
+    output,
+    process.argv.includes("--empty-converter-output") ? Buffer.alloc(0) : Buffer.from("fake-static-mp4-preview"),
+  );
+  process.stdout.write("Converted static preview\n");
+  process.exit(0);
+}
+
 if (process.argv.includes("--fail-render")) {
   process.stderr.write("Thumbnail render failed\n");
   process.exit(9);
@@ -70,7 +94,7 @@ process.stdout.write("Rendering 50%\n");
 const slowRender =
   process.argv.includes("--slow-render") || (process.argv.includes("--slow-thumbnail") && process.argv.includes("-s"));
 if (slowRender) await new Promise((resolve) => setTimeout(resolve, 10_000));
-if (process.argv.includes("-s")) {
+if (process.argv.includes("-s") || process.argv.includes("--static-render")) {
   const sceneName = process.argv.at(-1);
   const outputFileIndex = process.argv.indexOf("--output_file");
   const explicitOutputName = outputFileIndex >= 0 ? process.argv[outputFileIndex + 1] : null;

@@ -539,7 +539,7 @@ function validatePublishedMap(
   for (const mapping of map.mappings) {
     const entity = entities.get(mapping.entityId);
     const expectedFamilyPath =
-      source.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 10
+      source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 10
         ? lineJointsFamilyPathV10(entity?.sceneOrder ?? -1)
         : [];
     requireIdentity(

@@ -764,6 +764,12 @@ export function App({
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
+  const boundedRuntimeEditTargetId =
+    previewRenderer?.initialEditRuntimeAuthority?.profile === "line-joints-v10"
+      ? previewRenderer.initialEditRuntimeAuthority.studioEntityId
+      : null;
+  const boundedRuntimeMutationIsLocked = (entityId: string) =>
+    boundedRuntimeEditTargetId !== null && entityId !== boundedRuntimeEditTargetId;
   const {
     beginRequest: beginEditorRevisionRequest,
     blockDurationAuthority,
@@ -1984,7 +1990,7 @@ export function App({
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     if (canvasDrag.current || canvasResize.current) return;
-    if (previewSelectionOnly) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
     }
@@ -2010,7 +2016,12 @@ export function App({
           (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId))),
       ),
     );
-    const targetEntityIds = selectedEditableIds.includes(entityId) ? selectedEditableIds : [entityId];
+    const targetEntityIds =
+      boundedRuntimeEditTargetId === entityId
+        ? [entityId]
+        : selectedEditableIds.includes(entityId)
+          ? selectedEditableIds
+          : [entityId];
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -2110,7 +2121,7 @@ export function App({
   ) {
     event.stopPropagation();
     if (canvasDrag.current || canvasResize.current) return;
-    if (previewSelectionOnly) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
     }
@@ -2260,7 +2271,7 @@ export function App({
     if (!delta) return;
     event.preventDefault();
     event.stopPropagation();
-    if (previewSelectionOnly) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
     }
@@ -2456,7 +2467,7 @@ export function App({
   }
 
   function resizeEntityFromInspector(entityId: string, targetScale: number) {
-    if (previewSelectionOnly) return false;
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity || Math.abs(entity.scale - targetScale) < 0.001) return false;
     return installEntityScaleDraft(
@@ -2471,6 +2482,10 @@ export function App({
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
+      return false;
+    }
+    if (boundedRuntimeMutationIsLocked(entityId)) {
+      setDraftError("Only the runtime-proven center LineJoints object can be edited in this preview.");
       return false;
     }
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
@@ -2546,7 +2561,7 @@ export function App({
       return;
     }
     if (!gestureContext.proposedState || !projection) return;
-    const projected = projectedPositions(projection.canvas.entities, targetIds);
+    const projected = projectedPositions(editableEntities, targetIds);
     if (projected.kind === "invalid") {
       setDraftError(projected.message);
       return;
@@ -2604,12 +2619,17 @@ export function App({
     const delta = NUDGE_DELTAS[event.key];
     if (!delta || !draftBaseState || !projection) return;
     event.preventDefault();
-    if (previewSelectionOnly) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
       return;
     }
     const multiplier = event.shiftKey ? 5 : 1;
-    const targetIds = selectedObjectIds.includes(entityId) ? selectedObjectIds : [entityId];
+    const targetIds =
+      boundedRuntimeEditTargetId === entityId
+        ? [entityId]
+        : selectedObjectIds.includes(entityId)
+          ? selectedObjectIds
+          : [entityId];
     installPositionDraft(
       { x: delta.x * multiplier, y: delta.y * multiplier },
       targetIds,
@@ -2734,7 +2754,7 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
-          ...(previewRenderer?.initialEditRuntimeAuthority ? { verifiedWarpSquareInitialAnchor: 0 as const } : {}),
+          ...(previewRenderer?.initialEditRuntimeAuthority ? { verifiedInitialEditAnchor: 0 as const } : {}),
           viewport: STUDIO_VIEWPORT,
         }
       : null;

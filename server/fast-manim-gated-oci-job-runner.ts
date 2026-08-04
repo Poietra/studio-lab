@@ -87,9 +87,9 @@ const REQUIRED_READ_ONLY_SYSTEM_PATHS = Object.freeze([
   "/proc/sys",
   "/proc/sysrq-trigger",
 ] as const);
-const FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1 = "c4796847340c34a82396acdb56ae5e9d3d85e8414b9740860062e9f28712fad6";
-const FAST_MANIM_GATED_OCI_COMMIT_V1 = "29d21a2bd213df8ffeed0454278aa86289d190b8";
-const FAST_MANIM_GATED_OCI_TREE_V1 = "d486d57ba637da1e915a5b29d6bda2d967570a54";
+const FAST_MANIM_GATED_OCI_ARCHIVE_SHA256_V1 = "8eefa2a939cfa4670f4945537ba152b9a54906efafeaee338ddbb6624661c16b";
+const FAST_MANIM_GATED_OCI_COMMIT_V1 = "cd0cb237606b240a3c795b1171d61eeb3cef5305";
+const FAST_MANIM_GATED_OCI_TREE_V1 = "8007d53a31d2918e81116c675c352edc761a6ef2";
 
 /**
  * Versioned dependency on fast-manim's complete V4 Python-AST admission

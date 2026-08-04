@@ -40,6 +40,7 @@ const nativeTestByEntryId = new Map([
   ["real-warp-square-v9--target", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
   ["real-warp-square-v9--hold", "renders_real_warp_square_v9_samples_with_fallback_adapter"],
   ["real-line-joints-v10--static", "renders_real_line_joints_v10_static_with_fallback_adapter"],
+  ["real-line-joints-v10-edited--static", "renders_real_line_joints_v10_edited_static_with_fallback_adapter"],
 ]);
 const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
 const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();

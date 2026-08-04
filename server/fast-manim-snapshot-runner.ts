@@ -21,6 +21,7 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
+  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
@@ -700,7 +701,7 @@ export class FastManimSnapshotRunner {
 
   /**
    * Verifies immutable candidate bytes without reading or publishing project
-   * source. This is the server-internal V9 Apply preflight: candidate bytes
+   * source. This is the server-internal bounded-edit preflight: candidate bytes
    * become the correlated producer input and must pass the same seal plus
    * complete source/runtime identity authority as a normal unpublished run.
    */
@@ -709,8 +710,13 @@ export class FastManimSnapshotRunner {
     requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
     signal?: AbortSignal,
   ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
-    if (this.snapshotVersion !== undefined && this.snapshotVersion !== 9) {
-      throw new TypeError("Candidate source preflight is available only for snapshot profile V9.");
+    const candidateProfile =
+      requestValue.sceneName === "WarpSquare" ? 9 : requestValue.sceneName === "LineJoints" ? 10 : null;
+    if (
+      candidateProfile === null ||
+      (this.snapshotVersion !== undefined && this.snapshotVersion !== candidateProfile)
+    ) {
+      throw new TypeError("Candidate source preflight is available only for the bounded V9 and V10 edit profiles.");
     }
     if (
       typeof sourceText !== "string" ||
@@ -719,9 +725,10 @@ export class FastManimSnapshotRunner {
       throw new RangeError(`Candidate source accepts at most ${MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES} UTF-8 bytes.`);
     }
     // Candidate preflight is an internal fail-closed seam. Reject bytes that
-    // cannot be reduced to the audited WarpSquare source before reserving any
-    // producer or sandbox capacity.
-    deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
+    // cannot be reduced to the corresponding audited source before reserving
+    // any producer or sandbox capacity.
+    if (candidateProfile === 9) deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
+    else deriveLineJointsV10TransformPlan(sourceText, requestValue.sceneName);
     const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
     const candidate = Object.freeze({
       hash: sourceHash,
@@ -930,12 +937,14 @@ export class FastManimSnapshotRunner {
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
+    let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
     if (
       snapshotVersion === 3 ||
       snapshotVersion === 4 ||
       snapshotVersion === 5 ||
       snapshotVersion === 7 ||
-      snapshotVersion === 9
+      snapshotVersion === 9 ||
+      snapshotVersion === 10
     ) {
       try {
         if (snapshotVersion === 3) {
@@ -946,8 +955,10 @@ export class FastManimSnapshotRunner {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
         } else if (snapshotVersion === 7) {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
-        } else {
+        } else if (snapshotVersion === 9) {
           warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
+        } else {
+          lineJointsV10Plan = deriveLineJointsV10TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -960,6 +971,7 @@ export class FastManimSnapshotRunner {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
+      ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
