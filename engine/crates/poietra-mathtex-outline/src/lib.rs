@@ -6,6 +6,7 @@
 
 mod compile;
 mod digest;
+mod fonts;
 mod outline;
 
 use poietra_scene_ir::{CubicPathV1, FillRuleV1};
@@ -25,14 +26,15 @@ pub const MAX_MATHTEX_PARTS_V1: usize = 16;
 pub const MAX_MATHTEX_SOURCE_BYTES_V1: usize = 2_000;
 /// Maximum diagnostic bytes exposed across the trust boundary.
 pub const MAX_MATHTEX_UNSUPPORTED_MESSAGE_BYTES_V1: usize = 512;
-/// Aggregate SHA-256 of all 20 `KaTeX` TTF faces embedded by `RaTeX` v0.1.14.
+/// Aggregate SHA-256 of the 19 `KaTeX` TTF faces reachable through the pinned
+/// `RaTeX` v0.1.14 `FontId` mapping.
 ///
 /// The digest frames the basename-sorted files with the domain
 /// `poietra.mathtex-outline.fonts.v1\0`, an unsigned big-endian file count,
 /// then the unsigned big-endian basename length, basename, byte length, and
 /// raw bytes for each face. A unit test recomputes it from the embedded assets.
 pub const MATHTEX_FONT_DIGEST_V1: &str =
-    "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa";
+    "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a";
 
 /// Literal request schema represented as a closed serde enum.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

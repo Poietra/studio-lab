@@ -610,12 +610,10 @@ describe("gated OCI fixed profile", () => {
       expect(verifier, `${key} must be verified inside the image`).toContain(digest);
       expect(snapshotContract, `${key} must be admitted by the server`).toContain(digest);
     }
-    const noticePath = fileURLToPath(
-      new URL("../engine/crates/poietra-mathtex-outline/PACKAGE-LICENSES.txt", import.meta.url),
-    );
-    expect(createHash("sha256").update(readFileSync(noticePath)).digest("hex")).toBe(
-      TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.notice-sha256"],
-    );
+    // The current checkout can advance independently; the Containerfile verifies the notice
+    // inside its pinned engine archive, so its two build checks and image label must agree.
+    const pinnedNoticeDigest = TRUSTED_IMAGE_LABELS["io.poietra.mathtex-outline.notice-sha256"];
+    expect(containerfile.match(new RegExp(pinnedNoticeDigest, "gu"))).toHaveLength(3);
     for (const stale of [
       "3083db9ed9a9a93c2808ee3f51189ceca92d230b",
       "bff6f60534f820650d1c9e3c7d38627c56c6a0c6",

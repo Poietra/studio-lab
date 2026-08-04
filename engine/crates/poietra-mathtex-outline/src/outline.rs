@@ -6,6 +6,8 @@ use ratex_font::FontId;
 use ratex_types::{Color, DisplayItem, DisplayList, PathCommand};
 use ttf_parser::OutlineBuilder;
 
+use crate::fonts::katex_font_bytes;
+
 use crate::MathTexOutlineBoundsV1;
 
 const MAX_DISPLAY_ITEMS_V1: usize = 1_024;
@@ -341,12 +343,8 @@ impl OutlineCollector {
         }
 
         let font_id = FontId::parse(font_name).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
-        let filename =
-            katex_font_filename(font_id).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
-        let bytes =
-            ratex_katex_fonts::ttf_bytes(filename).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
-        let face =
-            ttf_parser::Face::parse(bytes.as_ref(), 0).map_err(|_| OutlineFailureV1::Invalid)?;
+        let bytes = katex_font_bytes(font_id).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
+        let face = ttf_parser::Face::parse(bytes, 0).map_err(|_| OutlineFailureV1::Invalid)?;
         let character = ratex_font::katex_ttf_glyph_char(font_id, char_code);
         let Some(glyph_id) = face.glyph_index(character) else {
             return if character.is_whitespace() {
@@ -494,31 +492,6 @@ fn ensure_nonnegative_rect(
     } else {
         Ok(())
     }
-}
-
-fn katex_font_filename(font_id: FontId) -> Option<&'static str> {
-    Some(match font_id {
-        FontId::AmsRegular => "KaTeX_AMS-Regular.ttf",
-        FontId::CaligraphicRegular => "KaTeX_Caligraphic-Regular.ttf",
-        FontId::FrakturRegular => "KaTeX_Fraktur-Regular.ttf",
-        FontId::FrakturBold => "KaTeX_Fraktur-Bold.ttf",
-        FontId::MainBold => "KaTeX_Main-Bold.ttf",
-        FontId::MainBoldItalic => "KaTeX_Main-BoldItalic.ttf",
-        FontId::MainItalic => "KaTeX_Main-Italic.ttf",
-        FontId::MainRegular => "KaTeX_Main-Regular.ttf",
-        FontId::MathBoldItalic => "KaTeX_Math-BoldItalic.ttf",
-        FontId::MathItalic => "KaTeX_Math-Italic.ttf",
-        FontId::SansSerifBold => "KaTeX_SansSerif-Bold.ttf",
-        FontId::SansSerifItalic => "KaTeX_SansSerif-Italic.ttf",
-        FontId::SansSerifRegular => "KaTeX_SansSerif-Regular.ttf",
-        FontId::ScriptRegular => "KaTeX_Script-Regular.ttf",
-        FontId::Size1Regular => "KaTeX_Size1-Regular.ttf",
-        FontId::Size2Regular => "KaTeX_Size2-Regular.ttf",
-        FontId::Size3Regular => "KaTeX_Size3-Regular.ttf",
-        FontId::Size4Regular => "KaTeX_Size4-Regular.ttf",
-        FontId::TypewriterRegular => "KaTeX_Typewriter-Regular.ttf",
-        FontId::CjkRegular | FontId::CjkFallback | FontId::EmojiFallback => return None,
-    })
 }
 
 fn rectangle_subpath(
@@ -1030,40 +1003,18 @@ mod tests {
         baseline_y: f64,
     }
 
-    const FONT_ASSET_NAMES_V1: [&str; 20] = [
-        "KaTeX_AMS-Regular.ttf",
-        "KaTeX_Caligraphic-Bold.ttf",
-        "KaTeX_Caligraphic-Regular.ttf",
-        "KaTeX_Fraktur-Bold.ttf",
-        "KaTeX_Fraktur-Regular.ttf",
-        "KaTeX_Main-Bold.ttf",
-        "KaTeX_Main-BoldItalic.ttf",
-        "KaTeX_Main-Italic.ttf",
-        "KaTeX_Main-Regular.ttf",
-        "KaTeX_Math-BoldItalic.ttf",
-        "KaTeX_Math-Italic.ttf",
-        "KaTeX_SansSerif-Bold.ttf",
-        "KaTeX_SansSerif-Italic.ttf",
-        "KaTeX_SansSerif-Regular.ttf",
-        "KaTeX_Script-Regular.ttf",
-        "KaTeX_Size1-Regular.ttf",
-        "KaTeX_Size2-Regular.ttf",
-        "KaTeX_Size3-Regular.ttf",
-        "KaTeX_Size4-Regular.ttf",
-        "KaTeX_Typewriter-Regular.ttf",
-    ];
-
     #[test]
     fn embedded_font_digest_covers_every_shipped_face_in_basename_order() {
+        use crate::fonts::REACHABLE_KATEX_FONT_ASSETS_V1;
+
         let mut digest = Sha256::new();
         digest.update(b"poietra.mathtex-outline.fonts.v1\0");
-        digest.update((FONT_ASSET_NAMES_V1.len() as u64).to_be_bytes());
-        for filename in FONT_ASSET_NAMES_V1 {
-            let bytes = ratex_katex_fonts::ttf_bytes(filename).expect("declared font is embedded");
+        digest.update((REACHABLE_KATEX_FONT_ASSETS_V1.len() as u64).to_be_bytes());
+        for &(_, filename, bytes) in REACHABLE_KATEX_FONT_ASSETS_V1 {
             digest.update((filename.len() as u64).to_be_bytes());
             digest.update(filename.as_bytes());
             digest.update((bytes.len() as u64).to_be_bytes());
-            digest.update(bytes.as_ref());
+            digest.update(bytes);
         }
         assert_eq!(format!("{:x}", digest.finalize()), MATHTEX_FONT_DIGEST_V1);
     }

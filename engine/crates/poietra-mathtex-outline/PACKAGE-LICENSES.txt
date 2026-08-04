@@ -50,11 +50,14 @@ Official distribution: https://github.com/KaTeX/KaTeX
 Redistributed by: ratex-katex-fonts 0.1.14 at the pinned RaTeX revision above
 License: SIL Open Font License, Version 1.1
 
-The following 20 unmodified TrueType faces are embedded by
-`ratex-katex-fonts`, in basename order:
+The following 19 unmodified TrueType faces are copied from the pinned
+`ratex-katex-fonts` build dependency and embedded in MathTex runtime artifacts,
+in basename order. This is the complete image of the pinned RaTeX `FontId`
+mapping after excluding its three non-KaTeX fallback variants. The upstream
+`KaTeX_Caligraphic-Bold.ttf` face has no corresponding `FontId`, so it is not
+part of this runtime payload or attestation:
 
   KaTeX_AMS-Regular.ttf
-  KaTeX_Caligraphic-Bold.ttf
   KaTeX_Caligraphic-Regular.ttf
   KaTeX_Fraktur-Bold.ttf
   KaTeX_Fraktur-Regular.ttf
@@ -74,14 +77,14 @@ The following 20 unmodified TrueType faces are embedded by
   KaTeX_Size4-Regular.ttf
   KaTeX_Typewriter-Regular.ttf
 
-Aggregate SHA-256: e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa
+Aggregate SHA-256: 6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a
 
 The aggregate digest is SHA-256 over the ASCII domain
 `poietra.mathtex-outline.fonts.v1` followed by one NUL byte, then an unsigned
 64-bit big-endian file count, followed for each basename-sorted face by its
 unsigned 64-bit big-endian basename length, basename bytes, unsigned 64-bit
 big-endian font byte length, and raw font bytes. A Rust unit test recomputes
-this value directly from all assets embedded by `ratex-katex-fonts`.
+this value directly from the reachable assets embedded in the runtime.
 
 Copyright and license notice reproduced from the font metadata:
 

@@ -23,8 +23,8 @@
     },
     "compilerContentDigest": "b9b6d79554e087576c6cc9095254deed52821214187a62929a60a07d1985c616",
     "compilerFillRule": "nonzero",
-    "compilerFontDigest": "e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
-    "compilerToolchainDigest": "40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+    "compilerFontDigest": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+    "compilerToolchainDigest": "9719d236a037e2f6ff263d8940a473521e32c43f02114e41a6dce4e363111825",
     "id": "nested-radical-fraction",
     "provenance": "fast-manim/manim/mobject/text/tex_mobject.py:274",
     "svgFile": "fixtures/mathtex-manim-parity-v1/references/nested-radical-fraction.svg",
@@ -2848,7 +2848,7 @@
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",
-      "revisionHash": "a4236d9217e19d519f3b5d405f012d0a6129d8f4923b053aa455ad0ab2ad5da9"
+      "revisionHash": "ed9a992e754a09f9bd0bac9e58eeb6e6d08615c6b4a957e5b9ef61929eaa2467"
     },
     "version": 1
   }
