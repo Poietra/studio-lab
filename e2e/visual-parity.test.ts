@@ -94,6 +94,13 @@ describe("visual parity v1 contracts", () => {
       "real-warp-square-v9--midpoint",
       "real-warp-square-v9--target",
       "real-warp-square-v9--hold",
+      "real-spiral-in-v11--start",
+      "real-spiral-in-v11--early-reveal",
+      "real-spiral-in-v11--spiral-midpoint",
+      "real-spiral-in-v11--spiral-end",
+      "real-spiral-in-v11--hold",
+      "real-spiral-in-v11--group-fade-midpoint",
+      "real-spiral-in-v11--end",
       "real-line-joints-v10--static",
       "real-line-joints-v10-edited--static",
     ]);
@@ -560,6 +567,113 @@ describe("visual parity v1 contracts", () => {
         expected: { semanticDigest },
         id: sampleId,
         packetId: `real-warp-square-v9:${sampleId}`,
+        sampleTime,
+        viewport: { heightPx: 360, widthPx: 640 },
+      });
+    }
+  });
+
+  it("pins the official SpiralIn V11 timeline to native/browser and independent Cairo gates", async () => {
+    const fixtureRevision = "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      ["real-spiral-in-v11--start", "start", 0, "04367b003237fa58eb9eeaabf78ec0a047f0d0b6934627da0d06734e9763cb4f"],
+      [
+        "real-spiral-in-v11--early-reveal",
+        "early-reveal",
+        0.1,
+        "496d2b60b004bbf5bdbae730265f6a2d95c86c237998033db75aaf140b678aba",
+      ],
+      [
+        "real-spiral-in-v11--spiral-midpoint",
+        "spiral-midpoint",
+        0.5,
+        "4922203e459aeae1b657afde10f4dd2f5292dc9e81c62f6bf43b990cfb15d3e2",
+      ],
+      [
+        "real-spiral-in-v11--spiral-end",
+        "spiral-end",
+        1,
+        "a64d3d19a164c1a6b405bfddaf55b5954e0d50d199790dba54d236bf1501cd36",
+      ],
+      ["real-spiral-in-v11--hold", "hold", 1.5, "a64d3d19a164c1a6b405bfddaf55b5954e0d50d199790dba54d236bf1501cd36"],
+      [
+        "real-spiral-in-v11--group-fade-midpoint",
+        "group-fade-midpoint",
+        2.5,
+        "7356a57f912f5b1c149b0f01affe30b095ad5f70545c92ee137930927d801ab9",
+      ],
+      ["real-spiral-in-v11--end", "end", 3, "9ffcc529e3ca4e953e7c10fea11c9cc1dd67aa1c06e3b345bd5b78caedd9e857"],
+    ] as const;
+    for (const [entryId, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The SpiralIn V11 corpus entry ${entryId} is missing.`);
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-spiral-in-v11",
+          path: "fixtures/engine-v1/real-spiral-in-v11.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-spiral-in-v11.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(128 * 1024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: ["affine-transform-animation", "cubic-path-geometry", "logical-group", "opacity-animation"],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash: "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 11,
+        sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(6);
+    expect(bundle.scene.entities[0]?.geometry).toEqual({ kind: "group" });
+    expect(bundle.scene.entities.slice(1).every(({ geometry }) => geometry.kind === "cubic-path")).toBe(true);
+    expect(bundle.scene.animationChannels).toHaveLength(11);
+    expect(bundle.scene.animationChannels.map(({ kind }) => kind).sort()).toEqual([
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "affine-transform",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+      "opacity",
+    ]);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "b14f9cf75eb8c0cd0f255110f43f86142ac3bca2",
+      fastManimCommit: "0b1aa3b303c58a33becaf31f822361e4292ce46f",
+      fastManimTree: "2d763ec42d7da5029d1a4375c507512a43e16473",
+      kind: "server-sealed-real-fast-manim-profile-v11",
+      producerSnapshotDigest: "000d40cae8f3ecfc9168d50244c2d8b2ada3f3b95248563f7cda1ecfd13e56cf",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+    for (const [, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      expect(fixture.samples).toContainEqual({
+        expected: { semanticDigest },
+        id: sampleId,
+        packetId: `real-spiral-in-v11:${sampleId}`,
         sampleTime,
         viewport: { heightPx: 360, widthPx: 640 },
       });

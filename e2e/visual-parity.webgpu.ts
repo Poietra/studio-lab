@@ -13,6 +13,11 @@ import {
 } from "./line-joints-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
+  SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1,
+  SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1,
+  readSpiralInCairoReferenceForEntryV1,
+} from "./spiral-in-cairo-reference";
+import {
   nativeVisualParityArtifactV1Schema,
   thresholdsForEntryV1,
   visualParityCorpusV1Schema,
@@ -77,6 +82,8 @@ const REAL_WARP_SQUARE_V9_ENTRY_IDS = [
 ] as const;
 const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENTRY_IDS);
 const REAL_LINE_JOINTS_V10_ENTRY_ID_SET = new Set<string>(LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1);
+const REAL_SPIRAL_IN_V11_ENTRY_IDS = SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1;
+const REAL_SPIRAL_IN_V11_ENTRY_ID_SET = new Set<string>(REAL_SPIRAL_IN_V11_ENTRY_IDS);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -90,7 +97,9 @@ if (FOCUSED_ENTRY_ID && VISUAL_PARITY_ENTRIES.length !== 1) {
 }
 if (
   FOCUSED_ENTRY_ID &&
-  (REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) || REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
+  (REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) ||
+    REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) ||
+    REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
 ) {
   throw new Error("Focused visual parity currently supports only independent single-frame entries.");
 }
@@ -288,6 +297,12 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(expectedRgba, actualRgba), widthPx, heightPx),
     ),
   ];
+  let spiralInCairoComparisons:
+    | readonly (readonly [
+        comparison: "native/Cairo" | "browser/Cairo",
+        metrics: ReturnType<typeof compareVisualParityFramesV1>,
+      ])[]
+    | undefined;
   if (analyticReference) {
     expect(analyticReference.viewport).toEqual(entry.sample.viewport);
     const referenceRgba = Uint8Array.from(analyticReference.rgba);
@@ -369,6 +384,37 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
     );
   }
+  if (REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(entry.id)) {
+    const cairo = await readSpiralInCairoReferenceForEntryV1(entry.id);
+    if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("SpiralIn V11 Cairo comparisons require imported Manim snapshots.");
+    }
+    expect(cairo.reference.frame.viewport).toEqual(entry.sample.viewport);
+    expect(cairo.sampleTime).toBe(entry.sample.sampleTime);
+    expect(cairo.reference.scene.sourceSha256).toBe(fixtureBundle.scene.source.sourceHash);
+    const referenceRgba = cairo.rgba;
+    spiralInCairoComparisons = [
+      [
+        "native/Cairo",
+        compareVisualParityFramesV1(referenceRgba, expectedRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+      [
+        "browser/Cairo",
+        compareVisualParityFramesV1(referenceRgba, actualRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+    ] as const;
+    artifactWrites.push(
+      writeFile(join(outputDirectory, "cairo-reference.png"), cairo.png),
+      writeFile(
+        join(outputDirectory, "native-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, expectedRgba), widthPx, heightPx),
+      ),
+      writeFile(
+        join(outputDirectory, "browser-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
+      ),
+    );
+  }
   await Promise.all(artifactWrites);
   const report = visualParityReportV1Schema.parse({
     artifacts: { actualPng: "actual.png", diffPng: "diff.png", expectedPng: "expected.png" },
@@ -414,6 +460,16 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     metrics.pixelFractionAboveThreshold,
     `visual parity report: ${join(outputDirectory, "report.json")}`,
   ).toBeLessThanOrEqual(thresholds.maximumPixelFractionAboveThreshold);
+  for (const [comparison, comparisonMetrics] of spiralInCairoComparisons ?? []) {
+    expect(
+      comparisonMetrics.ssim,
+      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeGreaterThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+    expect(
+      comparisonMetrics.pixelFractionAboveThreshold,
+      `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeLessThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
+  }
 
   return { actualRgba, expectedRgba };
 }
@@ -490,8 +546,45 @@ function expectRealWarpSquareRelations(
   }
 }
 
+function expectRealSpiralInRelations(frames: ReadonlyMap<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>) {
+  function requireFrame(entryId: (typeof REAL_SPIRAL_IN_V11_ENTRY_IDS)[number]) {
+    const frame = frames.get(entryId);
+    if (!frame) throw new Error(`The real SpiralIn proof is missing ${entryId}.`);
+    return frame;
+  }
+
+  const start = requireFrame("real-spiral-in-v11--start");
+  const early = requireFrame("real-spiral-in-v11--early-reveal");
+  const midpoint = requireFrame("real-spiral-in-v11--spiral-midpoint");
+  const spiralEnd = requireFrame("real-spiral-in-v11--spiral-end");
+  const hold = requireFrame("real-spiral-in-v11--hold");
+  const fade = requireFrame("real-spiral-in-v11--group-fade-midpoint");
+  const end = requireFrame("real-spiral-in-v11--end");
+  for (const rgbaKind of ["expectedRgba", "actualRgba"] as const) {
+    const label = rgbaKind === "expectedRgba" ? "native" : "browser";
+    expect(rgbaBytesEqual(start[rgbaKind], end[rgbaKind]), `${label}: start and FadeOut end must be clear`).toBe(true);
+    expect(rgbaBytesEqual(early[rgbaKind], start[rgbaKind]), `${label}: early reveal must differ from start`).toBe(
+      false,
+    );
+    expect(
+      rgbaBytesEqual(midpoint[rgbaKind], early[rgbaKind]),
+      `${label}: SpiralIn midpoint must differ from early reveal`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(spiralEnd[rgbaKind], midpoint[rgbaKind]),
+      `${label}: completed SpiralIn must differ from midpoint`,
+    ).toBe(false);
+    expect(rgbaBytesEqual(spiralEnd[rgbaKind], hold[rgbaKind]), `${label}: wait must preserve SpiralIn end`).toBe(true);
+    expect(rgbaBytesEqual(fade[rgbaKind], hold[rgbaKind]), `${label}: group fade must differ from hold`).toBe(false);
+    expect(rgbaBytesEqual(fade[rgbaKind], end[rgbaKind]), `${label}: group fade midpoint must retain ink`).toBe(false);
+  }
+}
+
 for (const entry of VISUAL_PARITY_ENTRIES.filter(
-  ({ id }) => !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) && !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id),
+  ({ id }) =>
+    !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) &&
+    !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id) &&
+    !REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(id),
 )) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
     await proveVisualParityEntry(page, entry.id);
@@ -522,4 +615,19 @@ test("matches native full-RGBA across the real WarpSquare V9 timeline", async ({
     frames.set(entryId, await proveVisualParityEntry(page, entryId));
   }
   expectRealWarpSquareRelations(frames);
+});
+
+test("matches native and independent Cairo full-RGBA across the official SpiralIn V11 timeline", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the seven-frame SpiralIn artifact set.",
+  );
+  testInfo.setTimeout(180_000);
+  const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
+  for (const entryId of REAL_SPIRAL_IN_V11_ENTRY_IDS) {
+    frames.set(entryId, await proveVisualParityEntry(page, entryId));
+  }
+  expectRealSpiralInRelations(frames);
 });
