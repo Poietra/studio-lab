@@ -11,6 +11,8 @@ const origin = "https://studio.example";
 const documentKey = "a".repeat(64);
 const epoch = "11111111-1111-4111-8111-111111111111";
 const subjectId = "22222222-2222-4222-8222-222222222222";
+const authorizationId = "55555555-5555-4555-8555-555555555555";
+const now = 2_000_000_000_000;
 
 function request(overrides: Readonly<{ path?: string; origin?: string; search?: string }> = {}) {
   const path = overrides.path ?? `/api/collaboration/projects/project-a/documents/${documentKey}`;
@@ -40,9 +42,16 @@ function harness() {
     POIETRA_PUBLIC_ORIGIN: origin,
   } satisfies CloudflareEditorCollaborationEnvironmentV1;
   const authorize = vi.fn<EditorCollaborationAuthorizeV1>(async () => ({
+    authorizationId,
     canWrite: true,
+    documentKey,
+    epoch,
     kind: "authorized" as const,
+    membershipVersion: 3,
     organizationId: "organization-a",
+    projectId: "project-a",
+    sessionExpiresAtMs: now + 120_000,
+    sessionVersion: 2,
     subjectId,
   }));
   return {
@@ -52,7 +61,7 @@ function harness() {
     get,
     idFromName,
     limit,
-    worker: createCloudflareEditorCollaborationWorkerV1({ authorize }),
+    worker: createCloudflareEditorCollaborationWorkerV1({ authorize, now: () => now }),
   };
 }
 
@@ -82,7 +91,12 @@ describe("Cloudflare Editor collaboration Worker", () => {
     expect(internal.headers.get(headers.epoch)).toBe(epoch);
     expect(internal.headers.get(headers.subjectId)).toBe(subjectId);
     expect(internal.headers.get(headers.canWrite)).toBe("1");
+    expect(internal.headers.get(headers.authorizationId)).toBe(authorizationId);
+    expect(internal.headers.get(headers.membershipVersion)).toBe("3");
+    expect(internal.headers.get(headers.sessionVersion)).toBe("2");
+    expect(internal.headers.get(headers.leaseExpiresAtMs)).toBe(String(now + 60_000));
     expect(internal.headers.get("cookie")).toBeNull();
+    expect([...internal.headers].join("\n")).not.toContain("session_token_hash");
   });
 
   it.each([
@@ -115,15 +129,50 @@ describe("Cloudflare Editor collaboration Worker", () => {
   it("fails closed when authorization returns a malformed internal identity", async () => {
     const value = harness();
     value.authorize.mockResolvedValueOnce({
+      authorizationId,
       canWrite: true,
+      documentKey,
+      epoch,
       kind: "authorized",
+      membershipVersion: 3,
       organizationId: "INVALID ORGANIZATION",
+      projectId: "project-a",
+      sessionExpiresAtMs: now + 120_000,
+      sessionVersion: 2,
       subjectId,
     });
 
     const response = await value.worker.fetch(request(), value.environment);
 
     expect(response.status).toBe(503);
+    expect(value.forwarded).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["project", { projectId: "project-b" }],
+    ["document", { documentKey: "b".repeat(64) }],
+    ["epoch", { epoch: "66666666-6666-4666-8666-666666666666" }],
+  ])("fails closed when authorization returns a foreign %s", async (_label, mismatch) => {
+    const value = harness();
+    value.authorize.mockResolvedValueOnce({
+      authorizationId,
+      canWrite: true,
+      documentKey,
+      epoch,
+      kind: "authorized",
+      membershipVersion: 3,
+      organizationId: "organization-a",
+      projectId: "project-a",
+      sessionExpiresAtMs: now + 120_000,
+      sessionVersion: 2,
+      subjectId,
+      ...mismatch,
+    });
+
+    const response = await value.worker.fetch(request(), value.environment);
+
+    expect(response.status).toBe(503);
+    expect(value.idFromName).not.toHaveBeenCalled();
     expect(value.forwarded).not.toHaveBeenCalled();
   });
 

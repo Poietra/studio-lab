@@ -27,6 +27,8 @@
   },
   "hyperdrive": [
     {
+      // Authorization leases require uncached session, membership, project,
+      // and document-seal reads at every room revalidation boundary.
       "binding": "HYPERDRIVE",
       "id": "00000000000000000000000000000000"
     }

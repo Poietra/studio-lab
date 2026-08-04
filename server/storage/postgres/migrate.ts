@@ -6,6 +6,7 @@ import { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-
 import { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
+import { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
 import { DURABLE_RETENTION_MIGRATION_V6_CHECKSUM } from "./durable-retention-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
@@ -36,6 +37,7 @@ import accountInvitationSqlV22 from "./migrations/0022_account_invitations.sql?r
 import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapshots.sql?raw";
 import accountInvitationQuotaSqlV24 from "./migrations/0024_account_invitation_quotas.sql?raw";
 import snapshotRuntimeConfigHeadSqlV25 from "./migrations/0025_snapshot_runtime_config_heads.sql?raw";
+import collaborationAuthorizationSqlV26 from "./migrations/0026_collaboration_authorization_ids.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -57,6 +59,7 @@ export { ACCOUNT_INVITATION_MIGRATION_V22_CHECKSUM } from "./account-invitation-
 export { ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM } from "./account-organization-schema";
 export { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 export { BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM } from "./billing-entitlement-schema";
+export { COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM } from "./collaboration-authorization-schema";
 export { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 export { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 export { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
@@ -121,6 +124,7 @@ export const ACCOUNT_INVITATION_MIGRATION_V22_SOURCE = accountInvitationSqlV22;
 export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapshotSqlV23;
 export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE = accountInvitationQuotaSqlV24;
 export const SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE = snapshotRuntimeConfigHeadSqlV25;
+export const COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE = collaborationAuthorizationSqlV26;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -379,6 +383,17 @@ const snapshotRuntimeConfigHeadMigrationV25: DurableStorageMigration<25> = Objec
   version: 25,
 });
 
+const collaborationAuthorizationMigrationV26: DurableStorageMigration<26> = Object.freeze({
+  checksum: COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM,
+  checksumMismatch: "The collaboration-authorization migration checksum is invalid.",
+  installedMismatch: "The installed collaboration-authorization schema does not match migration v26.",
+  missingPrerequisite: "Collaboration-authorization migration v26 requires durable storage migrations v1 through v25.",
+  prerequisiteMismatch:
+    "Collaboration-authorization migration v26 requires exact durable storage migrations v1 through v25.",
+  source: COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE,
+  version: 26,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -405,6 +420,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   editorSessionSnapshotMigrationV23,
   accountInvitationQuotaMigrationV24,
   snapshotRuntimeConfigHeadMigrationV25,
+  collaborationAuthorizationMigrationV26,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -657,6 +673,10 @@ export function applyAccountInvitationQuotaMigrationV24(pool: Pool, source: stri
 
 export function applySnapshotRuntimeConfigHeadMigrationV25(pool: Pool, source: string) {
   return applyMigration(pool, { ...snapshotRuntimeConfigHeadMigrationV25, source }, bundledMigrationsBefore(25));
+}
+
+export function applyCollaborationAuthorizationMigrationV26(pool: Pool, source: string) {
+  return applyMigration(pool, { ...collaborationAuthorizationMigrationV26, source }, bundledMigrationsBefore(26));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

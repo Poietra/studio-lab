@@ -1,0 +1,3 @@
+// Generated from server/storage/postgres/migrations/0026_collaboration_authorization_ids.sql.
+export const COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM =
+  "decacac0e00dc647a8ea30b723dc718384860dc9f8e80a84a364773f8bf625c0";

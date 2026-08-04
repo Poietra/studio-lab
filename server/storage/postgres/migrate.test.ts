@@ -16,6 +16,7 @@ import {
   applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
   applyBundledDurableStorageMigrationsThrough,
+  applyCollaborationAuthorizationMigrationV26,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
   applyEditorDocumentMigrationV17,
@@ -38,6 +39,8 @@ import {
   applyWorkspaceSourceMigrationV1,
   BILLING_ENTITLEMENT_MIGRATION_V14_CHECKSUM,
   BILLING_ENTITLEMENT_MIGRATION_V14_SOURCE,
+  COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM,
+  COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE,
   durableStorageMigrationChecksum,
   EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM,
   EDITOR_DOCUMENT_MIGRATION_V17_SOURCE,
@@ -112,12 +115,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 25 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 26 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 25 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 26 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -143,7 +146,8 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(50);
+    expect(db.queries.filter(({ text }) => text === COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(52);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -195,12 +199,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 25,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 26)).resolves.toEqual({
+      applied: true,
+      version: 26,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 26)).rejects.toThrow(
-      /migration v26 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 27)).rejects.toThrow(
+      /migration v27 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -686,6 +694,25 @@ describe("durable storage migrations", () => {
     await expect(
       applySnapshotRuntimeConfigHeadMigrationV25(db.pool, SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v24/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds a non-secret unique collaboration authorization identity to every session in v26", async () => {
+    expect(durableStorageMigrationChecksum(COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE)).toBe(
+      COLLABORATION_AUTHORIZATION_MIGRATION_V26_CHECKSUM,
+    );
+    expect(COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE).toContain(
+      "authorization_id uuid NOT NULL DEFAULT gen_random_uuid()",
+    );
+    expect(COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE).toContain(
+      "account_sessions_authorization_id_unique_v26 UNIQUE (authorization_id)",
+    );
+    expect(COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE).not.toContain("session_token_hash =");
+
+    const db = database();
+    await expect(
+      applyCollaborationAuthorizationMigrationV26(db.pool, COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v25/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
