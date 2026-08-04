@@ -254,8 +254,8 @@ export async function mixedDynamic2dSnapshotBundleFixtureV7(
         {
           evidence: [
             "MathTex content digest 4e86be799123233a78ef7e88c1a053a807d9c5de4f5db5dc4723bdfd1cda2eb4",
-            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
-            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
+            "MathTex toolchain digest 8d485207ea21e7e2721390f9c56a13519fc4fc8d53eeeb46aa7dcb0a56d21447",
+            "MathTex font digest 6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
           ],
           id: mathTexProvenanceId,
           origin: "fast-manim-server-snapshot",

@@ -12,7 +12,7 @@ mod outline;
 use poietra_scene_ir::{CubicPathV1, FillRuleV1};
 use serde::{Deserialize, Serialize};
 
-pub use compile::{compile_mathtex_outline_v1, manim_default_source_profile_digest_v1};
+pub use compile::compile_mathtex_outline_v1;
 
 /// Exact request schema literal accepted by the v1 compiler.
 pub const MATHTEX_OUTLINE_REQUEST_SCHEMA_V1: &str = "poietra.mathtex-outline-request";

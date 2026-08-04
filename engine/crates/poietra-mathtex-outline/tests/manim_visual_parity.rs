@@ -395,7 +395,7 @@ fn assert_ratex_metrics(case: &ParityCase, comparison: &Comparison) {
 
 fn assert_source_profile_exclusions(corpus: &Corpus) {
     assert_eq!(corpus.semantic_exclusions.len(), 1);
-    assert_eq!(corpus.unsupported_cases.len(), 17);
+    assert_eq!(corpus.unsupported_cases.len(), 44);
 
     for case in &corpus.semantic_exclusions {
         assert!(!case.id.is_empty());

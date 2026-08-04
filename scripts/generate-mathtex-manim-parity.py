@@ -90,7 +90,7 @@ SOURCE_PROFILE_CASES = (
     {
         "id": "fractions-radicals-over-and-delimiters",
         "texParts": [
-            r"\left\{\frac{a}{b}+\sqrt{x}+{1\over n}\right\}"
+            r"\left\{\frac{a}{b}+\sqrt{x}+{1\over n}\right\}+\left(x\right)+\left[x\right]"
         ],
     },
     {
@@ -131,6 +131,66 @@ SOURCE_PROFILE_CASES = (
 # pinned default template does not. The generator must observe a real LaTeX
 # compile failure before the browser compiler may claim a structured fallback.
 UNSUPPORTED_CASES = (
+    {"id": "hat-control-symbol-argument", "texParts": [r"\hat\\"]},
+    {"id": "hat-braced-line-break-argument", "texParts": [r"\hat{\\}"]},
+    {"id": "vec-control-symbol-argument", "texParts": [r"\vec\\"]},
+    {"id": "vec-braced-line-break-argument", "texParts": [r"\vec{\\}"]},
+    {"id": "radical-closing-brace-argument", "texParts": [r"\sqrt}"]},
+    {
+        "id": "radical-environment-argument",
+        "texParts": [r"\sqrt\begin{matrix}x\end{matrix}"],
+    },
+    {"id": "radical-alignment-argument", "texParts": [r"\sqrt&"]},
+    {"id": "radical-braced-line-break-argument", "texParts": [r"\sqrt{\\}"]},
+    {"id": "left-invalid-delimiter", "texParts": [r"\left x \right)"]},
+    {"id": "right-invalid-delimiter", "texParts": [r"\left( x \right y"]},
+    {"id": "sized-delimiter-bare-line-break", "texParts": [r"\left(x\\y\right)"]},
+    {
+        "id": "matrix-local-sized-delimiter-line-break",
+        "texParts": [r"\begin{matrix}\left(x\\y\right)\end{matrix}"],
+    },
+    {
+        "id": "array-local-sized-delimiter-line-break",
+        "texParts": [r"\begin{array}{c}\left(x\\y\right)\end{array}"],
+    },
+    {
+        "id": "text-environment-argument",
+        "texParts": [r"\text{\begin{matrix}x\end{matrix}}"],
+    },
+    {
+        "id": "text-environment-line-break-argument",
+        "texParts": [r"\text{\begin{matrix}x\\y\end{matrix}}"],
+    },
+    {
+        "id": "textbf-environment-argument",
+        "texParts": [r"\textbf{\begin{matrix}x\end{matrix}}"],
+    },
+    {
+        "id": "textbf-environment-line-break-argument",
+        "texParts": [r"\textbf{\begin{matrix}x\\y\end{matrix}}"],
+    },
+    {"id": "fraction-line-break-numerator", "texParts": [r"\frac{\\}{b}"]},
+    {"id": "fraction-line-break-denominator", "texParts": [r"\frac{a}{\\}"]},
+    {"id": "superscript-closing-brace", "texParts": [r"x^}"]},
+    {"id": "subscript-closing-brace", "texParts": [r"x_}"]},
+    {"id": "superscript-alignment", "texParts": [r"x^&"]},
+    {"id": "subscript-alignment", "texParts": [r"x_&"]},
+    {
+        "id": "superscript-environment",
+        "texParts": [r"x^\begin{matrix}x\end{matrix}"],
+    },
+    {
+        "id": "subscript-environment",
+        "texParts": [r"x_\begin{matrix}x\end{matrix}"],
+    },
+    {
+        "id": "superscript-environment-line-break",
+        "texParts": [r"x^\begin{matrix}x\\y\end{matrix}"],
+    },
+    {
+        "id": "subscript-environment-line-break",
+        "texParts": [r"x_\begin{matrix}x\\y\end{matrix}"],
+    },
     {"id": "katex-html", "texParts": [r"\htmlStyle{font-size:2em}{x}"]},
     {"id": "hyperref-href", "texParts": [r"\href{https://example.test}{x}"]},
     {"id": "hyperref-url", "texParts": [r"\url{https://example.test}"]},

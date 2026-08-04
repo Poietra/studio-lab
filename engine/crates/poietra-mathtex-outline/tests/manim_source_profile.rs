@@ -2,7 +2,6 @@ use std::collections::BTreeSet;
 
 use poietra_mathtex_outline::{
     MathTexOutlineRequestV1, MathTexOutlineResultV1, compile_mathtex_outline_v1,
-    manim_default_source_profile_digest_v1,
 };
 use serde::Deserialize;
 
@@ -10,6 +9,8 @@ const SOURCE_PROFILE_JSON: &str =
     include_str!("../../../../fixtures/mathtex-manim-parity-v1/source-profile.json");
 const EXPECTED_MANIM_IMAGE: &str =
     "manimcommunity/manim@sha256:f18f53f2e4eaf2ea41713437d34363fb3f5cc6008b03fd798676ac0359396c3b";
+const EXPECTED_TEX_TEMPLATE_SHA256: &str =
+    "c57ab64a4878840f001d5a474b2b52f0d3b99d81bfc2b032f98735d2e85f1a2e";
 const EXPECTED_CASE_IDS: &[&str] = &[
     "aligned-inner-environment",
     "array-inner-environment",
@@ -94,17 +95,15 @@ fn pinned_manim_core_ams_profile_compiles_deterministically() {
     );
     assert_eq!(fixture.reference_producer.dvisvgm_version, "dvisvgm 3.4.3");
     assert_eq!(fixture.reference_producer.tex_compiler, "latex");
-    assert!(is_lower_hex_digest(
-        &fixture.reference_producer.tex_template_sha256
-    ));
+    assert!(is_lower_hex_digest(EXPECTED_TEX_TEMPLATE_SHA256));
+    assert_eq!(
+        fixture.reference_producer.tex_template_sha256,
+        EXPECTED_TEX_TEMPLATE_SHA256
+    );
     assert_eq!(
         fixture.reference_producer.generation_command,
         "node scripts/regenerate-mathtex-manim-parity.mjs"
     );
-    assert!(is_lower_hex_digest(
-        &manim_default_source_profile_digest_v1()
-    ));
-
     let identifiers = fixture
         .cases
         .iter()

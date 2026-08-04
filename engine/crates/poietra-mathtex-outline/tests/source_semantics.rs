@@ -53,3 +53,46 @@ fn escaped_braces_and_part_spanning_groups_remain_valid_mathtex() {
     assert!(!compiled(&[r"\left\{x\right\}"]).subpaths.is_empty());
     assert!(!compiled(&["e^{i", r"\tau} = 1"]).subpaths.is_empty());
 }
+
+#[test]
+fn malformed_profile_command_shapes_fail_closed_like_pinned_manim() {
+    for source in [
+        r"\hat\\",
+        r"\hat{\\}",
+        r"\vec\\",
+        r"\vec{\\}",
+        r"\sqrt}",
+        r"\sqrt\begin{matrix}x\end{matrix}",
+        r"\sqrt&",
+        r"\sqrt{\\}",
+        r"\left x \right)",
+        r"\left( x \right y",
+        r"\left(x\\y\right)",
+        r"\begin{matrix}\left(x\\y\right)\end{matrix}",
+        r"\begin{array}{c}\left(x\\y\right)\end{array}",
+        r"\text{\begin{matrix}x\end{matrix}}",
+        r"\text{\begin{matrix}x\\y\end{matrix}}",
+        r"\textbf{\begin{matrix}x\end{matrix}}",
+        r"\textbf{\begin{matrix}x\\y\end{matrix}}",
+        r"\frac{\\}{b}",
+        r"\frac{a}{\\}",
+        r"x^}",
+        r"x_}",
+        r"x^&",
+        r"x_&",
+        r"x^\begin{matrix}x\end{matrix}",
+        r"x_\begin{matrix}x\end{matrix}",
+        r"x^\begin{matrix}x\\y\end{matrix}",
+        r"x_\begin{matrix}x\\y\end{matrix}",
+    ] {
+        let request = MathTexOutlineRequestV1::new(vec![source.to_owned()]);
+        let MathTexOutlineResultV1::Unsupported(unsupported) = compile_mathtex_outline_v1(&request)
+        else {
+            panic!("pinned-Manim compile failure must not compile: {source}");
+        };
+        assert_eq!(
+            unsupported.code,
+            MathTexOutlineUnsupportedCodeV1::SyntaxUnsupported
+        );
+    }
+}

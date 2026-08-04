@@ -65,7 +65,7 @@
     {
       "id": "fractions-radicals-over-and-delimiters",
       "texParts": [
-        "\\left\\{\\frac{a}{b}+\\sqrt{x}+{1\\over n}\\right\\}"
+        "\\left\\{\\frac{a}{b}+\\sqrt{x}+{1\\over n}\\right\\}+\\left(x\\right)+\\left[x\\right]"
       ],
       "expectedOutcome": "latex-compile-success"
     },
