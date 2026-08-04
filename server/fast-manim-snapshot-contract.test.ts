@@ -221,8 +221,8 @@ async function hermeticMathTexBundle(): Promise<SceneIrBundleV1> {
           ...base.scene.provenance[1],
           evidence: [
             `MathTex content digest ${"3".repeat(64)}`,
-            "MathTex toolchain digest 9719d236a037e2f6ff263d8940a473521e32c43f02114e41a6dce4e363111825",
-            "MathTex font digest 6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
           ],
         },
       ],
@@ -310,8 +310,8 @@ async function hermeticMathTexMorphBundleV5(
           ...base.scene.provenance[1],
           evidence: [
             `MathTex content digest ${initialDigest}`,
-            "MathTex toolchain digest 9719d236a037e2f6ff263d8940a473521e32c43f02114e41a6dce4e363111825",
-            "MathTex font digest 6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+            "MathTex toolchain digest 40a85bd625fe868b295906a6a002a1cfae677be241f835898f467a113b626430",
+            "MathTex font digest e52df76208d1e41c8222496e9fb30cc2a1fe8a275b14995f3f6c3a9205db21fa",
           ],
         },
         {
