@@ -1,0 +1,202 @@
+{
+  "schema": "poietra.segmented-tex-outline-evidence",
+  "version": 1,
+  "cases": [
+    {
+      "id": "official-write-stuff-tex",
+      "request": {
+        "schema": "poietra.segmented-tex-outline-request",
+        "version": 1,
+        "mode": "tex-text",
+        "sourceKind": "literal",
+        "source": "This is a some text",
+        "paintMatches": [
+          {
+            "literal": "text",
+            "paint": { "red": 1, "green": 1, "blue": 0, "alpha": 1 }
+          }
+        ]
+      },
+      "expected": {
+        "bounds": { "left": -5.640142, "right": 5.640142, "bottom": -0.5, "top": 0.5 },
+        "contentDigest": "a12f5d1728e6f22f18ce431bb5aa98ef9eafdacfe88ce4d001fac5cc836642ae",
+        "toolchainDigest": "2c9884faf8bd0f2ac1469f0671b7a8327a8d112a57d95d3de9c2fa9c2643fc8b",
+        "fontDigest": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+        "fragmentCount": 15,
+        "entityCount": 30,
+        "fragmentKinds": [
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph"
+        ],
+        "paintSpans": [
+          {
+            "sourceStartByte": 15,
+            "sourceEndByte": 19,
+            "paint": { "red": 1, "green": 1, "blue": 0, "alpha": 1 }
+          }
+        ],
+        "paintedFragmentOrders": [11, 12, 13, 14],
+        "subpathCount": 21,
+        "cubicSegmentCount": 641,
+        "fragmentEvidenceSha256": "2574994b82650eb9da712db2808149d41b68d946c3f3de95f47d01d4a58369e0"
+      },
+      "phaseSamples": [
+        {
+          "id": "start",
+          "progress": 0,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 0, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-reveal-midpoint",
+          "progress": 0.06578947368421052,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 0.5, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-phase-boundary",
+          "progress": 0.13157894736842105,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-transition-midpoint",
+          "progress": 0.19736842105263155,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 0.5, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "complete",
+          "progress": 1,
+          "fragmentOrder": 14,
+          "expected": {
+            "fragmentId": "fragment-0014",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 0, "strokeWidth": 2 }
+          }
+        }
+      ]
+    },
+    {
+      "id": "official-write-stuff-mathtex",
+      "request": {
+        "schema": "poietra.segmented-tex-outline-request",
+        "version": 1,
+        "mode": "mathtex-math",
+        "sourceKind": "literal",
+        "source": "\\sum_{k=1}^\\infty {1 \\over k^2} = {\\pi^2 \\over 6}",
+        "paintMatches": []
+      },
+      "expected": {
+        "bounds": { "left": -0.940237, "right": 0.940237, "bottom": -0.5, "top": 0.5 },
+        "contentDigest": "0762997c70a0abe2280e1f8a798a19141ea29057fa0735ecc4dfd4f416cc5121",
+        "toolchainDigest": "2c9884faf8bd0f2ac1469f0671b7a8327a8d112a57d95d3de9c2fa9c2643fc8b",
+        "fontDigest": "6a8369948029b4811a906fdd028542d5e34b11044937544a9870a88d4b9cd93a",
+        "fragmentCount": 14,
+        "entityCount": 28,
+        "fragmentKinds": [
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "rule",
+          "glyph",
+          "glyph",
+          "glyph",
+          "glyph",
+          "rule"
+        ],
+        "paintSpans": [],
+        "paintedFragmentOrders": [],
+        "subpathCount": 19,
+        "cubicSegmentCount": 445,
+        "fragmentEvidenceSha256": "4317c50fe271db9eae03da1c33c1bab0dfa98b4bc3cef1c71edc4ff4c6d34e5e"
+      },
+      "phaseSamples": [
+        {
+          "id": "start",
+          "progress": 0,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 0, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-reveal-midpoint",
+          "progress": 0.06944444444444445,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 0.5, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-phase-boundary",
+          "progress": 0.1388888888888889,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "first-transition-midpoint",
+          "progress": 0.20833333333333331,
+          "fragmentOrder": 0,
+          "expected": {
+            "fragmentId": "fragment-0000",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 0.5, "pathTrimEnd": 1, "strokeOpacity": 0.5, "strokeWidth": 2 }
+          }
+        },
+        {
+          "id": "complete",
+          "progress": 1,
+          "fragmentOrder": 13,
+          "expected": {
+            "fragmentId": "fragment-0013",
+            "outline": { "visible": false, "fillOpacity": 0, "pathTrimEnd": 1, "strokeOpacity": 1, "strokeWidth": 2 },
+            "fill": { "visible": true, "fillOpacity": 1, "pathTrimEnd": 1, "strokeOpacity": 0, "strokeWidth": 2 }
+          }
+        }
+      ]
+    }
+  ]
+}

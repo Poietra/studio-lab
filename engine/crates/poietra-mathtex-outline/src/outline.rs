@@ -29,6 +29,22 @@ pub(crate) enum OutlineFailureV1 {
     LimitExceeded,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutlineFragmentKindV1 {
+    Glyph,
+    Line,
+    Rect,
+    Path,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NormalizedOutlineFragmentV1 {
+    pub bounds: MathTexOutlineBoundsV1,
+    pub character: Option<char>,
+    pub kind: OutlineFragmentKindV1,
+    pub path: CubicPathV1,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Affine {
     scale_x: f64,
@@ -791,6 +807,72 @@ pub(crate) fn extract_normalized_outline_v1(
 ) -> Result<(CubicPathV1, MathTexOutlineBoundsV1), OutlineFailureV1> {
     let (path, bounds, _) = extract_normalized_outline_evidence_v1(display_list)?;
     Ok((path, bounds))
+}
+
+pub(crate) fn extract_segmented_normalized_outlines_v1(
+    display_list: &DisplayList,
+) -> Result<Vec<NormalizedOutlineFragmentV1>, OutlineFailureV1> {
+    let mut aggregate = OutlineCollector::default();
+    aggregate.visit_display_list(display_list)?;
+    if aggregate.subpaths.is_empty() {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    let aggregate_path = CubicPathV1 {
+        subpaths: aggregate.subpaths,
+    };
+    let aggregate_bounds = tight_bounds(&aggregate_path).ok_or(OutlineFailureV1::Invalid)?;
+    let height = aggregate_bounds.top - aggregate_bounds.bottom;
+    if !height.is_finite() || height <= MIN_INK_HEIGHT_V1 {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    let center_x = aggregate_bounds.left.midpoint(aggregate_bounds.right);
+    let center_y = aggregate_bounds.bottom.midpoint(aggregate_bounds.top);
+
+    let mut fragments = Vec::with_capacity(display_list.items.len());
+    for item in &display_list.items {
+        let mut collector = OutlineCollector::default();
+        collector.visit_item(item)?;
+        if collector.subpaths.is_empty() {
+            continue;
+        }
+        let mut path = CubicPathV1 {
+            subpaths: collector.subpaths,
+        };
+        for subpath in &mut path.subpaths {
+            normalize_point(&mut subpath.start, center_x, center_y, height)?;
+            for segment in &mut subpath.segments {
+                normalize_point(&mut segment.control1, center_x, center_y, height)?;
+                normalize_point(&mut segment.control2, center_x, center_y, height)?;
+                normalize_point(&mut segment.end, center_x, center_y, height)?;
+            }
+        }
+        validate_cubic_path_v1(&path).map_err(|_| OutlineFailureV1::Invalid)?;
+        let bounds = quantize_bounds(tight_bounds(&path).ok_or(OutlineFailureV1::Invalid)?)?;
+        let (kind, character) = match item {
+            DisplayItem::GlyphPath {
+                font, char_code, ..
+            } => {
+                let font_id = FontId::parse(font).ok_or(OutlineFailureV1::UnsupportedFrameItem)?;
+                (
+                    OutlineFragmentKindV1::Glyph,
+                    Some(ratex_font::katex_ttf_glyph_char(font_id, *char_code)),
+                )
+            }
+            DisplayItem::Line { .. } => (OutlineFragmentKindV1::Line, None),
+            DisplayItem::Rect { .. } => (OutlineFragmentKindV1::Rect, None),
+            DisplayItem::Path { .. } => (OutlineFragmentKindV1::Path, None),
+        };
+        fragments.push(NormalizedOutlineFragmentV1 {
+            bounds,
+            character,
+            kind,
+            path,
+        });
+    }
+    if fragments.is_empty() {
+        return Err(OutlineFailureV1::Invalid);
+    }
+    Ok(fragments)
 }
 
 fn quantize_bounds(
