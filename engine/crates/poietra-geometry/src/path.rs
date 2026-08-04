@@ -839,8 +839,8 @@ fn rectangle_path(center: &PointV1, width: f64, height: f64, radius: f64) -> Cub
 ///
 /// # Errors
 ///
-/// Returns [`GeometryError::ImageGeometry`] for image entities, which cross the
-/// render boundary without path lowering.
+/// Returns a non-vector geometry error for image and logical-group entities,
+/// which cross evaluation without path lowering.
 pub fn scene_geometry_as_cubic_path_v1(
     geometry: &SceneGeometryV1,
 ) -> Result<CubicPathV1, GeometryError> {
@@ -860,6 +860,7 @@ pub fn scene_geometry_as_cubic_path_v1(
             }],
         }),
         SceneGeometryV1::CubicPath { path } => Ok(path.clone()),
+        SceneGeometryV1::Group {} => Err(GeometryError::LogicalGroupGeometry),
         SceneGeometryV1::Image { .. } => Err(GeometryError::ImageGeometry),
     }
 }

@@ -36,4 +36,7 @@ pub enum GeometryError {
     /// Image geometry does not lower to a cubic path.
     #[error("image geometry cannot be lowered to a cubic path")]
     ImageGeometry,
+    /// Logical groups carry hierarchy state but have no drawable path.
+    #[error("logical group geometry cannot be lowered to a cubic path")]
+    LogicalGroupGeometry,
 }

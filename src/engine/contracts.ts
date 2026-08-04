@@ -165,7 +165,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
         path: ["packet", "draws", index, "sourceZIndex"],
       });
     }
-    if ((draw.kind === "image") !== (entity.geometry.kind === "image")) {
+    if (entity.geometry.kind === "group" || (draw.kind === "image") !== (entity.geometry.kind === "image")) {
       context.addIssue({
         code: "custom",
         message: `Draw kind does not match entity ${draw.entityId}.`,
@@ -222,7 +222,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
     const active = entity.lifetimes.some(
       (lifetime) => frame.packet.sampleTime >= lifetime.start && frame.packet.sampleTime < lifetime.end,
     );
-    if (active && !drawnEntityIds.has(entity.id)) {
+    if (active && entity.geometry.kind !== "group" && !drawnEntityIds.has(entity.id)) {
       context.addIssue({
         code: "custom",
         message: `Active entity ${entity.id} is missing from the packet.`,

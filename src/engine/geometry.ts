@@ -397,7 +397,9 @@ function rectanglePath(center: EnginePointV1, width: number, height: number, cor
   return { subpaths: [{ closed: true, segments, start }] };
 }
 
-export function sceneGeometryAsCubicPathV1(geometry: Exclude<SceneEntityGeometryV1, { kind: "image" }>): CubicPathV1 {
+export function sceneGeometryAsCubicPathV1(
+  geometry: Exclude<SceneEntityGeometryV1, { kind: "group" | "image" }>,
+): CubicPathV1 {
   if (geometry.kind === "cubic-path") return geometry.path;
   if (geometry.kind === "circle") return circlePath(geometry.center, geometry.radius);
   if (geometry.kind === "line")

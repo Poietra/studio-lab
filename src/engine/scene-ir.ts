@@ -91,16 +91,19 @@ const imageGeometryV1Schema = z
   })
   .strict();
 
+const groupGeometryV1Schema = z.object({ kind: z.literal("group") }).strict();
+
 const sceneGeometryV1Schema = z.discriminatedUnion("kind", [
   circleGeometryV1Schema,
   cubicPathGeometryV1Schema,
+  groupGeometryV1Schema,
   imageGeometryV1Schema,
   lineGeometryV1Schema,
   rectangleGeometryV1Schema,
 ]);
 
 export function countLoweredSceneGeometrySegmentsV1(geometry: z.infer<typeof sceneGeometryV1Schema>) {
-  if (geometry.kind === "image") return 0;
+  if (geometry.kind === "group" || geometry.kind === "image") return 0;
   if (geometry.kind === "circle") return 4;
   if (geometry.kind === "line") return 1;
   if (geometry.kind === "rectangle") return geometry.cornerRadius === 0 ? 4 : 8;
@@ -123,9 +126,20 @@ const imageAppearanceV1Schema = z
   })
   .strict();
 
+const groupAppearanceV1Schema = z
+  .object({
+    kind: z.literal("group"),
+    opacity: normalizedNumberV1Schema,
+  })
+  .strict();
+
 export const sceneEntityV1Schema = z
   .object({
-    appearance: z.discriminatedUnion("kind", [imageAppearanceV1Schema, vectorAppearanceV1Schema]),
+    appearance: z.discriminatedUnion("kind", [
+      groupAppearanceV1Schema,
+      imageAppearanceV1Schema,
+      vectorAppearanceV1Schema,
+    ]),
     geometry: sceneGeometryV1Schema,
     id: sourceIdentityV1Schema,
     lifetimes: z.array(intervalV1Schema).min(1).max(64),
@@ -319,6 +333,7 @@ export const sceneCapabilityV1Schema = z.enum([
   "affine-transform-animation",
   "camera-animation",
   "cubic-path-geometry",
+  "logical-group",
   "motion-path-animation",
   "opacity-animation",
   "path-morph-animation",
@@ -425,8 +440,11 @@ function validateEntities(scene: SceneIrV1Input, context: z.RefinementCtx) {
         path: ["entities", index, "provenanceId"],
       });
     }
-    const image = entity.geometry.kind === "image";
-    if ((image && entity.appearance.kind !== "image") || (!image && entity.appearance.kind !== "vector")) {
+    const appearanceMatchesGeometry =
+      (entity.geometry.kind === "group" && entity.appearance.kind === "group") ||
+      (entity.geometry.kind === "image" && entity.appearance.kind === "image") ||
+      (entity.geometry.kind !== "group" && entity.geometry.kind !== "image" && entity.appearance.kind === "vector");
+    if (!appearanceMatchesGeometry) {
       context.addIssue({
         code: "custom",
         message: "Entity appearance must match its geometry kind.",
@@ -560,7 +578,7 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
       });
       return;
     }
-    if (channel.kind === "path-trim" && entity.geometry.kind === "image") {
+    if (channel.kind === "path-trim" && entity.appearance.kind !== "vector") {
       context.addIssue({
         code: "custom",
         message: `${channel.kind} requires vector geometry.`,
@@ -719,7 +737,8 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
 function requiredCapabilities(scene: SceneIrV1Input) {
   const capabilities = new Set<z.infer<typeof sceneCapabilityV1Schema>>();
   for (const entity of scene.entities) {
-    if (entity.geometry.kind === "image") capabilities.add("png-image");
+    if (entity.geometry.kind === "group") capabilities.add("logical-group");
+    else if (entity.geometry.kind === "image") capabilities.add("png-image");
     else if (entity.geometry.kind === "cubic-path") capabilities.add("cubic-path-geometry");
     else capabilities.add("shape-primitives");
   }

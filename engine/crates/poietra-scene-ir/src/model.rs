@@ -351,6 +351,8 @@ pub enum SceneGeometryV1 {
     Line { end: PointV1, start: PointV1 },
     #[serde(rename = "cubic-path")]
     CubicPath { path: CubicPathV1 },
+    #[serde(rename = "group")]
+    Group {},
     #[serde(rename = "image")]
     Image {
         asset: AssetReferenceV1,
@@ -380,6 +382,8 @@ pub enum ImageSamplerV1 {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", deny_unknown_fields)]
 pub enum SceneAppearanceV1 {
+    #[serde(rename = "group")]
+    Group { opacity: f64 },
     #[serde(rename = "vector")]
     Vector {
         #[serde(deserialize_with = "deserialize_required_nullable")]
@@ -651,6 +655,8 @@ pub enum SceneCapabilityV1 {
     CameraAnimation,
     #[serde(rename = "cubic-path-geometry")]
     CubicPathGeometry,
+    #[serde(rename = "logical-group")]
+    LogicalGroup,
     #[serde(rename = "motion-path-animation")]
     MotionPathAnimation,
     #[serde(rename = "opacity-animation")]
