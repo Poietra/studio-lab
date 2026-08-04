@@ -10,9 +10,9 @@
   ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "a1e886fb854268ad7d06b00168f9a5ce3339857d",
-    "tree": "9ae1976517a9ed354e644215ae0909c30f95e12b",
-    "digest": "51a7d76c722964f40803ec35bb3dadb23c4768a56a4ac86b37f03248a04a10d6",
+    "revision": "2c1e56287193e3acddbe6779f6ecd4bd91094588",
+    "tree": "2cd11bb2449728601961d1776a8e04096f8ef2eb",
+    "digest": "9308f7e00fcf35fa4478960a6907409930494db90543cf54514f9725eb31320e",
     "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
     "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
     "module": "manim.renderer.source_runtime_identity"
@@ -162,7 +162,7 @@
         },
         {
           "name": "WarpSquare",
-          "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "profiles": [1, 2, 3, 4, 5, 6, 7, 9],
           "features": [
             "apply-pointwise-function",
             "default-manim-easing",
