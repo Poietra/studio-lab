@@ -94,6 +94,7 @@ describe("visual parity v1 contracts", () => {
       "real-warp-square-v9--midpoint",
       "real-warp-square-v9--target",
       "real-warp-square-v9--hold",
+      "real-line-joints-v10--static",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -562,6 +563,53 @@ describe("visual parity v1 contracts", () => {
         viewport: { heightPx: 360, widthPx: 640 },
       });
     }
+  });
+
+  it("pins the server-sealed real LineJoints V10 scene to native/browser and independent Cairo gates", async () => {
+    const fixtureRevision = "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "real-line-joints-v10--static");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-real-line-joints-v10",
+        path: "fixtures/engine-v1/real-line-joints-v10.json",
+        revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+      },
+      sample: {
+        id: "static",
+        sampleTime: 0.5,
+        semanticDigest: "25199374e0078a2fe619e48af3ace591f35d0468b93a7b1fec39fa004e41c73e",
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      thresholdException: null,
+    });
+    if (!entry) throw new Error("The LineJoints V10 visual-parity entry is missing.");
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixture = JSON.parse(await readFile(entry.fixture.path, "utf8"));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
+      snapshotHash: fixtureRevision,
+      snapshotVersion: 10,
+      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(4);
+    expect(bundle.scene.entities[0]?.geometry).toEqual({ kind: "group" });
+    expect(
+      bundle.scene.entities
+        .slice(1)
+        .map((entity) => (entity.appearance.kind === "vector" ? entity.appearance.stroke?.join : null)),
+    ).toEqual(["miter", "round", "bevel"]);
+    expect(fixture.producerReference).toMatchObject({
+      fastManimCommit: "29d21a2bd213df8ffeed0454278aa86289d190b8",
+      kind: "server-sealed-real-fast-manim-profile-v10",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
   });
 
   it("compares all four sRGB byte channels and uses a strict >8 pixel classification", async () => {

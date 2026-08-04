@@ -1,6 +1,17 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
-import { lineJointsCairoReferenceV1Schema, readLineJointsCairoReferenceV1 } from "./line-joints-cairo-reference";
+import {
+  LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1,
+  lineJointsCairoReferenceV1Schema,
+  readLineJointsCairoReferenceV1,
+} from "./line-joints-cairo-reference";
 import { decodeRgbaPngV1, encodeRgbaPngV1 } from "./png-rgba";
+import { nativeVisualParityArtifactV1Schema, visualParityCorpusV1Schema } from "./visual-parity-contract";
+import { compareVisualParityFramesV1 } from "./visual-parity-metrics";
+
+const ENTRY_ID = "real-line-joints-v10--static";
 
 describe("LineJoints Cairo reference v1", () => {
   it("pins the exact source, producer binaries, renderer configuration, PNG, and top-to-bottom RGBA", async () => {
@@ -68,4 +79,32 @@ describe("LineJoints Cairo reference v1", () => {
       }).success,
     ).toBe(false);
   });
+
+  it.runIf(Boolean(process.env.POIETRA_LINE_JOINTS_NATIVE_ARTIFACT_DIR))(
+    "matches a native retained-WGPU full-frame artifact against independent Manim/Cairo",
+    async () => {
+      const artifactRoot = process.env.POIETRA_LINE_JOINTS_NATIVE_ARTIFACT_DIR;
+      if (!artifactRoot) throw new Error("The native LineJoints artifact directory is required.");
+      const [cairo, corpusText, metadataText] = await Promise.all([
+        readLineJointsCairoReferenceV1(),
+        readFile("fixtures/visual-parity-v1/corpus.json", "utf8"),
+        readFile(join(artifactRoot, ENTRY_ID, "metadata.json"), "utf8"),
+      ]);
+      const corpus = visualParityCorpusV1Schema.parse(JSON.parse(corpusText));
+      const entry = corpus.entries.find(({ id }) => id === ENTRY_ID);
+      if (!entry) throw new Error("The LineJoints V10 visual-parity corpus entry is missing.");
+      const metadata = nativeVisualParityArtifactV1Schema.parse(JSON.parse(metadataText));
+      expect(metadata).toMatchObject({
+        corpusEntryId: ENTRY_ID,
+        fixture: { viewport: cairo.reference.frame.viewport },
+      });
+      const nativeRgba = new Uint8Array(await readFile(join(artifactRoot, ENTRY_ID, metadata.rgba.path)));
+      const metrics = compareVisualParityFramesV1(cairo.rgba, nativeRgba, entry.sample.viewport, corpus.metricContract);
+      const evidence = JSON.stringify(metrics);
+      expect(metrics.ssim, evidence).toBeGreaterThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+      expect(metrics.pixelFractionAboveThreshold, evidence).toBeLessThanOrEqual(
+        LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold,
+      );
+    },
+  );
 });

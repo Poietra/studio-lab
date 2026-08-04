@@ -11,6 +11,11 @@ const COMMIT_SHA = z.string().regex(/^[0-9a-f]{40}$/);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 
 export const LINE_JOINTS_CAIRO_REFERENCE_ROOT_V1 = "fixtures/line-joints-cairo-reference-v1";
+export const LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1 = {
+  maximumPixelFractionAboveThreshold: 0.02,
+  minimumSsim: 0.994,
+  reason: "Independent Cairo and Lyon/WGPU edge antialiasing differ while preserving the three exact join silhouettes.",
+} as const;
 
 export const lineJointsCairoReferenceV1Schema = z.strictObject({
   frame: z.strictObject({

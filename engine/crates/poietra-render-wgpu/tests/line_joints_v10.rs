@@ -101,6 +101,10 @@ fn semantic_digest(packet: &poietra_scene_ir::RenderPacketV1) -> String {
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one vertical-slice proof keeps producer pins, retained evaluation, joins, and interaction bounds together"
+)]
 fn sealed_v10_retains_three_joined_leaves_through_native_evaluation_and_wgpu_prepare() {
     let (fixture, bundle) = fixture();
     assert_eq!(fixture.id, FIXTURE_ID);
@@ -168,7 +172,7 @@ fn sealed_v10_retains_three_joined_leaves_through_native_evaluation_and_wgpu_pre
                 fill: None,
                 stroke: Some(stroke),
                 ..
-            } => stroke.join.clone(),
+            } => stroke.join,
             _ => panic!(
                 "the VGroup must emit no draw and each Triangle must emit one stroke-only path"
             ),

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
+import { LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1, readLineJointsCairoReferenceV1 } from "./line-joints-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
 import {
   nativeVisualParityArtifactV1Schema,
@@ -71,6 +72,7 @@ const REAL_WARP_SQUARE_V9_ENTRY_IDS = [
   "real-warp-square-v9--hold",
 ] as const;
 const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENTRY_IDS);
+const REAL_LINE_JOINTS_V10_ENTRY_ID = "real-line-joints-v10--static";
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -306,6 +308,46 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
       writeFile(
         join(outputDirectory, "browser-reference-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
+      ),
+    );
+  }
+  if (entry.id === REAL_LINE_JOINTS_V10_ENTRY_ID) {
+    const cairo = await readLineJointsCairoReferenceV1();
+    if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("The LineJoints V10 Cairo comparison requires an imported Manim snapshot.");
+    }
+    expect(cairo.reference.frame.viewport).toEqual(entry.sample.viewport);
+    expect(cairo.reference.frame.sampleTime).toBe(0);
+    expect(cairo.reference.scene.sourceSha256).toBe(fixtureBundle.scene.source.sourceHash);
+    const referenceRgba = cairo.rgba;
+    for (const [comparison, comparisonMetrics] of [
+      [
+        "native/Cairo",
+        compareVisualParityFramesV1(referenceRgba, expectedRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+      [
+        "browser/Cairo",
+        compareVisualParityFramesV1(referenceRgba, actualRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+    ] as const) {
+      expect(
+        comparisonMetrics.ssim,
+        `${comparison}: ${LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+      ).toBeGreaterThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+      expect(
+        comparisonMetrics.pixelFractionAboveThreshold,
+        `${comparison}: ${LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+      ).toBeLessThanOrEqual(LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
+    }
+    artifactWrites.push(
+      writeFile(join(outputDirectory, "cairo-reference.png"), cairo.png),
+      writeFile(
+        join(outputDirectory, "native-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, expectedRgba), widthPx, heightPx),
+      ),
+      writeFile(
+        join(outputDirectory, "browser-cairo-diff.png"),
         encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
       ),
     );
