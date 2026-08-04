@@ -42,7 +42,7 @@ export const REAL_MANIM_CENSUS_FEATURES = [
 
 const corpusSchema = z.enum(["calibration", "compatibility"]);
 const featureSchema = z.enum(REAL_MANIM_CENSUS_FEATURES);
-const profileSchema = z.number().int().min(1).max(9);
+const profileSchema = z.number().int().min(1).max(10);
 const sceneSchema = z
   .object({
     features: z.array(featureSchema).max(32).optional(),
@@ -51,14 +51,11 @@ const sceneSchema = z
   })
   .strict()
   .superRefine((scene, context) => {
-    for (const [field, values] of [
-      ["profiles", scene.profiles],
-      ["features", scene.features ?? []],
+    for (const [field, values, sorted] of [
+      ["profiles", scene.profiles, [...scene.profiles].sort((left, right) => left - right)],
+      ["features", scene.features ?? [], [...(scene.features ?? [])].sort()],
     ] as const) {
-      if (
-        new Set(values).size !== values.length ||
-        [...values].sort().some((value, index) => value !== values[index])
-      ) {
+      if (new Set(values).size !== values.length || sorted.some((value, index) => value !== values[index])) {
         context.addIssue({ code: "custom", message: `${field} must be sorted and unique.`, path: [field] });
       }
     }
@@ -166,6 +163,24 @@ const manifestSchema = z
           context.addIssue({
             code: "custom",
             message: "Profile V9 is reserved for the exact pinned fast-manim WarpSquare source.",
+            path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
+          });
+        }
+        if (
+          scene.profiles.includes(10) &&
+          !(
+            source.asset === undefined &&
+            source.corpus === "compatibility" &&
+            source.id === "fast-manim-basic" &&
+            source.path === "example_scenes/basic.py" &&
+            source.repository === "fast-manim" &&
+            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
+            scene.name === "LineJoints"
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Profile V10 is reserved for the exact pinned fast-manim LineJoints source.",
             path: ["sources", sourceIndex, "scenes", sceneIndex, "profiles"],
           });
         }
