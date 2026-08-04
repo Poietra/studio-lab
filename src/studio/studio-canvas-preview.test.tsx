@@ -490,6 +490,7 @@ describe("StudioCanvas retained preview layer", () => {
 
   it("selects only the three LineJoints leaves without starting a source rewrite gesture", () => {
     const triangles = [lineJointsTriangle("t1", 120), lineJointsTriangle("t2", 320), lineJointsTriangle("t3", 520)];
+    const selectionOnlyTriangles = triangles.map((entity) => ({ ...entity, present: false }));
     const groupRuntimeId = "scene:line-joints/entity:0";
     const leafRuntimeIds = [
       "scene:line-joints/entity:1",
@@ -530,11 +531,11 @@ describe("StudioCanvas retained preview layer", () => {
     const nudgeMutation = vi.fn();
     const props: StudioCanvasProps = {
       ...baseProps(),
-      entities: [group, ...triangles],
+      entities: [group, ...selectionOnlyTriangles],
       onEntityKeyDown: nudgeMutation,
       onEntityPointerDown: beginMutation,
       onSelectEntity: (entityId) => {
-        const entity = triangles.find(({ id }) => id === entityId);
+        const entity = selectionOnlyTriangles.find(({ id }) => id === entityId);
         if (entity) selected.push(entity);
       },
       preview: previewView(
@@ -551,12 +552,12 @@ describe("StudioCanvas retained preview layer", () => {
         sourceRuntimeIdentity,
         { kind: "selection-only", reason: "source-edit-anchor-unavailable" },
       ),
-      selectedIds: new Set([triangles[0]!.id]),
+      selectedIds: new Set([selectionOnlyTriangles[0]!.id]),
     };
     const tree = StudioCanvas(props);
     expect(() => findEntityButton(tree, group.id)).toThrow(/No Studio entity button/);
 
-    for (const triangle of triangles) {
+    for (const triangle of selectionOnlyTriangles) {
       const button = findEntityButton(tree, triangle.id);
       expect(button.props.disabled).toBe(false);
       expect(button.props.className).not.toContain("pointer-events-none");
@@ -578,7 +579,7 @@ describe("StudioCanvas retained preview layer", () => {
       expect(preventDefault).not.toHaveBeenCalled();
     }
 
-    expect(selected).toEqual(triangles);
+    expect(selected).toEqual(selectionOnlyTriangles);
     expect(beginMutation).not.toHaveBeenCalled();
     expect(nudgeMutation).not.toHaveBeenCalled();
     expect(draftError).toBeNull();

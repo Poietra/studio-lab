@@ -444,7 +444,17 @@ export function StudioCanvas({
             onMotionControlChange={onMotionControlChange}
           />
           {entities.map((entity) => {
-            if (!entity.present) return null;
+            const presentedIdentity =
+              presentingCanvasPixels && preview
+                ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
+                : null;
+            // Source projection does not expand a directly-added VGroup into
+            // present child rows. A correlated selection-only frame does: its
+            // runtime identity plus prepared bounds are sufficient to expose
+            // a paint-free selector, but never a mutation gesture.
+            const runtimePresentSelectionEntity =
+              selectionOnlyPreview && presentingCanvasPixels && presentedIdentity !== null;
+            if (!entity.present && !runtimePresentSelectionEntity) return null;
             // Aggregate morph identity is intentionally ambiguous. Once its
             // verified pixels are presented, retaining source-projected hit
             // targets would both obscure the frame and suggest unsupported
@@ -467,10 +477,6 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            const presentedIdentity =
-              presentingCanvasPixels && preview
-                ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
-                : null;
             // V10's logical VGroup has verified identity but no prepared
             // pixels. Neither selection-only nor the bounded t2-edit profile
             // may mint a semantic group hit target beside the WebGPU frame.

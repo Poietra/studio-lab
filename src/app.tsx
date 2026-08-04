@@ -2561,7 +2561,7 @@ export function App({
       return;
     }
     if (!gestureContext.proposedState || !projection) return;
-    const projected = projectedPositions(projection.canvas.entities, targetIds);
+    const projected = projectedPositions(editableEntities, targetIds);
     if (projected.kind === "invalid") {
       setDraftError(projected.message);
       return;
