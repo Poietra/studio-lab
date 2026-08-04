@@ -763,6 +763,7 @@ export function App({
     transientEdit:
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
+  const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const {
     beginRequest: beginEditorRevisionRequest,
     blockDurationAuthority,
@@ -1983,6 +1984,10 @@ export function App({
 
   function beginEntityDrag(event: PointerEvent<HTMLButtonElement>, entityId: string) {
     if (canvasDrag.current || canvasResize.current) return;
+    if (previewSelectionOnly) {
+      setSelectedObjectIds([entityId]);
+      return;
+    }
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
       return;
@@ -2105,6 +2110,10 @@ export function App({
   ) {
     event.stopPropagation();
     if (canvasDrag.current || canvasResize.current) return;
+    if (previewSelectionOnly) {
+      setSelectedObjectIds([entityId]);
+      return;
+    }
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return;
@@ -2251,6 +2260,10 @@ export function App({
     if (!delta) return;
     event.preventDefault();
     event.stopPropagation();
+    if (previewSelectionOnly) {
+      setSelectedObjectIds([entityId]);
+      return;
+    }
     if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
@@ -2443,6 +2456,7 @@ export function App({
   }
 
   function resizeEntityFromInspector(entityId: string, targetScale: number) {
+    if (previewSelectionOnly) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity || Math.abs(entity.scale - targetScale) < 0.001) return false;
     return installEntityScaleDraft(
@@ -2455,6 +2469,10 @@ export function App({
   }
 
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
+    if (previewSelectionOnly) {
+      setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
+      return false;
+    }
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return false;
     if (previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entityId) {
@@ -2586,6 +2604,10 @@ export function App({
     const delta = NUDGE_DELTAS[event.key];
     if (!delta || !draftBaseState || !projection) return;
     event.preventDefault();
+    if (previewSelectionOnly) {
+      setSelectedObjectIds([entityId]);
+      return;
+    }
     const multiplier = event.shiftKey ? 5 : 1;
     const targetIds = selectedObjectIds.includes(entityId) ? selectedObjectIds : [entityId];
     installPositionDraft(

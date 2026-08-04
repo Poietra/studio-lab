@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
-import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
@@ -760,6 +760,68 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       phase: "fallback",
       reason: "snapshot-uncorrelated",
     });
+  });
+
+  it("admits only the three drawable V10 leaves for selection while requiring the complete group identity", async () => {
+    const { proposedState, snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    const leaf = snapshot.snapshot.scene.entities[0];
+    if (source.kind !== "imported-manim-server-snapshot" || !leaf) {
+      throw new Error("Expected one imported line fixture entity.");
+    }
+    const groupId = "runtime-group";
+    const leafIds = ["runtime-t1", "runtime-t2", "runtime-t3"] as const;
+    const entities: SceneIrBundleV1["scene"]["entities"] = [
+      {
+        ...leaf,
+        appearance: { kind: "group", opacity: 1 },
+        geometry: { kind: "group" },
+        id: groupId,
+        parentId: null,
+      },
+      ...leafIds.map((id) => ({ ...leaf, id, parentId: groupId })),
+    ];
+    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["grp", { bindingId: "binding:grp", entityId: groupId, sourceName: "grp" }],
+      ...leafIds.map(
+        (entityId, index) =>
+          [`t${index + 1}`, { bindingId: `binding:t${index + 1}`, entityId, sourceName: `t${index + 1}` }] as const,
+      ),
+    ]);
+    const v10 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          entities,
+          source: { ...source, snapshotVersion: 10 },
+        },
+      },
+      sourceRuntimeIdentity: identity,
+    } as StudioVerifiedPreviewSnapshotV1;
+
+    const authority = studioPreviewInteractionAuthorityV1(v10);
+    expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual(leafIds);
+    expect(
+      studioPreviewInteractionAuthorityV1({
+        ...v10,
+        sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== "grp")),
+      }),
+    ).toEqual({ kind: "display-only", reason: "source-runtime-identity-unverified" });
+
+    const compiled = await compileStudioPreviewSceneV1({
+      frame: { height: 8, width: 14.222222222222221 },
+      proposedState,
+      snapshot: v10,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: "project-a/example_scenes/basic.py/LineJoints",
+    });
+    expect(compiled.kind).toBe("compiled");
+    if (compiled.kind !== "compiled") throw new Error(compiled.error);
+    expect(compiled.scene.interactionEntityIds).toEqual(leafIds);
   });
 
   it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {

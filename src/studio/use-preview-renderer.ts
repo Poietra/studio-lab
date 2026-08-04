@@ -78,6 +78,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 
 export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive" }>
+  | Readonly<{ kind: "selection-only"; reason: "source-edit-anchor-unavailable" }>
   | Readonly<{
       kind: "display-only";
       reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
@@ -183,7 +184,10 @@ export function studioPreviewInteractionAuthorityV1(
       entities !== undefined &&
       mappedEntityIds.size === entities.length &&
       entities.every(({ id }) => mappedEntityIds.has(id));
-    return complete ? { kind: "interactive" } : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+    if (!complete) return { kind: "display-only", reason: "source-runtime-identity-unverified" };
+    return Number(source.snapshotVersion) === 10
+      ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
+      : { kind: "interactive" };
   }
   return identity && identity.size > 0
     ? { kind: "interactive" }
@@ -217,13 +221,26 @@ export function studioPreviewEditedV9SampleFallbackV1(
 export function studioPreviewInteractionEntityIdsV1(
   identity: StudioPreviewSourceRuntimeIdentityV1 | null,
   authority: StudioPreviewInteractionAuthorityV1 = { kind: "interactive" },
+  entities: SceneIrBundleV1["scene"]["entities"] | null = null,
 ) {
   if (authority.kind === "display-only") return [];
   if (!identity) return [];
+  // Selection-only authority must be derived from the verified render graph:
+  // a logical group has source identity but no prepared pixels or honest hit
+  // bounds. Missing Scene evidence therefore admits no selection target.
+  const selectionEntityIds =
+    authority.kind === "selection-only"
+      ? new Set((entities ?? []).filter(({ geometry }) => geometry.kind !== "group").map(({ id }) => id))
+      : null;
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
-    if (seen.has(mapping.entityId) || !sourceIdentityV1Schema.safeParse(mapping.entityId).success) continue;
+    if (
+      seen.has(mapping.entityId) ||
+      !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||
+      (selectionEntityIds !== null && !selectionEntityIds.has(mapping.entityId))
+    )
+      continue;
     seen.add(mapping.entityId);
     entityIds.push(mapping.entityId);
     if (entityIds.length === MAX_CANVAS_INTERACTION_ENTITY_IDS) break;
@@ -342,6 +359,7 @@ export async function compileStudioPreviewSceneV1(
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
           studioPreviewInteractionAuthorityV1(input.snapshot),
+          snapshot.scene.entities,
         ),
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,

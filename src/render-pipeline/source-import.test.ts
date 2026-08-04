@@ -668,6 +668,7 @@ class LineJoints(Scene):
     const entities = imported?.runtimeSceneState.objectGraph.entities;
     const ids = ["t1", "t2", "t3"].map((variable) => `source:example_scenes/basic.py#LineJoints:${variable}`);
 
+    expect(imported?.anchors).toEqual([]);
     expect(imported?.initialVisibleSourceVariables).toEqual(["t1", "t2", "t3", "grp"]);
     for (const id of ids) {
       expect(entities?.[id]).toMatchObject({

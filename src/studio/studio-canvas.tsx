@@ -68,6 +68,7 @@ export type StudioCanvasProps = Readonly<{
   onEntityResizePointerUp: (event: PointerEvent<HTMLButtonElement>) => void;
   onMotionControlChange: (path: StudioMotionPath, delta: Point) => void;
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
+  onSelectEntity: (entityId: string) => void;
   presenceParticipants?: readonly StudioPresenceParticipantV1[];
   preview?: StudioPreviewRendererViewV1 | null;
   readOnly: boolean;
@@ -324,6 +325,7 @@ export function StudioCanvas({
   onEntityResizePointerUp,
   onMotionControlChange,
   onPresenceCursorChange = () => undefined,
+  onSelectEntity,
   preview = null,
   presenceParticipants = [],
   readOnly,
@@ -340,6 +342,7 @@ export function StudioCanvas({
   // semantic paint in the same render.
   const presentingCanvasPixels = preview?.state.phase === "presented";
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
+  const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -367,7 +370,7 @@ export function StudioCanvas({
         data-studio-canvas
         data-preview-fallback-reason={preview?.state.phase === "fallback" ? preview.state.reason : undefined}
         data-preview-packet-id={preview?.state.phase === "presented" ? preview.state.frame.packetId : undefined}
-        data-preview-interaction={displayOnlyPreview ? "display-only" : "interactive"}
+        data-preview-interaction={preview?.interactionAuthority.kind ?? "interactive"}
         data-preview-renderer={preview ? preview.state.phase : "off"}
         data-preview-revision={preview?.state.phase === "presented" ? preview.state.frame.revision : undefined}
         data-preview-sample-time={
@@ -450,10 +453,11 @@ export function StudioCanvas({
               return <div className={transition.className} key={entity.id} style={transition.style} />;
             }
             const selected = selectedIds.has(entity.id);
-            const locked =
+            const selectionLocked =
               readOnly ||
               displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
+            const mutationLocked = selectionLocked || selectionOnlyPreview;
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
@@ -462,8 +466,13 @@ export function StudioCanvas({
               presentingCanvasPixels && preview
                 ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
                 : null;
+            // V10's logical VGroup has verified identity but no prepared
+            // pixels. A selection-only preview may expose only entities with
+            // correlated runtime bounds, so it cannot mint a semantic group
+            // hit target beside the WebGPU frame.
+            if (selectionOnlyPreview && presentingCanvasPixels && presentedIdentity === null) return null;
             const presentedGeometry = presentedIdentity?.geometry ?? null;
-            const moveLocked = locked || (positionUnknown && presentedGeometry === null);
+            const moveLocked = selectionLocked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const displayedScale = entityPreviewScale(scalePreview, entity);
             const previewGeometry = presentedGeometry
@@ -516,21 +525,44 @@ export function StudioCanvas({
                       presentedGeometry ? "box-border p-0" : shape ? "p-0" : "px-3 py-2",
                       moveLocked
                         ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
-                        : "cursor-grab active:cursor-grabbing",
+                        : selectionOnlyPreview
+                          ? "cursor-pointer"
+                          : "cursor-grab active:cursor-grabbing",
                       selected
                         ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400"
                         : "border-transparent hover:border-zinc-600",
                     )}
                     data-studio-entity={entity.id}
                     disabled={moveLocked}
-                    onKeyDown={(event) => onEntityKeyDown(event, entity.id)}
-                    onLostPointerCapture={onEntityPointerCancel}
-                    onPointerCancel={onEntityPointerCancel}
-                    onPointerDown={(event) => onEntityPointerDown(event, entity.id)}
-                    onPointerMove={onEntityPointerMove}
-                    onPointerUp={onEntityPointerUp}
+                    onKeyDown={(event) => {
+                      if (!selectionOnlyPreview) {
+                        onEntityKeyDown(event, entity.id);
+                        return;
+                      }
+                      if (event.key !== "Enter" && event.key !== " ") return;
+                      event.preventDefault();
+                      onSelectEntity(entity.id);
+                    }}
+                    onLostPointerCapture={selectionOnlyPreview ? undefined : onEntityPointerCancel}
+                    onPointerCancel={selectionOnlyPreview ? undefined : onEntityPointerCancel}
+                    onPointerDown={(event) => {
+                      if (!selectionOnlyPreview) {
+                        onEntityPointerDown(event, entity.id);
+                        return;
+                      }
+                      event.stopPropagation();
+                      onSelectEntity(entity.id);
+                    }}
+                    onPointerMove={selectionOnlyPreview ? undefined : onEntityPointerMove}
+                    onPointerUp={selectionOnlyPreview ? undefined : onEntityPointerUp}
                     style={presentedGeometry ? entityDimensionStyle(previewGeometry.dimensions, frame) : undefined}
-                    title={positionUnknown ? entity.geometry.position.reason : undefined}
+                    title={
+                      selectionOnlyPreview
+                        ? "This verified object can be selected, but source rewriting is unavailable."
+                        : positionUnknown
+                          ? entity.geometry.position.reason
+                          : undefined
+                    }
                     type="button"
                   >
                     <span
@@ -545,7 +577,7 @@ export function StudioCanvas({
                       </span>
                     ) : null}
                   </button>
-                  {selected && selectedIds.size === 1 && !locked && resizeAvailable ? (
+                  {selected && selectedIds.size === 1 && !mutationLocked && resizeAvailable ? (
                     <EntityResizeHandles
                       cameraScale={cameraScale}
                       displayedScale={displayedScale}
@@ -579,7 +611,7 @@ export function StudioCanvas({
           >
             {preview.state.phase === "presented"
               ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
-                  displayOnlyPreview ? "display only" : "editing preview only"
+                  displayOnlyPreview ? "display only" : selectionOnlyPreview ? "selection only" : "editing preview only"
                 }`
               : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
           </div>
