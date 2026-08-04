@@ -149,6 +149,20 @@ describe("real Manim census report", () => {
       await writeFile(path, JSON.stringify(officialV10));
       await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV10);
 
+      const unpinnedV11 = structuredClone(manifest());
+      unpinnedV11.sources[2]!.scenes[0]!.profiles = [1, 2, 11];
+      await writeFile(path, JSON.stringify(unpinnedV11));
+      await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialV11 = structuredClone(manifest());
+      const officialSpiralInSource = officialV11.sources[2]!;
+      officialSpiralInSource.id = "fast-manim-basic";
+      officialSpiralInSource.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialSpiralInSource.scenes[0]!.name = "SpiralInExample";
+      officialSpiralInSource.scenes[0]!.profiles = [1, 2, 3, 4, 5, 6, 7, 11];
+      await writeFile(path, JSON.stringify(officialV11));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV11);
+
       const pinned = await loadRealManimCensusManifest(
         join(import.meta.dirname, "..", "fixtures", "real-manim-census-v1", "manifest.json"),
       );
@@ -170,6 +184,29 @@ describe("real Manim census report", () => {
           corpus: "compatibility",
           id: "fast-manim-basic",
           name: "SquareToCircle",
+          path: "example_scenes/basic.py",
+          repository: "fast-manim",
+          sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+        },
+      ]);
+      expect(
+        pinned.sources.flatMap((source) =>
+          source.scenes
+            .filter((scene) => scene.profiles.includes(11))
+            .map((scene) => ({
+              corpus: source.corpus,
+              id: source.id,
+              name: scene.name,
+              path: source.path,
+              repository: source.repository,
+              sha256: source.sha256,
+            })),
+        ),
+      ).toEqual([
+        {
+          corpus: "compatibility",
+          id: "fast-manim-basic",
+          name: "SpiralInExample",
           path: "example_scenes/basic.py",
           repository: "fast-manim",
           sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",

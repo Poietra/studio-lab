@@ -1,8 +1,8 @@
 {
-  "corpusDigest": "4440c3501a0787735fd58e72f58c0c146b3223766b15bdd435f759ff3f264080",
-  "manifestDigest": "85b041e844f2d076d3c48d9204f9098c6b18aa276cebdcf879ce9efc25b7c4d2",
+  "corpusDigest": "5971182c02795a06847bfdd429a9f1a180c433a28669d827ac24de0a8c3ba00f",
+  "manifestDigest": "f1931dc7347c9f2fab3439003a01df2192c7c9a6309b0775a1043e63a4749bd1",
   "manifestVersion": 1,
-  "producerDigest": "f5760561042013c5b8461070141cf929a595997b07f4aacd687e6befeb562412",
+  "producerDigest": "1b9b792823749bdb85cd588fa710a416292d08f4277cd4e99fb0a1c4078fc76b",
   "reasonCounts": {
     "failure:producer-exit": 1,
     "unsupported:animation-evidence-incomplete": 13,
@@ -141,6 +141,11 @@
     "fast-manim-basic/SpiralInExample/v1": {
       "outcome": "fallback",
       "reasons": ["unsupported:runtime-semantics-unsupported"]
+    },
+    "fast-manim-basic/SpiralInExample/v11": {
+      "outcome": "accepted",
+      "reasons": [],
+      "snapshotHash": "a5b0608d69a87c3fc5e66942584b14b94be8e9d7791dd3c6ec126047f3997ca7"
     },
     "fast-manim-basic/SpiralInExample/v2": {
       "outcome": "fallback",
@@ -306,7 +311,7 @@
     "calibration-unsupported/UnsupportedPreviewScene": "fallback",
     "fast-manim-basic/LineJoints": "accepted",
     "fast-manim-basic/OpeningManim": "fallback",
-    "fast-manim-basic/SpiralInExample": "fallback",
+    "fast-manim-basic/SpiralInExample": "accepted",
     "fast-manim-basic/SquareToCircle": "accepted",
     "fast-manim-basic/UpdatersExample": "fallback",
     "fast-manim-basic/WarpSquare": "accepted",
@@ -315,10 +320,10 @@
   "schema": "poietra.real-manim-census-report",
   "summary": {
     "attempts": {
-      "accepted": 15,
+      "accepted": 16,
       "fallback": 50,
       "rejected": 1,
-      "total": 66
+      "total": 67
     },
     "corpora": {
       "calibration": {
@@ -337,22 +342,22 @@
       },
       "compatibility": {
         "attempts": {
-          "accepted": 3,
+          "accepted": 4,
           "fallback": 49,
           "rejected": 0,
-          "total": 52
+          "total": 53
         },
         "scenes": {
-          "accepted": 3,
-          "fallback": 4,
+          "accepted": 4,
+          "fallback": 3,
           "rejected": 0,
           "total": 7
         }
       }
     },
     "scenes": {
-      "accepted": 15,
-      "fallback": 5,
+      "accepted": 16,
+      "fallback": 4,
       "rejected": 1,
       "total": 21
     }
