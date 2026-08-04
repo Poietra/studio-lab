@@ -390,6 +390,25 @@ describe("Poietra TypeScript reference evaluator v1", () => {
       paintOrder: 0,
       transform: { tx: 12, ty: 8 },
     });
+
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...scene,
+        animationChannels: [
+          {
+            entityId: "group",
+            id: "invalid-group-trim",
+            keyframes: [
+              { at: 0, easingToNext: { kind: "linear" }, value: 0 },
+              { at: 1, easingToNext: null, value: 1 },
+            ],
+            kind: "path-trim",
+            provenanceId: "fixture",
+          },
+        ],
+        requiredCapabilities: ["logical-group", "path-trim-animation", "shape-primitives"],
+      }).success,
+    ).toBe(false);
   });
 
   it("fails closed when finite hierarchy inputs overflow during affine composition", async () => {

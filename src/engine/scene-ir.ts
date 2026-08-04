@@ -578,7 +578,7 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
       });
       return;
     }
-    if (channel.kind === "path-trim" && entity.geometry.kind === "image") {
+    if (channel.kind === "path-trim" && entity.appearance.kind !== "vector") {
       context.addIssue({
         code: "custom",
         message: `${channel.kind} requires vector geometry.`,
