@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RenderCommitRequest } from "../src/render-pipeline/contracts";
 import { type DurableManimRenderServiceOptionsV1, DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { HttpError } from "./http/json";
+import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import { renderCommitCorrelationKey } from "./manim-render-session-policy";
 import { sourceHash } from "./manim-source-store";
@@ -17,6 +18,11 @@ import type {
   WorkspaceSourceHeadV1,
   WorkspaceSourceRepositoryV1,
 } from "./storage/workspace-source-repository";
+import {
+  CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
+  CANDIDATE_PREFLIGHT_PROFILES_V1,
+  CANDIDATE_PREFLIGHT_REJECTION_CASES_V1,
+} from "./test-fixtures/manim-render-candidate-preflight-fixture";
 
 function partial<T>(value: Partial<T>): T {
   return value as T;
@@ -76,7 +82,10 @@ function sessionFromCreate(input: CreateDurableRenderSessionInputV1): DurableRen
 function fixture(
   overrides: Readonly<{
     artifactReader?: DurableManimRenderServiceOptionsV1["artifactReader"];
+    candidateVerifier?: DurableManimRenderServiceOptionsV1["candidateVerifier"];
     createSession?: RenderSessionRepositoryV1["createSession"];
+    originalHead?: WorkspaceSourceHeadV1;
+    originalSource?: string;
     putSource?: SourceContentBlobStoreV1["putSource"];
     readSession?: RenderSessionRepositoryV1["readSession"];
   }> = {},
@@ -110,17 +119,18 @@ function fixture(
   });
   const sourceRepository = partial<WorkspaceSourceRepositoryV1>({
     queueBlobDeletion,
-    readSourceHead: vi.fn(async () => originalHead),
+    readSourceHead: vi.fn(async () => overrides.originalHead ?? originalHead),
   });
   const blobs = partial<SourceContentBlobStoreV1>({
     putSource,
-    readSource: vi.fn(async () => sceneSource),
+    readSource: vi.fn(async () => overrides.originalSource ?? sceneSource),
   });
   const executionCancel = vi.fn(async () => undefined);
   const wake = vi.fn();
   const service = new DurableManimRenderServiceV1({
     ...(overrides.artifactReader ? { artifactReader: overrides.artifactReader } : {}),
     blobs,
+    ...(overrides.candidateVerifier ? { candidateVerifier: overrides.candidateVerifier } : {}),
     execution: { cancel: executionCancel, wake },
     frame: { height: 8, width: 14.222 },
     repository,
@@ -136,10 +146,54 @@ function fixture(
     executionCancel,
     putSource,
     queueBlobDeletion,
+    readSource: blobs.readSource,
     readSession,
     repository,
     service,
     wake,
+  };
+}
+
+function candidateFixture(
+  profile: (typeof CANDIDATE_PREFLIGHT_PROFILES_V1)[number],
+  options: Readonly<{
+    beforeRunnerResult?: () => void;
+    candidateVerifier?: DurableManimRenderServiceOptionsV1["candidateVerifier"] | null;
+    mutate?: (result: ReturnType<typeof profile.verifiedCandidate>) => ReturnType<typeof profile.verifiedCandidate>;
+    runnerError?: unknown;
+  }> = {},
+) {
+  const input = profile.request();
+  const head: WorkspaceSourceHeadV1 = {
+    blob: receipt(input.sourceHash, "candidate-source-version"),
+    generation: 4n,
+    projectId: input.projectId,
+    sourcePath: input.sourcePath,
+    tenantId: "tenant-a",
+  };
+  const runCandidateUnpublished = vi.fn(async (candidateSource, runRequest) => {
+    options.beforeRunnerResult?.();
+    if (options.runnerError !== undefined) throw options.runnerError;
+    const verified = profile.verifiedCandidate(candidateSource, runRequest);
+    return options.mutate ? options.mutate(verified) : verified;
+  });
+  const candidateVerifier =
+    options.candidateVerifier === null
+      ? undefined
+      : (options.candidateVerifier ??
+        new ManimRenderCandidateVerifierV1({
+          frame: { height: 8, width: 14.222222222222221 },
+          runner: { runCandidateUnpublished },
+        }));
+  return {
+    ...fixture({
+      ...(candidateVerifier ? { candidateVerifier } : {}),
+      originalHead: head,
+      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
+    }),
+    head,
+    input,
+    runCandidateUnpublished,
   };
 }
 
@@ -171,6 +225,98 @@ describe("DurableManimRenderServiceV1", () => {
       undefined,
     );
     expect(wake).toHaveBeenCalledOnce();
+  });
+
+  it.each(CANDIDATE_PREFLIGHT_PROFILES_V1)(
+    "verifies $label candidate bytes before any durable render side effect",
+    async (profile) => {
+      const { createSession, input, putSource, runCandidateUnpublished, service, wake } = candidateFixture(profile);
+
+      await expect(service.start(input)).resolves.toMatchObject({ status: "preparing" });
+
+      expect(runCandidateUnpublished).toHaveBeenCalledOnce();
+      expect(runCandidateUnpublished.mock.calls[0]?.[0]).toContain(profile.candidateSnippet);
+      expect(runCandidateUnpublished.mock.invocationCallOrder[0]).toBeLessThan(putSource.mock.invocationCallOrder[0]!);
+      expect(putSource.mock.invocationCallOrder[0]).toBeLessThan(createSession.mock.invocationCallOrder[0]!);
+      expect(wake).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(
+    CANDIDATE_PREFLIGHT_PROFILES_V1.flatMap((profile) =>
+      CANDIDATE_PREFLIGHT_REJECTION_CASES_V1.map((rejection) => ({ profile, rejection })),
+    ),
+  )("fails $profile.label closed without durable residue for $rejection.label", async ({ profile, rejection }) => {
+    const { createSession, input, putSource, queueBlobDeletion, service, wake } = candidateFixture(profile, {
+      mutate: rejection.mutate,
+    });
+
+    await expect(service.start(input)).rejects.toMatchObject({ status: 409 });
+
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("fails edited candidates closed when the durable verifier is not composed", async () => {
+    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
+    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
+      candidateFixture(profile, { candidateVerifier: null });
+
+    await expect(service.start(input)).rejects.toMatchObject({ status: 503 });
+
+    expect(runCandidateUnpublished).not.toHaveBeenCalled();
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("leaves no durable residue when candidate production rejects or times out", async () => {
+    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
+    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
+      candidateFixture(profile, { runnerError: new Error("candidate producer timed out") });
+
+    await expect(service.start(input)).rejects.toMatchObject({ status: 409 });
+
+    expect(runCandidateUnpublished).toHaveBeenCalledOnce();
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("leaves no durable residue when candidate verification is aborted", async () => {
+    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
+    const controller = new AbortController();
+    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
+      candidateFixture(profile, {
+        beforeRunnerResult: () => controller.abort(),
+        runnerError: new Error("candidate producer observed abort"),
+      });
+
+    await expect(service.start(input, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+
+    expect(runCandidateUnpublished).toHaveBeenCalledOnce();
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
+  });
+
+  it("leaves no durable residue when the edited source head is stale", async () => {
+    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
+    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
+      candidateFixture(profile);
+
+    await expect(service.start({ ...input, sourceHash: "0".repeat(64) })).rejects.toMatchObject({ status: 409 });
+
+    expect(runCandidateUnpublished).not.toHaveBeenCalled();
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    expect(queueBlobDeletion).not.toHaveBeenCalled();
+    expect(wake).not.toHaveBeenCalled();
   });
 
   it("returns the coordinator-owned terminal state without a second PostgreSQL transition", async () => {
