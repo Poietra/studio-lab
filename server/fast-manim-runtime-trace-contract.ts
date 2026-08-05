@@ -5,10 +5,8 @@ import { z } from "zod";
 import {
   countCubicPathSegments,
   cubicPathV1Schema,
-  engineAffineTransformV1Schema,
   enginePointV1Schema,
   fillStyleV1Schema,
-  isSingularAffineTransform,
   MAX_COORDINATE,
   normalizedNumberV1Schema,
   opaqueIdV1Schema,
@@ -24,18 +22,39 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../src/render-pipeline/manim-identity-contract";
+import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V1 = "poietra.fast-manim-runtime-trace" as const;
+export const FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V1 =
+  "poietra.fast-manim-runtime-trace-producer-request" as const;
+export const FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V1 = "poietra.fast-manim-runtime-trace-config" as const;
 export const FAST_MANIM_RUNTIME_TRACE_VERSION_V1 = 1 as const;
+export const FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1 = 1 as const;
 export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 = 60 as const;
 export const FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1 = 6 as const;
+export const FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1 = 13 as const;
+export const FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V1 = "post-updater-pre-cairo-paint" as const;
 export const FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 =
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 * FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1;
-export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 = 8 as const;
+export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 = 10 as const;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 = 5 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1 = 2 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1 =
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1 * 6 + 64 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V1 = 64;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V1 = 16;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V1 = 4_096;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_DEPTH_V1 = 64;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V1 = 100_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V1 = 150_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V1 = 4_096;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_OBJECT_FIELDS_V1 = 64;
+// #465 lowers the measured 571-entity/1,887-run/7,244-segment result under
+// these fail-closed ceilings. They budget normalized Scene IR, not producer JSON.
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V1 = 640;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_LIFETIME_RUNS_V1 = 2_048;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V1 = 8_192;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 = 2 * 1024 * 1024;
 
 const gitObjectIdSchema = z.string().regex(/^[0-9a-f]{40}$/u, "Git object IDs must be lower-case SHA-1 hex.");
 
@@ -58,18 +77,35 @@ const runtimeTraceCameraV1Schema = z
   })
   .strict();
 
-const runtimeTraceAffineV1Schema = engineAffineTransformV1Schema.refine(
-  (transform) =>
-    [transform.m11, transform.m12, transform.m21, transform.m22].every(
-      (component) => Math.abs(component) <= MAX_COORDINATE,
-    ) && !isSingularAffineTransform(transform),
-  "Runtime Trace transforms must remain finite, bounded, and non-singular in the renderer domain.",
-);
+/**
+ * Quantizes an IEEE-754 f64 using ECMAScript `toFixed(13)`: nearest decimal,
+ * with an exact half tie rounded away from zero. Producers must implement this
+ * rule rather than their language's default decimal rounding mode.
+ */
+export function canonicalFastManimRuntimeTraceCoordinateV1(value: number) {
+  return Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1));
+}
+
+const runtimeTraceCoordinateV1Schema = z
+  .number()
+  .finite()
+  .min(-MAX_COORDINATE)
+  .max(MAX_COORDINATE)
+  .refine(
+    (value) => value === canonicalFastManimRuntimeTraceCoordinateV1(value),
+    `Runtime Trace coordinates must be canonicalized to ${FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1} decimal digits.`,
+  );
+
+const runtimeTracePointV1Schema = z
+  .object({ x: runtimeTraceCoordinateV1Schema, y: runtimeTraceCoordinateV1Schema })
+  .strict();
 
 const runtimeTraceRootV1Schema = z
   .object({
+    anchor: z.enum(["center", "left-center"]),
     binding: sourceBindingV1Schema,
     id: sourceIdentityV1Schema,
+    offset: runtimeTracePointV1Schema,
     role: z.enum(["square", "decimal"]),
   })
   .strict();
@@ -95,7 +131,8 @@ const runtimeTraceAppearanceResourceV1Schema = z
 const runtimeTraceDrawV1Schema = z
   .object({
     appearanceId: opaqueIdV1Schema,
-    localTransform: runtimeTraceAffineV1Schema,
+    familyPath: z.array(z.number().int().nonnegative().max(6)).max(3),
+    localPosition: runtimeTracePointV1Schema,
     opacity: normalizedNumberV1Schema,
     paintOrder: z
       .number()
@@ -104,15 +141,7 @@ const runtimeTraceDrawV1Schema = z
       .max(FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 - 1),
     pathId: opaqueIdV1Schema,
     rootId: sourceIdentityV1Schema,
-    slot: z.number().int().nonnegative().max(6),
-    sourceZIndex: z.number().finite(),
-  })
-  .strict();
-
-const runtimeTraceRootTransformV1Schema = z
-  .object({
-    rootId: sourceIdentityV1Schema,
-    transform: runtimeTraceAffineV1Schema,
+    sourceZIndex: z.literal(0),
   })
   .strict();
 
@@ -124,10 +153,15 @@ const runtimeTraceFrameV1Schema = z
       .int()
       .nonnegative()
       .max(FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 - 1),
-    rootTransforms: z.array(runtimeTraceRootTransformV1Schema).length(2),
+    motionY: runtimeTraceCoordinateV1Schema,
   })
   .strict();
 
+/**
+ * Producer hashes identify the implementation used for diagnostics and cache
+ * partitioning. They are correlation metadata, not authority for visual
+ * semantics; #465 independently verifies producer content before Scene IR use.
+ */
 const runtimeTraceProducerV1Schema = z
   .object({
     fastManimCommit: gitObjectIdSchema,
@@ -138,12 +172,107 @@ const runtimeTraceProducerV1Schema = z
   })
   .strict();
 
+export const fastManimRuntimeTraceConfigV1Schema = z
+  .object({
+    camera: runtimeTraceCameraV1Schema,
+    compositing: z.literal("manim-cairo-srgb"),
+    coordinatePrecisionDigits: z.literal(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1),
+    durationSeconds: z.literal(FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1),
+    frameRate: z.literal(FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1),
+    profileVersion: z.literal(FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1),
+    randomSeed: z.literal(0),
+    samplePhase: z.literal(FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V1),
+    schema: z.literal(FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V1),
+    version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V1),
+  })
+  .strict();
+
+export type FastManimRuntimeTraceConfigV1 = z.infer<typeof fastManimRuntimeTraceConfigV1Schema>;
+
+export function digestFastManimRuntimeTraceConfigV1(value: FastManimRuntimeTraceConfigV1) {
+  const config = fastManimRuntimeTraceConfigV1Schema.parse(value);
+  const number = canonicalF64HexV1;
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        camera: {
+          background: {
+            alpha: number(config.camera.background.alpha),
+            blue: number(config.camera.background.blue),
+            green: number(config.camera.background.green),
+            red: number(config.camera.background.red),
+          },
+          center: { x: number(config.camera.center.x), y: number(config.camera.center.y) },
+          frameHeight: number(config.camera.frameHeight),
+          frameWidth: number(config.camera.frameWidth),
+        },
+        compositing: config.compositing,
+        coordinatePrecisionDigits: config.coordinatePrecisionDigits,
+        durationSeconds: config.durationSeconds,
+        frameRate: config.frameRate,
+        profileVersion: config.profileVersion,
+        randomSeed: config.randomSeed,
+        samplePhase: config.samplePhase,
+        schema: config.schema,
+        version: config.version,
+      }),
+    )
+    .digest("hex");
+}
+
+export function fastManimRuntimeTraceSceneIdV1(sourcePath: string, sceneName: string) {
+  return `scene:${createHash("sha256").update(`${sourcePath}\0${sceneName}`).digest("hex")}`;
+}
+
+export const fastManimRuntimeTraceProducerRequestV1Schema = z
+  .object({
+    ...correlationShape,
+    profileVersion: z.literal(FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1),
+    runtimeConfig: fastManimRuntimeTraceConfigV1Schema,
+    sceneOccurrence: z
+      .object({
+        constructStartLine: z.number().int().positive(),
+        definitionOrdinal: z.number().int().positive().max(10_000),
+      })
+      .strict(),
+    schema: z.literal(FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V1),
+    sourceText: z.string(),
+    version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V1),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (Buffer.byteLength(request.sourceText, "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1) {
+      context.addIssue({
+        code: "custom",
+        message: `Runtime Trace source accepts at most ${MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1} UTF-8 bytes.`,
+        path: ["sourceText"],
+      });
+    }
+    const sourceHash = createHash("sha256").update(request.sourceText, "utf8").digest("hex");
+    if (request.sourceHash !== sourceHash) {
+      context.addIssue({ code: "custom", message: "Runtime Trace sourceHash is stale.", path: ["sourceHash"] });
+    }
+    if (request.sceneId !== fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName)) {
+      context.addIssue({ code: "custom", message: "Runtime Trace sceneId is stale.", path: ["sceneId"] });
+    }
+    if (request.runtimeConfigHash !== digestFastManimRuntimeTraceConfigV1(request.runtimeConfig)) {
+      context.addIssue({
+        code: "custom",
+        message: "Runtime Trace runtimeConfigHash is stale.",
+        path: ["runtimeConfigHash"],
+      });
+    }
+  });
+
+export type FastManimRuntimeTraceProducerRequestV1 = z.infer<typeof fastManimRuntimeTraceProducerRequestV1Schema>;
+
 const fastManimRuntimeTraceV1BaseSchema = z
   .object({
     ...correlationShape,
     authority: z.literal("preview-only"),
     camera: runtimeTraceCameraV1Schema,
     compositing: z.literal("manim-cairo-srgb"),
+    coordinatePrecisionDigits: z.literal(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1),
     durationSeconds: z.literal(FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1),
     frameCount: z.literal(FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1),
     frameRate: z.literal(FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1),
@@ -166,6 +295,7 @@ const fastManimRuntimeTraceV1BaseSchema = z
       })
       .strict(),
     schema: z.literal(FAST_MANIM_RUNTIME_TRACE_SCHEMA_V1),
+    samplePhase: z.literal(FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V1),
     version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V1),
   })
   .strict();
@@ -188,9 +318,43 @@ function reportDuplicateId(
   });
 }
 
-function rootSlotKey(rootId: string, slot: number) {
-  return JSON.stringify([rootId, slot]);
+function runtimeTracePathPoints(path: z.infer<typeof cubicPathV1Schema>) {
+  return path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
+  ]);
 }
+
+type RuntimeTracePointV1 = z.infer<typeof runtimeTracePointV1Schema>;
+
+/**
+ * Runtime Trace V1 is viewport-neutral. It captures root-local Scene coordinates,
+ * never pixel coordinates. The Studio verifier lowers this position into Scene IR;
+ * the independent 854x480 Cairo/WebGPU evidence belongs to the integration layer.
+ */
+export function fastManimRuntimeTraceWorldPositionV1(
+  motionY: number,
+  rootOffset: Readonly<RuntimeTracePointV1>,
+  localPosition: Readonly<RuntimeTracePointV1>,
+) {
+  return {
+    x: canonicalFastManimRuntimeTraceCoordinateV1(rootOffset.x + localPosition.x),
+    y: canonicalFastManimRuntimeTraceCoordinateV1(motionY + rootOffset.y + localPosition.y),
+  };
+}
+
+const EXPECTED_RUNTIME_TRACE_FAMILY_PATHS_V1 = [
+  [] as const,
+  [0, 0, 0] as const,
+  [1, 0, 0] as const,
+  [2, 0, 0] as const,
+  [3, 0, 0] as const,
+  [4, 0, 0] as const,
+  [5, 0, 0] as const,
+  [6, 0] as const,
+  [6, 1] as const,
+  [6, 2] as const,
+] as const;
 
 export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.superRefine((trace, context) => {
   reportDuplicateId(trace.resources.appearances, context, ["resources", "appearances"]);
@@ -199,9 +363,10 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
 
   const appearanceIds = new Set(trace.resources.appearances.map(({ id }) => id));
   const pathIds = new Set(trace.resources.paths.map(({ id }) => id));
+  const pathBounds = new Map<string, Readonly<{ maxX: number; maxY: number; minX: number; minY: number }>>();
   const roots = new Map(trace.roots.map((root) => [root.id, root]));
   let pathSegments = 0;
-  trace.resources.paths.forEach(({ path }, index) => {
+  trace.resources.paths.forEach(({ id, path }, index) => {
     pathSegments += countCubicPathSegments(path);
     if (pathSegments > MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V1) {
       context.addIssue({
@@ -210,14 +375,44 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
         path: ["resources", "paths", index, "path"],
       });
     }
+    const points = runtimeTracePathPoints(path);
+    points.forEach((point, pointIndex) => {
+      if (
+        point.x !== canonicalFastManimRuntimeTraceCoordinateV1(point.x) ||
+        point.y !== canonicalFastManimRuntimeTraceCoordinateV1(point.y)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `Runtime Trace path coordinates must be canonicalized to ${FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1} decimal digits.`,
+          path: ["resources", "paths", index, "path", "points", pointIndex],
+        });
+      }
+    });
+    pathBounds.set(id, {
+      maxX: Math.max(...points.map(({ x }) => x)),
+      maxY: Math.max(...points.map(({ y }) => y)),
+      minX: Math.min(...points.map(({ x }) => x)),
+      minY: Math.min(...points.map(({ y }) => y)),
+    });
   });
 
-  const expectedRoles = ["square", "decimal"] as const;
+  const expectedRoots = [
+    { anchor: "center", offset: { x: 0, y: 0 }, role: "square" },
+    { anchor: "left-center", offset: { x: 1.25, y: 0 }, role: "decimal" },
+  ] as const;
   trace.roots.forEach((root, index) => {
-    if (root.role !== expectedRoles[index] || root.binding.name !== root.role) {
+    const expected = expectedRoots[index];
+    if (
+      !expected ||
+      root.role !== expected.role ||
+      root.binding.name !== root.role ||
+      root.anchor !== expected.anchor ||
+      root.offset.x !== expected.offset.x ||
+      root.offset.y !== expected.offset.y
+    ) {
       context.addIssue({
         code: "custom",
-        message: "Runtime Trace V1 roots must be the source-bound square then decimal roots.",
+        message: "Runtime Trace V1 roots must be the source-bound Square center then DecimalNumber left-center roots.",
         path: ["roots", index],
       });
     }
@@ -231,19 +426,10 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
         path: ["frames", frameIndex, "frameIndex"],
       });
     }
-    const occupiedSlots = new Set<string>();
-    frame.rootTransforms.forEach((rootTransform, rootIndex) => {
-      if (rootTransform.rootId !== trace.roots[rootIndex]?.id) {
-        context.addIssue({
-          code: "custom",
-          message: "Runtime Trace root transforms must follow the canonical square then decimal root order.",
-          path: ["frames", frameIndex, "rootTransforms", rootIndex, "rootId"],
-        });
-      }
-    });
     frame.draws.forEach((draw, drawIndex) => {
       const root = roots.get(draw.rootId);
-      const slotKey = rootSlotKey(draw.rootId, draw.slot);
+      const expectedFamilyPath = EXPECTED_RUNTIME_TRACE_FAMILY_PATHS_V1[drawIndex];
+      const expectedRootId = trace.roots[drawIndex === 0 ? 0 : 1]?.id;
       if (draw.paintOrder !== drawIndex) {
         context.addIssue({
           code: "custom",
@@ -257,18 +443,12 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
           message: "Runtime Trace draw references an unknown source root.",
           path: ["frames", frameIndex, "draws", drawIndex, "rootId"],
         });
-      } else if ((root.role === "square" && draw.slot !== 0) || (root.role === "decimal" && draw.slot > 6)) {
-        context.addIssue({
-          code: "custom",
-          message: "Runtime Trace draw slot is invalid for its source root.",
-          path: ["frames", frameIndex, "draws", drawIndex, "slot"],
-        });
       }
-      if (occupiedSlots.has(slotKey)) {
+      if (draw.rootId !== expectedRootId || canonicalJsonV1(draw.familyPath) !== canonicalJsonV1(expectedFamilyPath)) {
         context.addIssue({
           code: "custom",
-          message: "Runtime Trace frame contains more than one draw for a root slot.",
-          path: ["frames", frameIndex, "draws", drawIndex, "slot"],
+          message: "Runtime Trace draws must follow the exact Square and DecimalNumber visible-family order.",
+          path: ["frames", frameIndex, "draws", drawIndex, "familyPath"],
         });
       }
       if (!appearanceIds.has(draw.appearanceId)) {
@@ -285,33 +465,33 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
           path: ["frames", frameIndex, "draws", drawIndex, "pathId"],
         });
       }
-      occupiedSlots.add(slotKey);
+      const bounds = pathBounds.get(draw.pathId);
+      if (root && bounds) {
+        const world = fastManimRuntimeTraceWorldPositionV1(frame.motionY, root.offset, draw.localPosition);
+        if (
+          ![bounds.minX + world.x, bounds.maxX + world.x, bounds.minY + world.y, bounds.maxY + world.y].every(
+            (coordinate) => Number.isFinite(coordinate) && Math.abs(coordinate) <= MAX_COORDINATE,
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Runtime Trace root-local geometry does not translate to renderable Scene coordinates.",
+            path: ["frames", frameIndex, "draws", drawIndex, "localPosition"],
+          });
+        }
+      }
     });
-
-    const squareId = trace.roots[0]?.id;
-    const decimalId = trace.roots[1]?.id;
-    const expectedSlots = [
-      rootSlotKey(squareId ?? "", 0),
-      ...Array.from({ length: 7 }, (_, slot) => rootSlotKey(decimalId ?? "", slot)),
-    ];
-    if (expectedSlots.some((slot) => !occupiedSlots.has(slot))) {
-      context.addIssue({
-        code: "custom",
-        message: "Runtime Trace frame must contain one Square draw and all seven DecimalNumber slots.",
-        path: ["frames", frameIndex, "draws"],
-      });
-    }
   });
 
   const terminal = canonicalJsonV1({
     draws: trace.frames[300]?.draws,
-    rootTransforms: trace.frames[300]?.rootTransforms,
+    motionY: trace.frames[300]?.motionY,
   });
   for (let index = 301; index < trace.frames.length; index += 1) {
     if (
       canonicalJsonV1({
         draws: trace.frames[index]?.draws,
-        rootTransforms: trace.frames[index]?.rootTransforms,
+        motionY: trace.frames[index]?.motionY,
       }) !== terminal
     ) {
       context.addIssue({
@@ -342,8 +522,13 @@ export type ExpectedFastManimRuntimeTraceCorrelationV1 = z.infer<
 
 export type FastManimRuntimeTraceContractErrorCodeV1 =
   | "correlation-mismatch"
+  | "request-invalid"
+  | "request-malformed"
+  | "request-too-complex"
+  | "request-too-large"
   | "result-invalid"
   | "result-malformed"
+  | "result-too-complex"
   | "result-too-large";
 
 export class FastManimRuntimeTraceContractError extends Error {
@@ -356,29 +541,107 @@ export class FastManimRuntimeTraceContractError extends Error {
   }
 }
 
-function parseRuntimeTraceJson(value: string | Uint8Array) {
+function parseRuntimeTraceJson(value: string | Uint8Array, maximumBytes: number, kind: "request" | "result") {
   const byteLength = typeof value === "string" ? Buffer.byteLength(value, "utf8") : value.byteLength;
-  if (byteLength > MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1) {
+  if (byteLength > maximumBytes) {
     throw new FastManimRuntimeTraceContractError(
-      "result-too-large",
-      `Runtime Trace V1 accepts at most ${MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1} encoded bytes.`,
+      `${kind}-too-large`,
+      `Runtime Trace V1 ${kind}s accept at most ${maximumBytes} encoded bytes.`,
     );
   }
   let json: string;
   try {
     json = typeof value === "string" ? value : new TextDecoder("utf-8", { fatal: true }).decode(value);
   } catch (cause) {
-    throw new FastManimRuntimeTraceContractError("result-malformed", "Runtime Trace V1 is not UTF-8 JSON.", {
+    throw new FastManimRuntimeTraceContractError(`${kind}-malformed`, `Runtime Trace V1 ${kind} is not UTF-8 JSON.`, {
       cause,
     });
   }
+  let parsed: unknown;
   try {
-    return JSON.parse(json) as unknown;
+    parsed = JSON.parse(json) as unknown;
   } catch (cause) {
-    throw new FastManimRuntimeTraceContractError("result-malformed", "Runtime Trace V1 is malformed JSON.", {
+    throw new FastManimRuntimeTraceContractError(`${kind}-malformed`, `Runtime Trace V1 ${kind} is malformed JSON.`, {
       cause,
     });
   }
+  assertBoundedRuntimeTraceJson(parsed, kind);
+  return parsed;
+}
+
+function assertBoundedRuntimeTraceJson(value: unknown, kind: "request" | "result") {
+  const stack: Array<Readonly<{ depth: number; value: unknown }>> = [{ depth: 0, value }];
+  let entries = 0;
+  let values = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (!current) break;
+    values += 1;
+    if (
+      values > MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V1 ||
+      current.depth > MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_DEPTH_V1
+    ) {
+      throw new FastManimRuntimeTraceContractError(
+        `${kind}-too-complex`,
+        `Runtime Trace V1 ${kind} exceeds its structural budget.`,
+      );
+    }
+    const entry = current.value;
+    if (
+      entry === null ||
+      typeof entry === "string" ||
+      typeof entry === "boolean" ||
+      (typeof entry === "number" && Number.isFinite(entry))
+    ) {
+      continue;
+    }
+    const children: unknown[] = [];
+    if (Array.isArray(entry)) {
+      if (entry.length > MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V1) {
+        throw new FastManimRuntimeTraceContractError(
+          `${kind}-too-complex`,
+          `Runtime Trace V1 ${kind} contains an oversized array.`,
+        );
+      }
+      children.push(...entry);
+    } else if (typeof entry === "object") {
+      const objectValues = Object.values(entry);
+      if (objectValues.length > MAX_FAST_MANIM_RUNTIME_TRACE_OBJECT_FIELDS_V1) {
+        throw new FastManimRuntimeTraceContractError(
+          `${kind}-too-complex`,
+          `Runtime Trace V1 ${kind} contains an oversized object.`,
+        );
+      }
+      children.push(...objectValues);
+    } else {
+      throw new FastManimRuntimeTraceContractError(
+        `${kind}-too-complex`,
+        `Runtime Trace V1 ${kind} is not plain JSON.`,
+      );
+    }
+    entries += children.length;
+    if (entries > MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V1) {
+      throw new FastManimRuntimeTraceContractError(
+        `${kind}-too-complex`,
+        `Runtime Trace V1 ${kind} exceeds its container-entry budget.`,
+      );
+    }
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ depth: current.depth + 1, value: children[index] });
+    }
+  }
+}
+
+export function parseFastManimRuntimeTraceProducerRequestJsonV1(value: string | Uint8Array) {
+  const parsed = fastManimRuntimeTraceProducerRequestV1Schema.safeParse(
+    parseRuntimeTraceJson(value, MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1, "request"),
+  );
+  if (!parsed.success) {
+    throw new FastManimRuntimeTraceContractError("request-invalid", "Runtime Trace V1 request is invalid.", {
+      cause: parsed.error,
+    });
+  }
+  return parsed.data;
 }
 
 function assertRuntimeTraceCorrelation(
@@ -408,7 +671,9 @@ export function parseFastManimRuntimeTraceProducerJsonV1(
   value: string | Uint8Array,
   expected: ExpectedFastManimRuntimeTraceCorrelationV1,
 ) {
-  const parsed = fastManimRuntimeTraceV1Schema.safeParse(parseRuntimeTraceJson(value));
+  const parsed = fastManimRuntimeTraceV1Schema.safeParse(
+    parseRuntimeTraceJson(value, MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1, "result"),
+  );
   if (!parsed.success) {
     throw new FastManimRuntimeTraceContractError("result-invalid", "Runtime Trace V1 violates its closed contract.", {
       cause: parsed.error,
@@ -422,13 +687,19 @@ export function digestFastManimRuntimeTraceV1(trace: FastManimRuntimeTraceV1) {
   return createHash("sha256").update(canonicalJsonV1(trace)).digest("hex");
 }
 
-/** Maps a Studio time to the captured presentation frame; duration retains the final frame. */
+/**
+ * Maps a Studio time to the captured presentation frame; duration retains the
+ * final frame. Values within four scaled-f64 epsilons of an integer frame are
+ * canonical grid times. This admits both `n / 60` and `n * (1 / 60)` while
+ * retaining floor selection for ordinary between-frame seeks.
+ */
 export function fastManimRuntimeTraceFrameIndexAtTimeV1(time: number) {
   if (!Number.isFinite(time) || time < 0 || time > FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1) {
     throw new RangeError("Runtime Trace sample time must be finite and inside the six-second Scene.");
   }
-  return Math.min(
-    FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 - 1,
-    Math.floor(time * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1),
-  );
+  const scaled = time * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1;
+  const nearestFrame = Math.round(scaled);
+  const gridTolerance = 4 * Number.EPSILON * Math.max(1, Math.abs(scaled));
+  const frame = Math.abs(scaled - nearestFrame) <= gridTolerance ? nearestFrame : Math.floor(scaled);
+  return Math.min(FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 - 1, frame);
 }
