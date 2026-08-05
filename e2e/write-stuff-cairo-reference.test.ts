@@ -10,6 +10,8 @@ import {
   WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1,
   WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1,
   WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1,
+  WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1,
+  WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1,
   writeStuffCairoReferenceV1Schema,
 } from "./write-stuff-cairo-reference";
 
@@ -111,6 +113,57 @@ describe("WriteStuff Cairo reference v1", () => {
     }
   });
 
+  it("pins the independently rendered Studio equation move and scale", async () => {
+    const result = await readWriteStuffCairoReferenceV1(WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1);
+    expect(result.reference).toMatchObject({
+      producer: {
+        fastManimCommit: "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063",
+        fastManimTree: "f1a5ef1b69711cf41c3424dd697ab75591942905",
+        identitySha256: "4a43a3cf03fac90a44f4a465a137ac2afbb4b083fa7ea265ebad4f095a8eec7b",
+        texCache: {
+          files: [
+            {
+              path: "2001da0d734dc8fc.tex",
+              sha256: "2001da0d734dc8fcaf7e6d3d0b5035e82d71733ab5feca774aa5740e8b099716",
+            },
+            {
+              path: "2001da0d734dc8fc.svg",
+              sha256: "8e6c76607b68689555296fc8039cf6c82ea29bf9ef0445a4dc6c030e9e13efa7",
+            },
+            {
+              path: "5c2081ce9e37598c.tex",
+              sha256: "5c2081ce9e37598c6bdd8ac3dd52ce6616d99b162c7c64071e9a6ef4ad20d8a8",
+            },
+            {
+              path: "5c2081ce9e37598c.svg",
+              sha256: "cb2e99f837c1316e47b67157bf787b1f096a14b01f4392482eba740dd3ac1dbc",
+            },
+            {
+              path: "8f249e3b899ba7b1.tex",
+              sha256: "8f249e3b899ba7b13ac37b744ca8509b929b2431baf1d2ff07d28892576ac419",
+            },
+            {
+              path: "8f249e3b899ba7b1.svg",
+              sha256: "1496ea173fbe28fab26772d9509d9b34dc58ce8bd6b01a8950899a9adcb4139d",
+            },
+          ],
+          kind: "pinned-manim-dvisvgm-svg",
+        },
+      },
+      scene: {
+        sourceSha256: "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98",
+      },
+    });
+    const hold = result.frames.get("hold");
+    expect(hold).toMatchObject({ sampleTime: 3.5 });
+    expect(result.reference.frames.find(({ id }) => id === "hold")?.png).toMatchObject({
+      byteLength: 21_020,
+      rgbaSha256: "00f17a9b15c69f2f1f8ba556dacf4061fd27c113e7063f008dcd7b5146cf9bfe",
+      sha256: "90b62cc1ecf50fd2d7cc0a8ea203d4e375f6a5647a161323ddff86c9d3c4242c",
+    });
+    expect(hold?.rgba).toHaveLength(640 * 360 * 4);
+  });
+
   it("proves both Writes advance and the completed glyphs remain through the duration endpoint", async () => {
     const { frames } = await readWriteStuffCairoReferenceV1();
     const rgba = (id: (typeof WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1)[number][1]) => {
@@ -171,7 +224,10 @@ describe("WriteStuff Cairo reference v1", () => {
         JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")),
       );
       const comparisons = [];
-      for (const entryId of WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1) {
+      for (const entryId of [
+        ...WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1,
+        ...WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1,
+      ]) {
         const [cairo, metadataText] = await Promise.all([
           readWriteStuffCairoReferenceForEntryV1(entryId),
           readFile(join(artifactRoot, entryId, "metadata.json"), "utf8"),

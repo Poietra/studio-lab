@@ -1,4 +1,4 @@
-"""Generate pinned Cairo timeline references for the official WriteStuff Scene."""
+"""Generate pinned Cairo timelines for official or Studio-edited WriteStuff."""
 
 from __future__ import annotations
 
@@ -27,10 +27,25 @@ from manim import tempconfig
 from PIL import Image
 
 
-FAST_MANIM_COMMIT = "044a61aa0d868fc9e799588f2eb88006594b6c44"
-FAST_MANIM_TREE = "996ad2b7375a6f911b1b00747eaad38834bde25c"
+OFFICIAL_FAST_MANIM_COMMIT = "044a61aa0d868fc9e799588f2eb88006594b6c44"
+OFFICIAL_FAST_MANIM_TREE = "996ad2b7375a6f911b1b00747eaad38834bde25c"
+EDITED_FAST_MANIM_COMMIT = "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063"
+EDITED_FAST_MANIM_TREE = "f1a5ef1b69711cf41c3424dd697ab75591942905"
 SOURCE_PATH = Path("example_scenes/basic.py")
-SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
+OFFICIAL_SOURCE_SHA256 = (
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
+)
+EDITED_SOURCE_SHA256 = (
+    "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98"
+)
+WRITE_STUFF_EDIT_ANCHOR = (
+    '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n'
+)
+WRITE_STUFF_EDIT_REPLACEMENT = (
+    WRITE_STUFF_EDIT_ANCHOR
+    + "        example_tex.move_to((1.25, -0.5, 0))\n"
+    + "        example_tex.scale(0.5)\n"
+)
 FRAME = {"height": 8, "width": 128.0 / 9.0}
 VIEWPORT = {"heightPx": 360, "widthPx": 640}
 FRAME_RATE = 60
@@ -44,6 +59,14 @@ SAMPLES = (
     ("math-end", 3.0),
     ("hold", 3.5),
     ("end", 4.0),
+)
+TEX_CACHE_FILES = (
+    "2001da0d734dc8fc.tex",
+    "2001da0d734dc8fc.svg",
+    "5c2081ce9e37598c.tex",
+    "5c2081ce9e37598c.svg",
+    "8f249e3b899ba7b1.tex",
+    "8f249e3b899ba7b1.svg",
 )
 
 
@@ -179,7 +202,10 @@ def manim_config(values: dict[str, Any], media: str) -> dict[str, Any]:
     }
 
 
-def producer_identity(fast_manim: Path) -> dict[str, Any]:
+def producer_identity(
+    fast_manim: Path,
+    tex_cache: Path | None,
+) -> dict[str, Any]:
     pycairo_module = Path(pycairo_extension.__file__).resolve()
     pillow_module = Path(pillow_imaging.__file__).resolve()
     python_executable = Path(sys.executable).resolve()
@@ -199,13 +225,35 @@ def producer_identity(fast_manim: Path) -> dict[str, Any]:
         "pythonImplementation": platform.python_implementation(),
         "pythonVersion": platform.python_version(),
         "renderer": "cairo",
-        "texToolchain": {
-            "dvisvgm": executable_identity("dvisvgm"),
-            "latex": executable_identity("latex"),
-        },
         "uvLockSha256": sha256_file(fast_manim / "uv.lock"),
     }
+    if tex_cache is None:
+        identity["texToolchain"] = {
+            "dvisvgm": executable_identity("dvisvgm"),
+            "latex": executable_identity("latex"),
+        }
+    else:
+        identity["texCache"] = {
+            "files": [
+                {"path": name, "sha256": sha256_file(tex_cache / name)}
+                for name in TEX_CACHE_FILES
+            ],
+            "kind": "pinned-manim-dvisvgm-svg",
+        }
     return {**identity, "identitySha256": canonical_digest(identity)}
+
+
+def install_tex_cache(source: Path, media: Path) -> None:
+    actual = {path.name for path in source.iterdir() if path.is_file()}
+    if actual != set(TEX_CACHE_FILES):
+        raise RuntimeError(
+            f"WriteStuff Tex cache differs: got {sorted(actual)}; "
+            f"expected {sorted(TEX_CACHE_FILES)}"
+        )
+    destination = media / "Tex"
+    destination.mkdir(parents=True)
+    for name in TEX_CACHE_FILES:
+        shutil.copyfile(source / name, destination / name)
 
 
 def render_sample_frames(
@@ -256,7 +304,12 @@ def render_sample_frames(
     return captured
 
 
-def generate(output: Path, fast_manim: Path) -> None:
+def generate(
+    output: Path,
+    fast_manim: Path,
+    variant: str,
+    tex_cache: Path | None,
+) -> None:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite generator output: {output}")
     if os.environ.get("PYTHONHASHSEED") != "0":
@@ -268,26 +321,58 @@ def generate(output: Path, fast_manim: Path) -> None:
         raise RuntimeError(
             f"imported manim is from {installed_fast_manim}; expected {fast_manim}"
         )
-    if git(fast_manim, "rev-parse", "HEAD") != FAST_MANIM_COMMIT:
-        raise RuntimeError(f"fast-manim must be pinned to {FAST_MANIM_COMMIT}")
-    if git(fast_manim, "rev-parse", "HEAD^{tree}") != FAST_MANIM_TREE:
-        raise RuntimeError(f"fast-manim tree must be pinned to {FAST_MANIM_TREE}")
+    expected_commit = (
+        EDITED_FAST_MANIM_COMMIT
+        if variant == "edited"
+        else OFFICIAL_FAST_MANIM_COMMIT
+    )
+    expected_tree = (
+        EDITED_FAST_MANIM_TREE if variant == "edited" else OFFICIAL_FAST_MANIM_TREE
+    )
+    if git(fast_manim, "rev-parse", "HEAD") != expected_commit:
+        raise RuntimeError(f"fast-manim must be pinned to {expected_commit}")
+    if git(fast_manim, "rev-parse", "HEAD^{tree}") != expected_tree:
+        raise RuntimeError(f"fast-manim tree must be pinned to {expected_tree}")
     if git(fast_manim, "status", "--porcelain"):
         raise RuntimeError("fast-manim checkout must be clean")
 
     source = fast_manim / SOURCE_PATH
-    source_digest = sha256_file(source)
-    if source_digest != SOURCE_SHA256:
+    official_source = source.read_text(encoding="utf-8")
+    if sha256(official_source.encode()) != OFFICIAL_SOURCE_SHA256:
         raise RuntimeError(
-            f"WriteStuff source hashes to {source_digest}; expected {SOURCE_SHA256}"
+            "official WriteStuff source differs from its pinned source generation"
+        )
+    rendered_source_text = official_source
+    if variant == "edited":
+        if official_source.count(WRITE_STUFF_EDIT_ANCHOR) != 1:
+            raise RuntimeError("the WriteStuff post-layout edit anchor is ambiguous")
+        rendered_source_text = official_source.replace(
+            WRITE_STUFF_EDIT_ANCHOR,
+            WRITE_STUFF_EDIT_REPLACEMENT,
+            1,
+        )
+    source_digest = sha256(rendered_source_text.encode())
+    expected_source_digest = (
+        EDITED_SOURCE_SHA256 if variant == "edited" else OFFICIAL_SOURCE_SHA256
+    )
+    if source_digest != expected_source_digest:
+        raise RuntimeError(
+            f"WriteStuff source hashes to {source_digest}; expected {expected_source_digest}"
         )
 
     values = renderer_config()
     random.seed(0)
     np.random.seed(0)
-    with tempfile.TemporaryDirectory(prefix="poietra-write-stuff-cairo-") as media:
-        with tempconfig(manim_config(values, media)):
-            frames = render_sample_frames(load_scene(source))
+    with tempfile.TemporaryDirectory(prefix="poietra-write-stuff-cairo-") as media_value:
+        media = Path(media_value)
+        if tex_cache is not None:
+            install_tex_cache(tex_cache, media)
+        rendered_source = source
+        if variant == "edited":
+            rendered_source = media / "edited_write_stuff.py"
+            rendered_source.write_text(rendered_source_text, encoding="utf-8")
+        with tempconfig(manim_config(values, str(media))):
+            frames = render_sample_frames(load_scene(rendered_source))
 
     output.mkdir(parents=True)
     frame_records = []
@@ -312,7 +397,7 @@ def generate(output: Path, fast_manim: Path) -> None:
             }
         )
 
-    producer = producer_identity(fast_manim)
+    producer = producer_identity(fast_manim, tex_cache)
     reference = {
         "frame": {
             "background": "opaque-black",
@@ -350,8 +435,19 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast-manim-repository", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--tex-cache", type=Path)
+    parser.add_argument(
+        "--variant",
+        choices=("edited", "official"),
+        default="official",
+    )
     arguments = parser.parse_args()
-    generate(arguments.output.resolve(), arguments.fast_manim_repository.resolve())
+    generate(
+        arguments.output.resolve(),
+        arguments.fast_manim_repository.resolve(),
+        arguments.variant,
+        arguments.tex_cache.resolve() if arguments.tex_cache is not None else None,
+    )
 
 
 if __name__ == "__main__":

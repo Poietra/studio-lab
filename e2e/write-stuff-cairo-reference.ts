@@ -11,6 +11,7 @@ const COMMIT_SHA = z.string().regex(/^[0-9a-f]{40}$/);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 
 export const WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1 = "fixtures/write-stuff-cairo-reference-v1";
+export const WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1 = "fixtures/write-stuff-cairo-reference-v1-edited";
 export const WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1 = [
   ["real-write-stuff-v12--start", "start", 0],
   ["real-write-stuff-v12--tex-early", "tex-early", 0.25],
@@ -24,12 +25,41 @@ export const WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1 = [
 export const WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1 = WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1.map(
   ([entryId]) => entryId,
 );
+export const WRITE_STUFF_EDITED_CAIRO_REFERENCE_SAMPLES_V1 = [
+  ["real-write-stuff-v12-edited--hold", "hold", 3.5],
+] as const;
+export const WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1 = WRITE_STUFF_EDITED_CAIRO_REFERENCE_SAMPLES_V1.map(
+  ([entryId]) => entryId,
+);
 export const WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1 = {
   maximumPixelFractionAboveThreshold: 0.02,
   minimumSsim: 0.994,
   reason:
-    "Independent Cairo and Lyon/WGPU edge antialiasing differ while preserving the exact official WriteStuff glyph order, paint, two Write phases, and final hold.",
+    "Independent Cairo and Lyon/WGPU edge antialiasing differ while preserving the exact WriteStuff glyph order, paint, two Write phases, and final hold.",
 } as const;
+
+const PRODUCER_IDENTITY_FIELDS = {
+  cairoLibrarySha256: SHA256,
+  cairoVersion: z.string().min(1),
+  fastManimCommit: COMMIT_SHA,
+  fastManimTree: COMMIT_SHA,
+  identitySha256: SHA256,
+  manimVersion: z.string().min(1),
+  numpyVersion: z.string().min(1),
+  pillowImagingModuleSha256: SHA256,
+  pillowVersion: z.string().min(1),
+  pycairoModuleSha256: SHA256,
+  pycairoVersion: z.string().min(1),
+  pythonExecutableSha256: SHA256,
+  pythonImplementation: z.literal("CPython"),
+  pythonVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
+  renderer: z.literal("cairo"),
+  uvLockSha256: SHA256,
+} as const;
+
+function texCacheFileSchema(path: string) {
+  return z.strictObject({ path: z.literal(path), sha256: SHA256 });
+}
 
 function frameSchema(id: (typeof WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1)[number][1], sampleTime: number) {
   return z.strictObject({
@@ -65,28 +95,29 @@ export const writeStuffCairoReferenceV1Schema = z.strictObject({
     frameSchema("hold", 3.5),
     frameSchema("end", 4),
   ]),
-  producer: z.strictObject({
-    cairoLibrarySha256: SHA256,
-    cairoVersion: z.string().min(1),
-    fastManimCommit: COMMIT_SHA,
-    fastManimTree: COMMIT_SHA,
-    identitySha256: SHA256,
-    manimVersion: z.string().min(1),
-    numpyVersion: z.string().min(1),
-    pillowImagingModuleSha256: SHA256,
-    pillowVersion: z.string().min(1),
-    pycairoModuleSha256: SHA256,
-    pycairoVersion: z.string().min(1),
-    pythonExecutableSha256: SHA256,
-    pythonImplementation: z.literal("CPython"),
-    pythonVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
-    renderer: z.literal("cairo"),
-    texToolchain: z.strictObject({
-      dvisvgm: z.strictObject({ executableSha256: SHA256, version: z.string().min(1) }),
-      latex: z.strictObject({ executableSha256: SHA256, version: z.string().min(1) }),
+  producer: z.union([
+    z.strictObject({
+      ...PRODUCER_IDENTITY_FIELDS,
+      texToolchain: z.strictObject({
+        dvisvgm: z.strictObject({ executableSha256: SHA256, version: z.string().min(1) }),
+        latex: z.strictObject({ executableSha256: SHA256, version: z.string().min(1) }),
+      }),
     }),
-    uvLockSha256: SHA256,
-  }),
+    z.strictObject({
+      ...PRODUCER_IDENTITY_FIELDS,
+      texCache: z.strictObject({
+        files: z.tuple([
+          texCacheFileSchema("2001da0d734dc8fc.tex"),
+          texCacheFileSchema("2001da0d734dc8fc.svg"),
+          texCacheFileSchema("5c2081ce9e37598c.tex"),
+          texCacheFileSchema("5c2081ce9e37598c.svg"),
+          texCacheFileSchema("8f249e3b899ba7b1.tex"),
+          texCacheFileSchema("8f249e3b899ba7b1.svg"),
+        ]),
+        kind: z.literal("pinned-manim-dvisvgm-svg"),
+      }),
+    }),
+  ]),
   rendererConfig: z.strictObject({
     identitySha256: SHA256,
     values: z.strictObject({
@@ -169,9 +200,13 @@ export async function readWriteStuffCairoReferenceV1(root = WRITE_STUFF_CAIRO_RE
 }
 
 export async function readWriteStuffCairoReferenceForEntryV1(entryId: string) {
-  const sample = WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
+  const official = WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
+  const edited = WRITE_STUFF_EDITED_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
+  const sample = official ?? edited;
   if (!sample) throw new Error(`Visual-parity entry ${entryId} has no independent WriteStuff Cairo reference.`);
-  const result = await readWriteStuffCairoReferenceV1();
+  const result = await readWriteStuffCairoReferenceV1(
+    edited ? WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1 : WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1,
+  );
   const frame = result.frames.get(sample[1]);
   if (!frame) throw new Error(`WriteStuff Cairo reference is missing ${sample[1]}.`);
   return { ...frame, reference: result.reference } as const;
