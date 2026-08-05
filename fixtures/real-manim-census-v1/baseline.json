@@ -1,8 +1,8 @@
 {
   "corpusDigest": "f8c6bfabd19dcc7190fbe1b8e084713970877712b01e9e41f9fbae80e2836aa4",
-  "manifestDigest": "76dc7cbee140729ce027da1d106af5b5ee2471a615071c1d5fcf2b9fd60ceea3",
+  "manifestDigest": "a0416af767808989576f927323692ca74007d08c9c72400e6cfacbdb9a8a9812",
   "manifestVersion": 1,
-  "producerDigest": "0d83d9ca867c5aa4b06cc37fb69a050334cf20841e2c5ba25c5cbc7f5be30525",
+  "producerDigest": "7760aa740415aeed1f083db3425b9fe34dd5b9f4b2e9db9694ab36811a3bc2c8",
   "reasonCounts": {
     "failure:producer-exit": 1,
     "unsupported:animation-evidence-incomplete": 13,
