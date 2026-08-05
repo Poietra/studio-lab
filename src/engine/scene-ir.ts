@@ -219,10 +219,14 @@ const pathMorphChannelV1Schema = z
   })
   .strict();
 
+const vectorAppearanceStrokeStyleV1Schema = strokeStyleV1Schema.extend({
+  widthWorld: finiteNumberV1Schema.nonnegative().max(MAX_COORDINATE),
+});
+
 export const vectorAppearanceValueV1Schema = z
   .object({
     fill: fillStyleV1Schema.nullable(),
-    stroke: strokeStyleV1Schema.nullable(),
+    stroke: vectorAppearanceStrokeStyleV1Schema.nullable(),
   })
   .strict()
   .refine((appearance) => appearance.fill !== null || appearance.stroke !== null, {

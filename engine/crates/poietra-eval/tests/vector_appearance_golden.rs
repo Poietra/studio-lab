@@ -189,3 +189,78 @@ fn contract_rejects_implicit_cross_fades_and_samples_stroke_width() {
     };
     assert_close(stroke.width_world, 0.042_804_148_661_804_33);
 }
+
+#[test]
+fn animated_zero_width_is_normalized_without_weakening_static_strokes() {
+    let (fixture, bundle) = fixture();
+
+    let mut static_zero = bundle.scene.clone();
+    let poietra_scene_ir::SceneAppearanceV1::Vector {
+        stroke: Some(stroke),
+        ..
+    } = &mut static_zero.entities[0].appearance
+    else {
+        panic!("fixture static stroke is missing");
+    };
+    stroke.width_world = 0.0;
+    assert!(
+        validate_scene_ir_v1(&static_zero)
+            .unwrap_err()
+            .contains_message("must be positive")
+    );
+
+    let mut zero_bundle = bundle;
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut zero_bundle.scene.animation_channels[1]
+    else {
+        panic!("fixture appearance channel is missing");
+    };
+    keyframes[1].value.stroke.as_mut().unwrap().width_world = 0.0;
+    validate_scene_ir_v1(&zero_bundle.scene).unwrap();
+    let session = EngineSessionV1::new(zero_bundle).unwrap();
+
+    let sample = |sample_time| {
+        session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "appearance:zero",
+                sample_time,
+                viewport: fixture.viewport.clone(),
+            })
+            .unwrap()
+    };
+    let midpoint = sample(1.5);
+    let RenderDrawV1::Path {
+        fill: Some(_),
+        stroke: Some(stroke),
+        ..
+    } = &midpoint.draws[0]
+    else {
+        panic!("positive midpoint must retain its stroke");
+    };
+    assert_close(stroke.width_world, 0.02);
+
+    let endpoint = sample(2.0);
+    assert!(matches!(
+        &endpoint.draws[0],
+        RenderDrawV1::Path {
+            fill: Some(_),
+            stroke: None,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn contract_rejects_negative_and_non_finite_animated_stroke_widths() {
+    for width_world in [-0.01, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let (_, mut bundle) = fixture();
+        let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+            &mut bundle.scene.animation_channels[1]
+        else {
+            panic!("fixture appearance channel is missing");
+        };
+        keyframes[1].value.stroke.as_mut().unwrap().width_world = width_world;
+        assert!(validate_scene_ir_v1(&bundle.scene).is_err());
+    }
+}

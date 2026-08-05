@@ -272,7 +272,12 @@ fn validate_fill(fill: &FillStyleV1, path: &str, validator: &mut Validator) {
     validate_color(&fill.color, &format!("{path}.color"), validator);
 }
 
-fn validate_stroke(stroke: &StrokeStyleV1, path: &str, validator: &mut Validator) {
+fn validate_stroke_inner(
+    stroke: &StrokeStyleV1,
+    path: &str,
+    allow_zero_width: bool,
+    validator: &mut Validator,
+) {
     validate_color(&stroke.color, &format!("{path}.color"), validator);
     validate_finite(stroke.miter_limit, &format!("{path}.miterLimit"), validator);
     if stroke.miter_limit.is_finite() && !(1.0..=1_000.0).contains(&stroke.miter_limit) {
@@ -281,13 +286,32 @@ fn validate_stroke(stroke: &StrokeStyleV1, path: &str, validator: &mut Validator
             "must be between 1 and 1000 inclusive",
         );
     }
-    validate_positive(stroke.width_world, &format!("{path}.widthWorld"), validator);
+    if allow_zero_width {
+        validate_finite(stroke.width_world, &format!("{path}.widthWorld"), validator);
+        if stroke.width_world.is_finite() && stroke.width_world < 0.0 {
+            validator.issue(format!("{path}.widthWorld"), "must be non-negative");
+        }
+    } else {
+        validate_positive(stroke.width_world, &format!("{path}.widthWorld"), validator);
+    }
     if stroke.width_world.is_finite() && stroke.width_world > MAX_COORDINATE_V1 {
         validator.issue(
             format!("{path}.widthWorld"),
             "must be inside the v1 coordinate range",
         );
     }
+}
+
+fn validate_stroke(stroke: &StrokeStyleV1, path: &str, validator: &mut Validator) {
+    validate_stroke_inner(stroke, path, false, validator);
+}
+
+fn validate_vector_appearance_stroke(
+    stroke: &StrokeStyleV1,
+    path: &str,
+    validator: &mut Validator,
+) {
+    validate_stroke_inner(stroke, path, true, validator);
 }
 
 fn validate_asset_reference(reference: &AssetReferenceV1, path: &str, validator: &mut Validator) {
@@ -1187,7 +1211,11 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                             validate_fill(fill, &format!("{value_path}.fill"), validator);
                         }
                         if let Some(stroke) = &value.stroke {
-                            validate_stroke(stroke, &format!("{value_path}.stroke"), validator);
+                            validate_vector_appearance_stroke(
+                                stroke,
+                                &format!("{value_path}.stroke"),
+                                validator,
+                            );
                         }
                         if let Some(first) = first {
                             if value.fill.is_some() != first.fill.is_some() {
