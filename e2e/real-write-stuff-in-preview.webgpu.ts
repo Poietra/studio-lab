@@ -150,6 +150,19 @@ async function renderCommitAndReimport(page: Page) {
   const commit = page.getByRole("button", { name: "Commit to source" });
   await expect(commit).toBeVisible({ timeout: 180_000 });
   await expect(commit).toBeEnabled();
+  const video = page.getByLabel("Rendered Manim preview of WriteStuff");
+  await expect(video).toBeVisible();
+  await expect
+    .poll(
+      () =>
+        video.evaluate((element: HTMLVideoElement) => ({
+          durationMillis: Number.isFinite(element.duration) ? Math.round(element.duration * 1_000) : 0,
+          height: element.videoHeight,
+          width: element.videoWidth,
+        })),
+      { timeout: 30_000 },
+    )
+    .toEqual({ durationMillis: 4_000, height: 480, width: 854 });
   await commit.click();
   const dialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
   await expect(dialog).toBeVisible();
@@ -404,8 +417,17 @@ test("moves and uniformly scales only example_tex through GUI, Python, Manim, an
 
   await playhead.fill("3.5");
   await expect(canvas).toHaveAttribute("data-preview-sample-time", "3.5");
+  const resizeHandle = page.getByRole("button", { name: "Resize example tex from bottom-right corner" });
+  await expect(resizeHandle).toBeVisible();
+  await dragBy(page, resizeHandle, { x: -24, y: -12 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await page.getByRole("button", { exact: true, name: "Discard" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await playhead.fill("3.5");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "3.5");
+
   const scale = page.getByRole("spinbutton", { name: "Scale example tex" });
-  await expect(scale).toBeVisible();
+  await expect(scale).toBeEnabled();
   await scale.fill("0.5");
   await page.getByRole("button", { name: "Set", exact: true }).click();
   const scaledFrame = await applyDraft(page, movedFrame);
