@@ -3928,7 +3928,31 @@ function fastManimWriteStuffNormalizedSemanticDigestV12(
     .digest("hex");
 }
 
-function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"]) {
+function writeStuffProducerNumberV12(value: number) {
+  const magnitude = Math.abs(value);
+  if (Number.isInteger(value) && magnitude < 1e16) return `${value}.0`;
+  const raw = magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16) ? value.toExponential() : value.toString();
+  return raw.replace(
+    /e([+-])(\d+)$/,
+    (_match, sign: string, exponent: string) => `e${sign}${exponent.padStart(2, "0")}`,
+  );
+}
+
+function writeStuffProducerTransformEvidenceV12(plan: WriteStuffV12TransformPlan) {
+  return [
+    ...(plan.moveTo === null
+      ? []
+      : [
+          "bounded editable WriteStuff v12 example_tex move_to " +
+            `(${writeStuffProducerNumberV12(plan.moveTo.x)}, ${writeStuffProducerNumberV12(plan.moveTo.y)}, 0)`,
+        ]),
+    ...(plan.scale === null
+      ? []
+      : [`bounded editable WriteStuff v12 example_tex uniform scale ${writeStuffProducerNumberV12(plan.scale)}`]),
+  ];
+}
+
+function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"], plan: WriteStuffV12TransformPlan) {
   const sceneEvidence = scene.provenance[0]?.evidence;
   if (
     !sceneEvidence ||
@@ -3945,9 +3969,24 @@ function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"]) 
     profileViolation("WriteStuff profile V12 scene provenance does not match the pinned producer evidence.");
   }
   const session = sceneEvidence[3]!.slice("render trace session ".length);
-  const normalizedEvidence = scene.provenance.map(({ evidence }) =>
-    evidence.map((entry) => entry.replaceAll(session, "<session>")),
-  );
+  const expectedTransformEvidence = writeStuffProducerTransformEvidenceV12(plan);
+  const mathRootEvidence = scene.provenance[33]?.evidence;
+  if (
+    !mathRootEvidence ||
+    (expectedTransformEvidence.length > 0 &&
+      (mathRootEvidence.length < expectedTransformEvidence.length ||
+        canonicalJsonV1(mathRootEvidence.slice(-expectedTransformEvidence.length)) !==
+          canonicalJsonV1(expectedTransformEvidence)))
+  ) {
+    profileViolation("WriteStuff profile V12 MathTex edit provenance does not match its source-derived plan.");
+  }
+  const normalizedEvidence = scene.provenance.map(({ evidence }, index) => {
+    const retainedEvidence =
+      index === 33 && expectedTransformEvidence.length > 0
+        ? evidence.slice(0, -expectedTransformEvidence.length)
+        : evidence;
+    return retainedEvidence.map((entry) => entry.replaceAll(session, "<session>"));
+  });
   const digest = createHash("sha256").update(canonicalJsonV1(normalizedEvidence), "utf8").digest("hex");
   if (digest !== FAST_MANIM_WRITE_STUFF_PRODUCER_PROVENANCE_SHA256_V12) {
     profileViolation("WriteStuff profile V12 entity and channel provenance differs from the pinned producer fixture.");
@@ -4135,7 +4174,7 @@ function assertWriteStuffProfileV12(
     );
   }
   if (mode === "producer") {
-    assertWriteStuffProducerProvenanceV12(scene);
+    assertWriteStuffProducerProvenanceV12(scene, plan);
   } else if (
     scene.provenance.some(
       ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12]),

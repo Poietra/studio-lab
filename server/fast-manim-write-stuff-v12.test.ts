@@ -115,10 +115,27 @@ describe("fast-manim WriteStuff snapshot profile V12", () => {
       `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
     );
     const editedSourceHash = createHash("sha256").update(editedSource, "utf8").digest("hex");
+    expect(editedSourceHash).toBe("37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98");
     const edited = structuredClone(envelope);
     edited.sourceHash = editedSourceHash;
     edited.bundle.scene.source.sourceHash = editedSourceHash;
     transformWriteStuffMathGeometry(edited, { x: 1.25, y: -0.5 }, 0.5);
+    edited.bundle.scene.provenance[33]!.evidence.push(
+      "bounded editable WriteStuff v12 example_tex move_to (1.25, -0.5, 0)",
+      "bounded editable WriteStuff v12 example_tex uniform scale 0.5",
+    );
+    const session = edited.bundle.scene.provenance[0]!.evidence[3]!.slice("render trace session ".length);
+    const editedProvenanceDigest = createHash("sha256")
+      .update(
+        canonicalJsonV1(
+          edited.bundle.scene.provenance.map(({ evidence }) =>
+            evidence.map((entry) => entry.replaceAll(session, "<session>")),
+          ),
+        ),
+        "utf8",
+      )
+      .digest("hex");
+    expect(editedProvenanceDigest).toBe("b1f1231038074decb50cfec4f932cceb0bd8987fccfb47f5b3799bcfd190ebd5");
     const editedExpected = {
       ...expected,
       sourceHash: editedSourceHash,
@@ -131,6 +148,13 @@ describe("fast-manim WriteStuff snapshot profile V12", () => {
       editedSource,
     );
     expect(sealed).toMatchObject({ kind: "compiled", sourceHash: editedSourceHash });
+
+    const provenanceTampered = structuredClone(edited);
+    const mathRootEvidence = provenanceTampered.bundle.scene.provenance[33]!.evidence;
+    mathRootEvidence[mathRootEvidence.length - 1] = "bounded editable WriteStuff v12 example_tex uniform scale 0.6";
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(provenanceTampered), editedExpected, editedSource),
+    ).rejects.toMatchObject({ code: "profile-violation" });
 
     const tampered = structuredClone(edited);
     const firstPath = tampered.bundle.scene.entities.find(({ sceneOrder }) => sceneOrder === 33)?.geometry.path;
