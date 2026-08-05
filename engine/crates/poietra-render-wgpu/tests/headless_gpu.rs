@@ -1634,6 +1634,10 @@ fn render_and_assert_shared_reference(
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
+    let artifact_target_format = match packet.compositing {
+        RenderCompositingV1::LinearLight => TARGET_FORMAT,
+        RenderCompositingV1::ManimCairoSrgb => MANIM_CAIRO_TARGET_FORMAT,
+    };
     let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
         .expect("proof target format must be supported by the renderer");
     let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
@@ -1672,7 +1676,7 @@ fn render_and_assert_shared_reference(
     if let Some(entry) = visual_parity_entry {
         let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
         assert_eq!(
-            emit_native_visual_parity_artifact(entry, &adapter_info, TARGET_FORMAT, &rgba),
+            emit_native_visual_parity_artifact(entry, &adapter_info, artifact_target_format, &rgba),
             artifact_requested,
             "the opt-in {evidence_name} native artifact must be emitted exactly once"
         );
