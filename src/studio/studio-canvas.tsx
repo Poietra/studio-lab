@@ -343,8 +343,7 @@ export function StudioCanvas({
   const presentingCanvasPixels = preview?.state.phase === "presented";
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
-  const lineJointsInitialEditAuthority =
-    preview?.initialEditRuntimeAuthority?.profile === "line-joints-v10" ? preview.initialEditRuntimeAuthority : null;
+  const boundedInitialEditAuthority = preview?.initialEditRuntimeAuthority ?? null;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -470,18 +469,18 @@ export function StudioCanvas({
               displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
             const runtimeMutationLocked =
-              lineJointsInitialEditAuthority !== null && entity.id !== lineJointsInitialEditAuthority.studioEntityId;
+              boundedInitialEditAuthority !== null && entity.id !== boundedInitialEditAuthority.studioEntityId;
             const selectionOnlyEntity = selectionOnlyPreview || runtimeMutationLocked;
             const mutationLocked = selectionLocked || selectionOnlyEntity;
             const positionUnknown = entity.geometry.position.kind === "unknown";
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            // V10's logical VGroup has verified identity but no prepared
-            // pixels. Neither selection-only nor the bounded t2-edit profile
-            // may mint a semantic group hit target beside the WebGPU frame.
+            // A logical source group with no requested prepared bounds must
+            // not mint a semantic hit target beside the WebGPU frame. The
+            // bounded V10/V12 targets are admitted only by runtime identity.
             if (
-              (selectionOnlyPreview || lineJointsInitialEditAuthority !== null) &&
+              (selectionOnlyPreview || boundedInitialEditAuthority !== null) &&
               presentingCanvasPixels &&
               presentedIdentity === null
             )

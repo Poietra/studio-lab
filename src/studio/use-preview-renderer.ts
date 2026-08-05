@@ -77,7 +77,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 }>;
 
 export type StudioPreviewInteractionAuthorityV1 =
-  | Readonly<{ kind: "interactive" }>
+  | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
   | Readonly<{ kind: "selection-only"; reason: "source-edit-anchor-unavailable" }>
   | Readonly<{
       kind: "display-only";
@@ -147,10 +147,11 @@ type StudioPreviewHostInstallationV1 = Readonly<{
  * bindings. V10 additionally requires the sealed LineJoints hierarchy and
  * admits mutation only for its runtime-proven center leaf. V11 requires its
  * complete SpiralIn hierarchy but remains selection-only because it has no
- * source rewrite contract. V12 likewise remains selection-only, but its two
- * source-bound Tex roots are nested logical groups whose bounds come from
- * their prepared drawable descendants. Older snapshot-only profiles retain
- * their semantic interaction fallback; no gesture guesses from Scene order.
+ * source rewrite contract. V12 admits only its exact source-bound example_tex
+ * root for mutation; example_text remains a paint-free selector and both root
+ * bounds come from their prepared drawable descendants. Older snapshot-only
+ * profiles retain their semantic interaction fallback; no gesture guesses
+ * from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
@@ -230,10 +231,17 @@ export function studioPreviewInteractionAuthorityV1(
     ) {
       return { kind: "interactive" };
     }
-    if (Number(source.snapshotVersion) === 11 || Number(source.snapshotVersion) === 12) {
+    if (Number(source.snapshotVersion) === 11) {
       return { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
     }
     const initialEditAuthority = snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null;
+    if (Number(source.snapshotVersion) === 12) {
+      const exampleText = identity?.get("example_text");
+      const exampleTex = identity?.get("example_tex");
+      return initialEditAuthority?.profile === "write-stuff-v12" && exampleText && exampleTex
+        ? { kind: "interactive", nestedGroupEntityIds: [exampleText.entityId, exampleTex.entityId] }
+        : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
+    }
     return initialEditAuthority?.profile === "line-joints-v10"
       ? { kind: "interactive" }
       : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
@@ -279,6 +287,8 @@ export function studioPreviewInteractionEntityIdsV1(
   // hit target. A nested source-bound group is selectable only when the worker
   // can aggregate prepared descendant bounds (V12 Tex/MathTex). Missing Scene
   // evidence remains fail-closed for selection-only mode.
+  const editableNestedGroups =
+    authority.kind === "interactive" ? new Set(authority.nestedGroupEntityIds ?? []) : new Set<string>();
   const drawableEntityIds =
     entities === null
       ? authority.kind === "selection-only"
@@ -287,8 +297,10 @@ export function studioPreviewInteractionEntityIdsV1(
       : new Set(
           entities
             .filter(
-              ({ geometry, parentId }) =>
-                geometry.kind !== "group" || (authority.kind === "selection-only" && parentId !== null),
+              ({ geometry, id, parentId }) =>
+                geometry.kind !== "group" ||
+                (authority.kind === "selection-only" && parentId !== null) ||
+                editableNestedGroups.has(id),
             )
             .map(({ id }) => id),
         );
@@ -437,7 +449,8 @@ export async function compileStudioPreviewSceneV1(
       (Number(source.snapshotVersion) !== 7 &&
         Number(source.snapshotVersion) !== 8 &&
         Number(source.snapshotVersion) !== 9 &&
-        Number(source.snapshotVersion) !== 10)
+        Number(source.snapshotVersion) !== 10 &&
+        Number(source.snapshotVersion) !== 12)
     ) {
       return {
         error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
@@ -470,10 +483,11 @@ export async function compileStudioPreviewSceneV1(
         bundle,
         engineRevisionHash,
         frame: { ...input.frame },
-        interactionEntityIds: rebased.scene.entities
-          .filter(({ geometry }) => geometry.kind !== "group")
-          .map(({ id }) => id)
-          .slice(0, MAX_CANVAS_INTERACTION_ENTITY_IDS),
+        interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+          input.snapshot.sourceRuntimeIdentity,
+          studioPreviewInteractionAuthorityV1(input.snapshot),
+          rebased.scene.entities,
+        ),
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,

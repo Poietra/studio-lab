@@ -32,7 +32,7 @@ type AuthorizedEditV1 = Readonly<{
   scaleFactor: number | null;
 }>;
 
-type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9 | 10;
+type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9 | 10 | 12;
 
 const OFFICIAL_BASIC_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
 const LINE_JOINTS_V10_PROFILE = {
@@ -44,6 +44,11 @@ const LINE_JOINTS_V10_PROFILE = {
   runtimeConfigHash: "b99127c213f9e049ffd247c8287bfba4f8d12d77e89bee5b1308bafc2527e9ec",
   snapshotHash: "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
   sourceNames: ["grp", "t1", "t2", "t3"],
+} as const;
+const WRITE_STUFF_V12_PROFILE = {
+  runtimeConfigHash: "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+  snapshotHash: "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594",
+  sourceNames: ["group", "example_text", "example_tex"],
 } as const;
 
 export type StudioPreviewInitialEditRuntimeAuthorityV1 =
@@ -59,6 +64,16 @@ export type StudioPreviewInitialEditRuntimeAuthorityV1 =
       duration: 1;
       lifetime: Readonly<{ end: 1; start: 0 }>;
       profile: "line-joints-v10";
+      relativeScale: 1;
+      runtimeEntityId: string;
+      studioEntityId: string;
+      studioSceneId: string;
+    }>
+  | Readonly<{
+      baseCenter: Point;
+      duration: 4;
+      lifetime: Readonly<{ end: 4; start: 0 }>;
+      profile: "write-stuff-v12";
       relativeScale: 1;
       runtimeEntityId: string;
       studioEntityId: string;
@@ -101,7 +116,7 @@ function supportedTemporalRebaseProfileV1(scene: SceneIrV1): SupportedTemporalRe
   const source = scene.source;
   if (source.kind !== "imported-manim-server-snapshot") return null;
   const version = Number(source.snapshotVersion);
-  return version === 7 || version === 8 || version === 9 || version === 10 ? version : null;
+  return version === 7 || version === 8 || version === 9 || version === 10 || version === 12 ? version : null;
 }
 
 function isExactManimSmoothInterval(channel: SceneIrV1["animationChannels"][number], start: number, end: number) {
@@ -210,6 +225,64 @@ function isExactStableLineJointsV10(
   );
 }
 
+function isExactStableWriteStuffV12(
+  scene: SceneIrV1,
+  runtimeIds: Readonly<{ exampleTex: string; exampleText: string; group: string }>,
+) {
+  // The sealed snapshot hash owns the exact 575 cubic curves and all channel
+  // bytes. These local checks pin only the hierarchy facts authoring consumes.
+  const source = scene.source;
+  const [group, exampleText] = scene.entities;
+  const exampleTex = scene.entities[32];
+  return (
+    source.kind === "imported-manim-server-snapshot" &&
+    supportedTemporalRebaseProfileV1(scene) === 12 &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    source.snapshotHash === WRITE_STUFF_V12_PROFILE.snapshotHash &&
+    source.runtimeConfigHash === WRITE_STUFF_V12_PROFILE.runtimeConfigHash &&
+    scene.duration === 4 &&
+    scene.entities.length === 61 &&
+    scene.animationChannels.length === 58 &&
+    scene.requiredCapabilities.length === 4 &&
+    scene.requiredCapabilities[0] === "cubic-path-geometry" &&
+    scene.requiredCapabilities[1] === "logical-group" &&
+    scene.requiredCapabilities[2] === "path-trim-animation" &&
+    scene.requiredCapabilities[3] === "vector-appearance-animation" &&
+    scene.camera.view.center.x === 0 &&
+    scene.camera.view.center.y === 0 &&
+    scene.camera.view.frameWidth === 14.222222222222221 &&
+    scene.camera.view.frameHeight === 8 &&
+    group?.id === runtimeIds.group &&
+    group.geometry.kind === "group" &&
+    group.parentId === null &&
+    group.sceneOrder === 0 &&
+    exampleText?.id === runtimeIds.exampleText &&
+    exampleText.geometry.kind === "group" &&
+    exampleText.parentId === group.id &&
+    exampleText.sceneOrder === 1 &&
+    exampleTex?.id === runtimeIds.exampleTex &&
+    exampleTex.geometry.kind === "group" &&
+    exampleTex.parentId === group.id &&
+    exampleTex.sceneOrder === 32 &&
+    scene.entities
+      .slice(2, 32)
+      .every(
+        (entity, index) =>
+          entity.sceneOrder === index + 2 &&
+          entity.parentId === exampleText.id &&
+          entity.geometry.kind === "cubic-path",
+      ) &&
+    scene.entities
+      .slice(33)
+      .every(
+        (entity, index) =>
+          entity.sceneOrder === index + 33 &&
+          entity.parentId === exampleTex.id &&
+          entity.geometry.kind === "cubic-path",
+      )
+  );
+}
+
 /**
  * Browser-authoring authority for a pinned, unedited producer fixture. A
  * producer-backed reimport changes its source seal, so this cannot accidentally
@@ -222,6 +295,55 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
   const { context } = snapshot.correlation;
   const source = snapshot.snapshot.scene.source;
   const identity = snapshot.sourceRuntimeIdentity;
+  if (
+    source.kind === "imported-manim-server-snapshot" &&
+    Number(source.snapshotVersion) === 12 &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourcePath === "example_scenes/basic.py" &&
+    context.sceneName === "WriteStuff" &&
+    identity?.size === WRITE_STUFF_V12_PROFILE.sourceNames.length
+  ) {
+    const group = identity.get("group");
+    const exampleText = identity.get("example_text");
+    const exampleTex = identity.get("example_tex");
+    if (
+      group?.sourceName === "group" &&
+      exampleText?.sourceName === "example_text" &&
+      exampleTex?.sourceName === "example_tex" &&
+      new Set([group.entityId, exampleText.entityId, exampleTex.entityId]).size ===
+        WRITE_STUFF_V12_PROFILE.sourceNames.length &&
+      isExactStableWriteStuffV12(snapshot.snapshot.scene, {
+        exampleTex: exampleTex.entityId,
+        exampleText: exampleText.entityId,
+        group: group.entityId,
+      })
+    ) {
+      const target = snapshot.snapshot.scene.entities.find(({ id }) => id === exampleTex.entityId);
+      const localCenter = target ? localBoundaryCenter(snapshot.snapshot.scene, target) : null;
+      const sourceTransform = target && localCenter ? uniformSourceTransform(target, localCenter) : null;
+      if (sourceTransform?.scale === 1) {
+        return {
+          baseCenter: scenePointToStudioPoint(
+            sourceTransform.worldCenter,
+            {
+              height: snapshot.snapshot.scene.camera.view.frameHeight,
+              width: snapshot.snapshot.scene.camera.view.frameWidth,
+            },
+            snapshot.snapshot.scene.camera.view.center,
+          ),
+          duration: 4,
+          lifetime: { end: 4, start: 0 },
+          profile: "write-stuff-v12",
+          relativeScale: 1,
+          runtimeEntityId: exampleTex.entityId,
+          studioEntityId: `source:${context.sourcePath}#${context.sceneName}:example_tex`,
+          studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+        };
+      }
+    }
+    return null;
+  }
   if (
     source.kind === "imported-manim-server-snapshot" &&
     Number(source.snapshotVersion) === 10 &&
@@ -250,7 +372,7 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
       })
     ) {
       const target = snapshot.snapshot.scene.entities.find(({ id }) => id === t2.entityId);
-      const localCenter = target ? localBoundaryCenter(target) : null;
+      const localCenter = target ? localBoundaryCenter(snapshot.snapshot.scene, target) : null;
       const sourceTransform = target && localCenter ? uniformSourceTransform(target, localCenter) : null;
       if (sourceTransform?.scale === 1) {
         return {
@@ -303,7 +425,11 @@ function studioInitialEditTargetMatches(
   authority: StudioPreviewInitialEditRuntimeAuthorityV1,
 ) {
   const expected =
-    authority.profile === "line-joints-v10" ? { name: "t2", type: "Triangle" } : { name: "square", type: "Square" };
+    authority.profile === "line-joints-v10"
+      ? { name: "t2", type: "Triangle" }
+      : authority.profile === "write-stuff-v12"
+        ? { name: "example_tex", type: "MathTex" }
+        : { name: "square", type: "Square" };
   return (
     entity?.id === authority.studioEntityId &&
     entity.type === expected.type &&
@@ -321,7 +447,7 @@ export function projectStudioPreviewInitialEntityPresenceV1(
   interactionGeometry: ReadonlyMap<string, unknown> | null,
 ) {
   if (!authority || !interactionGeometry?.has(authority.runtimeEntityId)) return entities;
-  if (authority.profile === "line-joints-v10") {
+  if (authority.profile === "line-joints-v10" || authority.profile === "write-stuff-v12") {
     const target = entities.find(({ id }) => id === authority.studioEntityId);
     if (!target || !studioInitialEditTargetMatches(target, authority)) return entities;
     return entities.map((entity) =>
@@ -362,7 +488,7 @@ export function projectStudioPreviewInitialValidationSceneV1(
 ) {
   if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
   const entities = Object.values(scene.objectGraph.entities);
-  if (authority.profile === "line-joints-v10") {
+  if (authority.profile === "line-joints-v10" || authority.profile === "write-stuff-v12") {
     const target = scene.objectGraph.entities[authority.studioEntityId];
     if (!studioInitialEditTargetMatches(target, authority) || !target.geometry) return scene;
     const projectedTarget: RuntimeSceneState["objectGraph"]["entities"][string] = {
@@ -472,12 +598,33 @@ function snapshotCorrelationIsExact(snapshot: StudioVerifiedPreviewSnapshotV1) {
   );
 }
 
-function localBoundaryCenter(entity: SceneEntityV1) {
-  if (entity.geometry.kind !== "cubic-path") return null;
-  const points = entity.geometry.path.subpaths.flatMap((subpath) => [
-    subpath.start,
-    ...subpath.segments.map(({ end }) => end),
-  ]);
+function applyTransform(point: Point, transform: SceneEntityV1["transform"]): Point {
+  return {
+    x: transform.m11 * point.x + transform.m12 * point.y + transform.tx,
+    y: transform.m21 * point.x + transform.m22 * point.y + transform.ty,
+  };
+}
+
+function localBoundaryCenter(scene: SceneIrV1, entity: SceneEntityV1) {
+  const byId = new Map(scene.entities.map((candidate) => [candidate.id, candidate]));
+  const points = scene.entities.flatMap((candidate) => {
+    if (candidate.geometry.kind !== "cubic-path") return [];
+    const transforms: SceneEntityV1["transform"][] = [];
+    let cursor: SceneEntityV1 | undefined = candidate;
+    const seen = new Set<string>();
+    while (cursor.id !== entity.id) {
+      if (seen.has(cursor.id)) return [];
+      seen.add(cursor.id);
+      transforms.push(cursor.transform);
+      cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId);
+      if (!cursor) return [];
+    }
+    return candidate.geometry.path.subpaths.flatMap((subpath) =>
+      [subpath.start, ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end])].map(
+        (point) => transforms.reduce((transformed, transform) => applyTransform(transformed, transform), point),
+      ),
+    );
+  });
   if (points.length === 0) return null;
   return {
     x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
@@ -553,7 +700,9 @@ function planInitialTransformEdit(
   const profile = supportedTemporalRebaseProfileV1(scene);
   if (profile === null) return unsupported("profile-unsupported", "The snapshot profile cannot be temporally rebased.");
   const initialEditAuthority =
-    profile === 9 || profile === 10 ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot) : null;
+    profile === 9 || profile === 10 || profile === 12
+      ? studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot)
+      : null;
   if (input.proposedState.evaluatedScene.duration !== scene.duration) {
     return unsupported(
       "channel-timing-edit-unsupported",
@@ -579,7 +728,7 @@ function planInitialTransformEdit(
   }
 
   const identity = input.snapshot.sourceRuntimeIdentity;
-  if (!identity || identity.size !== scene.entities.length) {
+  if (!identity || (profile !== 12 && identity.size !== scene.entities.length)) {
     return unsupported("identity-unverified", "Imported-animation edits require complete runtime identity.");
   }
   const runtimeEntities = new Map(scene.entities.map((entity) => [entity.id, entity]));
@@ -594,7 +743,7 @@ function planInitialTransformEdit(
     }
     verifiedRuntimeIds.add(mapping.entityId);
   }
-  if (verifiedRuntimeIds.size !== runtimeEntities.size) {
+  if (profile !== 12 && verifiedRuntimeIds.size !== runtimeEntities.size) {
     return unsupported("identity-unverified", "Temporal source/runtime identity does not cover every entity.");
   }
   const baseEntities = base.runtimeSceneState.objectGraph.entities;
@@ -662,7 +811,9 @@ function planInitialTransformEdit(
             channel.kind === "path-trim"
           : profile === 9
             ? channel.kind === "path-morph"
-            : false;
+            : profile === 12
+              ? channel.kind === "path-trim" || channel.kind === "vector-appearance"
+              : false;
     if (!supportedKind) {
       return unsupported("profile-unsupported", "Temporal preview found a channel outside its bounded profile.");
     }
@@ -742,10 +893,22 @@ function planInitialTransformEdit(
         studioEntity?.type === "Triangle" &&
         studioEntity.sourceIdentity.kind === "known" &&
         studioEntity.sourceIdentity.value === "t2";
+      const stableV12Target =
+        profile === 12 &&
+        initialEditAuthority?.profile === "write-stuff-v12" &&
+        initialEditAuthority.runtimeEntityId === runtimeEntityId &&
+        studioEntity?.type === "MathTex" &&
+        studioEntity.sourceIdentity.kind === "known" &&
+        studioEntity.sourceIdentity.value === "example_tex";
       const runtimeEntity = runtimeEntities.get(runtimeEntityId);
       if (
-        (!staticMathTex && !createTarget && !stableV8Target && !stableV9Target && !stableV10Target) ||
-        runtimeEntity?.geometry.kind !== "cubic-path"
+        (!staticMathTex &&
+          !createTarget &&
+          !stableV8Target &&
+          !stableV9Target &&
+          !stableV10Target &&
+          !stableV12Target) ||
+        (runtimeEntity?.geometry.kind !== "cubic-path" && !stableV12Target)
       ) {
         return unsupported(
           "target-edit-unsupported",
@@ -896,7 +1059,7 @@ export function compileStudioPreviewTemporalRebaseV1(
   const { edit, profile } = planned;
   const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);
   const target = scene.entities[targetIndex];
-  const center = target ? localBoundaryCenter(target) : null;
+  const center = target ? localBoundaryCenter(scene, target) : null;
   if (!target || !center) {
     return unsupported("geometry-edit-unsupported", "The authorized temporal target has no bounded cubic geometry.");
   }

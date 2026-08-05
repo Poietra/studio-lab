@@ -88,7 +88,11 @@ if (snapshotProfile === "8" && !externalBaseUrl && !officialV8ProjectRoot) {
   throw new Error("The real SquareToCircle V8 E2E requires POIETRA_FAST_MANIM_V8_PROJECT_ROOT.");
 }
 const mutableHarness =
-  snapshotProfile === "4" || snapshotProfile === "7" || snapshotProfile === "9" || snapshotProfile === "10";
+  snapshotProfile === "4" ||
+  snapshotProfile === "7" ||
+  snapshotProfile === "9" ||
+  snapshotProfile === "10" ||
+  snapshotProfile === "12";
 const harnessRoot = mutableHarness
   ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
   : join(process.cwd(), "fixtures", "real-preview-harness");

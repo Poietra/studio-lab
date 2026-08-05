@@ -54,6 +54,7 @@ const WARP_SQUARE_ENTITY_ID = `source:${WARP_SQUARE_SCENE_ID}:square`;
 const WARP_SQUARE_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const WARP_SQUARE_SNAPSHOT_HASH = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
 const LINE_JOINTS_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#LineJoints`;
+const WRITE_STUFF_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#WriteStuff`;
 
 type SquareToCircleFixtureFile = Readonly<{
   assets: unknown;
@@ -395,6 +396,122 @@ async function lineJointsInput(kind: EditKind = "combined", targetSourceName: "t
           scene: validationScene,
           targetEntityIds: [targetEntityId],
           transactionId: `scale-line-joints-${targetSourceName}-at-zero`,
+        }),
+      ),
+    );
+  }
+  return {
+    authority,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: records }),
+    snapshot,
+    targetEntityId,
+  };
+}
+
+async function writeStuffInput(
+  kind: EditKind = "combined",
+  targetSourceName: "example_tex" | "example_text" = "example_tex",
+) {
+  const [fixtureText, sourceText] = await Promise.all([
+    readFile(new URL("../../fixtures/engine-v1/real-write-stuff-v12.json", import.meta.url), "utf8"),
+    readFile(new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url), "utf8"),
+  ]);
+  const fixture = JSON.parse(fixtureText) as SquareToCircleFixtureFile;
+  const bundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
+  const source = bundle.scene.source;
+  const imported = importManimScene(sourceText, WARP_SQUARE_SOURCE_PATH, "WriteStuff", FRAME);
+  if (!imported || source.kind !== "imported-manim-server-snapshot") {
+    throw new Error("The WriteStuff V12 source fixture is incomplete.");
+  }
+  const sourceRuntimeIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>();
+  for (const [sourceName, sceneOrder] of [
+    ["group", 0],
+    ["example_text", 1],
+    ["example_tex", 32],
+  ] as const) {
+    const runtimeEntity = bundle.scene.entities[sceneOrder];
+    if (!runtimeEntity) throw new Error(`WriteStuff V12 lost runtime entity ${sceneOrder}.`);
+    sourceRuntimeIdentity.set(sourceName, {
+      bindingId: `binding:write-stuff:${sourceName}`,
+      entityId: runtimeEntity.id,
+      sourceName,
+    });
+  }
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
+    correlation: {
+      assetsManifestDigest: bundle.assets.manifestDigest,
+      context: {
+        projectId: "demo",
+        sceneName: "WriteStuff",
+        sourceDuration: 4,
+        sourceHash: source.sourceHash,
+        sourcePath: WARP_SQUARE_SOURCE_PATH,
+        workingRevision: PRISTINE_WORKING_REVISION,
+      },
+      engineRevisionHash: source.snapshotHash,
+      sceneDuration: 4,
+      sceneId: bundle.scene.sceneId,
+      serverPublicationRevision: 1,
+    },
+    duration: 4,
+    sceneId: bundle.scene.sceneId,
+    snapshot: bundle,
+    sourceLabel: `${WARP_SQUARE_SOURCE_PATH} · WriteStuff`,
+    sourceRuntimeIdentity,
+  };
+  const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
+  if (authority?.profile !== "write-stuff-v12") {
+    throw new Error("The sealed WriteStuff V12 fixture did not grant its bounded edit authority.");
+  }
+  const targetEntityId = `source:${WRITE_STUFF_SCENE_ID}:${targetSourceName}`;
+  const runtimeSceneState: RuntimeSceneState = { ...imported.runtimeSceneState, duration: 4 };
+  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, authority);
+  const inherited = workingState(runtimeSceneState);
+  const base: WorkingState = {
+    ...inherited,
+    editorContext: { ...inherited.editorContext, activeSceneId: WRITE_STUFF_SCENE_ID, selection: [targetEntityId] },
+    sourceSnapshot: {
+      configId: "sealed-write-stuff-v12",
+      hash: `sha256:${WARP_SQUARE_SOURCE_HASH}`,
+      sourceId: WARP_SQUARE_SOURCE_PATH,
+      version: STUDIO_STATE_VERSION,
+    },
+    staticSemanticState: imported.staticSemanticState,
+  };
+  const records: ProgramRecord[] = [];
+  if (kind === "position" || kind === "combined") {
+    const targetPosition = {
+      x: (0.5 + 1.25 / FRAME.width) * VIEWPORT.width,
+      y: (0.5 + 0.5 / FRAME.height) * VIEWPORT.height,
+    };
+    records.push(
+      validRecord(
+        createDirectManipulationPositionProgram({
+          capturedPlayhead: 0,
+          delta: {
+            x: targetPosition.x - authority.baseCenter.x,
+            y: targetPosition.y - authority.baseCenter.y,
+          },
+          positions: { [targetEntityId]: authority.baseCenter },
+          scene: validationScene,
+          start: 0,
+          targetEntityIds: [targetEntityId],
+          transactionId: `move-write-stuff-${targetSourceName}-at-zero`,
+        }),
+      ),
+    );
+  }
+  if (kind === "scale" || kind === "combined") {
+    records.push(
+      validRecord(
+        createDirectManipulationScaleProgram({
+          capturedPlayhead: 0,
+          interval: { end: 0, start: 0 },
+          scales: { [targetEntityId]: { from: 1, to: 0.5 } },
+          scene: validationScene,
+          targetEntityIds: [targetEntityId],
+          transactionId: `scale-write-stuff-${targetSourceName}-at-zero`,
         }),
       ),
     );
@@ -1076,6 +1193,93 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
     expect(studioPreviewInitialEditRuntimeAuthorityV1(drifted)).toBeNull();
     expect(compileLineJoints({ ...input, snapshot: drifted })).toMatchObject({
       issue: { code: "target-edit-unsupported" },
+      kind: "unsupported",
+    });
+  });
+});
+
+describe("compileStudioPreviewTemporalRebaseV1 WriteStuff V12", () => {
+  function compileWriteStuff(input: Awaited<ReturnType<typeof writeStuffInput>>) {
+    return compileStudioPreviewTemporalRebaseV1({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: WORKING_REVISION,
+    });
+  }
+
+  it("grants one synthetic source anchor only to the exact example_tex root", async () => {
+    const input = await writeStuffInput("position");
+    expect(input.authority.profile).toBe("write-stuff-v12");
+    expect(input.authority.baseCenter.x).toBeCloseTo(320, 10);
+    expect(input.authority.baseCenter.y).toBeCloseTo(220.05966224170555, 10);
+    expect(input.authority).toMatchObject({
+      duration: 4,
+      lifetime: { end: 4, start: 0 },
+      relativeScale: 1,
+      runtimeEntityId: input.snapshot.snapshot.scene.entities[32]?.id,
+      studioEntityId: input.targetEntityId,
+      studioSceneId: WRITE_STUFF_SCENE_ID,
+    });
+    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthorityV1(input.snapshot);
+    expect(interactionAuthority).toEqual({
+      kind: "interactive",
+      nestedGroupEntityIds: [
+        input.snapshot.snapshot.scene.entities[1]?.id,
+        input.snapshot.snapshot.scene.entities[32]?.id,
+      ],
+    });
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        input.snapshot.sourceRuntimeIdentity,
+        interactionAuthority,
+        input.snapshot.snapshot.scene.entities,
+      ),
+    ).toEqual([input.snapshot.snapshot.scene.entities[1]?.id, input.snapshot.snapshot.scene.entities[32]?.id]);
+  });
+
+  it("rebases move_to(1.25, -0.5) and scale(0.5) onto the logical MathTex root only", async () => {
+    const input = await writeStuffInput();
+    const importedScene = input.snapshot.snapshot.scene;
+    const result = await compileStudioPreviewSceneV1({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      workingRevision: WORKING_REVISION,
+      workspaceKey: "demo/example_scenes/basic.py/WriteStuff",
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    const scene = result.scene.bundle.scene;
+    expect(scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(scene.entities[0]).toBe(importedScene.entities[0]);
+    expect(scene.entities[1]).toBe(importedScene.entities[1]);
+    expect(scene.entities[31]).toBe(importedScene.entities[31]);
+    expect(scene.entities[33]).toBe(importedScene.entities[33]);
+    expect(scene.entities[32]?.geometry).toBe(importedScene.entities[32]?.geometry);
+    expect(scene.entities[32]?.transform).toMatchObject({ m11: 0.5, m12: 0, m21: 0, m22: 0.5, tx: 1.25 });
+    expect(scene.entities[32]?.transform.ty).toBeCloseTo(-0.0548926417588273, 12);
+    expect(result.scene.interactionEntityIds).toEqual([importedScene.entities[1]?.id, importedScene.entities[32]?.id]);
+  });
+
+  it("keeps example_text and any identity/source drift fail closed", async () => {
+    const siblingEdit = await writeStuffInput("position", "example_text");
+    expect(compileWriteStuff(siblingEdit)).toMatchObject({
+      issue: { code: "target-edit-unsupported" },
+      kind: "unsupported",
+    });
+
+    const input = await writeStuffInput("position");
+    const identity = new Map(input.snapshot.sourceRuntimeIdentity);
+    const exampleText = identity.get("example_text");
+    const exampleTex = identity.get("example_tex");
+    if (!exampleText || !exampleTex) throw new Error("WriteStuff V12 identity fixture is incomplete.");
+    identity.set("example_tex", { ...exampleTex, entityId: exampleText.entityId });
+    const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
+    expect(studioPreviewInitialEditRuntimeAuthorityV1(drifted)).toBeNull();
+    expect(compileWriteStuff({ ...input, snapshot: drifted })).toMatchObject({
+      issue: { code: "identity-unverified" },
       kind: "unsupported",
     });
   });

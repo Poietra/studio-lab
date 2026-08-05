@@ -1,9 +1,12 @@
 import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import { programRecord } from "./evaluator";
+import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
 import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
+import { createDirectManipulationPositionProgram } from "./suggestion-program";
 import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
 
 const CIRCLE_ENTITY: ProjectedEntity = {
@@ -95,14 +98,18 @@ function baseProps(): StudioCanvasProps {
   };
 }
 
-function renderSelectedInspector(entity: ProjectedEntity, draftError: string | null) {
+function renderSelectedInspector(
+  entity: ProjectedEntity,
+  draftError: string | null,
+  draftProgram: Parameters<typeof StudioInspector>[0]["draftProgram"] = null,
+) {
   return renderToStaticMarkup(
     <StudioInspector
       appliedProgramCount={0}
       draftApplyPending={false}
       draftError={draftError}
       draftOperation={null}
-      draftProgram={null}
+      draftProgram={draftProgram}
       inspectorReturnFocus={null}
       onApplyDraft={vi.fn()}
       onDiscardDraft={vi.fn()}
@@ -643,6 +650,33 @@ describe("StudioCanvas retained preview layer", () => {
     expect(interactiveMarkup).not.toContain(`data-studio-entity="${group.id}"`);
     expect(interactiveMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
     expect(interactiveMarkup).toContain(`data-studio-resize-handle="${t2.id}"`);
+  });
+
+  it("keeps an exact position refiner beside one direct-manipulation draft", () => {
+    const entity: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      content: { displayLines: ["E = mc²"], texParts: ["E = mc^2"] },
+      id: "equation_1",
+      sourceIdentity: { kind: "known", value: "equation" },
+      type: "MathTex",
+    };
+    const validation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 56.25, y: 22.5 },
+      positions: { equation_1: { x: 320, y: 180 } },
+      scene: STUDIO_FIXTURE_SCENE,
+      start: 0,
+      targetEntityIds: [entity.id],
+      transactionId: "studio-gesture-position-refinement",
+    });
+    const markup = renderSelectedInspector(entity, null, programRecord(validation.program, validation));
+
+    expect(markup).toContain('aria-label="Refine draft position of equation_1"');
+    expect(markup).toContain('aria-label="X draft position of equation_1"');
+    expect(markup).toContain('value="376.25"');
+    expect(markup).toContain('aria-label="Y draft position of equation_1"');
+    expect(markup).toContain('value="202.5"');
+    expect(markup).toContain("Update draft position");
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {
