@@ -587,13 +587,14 @@ fn compile_render_packet_from_validated_v1(
             "sampleTime must be finite and inside Scene duration".to_owned(),
         ));
     }
+    let state_sample_time = options.scene.state_sample_time(options.sample_time);
 
     let active: Vec<_> = index
         .stable_paint_order()
         .iter()
         .copied()
         .filter(|entity_index| {
-            entity_is_active(&options.scene.entities[*entity_index], options.sample_time)
+            entity_is_active(&options.scene.entities[*entity_index], state_sample_time)
         })
         .collect();
     let mut local = vec![None; options.scene.entities.len()];
@@ -604,7 +605,7 @@ fn compile_render_packet_from_validated_v1(
             options.scene,
             entity_index,
             entity,
-            options.sample_time,
+            state_sample_time,
         )?);
     }
     let world = world_samples(options.scene, index, &local)?;
@@ -701,7 +702,7 @@ fn compile_render_packet_from_validated_v1(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    let camera = sample_camera(options.scene, index, options.sample_time)?;
+    let camera = sample_camera(options.scene, index, state_sample_time)?;
     let packet = RenderPacketV1 {
         asset_manifest: options.scene.asset_manifest.clone(),
         camera: RenderCameraV1 {
@@ -919,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn emits_explicit_cairo_compositing_for_imported_v11_only() {
+    fn emits_explicit_cairo_compositing_for_imported_v11_and_v12() {
         let (assets, mut scene) = fixture();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash: "0".repeat(64),
@@ -949,13 +950,20 @@ mod tests {
             "manim-cairo-srgb"
         );
 
-        let SceneSourceV1::ImportedManimServerSnapshot {
-            snapshot_version, ..
-        } = &mut scene.source
-        else {
-            unreachable!()
+        let set_snapshot_version = |scene: &mut SceneIrV1, version| {
+            let SceneSourceV1::ImportedManimServerSnapshot {
+                snapshot_version, ..
+            } = &mut scene.source
+            else {
+                unreachable!()
+            };
+            *snapshot_version = version;
         };
-        *snapshot_version = SnapshotProfileVersionV1::V10;
+        set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V12);
+        let v12 = compile(&scene, "packet:v12");
+        assert_eq!(v12.compositing, RenderCompositingV1::ManimCairoSrgb);
+
+        set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V10);
         let v10 = compile(&scene, "packet:v10");
         assert_eq!(v10.compositing, RenderCompositingV1::LinearLight);
         assert!(
@@ -964,6 +972,32 @@ mod tests {
                 .get("compositing")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn imported_v12_retains_its_final_hold_at_the_correlated_duration() {
+        let (assets, mut scene) = fixture();
+        scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: "0".repeat(64),
+            snapshot_hash: "0".repeat(64),
+            snapshot_version: SnapshotProfileVersionV1::V12,
+            source_hash: "0".repeat(64),
+        };
+        let packet = compile_render_packet_v1(CompileEngineFrameOptionsV1 {
+            assets: &assets,
+            evidence: &[],
+            packet_id: "packet:v12-duration",
+            sample_time: scene.duration,
+            scene: &scene,
+            viewport: ViewportV1 {
+                height_px: 900,
+                width_px: 1600,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(packet.sample_time.to_bits(), scene.duration.to_bits());
+        assert_eq!(packet.draws.len(), 1);
     }
 
     #[test]

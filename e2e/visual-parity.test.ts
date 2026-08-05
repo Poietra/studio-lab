@@ -103,6 +103,14 @@ describe("visual parity v1 contracts", () => {
       "real-spiral-in-v11--end",
       "real-line-joints-v10--static",
       "real-line-joints-v10-edited--static",
+      "real-write-stuff-v12--start",
+      "real-write-stuff-v12--tex-early",
+      "real-write-stuff-v12--tex-midpoint",
+      "real-write-stuff-v12--math-start",
+      "real-write-stuff-v12--math-midpoint",
+      "real-write-stuff-v12--math-end",
+      "real-write-stuff-v12--hold",
+      "real-write-stuff-v12--end",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -674,6 +682,114 @@ describe("visual parity v1 contracts", () => {
         expected: { semanticDigest },
         id: sampleId,
         packetId: `real-spiral-in-v11:${sampleId}`,
+        sampleTime,
+        viewport: { heightPx: 360, widthPx: 640 },
+      });
+    }
+  });
+
+  it("pins the official WriteStuff V12 timeline to native/browser and independent Cairo gates", async () => {
+    const fixtureRevision = "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594";
+    const corpus = await corpusFixture();
+    const expectedSamples = [
+      ["real-write-stuff-v12--start", "start", 0, "2451c0c9c441b2c3672ea4cd4dc7c0a29eebb3eb896d45b57c7e35df5fbd5b70"],
+      [
+        "real-write-stuff-v12--tex-early",
+        "tex-early",
+        0.25,
+        "411329ac0a55560693e9278f35db572bd3f0ee9389041c6cfdaf4d325fd8cb42",
+      ],
+      [
+        "real-write-stuff-v12--tex-midpoint",
+        "tex-midpoint",
+        1,
+        "51249211b7697d8337ac1b85fde08c9e1c965904f8a227036078b6b3c6a89da9",
+      ],
+      [
+        "real-write-stuff-v12--math-start",
+        "math-start",
+        2,
+        "3139f1f7d8598c514a42b8be305209821b00da677e3b72cf1cdaf89c3c1fa1bc",
+      ],
+      [
+        "real-write-stuff-v12--math-midpoint",
+        "math-midpoint",
+        2.5,
+        "aa924b5981023a906e4c14fc91d3f6b3dd29db3ed3d2fd20a92283584abb638a",
+      ],
+      [
+        "real-write-stuff-v12--math-end",
+        "math-end",
+        3,
+        "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9",
+      ],
+      ["real-write-stuff-v12--hold", "hold", 3.5, "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9"],
+      ["real-write-stuff-v12--end", "end", 4, "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9"],
+    ] as const;
+    for (const [entryId, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      const entry = corpus.entries.find(({ id }) => id === entryId);
+      if (!entry) throw new Error(`The WriteStuff V12 corpus entry ${entryId} is missing.`);
+      expect(entry).toMatchObject({
+        fixture: {
+          id: "eng-v1-real-write-stuff-v12",
+          path: "fixtures/engine-v1/real-write-stuff-v12.json",
+          revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+        },
+        sample: {
+          id: sampleId,
+          sampleTime,
+          semanticDigest,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        thresholdException: null,
+      });
+      expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+    }
+
+    const fixtureBytes = new Uint8Array(await readFile("fixtures/engine-v1/real-write-stuff-v12.json"));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(1_024 * 1_024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene).toMatchObject({
+      duration: 4,
+      requiredCapabilities: [
+        "cubic-path-geometry",
+        "logical-group",
+        "path-trim-animation",
+        "vector-appearance-animation",
+      ],
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash: "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+        snapshotHash: fixtureRevision,
+        snapshotVersion: 12,
+        sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      },
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(61);
+    expect(bundle.scene.entities.filter(({ geometry }) => geometry.kind === "group")).toHaveLength(3);
+    expect(bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path")).toHaveLength(58);
+    expect(bundle.scene.animationChannels).toHaveLength(58);
+    expect(bundle.scene.animationChannels.map(({ kind }) => kind).sort()).toEqual([
+      ...Array(29).fill("path-trim"),
+      ...Array(29).fill("vector-appearance"),
+    ]);
+    expect(fixture.producerReference).toMatchObject({
+      fastManimCommit: "044a61aa0d868fc9e799588f2eb88006594b6c44",
+      fastManimTree: "996ad2b7375a6f911b1b00747eaad38834bde25c",
+      kind: "server-sealed-real-fast-manim-profile-v12",
+      producerSnapshotDigest: "dd6ca2c3e1015718f9fa9b8ad0e926de8260013eb85d17574c3c7fdeaba89817",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+    });
+    for (const [, sampleId, sampleTime, semanticDigest] of expectedSamples) {
+      expect(fixture.samples).toContainEqual({
+        expected: { semanticDigest },
+        id: sampleId,
+        packetId: `real-write-stuff-v12:${sampleId}`,
         sampleTime,
         viewport: { heightPx: 360, widthPx: 640 },
       });

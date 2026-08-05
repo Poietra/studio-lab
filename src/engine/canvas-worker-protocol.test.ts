@@ -316,6 +316,23 @@ describe("canvas worker v1 protocol", () => {
     expect(canvasFrameTelemetryV1Schema.parse(telemetry).memory).toEqual(telemetry.memory);
     if (telemetry.memory.kind !== "measured") throw new Error("The measured fixture must contain memory evidence.");
 
+    const legacyPayload = {
+      ...telemetry,
+      memory: {
+        ...telemetry.memory,
+        logicalGpuBreakdown: {
+          geometryBufferArena: telemetry.memory.logicalGpuBreakdown.geometryBufferArena,
+          retainedImageTextures: { currentBytes: 2_000_000, peakBytes: 3_000_000 },
+        },
+      },
+    };
+    const parsedLegacy = canvasFrameTelemetryV1Schema.parse(legacyPayload);
+    if (parsedLegacy.memory.kind !== "measured") throw new Error("Legacy measured memory must remain measured.");
+    expect(parsedLegacy.memory.logicalGpuBreakdown.multisampleColorTarget).toEqual({
+      currentBytes: 0,
+      peakBytes: 0,
+    });
+
     expect(
       canvasFrameTelemetryV1Schema.safeParse({
         ...telemetry,
@@ -324,6 +341,21 @@ describe("canvas worker v1 protocol", () => {
           retainedBoundaryTotal: {
             ...telemetry.memory.retainedBoundaryTotal,
             currentBytes: 25_000_001,
+          },
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      canvasFrameTelemetryV1Schema.safeParse({
+        ...telemetry,
+        memory: {
+          ...telemetry.memory,
+          logicalGpuBreakdown: {
+            ...telemetry.memory.logicalGpuBreakdown,
+            multisampleColorTarget: {
+              ...telemetry.memory.logicalGpuBreakdown.multisampleColorTarget,
+              currentBytes: 1_000_001,
+            },
           },
         },
       }).success,

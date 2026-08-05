@@ -200,12 +200,18 @@ fn sealed_v10_retains_three_joined_leaves_through_native_evaluation_and_wgpu_pre
 
     let group_id = &bundle.scene.entities[0].id;
     assert_eq!(direct.clip_bounds_for_entity(group_id), None);
+    let interaction_bounds = direct
+        .interaction_clip_bounds_by_entity(&bundle.scene)
+        .expect("the installed V10 Scene must match the prepared packet");
+    assert_eq!(interaction_bounds.get(group_id), None);
     let bounds = bundle.scene.entities[1..]
         .iter()
         .map(|entity| {
-            direct
+            let bounds = direct
                 .clip_bounds_for_entity(&entity.id)
-                .expect("each rendered Triangle must expose interaction bounds")
+                .expect("each rendered Triangle must expose interaction bounds");
+            assert_eq!(interaction_bounds.get(&entity.id), Some(&bounds));
+            bounds
         })
         .collect::<Vec<_>>();
     assert!(bounds.iter().all(|[min_x, min_y, max_x, max_y]| {

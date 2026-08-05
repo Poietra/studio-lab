@@ -52,7 +52,8 @@ export const MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES =
   MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES + 64 * 1024 + 1;
 export const MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS = 10_000;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH = 64;
-export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 25_000;
+/** V12 contains 27,454 entries; retain bounded parsing with explicit headroom. */
+export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES = 30_000;
 
 export const MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS = 64;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_VALUES = 50_000;
@@ -71,6 +72,7 @@ export const fastManimSnapshotProfileVersionV1Schema = z.union([
   z.literal(9),
   z.literal(10),
   z.literal(11),
+  z.literal(12),
 ]);
 export type FastManimSnapshotProfileVersionV1 = z.infer<typeof fastManimSnapshotProfileVersionV1Schema>;
 
@@ -488,6 +490,7 @@ export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8 =
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9 = "fast-manim server snapshot WarpSquare profile v9" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10 = "fast-manim server snapshot LineJoints profile v10" as const;
 export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V11 = "fast-manim server snapshot SpiralIn profile v11" as const;
+export const FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12 = "fast-manim server snapshot WriteStuff profile v12" as const;
 /** Distinct server-owned marker retained so sealed V7 bundles can re-prove the one static MathTex leaf. */
 export const FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7 =
   "fast-manim server snapshot mixed dynamic 2D MathTex profile v7" as const;
@@ -2287,6 +2290,7 @@ const FAST_MANIM_LINE_JOINTS_FRAME_V10 = {
   width: 14.222222222222221,
 } as const;
 const FAST_MANIM_SPIRAL_IN_FRAME_V11 = FAST_MANIM_LINE_JOINTS_FRAME_V10;
+const FAST_MANIM_WRITE_STUFF_FRAME_V12 = FAST_MANIM_SPIRAL_IN_FRAME_V11;
 export const FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
 export const FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10 = "example_scenes/basic.py" as const;
@@ -2302,6 +2306,18 @@ const FAST_MANIM_SPIRAL_IN_REQUIRED_CAPABILITIES_V11 = [
   "cubic-path-geometry",
   "logical-group",
   "opacity-animation",
+] as const;
+export const FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12 = FAST_MANIM_SPIRAL_IN_OFFICIAL_SOURCE_SHA256_V11;
+export const FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12 = "example_scenes/basic.py" as const;
+export const FAST_MANIM_WRITE_STUFF_SEMANTICS_SHA256_V12 =
+  "a172562ca730ad219343a1eaf03fe16363fae17ccb7bedc91a1899439afd81cd" as const;
+const FAST_MANIM_WRITE_STUFF_PRODUCER_PROVENANCE_SHA256_V12 =
+  "12ed6732d305e116a0a540753f80f77c3d79614eb5f2d36df109212d98b7307d" as const;
+const FAST_MANIM_WRITE_STUFF_REQUIRED_CAPABILITIES_V12 = [
+  "cubic-path-geometry",
+  "logical-group",
+  "path-trim-animation",
+  "vector-appearance-animation",
 ] as const;
 const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
 const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
@@ -3682,6 +3698,238 @@ function assertSpiralInProfileV11(
   }
 }
 
+function fastManimWriteStuffSemanticDigestV12(scene: SceneIrBundleV1["scene"]) {
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        animationChannels: scene.animationChannels.map((channel) => ({
+          entityId: "entityId" in channel ? channel.entityId : null,
+          keyframes: channel.keyframes,
+          kind: channel.kind,
+          ...("parameterization" in channel ? { parameterization: channel.parameterization } : {}),
+        })),
+        entities: scene.entities.map(
+          ({ appearance, geometry, lifetimes, parentId, sceneOrder, sourceZIndex, transform }) => ({
+            appearance,
+            geometry,
+            lifetimes,
+            parentId,
+            sceneOrder,
+            sourceZIndex,
+            transform,
+          }),
+        ),
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"]) {
+  const sceneEvidence = scene.provenance[0]?.evidence;
+  if (
+    !sceneEvidence ||
+    sceneEvidence.length !== 8 ||
+    sceneEvidence[0] !== "fast-manim Scene snapshot profile v12" ||
+    sceneEvidence[1] !== "source path example_scenes/basic.py" ||
+    sceneEvidence[2] !== "scene class WriteStuff" ||
+    !/^render trace session [0-9a-f]{32}$/.test(sceneEvidence[3] ?? "") ||
+    sceneEvidence[4] !== "bounded timeline: 3 plays, renderer time 4.0s, snapshot duration 4.0s" ||
+    sceneEvidence[5] !== "61 supported entities in canonical VGroup preorder" ||
+    sceneEvidence[6] !== "camera frame 14.222222222222221 x 8.0 scene units, background rgba(0.0, 0.0, 0.0, 1.0)" ||
+    sceneEvidence[7] !== "cairo line width multiple 0.01"
+  ) {
+    profileViolation("WriteStuff profile V12 scene provenance does not match the pinned producer evidence.");
+  }
+  const session = sceneEvidence[3]!.slice("render trace session ".length);
+  const normalizedEvidence = scene.provenance.map(({ evidence }) =>
+    evidence.map((entry) => entry.replaceAll(session, "<session>")),
+  );
+  const digest = createHash("sha256").update(canonicalJsonV1(normalizedEvidence), "utf8").digest("hex");
+  if (digest !== FAST_MANIM_WRITE_STUFF_PRODUCER_PROVENANCE_SHA256_V12) {
+    profileViolation("WriteStuff profile V12 entity and channel provenance differs from the pinned producer fixture.");
+  }
+}
+
+function assertWriteStuffProfileV12(
+  bundle: SceneIrBundleV1,
+  expectedFrame: Readonly<{ height: number; width: number }>,
+  mode: "producer" | "sealed",
+  expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+) {
+  const { scene } = bundle;
+  const { sceneId } = scene;
+  if (
+    expectedIdentity.sceneName !== "WriteStuff" ||
+    expectedIdentity.sourcePath !== FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12 ||
+    expectedIdentity.sourceHash !== FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12
+  ) {
+    profileViolation("Snapshot profile V12 is reserved for the pinned official WriteStuff source.");
+  }
+  if (
+    expectedFrame.height !== FAST_MANIM_WRITE_STUFF_FRAME_V12.height ||
+    expectedFrame.width !== FAST_MANIM_WRITE_STUFF_FRAME_V12.width ||
+    scene.duration !== 4 ||
+    scene.fidelity.kind !== "exact" ||
+    scene.camera.view.center.x !== 0 ||
+    scene.camera.view.center.y !== 0 ||
+    scene.camera.view.frameHeight !== expectedFrame.height ||
+    scene.camera.view.frameWidth !== expectedFrame.width ||
+    canonicalJsonV1(scene.camera.background) !== canonicalJsonV1({ alpha: 1, blue: 0, green: 0, red: 0 })
+  ) {
+    profileViolation("WriteStuff profile V12 requires its exact four-second static camera contract.");
+  }
+  if (
+    bundle.assets.assets.length !== 0 ||
+    bundle.assets.manifestId !== fastManimSnapshotManifestIdV1(sceneId) ||
+    scene.requiredCapabilities.length !== FAST_MANIM_WRITE_STUFF_REQUIRED_CAPABILITIES_V12.length ||
+    scene.requiredCapabilities.some(
+      (capability, index) => capability !== FAST_MANIM_WRITE_STUFF_REQUIRED_CAPABILITIES_V12[index],
+    )
+  ) {
+    profileViolation("WriteStuff profile V12 requires its exact asset-free renderer capability surface.");
+  }
+  if (scene.entities.length !== 61 || scene.animationChannels.length !== 58) {
+    profileViolation("WriteStuff profile V12 requires its exact 61-entity, 58-channel split Write tree.");
+  }
+
+  const identityTransform = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
+  const groupOrders = new Set([0, 1, 32]);
+  for (const entity of scene.entities) {
+    const expectedParentOrder =
+      entity.sceneOrder === 0
+        ? null
+        : entity.sceneOrder === 1 || entity.sceneOrder === 32
+          ? 0
+          : entity.sceneOrder < 32
+            ? 1
+            : 32;
+    if (
+      entity.id !== fastManimSnapshotEntityIdV1(sceneId, entity.sceneOrder) ||
+      entity.provenanceId !== fastManimSnapshotEntityProvenanceIdV1(sceneId, entity.sceneOrder) ||
+      entity.parentId !==
+        (expectedParentOrder === null ? null : fastManimSnapshotEntityIdV1(sceneId, expectedParentOrder)) ||
+      entity.sourceZIndex !== 0 ||
+      canonicalJsonV1(entity.transform) !== canonicalJsonV1(identityTransform)
+    ) {
+      profileViolation("WriteStuff profile V12 entity identity or hierarchy differs from canonical family preorder.");
+    }
+    if (!groupOrders.has(entity.sceneOrder)) continue;
+    const expectedLifetime = entity.sceneOrder === 32 ? [{ end: 4, start: 2 }] : [{ end: 4, start: 0 }];
+    if (
+      canonicalJsonV1(entity.geometry) !== canonicalJsonV1({ kind: "group" }) ||
+      canonicalJsonV1(entity.appearance) !== canonicalJsonV1({ kind: "group", opacity: 1 }) ||
+      canonicalJsonV1(entity.lifetimes) !== canonicalJsonV1(expectedLifetime)
+    ) {
+      profileViolation("WriteStuff profile V12 logical groups differ from the exact retained root contract.");
+    }
+  }
+
+  for (let fragment = 0; fragment < 29; fragment += 1) {
+    const outlineOrder = fragment < 15 ? 2 + fragment * 2 : 33 + (fragment - 15) * 2;
+    const fillOrder = outlineOrder + 1;
+    const outline = scene.entities[outlineOrder];
+    const fill = scene.entities[fillOrder];
+    const pathTrim = scene.animationChannels[fragment * 2];
+    const vectorAppearance = scene.animationChannels[fragment * 2 + 1];
+    if (
+      !outline ||
+      !fill ||
+      outline.sceneOrder !== outlineOrder ||
+      fill.sceneOrder !== fillOrder ||
+      outline.geometry.kind !== "cubic-path" ||
+      fill.geometry.kind !== "cubic-path" ||
+      canonicalJsonV1(outline.geometry) !== canonicalJsonV1(fill.geometry) ||
+      outline.appearance.kind !== "vector" ||
+      fill.appearance.kind !== "vector" ||
+      outline.appearance.opacity !== 1 ||
+      fill.appearance.opacity !== 1 ||
+      outline.appearance.fill !== null ||
+      outline.appearance.stroke === null ||
+      fill.appearance.fill === null ||
+      fill.appearance.stroke === null ||
+      fill.appearance.fill.rule !== "nonzero" ||
+      fill.appearance.fill.color.alpha !== 0 ||
+      outline.appearance.stroke.cap !== "butt" ||
+      outline.appearance.stroke.join !== "miter" ||
+      outline.appearance.stroke.miterLimit !== 10 ||
+      outline.appearance.stroke.widthWorld !== 0.02 ||
+      canonicalJsonV1(outline.appearance.stroke) !== canonicalJsonV1(fill.appearance.stroke) ||
+      canonicalJsonV1(outline.appearance.stroke.color) !== canonicalJsonV1({ ...fill.appearance.fill.color, alpha: 1 })
+    ) {
+      profileViolation("WriteStuff profile V12 fragment geometry or Cairo base paint differs from its split roles.");
+    }
+    if (
+      !pathTrim ||
+      pathTrim.kind !== "path-trim" ||
+      pathTrim.id !== fastManimSnapshotPathTrimChannelIdV2(sceneId, outlineOrder) ||
+      pathTrim.provenanceId !== fastManimSnapshotPathTrimChannelProvenanceIdV2(sceneId, outlineOrder) ||
+      pathTrim.entityId !== outline.id ||
+      pathTrim.parameterization !== "uniform-cubic-parameter-v1" ||
+      pathTrim.keyframes.length !== 2 ||
+      pathTrim.keyframes[0]?.value !== 0 ||
+      pathTrim.keyframes[0]?.easingToNext?.kind !== "linear" ||
+      pathTrim.keyframes[1]?.value !== 1 ||
+      pathTrim.keyframes[1]?.easingToNext !== null ||
+      canonicalJsonV1(outline.lifetimes) !==
+        canonicalJsonV1([{ end: pathTrim.keyframes[1]!.at, start: pathTrim.keyframes[0]!.at }])
+    ) {
+      profileViolation("WriteStuff profile V12 outline phase differs from its exact path-trim contract.");
+    }
+    const baseAppearance = { fill: fill.appearance.fill, stroke: fill.appearance.stroke };
+    const finalAppearance = {
+      fill: { ...fill.appearance.fill, color: { ...fill.appearance.fill.color, alpha: 1 } },
+      stroke: { ...fill.appearance.stroke, widthWorld: 0 },
+    };
+    if (
+      !vectorAppearance ||
+      vectorAppearance.kind !== "vector-appearance" ||
+      vectorAppearance.id !== fastManimSnapshotVectorAppearanceChannelIdV8(sceneId, fillOrder) ||
+      vectorAppearance.provenanceId !== fastManimSnapshotVectorAppearanceChannelProvenanceIdV8(sceneId, fillOrder) ||
+      vectorAppearance.entityId !== fill.id ||
+      vectorAppearance.keyframes.length !== 2 ||
+      canonicalJsonV1(vectorAppearance.keyframes[0]?.value) !== canonicalJsonV1(baseAppearance) ||
+      vectorAppearance.keyframes[0]?.easingToNext?.kind !== "linear" ||
+      canonicalJsonV1(vectorAppearance.keyframes[1]?.value) !== canonicalJsonV1(finalAppearance) ||
+      vectorAppearance.keyframes[1]?.easingToNext !== null ||
+      vectorAppearance.keyframes[0]?.at !== pathTrim.keyframes[1]?.at ||
+      canonicalJsonV1(fill.lifetimes) !== canonicalJsonV1([{ end: 4, start: vectorAppearance.keyframes[0]!.at }])
+    ) {
+      profileViolation("WriteStuff profile V12 fill phase differs from its exact vector-appearance contract.");
+    }
+  }
+
+  if (fastManimWriteStuffSemanticDigestV12(scene) !== FAST_MANIM_WRITE_STUFF_SEMANTICS_SHA256_V12) {
+    profileViolation(
+      "WriteStuff profile V12 geometry, paint, lifetimes, or Write timing differs from its producer fixture.",
+    );
+  }
+  const expectedProvenanceIds = [
+    fastManimSnapshotSceneProvenanceIdV1(sceneId),
+    ...scene.entities.map((_, index) => fastManimSnapshotEntityProvenanceIdV1(sceneId, index)),
+    ...scene.animationChannels.map(({ provenanceId }) => provenanceId),
+  ];
+  if (
+    scene.provenance.length !== expectedProvenanceIds.length ||
+    scene.provenance.some(
+      (record, index) => record.id !== expectedProvenanceIds[index] || record.origin !== "fast-manim-server-snapshot",
+    )
+  ) {
+    profileViolation(
+      "WriteStuff profile V12 provenance must exactly follow Scene, family preorder, and channel order.",
+    );
+  }
+  if (mode === "producer") {
+    assertWriteStuffProducerProvenanceV12(scene);
+  } else if (
+    scene.provenance.some(
+      ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12]),
+    )
+  ) {
+    profileViolation("Sealed WriteStuff profile V12 provenance must contain only the server-owned marker.");
+  }
+}
+
 /**
  * The v1 static snapshot profile: the only Scene shape the renderer provably
  * supports end to end (static filled convex closed paths lowered from Circle
@@ -3706,6 +3954,10 @@ function assertFastManimSnapshotProfileV1(
   lineJointsV10Plan: LineJointsV10TransformPlan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
+  if (snapshotVersion === 12) {
+    assertWriteStuffProfileV12(bundle, expectedFrame, mode, expectedIdentity);
+    return;
+  }
   if (snapshotVersion === 11) {
     assertSpiralInProfileV11(bundle, expectedFrame, mode, expectedIdentity);
     return;
@@ -3999,7 +4251,8 @@ function fastManimSnapshotProvenanceEvidence(
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V9
   | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10
-  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V11 {
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V11
+  | typeof FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12 {
   switch (snapshotVersion) {
     case 1:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V1;
@@ -4023,6 +4276,8 @@ function fastManimSnapshotProvenanceEvidence(
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V10;
     case 11:
       return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V11;
+    case 12:
+      return FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12;
   }
 }
 
@@ -4091,7 +4346,8 @@ async function parseFastManimSnapshotResultV1(
       expected.snapshotVersion === 8 ||
       expected.snapshotVersion === 9 ||
       expected.snapshotVersion === 10 ||
-      expected.snapshotVersion === 11) &&
+      expected.snapshotVersion === 11 ||
+      expected.snapshotVersion === 12) &&
     mode === "producer" &&
     sourceText !== undefined &&
     createHash("sha256").update(sourceText, "utf8").digest("hex") !== expected.sourceHash
@@ -4112,6 +4368,9 @@ async function parseFastManimSnapshotResultV1(
   }
   if (expected.snapshotVersion === 11 && mode === "producer" && sourceText === undefined) {
     profileViolation("SpiralIn profile V11 requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 12 && mode === "producer" && sourceText === undefined) {
+    profileViolation("WriteStuff profile V12 requires the exact server-held source during sealing.");
   }
   if (expected.snapshotVersion === 9 && mode === "producer" && sourceText !== undefined) {
     const derivedPlan = deriveWarpSquareV9TransformPlan(sourceText, expected.sceneName);
@@ -4326,6 +4585,14 @@ export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11 = Object.freeze([
   "shape-primitives",
 ] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
 
+/** The exact producer offer for the pinned official WriteStuff V12 slice. */
+export const FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12 = Object.freeze([
+  "cubic-path-geometry",
+  "logical-group",
+  "path-trim-animation",
+  "vector-appearance-animation",
+] as const satisfies readonly FastManimSnapshotRuntimeCapabilityV1[]);
+
 export const MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -4432,6 +4699,19 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       });
     }
     if (
+      config.snapshotVersion === 12 &&
+      (config.capabilities.length !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12.length ||
+        config.capabilities.some(
+          (capability, index) => capability !== FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12[index],
+        ))
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "WriteStuff profile V12 runtime requests must declare its exact frozen capability set.",
+        path: ["capabilities"],
+      });
+    }
+    if (
       config.snapshotVersion === 8 &&
       (config.frame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
         config.frame.width !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.width)
@@ -4472,6 +4752,17 @@ export const fastManimSnapshotRuntimeConfigV1Schema = z
       context.addIssue({
         code: "custom",
         message: "SpiralIn profile V11 runtime requests require the exact canonical demo frame.",
+        path: ["frame"],
+      });
+    }
+    if (
+      config.snapshotVersion === 12 &&
+      (config.frame.height !== FAST_MANIM_WRITE_STUFF_FRAME_V12.height ||
+        config.frame.width !== FAST_MANIM_WRITE_STUFF_FRAME_V12.width)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "WriteStuff profile V12 runtime requests require the exact canonical demo frame.",
         path: ["frame"],
       });
     }

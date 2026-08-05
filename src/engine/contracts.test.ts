@@ -237,7 +237,7 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
-  it("round-trips imported snapshot profiles V6 through V11 without coercing the negotiated integer union", () => {
+  it("round-trips imported snapshot profiles V6 through V12 without coercing the negotiated integer union", () => {
     const source = {
       kind: "imported-manim-server-snapshot" as const,
       runtimeConfigHash: ZERO_HASH,
@@ -251,9 +251,11 @@ describe("Poietra Engine v1 contracts", () => {
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 9 })).toEqual({ ...source, snapshotVersion: 9 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 10 })).toEqual({ ...source, snapshotVersion: 10 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 11 })).toEqual({ ...source, snapshotVersion: 11 });
+    expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 12 })).toEqual({ ...source, snapshotVersion: 12 });
     expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 10 })).toBe("linear-light");
     expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 11 })).toBe("manim-cairo-srgb");
-    for (const unsupported of [0, 2.5, 12]) {
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 12 })).toBe("manim-cairo-srgb");
+    for (const unsupported of [0, 2.5, 13]) {
       expect(sceneSourceV1Schema.safeParse({ ...source, snapshotVersion: unsupported }).success).toBe(false);
     }
   });
@@ -288,7 +290,7 @@ describe("Poietra Engine v1 contracts", () => {
     }
   });
 
-  it("binds explicit Cairo compositing to imported Manim snapshot V11 only", async () => {
+  it("binds explicit Cairo compositing to imported Manim snapshot V11 and V12 only", async () => {
     const assets = await manifest();
     const baseScene = scene(assets);
     const basePacket = packet(baseScene, assets);
@@ -313,6 +315,13 @@ describe("Poietra Engine v1 contracts", () => {
     };
 
     expect(engineFrameV1Schema.safeParse({ assets, packet: cairoPacket, scene: vectorScene }).success).toBe(true);
+    expect(
+      engineFrameV1Schema.safeParse({
+        assets,
+        packet: cairoPacket,
+        scene: { ...vectorScene, source: { ...vectorScene.source, snapshotVersion: 12 } },
+      }).success,
+    ).toBe(true);
 
     const missingMode = { ...cairoPacket };
     delete (missingMode as Partial<typeof missingMode>).compositing;

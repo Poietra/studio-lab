@@ -12,7 +12,12 @@ import {
   trimCubicPathV1,
 } from "./geometry";
 import { type CubicPathV1, type EngineAffineTransformV1, isSingularAffineTransform } from "./primitives";
-import { type SceneIrV1, sceneIrSourceRevisionHash, sceneSourceRenderCompositingV1 } from "./scene-ir";
+import {
+  type SceneIrV1,
+  sceneEvaluationSampleTimeV1,
+  sceneIrSourceRevisionHash,
+  sceneSourceRenderCompositingV1,
+} from "./scene-ir";
 
 type KeyframeV1<T> = Readonly<{
   at: number;
@@ -298,13 +303,14 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
 
   try {
     const { assets, scene } = verified;
+    const evaluationTime = sceneEvaluationSampleTimeV1(scene, sampleTime);
     const channels = indexEntityChannels(scene);
     const active = scene.entities
       .filter((entity) =>
-        entity.lifetimes.some((lifetime) => sampleTime >= lifetime.start && sampleTime < lifetime.end),
+        entity.lifetimes.some((lifetime) => evaluationTime >= lifetime.start && evaluationTime < lifetime.end),
       )
       .sort((left, right) => left.sourceZIndex - right.sourceZIndex || left.sceneOrder - right.sceneOrder);
-    const local = new Map(active.map((entity) => [entity.id, sampleLocalEntity(channels, entity, sampleTime)]));
+    const local = new Map(active.map((entity) => [entity.id, sampleLocalEntity(channels, entity, evaluationTime)]));
     const world = worldSamples(scene, active, local);
 
     const draws = active
@@ -352,7 +358,7 @@ export async function compileEngineFrameV1(options: CompileEngineFrameV1Options)
         };
       });
 
-    const camera = sampleCamera(scene, sampleTime);
+    const camera = sampleCamera(scene, evaluationTime);
     const compositing = sceneSourceRenderCompositingV1(scene.source);
     const packet = {
       assetManifest: scene.assetManifest,

@@ -2510,7 +2510,10 @@ class ExampleScene(Scene):
     expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 11 }).snapshotVersion).toBe(
       11,
     );
-    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 12 })).toThrow();
+    expect(expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 12 }).snapshotVersion).toBe(
+      12,
+    );
+    expect(() => expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, snapshotVersion: 13 })).toThrow();
     expect(
       expectedFastManimSnapshotCorrelationV1Schema.parse({ ...legacy, hermeticPngV4Plan, snapshotVersion: 4 })
         .hermeticPngV4Plan,

@@ -88,6 +88,7 @@ pub enum SnapshotProfileVersionV1 {
     V9,
     V10,
     V11,
+    V12,
 }
 
 impl Serialize for SnapshotProfileVersionV1 {
@@ -107,6 +108,7 @@ impl Serialize for SnapshotProfileVersionV1 {
             Self::V9 => 9,
             Self::V10 => 10,
             Self::V11 => 11,
+            Self::V12 => 12,
         })
     }
 }
@@ -128,8 +130,9 @@ impl<'de> Deserialize<'de> for SnapshotProfileVersionV1 {
             9 => Ok(Self::V9),
             10 => Ok(Self::V10),
             11 => Ok(Self::V11),
+            12 => Ok(Self::V12),
             version => Err(de::Error::custom(format!(
-                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, or 11"
+                "unsupported fast-manim snapshot profile version {version}; expected 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, or 12"
             ))),
         }
     }
@@ -627,20 +630,37 @@ impl SceneSourceV1 {
 
     /// Returns the renderer compositing semantics required by this source profile.
     ///
-    /// The V11 importer seals colors and opacity against Manim's Cairo output. Older
-    /// imported profiles and Studio-authored scenes retain the engine's original
-    /// linear-light contract.
+    /// The V11 and V12 importers seal colors and opacity against Manim's Cairo
+    /// output. Older imported profiles and Studio-authored scenes retain the
+    /// engine's original linear-light contract.
     #[must_use]
     pub const fn render_compositing(&self) -> RenderCompositingV1 {
         match self {
             Self::ImportedManimServerSnapshot {
-                snapshot_version: SnapshotProfileVersionV1::V11,
+                snapshot_version: SnapshotProfileVersionV1::V11 | SnapshotProfileVersionV1::V12,
                 ..
             } => RenderCompositingV1::ManimCairoSrgb,
             Self::StudioEditProgram { .. } | Self::ImportedManimServerSnapshot { .. } => {
                 RenderCompositingV1::LinearLight
             }
         }
+    }
+
+    /// Whether a sample exactly at Scene duration observes the final retained
+    /// visual state instead of the ordinary half-open lifetime endpoint.
+    ///
+    /// `WriteStuff` V12 ends with a real Manim `wait`, so its duration frame is
+    /// the completed Tex/MathTex composition. Earlier imported profiles keep
+    /// the original half-open endpoint contract, including completed `FadeOuts`.
+    #[must_use]
+    pub const fn retains_terminal_state(&self) -> bool {
+        matches!(
+            self,
+            Self::ImportedManimServerSnapshot {
+                snapshot_version: SnapshotProfileVersionV1::V12,
+                ..
+            }
+        )
     }
 }
 
@@ -780,6 +800,27 @@ pub struct SceneIrV1 {
     pub schema: SceneIrSchemaV1,
     pub source: SceneSourceV1,
     pub version: ContractVersionV1,
+}
+
+impl SceneIrV1 {
+    /// Resolves the internal state-sampling time for one already range-checked
+    /// request while leaving the request/packet correlation time unchanged.
+    ///
+    /// Lifetimes remain half-open. The negotiated V12 terminal-state profile
+    /// samples the immediately preceding representable time only at duration,
+    /// which preserves its final hold without changing any older Scene.
+    #[must_use]
+    pub fn state_sample_time(&self, requested_time: f64) -> f64 {
+        if requested_time.to_bits() == self.duration.to_bits()
+            && self.duration.is_finite()
+            && self.duration > 0.0
+            && self.source.retains_terminal_state()
+        {
+            f64::from_bits(self.duration.to_bits() - 1)
+        } else {
+            requested_time
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1005,7 +1046,11 @@ mod integer_wire_tests {
             serde_json::from_str::<SnapshotProfileVersionV1>("11.0").unwrap(),
             SnapshotProfileVersionV1::V11
         );
-        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("12.0").is_err());
+        assert_eq!(
+            serde_json::from_str::<SnapshotProfileVersionV1>("12.0").unwrap(),
+            SnapshotProfileVersionV1::V12
+        );
+        assert!(serde_json::from_str::<SnapshotProfileVersionV1>("13.0").is_err());
     }
 }
 

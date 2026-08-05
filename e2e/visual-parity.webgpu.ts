@@ -24,6 +24,11 @@ import {
   visualParityReportV1Schema,
 } from "./visual-parity-contract";
 import { compareVisualParityFramesV1, makeOpaqueVisualParityDiffV1 } from "./visual-parity-metrics";
+import {
+  readWriteStuffCairoReferenceForEntryV1,
+  WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1,
+  WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1,
+} from "./write-stuff-cairo-reference";
 
 type VisualParityFixtureSample = Readonly<{
   expected: Readonly<{ analyticReferenceId?: string; semanticDigest: string }>;
@@ -84,6 +89,8 @@ const REAL_WARP_SQUARE_V9_ENTRY_ID_SET = new Set<string>(REAL_WARP_SQUARE_V9_ENT
 const REAL_LINE_JOINTS_V10_ENTRY_ID_SET = new Set<string>(LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1);
 const REAL_SPIRAL_IN_V11_ENTRY_IDS = SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1;
 const REAL_SPIRAL_IN_V11_ENTRY_ID_SET = new Set<string>(REAL_SPIRAL_IN_V11_ENTRY_IDS);
+const REAL_WRITE_STUFF_V12_ENTRY_IDS = WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1;
+const REAL_WRITE_STUFF_V12_ENTRY_ID_SET = new Set<string>(REAL_WRITE_STUFF_V12_ENTRY_IDS);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -99,7 +106,8 @@ if (
   FOCUSED_ENTRY_ID &&
   (REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) ||
     REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) ||
-    REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
+    REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID) ||
+    REAL_WRITE_STUFF_V12_ENTRY_ID_SET.has(FOCUSED_ENTRY_ID))
 ) {
   throw new Error("Focused visual parity currently supports only independent single-frame entries.");
 }
@@ -277,7 +285,7 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
   });
   const usesManimCairoCompositing =
     fixtureBundle.scene.source.kind === "imported-manim-server-snapshot" &&
-    fixtureBundle.scene.source.snapshotVersion === 11;
+    (fixtureBundle.scene.source.snapshotVersion === 11 || fixtureBundle.scene.source.snapshotVersion === 12);
   const expectedBrowserViewFormat = usesManimCairoCompositing
     ? browserProof.pixels.surfaceFormat === "bgra8unorm"
       ? "Bgra8Unorm"
@@ -314,6 +322,12 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     ),
   ];
   let spiralInCairoComparisons:
+    | readonly (readonly [
+        comparison: "native/Cairo" | "browser/Cairo",
+        metrics: ReturnType<typeof compareVisualParityFramesV1>,
+      ])[]
+    | undefined;
+  let writeStuffCairoComparisons:
     | readonly (readonly [
         comparison: "native/Cairo" | "browser/Cairo",
         metrics: ReturnType<typeof compareVisualParityFramesV1>,
@@ -431,6 +445,38 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
     );
   }
+  if (REAL_WRITE_STUFF_V12_ENTRY_ID_SET.has(entry.id)) {
+    const cairo = await readWriteStuffCairoReferenceForEntryV1(entry.id);
+    if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
+      throw new Error("WriteStuff V12 Cairo comparisons require imported Manim snapshots.");
+    }
+    expect(fixtureBundle.scene.source.snapshotVersion).toBe(12);
+    expect(cairo.reference.frame.viewport).toEqual(entry.sample.viewport);
+    expect(cairo.sampleTime).toBe(entry.sample.sampleTime);
+    expect(cairo.reference.scene.sourceSha256).toBe(fixtureBundle.scene.source.sourceHash);
+    const referenceRgba = cairo.rgba;
+    writeStuffCairoComparisons = [
+      [
+        "native/Cairo",
+        compareVisualParityFramesV1(referenceRgba, expectedRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+      [
+        "browser/Cairo",
+        compareVisualParityFramesV1(referenceRgba, actualRgba, entry.sample.viewport, corpus.metricContract),
+      ],
+    ] as const;
+    artifactWrites.push(
+      writeFile(join(outputDirectory, "cairo-reference.png"), cairo.png),
+      writeFile(
+        join(outputDirectory, "native-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, expectedRgba), widthPx, heightPx),
+      ),
+      writeFile(
+        join(outputDirectory, "browser-cairo-diff.png"),
+        encodeRgbaPngV1(makeOpaqueVisualParityDiffV1(referenceRgba, actualRgba), widthPx, heightPx),
+      ),
+    );
+  }
   await Promise.all(artifactWrites);
   for (const [comparison, comparisonMetrics] of spiralInCairoComparisons ?? []) {
     expect(
@@ -441,6 +487,16 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       comparisonMetrics.pixelFractionAboveThreshold,
       `${comparison}: ${SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
     ).toBeLessThanOrEqual(SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
+  }
+  for (const [comparison, comparisonMetrics] of writeStuffCairoComparisons ?? []) {
+    expect(
+      comparisonMetrics.ssim,
+      `${comparison}: ${WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeGreaterThanOrEqual(WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1.minimumSsim);
+    expect(
+      comparisonMetrics.pixelFractionAboveThreshold,
+      `${comparison}: ${WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1.reason}`,
+    ).toBeLessThanOrEqual(WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1.maximumPixelFractionAboveThreshold);
   }
   const report = visualParityReportV1Schema.parse({
     artifacts: { actualPng: "actual.png", diffPng: "diff.png", expectedPng: "expected.png" },
@@ -596,11 +652,58 @@ function expectRealSpiralInRelations(frames: ReadonlyMap<string, Awaited<ReturnT
   }
 }
 
+function expectRealWriteStuffRelations(
+  frames: ReadonlyMap<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>,
+) {
+  function requireFrame(entryId: (typeof REAL_WRITE_STUFF_V12_ENTRY_IDS)[number]) {
+    const frame = frames.get(entryId);
+    if (!frame) throw new Error(`The real WriteStuff proof is missing ${entryId}.`);
+    return frame;
+  }
+
+  const start = requireFrame("real-write-stuff-v12--start");
+  const texEarly = requireFrame("real-write-stuff-v12--tex-early");
+  const texMidpoint = requireFrame("real-write-stuff-v12--tex-midpoint");
+  const mathStart = requireFrame("real-write-stuff-v12--math-start");
+  const mathMidpoint = requireFrame("real-write-stuff-v12--math-midpoint");
+  const mathEnd = requireFrame("real-write-stuff-v12--math-end");
+  const hold = requireFrame("real-write-stuff-v12--hold");
+  const end = requireFrame("real-write-stuff-v12--end");
+  for (const rgbaKind of ["expectedRgba", "actualRgba"] as const) {
+    const label = rgbaKind === "expectedRgba" ? "native" : "browser";
+    expect(rgbaBytesEqual(texEarly[rgbaKind], start[rgbaKind]), `${label}: early Tex Write must reveal ink`).toBe(
+      false,
+    );
+    expect(rgbaBytesEqual(texMidpoint[rgbaKind], texEarly[rgbaKind]), `${label}: Tex Write midpoint must advance`).toBe(
+      false,
+    );
+    expect(
+      rgbaBytesEqual(mathStart[rgbaKind], texMidpoint[rgbaKind]),
+      `${label}: completed Tex must differ from its midpoint`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(mathMidpoint[rgbaKind], mathStart[rgbaKind]),
+      `${label}: MathTex Write midpoint must reveal ink`,
+    ).toBe(false);
+    expect(
+      rgbaBytesEqual(mathEnd[rgbaKind], mathMidpoint[rgbaKind]),
+      `${label}: completed MathTex must differ from its midpoint`,
+    ).toBe(false);
+    expect(rgbaBytesEqual(hold[rgbaKind], mathEnd[rgbaKind]), `${label}: wait must preserve both expressions`).toBe(
+      true,
+    );
+    expect(rgbaBytesEqual(end[rgbaKind], hold[rgbaKind]), `${label}: duration endpoint must preserve final state`).toBe(
+      true,
+    );
+  }
+}
+
 for (const entry of VISUAL_PARITY_ENTRIES.filter(
   ({ id }) =>
     !REAL_MATHTEX_MORPH_V5_ENTRY_ID_SET.has(id) &&
     !REAL_WARP_SQUARE_V9_ENTRY_ID_SET.has(id) &&
-    !REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(id),
+    !REAL_SPIRAL_IN_V11_ENTRY_ID_SET.has(id) &&
+    !REAL_WRITE_STUFF_V12_ENTRY_ID_SET.has(id),
 )) {
   test(`matches native full-RGBA for ${entry.id}`, async ({ page }) => {
     await proveVisualParityEntry(page, entry.id);
@@ -646,4 +749,19 @@ test("matches native and independent Cairo full-RGBA across the official SpiralI
     frames.set(entryId, await proveVisualParityEntry(page, entryId));
   }
   expectRealSpiralInRelations(frames);
+});
+
+test("matches native and independent Cairo full-RGBA across the official WriteStuff V12 timeline", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    Boolean(FOCUSED_ENTRY_ID),
+    "A focused single-frame lane must not read the eight-frame WriteStuff artifact set.",
+  );
+  testInfo.setTimeout(240_000);
+  const frames = new Map<string, Awaited<ReturnType<typeof proveVisualParityEntry>>>();
+  for (const entryId of REAL_WRITE_STUFF_V12_ENTRY_IDS) {
+    frames.set(entryId, await proveVisualParityEntry(page, entryId));
+  }
+  expectRealWriteStuffRelations(frames);
 });

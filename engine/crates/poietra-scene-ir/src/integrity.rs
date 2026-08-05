@@ -207,6 +207,7 @@ fn validate_render_packet_for_scene(
     validate_source_bundle: bool,
 ) -> Result<(), ValidationErrors> {
     let mut issues = Vec::new();
+    let state_sample_time = scene.state_sample_time(packet.sample_time);
     if validate_source_bundle {
         collect_at(&mut issues, validate_asset_manifest_v1(assets), "$.assets");
         collect_at(
@@ -280,7 +281,7 @@ fn validate_render_packet_for_scene(
                 format!("entity {} has more than one draw", draw.entity_id()),
             );
         }
-        if !entity_is_active(entity, packet.sample_time) {
+        if !entity_is_active(entity, state_sample_time) {
             issue(
                 &mut issues,
                 format!("{path}.entityId"),
@@ -419,7 +420,7 @@ fn validate_render_packet_for_scene(
     }
 
     for entity in &scene.entities {
-        if entity_is_active(entity, packet.sample_time)
+        if entity_is_active(entity, state_sample_time)
             && !matches!(entity.geometry, SceneGeometryV1::Group {})
             && !drawn_entities.contains(entity.id.as_str())
         {

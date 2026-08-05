@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ops::Range;
 use std::sync::Arc;
 
@@ -13,7 +13,8 @@ use lyon_tessellation::{
 use poietra_scene_ir::{
     AffineTransformV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, ImageLocalRectV1,
     ImageSamplerV1, PointV1, RenderCameraV1, RenderCompositingV1, RenderDrawV1, RenderPacketV1,
-    RgbaColorV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1, validate_render_packet_v1,
+    RgbaColorV1, SceneGeometryV1, SceneIrV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    validate_render_packet_v1,
 };
 
 use crate::DecodedPngAssetV1;
@@ -320,7 +321,28 @@ pub struct PreparedFrameV1 {
     geometry: PreparedGeometryPlanV1,
     materials: PreparedMaterialPlanV1,
     ordered_draws: OrderedDrawPlanV1,
+    scene_revision_hash: String,
     viewport: [u32; 2],
+}
+
+fn include_clip_bounds(target: &mut Option<[f32; 4]>, candidate: [f32; 4]) {
+    *target = Some(target.map_or(candidate, |[min_x, min_y, max_x, max_y]| {
+        [
+            min_x.min(candidate[0]),
+            min_y.min(candidate[1]),
+            max_x.max(candidate[2]),
+            max_y.max(candidate[3]),
+        ]
+    }));
+}
+
+fn include_clip_point(target: &mut Option<[f32; 4]>, point: [f32; 2]) -> Option<()> {
+    let [x, y] = point;
+    if !x.is_finite() || !y.is_finite() {
+        return None;
+    }
+    include_clip_bounds(target, [x, y, x, y]);
+    Some(())
 }
 
 impl PreparedFrameV1 {
@@ -400,6 +422,106 @@ impl PreparedFrameV1 {
             }
         }
         bounds
+    }
+
+    /// Returns interaction AABBs for prepared draw entities and nested logical
+    /// groups in one validated Scene snapshot.
+    ///
+    /// A nested group receives the union of every prepared descendant paint
+    /// phase. Top-level groups remain absent so existing Scene-wide logical
+    /// containers do not become accidental hit targets. The packet revision,
+    /// hierarchy, and every prepared entity ID must agree with `scene`; any
+    /// inconsistency fails this advisory metadata closed without affecting the
+    /// already prepared pixel frame.
+    #[must_use]
+    pub fn interaction_clip_bounds_by_entity(
+        &self,
+        scene: &SceneIrV1,
+    ) -> Option<HashMap<String, [f32; 4]>> {
+        if scene.source.revision_hash() != self.scene_revision_hash {
+            return None;
+        }
+
+        let entity_count = scene.entities.len();
+        let mut entity_indexes = HashMap::with_capacity(entity_count);
+        for (entity_index, entity) in scene.entities.iter().enumerate() {
+            if entity_indexes
+                .insert(entity.id.as_str(), entity_index)
+                .is_some()
+            {
+                return None;
+            }
+        }
+
+        let mut direct_bounds = vec![None; entity_count];
+        for draw in &self.ordered_draws.draws {
+            let entity_index = *entity_indexes.get(draw.entity_id.as_str())?;
+            let start = usize::try_from(draw.vertex_range.start).ok()?;
+            let end = usize::try_from(draw.vertex_range.end).ok()?;
+            let vertices = self.geometry.vertices.get(start..end)?;
+            for vertex in vertices {
+                include_clip_point(&mut direct_bounds[entity_index], vertex.position)?;
+            }
+        }
+        for draw in &self.ordered_draws.image_draws {
+            let entity_index = *entity_indexes.get(draw.entity_id.as_str())?;
+            for vertex in draw.vertices {
+                include_clip_point(&mut direct_bounds[entity_index], vertex.position)?;
+            }
+        }
+
+        let mut parents = Vec::with_capacity(entity_count);
+        let mut child_counts = vec![0usize; entity_count];
+        for entity in &scene.entities {
+            let parent = match entity.parent_id.as_deref() {
+                Some(parent_id) => Some(*entity_indexes.get(parent_id)?),
+                None => None,
+            };
+            if let Some(parent_index) = parent {
+                child_counts[parent_index] = child_counts[parent_index].checked_add(1)?;
+            }
+            parents.push(parent);
+        }
+
+        let direct_entities = direct_bounds
+            .iter()
+            .map(Option::is_some)
+            .collect::<Vec<_>>();
+        let mut aggregate_bounds = direct_bounds;
+        let mut leaves = child_counts
+            .iter()
+            .enumerate()
+            .filter_map(|(entity_index, child_count)| (*child_count == 0).then_some(entity_index))
+            .collect::<VecDeque<_>>();
+        let mut processed = 0usize;
+        while let Some(entity_index) = leaves.pop_front() {
+            processed = processed.checked_add(1)?;
+            let Some(parent_index) = parents[entity_index] else {
+                continue;
+            };
+            if let Some(bounds) = aggregate_bounds[entity_index] {
+                include_clip_bounds(&mut aggregate_bounds[parent_index], bounds);
+            }
+            child_counts[parent_index] = child_counts[parent_index].checked_sub(1)?;
+            if child_counts[parent_index] == 0 {
+                leaves.push_back(parent_index);
+            }
+        }
+        if processed != entity_count {
+            return None;
+        }
+
+        let mut output = HashMap::new();
+        for (entity_index, entity) in scene.entities.iter().enumerate() {
+            let nested_group =
+                entity.parent_id.is_some() && matches!(entity.geometry, SceneGeometryV1::Group {});
+            if (direct_entities[entity_index] || nested_group)
+                && let Some(bounds) = aggregate_bounds[entity_index]
+            {
+                output.insert(entity.id.clone(), bounds);
+            }
+        }
+        Some(output)
     }
 
     #[must_use]
@@ -482,6 +604,8 @@ impl PreparedFrameV1 {
                 }],
                 image_draws: Vec::new(),
             },
+            scene_revision_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+                .to_owned(),
             viewport: [160, 90],
         }
     }
@@ -2515,6 +2639,7 @@ fn tessellate_validated_frame_inner_v1(
             draws: prepared.draws,
             image_draws: prepared.image_draws,
         },
+        scene_revision_hash: packet.scene_revision_hash.clone(),
         viewport: [packet.viewport.width_px, packet.viewport.height_px],
     })
 }

@@ -418,6 +418,29 @@ mod tests {
         )
     }
 
+    fn write_stuff_v12_session() -> (EngineWorkerSessionV1, [String; 3]) {
+        let fixture: Value = serde_json::from_slice(
+            &std::fs::read(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../../fixtures/engine-v1/real-write-stuff-v12.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let entities = fixture["scene"]["entities"].as_array().unwrap();
+        let entity_ids = [0usize, 1, 32]
+            .map(|entity_index| entities[entity_index]["id"].as_str().unwrap().to_owned());
+        let snapshot = serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap();
+        (
+            EngineWorkerSessionV1::from_snapshot_json(&snapshot).unwrap(),
+            entity_ids,
+        )
+    }
+
     fn correlation() -> SampleRequestCorrelationV1 {
         SampleRequestCorrelationV1 {
             packet_id: "canvas:frame-7".to_owned(),
@@ -672,6 +695,48 @@ mod tests {
                     assert_eq!(entry["status"], "inactive");
                     assert!(entry.get("bounds").is_none());
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn write_stuff_v12_presents_nested_tex_roots_without_promoting_the_scene_group() {
+        let (session, entity_ids) = write_stuff_v12_session();
+        for (sample_time, expected_statuses) in [
+            (0.0, ["empty", "empty", "inactive"]),
+            (0.25, ["empty", "present", "inactive"]),
+            (2.0, ["empty", "present", "empty"]),
+            (2.5, ["empty", "present", "present"]),
+            (4.0, ["empty", "present", "present"]),
+        ] {
+            let request = serde_json::to_vec(&json!({
+                "evidence": ["real WriteStuff V12 WASM canvas interaction"],
+                "interactionEntityIds": entity_ids,
+                "packetId": format!("canvas:write-stuff-v12:{sample_time}"),
+                "sampleTime": sample_time,
+                "schema": "poietra.engine-sample-request",
+                "version": 1,
+                "viewport": { "heightPx": 360, "widthPx": 640 },
+            }))
+            .unwrap();
+            let sampled = session.sample_packet_json(&request).unwrap();
+            let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
+            let bounds = prepared
+                .interaction_clip_bounds_by_entity(session.scene())
+                .unwrap();
+            let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
+                bounds.get(entity_id).copied()
+            });
+            let response =
+                presented_response_with_interaction(&sampled.correlation, false, interaction);
+            let value: Value = serde_json::from_slice(&response).unwrap();
+            let entries = value["result"]["interaction"]["entries"]
+                .as_array()
+                .unwrap();
+            assert_eq!(entries.len(), expected_statuses.len());
+            for (entry, expected_status) in entries.iter().zip(expected_statuses) {
+                assert_eq!(entry["status"], expected_status);
+                assert_eq!(entry.get("bounds").is_some(), expected_status == "present");
             }
         }
     }

@@ -147,8 +147,10 @@ type StudioPreviewHostInstallationV1 = Readonly<{
  * bindings. V10 additionally requires the sealed LineJoints hierarchy and
  * admits mutation only for its runtime-proven center leaf. V11 requires its
  * complete SpiralIn hierarchy but remains selection-only because it has no
- * source rewrite contract. Older snapshot-only profiles retain their semantic
- * interaction fallback; no gesture guesses from Scene order.
+ * source rewrite contract. V12 likewise remains selection-only, but its two
+ * source-bound Tex roots are nested logical groups whose bounds come from
+ * their prepared drawable descendants. Older snapshot-only profiles retain
+ * their semantic interaction fallback; no gesture guesses from Scene order.
  */
 export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
@@ -168,7 +170,8 @@ export function studioPreviewInteractionAuthorityV1(
     Number(source.snapshotVersion) !== 7 &&
     Number(source.snapshotVersion) !== 8 &&
     Number(source.snapshotVersion) !== 10 &&
-    Number(source.snapshotVersion) !== 11
+    Number(source.snapshotVersion) !== 11 &&
+    Number(source.snapshotVersion) !== 12
   ) {
     return { kind: "interactive" };
   }
@@ -177,21 +180,57 @@ export function studioPreviewInteractionAuthorityV1(
     Number(source.snapshotVersion) === 7 ||
     Number(source.snapshotVersion) === 8 ||
     Number(source.snapshotVersion) === 10 ||
-    Number(source.snapshotVersion) === 11
+    Number(source.snapshotVersion) === 11 ||
+    Number(source.snapshotVersion) === 12
   ) {
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
+    const writeStuffComplete = (() => {
+      if (Number(source.snapshotVersion) !== 12 || !identity || !entities || entities.length !== 61) return false;
+      const group = identity.get("group");
+      const exampleText = identity.get("example_text");
+      const exampleTex = identity.get("example_tex");
+      if (
+        identity.size !== 3 ||
+        group?.sourceName !== "group" ||
+        exampleText?.sourceName !== "example_text" ||
+        exampleTex?.sourceName !== "example_tex"
+      ) {
+        return false;
+      }
+      const byId = new Map(entities.map((entity) => [entity.id, entity]));
+      const groupEntity = byId.get(group.entityId);
+      const textEntity = byId.get(exampleText.entityId);
+      const texEntity = byId.get(exampleTex.entityId);
+      return (
+        groupEntity?.geometry.kind === "group" &&
+        groupEntity.parentId === null &&
+        groupEntity.sceneOrder === 0 &&
+        textEntity?.geometry.kind === "group" &&
+        textEntity.parentId === groupEntity.id &&
+        textEntity.sceneOrder === 1 &&
+        texEntity?.geometry.kind === "group" &&
+        texEntity.parentId === groupEntity.id &&
+        texEntity.sceneOrder === 32
+      );
+    })();
     const complete =
-      identity !== null &&
-      identity !== undefined &&
-      entities !== undefined &&
-      mappedEntityIds.size === entities.length &&
-      entities.every(({ id }) => mappedEntityIds.has(id));
+      Number(source.snapshotVersion) === 12
+        ? writeStuffComplete
+        : identity !== null &&
+          identity !== undefined &&
+          entities !== undefined &&
+          mappedEntityIds.size === entities.length &&
+          entities.every(({ id }) => mappedEntityIds.has(id));
     if (!complete) return { kind: "display-only", reason: "source-runtime-identity-unverified" };
-    if (Number(source.snapshotVersion) !== 10 && Number(source.snapshotVersion) !== 11) {
+    if (
+      Number(source.snapshotVersion) !== 10 &&
+      Number(source.snapshotVersion) !== 11 &&
+      Number(source.snapshotVersion) !== 12
+    ) {
       return { kind: "interactive" };
     }
-    if (Number(source.snapshotVersion) === 11) {
+    if (Number(source.snapshotVersion) === 11 || Number(source.snapshotVersion) === 12) {
       return { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
     }
     const initialEditAuthority = snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null;
@@ -236,15 +275,23 @@ export function studioPreviewInteractionEntityIdsV1(
   if (authority.kind === "display-only") return [];
   if (!identity) return [];
   // Canvas interaction must be derived from the verified render graph: a
-  // logical group has source identity but no prepared pixels or honest hit
-  // bounds. Missing Scene evidence is fail-closed for selection-only mode;
-  // interactive callers still omit groups whenever Scene evidence is present.
+  // top-level logical group has source identity but no independently useful
+  // hit target. A nested source-bound group is selectable only when the worker
+  // can aggregate prepared descendant bounds (V12 Tex/MathTex). Missing Scene
+  // evidence remains fail-closed for selection-only mode.
   const drawableEntityIds =
     entities === null
       ? authority.kind === "selection-only"
         ? new Set<string>()
         : null
-      : new Set(entities.filter(({ geometry }) => geometry.kind !== "group").map(({ id }) => id));
+      : new Set(
+          entities
+            .filter(
+              ({ geometry, parentId }) =>
+                geometry.kind !== "group" || (authority.kind === "selection-only" && parentId !== null),
+            )
+            .map(({ id }) => id),
+        );
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {

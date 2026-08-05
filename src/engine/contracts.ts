@@ -7,7 +7,13 @@ import {
   hasValidAssetManifestDigestV1,
 } from "./asset-manifest";
 import { renderPacketCompositingV1, renderPacketV1Schema } from "./render-packet";
-import { type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema, sceneSourceRenderCompositingV1 } from "./scene-ir";
+import {
+  type SceneIrV1,
+  sceneEvaluationSampleTimeV1,
+  sceneIrSourceRevisionHash,
+  sceneIrV1Schema,
+  sceneSourceRenderCompositingV1,
+} from "./scene-ir";
 
 export * from "./asset-manifest";
 export * from "./primitives";
@@ -130,6 +136,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
   }
 
   const entities = new Map(frame.scene.entities.map((entity) => [entity.id, entity]));
+  const evaluationTime = sceneEvaluationSampleTimeV1(frame.scene, frame.packet.sampleTime);
   const assets = assetIndex(frame.assets);
   const drawnEntityIds = new Set<string>();
   const vectorAppearanceEntityIds = new Set(
@@ -154,11 +161,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
         path: ["packet", "draws", index, "entityId"],
       });
     }
-    if (
-      !entity.lifetimes.some(
-        (lifetime) => frame.packet.sampleTime >= lifetime.start && frame.packet.sampleTime < lifetime.end,
-      )
-    ) {
+    if (!entity.lifetimes.some((lifetime) => evaluationTime >= lifetime.start && evaluationTime < lifetime.end)) {
       context.addIssue({
         code: "custom",
         message: `Draw entity ${draw.entityId} is outside its lifetime.`,
@@ -227,7 +230,7 @@ export const engineFrameV1Schema = engineFrameV1BaseSchema.superRefine((frame, c
 
   for (const entity of frame.scene.entities) {
     const active = entity.lifetimes.some(
-      (lifetime) => frame.packet.sampleTime >= lifetime.start && frame.packet.sampleTime < lifetime.end,
+      (lifetime) => evaluationTime >= lifetime.start && evaluationTime < lifetime.end,
     );
     if (active && entity.geometry.kind !== "group" && !drawnEntityIds.has(entity.id)) {
       context.addIssue({

@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
+#[cfg(any(target_arch = "wasm32", test))]
+use poietra_scene_ir::SceneIrV1;
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, MAX_VIEWPORT_PIXELS_V1, RenderPacketV1, SceneIrBundleV1,
     ViewportV1, parse_scene_ir_bundle_json_v1,
@@ -348,6 +350,7 @@ fn sample_interaction_request(
         .collect::<BTreeSet<_>>();
     let mut known = BTreeSet::new();
     let mut active = BTreeSet::new();
+    let state_sample_time = session.scene().state_sample_time(sample_time);
     for entity in &session.scene().entities {
         if !requested.contains(entity.id.as_str()) {
             continue;
@@ -356,7 +359,7 @@ fn sample_interaction_request(
         if entity
             .lifetimes
             .iter()
-            .any(|lifetime| sample_time >= lifetime.start && sample_time < lifetime.end)
+            .any(|lifetime| state_sample_time >= lifetime.start && state_sample_time < lifetime.end)
         {
             active.insert(entity.id.as_str());
         }
@@ -392,6 +395,11 @@ impl EngineWorkerSessionV1 {
         Ok(Self {
             session: EngineSessionV1::new(bundle)?,
         })
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn scene(&self) -> &SceneIrV1 {
+        self.session.scene()
     }
 
     /// Parses and retains one bounded Scene snapshot.

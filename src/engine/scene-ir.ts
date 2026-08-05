@@ -311,6 +311,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
         z.literal(9),
         z.literal(10),
         z.literal(11),
+        z.literal(12),
       ]),
       sourceHash: sha256V1Schema,
     })
@@ -817,9 +818,29 @@ export type SceneEntityGeometryV1 = SceneEntityV1["geometry"];
 export type SceneSourceV1 = z.infer<typeof sceneSourceV1Schema>;
 
 export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
-  return source.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 11
+  return source.kind === "imported-manim-server-snapshot" &&
+    (source.snapshotVersion === 11 || source.snapshotVersion === 12)
     ? ("manim-cairo-srgb" as const)
     : ("linear-light" as const);
+}
+
+/**
+ * WriteStuff V12 ends with a one-second hold, so Manim presents its completed
+ * frame at the exact Scene endpoint. Preserve half-open IR lifetimes everywhere
+ * else and evaluate only that sealed endpoint at the preceding f64 value.
+ */
+export function sceneEvaluationSampleTimeV1(scene: SceneIrV1, requestedSampleTime: number) {
+  if (
+    scene.source.kind !== "imported-manim-server-snapshot" ||
+    scene.source.snapshotVersion !== 12 ||
+    requestedSampleTime !== scene.duration
+  ) {
+    return requestedSampleTime;
+  }
+  const view = new DataView(new ArrayBuffer(8));
+  view.setFloat64(0, scene.duration);
+  view.setBigUint64(0, view.getBigUint64(0) - 1n);
+  return view.getFloat64(0);
 }
 
 export function sceneIrSourceRevisionHash(scene: SceneIrV1) {

@@ -384,6 +384,7 @@ impl MemoryHighWaterV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct LogicalGpuMemoryBreakdownV1 {
     geometry_buffer_arena: MemoryHighWaterV1,
+    multisample_color_target: MemoryHighWaterV1,
     retained_image_textures: MemoryHighWaterV1,
 }
 
@@ -439,6 +440,7 @@ impl FrameMemorySampleV1 {
 pub(crate) struct EngineMemoryCurrentV1 {
     pub(crate) decoded_image_assets: u64,
     pub(crate) geometry_buffer_arena: u64,
+    pub(crate) multisample_color_target: u64,
     pub(crate) prepared_geometry_cache: u64,
     pub(crate) retained_image_textures: u64,
     pub(crate) retained_scene_index: u64,
@@ -465,6 +467,7 @@ pub(crate) struct EngineMemoryHighWaterV1 {
     retained_boundary_total: u64,
     geometry_buffer_arena: u64,
     logical_gpu_resident: u64,
+    multisample_color_target: u64,
     prepared_geometry_cache: u64,
     retained_image_textures: u64,
     retained_scene_index: u64,
@@ -478,7 +481,8 @@ impl EngineMemoryHighWaterV1 {
     ) -> Result<FrameMemorySampleV1, EngineMemoryAccountingErrorV1> {
         let logical_gpu_resident = current
             .geometry_buffer_arena
-            .checked_add(current.retained_image_textures)
+            .checked_add(current.multisample_color_target)
+            .and_then(|total| total.checked_add(current.retained_image_textures))
             .ok_or(EngineMemoryAccountingErrorV1::LogicalGpuResidentOverflow)?;
         let retained_boundary_total = current
             .wasm_linear
@@ -487,6 +491,7 @@ impl EngineMemoryHighWaterV1 {
         for (quantity, value) in [
             ("decoded image assets", current.decoded_image_assets),
             ("geometry buffer arena", current.geometry_buffer_arena),
+            ("multisample color target", current.multisample_color_target),
             ("prepared geometry cache", current.prepared_geometry_cache),
             ("retained image textures", current.retained_image_textures),
             ("retained Scene index", current.retained_scene_index),
@@ -504,6 +509,9 @@ impl EngineMemoryHighWaterV1 {
                 .geometry_buffer_arena
                 .max(current.geometry_buffer_arena),
             logical_gpu_resident: self.logical_gpu_resident.max(logical_gpu_resident),
+            multisample_color_target: self
+                .multisample_color_target
+                .max(current.multisample_color_target),
             prepared_geometry_cache: self
                 .prepared_geometry_cache
                 .max(current.prepared_geometry_cache),
@@ -522,6 +530,10 @@ impl EngineMemoryHighWaterV1 {
                 geometry_buffer_arena: MemoryHighWaterV1::new(
                     current.geometry_buffer_arena,
                     next.geometry_buffer_arena,
+                ),
+                multisample_color_target: MemoryHighWaterV1::new(
+                    current.multisample_color_target,
+                    next.multisample_color_target,
                 ),
                 retained_image_textures: MemoryHighWaterV1::new(
                     current.retained_image_textures,
@@ -758,11 +770,13 @@ mod tests {
     fn memory_current(
         wasm_linear: u64,
         geometry_buffer_arena: u64,
+        multisample_color_target: u64,
         retained_image_textures: u64,
     ) -> EngineMemoryCurrentV1 {
         EngineMemoryCurrentV1 {
             decoded_image_assets: 300,
             geometry_buffer_arena,
+            multisample_color_target,
             prepared_geometry_cache: 200,
             retained_image_textures,
             retained_scene_index: 100,
@@ -773,7 +787,7 @@ mod tests {
     fn measured_telemetry() -> FrameTelemetryV1 {
         let mut telemetry = FrameTelemetryV1::new(TelemetryClockSourceV1::WorkerPerformanceNow);
         telemetry.memory = EngineMemoryHighWaterV1::default()
-            .observe(memory_current(1_000, 200, 100))
+            .observe(memory_current(1_000, 200, 50, 100))
             .unwrap();
         telemetry.phases.evaluate = measured(1.25);
         telemetry.phases.vertex_index_encode = measured(0.3);
@@ -827,11 +841,15 @@ mod tests {
             ("/telemetry/memory/kind", json!("measured")),
             (
                 "/telemetry/memory/retainedBoundaryTotal/currentBytes",
-                json!(1_300),
+                json!(1_350),
             ),
             (
                 "/telemetry/memory/logicalGpuBreakdown/geometryBufferArena/currentBytes",
                 json!(200),
+            ),
+            (
+                "/telemetry/memory/logicalGpuBreakdown/multisampleColorTarget/currentBytes",
+                json!(50),
             ),
             (
                 "/telemetry/memory/wasmLinearBreakdown/decodedImageAssets/currentBytes",
@@ -847,22 +865,26 @@ mod tests {
     #[test]
     fn memory_totals_exclude_linear_breakdowns_and_peaks_are_observed_aggregates() {
         let mut tracker = EngineMemoryHighWaterV1::default();
-        let first = serde_json::to_value(tracker.observe(memory_current(1_000, 200, 100)).unwrap())
-            .unwrap();
+        let first = serde_json::to_value(
+            tracker
+                .observe(memory_current(1_000, 200, 50, 100))
+                .unwrap(),
+        )
+        .unwrap();
         assert_eq!(
             first["retainedBoundaryTotal"],
-            json!({"currentBytes": 1_300, "peakBytes": 1_300})
+            json!({"currentBytes": 1_350, "peakBytes": 1_350})
         );
         assert_eq!(
             first["logicalGpuResident"],
-            json!({"currentBytes": 300, "peakBytes": 300})
+            json!({"currentBytes": 350, "peakBytes": 350})
         );
         assert_eq!(
             first["wasmLinear"],
             json!({"currentBytes": 1_000, "peakBytes": 1_000})
         );
         // The 600 logical CPU breakdown bytes are already within linear
-        // memory and therefore do not inflate the 1,300-byte total.
+        // memory and therefore do not inflate the 1,350-byte total.
         assert_eq!(
             first["wasmLinearBreakdown"]["retainedSceneIndex"]["currentBytes"],
             100
@@ -877,14 +899,15 @@ mod tests {
         );
 
         let second =
-            serde_json::to_value(tracker.observe(memory_current(900, 50, 500)).unwrap()).unwrap();
+            serde_json::to_value(tracker.observe(memory_current(900, 50, 25, 500)).unwrap())
+                .unwrap();
         assert_eq!(
             second["retainedBoundaryTotal"],
-            json!({"currentBytes": 1_450, "peakBytes": 1_450})
+            json!({"currentBytes": 1_475, "peakBytes": 1_475})
         );
         assert_eq!(
             second["logicalGpuResident"],
-            json!({"currentBytes": 550, "peakBytes": 550})
+            json!({"currentBytes": 575, "peakBytes": 575})
         );
         assert_eq!(
             second["wasmLinear"],
@@ -898,21 +921,27 @@ mod tests {
             second["logicalGpuBreakdown"]["retainedImageTextures"]["peakBytes"],
             500
         );
-        // Independent component peaks sum to 1,550, but that state was never
-        // observed; aggregate high-water remains the real 1,450-byte sample.
-        assert_eq!(second["retainedBoundaryTotal"]["peakBytes"], 1_450);
+        assert_eq!(
+            second["logicalGpuBreakdown"]["multisampleColorTarget"]["peakBytes"],
+            50
+        );
+        // Independent component peaks sum to 1,600, but that state was never
+        // observed; aggregate high-water remains the real 1,475-byte sample.
+        assert_eq!(second["retainedBoundaryTotal"]["peakBytes"], 1_475);
     }
 
     #[test]
     fn memory_accounting_overflow_and_json_range_fail_without_advancing_peaks() {
         let mut tracker = EngineMemoryHighWaterV1::default();
-        tracker.observe(memory_current(1_000, 200, 100)).unwrap();
+        tracker
+            .observe(memory_current(1_000, 200, 50, 100))
+            .unwrap();
         let before = tracker;
 
         let logical_overflow = EngineMemoryCurrentV1 {
             geometry_buffer_arena: u64::MAX,
-            retained_image_textures: 1,
-            ..memory_current(0, 0, 0)
+            multisample_color_target: 1,
+            ..memory_current(0, 0, 0, 0)
         };
         assert_eq!(
             tracker.observe(logical_overflow),
@@ -923,7 +952,7 @@ mod tests {
         let total_overflow = EngineMemoryCurrentV1 {
             wasm_linear: u64::MAX,
             geometry_buffer_arena: 1,
-            ..memory_current(0, 0, 0)
+            ..memory_current(0, 0, 0, 0)
         };
         assert_eq!(
             tracker.observe(total_overflow),
@@ -931,7 +960,7 @@ mod tests {
         );
         assert_eq!(tracker, before);
 
-        let json_range = memory_current(MAX_EXACT_JSON_INTEGER_V1, 1, 0);
+        let json_range = memory_current(MAX_EXACT_JSON_INTEGER_V1, 1, 0, 0);
         assert_eq!(
             tracker.observe(json_range),
             Err(EngineMemoryAccountingErrorV1::JsonIntegerRange {

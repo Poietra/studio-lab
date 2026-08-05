@@ -48,6 +48,14 @@ const nativeTestByEntryId = new Map([
   ["real-spiral-in-v11--end", "renders_real_spiral_in_v11_samples_with_fallback_adapter"],
   ["real-line-joints-v10--static", "renders_real_line_joints_v10_static_with_fallback_adapter"],
   ["real-line-joints-v10-edited--static", "renders_real_line_joints_v10_edited_static_with_fallback_adapter"],
+  ["real-write-stuff-v12--start", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--tex-early", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--tex-midpoint", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--math-start", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--math-midpoint", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--math-end", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--hold", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12--end", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
 ]);
 const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
 const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();

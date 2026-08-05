@@ -174,6 +174,7 @@ const STUDIO_SUPPORTED_CONSTRUCTORS_V7 = new Set(["Circle", "Line", "MathTex", "
 const STUDIO_SUPPORTED_CONSTRUCTORS_V8_V9 = new Set(["Square"]);
 const STUDIO_SUPPORTED_CONSTRUCTORS_V10 = new Set(["Triangle", "VGroup"]);
 const STUDIO_SUPPORTED_CONSTRUCTORS_V11 = new Set(["Circle", "MathTex", "Polygon", "Square", "Triangle", "VGroup"]);
+const STUDIO_SUPPORTED_CONSTRUCTORS_V12 = new Set(["MathTex", "Tex", "VGroup"]);
 
 /**
  * Exact producer-owned runtime classes admitted by mixed dynamic V7.
@@ -201,6 +202,38 @@ const STUDIO_RUNTIME_TYPES_BY_CONSTRUCTOR_V11: ReadonlyMap<string, string> = new
   ["Triangle", "manim.mobject.geometry.polygram.Triangle"],
   ["VGroup", "manim.mobject.types.vectorized_mobject.VGroup"],
 ] as const);
+const STUDIO_WRITE_STUFF_GROUP_RUNTIME_TYPE_V12 =
+  "manim.renderer._scene_snapshot.mathtex.hermetic_write_stuff_source_builtins_v12.<locals>._WriteStuffGroup" as const;
+const STUDIO_WRITE_STUFF_ROOT_RUNTIME_TYPE_V12 =
+  "manim.renderer._scene_snapshot.mathtex.hermetic_write_stuff_source_builtins_v12.<locals>._WriteStuffRoot" as const;
+const STUDIO_WRITE_STUFF_ROLE_RUNTIME_TYPE_V12 =
+  "manim.renderer._scene_snapshot.mathtex.hermetic_write_stuff_source_builtins_v12.<locals>._WriteStuffRole" as const;
+const STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12 = [
+  {
+    constructor: "VGroup",
+    familyPath: [],
+    name: "group",
+    ordinal: 3,
+    runtimeType: STUDIO_WRITE_STUFF_GROUP_RUNTIME_TYPE_V12,
+    sceneOrder: 0,
+  },
+  {
+    constructor: "Tex",
+    familyPath: [0],
+    name: "example_text",
+    ordinal: 1,
+    runtimeType: STUDIO_WRITE_STUFF_ROOT_RUNTIME_TYPE_V12,
+    sceneOrder: 1,
+  },
+  {
+    constructor: "MathTex",
+    familyPath: [1],
+    name: "example_tex",
+    ordinal: 2,
+    runtimeType: STUDIO_WRITE_STUFF_ROOT_RUNTIME_TYPE_V12,
+    sceneOrder: 32,
+  },
+] as const;
 
 function lineJointsFamilyPathV10(sceneOrder: number): readonly number[] {
   return sceneOrder === 0 ? [] : [sceneOrder - 1];
@@ -208,6 +241,15 @@ function lineJointsFamilyPathV10(sceneOrder: number): readonly number[] {
 
 function spiralInFamilyPathV11(sceneOrder: number): readonly number[] {
   return sceneOrder === 0 ? [] : [sceneOrder - 1];
+}
+
+function writeStuffFamilyPathV12(sceneOrder: number): readonly number[] {
+  if (sceneOrder === 0) return [];
+  if (sceneOrder === 1) return [0];
+  if (sceneOrder >= 2 && sceneOrder <= 31) return [0, sceneOrder - 2];
+  if (sceneOrder === 32) return [1];
+  if (sceneOrder >= 33 && sceneOrder <= 60) return [1, sceneOrder - 33];
+  return [-1];
 }
 
 function studioSupportsConstructor(
@@ -224,6 +266,7 @@ function studioSupportsConstructor(
   if (snapshotVersion === 8 || snapshotVersion === 9) return STUDIO_SUPPORTED_CONSTRUCTORS_V8_V9.has(constructor);
   if (snapshotVersion === 10) return STUDIO_SUPPORTED_CONSTRUCTORS_V10.has(constructor);
   if (snapshotVersion === 11) return STUDIO_SUPPORTED_CONSTRUCTORS_V11.has(constructor);
+  if (snapshotVersion === 12) return STUDIO_SUPPORTED_CONSTRUCTORS_V12.has(constructor);
   return STUDIO_SUPPORTED_CONSTRUCTORS_V1_TO_V3.has(constructor);
 }
 
@@ -355,7 +398,8 @@ function buildSourceBindingLookup(
       snapshotVersion === 8 ||
       snapshotVersion === 9 ||
       snapshotVersion === 10 ||
-      snapshotVersion === 11
+      snapshotVersion === 11 ||
+      snapshotVersion === 12
     ) {
       const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
       if (continuedCode === null) {
@@ -376,6 +420,16 @@ function buildSourceBindingLookup(
     }
     const assignments = topLevelAssignmentOperators(code);
     if (assignments === 0) continue;
+    // The pinned WriteStuff source assigns the retained VGroup's width after
+    // construction. This mutates an existing binding and cannot introduce a
+    // competing Python Name claim, so keep the simple-binding proof intact.
+    if (
+      snapshotVersion === 12 &&
+      assignments === 1 &&
+      /^\s*(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*(?:\.(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*)+\s*=(?!=)/u.test(code)
+    ) {
+      continue;
+    }
     const direct = code.match(/^\s*((?:_|\p{ID_Start})(?:_|\p{ID_Continue})*)\s*=(?!=)/u);
     if (
       assignments !== 1 ||
@@ -386,6 +440,7 @@ function buildSourceBindingLookup(
         snapshotVersion !== 9 &&
         snapshotVersion !== 10 &&
         snapshotVersion !== 11 &&
+        snapshotVersion !== 12 &&
         (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
     ) {
       proofComplete = false;
@@ -559,7 +614,9 @@ function validatePublishedMap(
         ? lineJointsFamilyPathV10(entity?.sceneOrder ?? -1)
         : source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 11
           ? spiralInFamilyPathV11(entity?.sceneOrder ?? -1)
-          : [];
+          : source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 12
+            ? writeStuffFamilyPathV12(entity?.sceneOrder ?? -1)
+            : [];
     requireIdentity(
       entity !== undefined &&
         entity.provenanceId === mapping.provenanceId &&
@@ -586,6 +643,21 @@ function validatePublishedMap(
       "Snapshot profiles V7 through V11 require one verified source/runtime mapping for every Scene entity.",
     );
   }
+  if (source?.kind === "imported-manim-server-snapshot" && source.snapshotVersion === 12) {
+    requireIdentity(
+      map.mappings.length === STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12.length &&
+        map.mappings.every((mapping, index) => {
+          const expected = STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12[index]!;
+          return (
+            mapping.binding.name === expected.name &&
+            mapping.binding.ordinal === expected.ordinal &&
+            entities.get(mapping.entityId)?.sceneOrder === expected.sceneOrder &&
+            JSON.stringify(mapping.familyPath) === JSON.stringify(expected.familyPath)
+          );
+        }),
+      "WriteStuff profile V12 requires only its exact VGroup, Tex, and MathTex source mappings.",
+    );
+  }
   return map;
 }
 
@@ -609,13 +681,14 @@ export function assertFastManimSnapshotIdentityAuthorityV1(
       snapshot.bundle.scene.source.snapshotVersion !== 8 &&
       snapshot.bundle.scene.source.snapshotVersion !== 9 &&
       snapshot.bundle.scene.source.snapshotVersion !== 10 &&
-      snapshot.bundle.scene.source.snapshotVersion !== 11)
+      snapshot.bundle.scene.source.snapshotVersion !== 11 &&
+      snapshot.bundle.scene.source.snapshotVersion !== 12)
   ) {
     return;
   }
   requireIdentity(
     identity !== null,
-    "Snapshot profiles V7 through V11 require complete source/runtime identity evidence before publication.",
+    "Snapshot profiles V7 through V12 require complete source/runtime identity evidence before publication.",
   );
   validatePublishedMap(identity, snapshot);
 }
@@ -688,6 +761,12 @@ export function verifyFastManimSourceRuntimeIdentityV1(
     requireIdentity(
       complete && records.length === 6,
       "SpiralIn profile V11 requires six complete runtime identity records.",
+    );
+  }
+  if (input.expected.snapshotVersion === 12 && input.snapshot.kind === "compiled") {
+    requireIdentity(
+      complete && records.length === 61,
+      "WriteStuff profile V12 requires 61 complete runtime identity records.",
     );
   }
   const sourceAnalysis = analyzePythonSource(input.sourceText);
@@ -860,6 +939,35 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         "SpiralIn profile V11 requires the exact VGroup-family lifecycle and membership.",
       );
     }
+    if (input.expected.snapshotVersion === 12) {
+      const [added] = recordValue.lifecycle;
+      const exactLifecycle =
+        sceneOrder === 1
+          ? recordValue.lifecycle.length === 1 &&
+            isPlainObject(added) &&
+            added.action === "add" &&
+            added.sequence === 64
+          : sceneOrder === 32
+            ? recordValue.lifecycle.length === 1 &&
+              isPlainObject(added) &&
+              added.action === "add" &&
+              added.sequence === 66
+            : recordValue.lifecycle.length === 0;
+      const expectedRuntimeType =
+        sceneOrder === 0
+          ? STUDIO_WRITE_STUFF_GROUP_RUNTIME_TYPE_V12
+          : sceneOrder === 1 || sceneOrder === 32
+            ? STUDIO_WRITE_STUFF_ROOT_RUNTIME_TYPE_V12
+            : STUDIO_WRITE_STUFF_ROLE_RUNTIME_TYPE_V12;
+      requireIdentity(
+        sceneOrder <= 60 &&
+          JSON.stringify(familyPath) === JSON.stringify(writeStuffFamilyPathV12(sceneOrder)) &&
+          exactLifecycle &&
+          runtimeType === expectedRuntimeType &&
+          status === (sceneOrder === 0 || sceneOrder === 1 || sceneOrder === 32 ? "mapped" : "unmatched"),
+        "WriteStuff profile V12 requires the exact VGroup, roots, roles, lifecycle, and membership.",
+      );
+    }
 
     requireIdentity(
       Array.isArray(recordValue.bindings) && recordValue.bindings.length <= MAX_BINDINGS_PER_ENTITY,
@@ -1015,6 +1123,25 @@ export function verifyFastManimSourceRuntimeIdentityV1(
           "SpiralIn profile V11 must map only the exact VGroup and five leaf source bindings.",
         );
       }
+      if (input.expected.snapshotVersion === 12 && input.snapshot.kind === "compiled") {
+        const expectedBinding = STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12.find(
+          (candidate) => candidate.sceneOrder === sceneOrder,
+        );
+        const claim = recordValue.bindings[0] as PlainObject | undefined;
+        requireIdentity(
+          expectedBinding !== undefined &&
+            activeClaim.studioSupported &&
+            activeClaim.constructor === expectedBinding.constructor &&
+            binding.name === expectedBinding.name &&
+            binding.ordinal === expectedBinding.ordinal &&
+            recordValue.bindings.length === 1 &&
+            claim?.boundSequence === expectedBinding.ordinal &&
+            claim?.releasedSequence === null &&
+            runtimeType === expectedBinding.runtimeType &&
+            JSON.stringify(familyPath) === JSON.stringify(expectedBinding.familyPath),
+          "WriteStuff profile V12 must map only the exact VGroup, Tex, and MathTex source bindings.",
+        );
+      }
       requireIdentity(!activeMappedBindings.has(binding.id), "One source binding maps to several runtime entities.");
       activeMappedBindings.add(binding.id);
       if (activeClaim.studioSupported) mappings.push({ binding, entityId, familyPath, provenanceId });
@@ -1066,10 +1193,11 @@ export function verifyFastManimSourceRuntimeIdentityV1(
       input.expected.snapshotVersion === 8 ||
       input.expected.snapshotVersion === 9 ||
       input.expected.snapshotVersion === 10 ||
-      input.expected.snapshotVersion === 11) &&
+      input.expected.snapshotVersion === 11 ||
+      input.expected.snapshotVersion === 12) &&
     input.snapshot.kind === "compiled"
   ) {
-    requireIdentity(complete, "Snapshot profiles V7 through V11 require complete source/runtime identity evidence.");
+    requireIdentity(complete, "Snapshot profiles V7 through V12 require complete source/runtime identity evidence.");
   }
   if (!complete) return null;
   requireIdentity(input.snapshot.kind === "compiled", "Complete identity evidence requires a compiled snapshot.");
@@ -1086,7 +1214,9 @@ export function verifyFastManimSourceRuntimeIdentityV1(
         ? lineJointsFamilyPathV10(entity.sceneOrder)
         : input.expected.snapshotVersion === 11
           ? spiralInFamilyPathV11(entity.sceneOrder)
-          : [];
+          : input.expected.snapshotVersion === 12
+            ? writeStuffFamilyPathV12(entity.sceneOrder)
+            : [];
     requireIdentity(
       Array.isArray(record.familyPath) &&
         JSON.stringify(record.familyPath) === JSON.stringify(expectedFamilyPath) &&
@@ -1140,6 +1270,20 @@ export function verifyFastManimSourceRuntimeIdentityV1(
             JSON.stringify(mapping.familyPath) === JSON.stringify(spiralInFamilyPathV11(index)),
         ),
       "SpiralIn profile V11 must publish the exact VGroup and five leaf mappings.",
+    );
+  }
+  if (input.expected.snapshotVersion === 12) {
+    requireIdentity(
+      mappings.length === STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12.length &&
+        mappings.every(
+          (mapping, index) =>
+            mapping.binding.name === STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12[index]!.name &&
+            mapping.entityId ===
+              `${input.expected.sceneId}/entity:${STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12[index]!.sceneOrder}` &&
+            JSON.stringify(mapping.familyPath) ===
+              JSON.stringify(STUDIO_WRITE_STUFF_SOURCE_BINDINGS_V12[index]!.familyPath),
+        ),
+      "WriteStuff profile V12 must publish the exact VGroup, Tex, and MathTex mappings.",
     );
   }
   const map = {

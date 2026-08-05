@@ -36,6 +36,7 @@ import {
   MAX_FAST_MANIM_SNAPSHOT_OBJECT_FIELDS,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH,
+  MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES,
   MAX_FAST_MANIM_SOURCE_RUNTIME_IDENTITY_RESULT_JSON_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
 } from "./fast-manim-snapshot-contract";
@@ -870,12 +871,24 @@ describe("gated OCI result boundary", () => {
         0,
       ]),
     );
-    const tooManyEntries = { a: Array(9_000).fill(0), b: Array(9_000).fill(0), c: Array(9_000).fill(0) };
-    for (const result of [
-      oversizedArray,
-      `${JSON.stringify(oversizedObject)}\n`,
-      `${JSON.stringify(tooManyEntries)}\n`,
-    ]) {
+    const exactEntryBudget = {
+      a: Array(9_999).fill(0),
+      b: Array(9_999).fill(0),
+      c: Array(9_999).fill(0),
+    };
+    const overEntryBudget = { ...exactEntryBudget, c: Array(10_000).fill(0) };
+    expect(MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_ENTRIES).toBe(30_000);
+    const exactWire = Buffer.from(`${canonicalJsonV1(exactEntryBudget)}\n`, "utf8");
+    expect(Buffer.from(parseFastManimGatedOciResultV1(exactWire))).toEqual(exactWire.subarray(0, -1));
+    expect(() =>
+      parseFastManimGatedOciResultV1(Buffer.from(`${canonicalJsonV1(overEntryBudget)}\n`, "utf8")),
+    ).toThrowError(
+      expect.objectContaining({
+        code: "sandbox-result-rejected",
+        message: expect.stringMatching(/container-entry budget/i),
+      }),
+    );
+    for (const result of [oversizedArray, `${JSON.stringify(oversizedObject)}\n`]) {
       expect(() => parseFastManimGatedOciResultV1(Buffer.from(result, "utf8"))).toThrowError(
         expect.objectContaining({ code: "sandbox-result-rejected" }),
       );

@@ -163,6 +163,20 @@ describe("real Manim census report", () => {
       await writeFile(path, JSON.stringify(officialV11));
       await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV11);
 
+      const unpinnedV12 = structuredClone(manifest());
+      unpinnedV12.sources[2]!.scenes[0]!.profiles = [1, 2, 12];
+      await writeFile(path, JSON.stringify(unpinnedV12));
+      await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialV12 = structuredClone(manifest());
+      const officialWriteStuffSource = officialV12.sources[2]!;
+      officialWriteStuffSource.id = "fast-manim-basic";
+      officialWriteStuffSource.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialWriteStuffSource.scenes[0]!.name = "WriteStuff";
+      officialWriteStuffSource.scenes[0]!.profiles = [1, 2, 3, 4, 5, 6, 7, 12];
+      await writeFile(path, JSON.stringify(officialV12));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialV12);
+
       const pinned = await loadRealManimCensusManifest(
         join(import.meta.dirname, "..", "fixtures", "real-manim-census-v1", "manifest.json"),
       );
@@ -184,6 +198,29 @@ describe("real Manim census report", () => {
           corpus: "compatibility",
           id: "fast-manim-basic",
           name: "SquareToCircle",
+          path: "example_scenes/basic.py",
+          repository: "fast-manim",
+          sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+        },
+      ]);
+      expect(
+        pinned.sources.flatMap((source) =>
+          source.scenes
+            .filter((scene) => scene.profiles.includes(12))
+            .map((scene) => ({
+              corpus: source.corpus,
+              id: source.id,
+              name: scene.name,
+              path: source.path,
+              repository: source.repository,
+              sha256: source.sha256,
+            })),
+        ),
+      ).toEqual([
+        {
+          corpus: "compatibility",
+          id: "fast-manim-basic",
+          name: "WriteStuff",
           path: "example_scenes/basic.py",
           repository: "fast-manim",
           sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",

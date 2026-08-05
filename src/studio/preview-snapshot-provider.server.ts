@@ -253,19 +253,43 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
     assertEqual("identity runtime configuration", verified.runtimeConfigHash, run.runtimeConfigHash);
     assertEqual("identity snapshot seal", verified.snapshotHash, envelope.snapshotHash);
     const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+    const writeStuffGroupId =
+      source.snapshotVersion === 12
+        ? bundle.scene.entities.find(
+            ({ geometry, parentId, sceneOrder }) => geometry.kind === "group" && parentId === null && sceneOrder === 0,
+          )?.id
+        : undefined;
     const bySourceName = new Map<string, Readonly<{ bindingId: string; entityId: string; sourceName: string }>>();
     const bindingIds = new Set<string>();
     const runtimeEntityIds = new Set<string>();
     for (const mapping of verified.mappings) {
       const entity = entities.get(mapping.entityId);
-      const expectedFamilyPath =
-        (source.snapshotVersion === 10 || source.snapshotVersion === 11) && entity
-          ? entity.sceneOrder === 0
-            ? []
-            : [entity.sceneOrder - 1]
-          : [];
+      const expectedFamilyPath = (() => {
+        if (!entity) return null;
+        if (source.snapshotVersion === 12) {
+          const expected =
+            mapping.binding.name === "group"
+              ? { parentId: null, path: [] as number[], sceneOrder: 0 }
+              : mapping.binding.name === "example_text"
+                ? { parentId: writeStuffGroupId, path: [0], sceneOrder: 1 }
+                : mapping.binding.name === "example_tex"
+                  ? { parentId: writeStuffGroupId, path: [1], sceneOrder: 32 }
+                  : null;
+          return expected !== null &&
+            entity.geometry.kind === "group" &&
+            entity.parentId === expected.parentId &&
+            entity.sceneOrder === expected.sceneOrder
+            ? expected.path
+            : null;
+        }
+        if (source.snapshotVersion === 10 || source.snapshotVersion === 11) {
+          return entity.sceneOrder === 0 ? [] : [entity.sceneOrder - 1];
+        }
+        return [];
+      })();
       if (
         !entity ||
+        expectedFamilyPath === null ||
         entity.provenanceId !== mapping.provenanceId ||
         JSON.stringify(mapping.familyPath) !== JSON.stringify(expectedFamilyPath)
       ) {
@@ -286,6 +310,16 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
       bySourceName.set(mapping.binding.name, browserMapping);
       bindingIds.add(mapping.binding.id);
       runtimeEntityIds.add(mapping.entityId);
+    }
+    if (
+      source.snapshotVersion === 12 &&
+      (writeStuffGroupId === undefined ||
+        bySourceName.size !== 3 ||
+        !bySourceName.has("group") ||
+        !bySourceName.has("example_text") ||
+        !bySourceName.has("example_tex"))
+    ) {
+      throw providerError("The verified WriteStuff source/runtime mapping is incomplete.");
     }
     return bySourceName;
   })();
