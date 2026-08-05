@@ -1,0 +1,18 @@
+{
+  "combinedWireSha256": "57e716b922a7b8a401aa81ff37b1b4733f2455731c77f07010bbd939816d328f",
+  "fastManimCommit": "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063",
+  "fastManimTree": "f1a5ef1b69711cf41c3424dd697ab75591942905",
+  "fixtureKind": "actual-combined-producer-output-after-bounded-source-edit",
+  "normalizedSemanticSha256": "9fa45c8813c9b4555b51595a18f550b79c57e7f49afd4c420241577ef6fb30fa",
+  "producerModule": "manim.renderer.source_runtime_identity",
+  "producerProvenanceSha256": "b1f1231038074decb50cfec4f932cceb0bd8987fccfb47f5b3799bcfd190ebd5",
+  "regeneration": "From fast-manim commit 8a1a4feb, insert example_tex.move_to((1.25, -0.5, 0)) followed by example_tex.scale(0.5) immediately after the canonical WriteStuff group.width assignment, then call python -m manim.renderer.source_runtime_identity with snapshotVersion 12 and capabilities cubic-path-geometry, logical-group, path-trim-animation, vector-appearance-animation; use the installed Studio segmented Tex native provider ABI v1 and PYTHONHASHSEED=0.",
+  "runtimeConfigHash": "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+  "sealedSnapshotHash": "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48",
+  "segmentedTexProviderAbi": 1,
+  "segmentedTexProviderSha256": "26e4a495715f9efeb8eeb922952d2a0965314aae274e0145af8968cb1baa78b5",
+  "snapshotDigest": "49e7491506b1514da26e70d035bf4b4cc34248ac17ac2688e801cf3459e98a24",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98",
+  "version": 1
+}

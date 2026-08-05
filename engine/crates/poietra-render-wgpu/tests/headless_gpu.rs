@@ -466,6 +466,24 @@ const REAL_WRITE_STUFF_V12_SAMPLES: [(&str, &str, f64); 8] = [
     ("real-write-stuff-v12--hold", "hold", 3.5),
     ("real-write-stuff-v12--end", "end", 4.0),
 ];
+const REAL_WRITE_STUFF_V12_EDITED_ENTRY_V1: &str = "real-write-stuff-v12-edited--hold";
+const REAL_WRITE_STUFF_V12_EDITED_FIXTURE_ID: &str = "eng-v1-real-write-stuff-v12-edited";
+const REAL_WRITE_STUFF_V12_EDITED_FIXTURE_PATH: &str =
+    "fixtures/engine-v1/real-write-stuff-v12-edited.json";
+const REAL_WRITE_STUFF_V12_EDITED_SOURCE_SHA256: &str =
+    "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98";
+const REAL_WRITE_STUFF_V12_EDITED_ENGINE_COMMIT: &str = "7b25d1ca96b8e6c3369344622de3ef5c32ac06fb";
+const REAL_WRITE_STUFF_V12_EDITED_FAST_MANIM_COMMIT: &str =
+    "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063";
+const REAL_WRITE_STUFF_V12_EDITED_FAST_MANIM_TREE: &str =
+    "f1a5ef1b69711cf41c3424dd697ab75591942905";
+const REAL_WRITE_STUFF_V12_EDITED_PRODUCER_SNAPSHOT_DIGEST: &str =
+    "49e7491506b1514da26e70d035bf4b4cc34248ac17ac2688e801cf3459e98a24";
+const REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH: &str =
+    "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48";
+const REAL_WRITE_STUFF_V12_EDIT_ANCHOR: &str =
+    "        group.width = config[\"frame_width\"] - 2 * LARGE_BUFF\n";
+const REAL_WRITE_STUFF_V12_EDIT_REPLACEMENT: &str = "        group.width = config[\"frame_width\"] - 2 * LARGE_BUFF\n        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n";
 
 #[derive(Clone, Copy)]
 struct RealLineJointsV10Contract {
@@ -1239,8 +1257,10 @@ fn real_spiral_in_v11_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBund
     (fixture, bundle)
 }
 
-fn real_write_stuff_v12_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
-    let path = repository_root().join(REAL_WRITE_STUFF_V12_FIXTURE_PATH);
+fn real_write_stuff_v12_fixture(
+    fixture_path: &str,
+) -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(fixture_path);
     let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
         &fs::read(path).expect("real WriteStuff V12 fixture must be readable"),
     )
@@ -1614,6 +1634,10 @@ fn render_and_assert_shared_reference(
     let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
     let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
 
+    let artifact_target_format = match packet.compositing {
+        RenderCompositingV1::LinearLight => TARGET_FORMAT,
+        RenderCompositingV1::ManimCairoSrgb => MANIM_CAIRO_TARGET_FORMAT,
+    };
     let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
         .expect("proof target format must be supported by the renderer");
     let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
@@ -1652,7 +1676,7 @@ fn render_and_assert_shared_reference(
     if let Some(entry) = visual_parity_entry {
         let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
         assert_eq!(
-            emit_native_visual_parity_artifact(entry, &adapter_info, TARGET_FORMAT, &rgba),
+            emit_native_visual_parity_artifact(entry, &adapter_info, artifact_target_format, &rgba),
             artifact_requested,
             "the opt-in {evidence_name} native artifact must be emitted exactly once"
         );
@@ -3020,7 +3044,7 @@ fn renders_real_spiral_in_v11_samples_with_fallback_adapter() {
 #[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
 #[allow(clippy::too_many_lines)] // One temporal proof binds the exact V12 producer to eight full-frame GPU artifacts.
 fn renders_real_write_stuff_v12_samples_with_fallback_adapter() {
-    let (fixture, bundle) = real_write_stuff_v12_fixture();
+    let (fixture, bundle) = real_write_stuff_v12_fixture(REAL_WRITE_STUFF_V12_FIXTURE_PATH);
     assert_eq!(fixture.id, REAL_WRITE_STUFF_V12_FIXTURE_ID);
     assert_eq!(
         fixture.producer_reference.kind,
@@ -3253,6 +3277,147 @@ fn renders_real_write_stuff_v12_samples_with_fallback_adapter() {
             0
         },
         "an opt-in WriteStuff V12 artifact request must emit all eight frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one edited-frame proof binds source, producer, engine, GPU, and artifact identities"
+)]
+fn renders_real_write_stuff_v12_edited_hold_with_fallback_adapter() {
+    let (fixture, bundle) = real_write_stuff_v12_fixture(REAL_WRITE_STUFF_V12_EDITED_FIXTURE_PATH);
+    let entry = load_visual_parity_entry(REAL_WRITE_STUFF_V12_EDITED_ENTRY_V1);
+    assert_eq!(fixture.id, REAL_WRITE_STUFF_V12_EDITED_FIXTURE_ID);
+    assert_eq!(entry.fixture.id, fixture.id);
+    assert_eq!(entry.fixture.path, REAL_WRITE_STUFF_V12_EDITED_FIXTURE_PATH);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v12"
+    );
+    assert_eq!(
+        fixture.producer_reference.engine_commit,
+        REAL_WRITE_STUFF_V12_EDITED_ENGINE_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_WRITE_STUFF_V12_EDITED_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_tree.as_deref(),
+        Some(REAL_WRITE_STUFF_V12_EDITED_FAST_MANIM_TREE)
+    );
+    assert_eq!(
+        fixture
+            .producer_reference
+            .producer_snapshot_digest
+            .as_deref(),
+        Some(REAL_WRITE_STUFF_V12_EDITED_PRODUCER_SNAPSHOT_DIGEST)
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_WRITE_STUFF_V12_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_WRITE_STUFF_V12_EDITED_SOURCE_SHA256
+    );
+
+    let official_source =
+        fs::read_to_string(repository_root().join(REAL_WRITE_STUFF_V12_SOURCE_MIRROR_PATH))
+            .expect("the mirrored official WriteStuff source must remain readable");
+    assert_eq!(
+        official_source
+            .matches(REAL_WRITE_STUFF_V12_EDIT_ANCHOR)
+            .count(),
+        1,
+        "the bounded WriteStuff edit anchor must remain unique"
+    );
+    let edited_source = official_source.replacen(
+        REAL_WRITE_STUFF_V12_EDIT_ANCHOR,
+        REAL_WRITE_STUFF_V12_EDIT_REPLACEMENT,
+        1,
+    );
+    assert_eq!(
+        format!("{:x}", Sha256::digest(edited_source.as_bytes())),
+        REAL_WRITE_STUFF_V12_EDITED_SOURCE_SHA256
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("edited WriteStuff V12 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V12);
+    assert_eq!(snapshot_hash, REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_WRITE_STUFF_V12_EDITED_SOURCE_SHA256);
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH
+    );
+    assert_eq!(bundle.scene.duration.to_bits(), 4.0_f64.to_bits());
+    assert_eq!(bundle.scene.entities.len(), 61);
+    assert_eq!(bundle.scene.animation_channels.len(), 58);
+
+    let [sample] = fixture.samples.as_slice() else {
+        panic!("edited WriteStuff V12 must contain exactly one hold sample");
+    };
+    assert_eq!(sample.id, entry.sample.id);
+    assert_eq!(
+        sample.sample_time.to_bits(),
+        entry.sample.sample_time.to_bits()
+    );
+    assert_eq!(sample.sample_time.to_bits(), 3.5_f64.to_bits());
+    assert_eq!(sample.viewport, entry.sample.viewport);
+    assert_eq!(
+        sample.expected.semantic_digest,
+        entry.sample.semantic_digest
+    );
+    assert_eq!(
+        entry.fixture.revision.sha256,
+        REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH
+    );
+
+    let session = EngineSessionV1::new(bundle).expect("edited WriteStuff V12 fixture must install");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id.clone(), sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("edited WriteStuff V12 hold fixture must sample");
+    assert_eq!(packet.draws.len(), 29);
+    assert_eq!(
+        render_packet_semantic_digest(&packet),
+        sample.expected.semantic_digest
+    );
+    assert!(
+        packet
+            .draws
+            .iter()
+            .all(|draw| matches!(draw, RenderDrawV1::Path { .. })),
+        "the edited hold frame must retain all 29 completed vector roles"
+    );
+    render_and_assert_shared_reference(
+        &packet,
+        PixelReferenceSet {
+            clear_only: false,
+            reason: "the actual producer-backed equation move and scale must remain visible at the hold frame"
+                .to_owned(),
+            samples: std::collections::BTreeMap::new(),
+        },
+        "real-write-stuff-v12-edited-hold",
+        Some(&entry),
     );
 }
 

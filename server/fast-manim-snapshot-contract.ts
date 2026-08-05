@@ -171,6 +171,14 @@ const lineJointsV10TransformPlanSchema = z
   .strict();
 export type LineJointsV10TransformPlan = z.infer<typeof lineJointsV10TransformPlanSchema>;
 
+const writeStuffV12TransformPlanSchema = z
+  .object({
+    moveTo: z.object({ x: hermeticPngV4NumberSchema, y: hermeticPngV4NumberSchema }).strict().nullable(),
+    scale: hermeticPngV4NumberSchema.positive().nullable(),
+  })
+  .strict();
+export type WriteStuffV12TransformPlan = z.infer<typeof writeStuffV12TransformPlanSchema>;
+
 /**
  * The minimal expected boundary the server holds against a result: the wire
  * correlation fields plus the runtime frame the request was issued for, so
@@ -202,6 +210,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // V9, this is derived from server-held Python and retained only so sealed
     // publications can be revalidated without keeping source bytes inline.
     lineJointsV10Plan: lineJointsV10TransformPlanSchema.optional(),
+    // V12 admits one bounded post-layout transform of the source-bound
+    // `example_tex` root. The server derives this plan from candidate source;
+    // producer geometry and provenance cannot authorize it.
+    writeStuffV12Plan: writeStuffV12TransformPlanSchema.optional(),
     // Durable V1 publications predate this correlation field. Treat only an
     // omitted stored value as V1; an explicit unsupported value still fails.
     snapshotVersion: fastManimSnapshotProfileVersionV1Schema.default(1),
@@ -241,6 +253,13 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         code: "custom",
         message: "LineJoints transform evidence is valid only for snapshot profile V10.",
         path: ["lineJointsV10Plan"],
+      });
+    }
+    if (value.snapshotVersion !== 12 && value.writeStuffV12Plan !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "WriteStuff transform evidence is valid only for snapshot profile V12.",
+        path: ["writeStuffV12Plan"],
       });
     }
   });
@@ -2322,6 +2341,7 @@ const FAST_MANIM_WRITE_STUFF_REQUIRED_CAPABILITIES_V12 = [
 const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
 const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
 const LINE_JOINTS_V10_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies LineJointsV10TransformPlan;
+const WRITE_STUFF_V12_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WriteStuffV12TransformPlan;
 
 function warpSquareV9CanonicalNumber(source: string, positive = false) {
   if (!WARP_SQUARE_V9_CANONICAL_NUMBER.test(source)) return null;
@@ -2505,6 +2525,96 @@ export function deriveLineJointsV10TransformPlan(source: string, sceneName: stri
     profileViolation("Removing the bounded LineJoints V10 edits must reconstruct the exact official source bytes.");
   }
   return lineJointsV10TransformPlanSchema.parse({ moveTo, scale });
+}
+
+/**
+ * Derives the only Studio-authored edit admitted by WriteStuff V12.
+ *
+ * Optional canonical move/scale statements must sit after the final VGroup
+ * width assignment and before the first Write. Removing them must reconstruct
+ * the byte-exact official module, preserving every other Scene and option.
+ */
+export function deriveWriteStuffV12TransformPlan(source: string, sceneName: string): WriteStuffV12TransformPlan {
+  if (sceneName !== "WriteStuff") {
+    profileViolation("WriteStuff profile V12 source verification requires the exact selected Scene name.");
+  }
+  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
+  if (sourceDigest === FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12) return WRITE_STUFF_V12_EMPTY_PLAN;
+
+  const analysis = analyzePythonSource(source);
+  let statements: ReturnType<typeof findSourceSceneStatements>;
+  try {
+    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12);
+  } catch (cause) {
+    throw new FastManimSnapshotContractError(
+      "profile-violation",
+      "WriteStuff profile V12 source does not identify one unambiguous selected Scene.",
+      { cause },
+    );
+  }
+  const fixedPrefix = [
+    'example_text = Tex("This is a some text", tex_to_color_map={"text": YELLOW})',
+    'example_tex = MathTex(\n"\\\\sum_{k=1}^\\\\infty {1 \\\\over k^2} = {\\\\pi^2 \\\\over 6}",\n)',
+    "group = VGroup(example_text, example_tex)",
+    "group.arrange(DOWN)",
+    'group.width = config["frame_width"] - 2 * LARGE_BUFF',
+  ] as const;
+  if (!analysis.valid || fixedPrefix.some((text, index) => statements[index]?.text !== text)) {
+    profileViolation("WriteStuff profile V12 edits require the exact official Tex/MathTex and VGroup layout prefix.");
+  }
+
+  const sourceLines = source.split("\n");
+  const removedLines = new Set<number>();
+  let statementIndex = fixedPrefix.length;
+  let moveTo: WriteStuffV12TransformPlan["moveTo"] = null;
+  let scale: number | null = null;
+
+  const moveStatement = statements[statementIndex];
+  const moveMatch = moveStatement?.text.match(
+    /^example_tex\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
+  );
+  if (moveStatement && moveMatch) {
+    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
+    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
+    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
+      profileViolation("WriteStuff profile V12 move_to must use bounded canonical Studio literals.");
+    }
+    moveTo = { x, y };
+    removedLines.add(moveStatement.line);
+    statementIndex += 1;
+  }
+
+  const scaleStatement = statements[statementIndex];
+  const scaleMatch = scaleStatement?.text.match(
+    /^example_tex\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/,
+  );
+  if (scaleStatement && scaleMatch) {
+    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
+    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
+      profileViolation("WriteStuff profile V12 scale must use one bounded canonical positive Studio literal.");
+    }
+    scale = factor;
+    removedLines.add(scaleStatement.line);
+    statementIndex += 1;
+  }
+
+  if (
+    removedLines.size === 0 ||
+    statements.length !== statementIndex + 3 ||
+    statements[statementIndex]?.text !== "self.play(Write(example_text))" ||
+    statements[statementIndex + 1]?.text !== "self.play(Write(example_tex))" ||
+    statements[statementIndex + 2]?.text !== "self.wait()"
+  ) {
+    profileViolation("WriteStuff profile V12 source is not the official generation or one bounded equation edit.");
+  }
+  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
+  if (
+    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
+    FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12
+  ) {
+    profileViolation("Removing the bounded WriteStuff V12 edits must reconstruct the exact official source bytes.");
+  }
+  return writeStuffV12TransformPlanSchema.parse({ moveTo, scale });
 }
 
 type WarpSquarePointV9 = { x: number; y: number };
@@ -3725,7 +3835,124 @@ function fastManimWriteStuffSemanticDigestV12(scene: SceneIrBundleV1["scene"]) {
     .digest("hex");
 }
 
-function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"]) {
+const FAST_MANIM_WRITE_STUFF_NORMALIZED_SEMANTICS_SHA256_V12 =
+  "9fa45c8813c9b4555b51595a18f550b79c57e7f49afd4c420241577ef6fb30fa" as const;
+const FAST_MANIM_WRITE_STUFF_MATH_ROOT_CENTER_V12 = { x: 0, y: -0.8902147164823454 } as const;
+
+function writeStuffRoundedCoordinateV12(value: number) {
+  const rounded = Number(value.toFixed(12));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function writeStuffMathCenterV12(scene: SceneIrBundleV1["scene"]) {
+  const points = scene.entities.slice(33, 61).flatMap(({ geometry }) => {
+    if (geometry.kind !== "cubic-path") {
+      profileViolation("WriteStuff profile V12 MathTex roles must retain cubic-path geometry.");
+    }
+    return geometry.path.subpaths.flatMap((subpath) => [
+      subpath.start,
+      ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+    ]);
+  });
+  if (points.length === 0) profileViolation("WriteStuff profile V12 MathTex geometry cannot be empty.");
+  const xs = points.map(({ x }) => x);
+  const ys = points.map(({ y }) => y);
+  return {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+}
+
+function fastManimWriteStuffNormalizedSemanticDigestV12(
+  scene: SceneIrBundleV1["scene"],
+  plan: WriteStuffV12TransformPlan,
+) {
+  const editedCenter = plan.moveTo ?? FAST_MANIM_WRITE_STUFF_MATH_ROOT_CENTER_V12;
+  const observedCenter = writeStuffMathCenterV12(scene);
+  const tolerance = 1e-9 * Math.max(1, Math.abs(editedCenter.x), Math.abs(editedCenter.y));
+  if (
+    Math.abs(observedCenter.x - editedCenter.x) > tolerance ||
+    Math.abs(observedCenter.y - editedCenter.y) > tolerance
+  ) {
+    profileViolation("WriteStuff profile V12 MathTex center does not match its source-derived edit plan.");
+  }
+  const scale = plan.scale ?? 1;
+  const normalizePoint = (point: Readonly<{ x: number; y: number }>) => ({
+    x: writeStuffRoundedCoordinateV12(
+      FAST_MANIM_WRITE_STUFF_MATH_ROOT_CENTER_V12.x + (point.x - editedCenter.x) / scale,
+    ),
+    y: writeStuffRoundedCoordinateV12(
+      FAST_MANIM_WRITE_STUFF_MATH_ROOT_CENTER_V12.y + (point.y - editedCenter.y) / scale,
+    ),
+  });
+  const entities = scene.entities.map(
+    ({ appearance, geometry, lifetimes, parentId, sceneOrder, sourceZIndex, transform }) => ({
+      appearance,
+      geometry:
+        sceneOrder >= 33 && sceneOrder <= 60 && geometry.kind === "cubic-path"
+          ? {
+              kind: "cubic-path" as const,
+              path: {
+                subpaths: geometry.path.subpaths.map((subpath) => ({
+                  closed: subpath.closed,
+                  segments: subpath.segments.map(({ control1, control2, end }) => ({
+                    control1: normalizePoint(control1),
+                    control2: normalizePoint(control2),
+                    end: normalizePoint(end),
+                  })),
+                  start: normalizePoint(subpath.start),
+                })),
+              },
+            }
+          : geometry,
+      lifetimes,
+      parentId,
+      sceneOrder,
+      sourceZIndex,
+      transform,
+    }),
+  );
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        animationChannels: scene.animationChannels.map((channel) => ({
+          entityId: "entityId" in channel ? channel.entityId : null,
+          keyframes: channel.keyframes,
+          kind: channel.kind,
+          ...("parameterization" in channel ? { parameterization: channel.parameterization } : {}),
+        })),
+        entities,
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
+function writeStuffProducerNumberV12(value: number) {
+  const magnitude = Math.abs(value);
+  if (Number.isInteger(value) && magnitude < 1e16) return `${value}.0`;
+  const raw = magnitude !== 0 && (magnitude < 1e-4 || magnitude >= 1e16) ? value.toExponential() : value.toString();
+  return raw.replace(
+    /e([+-])(\d+)$/,
+    (_match, sign: string, exponent: string) => `e${sign}${exponent.padStart(2, "0")}`,
+  );
+}
+
+function writeStuffProducerTransformEvidenceV12(plan: WriteStuffV12TransformPlan) {
+  return [
+    ...(plan.moveTo === null
+      ? []
+      : [
+          "bounded editable WriteStuff v12 example_tex move_to " +
+            `(${writeStuffProducerNumberV12(plan.moveTo.x)}, ${writeStuffProducerNumberV12(plan.moveTo.y)}, 0)`,
+        ]),
+    ...(plan.scale === null
+      ? []
+      : [`bounded editable WriteStuff v12 example_tex uniform scale ${writeStuffProducerNumberV12(plan.scale)}`]),
+  ];
+}
+
+function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"], plan: WriteStuffV12TransformPlan) {
   const sceneEvidence = scene.provenance[0]?.evidence;
   if (
     !sceneEvidence ||
@@ -3742,9 +3969,24 @@ function assertWriteStuffProducerProvenanceV12(scene: SceneIrBundleV1["scene"]) 
     profileViolation("WriteStuff profile V12 scene provenance does not match the pinned producer evidence.");
   }
   const session = sceneEvidence[3]!.slice("render trace session ".length);
-  const normalizedEvidence = scene.provenance.map(({ evidence }) =>
-    evidence.map((entry) => entry.replaceAll(session, "<session>")),
-  );
+  const expectedTransformEvidence = writeStuffProducerTransformEvidenceV12(plan);
+  const mathRootEvidence = scene.provenance[33]?.evidence;
+  if (
+    !mathRootEvidence ||
+    (expectedTransformEvidence.length > 0 &&
+      (mathRootEvidence.length < expectedTransformEvidence.length ||
+        canonicalJsonV1(mathRootEvidence.slice(-expectedTransformEvidence.length)) !==
+          canonicalJsonV1(expectedTransformEvidence)))
+  ) {
+    profileViolation("WriteStuff profile V12 MathTex edit provenance does not match its source-derived plan.");
+  }
+  const normalizedEvidence = scene.provenance.map(({ evidence }, index) => {
+    const retainedEvidence =
+      index === 33 && expectedTransformEvidence.length > 0
+        ? evidence.slice(0, -expectedTransformEvidence.length)
+        : evidence;
+    return retainedEvidence.map((entry) => entry.replaceAll(session, "<session>"));
+  });
   const digest = createHash("sha256").update(canonicalJsonV1(normalizedEvidence), "utf8").digest("hex");
   if (digest !== FAST_MANIM_WRITE_STUFF_PRODUCER_PROVENANCE_SHA256_V12) {
     profileViolation("WriteStuff profile V12 entity and channel provenance differs from the pinned producer fixture.");
@@ -3756,15 +3998,23 @@ function assertWriteStuffProfileV12(
   expectedFrame: Readonly<{ height: number; width: number }>,
   mode: "producer" | "sealed",
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+  transformPlan: WriteStuffV12TransformPlan | undefined,
 ) {
   const { scene } = bundle;
   const { sceneId } = scene;
+  const plan = transformPlan ?? WRITE_STUFF_V12_EMPTY_PLAN;
+  const edited = plan.moveTo !== null || plan.scale !== null;
   if (
     expectedIdentity.sceneName !== "WriteStuff" ||
-    expectedIdentity.sourcePath !== FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12 ||
-    expectedIdentity.sourceHash !== FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12
+    expectedIdentity.sourcePath !== FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12
   ) {
-    profileViolation("Snapshot profile V12 is reserved for the pinned official WriteStuff source.");
+    profileViolation("Snapshot profile V12 is reserved for the pinned official WriteStuff source family.");
+  }
+  if (
+    (expectedIdentity.sourceHash === FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12 && edited) ||
+    (expectedIdentity.sourceHash !== FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12 && !edited)
+  ) {
+    profileViolation("WriteStuff profile V12 source identity does not match its retained transform plan.");
   }
   if (
     expectedFrame.height !== FAST_MANIM_WRITE_STUFF_FRAME_V12.height ||
@@ -3899,7 +4149,11 @@ function assertWriteStuffProfileV12(
     }
   }
 
-  if (fastManimWriteStuffSemanticDigestV12(scene) !== FAST_MANIM_WRITE_STUFF_SEMANTICS_SHA256_V12) {
+  if (
+    fastManimWriteStuffNormalizedSemanticDigestV12(scene, plan) !==
+      FAST_MANIM_WRITE_STUFF_NORMALIZED_SEMANTICS_SHA256_V12 ||
+    (!edited && fastManimWriteStuffSemanticDigestV12(scene) !== FAST_MANIM_WRITE_STUFF_SEMANTICS_SHA256_V12)
+  ) {
     profileViolation(
       "WriteStuff profile V12 geometry, paint, lifetimes, or Write timing differs from its producer fixture.",
     );
@@ -3920,7 +4174,7 @@ function assertWriteStuffProfileV12(
     );
   }
   if (mode === "producer") {
-    assertWriteStuffProducerProvenanceV12(scene);
+    assertWriteStuffProducerProvenanceV12(scene, plan);
   } else if (
     scene.provenance.some(
       ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12]),
@@ -3952,10 +4206,11 @@ function assertFastManimSnapshotProfileV1(
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
   warpSquareV9Plan: WarpSquareV9TransformPlan | undefined,
   lineJointsV10Plan: LineJointsV10TransformPlan | undefined,
+  writeStuffV12Plan: WriteStuffV12TransformPlan | undefined,
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
 ) {
   if (snapshotVersion === 12) {
-    assertWriteStuffProfileV12(bundle, expectedFrame, mode, expectedIdentity);
+    assertWriteStuffProfileV12(bundle, expectedFrame, mode, expectedIdentity, writeStuffV12Plan);
     return;
   }
   if (snapshotVersion === 11) {
@@ -4338,6 +4593,7 @@ async function parseFastManimSnapshotResultV1(
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
   let warpSquareV9Plan = expected.warpSquareV9Plan;
   let lineJointsV10Plan = expected.lineJointsV10Plan;
+  let writeStuffV12Plan = expected.writeStuffV12Plan;
   if (
     (expected.snapshotVersion === 3 ||
       expected.snapshotVersion === 4 ||
@@ -4385,6 +4641,13 @@ async function parseFastManimSnapshotResultV1(
       profileViolation("The retained LineJoints transform plan does not match the server-held source.");
     }
     lineJointsV10Plan = derivedPlan;
+  }
+  if (expected.snapshotVersion === 12 && mode === "producer" && sourceText !== undefined) {
+    const derivedPlan = deriveWriteStuffV12TransformPlan(sourceText, expected.sceneName);
+    if (writeStuffV12Plan && canonicalJsonV1(writeStuffV12Plan) !== canonicalJsonV1(derivedPlan)) {
+      profileViolation("The retained WriteStuff transform plan does not match the server-held source.");
+    }
+    writeStuffV12Plan = derivedPlan;
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&
@@ -4434,6 +4697,7 @@ async function parseFastManimSnapshotResultV1(
     hermeticMathTexMorphV5Plan,
     warpSquareV9Plan,
     lineJointsV10Plan,
+    writeStuffV12Plan,
     expected,
   );
   const mixedDynamicMathTexProvenanceId =

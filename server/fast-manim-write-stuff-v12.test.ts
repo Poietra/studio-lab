@@ -4,6 +4,7 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
+  deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V12,
   FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12,
@@ -68,6 +69,103 @@ async function loadProducerFixture() {
 }
 
 describe("fast-manim WriteStuff snapshot profile V12", () => {
+  it("derives only the canonical post-layout equation move and scale", async () => {
+    const { sourceText } = await loadProducerFixture();
+    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
+    const editedSource = sourceText.replace(
+      anchor,
+      `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
+    );
+
+    expect(deriveWriteStuffV12TransformPlan(sourceText, "WriteStuff")).toEqual({ moveTo: null, scale: null });
+    expect(deriveWriteStuffV12TransformPlan(editedSource, "WriteStuff")).toEqual({
+      moveTo: { x: 1.25, y: -0.5 },
+      scale: 0.5,
+    });
+  });
+
+  it.each([
+    ["a different target", "        example_text.move_to((1.25, -0.5, 0))\n"],
+    ["reversed edit order", "        example_tex.scale(0.5)\n        example_tex.move_to((1.25, -0.5, 0))\n"],
+    ["a repeated move", "        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.move_to((2, 1, 0))\n"],
+    ["a negative scale", "        example_tex.scale(-0.5)\n"],
+    ["a dynamic scale", "        example_tex.scale(factor)\n"],
+    ["a nonzero z coordinate", "        example_tex.move_to((1.25, -0.5, 1))\n"],
+    ["an unrelated statement", "        example_tex.set_color(RED)\n"],
+  ] as const)("rejects %s in the bounded source edit slot", async (_label, inserted) => {
+    const { sourceText } = await loadProducerFixture();
+    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
+    expect(() =>
+      deriveWriteStuffV12TransformPlan(sourceText.replace(anchor, `${anchor}${inserted}`), "WriteStuff"),
+    ).toThrowError(/WriteStuff profile V12/);
+  });
+
+  it("rejects an otherwise canonical edit after the first Write", async () => {
+    const { sourceText } = await loadProducerFixture();
+    const anchor = "        self.play(Write(example_text))\n";
+    const editedSource = sourceText.replace(anchor, `${anchor}        example_tex.scale(0.5)\n`);
+    expect(() => deriveWriteStuffV12TransformPlan(editedSource, "WriteStuff")).toThrowError(/WriteStuff profile V12/);
+  });
+
+  it("seals move-then-scale geometry against its server-derived source plan", async () => {
+    const { envelope, expected, sourceText } = await loadProducerFixture();
+    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
+    const editedSource = sourceText.replace(
+      anchor,
+      `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
+    );
+    const editedSourceHash = createHash("sha256").update(editedSource, "utf8").digest("hex");
+    expect(editedSourceHash).toBe("37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98");
+    const edited = structuredClone(envelope);
+    edited.sourceHash = editedSourceHash;
+    edited.bundle.scene.source.sourceHash = editedSourceHash;
+    transformWriteStuffMathGeometry(edited, { x: 1.25, y: -0.5 }, 0.5);
+    edited.bundle.scene.provenance[33]!.evidence.push(
+      "bounded editable WriteStuff v12 example_tex move_to (1.25, -0.5, 0)",
+      "bounded editable WriteStuff v12 example_tex uniform scale 0.5",
+    );
+    const session = edited.bundle.scene.provenance[0]!.evidence[3]!.slice("render trace session ".length);
+    const editedProvenanceDigest = createHash("sha256")
+      .update(
+        canonicalJsonV1(
+          edited.bundle.scene.provenance.map(({ evidence }) =>
+            evidence.map((entry) => entry.replaceAll(session, "<session>")),
+          ),
+        ),
+        "utf8",
+      )
+      .digest("hex");
+    expect(editedProvenanceDigest).toBe("b1f1231038074decb50cfec4f932cceb0bd8987fccfb47f5b3799bcfd190ebd5");
+    const editedExpected = {
+      ...expected,
+      sourceHash: editedSourceHash,
+      writeStuffV12Plan: { moveTo: { x: 1.25, y: -0.5 }, scale: 0.5 },
+    } as const satisfies ExpectedFastManimSnapshotCorrelationV1;
+
+    const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(
+      canonicalJsonV1(edited),
+      editedExpected,
+      editedSource,
+    );
+    expect(sealed).toMatchObject({ kind: "compiled", sourceHash: editedSourceHash });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, editedExpected)).resolves.toEqual(sealed);
+
+    const provenanceTampered = structuredClone(edited);
+    const mathRootEvidence = provenanceTampered.bundle.scene.provenance[33]!.evidence;
+    mathRootEvidence[mathRootEvidence.length - 1] = "bounded editable WriteStuff v12 example_tex uniform scale 0.6";
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(provenanceTampered), editedExpected, editedSource),
+    ).rejects.toMatchObject({ code: "profile-violation" });
+
+    const tampered = structuredClone(edited);
+    const firstPath = tampered.bundle.scene.entities.find(({ sceneOrder }) => sceneOrder === 33)?.geometry.path;
+    if (!firstPath) throw new Error("Expected the first MathTex role path.");
+    firstPath.subpaths[0]!.start.x += 0.001;
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(canonicalJsonV1(tampered), editedExpected, editedSource),
+    ).rejects.toMatchObject({ code: "profile-violation" });
+  });
+
   it("seals the exact two-root, 58-role Write timeline and its three editable source identities", async () => {
     const { combined, envelope, expected, manifest, producer, sourceText } = await loadProducerFixture();
     const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producer.snapshotJson, expected, sourceText);
@@ -270,7 +368,15 @@ type WriteStuffEnvelope = {
     scene: {
       animationChannels: Array<{ keyframes: Array<{ at: number }>; kind: string }>;
       entities: Array<{
-        geometry: { path?: { subpaths: Array<{ start: { x: number } }> } };
+        geometry: {
+          path?: {
+            subpaths: Array<{
+              segments: Array<{ control1: WriteStuffPoint; control2: WriteStuffPoint; end: WriteStuffPoint }>;
+              start: WriteStuffPoint;
+            }>;
+          };
+        };
+        sceneOrder: number;
       }>;
       provenance: Array<{ evidence: string[] }>;
       source: { sourceHash: string };
@@ -280,6 +386,35 @@ type WriteStuffEnvelope = {
   runtimeConfigHash: string;
   sourceHash: string;
 };
+
+type WriteStuffPoint = { x: number; y: number };
+
+function transformWriteStuffMathGeometry(
+  envelope: WriteStuffEnvelope,
+  target: Readonly<WriteStuffPoint>,
+  scale: number,
+) {
+  const paths = envelope.bundle.scene.entities.flatMap(({ geometry, sceneOrder }) =>
+    sceneOrder >= 33 && sceneOrder <= 60 && geometry.path ? [geometry.path] : [],
+  );
+  const points = paths.flatMap(({ subpaths }) =>
+    subpaths.flatMap((subpath) => [
+      subpath.start,
+      ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+    ]),
+  );
+  if (points.length === 0) throw new Error("Expected WriteStuff MathTex role geometry.");
+  const xs = points.map(({ x }) => x);
+  const ys = points.map(({ y }) => y);
+  const sourceCenter = {
+    x: (Math.min(...xs) + Math.max(...xs)) / 2,
+    y: (Math.min(...ys) + Math.max(...ys)) / 2,
+  };
+  for (const point of points) {
+    point.x = target.x + (point.x - sourceCenter.x) * scale;
+    point.y = target.y + (point.y - sourceCenter.y) * scale;
+  }
+}
 
 type WriteStuffIdentityEvidence = {
   records: Array<{ familyPath: number[]; runtimeType: string; status: string }>;

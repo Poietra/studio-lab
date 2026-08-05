@@ -6,14 +6,13 @@ import type {
   RenderSessionView,
 } from "../render-pipeline/contracts";
 import { RenderPipelinePanel } from "../render-pipeline/render-pipeline-panel";
-import type { RenderProgramCandidate } from "../render-pipeline/render-pipeline-policy";
-import type { RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
+import type { RenderProgramCandidate, RenderSourceRefreshTarget } from "../render-pipeline/render-pipeline-policy";
+import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
 import { DraftInspector } from "./draft-inspector";
 import { EntityInspectorEditor, entityInspectorKey } from "./entity-inspector";
 import type { ManimWorkspaceScene } from "./imported-workspace";
-import type { ProgramRecord, ProjectedEntity } from "./model";
 import type { InspectorEditField, ValidatedInspectorEdits } from "./inspector-edit";
-import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
+import type { ProgramRecord, ProjectedEntity } from "./model";
 import { entityLabel } from "./studio-viewport";
 
 const SIDEBAR_SHORTCUTS: readonly StudioCommandId[] = [
@@ -49,6 +48,72 @@ function styleSummary(entity: ProjectedEntity) {
   if (entity.geometry.style.kind === "unknown") return "Runtime-dependent";
   const { color, fillColor, strokeColor } = entity.geometry.style.value;
   return [color, fillColor, strokeColor].filter(Boolean).join(" · ") || "Manim defaults";
+}
+
+function directPositionDraft(record: ProgramRecord, entity: ProjectedEntity | null) {
+  const operation = record.program.operations[0];
+  if (
+    !entity ||
+    record.program.provenance.origin !== "direct-manipulation" ||
+    record.program.operations.length !== 1 ||
+    operation?.kind !== "SetProperty" ||
+    operation.key !== "position" ||
+    operation.entityId !== entity.id ||
+    typeof operation.value !== "object" ||
+    operation.value === null ||
+    !("x" in operation.value) ||
+    !("y" in operation.value) ||
+    typeof operation.value.x !== "number" ||
+    typeof operation.value.y !== "number"
+  ) {
+    return null;
+  }
+  return operation.value;
+}
+
+function DraftPositionRefinement({
+  entity,
+  onSubmit,
+  position,
+}: Readonly<{
+  entity: ProjectedEntity;
+  onSubmit: (position: Readonly<{ x: number; y: number }>) => void;
+  position: Readonly<{ x: number; y: number }>;
+}>) {
+  return (
+    <form
+      aria-label={`Refine draft position of ${entityLabel(entity)}`}
+      className="mt-3 border border-zinc-800 p-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        const data = new FormData(event.currentTarget);
+        const x = Number(data.get("x"));
+        const y = Number(data.get("y"));
+        if (Number.isFinite(x) && Number.isFinite(y)) onSubmit({ x, y });
+      }}
+    >
+      <p className="text-xs font-medium text-zinc-300">Refine position</p>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        {(["x", "y"] as const).map((axis) => (
+          <label className="text-[10px] uppercase text-zinc-500" key={axis}>
+            {axis}
+            <input
+              aria-label={`${axis.toUpperCase()} draft position of ${entityLabel(entity)}`}
+              className="mt-1 h-8 w-full border border-zinc-700 bg-zinc-950 px-2 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+              defaultValue={position[axis]}
+              name={axis}
+              required
+              step="any"
+              type="number"
+            />
+          </label>
+        ))}
+      </div>
+      <button className="mt-2 h-8 w-full border border-zinc-700 text-xs text-zinc-300 hover:bg-zinc-800" type="submit">
+        Update draft position
+      </button>
+    </form>
+  );
 }
 
 export function WorkspaceSidebar({
@@ -338,6 +403,7 @@ export function StudioInspector({
   suggestion: EditSuggestion | null;
   workspace: ManimWorkspaceView | null;
 }>) {
+  const draftPosition = draftProgram ? directPositionDraft(draftProgram, selectedEntity) : null;
   const geometryUnknowns = selectedEntity
     ? (
         [
@@ -352,16 +418,28 @@ export function StudioInspector({
   return (
     <aside className={cn("min-h-0 overflow-y-auto bg-zinc-950 p-3", className)}>
       {draftProgram ? (
-        <DraftInspector
-          applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
-          error={draftError}
-          isApplying={draftApplyPending}
-          onApply={onApplyDraft}
-          onDiscard={onDiscardDraft}
-          onOperationChange={onDraftOperationChange}
-          operation={draftOperation}
-          record={draftProgram}
-        />
+        <>
+          <DraftInspector
+            applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
+            error={draftError}
+            isApplying={draftApplyPending}
+            onApply={onApplyDraft}
+            onDiscard={onDiscardDraft}
+            onOperationChange={onDraftOperationChange}
+            operation={draftOperation}
+            record={draftProgram}
+          />
+          {draftPosition && selectedEntity ? (
+            <DraftPositionRefinement
+              entity={selectedEntity}
+              key={`${draftProgram.program.transactionId}/${draftPosition.x}/${draftPosition.y}`}
+              onSubmit={(position) => {
+                onEntityEdit(selectedEntity.id, { position }, "x");
+              }}
+              position={draftPosition}
+            />
+          ) : null}
+        </>
       ) : (
         <section>
           <h2 className="text-balance text-sm font-medium text-zinc-100">Inspector</h2>

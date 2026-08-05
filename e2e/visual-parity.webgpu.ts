@@ -28,6 +28,7 @@ import {
   readWriteStuffCairoReferenceForEntryV1,
   WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1,
   WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1,
+  WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1,
 } from "./write-stuff-cairo-reference";
 
 type VisualParityFixtureSample = Readonly<{
@@ -91,6 +92,10 @@ const REAL_SPIRAL_IN_V11_ENTRY_IDS = SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1;
 const REAL_SPIRAL_IN_V11_ENTRY_ID_SET = new Set<string>(REAL_SPIRAL_IN_V11_ENTRY_IDS);
 const REAL_WRITE_STUFF_V12_ENTRY_IDS = WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1;
 const REAL_WRITE_STUFF_V12_ENTRY_ID_SET = new Set<string>(REAL_WRITE_STUFF_V12_ENTRY_IDS);
+const WRITE_STUFF_CAIRO_ENTRY_ID_SET = new Set<string>([
+  ...REAL_WRITE_STUFF_V12_ENTRY_IDS,
+  ...WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1,
+]);
 
 const VISUAL_PARITY_CORPUS = visualParityCorpusV1Schema.parse(
   JSON.parse(readFileSync("fixtures/visual-parity-v1/corpus.json", "utf8")),
@@ -445,7 +450,7 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
       ),
     );
   }
-  if (REAL_WRITE_STUFF_V12_ENTRY_ID_SET.has(entry.id)) {
+  if (WRITE_STUFF_CAIRO_ENTRY_ID_SET.has(entry.id)) {
     const cairo = await readWriteStuffCairoReferenceForEntryV1(entry.id);
     if (fixtureBundle.scene.source.kind !== "imported-manim-server-snapshot") {
       throw new Error("WriteStuff V12 Cairo comparisons require imported Manim snapshots.");

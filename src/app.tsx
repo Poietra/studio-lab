@@ -764,10 +764,7 @@ export function App({
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
-  const boundedRuntimeEditTargetId =
-    previewRenderer?.initialEditRuntimeAuthority?.profile === "line-joints-v10"
-      ? previewRenderer.initialEditRuntimeAuthority.studioEntityId
-      : null;
+  const boundedRuntimeEditTargetId = previewRenderer?.initialEditRuntimeAuthority?.studioEntityId ?? null;
   const boundedRuntimeMutationIsLocked = (entityId: string) =>
     boundedRuntimeEditTargetId !== null && entityId !== boundedRuntimeEditTargetId;
   const {
@@ -972,7 +969,8 @@ export function App({
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
   const retainedInitialEditDragAuthority =
-    (dragPreview !== null || scalePreview !== null) && currentTime === 0
+    (dragPreview !== null || scalePreview !== null) &&
+    (currentTime === 0 || previewRenderer?.initialEditRuntimeAuthority?.profile === "write-stuff-v12")
       ? previewRenderer?.initialEditRuntimeAuthority
       : null;
   const presentedInitialEditAuthority =
@@ -1977,7 +1975,13 @@ export function App({
       setIsPlaying(false);
       return null;
     }
-    if (input.requireAlignedPlayhead && Math.abs(currentTime - anchor.workingTime) >= 0.0005) {
+    const visibleWriteStuffInitialEdit =
+      runtimePresenceAuthority?.profile === "write-stuff-v12" && anchor.sourceTime === 0;
+    if (
+      input.requireAlignedPlayhead &&
+      !visibleWriteStuffInitialEdit &&
+      Math.abs(currentTime - anchor.workingTime) >= 0.0005
+    ) {
       setCurrentTime(anchor.workingTime);
       setIsPlaying(false);
       setDraftError(
@@ -2485,14 +2489,53 @@ export function App({
       return false;
     }
     if (boundedRuntimeMutationIsLocked(entityId)) {
-      setDraftError("Only the runtime-proven center LineJoints object can be edited in this preview.");
+      setDraftError("Only the runtime-proven source edit target can be changed in this preview.");
       return false;
     }
-    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
-    if (!entity) return false;
-    if (previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entityId) {
-      setDraftError("This runtime-backed object currently supports canvas drag and uniform scale only.");
-      return false;
+    const initialTransformAuthority = previewRenderer?.initialEditRuntimeAuthority;
+    const entity = editableEntities.find((candidate) => candidate.id === entityId);
+    if (!entity || (!entity.present && initialTransformAuthority?.studioEntityId !== entityId)) return false;
+    if (initialTransformAuthority?.studioEntityId === entityId) {
+      if (!("baseCenter" in initialTransformAuthority) || !edits.position || edits.content || edits.dimensions) {
+        setDraftError("This runtime-backed object currently supports position and uniform scale only.");
+        return false;
+      }
+      if (!draftBaseState) return false;
+      const sourcePrograms = draftPrecedingCanonicalPrograms;
+      const sourceScene = projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, sourcePrograms);
+      const anchor = manualAuthoringAnchor({
+        action: "Inspector position edit",
+        allowSyntheticPreviewAnchor: true,
+        requireAlignedPlayhead: true,
+        scene: sourceScene,
+        sourcePrograms,
+        targetEntityIds: [entityId],
+      });
+      if (!anchor) return false;
+      const validationScene = projectStudioPreviewInitialValidationSceneV1(
+        sourceScene,
+        anchor.sourceTime === 0 ? initialTransformAuthority : null,
+      );
+      const validation = createDirectManipulationPositionProgram({
+        capturedPlayhead: anchor.sourceTime,
+        delta: {
+          x: edits.position.x - initialTransformAuthority.baseCenter.x,
+          y: edits.position.y - initialTransformAuthority.baseCenter.y,
+        },
+        positions: { [entityId]: initialTransformAuthority.baseCenter },
+        scene: validationScene,
+        start: anchor.sourceTime,
+        targetEntityIds: [entityId],
+        transactionId: `studio-inspector-position-${crypto.randomUUID()}`,
+      });
+      const validated = validatedProgramRecord(validation);
+      if (validated.kind === "invalid") {
+        setDraftError(validated.message);
+        return false;
+      }
+      const installed = installCanonicalDraft(validated.record, [entityId], sourcePrograms);
+      if (installed) setInspectorReturnFocus(returnFocus);
+      return installed;
     }
     if (edits.position && entity.geometry.position.kind === "unknown") {
       setDraftError(`Studio cannot move ${entityLabel(entity)} safely: ${entity.geometry.position.reason}`);
