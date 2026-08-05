@@ -24,6 +24,7 @@ import {
   deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
+  deriveWriteStuffV12TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
@@ -716,12 +717,18 @@ export class FastManimSnapshotRunner {
     signal?: AbortSignal,
   ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
     const candidateProfile =
-      requestValue.sceneName === "WarpSquare" ? 9 : requestValue.sceneName === "LineJoints" ? 10 : null;
+      requestValue.sceneName === "WarpSquare"
+        ? 9
+        : requestValue.sceneName === "LineJoints"
+          ? 10
+          : requestValue.sceneName === "WriteStuff"
+            ? 12
+            : null;
     if (
       candidateProfile === null ||
       (this.snapshotVersion !== undefined && this.snapshotVersion !== candidateProfile)
     ) {
-      throw new TypeError("Candidate source preflight is available only for the bounded V9 and V10 edit profiles.");
+      throw new TypeError("Candidate source preflight is available only for the bounded V9, V10, and V12 profiles.");
     }
     if (
       typeof sourceText !== "string" ||
@@ -733,7 +740,8 @@ export class FastManimSnapshotRunner {
     // cannot be reduced to the corresponding audited source before reserving
     // any producer or sandbox capacity.
     if (candidateProfile === 9) deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
-    else deriveLineJointsV10TransformPlan(sourceText, requestValue.sceneName);
+    else if (candidateProfile === 10) deriveLineJointsV10TransformPlan(sourceText, requestValue.sceneName);
+    else deriveWriteStuffV12TransformPlan(sourceText, requestValue.sceneName);
     const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
     const candidate = Object.freeze({
       hash: sourceHash,
@@ -943,13 +951,15 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
     let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
+    let writeStuffV12Plan: ExpectedFastManimSnapshotCorrelationV1["writeStuffV12Plan"];
     if (
       snapshotVersion === 3 ||
       snapshotVersion === 4 ||
       snapshotVersion === 5 ||
       snapshotVersion === 7 ||
       snapshotVersion === 9 ||
-      snapshotVersion === 10
+      snapshotVersion === 10 ||
+      snapshotVersion === 12
     ) {
       try {
         if (snapshotVersion === 3) {
@@ -962,8 +972,10 @@ export class FastManimSnapshotRunner {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
         } else if (snapshotVersion === 9) {
           warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
-        } else {
+        } else if (snapshotVersion === 10) {
           lineJointsV10Plan = deriveLineJointsV10TransformPlan(before.source, request.sceneName);
+        } else {
+          writeStuffV12Plan = deriveWriteStuffV12TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -978,6 +990,7 @@ export class FastManimSnapshotRunner {
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
+      ...(writeStuffV12Plan ? { writeStuffV12Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
