@@ -351,7 +351,9 @@ export async function digestStudioPreviewSceneRevisionV1(
   const sourceAuthority =
     source.kind === "imported-manim-server-snapshot"
       ? [source.kind, source.sourceHash, source.runtimeConfigHash, source.snapshotVersion, source.snapshotHash]
-      : [source.kind, source.editProgramVersion, source.revisionHash];
+      : source.kind === "imported-manim-runtime-trace"
+        ? [source.kind, source.sourceHash, source.runtimeConfigHash, source.traceVersion, source.traceDigest]
+        : [source.kind, source.editProgramVersion, source.revisionHash];
   // An ordered scalar tuple is the canonical serialization for this digest.
   // Every authority axis that can alter the compiled bundle is included so a
   // retained worker never observes two different scenes under one revision.
