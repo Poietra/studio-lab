@@ -158,6 +158,7 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     const runtimeTrace = await compile(
       {
         ...base,
+        duration: 6,
         source: {
           kind: "imported-manim-runtime-trace",
           runtimeConfigHash: SCENE_HASH,
@@ -204,6 +205,8 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     const runtimeTraceEndpoint = await compile(
       {
         ...base,
+        duration: 6,
+        entities: base.entities.map((entity) => ({ ...entity, lifetimes: [{ end: 6, start: 0 }] })),
         source: {
           kind: "imported-manim-runtime-trace",
           runtimeConfigHash: SCENE_HASH,
@@ -213,7 +216,7 @@ describe("Poietra TypeScript reference evaluator v1", () => {
         },
       },
       assets,
-      2,
+      6,
     );
     expect(runtimeTraceEndpoint.packet.draws).toHaveLength(1);
   });

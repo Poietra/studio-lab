@@ -16,6 +16,12 @@ import {
   strokeStyleV1Schema,
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import {
+  RUNTIME_TRACE_DURATION_SECONDS_V1,
+  RUNTIME_TRACE_FRAME_COUNT_V1,
+  RUNTIME_TRACE_FRAME_RATE_V1,
+  runtimeTraceFrameIndexAtTimeV1,
+} from "../src/engine/runtime-trace-time";
 import { sourceBindingV1Schema } from "../src/engine/source-runtime-identity";
 import {
   manimProjectIdSchema,
@@ -30,12 +36,11 @@ export const FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V1 =
 export const FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V1 = "poietra.fast-manim-runtime-trace-config" as const;
 export const FAST_MANIM_RUNTIME_TRACE_VERSION_V1 = 1 as const;
 export const FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1 = 1 as const;
-export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 = 60 as const;
-export const FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1 = 6 as const;
+export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 = RUNTIME_TRACE_FRAME_RATE_V1;
+export const FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1 = RUNTIME_TRACE_DURATION_SECONDS_V1;
 export const FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1 = 13 as const;
 export const FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V1 = "post-updater-pre-cairo-paint" as const;
-export const FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 =
-  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 * FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1;
+export const FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 = RUNTIME_TRACE_FRAME_COUNT_V1;
 export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 = 10 as const;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 = 5 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1 = 2 * 1024 * 1024;
@@ -694,12 +699,5 @@ export function digestFastManimRuntimeTraceV1(trace: FastManimRuntimeTraceV1) {
  * retaining floor selection for ordinary between-frame seeks.
  */
 export function fastManimRuntimeTraceFrameIndexAtTimeV1(time: number) {
-  if (!Number.isFinite(time) || time < 0 || time > FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1) {
-    throw new RangeError("Runtime Trace sample time must be finite and inside the six-second Scene.");
-  }
-  const scaled = time * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1;
-  const nearestFrame = Math.round(scaled);
-  const gridTolerance = 4 * Number.EPSILON * Math.max(1, Math.abs(scaled));
-  const frame = Math.abs(scaled - nearestFrame) <= gridTolerance ? nearestFrame : Math.floor(scaled);
-  return Math.min(FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 - 1, frame);
+  return runtimeTraceFrameIndexAtTimeV1(time);
 }
