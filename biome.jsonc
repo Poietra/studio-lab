@@ -11,6 +11,8 @@
       "**",
       "!!src-tauri/icons",
       "!!fixtures/mathtex-manim-parity-v1",
+      // Exact dvisvgm cache inputs are hash-pinned evidence, not authored UI SVGs.
+      "!!fixtures/write-stuff-tex-cache-v1",
       // Sealed producer output stays canonical/minified; formatting it would add thousands of generated lines.
       "!!server/test-fixtures/fast-manim-*-combined.json",
       "!!fixtures/manim-tex-natural-metrics-v1/reference.json",
@@ -21,7 +23,8 @@
       "!!fixtures/engine-v1/real-square-to-circle-v8.json",
       "!!fixtures/engine-v1/real-spiral-in-v11.json",
       "!!fixtures/engine-v1/real-warp-square-v9.json",
-      "!!fixtures/engine-v1/real-write-stuff-v12.json"
+      "!!fixtures/engine-v1/real-write-stuff-v12.json",
+      "!!fixtures/engine-v1/real-write-stuff-v12-edited.json"
     ]
   },
   "formatter": {
