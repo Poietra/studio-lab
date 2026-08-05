@@ -1,6 +1,12 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
+import { lowerFastManimRuntimeTraceProducerJsonV1 } from "../../server/fast-manim-runtime-trace-lowering";
+import {
+  runtimeTraceFixture,
+  runtimeTraceRequestFixture,
+  trustedRuntimeTraceProducer,
+} from "../../server/test-fixtures/fast-manim-runtime-trace-fixture";
 import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
@@ -1079,6 +1085,74 @@ describe("studioPreviewInteractionAuthorityV1", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
+  it("passes a pristine verified Runtime Trace through as selection-only root evidence", async () => {
+    const base = await compilablePreviewInput();
+    const trace = runtimeTraceFixture();
+    const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
+      canonicalJsonV1(trace),
+      runtimeTraceRequestFixture(),
+      trustedRuntimeTraceProducer(trace),
+    );
+    const runtimeSource = bundle.scene.source;
+    if (runtimeSource.kind !== "imported-manim-runtime-trace") {
+      throw new Error("Runtime Trace lowering lost its source evidence.");
+    }
+    const runtimeState = {
+      ...base.proposedState.evaluatedScene,
+      duration: bundle.scene.duration,
+    };
+    const proposedState: ProposedState = {
+      ...base.proposedState,
+      base: { ...base.proposedState.base, runtimeSceneState: runtimeState },
+      evaluatedScene: runtimeState,
+    };
+    const context = {
+      projectId: trace.projectId,
+      sceneName: trace.sceneName,
+      sourceDuration: bundle.scene.duration,
+      sourceHash: trace.sourceHash,
+      sourcePath: trace.sourcePath,
+      workingRevision: PRISTINE_WORKING_REVISION,
+    } as const;
+    const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+      assetPayloads: [],
+      correlation: {
+        assetsManifestDigest: bundle.assets.manifestDigest,
+        context,
+        engineRevisionHash: runtimeSource.traceDigest,
+        sceneDuration: bundle.scene.duration,
+        sceneId: bundle.scene.sceneId,
+        serverPublicationRevision: null,
+      },
+      duration: bundle.scene.duration,
+      sceneId: bundle.scene.sceneId,
+      snapshot: bundle,
+      sourceLabel: "verified Runtime Trace",
+      sourceRuntimeIdentity: new Map(
+        trace.roots.map((root) => [
+          root.binding.name,
+          { bindingId: root.binding.id, entityId: root.id, sourceName: root.binding.name },
+        ]),
+      ),
+    };
+
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 8, width: 14.222222222222221 },
+      proposedState,
+      snapshot,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: "demo/example_scenes/basic.py/UpdatersExample",
+    });
+    expect(result.kind).toBe("compiled");
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.bundle).toBe(bundle);
+    expect(result.scene.interactionEntityIds).toEqual(trace.roots.map(({ id }) => id));
+    expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
+      kind: "selection-only",
+      reason: "runtime-trace-preview-only",
+    });
+  });
+
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {
     const { proposedState, snapshot } = await linePreviewInput();
     const result = await compileStudioPreviewSceneV1({
