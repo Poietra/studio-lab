@@ -163,7 +163,7 @@ fn assert_close(actual: f64, expected: f64) {
 #[test]
 fn shared_generic_fixture_preserves_topology_and_packet_paint_order() {
     let (packet, reference) = generic_fill_fixture();
-    assert!(reference.reason.contains("four-sample edge-antialiasing"));
+    assert!(reference.reason.contains("edge antialiasing"));
 
     let frame = prepare_frame_v1(&packet).expect("concave fill must tessellate");
     assert_eq!(frame.draws()[0].draw_id(), "draw:0");

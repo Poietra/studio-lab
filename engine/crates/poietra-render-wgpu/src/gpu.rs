@@ -6,8 +6,8 @@ use crate::image_gpu::{
 use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
     GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
-    ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, PreparedFrameV1,
-    PreparedRenderCommandV1, RENDER_SAMPLE_COUNT_V1, build_gpu_upload_plan_v1,
+    ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, MANIM_CAIRO_SAMPLE_COUNT_V1,
+    PreparedFrameV1, PreparedRenderCommandV1, build_gpu_upload_plan_v1,
 };
 use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 
@@ -16,7 +16,7 @@ const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 /// Maximum logical bytes for the retained four-sample color attachment under
 /// the Scene IR viewport-pixel limit.
 pub const MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1: u64 =
-    MAX_VIEWPORT_PIXELS_V1 * RENDER_SAMPLE_COUNT_V1 as u64 * RGBA8_BYTES_PER_SAMPLE_V1;
+    MAX_VIEWPORT_PIXELS_V1 * MANIM_CAIRO_SAMPLE_COUNT_V1 as u64 * RGBA8_BYTES_PER_SAMPLE_V1;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -53,6 +53,13 @@ fn cairo_target_format_for_linear_view(
     .then(|| target_format.remove_srgb_suffix())
 }
 
+const fn paint_sample_count_v1(compositing: RenderCompositingV1) -> u32 {
+    match compositing {
+        RenderCompositingV1::LinearLight => 1,
+        RenderCompositingV1::ManimCairoSrgb => MANIM_CAIRO_SAMPLE_COUNT_V1,
+    }
+}
+
 fn multisample_color_texture_descriptor_v1(
     format: wgpu::TextureFormat,
     width_px: u32,
@@ -66,7 +73,7 @@ fn multisample_color_texture_descriptor_v1(
             width: width_px,
         },
         mip_level_count: 1,
-        sample_count: RENDER_SAMPLE_COUNT_V1,
+        sample_count: MANIM_CAIRO_SAMPLE_COUNT_V1,
         dimension: wgpu::TextureDimension::D2,
         format,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -129,7 +136,7 @@ fn multisample_color_target_bytes_v1(
 ) -> Result<u64, RendererMemorySnapshotErrorV1> {
     u64::from(width_px)
         .checked_mul(u64::from(height_px))
-        .and_then(|pixels| pixels.checked_mul(u64::from(RENDER_SAMPLE_COUNT_V1)))
+        .and_then(|pixels| pixels.checked_mul(u64::from(MANIM_CAIRO_SAMPLE_COUNT_V1)))
         .and_then(|samples| samples.checked_mul(RGBA8_BYTES_PER_SAMPLE_V1))
         .ok_or(RendererMemorySnapshotErrorV1::MultisampleColorTargetByteAccounting)
 }
@@ -379,7 +386,8 @@ pub struct WgpuFillRendererV1 {
 /// Exact logical byte counts for GPU resources retained by one renderer.
 ///
 /// These values cover the grow-only vertex/index buffer arena, image textures
-/// retained by the bounded LRU, and the current four-sample color attachment.
+/// retained by the bounded LRU, and the optional Manim/Cairo four-sample color
+/// attachment after that compositing profile has been rendered.
 /// They intentionally exclude backend-owned pipeline/surface allocation
 /// overhead, so they are not a browser-process RSS claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -418,10 +426,11 @@ pub enum RendererMemorySnapshotErrorV1 {
 }
 
 impl WgpuFillRendererV1 {
-    /// Creates paired four-sample pipelines for one sRGB view and its base
-    /// Unorm view. Both pipelines share the retained geometry arena, image
-    /// cache, and a lazily resized multisample attachment; each frame resolves
-    /// into the caller's single-sample target.
+    /// Creates a portable single-sample linear-light pipeline and a four-sample
+    /// Manim/Cairo pipeline for the sRGB view's base Unorm format. Both share
+    /// the retained geometry arena and image cache. Cairo frames lazily retain
+    /// and resolve a multisample attachment into the caller's target; linear
+    /// frames draw directly so browser/native sRGB output remains deterministic.
     ///
     /// # Errors
     ///
@@ -456,7 +465,7 @@ impl WgpuFillRendererV1 {
             },
         )?;
         let shader = device.create_shader_module(wgpu::include_wgsl!("fill.wgsl"));
-        let create_paint_pipeline = |label, format| {
+        let create_paint_pipeline = |label, format, sample_count| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: None,
@@ -477,7 +486,7 @@ impl WgpuFillRendererV1 {
                 },
                 depth_stencil: None,
                 multisample: wgpu::MultisampleState {
-                    count: RENDER_SAMPLE_COUNT_V1,
+                    count: sample_count,
                     ..wgpu::MultisampleState::default()
                 },
                 fragment: Some(wgpu::FragmentState {
@@ -494,11 +503,15 @@ impl WgpuFillRendererV1 {
                 cache: None,
             })
         };
-        let pipeline =
-            create_paint_pipeline("poietra linear-light paint pipeline v1", target_format);
+        let pipeline = create_paint_pipeline(
+            "poietra linear-light paint pipeline v1",
+            target_format,
+            paint_sample_count_v1(RenderCompositingV1::LinearLight),
+        );
         let cairo_pipeline = create_paint_pipeline(
             "poietra Manim Cairo sRGB paint pipeline v1",
             cairo_target_format,
+            paint_sample_count_v1(RenderCompositingV1::ManimCairoSrgb),
         );
         Ok(Self {
             arena: GpuBufferArenaV1::default(),
@@ -624,23 +637,26 @@ impl WgpuFillRendererV1 {
             return Err(RenderFrameErrorV1::ManimCairoSrgbImagesUnsupported);
         }
 
-        let recreate_multisample_target =
-            self.multisample_target
-                .as_ref()
-                .is_none_or(|multisample_target| {
-                    !multisample_target.matches(
-                        expected_target_format,
-                        target.width_px,
-                        target.height_px,
-                    )
-                });
-        if recreate_multisample_target {
-            self.multisample_target = Some(MultisampleColorTargetV1::new(
-                device,
-                expected_target_format,
-                target.width_px,
-                target.height_px,
-            ));
+        let uses_multisample_target = paint_sample_count_v1(frame.compositing()) > 1;
+        if uses_multisample_target {
+            let recreate_multisample_target =
+                self.multisample_target
+                    .as_ref()
+                    .is_none_or(|multisample_target| {
+                        !multisample_target.matches(
+                            expected_target_format,
+                            target.width_px,
+                            target.height_px,
+                        )
+                    });
+            if recreate_multisample_target {
+                self.multisample_target = Some(MultisampleColorTargetV1::new(
+                    device,
+                    expected_target_format,
+                    target.width_px,
+                    target.height_px,
+                ));
+            }
         }
 
         let mut evidence = RenderStageEvidenceV1::empty();
@@ -712,17 +728,22 @@ impl WgpuFillRendererV1 {
         });
         {
             let clear = frame.clear_color();
-            let multisample_view = &self
-                .multisample_target
-                .as_ref()
-                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
-                    "validated target extent did not retain a multisample attachment",
-                ))?
-                .view;
+            let (render_view, resolve_target, store) = if uses_multisample_target {
+                let multisample_view = &self
+                    .multisample_target
+                    .as_ref()
+                    .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                        "validated Cairo target extent did not retain a multisample attachment",
+                    ))?
+                    .view;
+                (multisample_view, Some(target.view), wgpu::StoreOp::Discard)
+            } else {
+                (target.view, None, wgpu::StoreOp::Store)
+            };
             let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: multisample_view,
+                view: render_view,
                 depth_slice: None,
-                resolve_target: Some(target.view),
+                resolve_target,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: clear[0],
@@ -730,7 +751,7 @@ impl WgpuFillRendererV1 {
                         b: clear[2],
                         a: clear[3],
                     }),
-                    store: wgpu::StoreOp::Discard,
+                    store,
                 },
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -813,5 +834,14 @@ mod tests {
         );
         assert_eq!(multisample_color_target_bytes_v1(640, 360), Ok(3_686_400));
         assert_eq!(MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1, 536_870_912);
+    }
+
+    #[test]
+    fn only_manim_cairo_frames_use_backend_multisampling() {
+        assert_eq!(paint_sample_count_v1(RenderCompositingV1::LinearLight), 1);
+        assert_eq!(
+            paint_sample_count_v1(RenderCompositingV1::ManimCairoSrgb),
+            4
+        );
     }
 }

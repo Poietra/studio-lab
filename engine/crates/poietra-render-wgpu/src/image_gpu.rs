@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use poietra_scene_ir::{ImageSamplerV1, MAX_ASSETS_V1};
 
-use crate::{DecodedPngAssetV1, PreparedImageDrawV1, RENDER_SAMPLE_COUNT_V1};
+use crate::{DecodedPngAssetV1, PreparedImageDrawV1};
 
 const IMAGE_VERTICES_PER_DRAW_V1: usize = 4;
 const IMAGE_INDICES_PER_DRAW_V1: usize = 6;
@@ -245,10 +245,7 @@ impl ImagePipelineV1 {
                 ..wgpu::PrimitiveState::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: RENDER_SAMPLE_COUNT_V1,
-                ..wgpu::MultisampleState::default()
-            },
+            multisample: wgpu::MultisampleState::default(),
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_main"),

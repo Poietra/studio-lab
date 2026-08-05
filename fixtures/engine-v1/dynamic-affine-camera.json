@@ -20,12 +20,12 @@
   "pixelReferences": {
     "a": {
       "clearOnly": false,
-      "reason": "Interior probes pin fills and overlap while the child-stroke probe pins deterministic four-sample edge coverage after resolve.",
+      "reason": "Interior probes avoid raster edges while pinning child-only fill, parent-child overlap, child stroke, and motion-path stroke pixels.",
       "samples": {
         "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
         "parent-child-overlap": { "at": [110, 12], "rgba": [149, 122, 152, 255], "tolerance": 4 },
-        "child-stroke": { "at": [120, 22], "rgba": [24, 128, 12, 255], "tolerance": 4 },
-        "motion-stroke": { "at": [126, 18], "rgba": [186, 66, 192, 255], "tolerance": 4 },
+        "child-stroke": { "at": [120, 22], "rgba": [37, 176, 18, 255], "tolerance": 4 },
+        "motion-stroke": { "at": [126, 18], "rgba": [194, 69, 193, 255], "tolerance": 4 },
         "child-only-fill": { "at": [100, 8], "rgba": [25, 111, 149, 255], "tolerance": 4 }
       }
     },
@@ -51,7 +51,7 @@
       "samples": {
         "background": { "at": [0, 0], "rgba": [0, 3, 5, 255], "tolerance": 4 },
         "parent-child-overlap": { "at": [255, 15], "rgba": [146, 113, 139, 255], "tolerance": 4 },
-        "motion-stroke": { "at": [305, 40], "rgba": [105, 32, 127, 255], "tolerance": 4 },
+        "motion-stroke": { "at": [305, 40], "rgba": [145, 47, 174, 255], "tolerance": 4 },
         "child-only-fill": { "at": [230, 10], "rgba": [22, 101, 136, 255], "tolerance": 4 }
       }
     },

@@ -253,7 +253,7 @@
     "viewport": { "heightPx": 90, "widthPx": 160 }
   },
   "reference": {
-    "reason": "Opaque interior probes are at least five pixels from topology edges, so exact RGBA remains stable under the v1 four-sample edge-antialiasing contract.",
+    "reason": "Opaque interior probes are at least five pixels from topology edges; exact RGBA is required because edge antialiasing is outside the v1 renderer profile.",
     "samples": {
       "background": { "at": [5, 5], "rgba": [0, 0, 0, 255], "tolerance": 0 },
       "concaveInterior": { "at": [25, 45], "rgba": [255, 0, 0, 255], "tolerance": 0 },

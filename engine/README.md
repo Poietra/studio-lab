@@ -152,23 +152,22 @@ verified decoded bytes. Texture uploads and nearest/linear binding reuse are
 reported separately by opt-in telemetry.
 
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
-and single-sample `TextureView` values. It retains one four-sample color attachment
-keyed by extent and compositing format, clears and draws into that attachment, then
-resolves into the caller's target. Resize or linear/Cairo format changes replace the
-attachment; its exact RGBA8 sample bytes are reported separately in opt-in memory
-telemetry and remain bounded at 512 MiB by the existing Scene viewport-pixel cap.
-Indexed path triangles and verified PNG quads retain packet paint order. The implicit
-`linear-light` contract uses premultiplied linear values through an
-`Rgba8UnormSrgb` or `Bgra8UnormSrgb` view. Imported Manim V11 and V12 vector
-packets select the explicit `manim-cairo-srgb` contract instead: premultiplied
-sRGB values are blended through the matching base Unorm view. V12 additionally
+and single-sample `TextureView` values. The portable `linear-light` path and image
+pipelines draw directly through an `Rgba8UnormSrgb` or `Bgra8UnormSrgb` view.
+Imported Manim V11 and V12 vector packets select the explicit `manim-cairo-srgb`
+contract instead: premultiplied sRGB values are blended through the matching base
+Unorm view into a retained four-sample attachment, then resolved into the caller's
+target. Resizing a Cairo frame replaces the attachment; its exact RGBA8 sample bytes
+are reported separately in opt-in memory telemetry and remain bounded at 512 MiB by
+the existing Scene viewport-pixel cap. Indexed path triangles and verified PNG quads
+retain packet paint order. V12 additionally
 retains its completed Write state when the playhead is exactly at Scene duration;
 older profiles preserve the original half-open endpoint semantics. Cairo-mode
 image draws fail closed until their filtering semantics are defined. A renderer
 is constructed from the sRGB view format and retains the paired base-Unorm path
-pipeline for per-frame selection. Four-sample coverage antialiasing is shared by
-native and browser path/image pipelines; it does not substitute for truthful source
-font geometry. Device creation, cross-worker/persistent texture caching, and
+pipeline for per-frame selection. Four-sample coverage on Manim/Cairo vector frames
+does not substitute for truthful source font geometry; portable antialiasing for the
+linear-light sRGB path remains future work. Device creation, cross-worker/persistent texture caching, and
 clipping remain outside this slice. Native software-adapter and
 Chromium Worker readbacks share fixtures for generic fill topology and for animated
 curved/joined strokes, fill/stroke composition, and translucent source order; the

@@ -374,12 +374,12 @@
     "viewport": { "heightPx": 90, "widthPx": 160 }
   },
   "reference": {
-    "reason": "Interior and four-sample coverage probes cover round and square caps, miter, bevel and round joins, and fill-before-translucent-stroke composition; tolerance remains reserved for linear-light blending.",
+    "reason": "Interior and topology-discriminating probes cover round and square caps, miter, bevel and round joins, and fill-before-translucent-stroke composition; tolerance is reserved for linear-light blending because edge antialiasing is outside the v1 renderer profile.",
     "samples": {
       "background": { "at": [5, 5], "rgba": [0, 0, 0, 255], "tolerance": 0 },
-      "animatedCurve": { "at": [40, 35], "rgba": [0, 225, 0, 255], "tolerance": 0 },
+      "animatedCurve": { "at": [40, 35], "rgba": [0, 255, 0, 255], "tolerance": 0 },
       "roundCapExterior": { "at": [54, 37], "rgba": [0, 255, 0, 255], "tolerance": 0 },
-      "squareCapCorner": { "at": [72, 69], "rgba": [0, 0, 225, 255], "tolerance": 0 },
+      "squareCapCorner": { "at": [72, 69], "rgba": [0, 0, 255, 255], "tolerance": 0 },
       "miterJoin": { "at": [80, 15], "rgba": [0, 0, 255, 255], "tolerance": 0 },
       "roundJoinArc": { "at": [40, 6], "rgba": [0, 255, 255, 255], "tolerance": 0 },
       "combinedFill": { "at": [120, 35], "rgba": [188, 0, 0, 255], "tolerance": 1 },
