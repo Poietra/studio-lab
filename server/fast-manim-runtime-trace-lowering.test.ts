@@ -1,16 +1,29 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
-import { canonicalFastManimRuntimeTraceCoordinateV1 } from "./fast-manim-runtime-trace-contract";
+import {
+  canonicalFastManimRuntimeTraceCoordinateV1,
+  digestFastManimRuntimeTraceAppearanceV1,
+  digestFastManimRuntimeTracePathV1,
+  type TrustedFastManimRuntimeTraceProducerV1,
+} from "./fast-manim-runtime-trace-contract";
 import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
 import {
-  expectedRuntimeTraceCorrelation,
   RUNTIME_TRACE_CONFIG_HASH,
+  RUNTIME_TRACE_SOURCE_TEXT,
   runtimeTraceFixture,
+  runtimeTraceRequestFixture,
+  sealRuntimeTraceFixture,
+  trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 
-async function lower(trace = runtimeTraceFixture()) {
-  return lowerFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(trace), expectedRuntimeTraceCorrelation(trace));
+async function lower(trace = runtimeTraceFixture(), trusted?: TrustedFastManimRuntimeTraceProducerV1) {
+  const sealed = sealRuntimeTraceFixture(trace);
+  return lowerFastManimRuntimeTraceProducerJsonV1(
+    canonicalJsonV1(sealed),
+    runtimeTraceRequestFixture(),
+    trusted ?? trustedRuntimeTraceProducer(sealed),
+  );
 }
 
 async function frameAt(bundle: Awaited<ReturnType<typeof lower>>, sampleTime: number) {
@@ -98,16 +111,74 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     }
     await expect(lower(trace)).rejects.toMatchObject({
       code: "normalization-budget",
+      message: expect.stringContaining("0 bytes"),
     });
+  });
+
+  it("rejects re-addressed visual substitutions against independent trusted evidence", async () => {
+    const original = runtimeTraceFixture();
+    const trusted = trustedRuntimeTraceProducer(original);
+    const substitutions = [
+      (trace: ReturnType<typeof runtimeTraceFixture>) => {
+        const resource = trace.resources.paths[0];
+        const previousId = resource.id;
+        resource.path.subpaths[0].start.x = 0.25;
+        resource.id = `path:${digestFastManimRuntimeTracePathV1(resource.path)}`;
+        trace.frames.forEach((frame) => {
+          frame.draws.forEach((draw) => {
+            if (draw.pathId === previousId) draw.pathId = resource.id;
+          });
+        });
+      },
+      (trace: ReturnType<typeof runtimeTraceFixture>) => {
+        const resource = trace.resources.appearances[0];
+        const previousId = resource.id;
+        if (!resource.fill) throw new Error("Expected filled fixture appearance.");
+        resource.fill.color.red = 0.5;
+        resource.id = `appearance:${digestFastManimRuntimeTraceAppearanceV1({
+          fill: resource.fill,
+          stroke: resource.stroke,
+        })}`;
+        trace.frames.forEach((frame) => {
+          frame.draws.forEach((draw) => {
+            if (draw.appearanceId === previousId) draw.appearanceId = resource.id;
+          });
+        });
+      },
+      (trace: ReturnType<typeof runtimeTraceFixture>) => {
+        trace.frames[1].draws[0].opacity = 0.5;
+      },
+      (trace: ReturnType<typeof runtimeTraceFixture>) => {
+        trace.frames[1].draws[0].localPosition.x = 0.125;
+      },
+    ];
+
+    for (const substitute of substitutions) {
+      const changed = structuredClone(original);
+      substitute(changed);
+      await expect(lower(changed, trusted)).rejects.toThrow(/stale producer correlation/);
+    }
+  });
+
+  it("pins lowering to the exact reviewed official source bytes", async () => {
+    const request = runtimeTraceRequestFixture(`${RUNTIME_TRACE_SOURCE_TEXT}\n`);
+    const trace = runtimeTraceFixture();
+    trace.sourceHash = request.sourceHash;
+    sealRuntimeTraceFixture(trace);
+    await expect(
+      lowerFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(trace), request, trustedRuntimeTraceProducer(trace)),
+    ).rejects.toMatchObject({ code: "semantic-mismatch" });
   });
 
   it("rechecks producer correlation before any lowering", async () => {
     const trace = runtimeTraceFixture();
+    trace.sourceHash = "f".repeat(64);
     await expect(
-      lowerFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(trace), {
-        ...expectedRuntimeTraceCorrelation(trace),
-        sourceHash: "f".repeat(64),
-      }),
+      lowerFastManimRuntimeTraceProducerJsonV1(
+        canonicalJsonV1(trace),
+        runtimeTraceRequestFixture(),
+        trustedRuntimeTraceProducer(trace),
+      ),
     ).rejects.toThrow(/stale sourceHash correlation/);
   });
 });

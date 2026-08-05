@@ -3,7 +3,11 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
   canonicalFastManimRuntimeTraceCoordinateV1,
+  digestFastManimRuntimeTraceAppearanceV1,
+  digestFastManimRuntimeTracePathV1,
   digestFastManimRuntimeTraceV1,
+  digestFastManimRuntimeTraceVisualSemanticsV1,
+  expectedFastManimRuntimeTraceCorrelationFromRequestV1,
   FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1,
   fastManimRuntimeTraceFrameIndexAtTimeV1,
   fastManimRuntimeTraceV1Schema,
@@ -20,6 +24,8 @@ import {
   runtimeTraceFixture,
   runtimeTraceRequestFixture,
   runtimeTraceSegment,
+  sealRuntimeTraceFixture,
+  trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 
 function clone<T>(value: T): T {
@@ -32,6 +38,9 @@ describe("fast-manim Runtime Trace V1 contract", () => {
     expect(request.runtimeConfigHash).toBe("9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97");
     expect(request.sceneId).toBe("scene:89e99799b8a4df781a0ee4dca3b92211b28cdfb690324a33df5917a457842128");
     expect(parseFastManimRuntimeTraceProducerRequestJsonV1(canonicalJsonV1(request))).toEqual(request);
+    expect(expectedFastManimRuntimeTraceCorrelationFromRequestV1(request, trustedRuntimeTraceProducer())).toEqual(
+      expectedRuntimeTraceCorrelation(),
+    );
 
     for (const changed of [
       { ...request, sourceHash: RUNTIME_TRACE_GLYPH_HASH },
@@ -71,6 +80,26 @@ describe("fast-manim Runtime Trace V1 contract", () => {
     );
   });
 
+  it("matches Python resource and visual-semantics digest goldens", () => {
+    const trace = runtimeTraceFixture();
+    expect(digestFastManimRuntimeTracePathV1(trace.resources.paths[0].path)).toBe(
+      "0831c3ce008105c35bd2177d825e833e652c7f39b4cdcec7cc5f8335aea220b0",
+    );
+    expect(
+      digestFastManimRuntimeTraceAppearanceV1({
+        fill: trace.resources.appearances[0].fill,
+        stroke: trace.resources.appearances[0].stroke,
+      }),
+    ).toBe("142dd022a18fb23248b2a4cccdff797ef4e9f77fa0a9d7a7deffe9b107b82ff7");
+
+    trace.frames.forEach((frame, frameIndex) => {
+      frame.motionY = canonicalFastManimRuntimeTraceCoordinateV1(frameIndex < 300 ? frameIndex / 300 : 1);
+    });
+    expect(digestFastManimRuntimeTraceVisualSemanticsV1(trace)).toBe(
+      "0fc7b20c2f452aca2c9a1ca70a698612b1c4d01a544ee6809a418996561e4de7",
+    );
+  });
+
   it("defines floor-based frame selection and retains the duration endpoint", () => {
     for (let frameIndex = 0; frameIndex < FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1; frameIndex += 1) {
       expect(fastManimRuntimeTraceFrameIndexAtTimeV1(frameIndex / 60)).toBe(frameIndex);
@@ -98,9 +127,13 @@ describe("fast-manim Runtime Trace V1 contract", () => {
 
     const substituted = clone(trace);
     substituted.roots[1].binding.id = "source-binding:substituted";
-    expect(() => parseFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(substituted), expected)).toThrowError(
-      /stale roots correlation/,
-    );
+    sealRuntimeTraceFixture(substituted);
+    expect(() =>
+      parseFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(substituted), {
+        ...expected,
+        producer: substituted.producer,
+      }),
+    ).toThrowError(/stale roots correlation/);
   });
 
   it("rejects gaps, reordered paint, missing resources, wrong family identity, and a changed terminal hold", () => {
@@ -125,13 +158,14 @@ describe("fast-manim Runtime Trace V1 contract", () => {
         value.frames[10].draws[0].localPosition.x = 1_000_000_000;
       },
       (value: ReturnType<typeof runtimeTraceFixture>) => {
-        value.frames[10].draws[0].sourceZIndex = 1;
+        (value.frames[10].draws[0] as { sourceZIndex: number }).sourceZIndex = 1;
       },
     ];
 
     for (const mutate of mutations) {
       const changed = clone(trace);
       mutate(changed);
+      sealRuntimeTraceFixture(changed);
       expect(() =>
         parseFastManimRuntimeTraceProducerJsonV1(canonicalJsonV1(changed), expectedRuntimeTraceCorrelation(trace)),
       ).toThrowError(/violates its closed contract/);

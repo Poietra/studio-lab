@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 
 import { applyEngineEasingV1 } from "../../src/engine/easing";
 import {
   canonicalFastManimRuntimeTraceCoordinateV1,
+  digestFastManimRuntimeTraceAppearanceV1,
   digestFastManimRuntimeTraceConfigV1,
+  digestFastManimRuntimeTracePathV1,
+  digestFastManimRuntimeTraceVisualSemanticsV1,
   type ExpectedFastManimRuntimeTraceCorrelationV1,
   FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1,
   FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1,
@@ -13,11 +17,16 @@ import {
   fastManimRuntimeTraceSceneIdV1,
 } from "../fast-manim-runtime-trace-contract";
 
-export const RUNTIME_TRACE_SOURCE_HASH = "a".repeat(64);
-export const RUNTIME_TRACE_CONFIG_HASH = "b".repeat(64);
+export const RUNTIME_TRACE_SOURCE_TEXT = readFileSync(
+  new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+  "utf8",
+);
+export const RUNTIME_TRACE_SOURCE_HASH = createHash("sha256").update(RUNTIME_TRACE_SOURCE_TEXT, "utf8").digest("hex");
+export const RUNTIME_TRACE_CONFIG_HASH = "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97";
 export const RUNTIME_TRACE_GLYPH_HASH = "c".repeat(64);
-export const RUNTIME_TRACE_SQUARE_ROOT = "scene:updaters/runtime-root:square";
-export const RUNTIME_TRACE_DECIMAL_ROOT = "scene:updaters/runtime-root:decimal";
+export const RUNTIME_TRACE_SCENE_ID = "scene:89e99799b8a4df781a0ee4dca3b92211b28cdfb690324a33df5917a457842128";
+export const RUNTIME_TRACE_SQUARE_ROOT = `${RUNTIME_TRACE_SCENE_ID}/runtime-root:square`;
+export const RUNTIME_TRACE_DECIMAL_ROOT = `${RUNTIME_TRACE_SCENE_ID}/runtime-root:decimal`;
 
 const DECIMAL_FAMILY_PATHS = [
   [0, 0, 0],
@@ -36,7 +45,7 @@ function bindingId(name: string, ordinal: number, span: Readonly<Record<string, 
     "poietra.fast-manim-source-runtime-identity",
     "1",
     RUNTIME_TRACE_SOURCE_HASH,
-    "scene:updaters",
+    RUNTIME_TRACE_SCENE_ID,
     name,
     String(ordinal),
     String(span.startLine),
@@ -88,9 +97,9 @@ function roots() {
   ];
 }
 
-function draw(rootId: string, familyPath: readonly number[], paintOrder: number) {
+function draw(rootId: string, familyPath: readonly number[], paintOrder: number, appearanceId: string, pathId: string) {
   return {
-    appearanceId: "appearance:white",
+    appearanceId,
     familyPath: [...familyPath],
     localPosition: {
       x: rootId === RUNTIME_TRACE_DECIMAL_ROOT ? canonicalFastManimRuntimeTraceCoordinateV1((paintOrder - 1) * 0.4) : 0,
@@ -98,9 +107,9 @@ function draw(rootId: string, familyPath: readonly number[], paintOrder: number)
     },
     opacity: 1,
     paintOrder,
-    pathId: rootId === RUNTIME_TRACE_SQUARE_ROOT ? "path:square" : "path:glyph",
+    pathId,
     rootId,
-    sourceZIndex: 0,
+    sourceZIndex: 0 as const,
   };
 }
 
@@ -112,8 +121,17 @@ function officialMotionY(frameIndex: number) {
   return canonicalFastManimRuntimeTraceCoordinateV1(firstHalf ? 2.5 - 5 * eased : -2.5 + 5 * eased);
 }
 
-export function runtimeTraceFixture() {
+function buildRuntimeTraceFixture() {
   const traceRoots = roots();
+  const squarePath = path();
+  const glyphPath = path(2);
+  const squarePathId = `path:${digestFastManimRuntimeTracePathV1(squarePath)}`;
+  const glyphPathId = `path:${digestFastManimRuntimeTracePathV1(glyphPath)}`;
+  const appearance = {
+    fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" as const },
+    stroke: null,
+  };
+  const appearanceId = `appearance:${digestFastManimRuntimeTraceAppearanceV1(appearance)}`;
   return {
     authority: "preview-only" as const,
     camera: {
@@ -129,8 +147,10 @@ export function runtimeTraceFixture() {
     frameRate: FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1,
     frames: Array.from({ length: FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 }, (_, frameIndex) => ({
       draws: [
-        draw(RUNTIME_TRACE_SQUARE_ROOT, [], 0),
-        ...DECIMAL_FAMILY_PATHS.map((familyPath, index) => draw(RUNTIME_TRACE_DECIMAL_ROOT, familyPath, index + 1)),
+        draw(RUNTIME_TRACE_SQUARE_ROOT, [], 0, appearanceId, squarePathId),
+        ...DECIMAL_FAMILY_PATHS.map((familyPath, index) =>
+          draw(RUNTIME_TRACE_DECIMAL_ROOT, familyPath, index + 1, appearanceId, glyphPathId),
+        ),
       ],
       frameIndex,
       motionY: officialMotionY(frameIndex),
@@ -140,26 +160,20 @@ export function runtimeTraceFixture() {
       fastManimTree: "2".repeat(40),
       glyphProviderSha256: RUNTIME_TRACE_GLYPH_HASH,
       manimVersion: "0.17.3",
-      semanticsSha256: RUNTIME_TRACE_CONFIG_HASH,
+      semanticsSha256: "0".repeat(64),
     },
     projectId: "demo",
     requestId: "req-runtime-trace-1",
     resources: {
-      appearances: [
-        {
-          fill: { color: { alpha: 1, blue: 1, green: 1, red: 1 }, rule: "nonzero" as const },
-          id: "appearance:white",
-          stroke: null,
-        },
-      ],
+      appearances: [{ ...appearance, id: appearanceId }],
       paths: [
-        { id: "path:square", path: path() },
-        { id: "path:glyph", path: path(2) },
+        { id: squarePathId, path: squarePath },
+        { id: glyphPathId, path: glyphPath },
       ],
     },
     roots: traceRoots,
     runtimeConfigHash: RUNTIME_TRACE_CONFIG_HASH,
-    sceneId: "scene:updaters",
+    sceneId: RUNTIME_TRACE_SCENE_ID,
     sceneName: "UpdatersExample",
     sceneOccurrence: { constructStartLine: 113, definitionOrdinal: 5 },
     schema: "poietra.fast-manim-runtime-trace" as const,
@@ -168,6 +182,17 @@ export function runtimeTraceFixture() {
     sourcePath: "example_scenes/basic.py",
     version: 1 as const,
   };
+}
+
+type RuntimeTraceFixture = ReturnType<typeof buildRuntimeTraceFixture>;
+
+export function sealRuntimeTraceFixture(trace: RuntimeTraceFixture) {
+  trace.producer.semanticsSha256 = digestFastManimRuntimeTraceVisualSemanticsV1(trace);
+  return trace;
+}
+
+export function runtimeTraceFixture() {
+  return sealRuntimeTraceFixture(buildRuntimeTraceFixture());
 }
 
 export function expectedRuntimeTraceCorrelation(
@@ -188,11 +213,18 @@ export function expectedRuntimeTraceCorrelation(
   };
 }
 
-export function runtimeTraceRequestFixture(
-  sourceText = "from manim import *\n\nclass UpdatersExample(Scene):\n    def construct(self):\n        pass\n",
-) {
+export function trustedRuntimeTraceProducer(trace = runtimeTraceFixture()) {
+  return { producer: trace.producer, roots: [...trace.roots] };
+}
+
+export function runtimeTraceRequestFixture(sourceText = RUNTIME_TRACE_SOURCE_TEXT) {
   const runtimeConfig = {
-    camera: runtimeTraceFixture().camera,
+    camera: {
+      background: { alpha: 1, blue: 0, green: 0, red: 0 },
+      center: { x: 0, y: 0 },
+      frameHeight: 8,
+      frameWidth: 14.222222222222221,
+    },
     compositing: "manim-cairo-srgb" as const,
     coordinatePrecisionDigits: FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1,
     durationSeconds: 6 as const,
@@ -213,7 +245,7 @@ export function runtimeTraceRequestFixture(
     runtimeConfigHash: digestFastManimRuntimeTraceConfigV1(runtimeConfig),
     sceneId: fastManimRuntimeTraceSceneIdV1(sourcePath, sceneName),
     sceneName,
-    sceneOccurrence: { constructStartLine: 4, definitionOrdinal: 1 },
+    sceneOccurrence: { constructStartLine: 113, definitionOrdinal: 5 },
     schema: "poietra.fast-manim-runtime-trace-producer-request" as const,
     sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
     sourcePath,
