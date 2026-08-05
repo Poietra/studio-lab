@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -154,6 +155,12 @@ describe("WriteStuff Cairo reference v1", () => {
         sourceSha256: "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98",
       },
     });
+    if (!("texCache" in result.reference.producer))
+      throw new Error("The edited Cairo producer must pin its Tex cache.");
+    for (const file of result.reference.producer.texCache.files) {
+      const bytes = await readFile(join("fixtures/write-stuff-tex-cache-v1", file.path));
+      expect(createHash("sha256").update(bytes).digest("hex")).toBe(file.sha256);
+    }
     const hold = result.frames.get("hold");
     expect(hold).toMatchObject({ sampleTime: 3.5 });
     expect(result.reference.frames.find(({ id }) => id === "hold")?.png).toMatchObject({
