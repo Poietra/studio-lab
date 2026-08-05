@@ -148,6 +148,7 @@ describe("fast-manim WriteStuff snapshot profile V12", () => {
       editedSource,
     );
     expect(sealed).toMatchObject({ kind: "compiled", sourceHash: editedSourceHash });
+    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, editedExpected)).resolves.toEqual(sealed);
 
     const provenanceTampered = structuredClone(edited);
     const mathRootEvidence = provenanceTampered.bundle.scene.provenance[33]!.evidence;

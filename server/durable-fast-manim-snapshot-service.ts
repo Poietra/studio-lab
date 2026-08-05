@@ -8,6 +8,7 @@ import {
   deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
+  deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
@@ -350,13 +351,15 @@ export class DurableFastManimSnapshotServiceV1 {
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
     let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
+    let writeStuffV12Plan: ExpectedFastManimSnapshotCorrelationV1["writeStuffV12Plan"];
     if (
       scene.source.snapshotVersion === 3 ||
       scene.source.snapshotVersion === 4 ||
       scene.source.snapshotVersion === 5 ||
       scene.source.snapshotVersion === 7 ||
       scene.source.snapshotVersion === 9 ||
-      scene.source.snapshotVersion === 10
+      scene.source.snapshotVersion === 10 ||
+      scene.source.snapshotVersion === 12
     ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
@@ -378,8 +381,10 @@ export class DurableFastManimSnapshotServiceV1 {
         hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, view.sceneName);
       } else if (scene.source.snapshotVersion === 9) {
         warpSquareV9Plan = deriveWarpSquareV9TransformPlan(source, view.sceneName);
-      } else {
+      } else if (scene.source.snapshotVersion === 10) {
         lineJointsV10Plan = deriveLineJointsV10TransformPlan(source, view.sceneName);
+      } else {
+        writeStuffV12Plan = deriveWriteStuffV12TransformPlan(source, view.sceneName);
       }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
@@ -389,6 +394,7 @@ export class DurableFastManimSnapshotServiceV1 {
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
+      ...(writeStuffV12Plan ? { writeStuffV12Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,
       runtimeConfigHash: view.runtimeConfigHash,

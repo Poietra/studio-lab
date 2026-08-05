@@ -13,6 +13,7 @@ import {
   deriveHermeticPngV4TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
   deriveWarpSquareV9TransformPlan,
+  deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   type FastManimSnapshotRunViewV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
@@ -39,6 +40,7 @@ const RESULT_DIGEST = "d".repeat(64);
 const SNAPSHOT_DIGEST = "e".repeat(64);
 const RELEASE_RUNTIME_DIGEST = "f".repeat(64);
 const V9_RUNTIME_CONFIG_HASH = "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a";
+const V12_RUNTIME_CONFIG_HASH = "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593";
 const PUBLISHED_AT = new Date("2026-07-28T01:02:03.000Z");
 const request = {
   projectId: PROJECT,
@@ -160,6 +162,26 @@ function v9VerifiedView(sourceHash: string) {
         scene: {
           ...compiledSnapshot.bundle.scene,
           source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 9, sourceHash },
+        },
+      },
+      sourceHash,
+    } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
+    sourcePath: "example_scenes/basic.py",
+  } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function v12VerifiedView(sourceHash: string) {
+  return {
+    ...verifiedView,
+    runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
+    sceneName: "WriteStuff",
+    snapshot: {
+      ...compiledSnapshot,
+      bundle: {
+        ...compiledSnapshot.bundle,
+        scene: {
+          ...compiledSnapshot.bundle.scene,
+          source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 12, sourceHash },
         },
       },
       sourceHash,
@@ -538,6 +560,46 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       expect.objectContaining({ runtimeConfigHash: V9_RUNTIME_CONFIG_HASH }),
       undefined,
     );
+  });
+
+  it("retains the server-derived edited V12 plan at the durable publication boundary", async () => {
+    const official = await readFile(
+      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
+    const source = official.replace(
+      anchor,
+      `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
+    );
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const view = v12VerifiedView(sourceHash);
+    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V12_RUNTIME_CONFIG_HASH);
+    const head = {
+      ...sourceHead(7n, sourceHash),
+      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
+      sourcePath: "example_scenes/basic.py",
+    };
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(source);
+    const v12Request = {
+      ...request,
+      sceneName: "WriteStuff",
+      sourcePath: "example_scenes/basic.py",
+    };
+
+    await expect(fixture.service.run(v12Request)).resolves.toMatchObject({ status: "verified" });
+
+    expect(fixture.publish).toHaveBeenCalledOnce();
+    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
+      expected: {
+        runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
+        snapshotVersion: 12,
+        writeStuffV12Plan: deriveWriteStuffV12TransformPlan(source, "WriteStuff"),
+      },
+      runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
+      snapshot: view.snapshot,
+    });
   });
 
   it("retains the server-derived V4 image transform plan for durable publication", async () => {
