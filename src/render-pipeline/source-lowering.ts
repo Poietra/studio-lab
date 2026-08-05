@@ -56,7 +56,7 @@ export type LoweredProgramBatchSource = Readonly<{
   insertedCode: string;
   preflight?: Readonly<{
     baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
-    kind: "fast-manim-line-joints-v10" | "fast-manim-warp-square-v9";
+    kind: "fast-manim-line-joints-v10" | "fast-manim-warp-square-v9" | "fast-manim-write-stuff-v12";
   }>;
   source: string;
 }>;
@@ -106,6 +106,9 @@ const WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9 =
 const LINE_JOINTS_OFFICIAL_SOURCE_PATH_V10 = "example_scenes/basic.py";
 const LINE_JOINTS_SCENE_NAME_V10 = "LineJoints";
 const LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
+const WRITE_STUFF_OFFICIAL_SOURCE_PATH_V12 = "example_scenes/basic.py";
+const WRITE_STUFF_SCENE_NAME_V12 = "WriteStuff";
+const WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
 
 type TemporalSourceMarker =
   | Readonly<{
@@ -2102,6 +2105,126 @@ export function lowerLineJointsInitialTransformSourceV10(
   };
 }
 
+function writeStuffV12LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `WriteStuff V12 equation transform: ${message}`);
+}
+
+/**
+ * Lowers the only source mutation admitted by the exact WriteStuff V12
+ * family. The MathTex root may move and/or scale once, after the audited
+ * VGroup layout has completed and before either Write animation starts.
+ */
+export function lowerWriteStuffInitialTransformSourceV12(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramBatchSource | null {
+  if (request.sourcePath !== WRITE_STUFF_OFFICIAL_SOURCE_PATH_V12 || request.sceneName !== WRITE_STUFF_SCENE_NAME_V12) {
+    return null;
+  }
+  if (request.sourceHash !== WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12) {
+    writeStuffV12LoweringError("the edit must be rebased from the pinned official source generation.");
+  }
+  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
+  if (!imported || imported.sourceHash !== WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12) {
+    writeStuffV12LoweringError("the current source bytes are not the pinned official source generation.");
+  }
+  if (incoming !== null || request.destination !== null) {
+    writeStuffV12LoweringError("Scene transitions are outside this bounded round-trip profile.");
+  }
+  if (
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0
+  ) {
+    writeStuffV12LoweringError("the Studio frame and viewport must be finite and positive.");
+  }
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  if (
+    !Number.isFinite(cameraCenter.x) ||
+    !Number.isFinite(cameraCenter.y) ||
+    cameraCenter.x !== 0 ||
+    cameraCenter.y !== 0
+  ) {
+    writeStuffV12LoweringError("the pinned static camera must remain centered.");
+  }
+
+  const expectedVariables = new Set(["example_text", "example_tex", "group"]);
+  if (
+    Object.keys(imported.sourceVariables).length !== expectedVariables.size ||
+    request.sourceBindings.length !== expectedVariables.size ||
+    new Set(request.sourceBindings.map(({ sourceVariable }) => sourceVariable)).size !== expectedVariables.size ||
+    request.sourceBindings.some(
+      ({ entityId, sourceVariable }) =>
+        !expectedVariables.has(sourceVariable) || imported.sourceVariables[entityId] !== sourceVariable,
+    )
+  ) {
+    writeStuffV12LoweringError(
+      "the exact imported `group`, `example_text`, and `example_tex` source bindings are required.",
+    );
+  }
+  const binding = request.sourceBindings.find(({ sourceVariable }) => sourceVariable === "example_tex");
+  if (!binding) writeStuffV12LoweringError("the source-bound `example_tex` equation is unavailable.");
+  const { position, scale } = boundedInitialTransformPlan(
+    request,
+    entries,
+    binding.entityId,
+    "`example_tex` equation",
+    writeStuffV12LoweringError,
+  );
+
+  const statements = findSourceSceneStatements(source, request.sceneName, request.sourcePath);
+  const equationAssignments = statements.filter(({ text }) => text.startsWith("example_tex = MathTex("));
+  const groupLayouts = statements.filter(({ text }) => text === 'group.width = config["frame_width"] - 2 * LARGE_BUFF');
+  const firstWrite = statements.filter(({ text }) => text === "self.play(Write(example_text))");
+  const equationAssignment = equationAssignments[0];
+  const groupLayout = groupLayouts[0];
+  const write = firstWrite[0];
+  if (
+    equationAssignments.length !== 1 ||
+    groupLayouts.length !== 1 ||
+    firstWrite.length !== 1 ||
+    !equationAssignment ||
+    !groupLayout ||
+    !write ||
+    equationAssignment.line >= groupLayout.line ||
+    groupLayout.line >= write.line
+  ) {
+    writeStuffV12LoweringError("the pinned equation assignment and post-layout source boundary are unavailable.");
+  }
+
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const indentation = lines[groupLayout.line]?.match(/^\s*/)?.[0] ?? "";
+  if (indentation !== "        ") {
+    writeStuffV12LoweringError("the pinned group layout indentation changed.");
+  }
+  const insertedLines = [
+    ...(position === null
+      ? []
+      : [`${indentation}example_tex.move_to(${pointExpression(position, frame, request.viewport)})`]),
+    ...(scale === null ? [] : [`${indentation}example_tex.scale(${formatPositiveAmount(scale)})`]),
+  ];
+  lines.splice(groupLayout.line + 1, 0, ...insertedLines);
+  return {
+    anchorLine: groupLayout.line + 1,
+    anchorLines: [groupLayout.line + 1],
+    insertedCode: insertedLines.join(newline),
+    preflight: {
+      baseSourceHash: WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12,
+      kind: "fast-manim-write-stuff-v12",
+    },
+    source: lines.join(newline),
+  };
+}
+
 /**
  * Lowers validated Programs as one atomic source export. Entries carry both
  * their rebased runtime Program and the immutable source anchor that selected
@@ -2119,6 +2242,8 @@ export function lowerCanonicalProgramBatchSource(
   if (warpSquareV9) return warpSquareV9;
   const lineJointsV10 = lowerLineJointsInitialTransformSourceV10(source, request, entries, frame, incoming);
   if (lineJointsV10) return lineJointsV10;
+  const writeStuffV12 = lowerWriteStuffInitialTransformSourceV12(source, request, entries, frame, incoming);
+  if (writeStuffV12) return writeStuffV12;
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
   }

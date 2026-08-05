@@ -18,6 +18,9 @@ const warpSquareEngineFixture = JSON.parse(
 const lineJointsEngineFixture = JSON.parse(
   await readFile(new URL("../../fixtures/engine-v1/real-line-joints-v10.json", import.meta.url), "utf8"),
 ) as { assets: unknown; scene: Record<string, unknown> };
+const writeStuffEngineFixture = JSON.parse(
+  await readFile(new URL("../../fixtures/engine-v1/real-write-stuff-v12.json", import.meta.url), "utf8"),
+) as { assets: unknown; scene: Record<string, unknown> };
 
 type VerifiedCandidateBuilderV1 = (
   candidateSource: string,
@@ -26,9 +29,9 @@ type VerifiedCandidateBuilderV1 = (
 
 export type CandidatePreflightProfileFixtureV1 = Readonly<{
   candidateSnippet: string;
-  label: "LineJoints V10" | "WarpSquare V9";
+  label: "LineJoints V10" | "WarpSquare V9" | "WriteStuff V12";
   request: () => ProgramRenderRequest;
-  snapshotVersion: 9 | 10;
+  snapshotVersion: 9 | 10 | 12;
   verifiedCandidate: VerifiedCandidateBuilderV1;
 }>;
 
@@ -100,11 +103,11 @@ function verifiedCandidate(
     source: { runtimeConfigHash: string; snapshotHash: string; sourceHash: string };
   };
   scene.source.sourceHash = candidateHash;
-  const mappings = bindings.map(({ columnEnd, familyPath, line, name, ordinal, sceneOrder }) => {
+  const mappings = bindings.map(({ columnEnd, familyPath, line, name, ordinal, sceneOrder }, bindingIndex) => {
     const entity = scene.entities[sceneOrder]!;
     return {
       binding: {
-        id: `source-binding:${"abcd"[sceneOrder]!.repeat(64)}`,
+        id: `source-binding:${"abcd"[bindingIndex]!.repeat(64)}`,
         name,
         ordinal,
         span: { endColumn: columnEnd, endLine: line, startColumn: 8, startLine: line },
@@ -172,6 +175,24 @@ export const CANDIDATE_PREFLIGHT_PROFILES_V1: readonly CandidatePreflightProfile
         { columnEnd: 10, familyPath: [0], line: 169, name: "t1", ordinal: 1, sceneOrder: 1 },
         { columnEnd: 10, familyPath: [1], line: 170, name: "t2", ordinal: 2, sceneOrder: 2 },
         { columnEnd: 10, familyPath: [2], line: 171, name: "t3", ordinal: 3, sceneOrder: 3 },
+      ]),
+  },
+  {
+    candidateSnippet: "        example_tex.move_to(",
+    label: "WriteStuff V12",
+    request: () =>
+      renderRequest(
+        "WriteStuff",
+        ["example_text", "example_tex", "group"],
+        "example_tex",
+        "write-stuff-v12-initial-transform",
+      ),
+    snapshotVersion: 12,
+    verifiedCandidate: (candidateSource, request) =>
+      verifiedCandidate(writeStuffEngineFixture, candidateSource, request, [
+        { columnEnd: 13, familyPath: [], line: 103, name: "group", ordinal: 3, sceneOrder: 0 },
+        { columnEnd: 20, familyPath: [0], line: 99, name: "example_text", ordinal: 1, sceneOrder: 1 },
+        { columnEnd: 19, familyPath: [1], line: 100, name: "example_tex", ordinal: 2, sceneOrder: 32 },
       ]),
   },
 ] as const;

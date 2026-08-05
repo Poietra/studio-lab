@@ -4,6 +4,7 @@ import {
   lowerCanonicalProgramBatchSource,
   lowerLineJointsInitialTransformSourceV10,
   lowerWarpSquareInitialTransformSourceV9,
+  lowerWriteStuffInitialTransformSourceV12,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
@@ -68,6 +69,14 @@ export function lowerManimRenderRequest({
       null,
     );
     if (lineJointsV10) return { lowered: lineJointsV10, renderRequest: request };
+    const writeStuffV12 = lowerWriteStuffInitialTransformSourceV12(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (writeStuffV12) return { lowered: writeStuffV12, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

@@ -33,6 +33,7 @@ type CandidateBindingProfileV1 = Readonly<{
 
 type CandidateProfileV1 = Readonly<{
   bindings: readonly CandidateBindingProfileV1[];
+  entityCount: number;
   kind: string;
   label: string;
   logEvent: string;
@@ -54,6 +55,7 @@ const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
           sceneOrder: 0,
         },
       ],
+      entityCount: 1,
       kind: "fast-manim-warp-square-v9",
       label: "WarpSquare",
       logEvent: "render.warp_square_v9_candidate_preflight_rejected",
@@ -101,10 +103,50 @@ const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
           sceneOrder: 3,
         },
       ],
+      entityCount: 4,
       kind: "fast-manim-line-joints-v10",
       label: "LineJoints",
       logEvent: "render.line_joints_v10_candidate_preflight_rejected",
       snapshotVersion: 10,
+    },
+  ],
+  [
+    "fast-manim-write-stuff-v12",
+    {
+      bindings: [
+        {
+          columnEnd: 13,
+          familyPath: [],
+          line: 103,
+          name: "group",
+          ordinal: 3,
+          parentSceneOrder: null,
+          sceneOrder: 0,
+        },
+        {
+          columnEnd: 20,
+          familyPath: [0],
+          line: 99,
+          name: "example_text",
+          ordinal: 1,
+          parentSceneOrder: 0,
+          sceneOrder: 1,
+        },
+        {
+          columnEnd: 19,
+          familyPath: [1],
+          line: 100,
+          name: "example_tex",
+          ordinal: 2,
+          parentSceneOrder: 0,
+          sceneOrder: 32,
+        },
+      ],
+      entityCount: 61,
+      kind: "fast-manim-write-stuff-v12",
+      label: "WriteStuff",
+      logEvent: "render.write_stuff_v12_candidate_preflight_rejected",
+      snapshotVersion: 12,
     },
   ],
 ]);
@@ -231,8 +273,8 @@ export class ManimRenderCandidateVerifierV1 {
     const entitiesBySceneOrder = new Map(scene.entities.map((entity) => [entity.sceneOrder, entity]));
     const mappingsByName = new Map(identity.mappings.map((mapping) => [mapping.binding.name, mapping]));
     if (
-      scene.entities.length !== profile.bindings.length ||
-      entitiesBySceneOrder.size !== profile.bindings.length ||
+      scene.entities.length !== profile.entityCount ||
+      entitiesBySceneOrder.size !== profile.entityCount ||
       identity.mappings.length !== profile.bindings.length ||
       mappingsByName.size !== profile.bindings.length ||
       profile.bindings.some((expected) => {
