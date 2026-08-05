@@ -22,7 +22,7 @@ import {
 } from "./fast-manim-source-runtime-identity";
 
 const RUNTIME_CONFIG_HASH = "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593";
-const SNAPSHOT_DIGEST = "28e5aa43db379457042eef27daa6502b5d52912fa51efe332bbb587af816ac2e";
+const SNAPSHOT_DIGEST = "dd6ca2c3e1015718f9fa9b8ad0e926de8260013eb85d17574c3c7fdeaba89817";
 
 async function loadProducerFixture() {
   const [wire, sourceText, manifestText] = await Promise.all([
@@ -33,8 +33,8 @@ async function loadProducerFixture() {
   const manifest = JSON.parse(manifestText) as Record<string, unknown>;
   expect(manifest).toMatchObject({
     combinedWireSha256: createHash("sha256").update(wire, "utf8").digest("hex"),
-    fastManimCommit: "c631878e0ca826e0b608bbc478dccfc253f78ac1",
-    fastManimTree: "bda164e2cada71a35dbc6cb5035d24b99f65e372",
+    fastManimCommit: "044a61aa0d868fc9e799588f2eb88006594b6c44",
+    fastManimTree: "996ad2b7375a6f911b1b00747eaad38834bde25c",
     fixtureKind: "actual-combined-producer-output",
     producerModule: "manim.renderer.source_runtime_identity",
     runtimeConfigHash: RUNTIME_CONFIG_HASH,
@@ -69,7 +69,7 @@ async function loadProducerFixture() {
 
 describe("fast-manim WriteStuff snapshot profile V12", () => {
   it("seals the exact two-root, 58-role Write timeline and its three editable source identities", async () => {
-    const { combined, expected, manifest, producer, sourceText } = await loadProducerFixture();
+    const { combined, envelope, expected, manifest, producer, sourceText } = await loadProducerFixture();
     const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producer.snapshotJson, expected, sourceText);
     expect(sealed.kind).toBe("compiled");
     if (sealed.kind !== "compiled") throw new Error("Expected one compiled V12 snapshot.");
@@ -89,6 +89,27 @@ describe("fast-manim WriteStuff snapshot profile V12", () => {
         sourceHash: expected.sourceHash,
       },
     });
+
+    const texRootEvidence = envelope.bundle.scene.provenance[2]?.evidence;
+    const mathRootEvidence = envelope.bundle.scene.provenance[33]?.evidence;
+    expect(texRootEvidence).toEqual(
+      expect.arrayContaining([
+        "segmented Tex source/paint/correlation content digest a55fd97d17b5aae8b5b452eb2c8ae16432ad99c441821675c0defca0719497b8",
+        "exact real-Manim LaTeX/dvisvgm geometry resource digest 3b8e1914566b1f9e9627ba1ff9c4847cf8a26e518559e2da2e460f8b3c858963",
+        "exact real-Manim LaTeX/dvisvgm source SVG digest 1496ea173fbe28fab26772d9509d9b34dc58ce8bd6b01a8950899a9adcb4139d",
+        "exact real-Manim LaTeX/dvisvgm producer identity digest ea1d5eeceb19faad930cfab02ae4d649f5c89f120fc4c18947d96574ab53d55c",
+        "exact real-Manim TeX font bundle digest c08c8616a0b95c16cd0c1bfcae0f30361e8bb89868bfdb5135369d3b59b56b5e",
+      ]),
+    );
+    expect(mathRootEvidence).toEqual(
+      expect.arrayContaining([
+        "segmented Tex source/paint/correlation content digest 0762997c70a0abe2280e1f8a798a19141ea29057fa0735ecc4dfd4f416cc5121",
+        "exact real-Manim LaTeX/dvisvgm geometry resource digest 3b8e1914566b1f9e9627ba1ff9c4847cf8a26e518559e2da2e460f8b3c858963",
+        "exact real-Manim LaTeX/dvisvgm source SVG digest cb2e99f837c1316e47b67157bf787b1f096a14b01f4392482eba740dd3ac1dbc",
+        "exact real-Manim LaTeX/dvisvgm producer identity digest ea1d5eeceb19faad930cfab02ae4d649f5c89f120fc4c18947d96574ab53d55c",
+        "exact real-Manim TeX font bundle digest c08c8616a0b95c16cd0c1bfcae0f30361e8bb89868bfdb5135369d3b59b56b5e",
+      ]),
+    );
 
     const { animationChannels, entities, provenance } = sealed.bundle.scene;
     expect(entities).toHaveLength(61);
