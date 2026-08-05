@@ -690,8 +690,15 @@ impl PoietraCanvasEngineV1 {
 
         match rendered {
             Ok(suboptimal) => {
+                let interaction_bounds = matches!(
+                    &sampled.interaction,
+                    crate::protocol::SampledInteractionRequestV1::Available(_)
+                )
+                .then(|| frame.interaction_clip_bounds_by_entity(self.session.scene()))
+                .flatten()
+                .unwrap_or_default();
                 let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
-                    frame.clip_bounds_for_entity(entity_id)
+                    interaction_bounds.get(entity_id).copied()
                 });
                 presented_response_with_interaction(correlation, suboptimal, interaction)
             }

@@ -61,7 +61,8 @@ export function parseFastManimSnapshotVersion(
   if (normalized === "9") return 9;
   if (normalized === "10") return 10;
   if (normalized === "11") return 11;
-  throw new TypeError("POIETRA_FAST_MANIM_SNAPSHOT_VERSION must be 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, or 11.");
+  if (normalized === "12") return 12;
+  throw new TypeError("POIETRA_FAST_MANIM_SNAPSHOT_VERSION must be 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, or 12.");
 }
 
 export function parseManimProjects(value: string | undefined): readonly ManimProjectConfig[] | undefined {

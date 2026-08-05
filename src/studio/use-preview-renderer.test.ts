@@ -891,6 +891,81 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     expect(compiled.scene.interactionEntityIds).toEqual(leafIds);
   });
 
+  it("selects only the two source-bound nested V12 Tex roots", async () => {
+    const { proposedState, snapshot } = await linePreviewInput();
+    const source = snapshot.snapshot.scene.source;
+    const leaf = snapshot.snapshot.scene.entities[0];
+    if (source.kind !== "imported-manim-server-snapshot" || !leaf) {
+      throw new Error("Expected one imported line fixture entity.");
+    }
+    const groupId = "runtime-write-stuff";
+    const textRootId = "runtime-example-text";
+    const texRootId = "runtime-example-tex";
+    const groupEntity = {
+      ...leaf,
+      appearance: { kind: "group", opacity: 1 } as const,
+      geometry: { kind: "group" } as const,
+      id: groupId,
+      parentId: null,
+      sceneOrder: 0,
+    };
+    const textRoot = { ...groupEntity, id: textRootId, parentId: groupId, sceneOrder: 1 };
+    const textRoles = Array.from({ length: 30 }, (_, index) => ({
+      ...leaf,
+      id: `runtime-text-role-${index}`,
+      parentId: textRootId,
+      sceneOrder: index + 2,
+    }));
+    const texRoot = { ...groupEntity, id: texRootId, parentId: groupId, sceneOrder: 32 };
+    const texRoles = Array.from({ length: 28 }, (_, index) => ({
+      ...leaf,
+      id: `runtime-tex-role-${index}`,
+      parentId: texRootId,
+      sceneOrder: index + 33,
+    }));
+    const entities: SceneIrBundleV1["scene"]["entities"] = [groupEntity, textRoot, ...textRoles, texRoot, ...texRoles];
+    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["group", { bindingId: "binding:group", entityId: groupId, sourceName: "group" }],
+      ["example_text", { bindingId: "binding:example-text", entityId: textRootId, sourceName: "example_text" }],
+      ["example_tex", { bindingId: "binding:example-tex", entityId: texRootId, sourceName: "example_tex" }],
+    ]);
+    const v12 = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          entities,
+          source: { ...source, snapshotVersion: 12 },
+        },
+      },
+      sourceRuntimeIdentity: identity,
+    } as StudioVerifiedPreviewSnapshotV1;
+
+    const authority = studioPreviewInteractionAuthorityV1(v12);
+    expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([textRootId, texRootId]);
+    for (const missingName of ["group", "example_text", "example_tex"]) {
+      expect(
+        studioPreviewInteractionAuthorityV1({
+          ...v12,
+          sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== missingName)),
+        }),
+      ).toEqual({ kind: "display-only", reason: "source-runtime-identity-unverified" });
+    }
+
+    const compiled = await compileStudioPreviewSceneV1({
+      frame: { height: 8, width: 14.222222222222221 },
+      proposedState,
+      snapshot: v12,
+      workingRevision: PRISTINE_WORKING_REVISION,
+      workspaceKey: "project-a/example_scenes/basic.py/WriteStuff",
+    });
+    expect(compiled.kind).toBe("compiled");
+    if (compiled.kind !== "compiled") throw new Error(compiled.error);
+    expect(compiled.scene.interactionEntityIds).toEqual([textRootId, texRootId]);
+  });
+
   it("keeps V6 partially interactive but requires complete V7/V8 identity authority", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;

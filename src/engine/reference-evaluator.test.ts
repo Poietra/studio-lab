@@ -139,7 +139,7 @@ async function compile(scene: SceneIrV1, assets: AssetManifestV1, sampleTime: nu
 }
 
 describe("Poietra TypeScript reference evaluator v1", () => {
-  it("emits explicit Cairo compositing for imported Manim snapshot V11 only", async () => {
+  it("emits explicit Cairo compositing for imported Manim snapshot V11 and V12 only", async () => {
     const assets = await emptyManifest();
     const base = createScene(assets, { entities: [], requiredCapabilities: [] });
     const importedSource = {
@@ -152,8 +152,37 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     const v11 = await compile({ ...base, source: importedSource }, assets, 0.5);
     expect(v11.packet.compositing).toBe("manim-cairo-srgb");
 
+    const v12 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 12 as const } }, assets, 0.5);
+    expect(v12.packet.compositing).toBe("manim-cairo-srgb");
+
     const v10 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 10 as const } }, assets, 0.5);
     expect("compositing" in v10.packet).toBe(false);
+  });
+
+  it("keeps only the held WriteStuff V12 frame present at its exact endpoint", async () => {
+    const assets = await emptyManifest();
+    const base = createScene(assets, {
+      entities: [vectorEntity("held-write", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 })],
+      requiredCapabilities: ["shape-primitives"],
+    });
+    const importedSource = {
+      kind: "imported-manim-server-snapshot" as const,
+      runtimeConfigHash: SCENE_HASH,
+      snapshotHash: SCENE_HASH,
+      snapshotVersion: 12 as const,
+      sourceHash: SCENE_HASH,
+    };
+
+    const endpoint = await compile({ ...base, source: importedSource }, assets, 2);
+    expect(endpoint.packet.sampleTime).toBe(2);
+    expect(endpoint.packet.draws).toHaveLength(1);
+
+    const ordinaryHalfOpenEndpoint = await compile(
+      { ...base, source: { ...importedSource, snapshotVersion: 11 as const } },
+      assets,
+      2,
+    );
+    expect(ordinaryHalfOpenEndpoint.packet.draws).toEqual([]);
   });
 
   it("lowers shape primitives to cubic RenderPacket draws in source order", async () => {

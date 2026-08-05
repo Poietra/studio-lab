@@ -113,6 +113,7 @@ const SUPPORTED_TYPES = new Set([
   "RegularPolygon",
   "Square",
   "SurroundingRectangle",
+  "Tex",
   "Text",
   "Triangle",
   "VGroup",
@@ -949,15 +950,19 @@ function markerIdentity(statements: readonly SourceStatement[], assignmentIndex:
 }
 
 function entityContent(type: string, variable: string, argumentsSource: string): EntityContent | undefined {
-  const strings = stringLiterals(argumentsSource);
-  if (type === "MathTex") {
-    const texParts = strings.length > 0 ? strings : [variable];
+  if (type === "MathTex" || type === "Tex") {
+    const { positional } = constructorArguments(argumentsSource);
+    const texParts = positional.flatMap((argument) =>
+      isStaticStringLiteral(argument) ? stringLiterals(argument) : [],
+    );
+    const displayParts = texParts.length > 0 ? texParts : [variable];
     return {
-      displayLines: [texParts.join(" ")],
+      displayLines: [displayParts.join(" ")],
       label: variable.replaceAll("_", " "),
-      texParts,
+      texParts: displayParts,
     };
   }
+  const strings = stringLiterals(argumentsSource);
   if (type === "Text") {
     const text = strings[0] ?? variable.replaceAll("_", " ");
     return { displayLines: [text], label: variable.replaceAll("_", " "), text };

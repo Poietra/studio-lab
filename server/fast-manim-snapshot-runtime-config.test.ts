@@ -9,6 +9,7 @@ import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12,
   type FastManimSnapshotRuntimeConfigV1,
   fastManimSnapshotProducerRequestV1Schema,
   fastManimSnapshotProfileVersionV1Schema,
@@ -74,7 +75,7 @@ describe("fast-manim snapshot runtime config", () => {
     ).toThrow(/sorted/i);
   });
 
-  it("keeps V1-V11 canonical runtime digests frozen", () => {
+  it("keeps V1-V12 canonical runtime digests frozen", () => {
     const config = runtimeConfig();
     const expected = [
       [1, "5eb22569bc257af3a71b87e62fdb23c070c8204ac4aa27ad684d8bff9b7b5a7a"],
@@ -140,9 +141,29 @@ describe("fast-manim snapshot runtime config", () => {
         frame: { ...v10.frame, width: 14.22222222222222 },
       }),
     ).toThrow(/exact canonical demo frame/i);
+    const v11 = runtimeConfig(11);
+    expect(v11.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11);
+    expect(digestFastManimSnapshotRuntimeConfigV1(v11)).toBe(
+      "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+    );
+    const v12 = runtimeConfig(12);
+    expect(v12.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12);
+    expect(digestFastManimSnapshotRuntimeConfigV1(v12)).toBe(
+      "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+    );
+    expect(() => digestFastManimSnapshotRuntimeConfigV1({ ...v12, capabilities: [...config.capabilities] })).toThrow(
+      /exact frozen capability set/i,
+    );
+    expect(() =>
+      digestFastManimSnapshotRuntimeConfigV1({
+        ...v12,
+        frame: { ...v12.frame, width: 14.22222222222222 },
+      }),
+    ).toThrow(/exact canonical demo frame/i);
     expect(fastManimSnapshotProfileVersionV1Schema.safeParse(10).success).toBe(true);
     expect(fastManimSnapshotProfileVersionV1Schema.safeParse(11).success).toBe(true);
-    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(12).success).toBe(false);
+    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(12).success).toBe(true);
+    expect(fastManimSnapshotProfileVersionV1Schema.safeParse(13).success).toBe(false);
   });
 
   it("pins the canonical randomSeed to exactly 0 in the runtime config contract", () => {
@@ -217,6 +238,11 @@ describe("fast-manim snapshot runtime config", () => {
     expect(v11Config.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11);
     expect(digestFastManimSnapshotRuntimeConfigV1(v11Config)).toBe(
       "5e5999869eec1e504524113678df6b55f38cc850efa4fbda569e2f2601beb520",
+    );
+    const v12Config = runtimeConfig(12);
+    expect(v12Config.capabilities).toEqual(FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12);
+    expect(digestFastManimSnapshotRuntimeConfigV1(v12Config)).toBe(
+      "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
     );
     expect(() =>
       fastManimSnapshotProducerRequestV1Schema.parse({

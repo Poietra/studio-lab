@@ -1,0 +1,17 @@
+{
+  "combinedWireSha256": "6a91ad5534063ca5a0d34cb805d01d20ed3a3cd01cb3bf63435b106e59ada12b",
+  "fastManimCommit": "c631878e0ca826e0b608bbc478dccfc253f78ac1",
+  "fastManimTree": "bda164e2cada71a35dbc6cb5035d24b99f65e372",
+  "fixtureKind": "actual-combined-producer-output",
+  "producerModule": "manim.renderer.source_runtime_identity",
+  "regeneration": "From fast-manim commit c631878e, call tests.helpers.scene_snapshot.request_document for example_scenes/basic.py / WriteStuff with snapshotVersion 12 and capabilities cubic-path-geometry, logical-group, path-trim-animation, vector-appearance-animation; inject the Studio segmented Tex native provider ABI v1; parse and canonicalize export_source_runtime_identity under PYTHONHASHSEED=0.",
+  "runtimeConfigHash": "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+  "sealedSnapshotHash": "213fe747b7e1575330f1c25562431510b4d262604f85a8530f61669749c791a4",
+  "segmentedTexProviderAbi": 1,
+  "segmentedTexProviderSha256": "26e4a495715f9efeb8eeb922952d2a0965314aae274e0145af8968cb1baa78b5",
+  "semanticSha256": "ca59b256b298c6babfcc1b107e713446b4c0452f640d16399c86c95184bf74d5",
+  "snapshotDigest": "28e5aa43db379457042eef27daa6502b5d52912fa51efe332bbb587af816ac2e",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  "version": 1
+}

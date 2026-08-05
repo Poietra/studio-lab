@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it } from "vitest";
 
 import { evaluateWorkingState, projectProposedState } from "../studio/evaluator";
@@ -37,6 +39,25 @@ class Second(Scene):
 `;
 
 describe("conservative Manim source import", () => {
+  it("retains the official WriteStuff Tex roots without treating style-map strings as content", async () => {
+    const officialSource = await readFile(
+      new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const imported = importManimScene(officialSource, "example_scenes/basic.py", "WriteStuff");
+    const textId = "source:example_scenes/basic.py#WriteStuff:example_text";
+
+    expect(imported?.sourceVariables).toEqual({
+      [textId]: "example_text",
+      "source:example_scenes/basic.py#WriteStuff:example_tex": "example_tex",
+      "source:example_scenes/basic.py#WriteStuff:group": "group",
+    });
+    expect(imported?.runtimeSceneState.objectGraph.entities[textId]?.content?.texParts).toEqual([
+      "This is a some text",
+    ]);
+    expect(imported?.contentReplacementSafety).not.toHaveProperty("example_text");
+  });
+
   it("classifies only direct ImageMobject assignment paths without comment or string false positives", () => {
     const imageSource = `from manim import *
 

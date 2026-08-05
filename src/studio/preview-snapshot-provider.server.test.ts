@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
-import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
+import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
+import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import type { StudioPreviewSceneIdentityV1 } from "./preview-snapshot-provider";
 import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provider.server";
@@ -8,6 +9,7 @@ import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provid
 const REQUEST_ID = "studio-preview:test-request";
 const SOURCE_HASH = "a".repeat(64);
 const RUNTIME_HASH = "b".repeat(64);
+const WRITE_STUFF_REQUEST_ID = "req-1";
 const PNG_BYTES = Uint8Array.from(
   Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
 );
@@ -16,6 +18,12 @@ const identity: StudioPreviewSceneIdentityV1 = {
   sceneName: "ExampleScene",
   sourceHash: SOURCE_HASH,
   sourcePath: "scene.py",
+};
+const writeStuffIdentity: StudioPreviewSceneIdentityV1 = {
+  projectId: "demo",
+  sceneName: "WriteStuff",
+  sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  sourcePath: "example_scenes/basic.py",
 };
 
 async function sceneId() {
@@ -154,6 +162,71 @@ async function verifiedRun(options: Readonly<{ identityMap?: boolean; pngAsset?:
   };
 }
 
+async function verifiedWriteStuffRun() {
+  const producer = JSON.parse(writeStuffCombinedFixture.snapshotJson) as {
+    bundle: SceneIrBundleV1;
+    projectId: string;
+    requestId: string;
+    runtimeConfigHash: string;
+    sceneId: string;
+    sceneName: string;
+    sourceHash: string;
+    sourcePath: string;
+  };
+  const unsealedBundle = await parseVerifiedSceneIrBundleV1(producer.bundle);
+  const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(unsealedBundle);
+  const bundle = await parseVerifiedSceneIrBundleV1({
+    ...unsealedBundle,
+    scene: {
+      ...unsealedBundle.scene,
+      source: { ...unsealedBundle.scene.source, snapshotHash },
+    },
+  });
+  const mappings = writeStuffCombinedFixture.evidence.records.flatMap((record) => {
+    if (record.status !== "mapped") return [];
+    const active = record.bindings.find(({ releasedSequence }) => releasedSequence === null);
+    if (!active) throw new Error("The WriteStuff mapped fixture record has no active source binding.");
+    return [
+      {
+        binding: active.binding,
+        entityId: record.entityId,
+        familyPath: record.familyPath,
+        provenanceId: record.provenanceId,
+      },
+    ];
+  });
+  return {
+    projectId: producer.projectId,
+    publishedAt: "2026-08-05T00:00:00.000Z",
+    requestId: producer.requestId,
+    revision: 12,
+    runtimeConfigHash: producer.runtimeConfigHash,
+    sceneName: producer.sceneName,
+    schema: "poietra.fast-manim-snapshot-run",
+    snapshot: {
+      ...producer,
+      bundle,
+      kind: "compiled",
+      schema: "poietra.fast-manim-snapshot-result",
+      snapshotHash,
+      version: 1,
+    },
+    sourcePath: producer.sourcePath,
+    sourceRuntimeIdentity: {
+      mappings,
+      runtimeConfigHash: producer.runtimeConfigHash,
+      sceneId: producer.sceneId,
+      schema: "poietra.studio-verified-source-runtime-identity-map",
+      snapshotDigest: writeStuffCombinedFixture.snapshotDigest,
+      snapshotHash,
+      sourceHash: producer.sourceHash,
+      version: 1,
+    },
+    status: "verified",
+    version: 1,
+  };
+}
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
@@ -198,6 +271,60 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       sourceName: "circle",
     });
     expect(provider.evidence).toBeUndefined();
+  });
+
+  it("loads only the exact three nested WriteStuff V12 source mappings", async () => {
+    const run = await verifiedWriteStuffRun();
+    const fetcher = vi.fn(async () => jsonResponse(run));
+    const loaded = await createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => WRITE_STUFF_REQUEST_ID,
+    }).loadVerifiedSnapshot({ identity: writeStuffIdentity });
+
+    expect(loaded.duration).toBe(4);
+    expect([...loaded.sourceRuntimeIdentity!.entries()]).toEqual([
+      [
+        "group",
+        {
+          bindingId: "source-binding:a75a635aebfdd59c179e8294eb8c9219a03ccd07623a4e2bb4131d83e9c9f9df",
+          entityId: `${run.snapshot.sceneId}/entity:0`,
+          sourceName: "group",
+        },
+      ],
+      [
+        "example_text",
+        {
+          bindingId: "source-binding:060af997224353efcf43ce98b5c4ed1fae6b82a8492603e57ac6bc4a15c1dd28",
+          entityId: `${run.snapshot.sceneId}/entity:1`,
+          sourceName: "example_text",
+        },
+      ],
+      [
+        "example_tex",
+        {
+          bindingId: "source-binding:ebe57a2dbf04650459179dd0933f9c179232f4108ad6a9a72ec1e5d41f3439e9",
+          entityId: `${run.snapshot.sceneId}/entity:32`,
+          sourceName: "example_tex",
+        },
+      ],
+    ]);
+
+    const wrongPath = {
+      ...run,
+      sourceRuntimeIdentity: {
+        ...run.sourceRuntimeIdentity,
+        mappings: run.sourceRuntimeIdentity.mappings.map((mapping) =>
+          mapping.binding.name === "example_tex" ? { ...mapping, familyPath: [2] } : mapping,
+        ),
+      },
+    };
+    const rejected = createServerPreviewSnapshotProviderV1({
+      fetcher: vi.fn(async () => jsonResponse(wrongPath)),
+      requestIdFactory: () => WRITE_STUFF_REQUEST_ID,
+    });
+    await expect(rejected.loadVerifiedSnapshot({ identity: writeStuffIdentity })).rejects.toThrow(
+      "does not name one exact Scene IR entity",
+    );
   });
 
   it("fetches each digest-correlated PNG and returns manifest-owned transfer metadata", async () => {

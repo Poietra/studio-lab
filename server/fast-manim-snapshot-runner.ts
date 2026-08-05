@@ -685,7 +685,8 @@ export class FastManimSnapshotRunner {
           snapshotVersion === 8 ||
           snapshotVersion === 9 ||
           snapshotVersion === 10 ||
-          snapshotVersion === 11)
+          snapshotVersion === 11 ||
+          snapshotVersion === 12)
         ? undefined
         : this.capabilities,
     );

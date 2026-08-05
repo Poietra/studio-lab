@@ -303,7 +303,7 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 }
 
 #[test]
-fn imported_snapshot_source_accepts_profiles_one_through_eleven_only() {
+fn imported_snapshot_source_accepts_profiles_one_through_twelve_only() {
     for snapshot_version in [
         SnapshotProfileVersionV1::V1,
         SnapshotProfileVersionV1::V2,
@@ -316,6 +316,7 @@ fn imported_snapshot_source_accepts_profiles_one_through_eleven_only() {
         SnapshotProfileVersionV1::V9,
         SnapshotProfileVersionV1::V10,
         SnapshotProfileVersionV1::V11,
+        SnapshotProfileVersionV1::V12,
     ] {
         let mut scene = empty_scene();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
@@ -326,12 +327,22 @@ fn imported_snapshot_source_accepts_profiles_one_through_eleven_only() {
         };
         assert_eq!(
             scene.source.render_compositing(),
-            if snapshot_version == SnapshotProfileVersionV1::V11 {
+            if matches!(
+                snapshot_version,
+                SnapshotProfileVersionV1::V11 | SnapshotProfileVersionV1::V12
+            ) {
                 RenderCompositingV1::ManimCairoSrgb
             } else {
                 RenderCompositingV1::LinearLight
             }
         );
+        let endpoint_state_time = scene.state_sample_time(scene.duration);
+        if snapshot_version == SnapshotProfileVersionV1::V12 {
+            assert!(endpoint_state_time < scene.duration);
+            assert_eq!(endpoint_state_time.to_bits(), scene.duration.to_bits() - 1);
+        } else {
+            assert_eq!(endpoint_state_time.to_bits(), scene.duration.to_bits());
+        }
         validate_scene_ir_v1(&scene).unwrap();
         assert_eq!(
             parse_scene_ir_json_v1(&serde_json::to_vec(&scene).unwrap()).unwrap(),
@@ -350,7 +361,7 @@ fn imported_snapshot_source_accepts_profiles_one_through_eleven_only() {
         "kind": "imported-manim-server-snapshot",
         "runtimeConfigHash": REVISION,
         "snapshotHash": REVISION,
-        "snapshotVersion": 12.0,
+        "snapshotVersion": 13.0,
         "sourceHash": REVISION,
     });
     assert!(serde_json::from_value::<SceneIrV1>(invalid).is_err());
