@@ -211,7 +211,7 @@ async function expectSharedPixelReference(page: Page, fixturePath: string, packe
     },
   });
   expect(proof.pixels.surfaceFormat).toMatch(/^(bgra|rgba)8unorm$/);
-  expect(fixture.reference.reason).toContain("edge antialiasing is outside");
+  expect(fixture.reference.reason).toContain("four-sample");
   for (const [name, reference] of Object.entries(fixture.reference.samples)) {
     expectPixelNear(proof.pixels.samples[name] ?? [0, 0, 0, 0], reference.rgba, reference.tolerance);
   }

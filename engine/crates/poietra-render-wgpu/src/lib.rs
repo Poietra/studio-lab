@@ -7,10 +7,14 @@
 //! A verified decoded-asset resolver enables affine PNG quads with row-zero-top UVs,
 //! premultiplied linear-light samples, and exact nearest/linear clamp filtering.
 //! Vector paints support the packet's explicit linear-light or Manim/Cairo sRGB
-//! compositing contract through paired sRGB and base-Unorm target pipelines; image
-//! draws remain restricted to linear-light compositing.
+//! compositing contract through paired sRGB and base-Unorm target pipelines. Both
+//! path and image pipelines render with four-sample coverage and resolve into the
+//! caller's single-sample target; image draws remain restricted to linear-light
+//! compositing.
 //! Preparation is independent of a GPU device and rejects the complete frame when
 //! any phase falls outside the bounded subset.
+
+pub(crate) const RENDER_SAMPLE_COUNT_V1: u32 = 4;
 
 mod arena;
 mod asset;
@@ -25,9 +29,9 @@ pub use asset::{
     DecodePngAssetErrorV1, DecodedPngAssetV1, MAX_ENCODED_PNG_BYTES_V1, decode_verified_png_v1,
 };
 pub use gpu::{
-    CreateRendererErrorV1, RenderFrameErrorV1, RenderStageEvidenceV1,
-    RendererMemorySnapshotErrorV1, RendererMemorySnapshotV1, WgpuFillRendererV1,
-    WgpuRenderTargetV1,
+    CreateRendererErrorV1, MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1, RenderFrameErrorV1,
+    RenderStageEvidenceV1, RendererMemorySnapshotErrorV1, RendererMemorySnapshotV1,
+    WgpuFillRendererV1, WgpuRenderTargetV1,
 };
 pub use image_gpu::{
     ImageGpuUploadErrorV1, ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1,

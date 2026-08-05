@@ -34,7 +34,8 @@ export function measuredTelemetryFixtureV1(): CanvasFrameTelemetryV1 {
       kind: "measured",
       logicalGpuBreakdown: {
         geometryBufferArena: { currentBytes: 3_000_000, peakBytes: 4_000_000 },
-        retainedImageTextures: { currentBytes: 2_000_000, peakBytes: 3_000_000 },
+        multisampleColorTarget: { currentBytes: 1_000_000, peakBytes: 1_000_000 },
+        retainedImageTextures: { currentBytes: 1_000_000, peakBytes: 2_000_000 },
       },
       logicalGpuResident: { currentBytes: 5_000_000, peakBytes: 6_000_000 },
       wasmLinear: { currentBytes: 20_000_000, peakBytes: 25_000_000 },

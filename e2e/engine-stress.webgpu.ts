@@ -467,8 +467,8 @@ test("records the 1080p WebGPU stress matrix", async ({ page, request }, testInf
       ],
       rendererUnsupported: [
         {
-          feature: "antialiasing and clipping",
-          reason: "The current WebGPU renderer has no multisample-antialiasing or clipping contract.",
+          feature: "clipping",
+          reason: "The current WebGPU renderer resolves four-sample coverage but has no clipping contract.",
         },
       ],
     },

@@ -912,6 +912,7 @@ impl PoietraCanvasEngineV1 {
         Ok(EngineMemoryCurrentV1 {
             decoded_image_assets,
             geometry_buffer_arena: renderer.geometry_buffer_arena_bytes(),
+            multisample_color_target: renderer.multisample_color_target_bytes(),
             prepared_geometry_cache,
             retained_image_textures: renderer.retained_image_texture_bytes(),
             retained_scene_index,

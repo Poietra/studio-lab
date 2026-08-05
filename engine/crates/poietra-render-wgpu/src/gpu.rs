@@ -7,11 +7,16 @@ use crate::upload::VERTEX_ENCODED_SIZE_V1;
 use crate::{
     GpuBufferArenaErrorV1, GpuUploadPlanErrorV1, ImageGpuUploadErrorV1,
     ImageTextureCacheFrameStatsV1, ImageTextureCacheLimitsV1, PreparedFrameV1,
-    PreparedRenderCommandV1, build_gpu_upload_plan_v1,
+    PreparedRenderCommandV1, RENDER_SAMPLE_COUNT_V1, build_gpu_upload_plan_v1,
 };
-use poietra_scene_ir::RenderCompositingV1;
+use poietra_scene_ir::{MAX_VIEWPORT_PIXELS_V1, RenderCompositingV1};
 
 const VERTEX_STRIDE: wgpu::BufferAddress = VERTEX_ENCODED_SIZE_V1 as wgpu::BufferAddress;
+const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
+/// Maximum logical bytes for the retained four-sample color attachment under
+/// the Scene IR viewport-pixel limit.
+pub const MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1: u64 =
+    MAX_VIEWPORT_PIXELS_V1 * RENDER_SAMPLE_COUNT_V1 as u64 * RGBA8_BYTES_PER_SAMPLE_V1;
 const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -48,6 +53,27 @@ fn cairo_target_format_for_linear_view(
     .then(|| target_format.remove_srgb_suffix())
 }
 
+fn multisample_color_texture_descriptor_v1(
+    format: wgpu::TextureFormat,
+    width_px: u32,
+    height_px: u32,
+) -> wgpu::TextureDescriptor<'static> {
+    wgpu::TextureDescriptor {
+        label: Some("poietra multisample paint target v1"),
+        size: wgpu::Extent3d {
+            depth_or_array_layers: 1,
+            height: height_px,
+            width: width_px,
+        },
+        mip_level_count: 1,
+        sample_count: RENDER_SAMPLE_COUNT_V1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    }
+}
+
 /// Target view plus caller-provided format and extent evidence. WGPU does not
 /// expose these properties from a `TextureView`, so the renderer verifies the
 /// evidence before uploading the frame.
@@ -57,6 +83,55 @@ pub struct WgpuRenderTargetV1<'a> {
     pub height_px: u32,
     pub view: &'a wgpu::TextureView,
     pub width_px: u32,
+}
+
+#[derive(Debug)]
+struct MultisampleColorTargetV1 {
+    format: wgpu::TextureFormat,
+    height_px: u32,
+    _texture: wgpu::Texture,
+    view: wgpu::TextureView,
+    width_px: u32,
+}
+
+impl MultisampleColorTargetV1 {
+    fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        width_px: u32,
+        height_px: u32,
+    ) -> Self {
+        let texture = device.create_texture(&multisample_color_texture_descriptor_v1(
+            format, width_px, height_px,
+        ));
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        Self {
+            format,
+            height_px,
+            _texture: texture,
+            view,
+            width_px,
+        }
+    }
+
+    fn matches(&self, format: wgpu::TextureFormat, width_px: u32, height_px: u32) -> bool {
+        self.format == format && self.width_px == width_px && self.height_px == height_px
+    }
+
+    fn accounted_bytes(&self) -> Result<u64, RendererMemorySnapshotErrorV1> {
+        multisample_color_target_bytes_v1(self.width_px, self.height_px)
+    }
+}
+
+fn multisample_color_target_bytes_v1(
+    width_px: u32,
+    height_px: u32,
+) -> Result<u64, RendererMemorySnapshotErrorV1> {
+    u64::from(width_px)
+        .checked_mul(u64::from(height_px))
+        .and_then(|pixels| pixels.checked_mul(u64::from(RENDER_SAMPLE_COUNT_V1)))
+        .and_then(|samples| samples.checked_mul(RGBA8_BYTES_PER_SAMPLE_V1))
+        .ok_or(RendererMemorySnapshotErrorV1::MultisampleColorTargetByteAccounting)
 }
 
 /// A prepared frame cannot be submitted truthfully to the supplied target.
@@ -296,31 +371,38 @@ pub struct WgpuFillRendererV1 {
     cairo_target_format: wgpu::TextureFormat,
     image_pipeline: ImagePipelineV1,
     image_texture_cache: ImageTextureCacheV1,
+    multisample_target: Option<MultisampleColorTargetV1>,
     pipeline: wgpu::RenderPipeline,
     target_format: wgpu::TextureFormat,
 }
 
 /// Exact logical byte counts for GPU resources retained by one renderer.
 ///
-/// These values cover the grow-only vertex/index buffer arena and image
-/// textures retained by the bounded LRU. They intentionally exclude transient
-/// frame buffers and backend-owned pipeline/surface allocation overhead, so
-/// they are not a browser-process RSS claim.
+/// These values cover the grow-only vertex/index buffer arena, image textures
+/// retained by the bounded LRU, and the current four-sample color attachment.
+/// They intentionally exclude backend-owned pipeline/surface allocation
+/// overhead, so they are not a browser-process RSS claim.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RendererMemorySnapshotV1 {
-    geometry_buffer_arena_bytes: u64,
-    retained_image_texture_bytes: u64,
+    geometry_buffer_arena: u64,
+    multisample_color_target: u64,
+    retained_image_texture: u64,
 }
 
 impl RendererMemorySnapshotV1 {
     #[must_use]
     pub const fn geometry_buffer_arena_bytes(self) -> u64 {
-        self.geometry_buffer_arena_bytes
+        self.geometry_buffer_arena
+    }
+
+    #[must_use]
+    pub const fn multisample_color_target_bytes(self) -> u64 {
+        self.multisample_color_target
     }
 
     #[must_use]
     pub const fn retained_image_texture_bytes(self) -> u64 {
-        self.retained_image_texture_bytes
+        self.retained_image_texture
     }
 }
 
@@ -331,12 +413,15 @@ pub enum RendererMemorySnapshotErrorV1 {
     BufferArena(#[from] GpuBufferArenaErrorV1),
     #[error("retained image texture byte accounting is not representable as u64")]
     ImageTextureByteConversion,
+    #[error("multisample color-target byte accounting overflowed")]
+    MultisampleColorTargetByteAccounting,
 }
 
 impl WgpuFillRendererV1 {
-    /// Creates paired single-sample pipelines for one sRGB view and its base
-    /// Unorm view. Both pipelines share the retained geometry arena and image
-    /// cache; each frame selects exactly one through its compositing contract.
+    /// Creates paired four-sample pipelines for one sRGB view and its base
+    /// Unorm view. Both pipelines share the retained geometry arena, image
+    /// cache, and a lazily resized multisample attachment; each frame resolves
+    /// into the caller's single-sample target.
     ///
     /// # Errors
     ///
@@ -391,7 +476,10 @@ impl WgpuFillRendererV1 {
                     ..wgpu::PrimitiveState::default()
                 },
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState {
+                    count: RENDER_SAMPLE_COUNT_V1,
+                    ..wgpu::MultisampleState::default()
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some("fs_main"),
@@ -418,6 +506,7 @@ impl WgpuFillRendererV1 {
             cairo_target_format,
             image_pipeline: ImagePipelineV1::new(device, target_format),
             image_texture_cache: ImageTextureCacheV1::with_limits(image_texture_cache_limits),
+            multisample_target: None,
             pipeline,
             target_format,
         })
@@ -434,17 +523,22 @@ impl WgpuFillRendererV1 {
     ///
     /// # Errors
     ///
-    /// Returns an error instead of saturating if either retained byte count is
+    /// Returns an error instead of saturating if any retained byte count is
     /// not representable.
     pub fn memory_snapshot(
         &self,
     ) -> Result<RendererMemorySnapshotV1, RendererMemorySnapshotErrorV1> {
+        let retained_image_texture = u64::try_from(self.image_texture_cache.accounted_gpu_bytes())
+            .map_err(|_| RendererMemorySnapshotErrorV1::ImageTextureByteConversion)?;
         Ok(RendererMemorySnapshotV1 {
-            geometry_buffer_arena_bytes: self.arena.capacity_bytes()?,
-            retained_image_texture_bytes: u64::try_from(
-                self.image_texture_cache.accounted_gpu_bytes(),
-            )
-            .map_err(|_| RendererMemorySnapshotErrorV1::ImageTextureByteConversion)?,
+            geometry_buffer_arena: self.arena.capacity_bytes()?,
+            multisample_color_target: self
+                .multisample_target
+                .as_ref()
+                .map(MultisampleColorTargetV1::accounted_bytes)
+                .transpose()?
+                .unwrap_or(0),
+            retained_image_texture,
         })
     }
 
@@ -530,6 +624,25 @@ impl WgpuFillRendererV1 {
             return Err(RenderFrameErrorV1::ManimCairoSrgbImagesUnsupported);
         }
 
+        let recreate_multisample_target =
+            self.multisample_target
+                .as_ref()
+                .is_none_or(|multisample_target| {
+                    !multisample_target.matches(
+                        expected_target_format,
+                        target.width_px,
+                        target.height_px,
+                    )
+                });
+        if recreate_multisample_target {
+            self.multisample_target = Some(MultisampleColorTargetV1::new(
+                device,
+                expected_target_format,
+                target.width_px,
+                target.height_px,
+            ));
+        }
+
         let mut evidence = RenderStageEvidenceV1::empty();
         let has_geometry = !frame.indices().is_empty() || !frame.image_draws().is_empty();
         let mut image_frame = None;
@@ -599,10 +712,17 @@ impl WgpuFillRendererV1 {
         });
         {
             let clear = frame.clear_color();
+            let multisample_view = &self
+                .multisample_target
+                .as_ref()
+                .ok_or(GpuUploadPlanErrorV1::Inconsistent(
+                    "validated target extent did not retain a multisample attachment",
+                ))?
+                .view;
             let attachments = [Some(wgpu::RenderPassColorAttachment {
-                view: target.view,
+                view: multisample_view,
                 depth_slice: None,
-                resolve_target: None,
+                resolve_target: Some(target.view),
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color {
                         r: clear[0],
@@ -610,7 +730,7 @@ impl WgpuFillRendererV1 {
                         b: clear[2],
                         a: clear[3],
                     }),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 },
             })];
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -668,5 +788,30 @@ mod tests {
             cairo_target_format_for_linear_view(wgpu::TextureFormat::Rgba8Unorm),
             None
         );
+    }
+
+    #[test]
+    fn multisample_attachment_resolves_four_samples_without_copy_or_sampling_usage() {
+        let descriptor =
+            multisample_color_texture_descriptor_v1(wgpu::TextureFormat::Rgba8Unorm, 640, 360);
+        assert_eq!(descriptor.sample_count, 4);
+        assert_eq!(descriptor.mip_level_count, 1);
+        assert_eq!(descriptor.dimension, wgpu::TextureDimension::D2);
+        assert_eq!(descriptor.format, wgpu::TextureFormat::Rgba8Unorm);
+        assert_eq!(
+            descriptor.size,
+            wgpu::Extent3d {
+                width: 640,
+                height: 360,
+                depth_or_array_layers: 1,
+            }
+        );
+        assert_eq!(descriptor.usage, wgpu::TextureUsages::RENDER_ATTACHMENT);
+        assert_eq!(
+            multisample_color_target_bytes_v1(3_840, 2_160),
+            Ok(132_710_400)
+        );
+        assert_eq!(multisample_color_target_bytes_v1(640, 360), Ok(3_686_400));
+        assert_eq!(MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1, 536_870_912);
     }
 }

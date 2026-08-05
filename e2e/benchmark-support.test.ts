@@ -1463,6 +1463,11 @@ describe("report summaries", () => {
     const report = stageReportFixture();
     report.workloads[0]!.memory.samples[1]!.memory.retainedBoundaryTotal.peakBytes = 29_000_000;
     expect(engineWebgpuStageTelemetryReportSchema.safeParse(report).success).toBe(false);
+
+    const regressingMultisampleTarget = stageReportFixture();
+    regressingMultisampleTarget.workloads[0]!.memory
+      .samples[0]!.memory.logicalGpuBreakdown.multisampleColorTarget.peakBytes += 1;
+    expect(engineWebgpuStageTelemetryReportSchema.safeParse(regressingMultisampleTarget).success).toBe(false);
   });
 
   it("pins the canonical viewport, retry, warmup, and stage-attribution configuration", () => {

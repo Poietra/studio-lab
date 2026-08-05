@@ -705,6 +705,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
       const highWaterPaths = [
         ["retainedBoundaryTotal"],
         ["logicalGpuBreakdown", "geometryBufferArena"],
+        ["logicalGpuBreakdown", "multisampleColorTarget"],
         ["logicalGpuBreakdown", "retainedImageTextures"],
         ["logicalGpuResident"],
         ["wasmLinear"],
@@ -724,6 +725,7 @@ export const engineWebgpuStageTelemetryReportSchema = z
         const peaks = [
           sample.memory.retainedBoundaryTotal.peakBytes,
           sample.memory.logicalGpuBreakdown.geometryBufferArena.peakBytes,
+          sample.memory.logicalGpuBreakdown.multisampleColorTarget.peakBytes,
           sample.memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
           sample.memory.logicalGpuResident.peakBytes,
           sample.memory.wasmLinear.peakBytes,

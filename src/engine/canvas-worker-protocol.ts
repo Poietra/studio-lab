@@ -270,6 +270,19 @@ function addExactMemorySumIssue(
   }
 }
 
+function addExactMemoryComponentsSumIssue(
+  context: z.core.$RefinementCtx<unknown>,
+  components: readonly number[],
+  reported: number,
+  path: string[],
+  label: string,
+) {
+  const expected = components.reduce((total, component) => total + component, 0);
+  if (!Number.isSafeInteger(expected) || reported !== expected) {
+    context.addIssue({ code: "custom", message: `${label} must equal its current-byte components`, path });
+  }
+}
+
 function addMemoryRangeIssue(
   context: z.core.$RefinementCtx<unknown>,
   value: number,
@@ -290,6 +303,9 @@ export const canvasMeasuredMemoryTelemetryV1Schema = z
     logicalGpuBreakdown: z
       .object({
         geometryBufferArena: canvasMemoryHighWaterV1Schema,
+        // Older worker bundles predate the retained MSAA target. Normalize
+        // their absent component to zero while new workers always emit it.
+        multisampleColorTarget: canvasMemoryHighWaterV1Schema.optional().default({ currentBytes: 0, peakBytes: 0 }),
         retainedImageTextures: canvasMemoryHighWaterV1Schema,
       })
       .strict(),
@@ -305,10 +321,13 @@ export const canvasMeasuredMemoryTelemetryV1Schema = z
   })
   .strict()
   .superRefine((memory, context) => {
-    addExactMemorySumIssue(
+    addExactMemoryComponentsSumIssue(
       context,
-      memory.logicalGpuBreakdown.geometryBufferArena.currentBytes,
-      memory.logicalGpuBreakdown.retainedImageTextures.currentBytes,
+      [
+        memory.logicalGpuBreakdown.geometryBufferArena.currentBytes,
+        memory.logicalGpuBreakdown.multisampleColorTarget.currentBytes,
+        memory.logicalGpuBreakdown.retainedImageTextures.currentBytes,
+      ],
       memory.logicalGpuResident.currentBytes,
       ["logicalGpuResident", "currentBytes"],
       "logicalGpuResident.currentBytes",
@@ -326,9 +345,11 @@ export const canvasMeasuredMemoryTelemetryV1Schema = z
       memory.logicalGpuResident.peakBytes,
       Math.max(
         memory.logicalGpuBreakdown.geometryBufferArena.peakBytes,
+        memory.logicalGpuBreakdown.multisampleColorTarget.peakBytes,
         memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
       ),
       memory.logicalGpuBreakdown.geometryBufferArena.peakBytes +
+        memory.logicalGpuBreakdown.multisampleColorTarget.peakBytes +
         memory.logicalGpuBreakdown.retainedImageTextures.peakBytes,
       ["logicalGpuResident", "peakBytes"],
       "logicalGpuResident.peakBytes",
