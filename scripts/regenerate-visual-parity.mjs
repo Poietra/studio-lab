@@ -56,6 +56,7 @@ const nativeTestByEntryId = new Map([
   ["real-write-stuff-v12--math-end", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
   ["real-write-stuff-v12--hold", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
   ["real-write-stuff-v12--end", "renders_real_write_stuff_v12_samples_with_fallback_adapter"],
+  ["real-write-stuff-v12-edited--hold", "renders_real_write_stuff_v12_edited_hold_with_fallback_adapter"],
 ]);
 const expectedArtifactIds = corpus.entries.map(({ id }) => id).sort();
 const configuredArtifactIds = [...nativeTestByEntryId.keys()].sort();

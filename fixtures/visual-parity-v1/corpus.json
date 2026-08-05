@@ -696,6 +696,24 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12-edited--hold",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12-edited",
+        "path": "fixtures/engine-v1/real-write-stuff-v12-edited.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48"
+        }
+      },
+      "sample": {
+        "id": "hold",
+        "sampleTime": 3.5,
+        "semanticDigest": "0d55846a1d4c4dd5556dd40d6c5deb34b4ed0e42a29bbb3ee31596262e3839cc",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }

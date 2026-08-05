@@ -111,6 +111,7 @@ describe("visual parity v1 contracts", () => {
       "real-write-stuff-v12--math-end",
       "real-write-stuff-v12--hold",
       "real-write-stuff-v12--end",
+      "real-write-stuff-v12-edited--hold",
     ]);
     const entry = corpus.entries.find(({ id }) => id === "dynamic-affine-camera--a-first");
     expect(entry).toBeDefined();
@@ -794,6 +795,102 @@ describe("visual parity v1 contracts", () => {
         viewport: { heightPx: 360, widthPx: 640 },
       });
     }
+  });
+
+  it("pins the actual producer snapshot after the Studio WriteStuff equation edit", async () => {
+    const fixtureRevision = "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48";
+    const sourceHash = "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98";
+    const corpus = await corpusFixture();
+    const entry = corpus.entries.find(({ id }) => id === "real-write-stuff-v12-edited--hold");
+    expect(entry).toMatchObject({
+      fixture: {
+        id: "eng-v1-real-write-stuff-v12-edited",
+        path: "fixtures/engine-v1/real-write-stuff-v12-edited.json",
+        revision: { kind: "imported-manim-server-snapshot", sha256: fixtureRevision },
+      },
+      sample: {
+        id: "hold",
+        sampleTime: 3.5,
+        semanticDigest: "0d55846a1d4c4dd5556dd40d6c5deb34b4ed0e42a29bbb3ee31596262e3839cc",
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+      thresholdException: null,
+    });
+    if (!entry) throw new Error("The edited WriteStuff V12 visual-parity entry is missing.");
+    expect(thresholdsForEntryV1(corpus, entry)).toEqual(corpus.defaultThresholds);
+
+    const fixtureBytes = new Uint8Array(await readFile(entry.fixture.path));
+    expect(fixtureBytes.byteLength).toBeLessThanOrEqual(1_024 * 1_024);
+    const fixture = JSON.parse(new TextDecoder().decode(fixtureBytes));
+    const bundle = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-server-snapshot",
+      runtimeConfigHash: "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593",
+      snapshotHash: fixtureRevision,
+      snapshotVersion: 12,
+      sourceHash,
+    });
+    expect(digestFastManimSnapshotBundleV1(bundle)).toBe(fixtureRevision);
+    expect(sceneIrSourceRevisionHash(bundle.scene)).toBe(fixtureRevision);
+    expect(bundle.scene.entities).toHaveLength(61);
+    expect(bundle.scene.animationChannels).toHaveLength(58);
+
+    const officialFixture = JSON.parse(await readFile("fixtures/engine-v1/real-write-stuff-v12.json", "utf8"));
+    const official = sceneIrBundleV1Schema.parse({ assets: officialFixture.assets, scene: officialFixture.scene });
+    expect(bundle.scene.entities.map(({ id, parentId }) => ({ id, parentId }))).toEqual(
+      official.scene.entities.map(({ id, parentId }) => ({ id, parentId })),
+    );
+    expect(bundle.scene.animationChannels).toEqual(official.scene.animationChannels);
+    const mathBounds = (scene: typeof bundle.scene) => {
+      const points = scene.entities.slice(33).flatMap(({ geometry }) => {
+        if (geometry.kind !== "cubic-path") throw new Error("WriteStuff MathTex roles must be cubic paths.");
+        return geometry.path.subpaths.flatMap((subpath) => [
+          subpath.start,
+          ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+        ]);
+      });
+      const xs = points.map(({ x }) => x);
+      const ys = points.map(({ y }) => y);
+      return {
+        center: { x: (Math.min(...xs) + Math.max(...xs)) / 2, y: (Math.min(...ys) + Math.max(...ys)) / 2 },
+        height: Math.max(...ys) - Math.min(...ys),
+        width: Math.max(...xs) - Math.min(...xs),
+      };
+    };
+    const editedBounds = mathBounds(bundle.scene);
+    const officialBounds = mathBounds(official.scene);
+    expect(editedBounds.center.x).toBeCloseTo(1.25, 12);
+    expect(editedBounds.center.y).toBeCloseTo(-0.5, 12);
+    expect(editedBounds.width / officialBounds.width).toBeCloseTo(0.5, 12);
+    expect(editedBounds.height / officialBounds.height).toBeCloseTo(0.5, 12);
+
+    const officialSource = await readFile("fixtures/real-preview-harness/example_scenes/basic.py", "utf8");
+    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
+    const editedSource = officialSource.replace(
+      anchor,
+      `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
+    );
+    expect(editedSource).not.toBe(officialSource);
+    expect(sha256(new TextEncoder().encode(editedSource))).toBe(sourceHash);
+    expect(fixture.producerReference).toEqual({
+      engineCommit: "7b25d1ca96b8e6c3369344622de3ef5c32ac06fb",
+      fastManimCommit: "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063",
+      fastManimTree: "f1a5ef1b69711cf41c3424dd697ab75591942905",
+      kind: "server-sealed-real-fast-manim-profile-v12",
+      producerSnapshotDigest: "49e7491506b1514da26e70d035bf4b4cc34248ac17ac2688e801cf3459e98a24",
+      snapshotHash: fixtureRevision,
+      sourcePath: "example_scenes/basic.py",
+      sourceSha256: sourceHash,
+    });
+    expect(fixture.samples).toEqual([
+      {
+        expected: { semanticDigest: "0d55846a1d4c4dd5556dd40d6c5deb34b4ed0e42a29bbb3ee31596262e3839cc" },
+        id: "hold",
+        packetId: "real-write-stuff-v12-edited:hold",
+        sampleTime: 3.5,
+        viewport: { heightPx: 360, widthPx: 640 },
+      },
+    ]);
   });
 
   it("pins the server-sealed real LineJoints V10 scene to native/browser and independent Cairo gates", async () => {
