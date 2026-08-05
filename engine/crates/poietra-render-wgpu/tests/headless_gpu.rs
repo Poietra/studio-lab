@@ -442,6 +442,30 @@ const REAL_SPIRAL_IN_V11_SAMPLES: [(&str, &str, f64); 7] = [
     ),
     ("real-spiral-in-v11--end", "end", 3.0),
 ];
+const REAL_WRITE_STUFF_V12_FIXTURE_ID: &str = "eng-v1-real-write-stuff-v12";
+const REAL_WRITE_STUFF_V12_FIXTURE_PATH: &str = "fixtures/engine-v1/real-write-stuff-v12.json";
+const REAL_WRITE_STUFF_V12_SOURCE_PATH: &str = "example_scenes/basic.py";
+const REAL_WRITE_STUFF_V12_SOURCE_MIRROR_PATH: &str =
+    "fixtures/real-preview-harness/example_scenes/basic.py";
+const REAL_WRITE_STUFF_V12_SOURCE_SHA256: &str =
+    "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const REAL_WRITE_STUFF_V12_ENGINE_COMMIT: &str = "8b19ef72e425d41f271c785c74a0fd295a14b5b5";
+const REAL_WRITE_STUFF_V12_FAST_MANIM_COMMIT: &str = "044a61aa0d868fc9e799588f2eb88006594b6c44";
+const REAL_WRITE_STUFF_V12_FAST_MANIM_TREE: &str = "996ad2b7375a6f911b1b00747eaad38834bde25c";
+const REAL_WRITE_STUFF_V12_PRODUCER_SNAPSHOT_DIGEST: &str =
+    "dd6ca2c3e1015718f9fa9b8ad0e926de8260013eb85d17574c3c7fdeaba89817";
+const REAL_WRITE_STUFF_V12_SNAPSHOT_HASH: &str =
+    "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594";
+const REAL_WRITE_STUFF_V12_SAMPLES: [(&str, &str, f64); 8] = [
+    ("real-write-stuff-v12--start", "start", 0.0),
+    ("real-write-stuff-v12--tex-early", "tex-early", 0.25),
+    ("real-write-stuff-v12--tex-midpoint", "tex-midpoint", 1.0),
+    ("real-write-stuff-v12--math-start", "math-start", 2.0),
+    ("real-write-stuff-v12--math-midpoint", "math-midpoint", 2.5),
+    ("real-write-stuff-v12--math-end", "math-end", 3.0),
+    ("real-write-stuff-v12--hold", "hold", 3.5),
+    ("real-write-stuff-v12--end", "end", 4.0),
+];
 
 #[derive(Clone, Copy)]
 struct RealLineJointsV10Contract {
@@ -741,6 +765,13 @@ fn assert_target_format_support(adapter: &wgpu::Adapter) {
             "fallback adapter must support {format:?} as a copyable render attachment"
         );
     }
+    let cairo_format_features = adapter.get_texture_format_features(MANIM_CAIRO_TARGET_FORMAT);
+    let required_cairo_flags = wgpu::TextureFormatFeatureFlags::MULTISAMPLE_X4
+        | wgpu::TextureFormatFeatureFlags::MULTISAMPLE_RESOLVE;
+    assert!(
+        cairo_format_features.flags.contains(required_cairo_flags),
+        "fallback adapter must support 4x multisample resolve for the Manim/Cairo base-Unorm target"
+    );
 }
 
 fn request_device(adapter: &wgpu::Adapter) -> (wgpu::Device, wgpu::Queue) {
@@ -1205,6 +1236,20 @@ fn real_spiral_in_v11_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBund
         "scene": fixture.scene,
     }))
     .expect("real SpiralIn V11 fixture must contain a valid Scene bundle");
+    (fixture, bundle)
+}
+
+fn real_write_stuff_v12_fixture() -> (RealSnapshotVisualParityFixture, SceneIrBundleV1) {
+    let path = repository_root().join(REAL_WRITE_STUFF_V12_FIXTURE_PATH);
+    let fixture: RealSnapshotVisualParityFixture = serde_json::from_slice(
+        &fs::read(path).expect("real WriteStuff V12 fixture must be readable"),
+    )
+    .expect("real WriteStuff V12 fixture must match its strict native envelope");
+    let bundle = serde_json::from_value(serde_json::json!({
+        "assets": fixture.assets,
+        "scene": fixture.scene,
+    }))
+    .expect("real WriteStuff V12 fixture must contain a valid Scene bundle");
     (fixture, bundle)
 }
 
@@ -2968,6 +3013,246 @@ fn renders_real_spiral_in_v11_samples_with_fallback_adapter() {
             0
         },
         "an opt-in SpiralIn V11 artifact request must emit all seven frames"
+    );
+}
+
+#[test]
+#[ignore = "requires a native software WGPU adapter; the visual parity lane runs this proof"]
+#[allow(clippy::too_many_lines)] // One temporal proof binds the exact V12 producer to eight full-frame GPU artifacts.
+fn renders_real_write_stuff_v12_samples_with_fallback_adapter() {
+    let (fixture, bundle) = real_write_stuff_v12_fixture();
+    assert_eq!(fixture.id, REAL_WRITE_STUFF_V12_FIXTURE_ID);
+    assert_eq!(
+        fixture.producer_reference.kind,
+        "server-sealed-real-fast-manim-profile-v12"
+    );
+    assert_eq!(
+        fixture.producer_reference.engine_commit,
+        REAL_WRITE_STUFF_V12_ENGINE_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_commit,
+        REAL_WRITE_STUFF_V12_FAST_MANIM_COMMIT
+    );
+    assert_eq!(
+        fixture.producer_reference.fast_manim_tree.as_deref(),
+        Some(REAL_WRITE_STUFF_V12_FAST_MANIM_TREE)
+    );
+    assert_eq!(
+        fixture
+            .producer_reference
+            .producer_snapshot_digest
+            .as_deref(),
+        Some(REAL_WRITE_STUFF_V12_PRODUCER_SNAPSHOT_DIGEST)
+    );
+    assert_eq!(
+        fixture.producer_reference.snapshot_hash,
+        REAL_WRITE_STUFF_V12_SNAPSHOT_HASH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_path,
+        REAL_WRITE_STUFF_V12_SOURCE_PATH
+    );
+    assert_eq!(
+        fixture.producer_reference.source_sha256,
+        REAL_WRITE_STUFF_V12_SOURCE_SHA256
+    );
+    assert_eq!(
+        format!(
+            "{:x}",
+            Sha256::digest(
+                fs::read(repository_root().join(REAL_WRITE_STUFF_V12_SOURCE_MIRROR_PATH))
+                    .expect("the mirrored official WriteStuff source must remain readable")
+            )
+        ),
+        REAL_WRITE_STUFF_V12_SOURCE_SHA256,
+        "the mirrored Python source must match the sealed V12 provenance"
+    );
+
+    let SceneSourceV1::ImportedManimServerSnapshot {
+        snapshot_hash,
+        snapshot_version,
+        source_hash,
+        ..
+    } = &bundle.scene.source
+    else {
+        panic!("real WriteStuff V12 must remain an imported server snapshot");
+    };
+    assert_eq!(*snapshot_version, SnapshotProfileVersionV1::V12);
+    assert_eq!(snapshot_hash, REAL_WRITE_STUFF_V12_SNAPSHOT_HASH);
+    assert_eq!(source_hash, REAL_WRITE_STUFF_V12_SOURCE_SHA256);
+    assert_eq!(
+        bundle.scene.source.revision_hash(),
+        REAL_WRITE_STUFF_V12_SNAPSHOT_HASH
+    );
+    assert_eq!(bundle.scene.duration.to_bits(), 4.0_f64.to_bits());
+    assert_eq!(bundle.scene.entities.len(), 61);
+    assert_eq!(bundle.scene.animation_channels.len(), 58);
+
+    let visual_parity_entries =
+        REAL_WRITE_STUFF_V12_SAMPLES.map(|(entry_id, _, _)| load_visual_parity_entry(entry_id));
+    let expected_viewport = ViewportV1 {
+        height_px: 360,
+        width_px: 640,
+    };
+    for (index, &(entry_id, sample_id, sample_time)) in
+        REAL_WRITE_STUFF_V12_SAMPLES.iter().enumerate()
+    {
+        let entry = &visual_parity_entries[index];
+        let sample = fixture
+            .samples
+            .iter()
+            .find(|sample| sample.id == sample_id)
+            .unwrap_or_else(|| panic!("WriteStuff V12 sample {sample_id} must exist"));
+        assert_eq!(entry.id, entry_id);
+        assert_eq!(entry.fixture.id, REAL_WRITE_STUFF_V12_FIXTURE_ID);
+        assert_eq!(entry.fixture.path, REAL_WRITE_STUFF_V12_FIXTURE_PATH);
+        assert_eq!(
+            entry.fixture.revision.kind,
+            "imported-manim-server-snapshot"
+        );
+        assert_eq!(
+            entry.fixture.revision.sha256,
+            REAL_WRITE_STUFF_V12_SNAPSHOT_HASH
+        );
+        assert_eq!(entry.sample.id, sample_id);
+        assert_eq!(entry.sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(entry.sample.viewport, expected_viewport);
+        assert_eq!(
+            sample.packet_id,
+            format!("real-write-stuff-v12:{sample_id}")
+        );
+        assert_eq!(sample.sample_time.to_bits(), sample_time.to_bits());
+        assert_eq!(sample.viewport, expected_viewport);
+        assert_eq!(
+            sample.expected.semantic_digest, entry.sample.semantic_digest,
+            "{sample_id} fixture and corpus semantics must stay pinned together"
+        );
+    }
+
+    let session =
+        EngineSessionV1::new(bundle).expect("real WriteStuff V12 fixture must install once");
+    let sampled_packets = REAL_WRITE_STUFF_V12_SAMPLES
+        .iter()
+        .map(|&(_, sample_id, _)| {
+            let sample = fixture
+                .samples
+                .iter()
+                .find(|sample| sample.id == sample_id)
+                .unwrap_or_else(|| panic!("WriteStuff V12 sample {sample_id} must exist"));
+            let packet = session
+                .sample_render_packet(SampleEngineSessionOptionsV1 {
+                    evidence: &[fixture.id.clone(), sample.id.clone()],
+                    packet_id: &sample.packet_id,
+                    sample_time: sample.sample_time,
+                    viewport: sample.viewport.clone(),
+                })
+                .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+            assert_eq!(packet.packet_id, sample.packet_id);
+            assert_eq!(packet.sample_time.to_bits(), sample.sample_time.to_bits());
+            assert_eq!(packet.viewport, sample.viewport);
+            assert_eq!(
+                packet.scene_revision_hash,
+                REAL_WRITE_STUFF_V12_SNAPSHOT_HASH
+            );
+            assert_eq!(packet.compositing, RenderCompositingV1::ManimCairoSrgb);
+            assert_eq!(
+                render_packet_semantic_digest(&packet),
+                sample.expected.semantic_digest,
+                "{} fixture semantic digest must match the native evaluator",
+                sample.id
+            );
+            assert!(
+                packet.draws.iter().all(|draw| matches!(
+                    draw,
+                    RenderDrawV1::Empty { .. } | RenderDrawV1::Path { .. }
+                )),
+                "the logical groups must not draw and every WriteStuff leaf must stay vector-only"
+            );
+            (sample, packet)
+        })
+        .collect::<Vec<_>>();
+
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    let adapter = request_fallback_adapter(&instance);
+    let adapter_info = adapter.get_info();
+    assert_eq!(adapter_info.device_type, wgpu::DeviceType::Cpu);
+    assert_target_format_support(&adapter);
+    let (device, queue) = request_device(&adapter);
+    let device_loss = track_device_loss(&device);
+    let out_of_memory_scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let internal_scope = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let validation_scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let mut renderer = WgpuPaintRendererV1::new(&device, TARGET_FORMAT)
+        .expect("proof target format must be supported by the renderer");
+    let mut frames_by_sample = std::collections::BTreeMap::new();
+
+    for (sample, packet) in &sampled_packets {
+        let (texture, extent) = render_packet(&device, &queue, &mut renderer, packet);
+        let (_, rgba) = readback_texture(&device, &queue, &texture, extent);
+        assert_eq!(extent.width, sample.viewport.width_px);
+        assert_eq!(extent.height, sample.viewport.height_px);
+        assert!(
+            frames_by_sample.insert(sample.id.clone(), rgba).is_none(),
+            "WriteStuff V12 parity sample ids must be unique"
+        );
+    }
+
+    assert_no_gpu_error("validation", pollster::block_on(validation_scope.pop()));
+    assert_no_gpu_error("internal", pollster::block_on(internal_scope.pop()));
+    assert_no_gpu_error(
+        "out-of-memory",
+        pollster::block_on(out_of_memory_scope.pop()),
+    );
+    assert!(
+        device_loss
+            .lock()
+            .expect("device-loss evidence mutex must not be poisoned")
+            .is_none(),
+        "device must remain available through all eight WriteStuff V12 readbacks"
+    );
+    for (left, right) in [
+        ("start", "tex-early"),
+        ("tex-early", "tex-midpoint"),
+        ("tex-midpoint", "math-start"),
+        ("math-start", "math-midpoint"),
+        ("math-midpoint", "math-end"),
+    ] {
+        assert_ne!(
+            frames_by_sample[left], frames_by_sample[right],
+            "{left} and {right} must produce distinct full frames"
+        );
+    }
+    assert_eq!(
+        frames_by_sample["math-end"], frames_by_sample["hold"],
+        "the completed expressions must remain unchanged during the wait"
+    );
+    assert_eq!(
+        frames_by_sample["hold"], frames_by_sample["end"],
+        "the requested duration endpoint must preserve the final Cairo state"
+    );
+
+    let artifact_requested = env::var_os(VISUAL_PARITY_NATIVE_ARTIFACT_ENV_V1).is_some();
+    let artifact_count = visual_parity_entries
+        .iter()
+        .map(|entry| {
+            usize::from(emit_native_visual_parity_artifact(
+                entry,
+                &adapter_info,
+                MANIM_CAIRO_TARGET_FORMAT,
+                &frames_by_sample[&entry.sample.id],
+            ))
+        })
+        .sum::<usize>();
+    assert_eq!(
+        artifact_count,
+        if artifact_requested {
+            REAL_WRITE_STUFF_V12_SAMPLES.len()
+        } else {
+            0
+        },
+        "an opt-in WriteStuff V12 artifact request must emit all eight frames"
     );
 }
 

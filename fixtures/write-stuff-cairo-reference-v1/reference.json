@@ -1,0 +1,191 @@
+{
+  "frame": {
+    "background": "opaque-black",
+    "camera": {
+      "height": 8,
+      "width": 14.222222222222221
+    },
+    "colorDomain": "srgb-u8",
+    "frameRate": 60,
+    "viewport": {
+      "heightPx": 360,
+      "widthPx": 640
+    }
+  },
+  "frames": [
+    {
+      "id": "start",
+      "png": {
+        "byteLength": 1751,
+        "channelOrder": "rgba",
+        "path": "start.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "b2eab2e96e1c94751425a42d1e435e41f8c48a5f1cd41ff4defb3931323ddc07",
+        "rowOrder": "top-to-bottom",
+        "sha256": "067aba9deef0fde3a8db2c6c4f559a1e947de08dd4d07b39a35708a776952d91"
+      },
+      "sampleTime": 0.0
+    },
+    {
+      "id": "tex-early",
+      "png": {
+        "byteLength": 3982,
+        "channelOrder": "rgba",
+        "path": "tex-early.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "8d0e4d84a9804e37d0404a423da3694a3b16ae9ef88ed525eea687e2fe1dea71",
+        "rowOrder": "top-to-bottom",
+        "sha256": "eedf1a57c5e4763ec665431c40fed28f562fde87db041a98c6657161cc4070f4"
+      },
+      "sampleTime": 0.25
+    },
+    {
+      "id": "tex-midpoint",
+      "png": {
+        "byteLength": 11247,
+        "channelOrder": "rgba",
+        "path": "tex-midpoint.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "33bbd61119f559d236ecb61a24df96e9d662cfbf10b13942f6bdbec054d42731",
+        "rowOrder": "top-to-bottom",
+        "sha256": "c586befe504be8053f6469d5aeb855e5eeaf992771b4cc3413aecff48644c642"
+      },
+      "sampleTime": 1.0
+    },
+    {
+      "id": "math-start",
+      "png": {
+        "byteLength": 15233,
+        "channelOrder": "rgba",
+        "path": "math-start.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "119d2636515d854735801c1f4ffda74248512c484c5298465597dd9751ec37b5",
+        "rowOrder": "top-to-bottom",
+        "sha256": "c091b206e9c862714b3d9a76e29e2ee3d99c9ecdf0fdf04a8b4d5e6fd485c510"
+      },
+      "sampleTime": 2.0
+    },
+    {
+      "id": "math-midpoint",
+      "png": {
+        "byteLength": 23987,
+        "channelOrder": "rgba",
+        "path": "math-midpoint.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "d74d177af8f819dcddbb7c9300fb16fb62722a9677eec57a02ab32b9dc03261f",
+        "rowOrder": "top-to-bottom",
+        "sha256": "3a580cee3b899bce40e9ecb83c45f08ab801d4900a0f4566a1ef5b6d28abb8e6"
+      },
+      "sampleTime": 2.5
+    },
+    {
+      "id": "math-end",
+      "png": {
+        "byteLength": 27172,
+        "channelOrder": "rgba",
+        "path": "math-end.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "a59062c94722a3628ded101c9f8d76fb0d7ec5cd51ea966042a870323b48cc32",
+        "rowOrder": "top-to-bottom",
+        "sha256": "9f9a831733478f5b0bea11de883b4c1c7f9a8e4611c52eb45b8d4a1a314dffe8"
+      },
+      "sampleTime": 3.0
+    },
+    {
+      "id": "hold",
+      "png": {
+        "byteLength": 27172,
+        "channelOrder": "rgba",
+        "path": "hold.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "a59062c94722a3628ded101c9f8d76fb0d7ec5cd51ea966042a870323b48cc32",
+        "rowOrder": "top-to-bottom",
+        "sha256": "9f9a831733478f5b0bea11de883b4c1c7f9a8e4611c52eb45b8d4a1a314dffe8"
+      },
+      "sampleTime": 3.5
+    },
+    {
+      "id": "end",
+      "png": {
+        "byteLength": 27172,
+        "channelOrder": "rgba",
+        "path": "end.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "a59062c94722a3628ded101c9f8d76fb0d7ec5cd51ea966042a870323b48cc32",
+        "rowOrder": "top-to-bottom",
+        "sha256": "9f9a831733478f5b0bea11de883b4c1c7f9a8e4611c52eb45b8d4a1a314dffe8"
+      },
+      "sampleTime": 4.0
+    }
+  ],
+  "producer": {
+    "cairoLibrarySha256": "3144bd5935aee427d6c191b6b6d0ebf9010fb6320295a7f73edd276bc6993f2d",
+    "cairoVersion": "1.18.0",
+    "fastManimCommit": "044a61aa0d868fc9e799588f2eb88006594b6c44",
+    "fastManimTree": "996ad2b7375a6f911b1b00747eaad38834bde25c",
+    "identitySha256": "1bd11c4b82105e2e4013fcd90d7c4cb82a779f8d9df93e3390d4101a744bca0f",
+    "manimVersion": "0.20.1",
+    "numpyVersion": "2.4.1",
+    "pillowImagingModuleSha256": "8a2c7efde4f6b0ef41e6a6197c00a2c19416c5939bf9bb43086f680cb54136a9",
+    "pillowVersion": "12.2.0",
+    "pycairoModuleSha256": "a378b352cf9af46ba04511a5910543e33917fc01881ec6908c12ebc9a9cba731",
+    "pycairoVersion": "1.29.0",
+    "pythonExecutableSha256": "700660abb666fb5db819af3f03a92bc7d53c15e40b235c17fca6023b5755d784",
+    "pythonImplementation": "CPython",
+    "pythonVersion": "3.13.11",
+    "renderer": "cairo",
+    "texToolchain": {
+      "dvisvgm": {
+        "executableSha256": "f71f47113ad9a77b9d2b01dd5d938e3537c60d1ee7f342ec273ed061d5e51b38",
+        "version": "dvisvgm 3.6"
+      },
+      "latex": {
+        "executableSha256": "1c5ff71156ee990c3a18402cf06d3671ecf748bd84fb3983dbd5d62b600bc40b",
+        "version": "pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026)"
+      }
+    },
+    "uvLockSha256": "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753"
+  },
+  "rendererConfig": {
+    "identitySha256": "931ba54adc01f50656485cdc21aef32489e9b36caf3dd396115787115cb03d33",
+    "values": {
+      "antialias": "default",
+      "backgroundColor": "#000000",
+      "backgroundOpacity": 1,
+      "cairoCompositor": false,
+      "cairoCompositorFades": false,
+      "cairoForkWorkers": 0,
+      "cairoStaticLayers": false,
+      "disableCaching": true,
+      "format": "png",
+      "frameHeight": 8,
+      "frameRate": 60,
+      "frameWidth": 14.222222222222221,
+      "pixelHeight": 360,
+      "pixelWidth": 640,
+      "renderer": "cairo",
+      "saveLastFrame": false,
+      "savePngs": false,
+      "transparent": false,
+      "verbosity": "WARNING",
+      "writeToMovie": false
+    }
+  },
+  "reproducibility": {
+    "environment": {
+      "PYTHONHASHSEED": "0"
+    },
+    "seeds": {
+      "numpy": 0,
+      "pythonRandom": 0
+    }
+  },
+  "scene": {
+    "className": "WriteStuff",
+    "repository": "Poietra/fast-manim",
+    "sourcePath": "example_scenes/basic.py",
+    "sourceSha256": "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
+  },
+  "schema": "poietra.write-stuff-cairo-reference",
+  "version": 1
+}

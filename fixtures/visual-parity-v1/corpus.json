@@ -552,6 +552,150 @@
         "viewport": { "heightPx": 360, "widthPx": 640 }
       },
       "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--start",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "start",
+        "sampleTime": 0,
+        "semanticDigest": "2451c0c9c441b2c3672ea4cd4dc7c0a29eebb3eb896d45b57c7e35df5fbd5b70",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--tex-early",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "tex-early",
+        "sampleTime": 0.25,
+        "semanticDigest": "411329ac0a55560693e9278f35db572bd3f0ee9389041c6cfdaf4d325fd8cb42",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--tex-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "tex-midpoint",
+        "sampleTime": 1,
+        "semanticDigest": "51249211b7697d8337ac1b85fde08c9e1c965904f8a227036078b6b3c6a89da9",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--math-start",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "math-start",
+        "sampleTime": 2,
+        "semanticDigest": "3139f1f7d8598c514a42b8be305209821b00da677e3b72cf1cdaf89c3c1fa1bc",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--math-midpoint",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "math-midpoint",
+        "sampleTime": 2.5,
+        "semanticDigest": "aa924b5981023a906e4c14fc91d3f6b3dd29db3ed3d2fd20a92283584abb638a",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--math-end",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "math-end",
+        "sampleTime": 3,
+        "semanticDigest": "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--hold",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "hold",
+        "sampleTime": 3.5,
+        "semanticDigest": "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
+    },
+    {
+      "id": "real-write-stuff-v12--end",
+      "fixture": {
+        "id": "eng-v1-real-write-stuff-v12",
+        "path": "fixtures/engine-v1/real-write-stuff-v12.json",
+        "revision": {
+          "kind": "imported-manim-server-snapshot",
+          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+        }
+      },
+      "sample": {
+        "id": "end",
+        "sampleTime": 4,
+        "semanticDigest": "73f15e65f384a42358b5dbf61f22de23332c0c6da3697a91d6acdbaafc2c9ff9",
+        "viewport": { "heightPx": 360, "widthPx": 640 }
+      },
+      "thresholdException": null
     }
   ]
 }
