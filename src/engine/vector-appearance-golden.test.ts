@@ -114,6 +114,57 @@ describe("vector-appearance Scene IR channel", () => {
     expect(draw.stroke.widthWorld).toBeCloseTo(0.04280414866180433, 14);
   });
 
+  it("normalizes an animated zero-width endpoint without weakening static stroke validation", async () => {
+    const fixture = await loadFixture();
+    const assets = assetManifestV1Schema.parse(fixture.assets);
+    const staticZero = sceneIrV1Schema.parse(fixture.scene);
+    const staticAppearance = staticZero.entities[0]?.appearance;
+    if (staticAppearance?.kind !== "vector" || staticAppearance.stroke === null) {
+      throw new Error("Fixture must contain a static vector stroke.");
+    }
+    staticAppearance.stroke.widthWorld = 0;
+    expect(sceneIrV1Schema.safeParse(staticZero).success).toBe(false);
+
+    const scene = sceneIrV1Schema.parse(fixture.scene);
+    const channel = scene.animationChannels.find((candidate) => candidate.kind === "vector-appearance");
+    if (channel?.kind !== "vector-appearance" || channel.keyframes[1]?.value.stroke === null) {
+      throw new Error("Fixture must contain a vector-appearance stroke channel.");
+    }
+    channel.keyframes[1].value.stroke.widthWorld = 0;
+    expect(sceneIrV1Schema.safeParse(scene).success).toBe(true);
+
+    const sampleStroke = async (sampleTime: number) => {
+      const result = await compileEngineFrameV1({
+        assets,
+        packetId: `appearance:zero:${sampleTime}`,
+        sampleTime,
+        scene,
+        viewport: fixture.viewport,
+      });
+      if (result.kind !== "ready") throw new Error(result.message);
+      const draw = result.frame.packet.draws[0];
+      if (draw?.kind !== "path" || draw.fill === null) throw new Error("Expected a filled path draw.");
+      return draw.stroke;
+    };
+
+    expect((await sampleStroke(1.5))?.widthWorld).toBeCloseTo(0.02, 14);
+    expect(await sampleStroke(2)).toBeNull();
+  });
+
+  it.each([-0.01, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "rejects invalid animated stroke width %s",
+    async (widthWorld) => {
+      const fixture = await loadFixture();
+      const scene = sceneIrV1Schema.parse(fixture.scene);
+      const channel = scene.animationChannels.find((candidate) => candidate.kind === "vector-appearance");
+      if (channel?.kind !== "vector-appearance" || channel.keyframes[1]?.value.stroke === null) {
+        throw new Error("Fixture must contain a vector-appearance stroke channel.");
+      }
+      channel.keyframes[1].value.stroke.widthWorld = widthWorld;
+      expect(sceneIrV1Schema.safeParse(scene).success).toBe(false);
+    },
+  );
+
   it("fails closed for implicit paint cross-fades and unsupported style transitions", async () => {
     const fixture = await loadFixture();
     const candidateScene = () => sceneIrV1Schema.parse(fixture.scene);

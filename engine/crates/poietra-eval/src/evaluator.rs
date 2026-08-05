@@ -273,6 +273,19 @@ fn interpolate_vector_appearance(
     Ok(VectorAppearanceValueV1 { fill, stroke })
 }
 
+fn normalize_vector_appearance_stroke(
+    mut appearance: VectorAppearanceValueV1,
+) -> VectorAppearanceValueV1 {
+    if appearance
+        .stroke
+        .as_ref()
+        .is_some_and(|stroke| stroke.width_world == 0.0)
+    {
+        appearance.stroke = None;
+    }
+    appearance
+}
+
 #[derive(Clone, Debug)]
 struct LocalSample {
     empty_reason: Option<RenderEmptyReasonV1>,
@@ -359,7 +372,7 @@ fn sample_vector_appearance(
         ));
     };
     sample_keyframes(base, keyframes, time, interpolate_vector_appearance)
-        .map(|sample| Some(sample.0))
+        .map(|sample| Some(normalize_vector_appearance_stroke(sample.0)))
 }
 
 fn sample_local_entity(

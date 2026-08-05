@@ -161,6 +161,7 @@ function sampleLocalEntity(
     appearanceChannel && baseAppearance
       ? sampleKeyframes(baseAppearance, appearanceChannel.keyframes, time, interpolateVectorAppearance).value
       : baseAppearance;
+  const stroke = appearance?.stroke?.widthWorld === 0 ? null : appearance?.stroke;
 
   const transformChannel = entityChannel(channels, entity.id, "affine-transform");
   const transformSample = transformChannel
@@ -206,7 +207,7 @@ function sampleLocalEntity(
           : trimCubicPathV1(path, trim);
     }
   }
-  return { emptyReason, entity, fill: appearance?.fill, opacity, path, stroke: appearance?.stroke, transform };
+  return { emptyReason, entity, fill: appearance?.fill, opacity, path, stroke, transform };
 }
 
 type WorldSample = Readonly<{ opacity: number; transform: EngineAffineTransformV1 }>;
