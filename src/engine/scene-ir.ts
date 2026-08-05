@@ -21,6 +21,7 @@ import {
   sourceIdentityV1Schema,
   strokeStyleV1Schema,
 } from "./primitives";
+import { runtimeTraceFrameSampleTimeV1 } from "./runtime-trace-time";
 
 const MAX_ENTITIES = 10_000;
 const MAX_CHANNELS = 10_000;
@@ -316,13 +317,22 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
       sourceHash: sha256V1Schema,
     })
     .strict(),
+  z
+    .object({
+      kind: z.literal("imported-manim-runtime-trace"),
+      runtimeConfigHash: sha256V1Schema,
+      sourceHash: sha256V1Schema,
+      traceDigest: sha256V1Schema,
+      traceVersion: z.literal(1),
+    })
+    .strict(),
 ]);
 
 export const provenanceRecordV1Schema = z
   .object({
     evidence: z.array(evidenceV1Schema).max(64),
     id: sourceIdentityV1Schema,
-    origin: z.enum(["fast-manim-server-snapshot", "fixture", "studio-edit-program"]),
+    origin: z.enum(["fast-manim-runtime-trace", "fast-manim-server-snapshot", "fixture", "studio-edit-program"]),
   })
   .strict();
 
@@ -805,6 +815,13 @@ export const sceneIrV1Schema = sceneIrV1BaseSchema.superRefine((scene, context) 
   validateEntities(scene, context);
   validateChannels(scene, context);
   validateCapabilities(scene, context);
+  if (scene.source.kind === "imported-manim-runtime-trace" && scene.duration !== 6) {
+    context.addIssue({
+      code: "custom",
+      message: "Runtime Trace V1 Scene IR requires its sealed six-second presentation grid.",
+      path: ["duration"],
+    });
+  }
   if (totalPathSegments(scene) > MAX_TOTAL_PATH_SEGMENTS) {
     context.addIssue({
       code: "custom",
@@ -818,18 +835,22 @@ export type SceneEntityGeometryV1 = SceneEntityV1["geometry"];
 export type SceneSourceV1 = z.infer<typeof sceneSourceV1Schema>;
 
 export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
-  return source.kind === "imported-manim-server-snapshot" &&
-    (source.snapshotVersion === 11 || source.snapshotVersion === 12)
+  return source.kind === "imported-manim-runtime-trace" ||
+    (source.kind === "imported-manim-server-snapshot" &&
+      (source.snapshotVersion === 11 || source.snapshotVersion === 12))
     ? ("manim-cairo-srgb" as const)
     : ("linear-light" as const);
 }
 
 /**
- * WriteStuff V12 ends with a one-second hold, so Manim presents its completed
- * frame at the exact Scene endpoint. Preserve half-open IR lifetimes everywhere
- * else and evaluate only that sealed endpoint at the preceding f64 value.
+ * Sealed imported profiles with a terminal hold present their completed frame
+ * at the exact Scene endpoint. Preserve half-open IR lifetimes everywhere else
+ * and evaluate only those sealed endpoints at the preceding f64 value.
  */
 export function sceneEvaluationSampleTimeV1(scene: SceneIrV1, requestedSampleTime: number) {
+  if (scene.source.kind === "imported-manim-runtime-trace") {
+    return runtimeTraceFrameSampleTimeV1(requestedSampleTime);
+  }
   if (
     scene.source.kind !== "imported-manim-server-snapshot" ||
     scene.source.snapshotVersion !== 12 ||
@@ -844,5 +865,9 @@ export function sceneEvaluationSampleTimeV1(scene: SceneIrV1, requestedSampleTim
 }
 
 export function sceneIrSourceRevisionHash(scene: SceneIrV1) {
-  return scene.source.kind === "studio-edit-program" ? scene.source.revisionHash : scene.source.snapshotHash;
+  return scene.source.kind === "studio-edit-program"
+    ? scene.source.revisionHash
+    : scene.source.kind === "imported-manim-runtime-trace"
+      ? scene.source.traceDigest
+      : scene.source.snapshotHash;
 }

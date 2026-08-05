@@ -139,7 +139,7 @@ async function compile(scene: SceneIrV1, assets: AssetManifestV1, sampleTime: nu
 }
 
 describe("Poietra TypeScript reference evaluator v1", () => {
-  it("emits explicit Cairo compositing for imported Manim snapshot V11 and V12 only", async () => {
+  it("emits explicit Cairo compositing for sealed Manim snapshot and Runtime Trace sources", async () => {
     const assets = await emptyManifest();
     const base = createScene(assets, { entities: [], requiredCapabilities: [] });
     const importedSource = {
@@ -155,11 +155,29 @@ describe("Poietra TypeScript reference evaluator v1", () => {
     const v12 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 12 as const } }, assets, 0.5);
     expect(v12.packet.compositing).toBe("manim-cairo-srgb");
 
+    const runtimeTrace = await compile(
+      {
+        ...base,
+        duration: 6,
+        source: {
+          kind: "imported-manim-runtime-trace",
+          runtimeConfigHash: SCENE_HASH,
+          sourceHash: SCENE_HASH,
+          traceDigest: ZERO_HASH,
+          traceVersion: 1,
+        },
+      },
+      assets,
+      0.5,
+    );
+    expect(runtimeTrace.packet.compositing).toBe("manim-cairo-srgb");
+    expect(runtimeTrace.packet.sceneRevisionHash).toBe(ZERO_HASH);
+
     const v10 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 10 as const } }, assets, 0.5);
     expect("compositing" in v10.packet).toBe(false);
   });
 
-  it("keeps only the held WriteStuff V12 frame present at its exact endpoint", async () => {
+  it("keeps sealed imported terminal holds present at their exact endpoint", async () => {
     const assets = await emptyManifest();
     const base = createScene(assets, {
       entities: [vectorEntity("held-write", 0, { center: { x: 0, y: 0 }, kind: "circle", radius: 1 })],
@@ -183,6 +201,24 @@ describe("Poietra TypeScript reference evaluator v1", () => {
       2,
     );
     expect(ordinaryHalfOpenEndpoint.packet.draws).toEqual([]);
+
+    const runtimeTraceEndpoint = await compile(
+      {
+        ...base,
+        duration: 6,
+        entities: base.entities.map((entity) => ({ ...entity, lifetimes: [{ end: 6, start: 0 }] })),
+        source: {
+          kind: "imported-manim-runtime-trace",
+          runtimeConfigHash: SCENE_HASH,
+          sourceHash: SCENE_HASH,
+          traceDigest: ZERO_HASH,
+          traceVersion: 1,
+        },
+      },
+      assets,
+      6,
+    );
+    expect(runtimeTraceEndpoint.packet.draws).toHaveLength(1);
   });
 
   it("lowers shape primitives to cubic RenderPacket draws in source order", async () => {

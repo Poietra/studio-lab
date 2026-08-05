@@ -16,6 +16,12 @@ import {
   strokeStyleV1Schema,
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import {
+  RUNTIME_TRACE_DURATION_SECONDS_V1,
+  RUNTIME_TRACE_FRAME_COUNT_V1,
+  RUNTIME_TRACE_FRAME_RATE_V1,
+  runtimeTraceFrameIndexAtTimeV1,
+} from "../src/engine/runtime-trace-time";
 import { sourceBindingV1Schema } from "../src/engine/source-runtime-identity";
 import {
   manimProjectIdSchema,
@@ -30,12 +36,11 @@ export const FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V1 =
 export const FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V1 = "poietra.fast-manim-runtime-trace-config" as const;
 export const FAST_MANIM_RUNTIME_TRACE_VERSION_V1 = 1 as const;
 export const FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1 = 1 as const;
-export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 = 60 as const;
-export const FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1 = 6 as const;
+export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 = RUNTIME_TRACE_FRAME_RATE_V1;
+export const FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1 = RUNTIME_TRACE_DURATION_SECONDS_V1;
 export const FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1 = 13 as const;
 export const FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V1 = "post-updater-pre-cairo-paint" as const;
-export const FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 =
-  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1 * FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1;
+export const FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 = RUNTIME_TRACE_FRAME_COUNT_V1;
 export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 = 10 as const;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 = 5 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1 = 2 * 1024 * 1024;
@@ -57,6 +62,8 @@ export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V1 = 8_192;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 = 2 * 1024 * 1024;
 
 const gitObjectIdSchema = z.string().regex(/^[0-9a-f]{40}$/u, "Git object IDs must be lower-case SHA-1 hex.");
+const runtimeTracePathIdV1Schema = z.string().regex(/^path:[0-9a-f]{64}$/u);
+const runtimeTraceAppearanceIdV1Schema = z.string().regex(/^appearance:[0-9a-f]{64}$/u);
 
 const correlationShape = {
   projectId: manimProjectIdSchema,
@@ -86,6 +93,39 @@ export function canonicalFastManimRuntimeTraceCoordinateV1(value: number) {
   return Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V1));
 }
 
+function runtimeTraceDigestValueV1(value: unknown): unknown {
+  if (typeof value === "number") return canonicalF64HexV1(value);
+  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
+  if (Array.isArray(value)) return value.map(runtimeTraceDigestValueV1);
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, runtimeTraceDigestValueV1(entry)]),
+    );
+  }
+  throw new TypeError("Runtime Trace digest input must be plain finite JSON.");
+}
+
+function digestRuntimeTraceDomainV1(domain: string, value: unknown) {
+  return createHash("sha256")
+    .update(canonicalJsonV1({ domain, value: runtimeTraceDigestValueV1(value) }))
+    .digest("hex");
+}
+
+export function digestFastManimRuntimeTracePathV1(path: z.infer<typeof cubicPathV1Schema>) {
+  return digestRuntimeTraceDomainV1("poietra.runtime-trace-path-v1", path);
+}
+
+export function digestFastManimRuntimeTraceAppearanceV1(
+  appearance: Readonly<{
+    fill: z.infer<typeof fillStyleV1Schema> | null;
+    stroke: z.infer<typeof strokeStyleV1Schema> | null;
+  }>,
+) {
+  return digestRuntimeTraceDomainV1("poietra.runtime-trace-appearance-v1", appearance);
+}
+
 const runtimeTraceCoordinateV1Schema = z
   .number()
   .finite()
@@ -112,25 +152,33 @@ const runtimeTraceRootV1Schema = z
 
 const runtimeTracePathResourceV1Schema = z
   .object({
-    id: opaqueIdV1Schema,
+    id: runtimeTracePathIdV1Schema,
     path: cubicPathV1Schema,
   })
-  .strict();
+  .strict()
+  .refine(({ id, path }) => id === `path:${digestFastManimRuntimeTracePathV1(path)}`, {
+    message: "Runtime Trace path IDs must seal their canonical content.",
+    path: ["id"],
+  });
 
 const runtimeTraceAppearanceResourceV1Schema = z
   .object({
     fill: fillStyleV1Schema.nullable(),
-    id: opaqueIdV1Schema,
+    id: runtimeTraceAppearanceIdV1Schema,
     stroke: strokeStyleV1Schema.nullable(),
   })
   .strict()
   .refine(({ fill, stroke }) => fill !== null || stroke !== null, {
     message: "A Runtime Trace appearance requires a fill or stroke.",
+  })
+  .refine(({ fill, id, stroke }) => id === `appearance:${digestFastManimRuntimeTraceAppearanceV1({ fill, stroke })}`, {
+    message: "Runtime Trace appearance IDs must seal their canonical content.",
+    path: ["id"],
   });
 
 const runtimeTraceDrawV1Schema = z
   .object({
-    appearanceId: opaqueIdV1Schema,
+    appearanceId: runtimeTraceAppearanceIdV1Schema,
     familyPath: z.array(z.number().int().nonnegative().max(6)).max(3),
     localPosition: runtimeTracePointV1Schema,
     opacity: normalizedNumberV1Schema,
@@ -139,7 +187,7 @@ const runtimeTraceDrawV1Schema = z
       .int()
       .nonnegative()
       .max(FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V1 - 1),
-    pathId: opaqueIdV1Schema,
+    pathId: runtimeTracePathIdV1Schema,
     rootId: sourceIdentityV1Schema,
     sourceZIndex: z.literal(0),
   })
@@ -158,9 +206,9 @@ const runtimeTraceFrameV1Schema = z
   .strict();
 
 /**
- * Producer hashes identify the implementation used for diagnostics and cache
- * partitioning. They are correlation metadata, not authority for visual
- * semantics; #465 independently verifies producer content before Scene IR use.
+ * Toolchain hashes identify the producer for diagnostics and cache
+ * partitioning. `semanticsSha256` seals the visual document and becomes
+ * authority only when its value is supplied by independent trusted evidence.
  */
 const runtimeTraceProducerV1Schema = z
   .object({
@@ -300,6 +348,29 @@ const fastManimRuntimeTraceV1BaseSchema = z
   })
   .strict();
 
+type FastManimRuntimeTraceV1Base = z.infer<typeof fastManimRuntimeTraceV1BaseSchema>;
+
+/**
+ * Seals every visual value that lowering may publish while excluding request
+ * correlation and producer metadata. The independently trusted expected
+ * producer correlation pins this digest; a producer cannot substitute content
+ * and merely recompute resource IDs.
+ */
+export function digestFastManimRuntimeTraceVisualSemanticsV1(trace: FastManimRuntimeTraceV1Base) {
+  return digestRuntimeTraceDomainV1("poietra.runtime-trace-visual-semantics-v1", {
+    camera: trace.camera,
+    compositing: trace.compositing,
+    coordinatePrecisionDigits: trace.coordinatePrecisionDigits,
+    durationSeconds: trace.durationSeconds,
+    frameCount: trace.frameCount,
+    frameRate: trace.frameRate,
+    frames: trace.frames,
+    resources: trace.resources,
+    roots: trace.roots,
+    samplePhase: trace.samplePhase,
+  });
+}
+
 function reportDuplicateId(
   values: readonly Readonly<{ id: string }>[],
   context: z.RefinementCtx,
@@ -360,6 +431,13 @@ export const fastManimRuntimeTraceV1Schema = fastManimRuntimeTraceV1BaseSchema.s
   reportDuplicateId(trace.resources.appearances, context, ["resources", "appearances"]);
   reportDuplicateId(trace.resources.paths, context, ["resources", "paths"]);
   reportDuplicateId(trace.roots, context, ["roots"]);
+  if (trace.producer.semanticsSha256 !== digestFastManimRuntimeTraceVisualSemanticsV1(trace)) {
+    context.addIssue({
+      code: "custom",
+      message: "Runtime Trace visual semantics do not match the trusted producer seal.",
+      path: ["producer", "semanticsSha256"],
+    });
+  }
 
   const appearanceIds = new Set(trace.resources.appearances.map(({ id }) => id));
   const pathIds = new Set(trace.resources.paths.map(({ id }) => id));
@@ -519,6 +597,31 @@ export const expectedFastManimRuntimeTraceCorrelationV1Schema = z
 export type ExpectedFastManimRuntimeTraceCorrelationV1 = z.infer<
   typeof expectedFastManimRuntimeTraceCorrelationV1Schema
 >;
+
+export type TrustedFastManimRuntimeTraceProducerV1 = Readonly<
+  Pick<ExpectedFastManimRuntimeTraceCorrelationV1, "producer" | "roots">
+>;
+
+/** Derives response correlation only from the original request plus trusted producer/root evidence. */
+export function expectedFastManimRuntimeTraceCorrelationFromRequestV1(
+  requestValue: FastManimRuntimeTraceProducerRequestV1,
+  trusted: TrustedFastManimRuntimeTraceProducerV1,
+) {
+  const request = fastManimRuntimeTraceProducerRequestV1Schema.parse(requestValue);
+  return expectedFastManimRuntimeTraceCorrelationV1Schema.parse({
+    camera: request.runtimeConfig.camera,
+    producer: trusted.producer,
+    projectId: request.projectId,
+    requestId: request.requestId,
+    roots: trusted.roots,
+    runtimeConfigHash: request.runtimeConfigHash,
+    sceneId: request.sceneId,
+    sceneName: request.sceneName,
+    sceneOccurrence: request.sceneOccurrence,
+    sourceHash: request.sourceHash,
+    sourcePath: request.sourcePath,
+  });
+}
 
 export type FastManimRuntimeTraceContractErrorCodeV1 =
   | "correlation-mismatch"
@@ -694,12 +797,5 @@ export function digestFastManimRuntimeTraceV1(trace: FastManimRuntimeTraceV1) {
  * retaining floor selection for ordinary between-frame seeks.
  */
 export function fastManimRuntimeTraceFrameIndexAtTimeV1(time: number) {
-  if (!Number.isFinite(time) || time < 0 || time > FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1) {
-    throw new RangeError("Runtime Trace sample time must be finite and inside the six-second Scene.");
-  }
-  const scaled = time * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1;
-  const nearestFrame = Math.round(scaled);
-  const gridTolerance = 4 * Number.EPSILON * Math.max(1, Math.abs(scaled));
-  const frame = Math.abs(scaled - nearestFrame) <= gridTolerance ? nearestFrame : Math.floor(scaled);
-  return Math.min(FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1 - 1, frame);
+  return runtimeTraceFrameIndexAtTimeV1(time);
 }

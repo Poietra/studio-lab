@@ -695,6 +695,56 @@ describe("claimStudioPreviewCanvasV1", () => {
 });
 
 describe("studioPreviewInteractionAuthorityV1", () => {
+  it("keeps Runtime Trace preview-only and selects only its two source roots", async () => {
+    const { snapshot } = await linePreviewInput();
+    const leaf = snapshot.snapshot.scene.entities[0];
+    if (!leaf) throw new Error("Expected one imported line fixture entity.");
+    const motionRootId = "runtime-trace-motion-root";
+    const squareRootId = "runtime-trace-square-root";
+    const decimalRootId = "runtime-trace-decimal-root";
+    const glyphId = "runtime-trace-glyph";
+    const group = {
+      ...leaf,
+      appearance: { kind: "group", opacity: 1 } as const,
+      geometry: { kind: "group" } as const,
+    };
+    const entities: SceneIrBundleV1["scene"]["entities"] = [
+      { ...group, id: motionRootId, parentId: null },
+      { ...group, id: squareRootId, parentId: motionRootId },
+      { ...group, id: decimalRootId, parentId: motionRootId },
+      { ...leaf, id: glyphId, parentId: decimalRootId },
+    ];
+    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["square", { bindingId: "binding:square", entityId: squareRootId, sourceName: "square" }],
+      ["decimal", { bindingId: "binding:decimal", entityId: decimalRootId, sourceName: "decimal" }],
+      ["glyph", { bindingId: "binding:glyph", entityId: glyphId, sourceName: "glyph" }],
+      ["spoofed-square", { bindingId: "binding:spoofed", entityId: glyphId, sourceName: "square" }],
+    ]);
+    const runtimeTrace = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          entities,
+          source: {
+            kind: "imported-manim-runtime-trace",
+            runtimeConfigHash: HASH_A,
+            sourceHash: HASH_B,
+            traceDigest: HASH_C,
+            traceVersion: 1,
+          },
+        },
+      },
+      sourceRuntimeIdentity: identity,
+    } as StudioVerifiedPreviewSnapshotV1;
+
+    const authority = studioPreviewInteractionAuthorityV1(runtimeTrace);
+    expect(authority).toEqual({ kind: "selection-only", reason: "runtime-trace-preview-only" });
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([squareRootId, decimalRootId]);
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
+  });
+
   it("keeps aggregate MathTex morph identity display-only even if mappings are supplied", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;

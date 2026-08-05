@@ -78,7 +78,10 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 
 export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
-  | Readonly<{ kind: "selection-only"; reason: "source-edit-anchor-unavailable" }>
+  | Readonly<{
+      kind: "selection-only";
+      reason: "runtime-trace-preview-only" | "source-edit-anchor-unavailable";
+    }>
   | Readonly<{
       kind: "display-only";
       reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
@@ -157,6 +160,9 @@ export function studioPreviewInteractionAuthorityV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
 ): StudioPreviewInteractionAuthorityV1 {
   const source = snapshot?.snapshot.scene.source;
+  if (source?.kind === "imported-manim-runtime-trace") {
+    return { kind: "selection-only", reason: "runtime-trace-preview-only" };
+  }
   if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
@@ -289,6 +295,8 @@ export function studioPreviewInteractionEntityIdsV1(
   // evidence remains fail-closed for selection-only mode.
   const editableNestedGroups =
     authority.kind === "interactive" ? new Set(authority.nestedGroupEntityIds ?? []) : new Set<string>();
+  const runtimeTraceSelection =
+    authority.kind === "selection-only" && authority.reason === "runtime-trace-preview-only";
   const drawableEntityIds =
     entities === null
       ? authority.kind === "selection-only"
@@ -296,17 +304,26 @@ export function studioPreviewInteractionEntityIdsV1(
         : null
       : new Set(
           entities
-            .filter(
-              ({ geometry, id, parentId }) =>
-                geometry.kind !== "group" ||
-                (authority.kind === "selection-only" && parentId !== null) ||
-                editableNestedGroups.has(id),
+            .filter(({ geometry, id, parentId }) =>
+              runtimeTraceSelection
+                ? geometry.kind === "group" && parentId !== null
+                : geometry.kind !== "group" ||
+                  (authority.kind === "selection-only" && parentId !== null) ||
+                  editableNestedGroups.has(id),
             )
             .map(({ id }) => id),
         );
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
+    if (
+      authority.kind === "selection-only" &&
+      authority.reason === "runtime-trace-preview-only" &&
+      mapping.sourceName !== "square" &&
+      mapping.sourceName !== "decimal"
+    ) {
+      continue;
+    }
     if (
       seen.has(mapping.entityId) ||
       !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||
@@ -351,7 +368,9 @@ export async function digestStudioPreviewSceneRevisionV1(
   const sourceAuthority =
     source.kind === "imported-manim-server-snapshot"
       ? [source.kind, source.sourceHash, source.runtimeConfigHash, source.snapshotVersion, source.snapshotHash]
-      : [source.kind, source.editProgramVersion, source.revisionHash];
+      : source.kind === "imported-manim-runtime-trace"
+        ? [source.kind, source.sourceHash, source.runtimeConfigHash, source.traceVersion, source.traceDigest]
+        : [source.kind, source.editProgramVersion, source.revisionHash];
   // An ordered scalar tuple is the canonical serialization for this digest.
   // Every authority axis that can alter the compiled bundle is included so a
   // retained worker never observes two different scenes under one revision.
