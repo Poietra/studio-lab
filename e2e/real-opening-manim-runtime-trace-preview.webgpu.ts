@@ -813,11 +813,7 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
   const caseId = "fast-manim-basic/OpeningManim/runtime-trace-v2" as const;
   assertRealManimEditabilityCensusCaseFloor(
     caseId,
-    REAL_MANIM_EDITABILITY_CAPABILITIES.map((capability, index) =>
-      index < 2
-        ? { capability, caseId, status: "proven" as const }
-        : { blocker: "source-edit-anchor-unavailable" as const, capability, caseId, status: "blocked" as const },
-    ),
+    REAL_MANIM_EDITABILITY_CAPABILITIES.map((capability) => ({ capability, caseId, status: "proven" as const })),
     editabilityBaseline,
   );
 });

@@ -8,9 +8,9 @@
       "capabilities": {
         "preview": { "status": "proven" },
         "selection": { "status": "proven" },
-        "edit": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" },
-        "edited-export": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" },
-        "validated-roundtrip": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" }
+        "edit": { "status": "proven" },
+        "edited-export": { "status": "proven" },
+        "validated-roundtrip": { "status": "proven" }
       },
       "runtimeTraceVersion": 2,
       "sceneName": "OpeningManim"
