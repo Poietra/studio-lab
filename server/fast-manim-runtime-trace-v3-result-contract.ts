@@ -54,6 +54,21 @@ const coordinateV3Schema = z
     (value) => value === Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3)),
     "Runtime Trace V3 coordinates must use the canonical 13-digit precision.",
   );
+const canonicalNumberV3 = (value: number) =>
+  value === Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3));
+const normalizedV3Schema = normalizedNumberV1Schema.refine(
+  canonicalNumberV3,
+  "Runtime Trace V3 normalized values must use the canonical 13-digit precision.",
+);
+const fillV3Schema = fillStyleV1Schema.refine(
+  ({ color }) => Object.values(color).every(canonicalNumberV3),
+  "Runtime Trace V3 fill colors must use the canonical 13-digit precision.",
+);
+const strokeV3Schema = strokeStyleV1Schema.refine(
+  ({ color, miterLimit, widthWorld }) =>
+    Object.values(color).every(canonicalNumberV3) && canonicalNumberV3(miterLimit) && canonicalNumberV3(widthWorld),
+  "Runtime Trace V3 stroke values must use the canonical 13-digit precision.",
+);
 const pathIdV3Schema = z.string().regex(/^path:[0-9a-f]{64}$/u);
 const appearanceIdV3Schema = z.string().regex(/^appearance:[0-9a-f]{64}$/u);
 const gitObjectIdV3Schema = z.string().regex(/^[0-9a-f]{40}$/u);
@@ -111,9 +126,9 @@ const drawV3Schema = z
 
 const appearanceV3Schema = z
   .object({
-    fill: fillStyleV1Schema.nullable(),
+    fill: fillV3Schema.nullable(),
     id: appearanceIdV3Schema,
-    stroke: strokeStyleV1Schema.nullable(),
+    stroke: strokeV3Schema.nullable(),
   })
   .strict()
   .refine(({ fill, stroke }) => fill !== null || stroke !== null, "Runtime Trace V3 appearances require paint.");
@@ -135,7 +150,7 @@ const stateV3Schema = z
   .object({
     appearanceId: appearanceIdV3Schema,
     drawId: sourceIdentityV1Schema,
-    opacity: normalizedNumberV1Schema,
+    opacity: normalizedV3Schema,
     paintOrder: z
       .number()
       .int()
@@ -143,7 +158,7 @@ const stateV3Schema = z
       .max(MAX_FAST_MANIM_RUNTIME_TRACE_STATES_PER_FRAME_V3 - 1),
     pathId: pathIdV3Schema,
     pathTrim: z
-      .object({ end: normalizedNumberV1Schema, start: normalizedNumberV1Schema })
+      .object({ end: normalizedV3Schema, start: normalizedV3Schema })
       .strict()
       .refine(({ end, start }) => start <= end, "Runtime Trace V3 path trim must be ordered."),
     sourceZIndex: coordinateV3Schema,
@@ -291,15 +306,15 @@ function verifySemanticsV3(trace: FastManimRuntimeTraceV3, trusted: TrustedFastM
   const rootById = new Map<string, FastManimRuntimeTraceV3["roots"][number]>();
   const rootFrames = new Map<string, number[]>();
   trace.roots.forEach((root, index) => {
-    if (root.sceneOrder !== index || rootById.has(root.id))
+    if (root.sceneOrder !== index || root.id !== `${trace.sceneId}/runtime-v3-root:${index}` || rootById.has(root.id))
       throw new TypeError("Runtime Trace V3 root identity is invalid.");
     rootById.set(root.id, root);
     rootFrames.set(root.id, []);
   });
   const drawById = new Map<string, FastManimRuntimeTraceV3["draws"][number]>();
   const drawFrames = new Map<string, number[]>();
-  for (const draw of trace.draws) {
-    if (drawById.has(draw.id) || !rootById.has(draw.rootId)) {
+  for (const [drawIndex, draw] of trace.draws.entries()) {
+    if (drawById.has(draw.id) || !rootById.has(draw.rootId) || draw.id !== `${draw.rootId}/draw:${drawIndex}`) {
       throw new TypeError("Runtime Trace V3 draw identity is invalid.");
     }
     drawById.set(draw.id, draw);
