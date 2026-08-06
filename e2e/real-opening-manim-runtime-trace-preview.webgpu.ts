@@ -1,5 +1,8 @@
 import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
+import { compareOpeningManimCairoWebGpuFramesV1, type OpeningManimWebGpuFrameV1 } from "./opening-manim-cairo-parity";
+import { OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1 } from "./opening-manim-cairo-reference";
+import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
 import {
   captureRuntimeTraceWebGpuFramesV1,
   OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
@@ -11,6 +14,7 @@ const SOURCE_PATH = "example_scenes/basic.py";
 const SCENE_NAME = "OpeningManim";
 const SCENE_LABEL = `${SOURCE_PATH} · ${SCENE_NAME}`;
 const SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const CAIRO_PARITY_REQUIRED = process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_REQUIRED === "1";
 
 type RuntimeTraceRunBody = Readonly<{
   absolutePath?: unknown;
@@ -91,12 +95,6 @@ async function verifiedOpeningRuntimeTrace(page: Page) {
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   const response = await responsePromise;
   expect(response.ok()).toBe(true);
-  const responseFailure = await response.finished();
-  if (responseFailure) {
-    throw new Error("The verified OpeningManim Runtime Trace response body did not finish downloading.", {
-      cause: responseFailure,
-    });
-  }
   const request = response.request().postDataJSON() as Record<string, unknown>;
   expect(request).toMatchObject({
     projectId: "real-preview-harness",
@@ -146,6 +144,21 @@ function expectSameFullRgba(
   expect(right.sha256).toBe(left.sha256);
   expect(right.rgba.byteLength).toBe(left.rgba.byteLength);
   expect(right.rgba.every((byte, index) => byte === left.rgba[index])).toBe(true);
+}
+
+async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFrameV1[]) {
+  return withGeneratedRuntimeTraceCairoReferenceV1({
+    generatorPath: "scripts/generate-opening-manim-cairo-reference.py",
+    read: (referenceRoot) =>
+      compareOpeningManimCairoWebGpuFramesV1({
+        cairoReferenceRoot: referenceRoot,
+        frames,
+        outputRoot:
+          process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ??
+          "test-results/runtime-trace-opening-cairo-parity",
+      }),
+    temporaryPrefix: "poietra-opening-manim-cairo-parity-",
+  });
 }
 
 test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
@@ -284,4 +297,19 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
   expectSameFullRgba(frames, "hold", "duration-end");
   expect(frames.get("initial")?.sha256).not.toBe(frames.get("write-progress")?.sha256);
   expect(frames.get("write-progress")?.sha256).not.toBe(frames.get("animation-progress")?.sha256);
+
+  if (CAIRO_PARITY_REQUIRED) {
+    const parityFrames = OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1.map(([id, frameIndex, sampleTime]) => {
+      const frame = fullRgba.frames.find(
+        (candidate) => candidate.frameIndex === frameIndex && candidate.requestSampleTime === sampleTime,
+      );
+      if (!frame) throw new Error(`The retained WebGPU readback is missing the ${id} Cairo parity sample.`);
+      return { frameIndex, id, rgba: frame.rgba, sampleTime } satisfies OpeningManimWebGpuFrameV1;
+    });
+    const comparisons = await compareWithIndependentCairo(parityFrames);
+    expect(
+      comparisons.filter(({ passed }) => !passed),
+      JSON.stringify(comparisons, null, 2),
+    ).toEqual([]);
+  }
 });

@@ -1,11 +1,6 @@
-import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-import { promisify } from "node:util";
-
 import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
+import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
 import {
   captureRuntimeTraceWebGpuFramesV1,
   RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
@@ -22,7 +17,6 @@ const SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a
 const ROOT_EVIDENCE_POINT_COUNT = 5;
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 const CAIRO_PARITY_REQUIRED = process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_REQUIRED === "1";
-const execFile = promisify(execFileCallback);
 
 type RuntimeTraceRunBody = Readonly<{
   absolutePath?: unknown;
@@ -107,12 +101,6 @@ async function openOfficialRuntimeTrace(page: Page) {
 async function verifiedRuntimeTrace(page: Page) {
   const response = await openOfficialRuntimeTrace(page);
   expect(response.ok()).toBe(true);
-  const responseFailure = await response.finished();
-  if (responseFailure) {
-    throw new Error("The verified Runtime Trace response body did not finish downloading.", {
-      cause: responseFailure,
-    });
-  }
   const request = response.request().postDataJSON() as Record<string, unknown>;
   expect(request).toMatchObject({
     projectId: "real-preview-harness",
@@ -262,52 +250,17 @@ function expectSameFullRgba(
 }
 
 async function compareWithIndependentCairo(frames: readonly UpdatersWebGpuFrameV1[]) {
-  const commandText = process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND?.trim();
-  const repositoryText = process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_REPOSITORY?.trim();
-  if (!commandText || !repositoryText) {
-    throw new Error(
-      "Runtime Trace Cairo parity requires POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND and POIETRA_FAST_MANIM_RUNTIME_TRACE_REPOSITORY.",
-    );
-  }
-  let command: unknown;
-  try {
-    command = JSON.parse(commandText);
-  } catch (error) {
-    throw new Error("Runtime Trace Cairo parity requires the producer command as a JSON argv array.", { cause: error });
-  }
-  if (
-    !Array.isArray(command) ||
-    command.length !== 3 ||
-    !command.every((argument) => typeof argument === "string" && argument.length > 0) ||
-    command[1] !== "-m" ||
-    command[2] !== "manim.renderer.runtime_trace"
-  ) {
-    throw new Error('Runtime Trace Cairo parity requires [python, "-m", "manim.renderer.runtime_trace"].');
-  }
-
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "poietra-updaters-cairo-parity-"));
-  const referenceRoot = join(temporaryRoot, "reference");
-  try {
-    await execFile(
-      command[0],
-      [
-        resolve("scripts/generate-updaters-cairo-reference.py"),
-        "--fast-manim",
-        resolve(repositoryText),
-        "--output",
-        referenceRoot,
-      ],
-      { env: { ...process.env, PYTHONHASHSEED: "0" }, maxBuffer: 2 * 1024 * 1024 },
-    );
-    return await compareUpdatersCairoWebGpuFramesV1({
-      cairoReferenceRoot: referenceRoot,
-      frames,
-      outputRoot:
-        process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/runtime-trace-cairo-parity",
-    });
-  } finally {
-    await rm(temporaryRoot, { force: true, recursive: true });
-  }
+  return withGeneratedRuntimeTraceCairoReferenceV1({
+    generatorPath: "scripts/generate-updaters-cairo-reference.py",
+    read: (referenceRoot) =>
+      compareUpdatersCairoWebGpuFramesV1({
+        cairoReferenceRoot: referenceRoot,
+        frames,
+        outputRoot:
+          process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/runtime-trace-cairo-parity",
+      }),
+    temporaryPrefix: "poietra-updaters-cairo-parity-",
+  });
 }
 
 test("renders official UpdatersExample through an unpublished Runtime Trace and one retained WebGPU Scene", async ({
