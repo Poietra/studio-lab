@@ -402,6 +402,12 @@ function increment(counts: Counts, outcome: RealManimCensusOutcome) {
   counts.total += 1;
 }
 
+export function summarizeRealManimCensusOutcomes(outcomes: readonly RealManimCensusOutcome[]): Counts {
+  const counts = emptyCounts();
+  for (const outcome of outcomes) increment(counts, outcome);
+  return counts;
+}
+
 export function buildRealManimCensusReport(
   manifestInput: RealManimCensusManifest,
   producerDigest: string,
@@ -469,11 +475,10 @@ export function buildRealManimCensusReport(
   if (missing.length > 0) throw new Error(`Missing census attempts: ${missing.join(", ")}`);
   results.sort((left, right) => left.caseId.localeCompare(right.caseId));
 
-  const attempts = emptyCounts();
+  const attempts = summarizeRealManimCensusOutcomes(results.map(({ outcome }) => outcome));
   const corpusAttempts = { calibration: emptyCounts(), compatibility: emptyCounts() };
   const reasonCounts = new Map<string, number>();
   for (const result of results) {
-    increment(attempts, result.outcome);
     increment(corpusAttempts[result.corpus], result.outcome);
     for (const reason of result.reasons) reasonCounts.set(reason, (reasonCounts.get(reason) ?? 0) + 1);
   }
