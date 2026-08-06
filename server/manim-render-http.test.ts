@@ -971,7 +971,7 @@ describe("Runtime Trace preview routing", () => {
           method: "POST",
         },
       );
-      expect(missing.status).toBe(503);
+      expect(missing.status).toBe(501);
     } finally {
       await Promise.all(
         [configured, unavailable].map(

@@ -496,7 +496,13 @@ export function createServerPreviewSnapshotProviderV1(
       try {
         const response = await post("runtime-traces");
         signal?.throwIfAborted();
-        if (!response.ok) throw providerError(`The Runtime Trace endpoint failed with HTTP ${response.status}.`);
+        if (!response.ok) {
+          throw providerError(
+            `The Runtime Trace endpoint failed with HTTP ${response.status}.`,
+            undefined,
+            response.status === 501 ? "unsupported" : "failed",
+          );
+        }
         verified = await validateVerifiedRuntimeTraceRun(
           await readBoundedJson(response, MAX_RUNTIME_TRACE_RESPONSE_BYTES),
           identity,

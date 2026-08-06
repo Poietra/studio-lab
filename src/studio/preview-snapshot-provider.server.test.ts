@@ -505,6 +505,27 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     ]);
   });
 
+  it("keeps snapshot previews reachable when the optional Runtime Trace endpoint is not configured", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/runtime-traces")
+        ? jsonResponse({ error: "Runtime Trace preview is not configured." }, 501)
+        : jsonResponse({ status: "unsupported" }),
+    );
+    const provider = createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+    });
+
+    await expect(provider.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toMatchObject({
+      failureKind: "unsupported",
+      name: StudioPreviewSnapshotLoadErrorV1.name,
+    });
+    expect(fetcher.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/manim/projects/demo/runtime-traces",
+      "/api/manim/projects/demo/scene-snapshots",
+    ]);
+  });
+
   it("accepts the reviewed fifteen-second OpeningManim V2 profile and all four source roots", async () => {
     const run = await verifiedOpeningRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));

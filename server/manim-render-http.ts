@@ -697,7 +697,7 @@ async function routeManimRequest(
   const runtimeTraceMatch = url.pathname.match(PROJECT_RUNTIME_TRACE_ROUTE);
   if (runtimeTraceMatch) {
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-    if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 503);
+    if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 501);
     const projectId = runtimeTraceMatch[1]!;
     const parsed = fastManimRuntimeTraceRunRequestV1Schema.safeParse(
       await readBoundedJsonBody(request, policy, 16 * 1024),
