@@ -46,6 +46,20 @@ const correlationShapeV2 = {
   sourcePath: manimSourcePathSchema,
 };
 
+function isUnicodeScalarSequence(value: string) {
+  for (let index = 0; index < value.length; index += 1) {
+    const codeUnit = value.charCodeAt(index);
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+      index += 1;
+    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
+      return false;
+    }
+  }
+  return true;
+}
+
 const canonicalRuntimeTraceCameraV2 = {
   background: { alpha: 1, blue: 0, green: 0, red: 0 },
   center: { x: 0, y: 0 },
@@ -144,7 +158,7 @@ export const fastManimRuntimeTraceProducerRequestV2Schema = z
       })
       .strict(),
     schema: z.literal(FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2),
-    sourceText: z.string(),
+    sourceText: z.string().refine(isUnicodeScalarSequence, "Runtime Trace V2 sourceText must contain Unicode scalars."),
     version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V2),
   })
   .strict()
@@ -266,6 +280,12 @@ export function parseFastManimRuntimeTraceProducerRequestJsonV2(value: string | 
       "request-malformed",
       "Runtime Trace V2 request is malformed JSON.",
       { cause },
+    );
+  }
+  if (canonicalJsonV1(document) !== json) {
+    throw new FastManimRuntimeTraceV2RequestContractError(
+      "request-malformed",
+      "Runtime Trace V2 request must use duplicate-free canonical JSON.",
     );
   }
   assertBoundedRuntimeTraceV2RequestJson(document);

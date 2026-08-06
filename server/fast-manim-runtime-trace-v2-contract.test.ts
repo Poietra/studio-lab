@@ -17,7 +17,6 @@ import {
   createFastManimRuntimeTraceProducerRequestV2,
   FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
 } from "./fast-manim-runtime-trace-v2-profile";
@@ -56,7 +55,9 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
       },
       runtimeConfigHash: FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
       sceneName: "OpeningManim",
-      sceneOccurrence: FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2,
+      sceneOccurrence: { constructStartLine: 19, definitionOrdinal: 1 },
+      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      sourcePath: "example_scenes/basic.py",
       version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
     });
     expect(createHash("sha256").update(parsed.sourceText, "utf8").digest("hex")).toBe(parsed.sourceHash);
@@ -126,6 +127,24 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
         new Uint8Array(MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2 + 1),
       ),
     ).toThrowError(/at most/);
+  });
+
+  it("rejects duplicate keys and non-scalar source text instead of normalizing them", () => {
+    const value = producerRequest();
+    const canonical = canonicalJsonV1(value);
+    const duplicate = canonical.replace('"projectId":"demo"', '"projectId":"other","projectId":"demo"');
+    const loneSurrogate = "\ud800";
+    const nonScalar = {
+      ...value,
+      sourceHash: createHash("sha256").update(loneSurrogate, "utf8").digest("hex"),
+      sourceText: loneSurrogate,
+    };
+
+    expect(duplicate).not.toBe(canonical);
+    expect(() => parseFastManimRuntimeTraceProducerRequestJsonV2(duplicate)).toThrowError(/canonical JSON/);
+    expect(() => parseFastManimRuntimeTraceProducerRequestJsonV2(canonicalJsonV1(nonScalar))).toThrowError(
+      /closed contract/,
+    );
   });
 
   it("dispatches the V2 request through the existing immutable sandbox wire", () => {
