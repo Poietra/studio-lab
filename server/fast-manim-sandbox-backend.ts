@@ -18,6 +18,12 @@ import {
 } from "./fast-manim-runtime-trace-v2-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import {
+  type FastManimRuntimeTraceProducerRequestV3,
+  fastManimRuntimeTraceProducerRequestV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V3,
+} from "./fast-manim-runtime-trace-v3-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 } from "./fast-manim-runtime-trace-v3-result-contract";
+import {
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotProducerRequestV1Schema,
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
@@ -40,10 +46,14 @@ export const FAST_MANIM_SANDBOX_STATUS_VERSION_V1 = 1 as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.fast-manim-sandbox-request" as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3 = "poietra.fast-manim-sandbox-request" as const;
 export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 64 * 1024;
-export const MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES = Math.max(
-  MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+const MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES = Math.max(
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V3,
+);
+export const MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES = Math.max(
+  MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+  MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES,
 );
 const MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES = 4 * Math.ceil(MAX_PROJECT_PNG_BYTES_V1 / 3);
 export const MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES =
@@ -57,14 +67,17 @@ export const MAX_FAST_MANIM_SANDBOX_STATUS_RAW_JSON_BYTES = 8 * 1024;
 const MAX_FAST_MANIM_SANDBOX_IN_PROCESS_RESULT_BYTES = Math.max(
   MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
   MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 + 1,
 );
 
 function maximumResultBytesForProducerRequestV1(request: FastManimSandboxProducerRequestV1) {
   if (request.schema === "poietra.fast-manim-runtime-trace-producer-request") {
     return (
-      (request.version === 2
-        ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2
-        : MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1) + 1
+      (request.version === 3
+        ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3
+        : request.version === 2
+          ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2
+          : MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1) + 1
     );
   }
   return MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
@@ -160,13 +173,15 @@ export const fastManimSnapshotProducerOrSelectionRequestV1Schema = z.union([
 export type FastManimSandboxProducerRequestV1 =
   | FastManimSnapshotProducerOrSelectionRequestV1
   | FastManimRuntimeTraceProducerRequestV1
-  | FastManimRuntimeTraceProducerRequestV2;
+  | FastManimRuntimeTraceProducerRequestV2
+  | FastManimRuntimeTraceProducerRequestV3;
 
 export const fastManimSandboxProducerRequestV1Schema = z.union([
   fastManimSnapshotProducerRequestV1Schema,
   fastManimSnapshotProfileSelectionRequestV1Schema,
   fastManimRuntimeTraceProducerRequestV1Schema,
   fastManimRuntimeTraceProducerRequestV2Schema,
+  fastManimRuntimeTraceProducerRequestV3Schema,
 ]);
 
 const fastManimSandboxCapabilityV1Schema = z.enum(FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1);
@@ -347,7 +362,7 @@ export class FastManimSandboxRequestBundleV1 {
     const request = fastManimSandboxProducerRequestV1Schema.parse(value);
     const runtimeTraceRequest = request.schema === "poietra.fast-manim-runtime-trace-producer-request";
     const plainRequestMaximumBytes = runtimeTraceRequest
-      ? Math.max(MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1, MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2)
+      ? MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES
       : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES;
     const producerRequestBytes = copyFastManimSandboxUint8ArrayV1(
       Buffer.from(canonicalJsonV1(request), "utf8"),
@@ -452,10 +467,7 @@ export class FastManimSandboxRequestBundleV1 {
     return copyFastManimSandboxUint8ArrayV1(
       this.#producerRequestBytes,
       this.producerKind === "runtime-trace"
-        ? Math.max(
-            MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
-            MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,
-          )
+        ? MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES
         : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
     );
   }
@@ -466,10 +478,7 @@ export function verifyFastManimSandboxRequestBundleV1(bundle: FastManimSandboxRe
   const maximumBytes =
     bundle.version === 1
       ? bundle.producerKind === "runtime-trace"
-        ? Math.max(
-            MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
-            MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,
-          )
+        ? MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES
         : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES
       : MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES;
   if (bytes.byteLength !== bundle.byteLength || bytes.byteLength > maximumBytes) return false;

@@ -3,18 +3,20 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
 import {
   createFastManimRuntimeTraceProducerRequestV2,
   FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
 } from "./fast-manim-runtime-trace-v2-profile";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 } from "./fast-manim-runtime-trace-v3-result-contract";
 import {
   copyFastManimSandboxUint8ArrayV1,
-  fastManimSandboxBackendResultV1Schema,
   FastManimSandboxRequestBundleV1,
+  fastManimSandboxBackendResultV1Schema,
   MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
   MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES,
   MAX_FAST_MANIM_SANDBOX_STATUS_RAW_JSON_BYTES,
@@ -133,11 +135,26 @@ describe("fast-manim sandbox request bundle", () => {
       RUNTIME_TRACE_SOURCE_TEXT,
       { height: 8, width: 128 / 9 },
     );
+    const runtimeTraceV3Source =
+      "from manim import *\nclass Generic(Scene):\n    def construct(self):\n        self.add(Square())\n";
+    const runtimeTraceV3 = createFastManimRuntimeTraceProducerRequestV3(
+      {
+        projectId: "demo",
+        requestId: "req-generic-runtime-trace-v3",
+        sceneName: "Generic",
+        sourceHash: createHash("sha256").update(runtimeTraceV3Source).digest("hex"),
+        sourcePath: "scenes/generic.py",
+      },
+      runtimeTraceV3Source,
+      { constructStartLine: 3, definitionOrdinal: 1 },
+      { height: 8, width: 128 / 9 },
+    );
     const bundles = [
       new FastManimSandboxRequestBundleV1(snapshot),
       new FastManimSandboxRequestBundleV1(selection),
       new FastManimSandboxRequestBundleV1(runtimeTraceRequestFixture()),
       new FastManimSandboxRequestBundleV1(runtimeTraceV2),
+      new FastManimSandboxRequestBundleV1(runtimeTraceV3),
     ];
 
     expect(bundles.map(({ maximumResultBytes }) => maximumResultBytes)).toEqual([
@@ -145,10 +162,14 @@ describe("fast-manim sandbox request bundle", () => {
       MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
       MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 1,
       MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
+      MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 + 1,
     ]);
     expect(bundles.every(Object.isFrozen)).toBe(true);
     expect(FastManimSandboxRequestBundleV1.fromBytes(bundles[3]!.copyBytes()).maximumResultBytes).toBe(
       MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
+    );
+    expect(FastManimSandboxRequestBundleV1.fromBytes(bundles[4]!.copyBytes()).maximumResultBytes).toBe(
+      MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 + 1,
     );
   });
 
