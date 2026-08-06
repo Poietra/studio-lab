@@ -122,6 +122,9 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     expect(() => parseFastManimRuntimeTraceProducerRequestJsonV2(JSON.stringify(nested))).toThrowError(
       /structural budget/,
     );
+    const stackDepth = 20_000;
+    const deeplyNested = `${'{"nested":'.repeat(stackDepth)}null${"}".repeat(stackDepth)}`;
+    expect(() => parseFastManimRuntimeTraceProducerRequestJsonV2(deeplyNested)).toThrowError(/structural budget/);
     expect(() =>
       parseFastManimRuntimeTraceProducerRequestJsonV2(
         new Uint8Array(MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2 + 1),

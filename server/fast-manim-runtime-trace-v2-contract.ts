@@ -282,13 +282,13 @@ export function parseFastManimRuntimeTraceProducerRequestJsonV2(value: string | 
       { cause },
     );
   }
+  assertBoundedRuntimeTraceV2RequestJson(document);
   if (canonicalJsonV1(document) !== json) {
     throw new FastManimRuntimeTraceV2RequestContractError(
       "request-malformed",
       "Runtime Trace V2 request must use duplicate-free canonical JSON.",
     );
   }
-  assertBoundedRuntimeTraceV2RequestJson(document);
   const parsed = fastManimRuntimeTraceProducerRequestV2Schema.safeParse(document);
   if (!parsed.success) {
     throw new FastManimRuntimeTraceV2RequestContractError(
