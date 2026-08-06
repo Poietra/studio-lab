@@ -627,7 +627,7 @@ The following evidence is reproducible in this repository:
 | whole-Scene failure policy | met at contract, renderer, Worker, and client boundaries | unsupported draws, malformed responses, stale correlation, surface/device failures, and protocol divergence never produce a partial success |
 | generated payload | met on the named host | the clean-commit report binds the served release WASM at 1,631,912 raw bytes / 552,354 gzip bytes with SHA-256 `2d917354...a640`, below the 3 MiB compressed budget |
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
-| fixture breadth and visual parity | met for the bounded corpus and static real-Scene slice | the catalog fixes 15 workload IDs; the corpus-driven full-RGBA lane covers affine/camera, PNG alpha, nested MathTex, generic stroke topology, and five bounded real MathTex morph samples. The V5 aggregate-path interpolation remains semantic evidence rather than exact Manim/Cairo animation parity. The independent static `RealPreviewScene` Cairo-to-visible-Edge compositor run passes at SSIM `0.9985658029` with `1,855 / 389,376` pixels (`0.47640327%`) above `8/255`, against gates of `0.995` and `0.5%`; expected, actual, diff, report, source, host, commit, producer, and served-WASM identities are checked in under [`docs/evidence/manim-compositor-parity-2026-07-31`](../evidence/manim-compositor-parity-2026-07-31/report.json). This does not claim exact dynamic Manim/Cairo animation parity. |
+| fixture breadth and visual parity | met for the bounded corpus, static real-Scene slice, and exact `UpdatersExample` Runtime Trace slice | the catalog fixes 15 workload IDs; the corpus-driven full-RGBA lane covers affine/camera, PNG alpha, nested MathTex, generic stroke topology, and five bounded real MathTex morph samples. The V5 aggregate-path interpolation remains semantic evidence rather than exact Manim/Cairo animation parity. The independent static `RealPreviewScene` Cairo-to-visible-Edge compositor run passes at SSIM `0.9985658029` with `1,855 / 389,376` pixels (`0.47640327%`) above `8/255`, against gates of `0.995` and `0.5%`; expected, actual, diff, report, source, host, commit, producer, and served-WASM identities are checked in under [`docs/evidence/manim-compositor-parity-2026-07-31`](../evidence/manim-compositor-parity-2026-07-31/report.json). The local required Runtime Trace lane independently executes Cairo and compares seven full 640x360 RGBA frames after the real producer, server verification, lowering, and one retained WebGPU install. Its worst frame passes at SSIM `0.9993221454`; its largest over-`8/255` fraction is `1,007 / 230,400` pixels (`0.43706597%`), and a backward seek reproduces the bottom frame byte-for-byte. This is exact evidence only for the sealed official `UpdatersExample` profile, not arbitrary updater semantics. |
 | renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, general cubic strokes with v1 caps/joins/miter limits, ordered fill-then-stroke composition, transforms/camera/animation, verified PNG images, and four-sample coverage for Manim/Cairo vector frames work; the shared stroke fixture also samples nonzero trim, morph, and motion. Open fill paths, portable linear-light antialiasing, and clipping remain truthful fallbacks. |
 | Studio preview integration | met for bounded V1–V6 opt-in | `?previewRenderer=server` selects a real project source and Scene across the bounded V1–V6 profiles, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted. Verified source/runtime identity drives imported hit geometry; exact GPU texture readback and the named-host visible browser-compositor path are both covered. Unsupported semantics still fail closed to the semantic/server fallback. |
 | incremental edit transfer | met for Studio-owned Scenes | the first revision uses a verified full install; subsequent edits use the 256 KiB stale-revision-safe delta through Canvas Worker ABI v4 and WASM, with asset changes and rejected/stale deltas using a verified full replacement. Imported Manim snapshots remain server-sealed full installs. |
@@ -646,8 +646,9 @@ the exact driver/profile/commit/WASM identities, and no eligibility exceptions.
 
 Production-default migration remains blocked until independent follow-up work:
 
-1. expands real Manim/Cairo parity beyond the bounded static Scene whenever a
-   broader profile is proposed for default rendering;
+1. expands real Manim/Cairo parity beyond the bounded static Scene and sealed
+   `UpdatersExample` Runtime Trace whenever a broader profile is proposed for
+   default rendering;
 2. promotes the current immutable snapshot/render artifacts and passes the
    operator-owned rootless production conformance gates (#186, #227, #280); and
 3. completes the production rollout and multi-tenant adversarial evidence for
@@ -664,9 +665,11 @@ not satisfy the OS isolation, hard-limit, multi-tenant, or rollout evidence
 required from #82–#85.
 
 The `PreviewRenderer` host and explicit server-side fast-manim snapshot exporter
-now cover the bounded V1–V6 profiles. The static real-Scene visible-compositor
-gate is complete; broader dynamic Manim/Cairo parity and production operator
-evidence remain outside this bounded decision.
+cover the bounded snapshot profiles, while the separate verified Runtime Trace
+path covers the sealed official `UpdatersExample`. The static real-Scene
+visible-compositor gate and this one dynamic updater gate are complete; broader
+dynamic Manim/Cairo parity and production operator evidence remain outside this
+bounded decision.
 
 WebGPU is accepted as an explicit bounded client preview, while the semantic
 preview remains the default fallback. Server-side video rendering/export remains

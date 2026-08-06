@@ -97,6 +97,7 @@ export const updatersCairoReferenceV1Schema = z.strictObject({
       renderer: z.literal("cairo"),
       saveLastFrame: z.literal(false),
       savePngs: z.literal(false),
+      seed: z.literal(0),
       transparent: z.literal(false),
       verbosity: z.literal("WARNING"),
       writeToMovie: z.literal(false),
