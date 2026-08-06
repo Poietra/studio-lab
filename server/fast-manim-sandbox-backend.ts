@@ -8,6 +8,7 @@ import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
   type FastManimRuntimeTraceProducerRequestV1,
   fastManimRuntimeTraceProducerRequestV1Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1,
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
 } from "./fast-manim-runtime-trace-contract";
 import {
@@ -15,9 +16,11 @@ import {
   fastManimRuntimeTraceProducerRequestV2Schema,
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,
 } from "./fast-manim-runtime-trace-v2-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import {
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotProducerRequestV1Schema,
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
 } from "./fast-manim-snapshot-contract";
@@ -49,6 +52,23 @@ export const MAX_FAST_MANIM_SANDBOX_STATUS_CANONICAL_JSON_BYTES = 4 * 1024;
 export const MAX_FAST_MANIM_SANDBOX_STATUS_FIELD_UTF8_BYTES = 512;
 /** Production adapters must enforce this limit before parsing a raw status response as JSON. */
 export const MAX_FAST_MANIM_SANDBOX_STATUS_RAW_JSON_BYTES = 8 * 1024;
+
+/** Absolute in-process result ceiling; the broker wire retains its smaller 24 MiB bound. */
+const MAX_FAST_MANIM_SANDBOX_IN_PROCESS_RESULT_BYTES = Math.max(
+  MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
+);
+
+function maximumResultBytesForProducerRequestV1(request: FastManimSandboxProducerRequestV1) {
+  if (request.schema === "poietra.fast-manim-runtime-trace-producer-request") {
+    return (
+      (request.version === 2
+        ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2
+        : MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1) + 1
+    );
+  }
+  return MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
+}
 
 export const FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1 = Object.freeze([
   "abort",
@@ -314,6 +334,8 @@ export function resolveFastManimSandboxReadiness(
  */
 export class FastManimSandboxRequestBundleV1 {
   readonly byteLength: number;
+  /** Sealed request-derived stdout ceiling, including the producer CLI's required trailing LF. */
+  readonly maximumResultBytes: number;
   readonly producerKind: "runtime-trace" | "snapshot";
   readonly requestDigest: string;
   readonly version: 1 | 2 | 3;
@@ -388,6 +410,7 @@ export class FastManimSandboxRequestBundleV1 {
     this.#pngBytes = pngBytes;
     this.#producerRequestBytes = producerRequestBytes;
     this.byteLength = ownedByteLength;
+    this.maximumResultBytes = maximumResultBytesForProducerRequestV1(request);
     this.producerKind = runtimeTraceRequest ? "runtime-trace" : "snapshot";
     this.requestDigest = createHash("sha256").update(owned).digest("hex");
     Object.freeze(this);
@@ -536,7 +559,7 @@ export function copyFastManimSandboxUint8ArrayV1(value: unknown, maximumByteLeng
 
 const fastManimSandboxResultBytesV1Schema = z.custom<Uint8Array>((value) => {
   const byteLength = inspectedFastManimSandboxUint8ArrayByteLengthV1(value);
-  return byteLength !== null && byteLength <= MAX_FAST_MANIM_SANDBOX_RESULT_BYTES;
+  return byteLength !== null && byteLength <= MAX_FAST_MANIM_SANDBOX_IN_PROCESS_RESULT_BYTES;
 }, "Sandbox results must be fixed Uint8Array bytes within the raw result byte budget.");
 
 export const fastManimSandboxBackendResultV1Schema = z.discriminatedUnion("kind", [

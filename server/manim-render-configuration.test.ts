@@ -79,4 +79,37 @@ describe("Manim render plugin configuration", () => {
     const closeBundle = plugin.closeBundle as () => Promise<void>;
     await closeBundle();
   });
+
+  it("gives full Runtime Traces a bounded render-sized default without weakening snapshot timeouts", async () => {
+    const createManager = (snapshotTimeoutMs?: number) =>
+      new ManimRenderManager({
+        command: [process.execPath],
+        frame: { height: 8, width: 128 / 9 },
+        projectRoot: process.cwd(),
+        runtimeTraceProducerCommand: [process.execPath],
+        runtimeTraceProducerDevOptIn: true,
+        snapshotSandboxDeployment: "test",
+        ...(snapshotTimeoutMs === undefined ? {} : { snapshotTimeoutMs }),
+        tenantId: "test-tenant",
+      });
+    const defaults = createManager();
+    const explicit = createManager(7_500);
+    const timeouts = (manager: ManimRenderManager) => {
+      const runners = manager as unknown as {
+        runtimeTraceRunner: { timeoutMs: number } | null;
+        snapshotRunner: { timeoutMs: number };
+      };
+      return {
+        runtimeTrace: runners.runtimeTraceRunner?.timeoutMs,
+        snapshot: runners.snapshotRunner.timeoutMs,
+      };
+    };
+
+    try {
+      expect(timeouts(defaults)).toEqual({ runtimeTrace: 180_000, snapshot: 20_000 });
+      expect(timeouts(explicit)).toEqual({ runtimeTrace: 7_500, snapshot: 7_500 });
+    } finally {
+      await Promise.all([defaults.close(), explicit.close()]);
+    }
+  });
 });
