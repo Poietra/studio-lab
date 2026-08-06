@@ -29,6 +29,10 @@ import {
 } from "../src/render-pipeline/mathtex-morph-source-v5";
 import { analyzePythonSource, isPythonStatementStart } from "../src/render-pipeline/python-source-analysis";
 import { findSourceSceneBlock, findSourceSceneStatements } from "../src/render-pipeline/source-import";
+import {
+  deriveSquareToCircleV8PositionPlan,
+  FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8,
+} from "./fast-manim-square-to-circle-v8-candidate";
 
 export const FAST_MANIM_SNAPSHOT_SCHEMA_V1 = "poietra.fast-manim-snapshot-result" as const;
 export const FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1 = "poietra.fast-manim-snapshot-producer-request" as const;
@@ -164,6 +168,22 @@ const hermeticMathTexMorphV5PlanSchema = z
   });
 export type HermeticMathTexMorphV5Plan = z.infer<typeof hermeticMathTexMorphV5PlanSchema>;
 
+const squareToCircleV8PositionPlanSchema = z
+  .object({
+    moveTo: z.object({ x: hermeticPngV4NumberSchema, y: hermeticPngV4NumberSchema }).strict().nullable(),
+  })
+  .strict()
+  .superRefine((plan, context) => {
+    if (plan.moveTo?.x === 0 && plan.moveTo.y === 0) {
+      context.addIssue({
+        code: "custom",
+        message: "SquareToCircle position evidence cannot retain a no-op move.",
+        path: ["moveTo"],
+      });
+    }
+  });
+export type SquareToCircleV8PositionPlan = z.infer<typeof squareToCircleV8PositionPlanSchema>;
+
 const warpSquareV9TransformPlanSchema = z
   .object({
     moveTo: z.object({ x: hermeticPngV4NumberSchema, y: hermeticPngV4NumberSchema }).strict().nullable(),
@@ -211,6 +231,10 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
     // V5 retains only server-derived digests and timing. Exact TeX source
     // remains in the versioned source blob and never enters publication JSON.
     hermeticMathTexMorphV5Plan: hermeticMathTexMorphV5PlanSchema.optional(),
+    // V8 admits one paired initial position for the stable Square and its
+    // hidden Transform target. This is derived from the exact Python bytes;
+    // runtime geometry cannot authorize a different source mutation.
+    squareToCircleV8Plan: squareToCircleV8PositionPlanSchema.optional(),
     // V9 retains the only two Studio-authored base edits that its bounded
     // producer accepts. The server derives this from the exact source bytes;
     // it is verification state, never producer-authored evidence.
@@ -248,6 +272,13 @@ export const expectedFastManimSnapshotCorrelationV1Schema = z
         code: "custom",
         message: "Hermetic MathTex morph evidence is valid only for snapshot profile V5.",
         path: ["hermeticMathTexMorphV5Plan"],
+      });
+    }
+    if (value.snapshotVersion !== 8 && value.squareToCircleV8Plan !== undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "SquareToCircle position evidence is valid only for snapshot profile V8.",
+        path: ["squareToCircleV8Plan"],
       });
     }
     if (value.snapshotVersion !== 9 && value.warpSquareV9Plan !== undefined) {
@@ -2282,6 +2313,7 @@ const FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8 = new Set<string>([
   FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
 ]);
+const SQUARE_TO_CIRCLE_V8_EMPTY_PLAN = Object.freeze({ moveTo: null }) satisfies SquareToCircleV8PositionPlan;
 
 const FAST_MANIM_SQUARE_TO_CIRCLE_REQUIRED_CAPABILITIES_V8 = [
   "cubic-path-geometry",
@@ -2979,6 +3011,55 @@ function fastManimSquareToCircleSemanticDigestV8(
     .digest("hex");
 }
 
+const FAST_MANIM_SQUARE_TO_CIRCLE_NORMALIZED_SEMANTICS_SHA256_V8 =
+  "abab504f7c2404721cb3605424a6c38323b413130d611cd61e387a21838904c2" as const;
+
+function squareToCircleRoundedCoordinateV8(value: number) {
+  // fast-manim/Cairo translation can differ by a few floating-point ULPs.
+  // Twelve decimals admit only that producer round-off while the exact source
+  // plan still authorizes the absolute center independently.
+  const rounded = Number(value.toFixed(12));
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function squareToCircleNormalizedSemanticDigestV8(
+  entity: StaticProfileEntity,
+  pathMorph: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "path-morph" }>,
+  vectorAppearance: Extract<SceneIrBundleV1["scene"]["animationChannels"][number], { kind: "vector-appearance" }>,
+  plan: SquareToCircleV8PositionPlan,
+) {
+  if (entity.geometry.kind !== "cubic-path") {
+    profileViolation("SquareToCircle profile V8 requires cubic-path geometry before normalization.");
+  }
+  const center = plan.moveTo ?? { x: 0, y: 0 };
+  const normalizePoint = (point: Readonly<{ x: number; y: number }>) => ({
+    x: squareToCircleRoundedCoordinateV8(point.x - center.x),
+    y: squareToCircleRoundedCoordinateV8(point.y - center.y),
+  });
+  const normalizePath = (path: typeof entity.geometry.path) => ({
+    subpaths: path.subpaths.map((subpath) => ({
+      closed: subpath.closed,
+      segments: subpath.segments.map((segment) => ({
+        control1: normalizePoint(segment.control1),
+        control2: normalizePoint(segment.control2),
+        end: normalizePoint(segment.end),
+      })),
+      start: normalizePoint(subpath.start),
+    })),
+  });
+  return createHash("sha256")
+    .update(
+      canonicalJsonV1({
+        baseAppearance: entity.appearance,
+        baseGeometry: { kind: "cubic-path", path: normalizePath(entity.geometry.path) },
+        pathMorphValues: pathMorph.keyframes.map(({ value }) => normalizePath(value)),
+        vectorAppearanceValues: vectorAppearance.keyframes.map(({ value }) => value),
+      }),
+      "utf8",
+    )
+    .digest("hex");
+}
+
 function exactSnapshotEasingV8(
   keyframes: readonly Readonly<{ at: number; easingToNext: unknown; value: unknown }>[],
   expected: readonly Readonly<{ at: number; value: unknown }>[],
@@ -3003,13 +3084,16 @@ function assertSquareToCircleProducerProvenanceV8(
   scene: SceneIrBundleV1["scene"],
   sourcePath: string,
   sourceHash: string,
+  plan: SquareToCircleV8PositionPlan,
 ) {
   const sourceAnchorLine =
-    sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8
+    sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 && plan.moveTo === null
       ? 75
-      : sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8
+      : sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8 && plan.moveTo === null
         ? 7
-        : null;
+        : sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8 && plan.moveTo !== null
+          ? 75
+          : null;
   if (sourceAnchorLine === null) {
     profileViolation("SquareToCircle profile V8 provenance requires one pinned source generation.");
   }
@@ -3080,14 +3164,28 @@ function assertSquareToCircleProfileV8(
   expectedFrame: Readonly<{ height: number; width: number }>,
   mode: "producer" | "sealed",
   expectedIdentity: Readonly<{ sceneName: string; sourceHash: string; sourcePath: string }>,
+  expectedPlan: SquareToCircleV8PositionPlan | undefined,
 ) {
   const { scene } = bundle;
   const { sceneId } = scene;
+  const plan =
+    expectedPlan ??
+    (FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expectedIdentity.sourceHash)
+      ? SQUARE_TO_CIRCLE_V8_EMPTY_PLAN
+      : profileViolation("Edited SquareToCircle profile V8 publications require their server-derived position plan."));
+  const officialBase = expectedIdentity.sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8;
+  const minimalBase = expectedIdentity.sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8;
+  const editedOfficial =
+    expectedIdentity.sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8 &&
+    plan.moveTo !== null &&
+    !FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expectedIdentity.sourceHash);
   if (
     expectedIdentity.sceneName !== "SquareToCircle" ||
-    !FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expectedIdentity.sourceHash)
+    (!(officialBase || minimalBase) && !editedOfficial) ||
+    (plan.moveTo === null && !(officialBase || minimalBase)) ||
+    (plan.moveTo !== null && (officialBase || minimalBase))
   ) {
-    profileViolation("Snapshot profile V8 is reserved for the pinned SquareToCircle source generation.");
+    profileViolation("Snapshot profile V8 is reserved for an audited SquareToCircle source generation or edit.");
   }
   if (
     expectedFrame.height !== FAST_MANIM_SQUARE_TO_CIRCLE_FRAME_V8.height ||
@@ -3214,8 +3312,11 @@ function assertSquareToCircleProfileV8(
     pathMorph.keyframes.length !== 2 ||
     vectorAppearance.keyframes.length !== 2 ||
     canonicalJsonV1(entity.geometry.path) !== canonicalJsonV1(pathMorph.keyframes[0]!.value) ||
-    fastManimSquareToCircleSemanticDigestV8(entity, pathMorph, vectorAppearance) !==
-      FAST_MANIM_SQUARE_TO_CIRCLE_SEMANTICS_SHA256_V8
+    squareToCircleNormalizedSemanticDigestV8(entity, pathMorph, vectorAppearance, plan) !==
+      FAST_MANIM_SQUARE_TO_CIRCLE_NORMALIZED_SEMANTICS_SHA256_V8 ||
+    (plan.moveTo === null &&
+      fastManimSquareToCircleSemanticDigestV8(entity, pathMorph, vectorAppearance) !==
+        FAST_MANIM_SQUARE_TO_CIRCLE_SEMANTICS_SHA256_V8)
   ) {
     profileViolation("SquareToCircle profile V8 geometry or appearance differs from its pinned Manim endpoints.");
   }
@@ -3237,7 +3338,7 @@ function assertSquareToCircleProfileV8(
     profileViolation("SquareToCircle profile V8 provenance must exactly follow Scene, entity, and channel order.");
   }
   if (mode === "producer") {
-    assertSquareToCircleProducerProvenanceV8(scene, expectedIdentity.sourcePath, expectedIdentity.sourceHash);
+    assertSquareToCircleProducerProvenanceV8(scene, expectedIdentity.sourcePath, expectedIdentity.sourceHash, plan);
   } else if (
     scene.provenance.some(
       ({ evidence }) => canonicalJsonV1(evidence) !== canonicalJsonV1([FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8]),
@@ -4213,6 +4314,7 @@ function assertFastManimSnapshotProfileV1(
   hermeticMathTexV3Plan: HermeticMathTexV3TransformPlan | undefined,
   hermeticPngV4Plan: HermeticPngV4TransformPlan | undefined,
   hermeticMathTexMorphV5Plan: HermeticMathTexMorphV5Plan | undefined,
+  squareToCircleV8Plan: SquareToCircleV8PositionPlan | undefined,
   warpSquareV9Plan: WarpSquareV9TransformPlan | undefined,
   lineJointsV10Plan: LineJointsV10TransformPlan | undefined,
   writeStuffV12Plan: WriteStuffV12TransformPlan | undefined,
@@ -4235,7 +4337,7 @@ function assertFastManimSnapshotProfileV1(
     return;
   }
   if (snapshotVersion === 8) {
-    assertSquareToCircleProfileV8(bundle, expectedFrame, mode, expectedIdentity);
+    assertSquareToCircleProfileV8(bundle, expectedFrame, mode, expectedIdentity, squareToCircleV8Plan);
     return;
   }
   const { scene } = bundle;
@@ -4600,6 +4702,7 @@ async function parseFastManimSnapshotResultV1(
   let hermeticMathTexV3Plan = expected.hermeticMathTexV3Plan;
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
+  let squareToCircleV8Plan = expected.squareToCircleV8Plan;
   let warpSquareV9Plan = expected.warpSquareV9Plan;
   let lineJointsV10Plan = expected.lineJointsV10Plan;
   let writeStuffV12Plan = expected.writeStuffV12Plan;
@@ -4636,6 +4739,22 @@ async function parseFastManimSnapshotResultV1(
   }
   if (expected.snapshotVersion === 12 && mode === "producer" && sourceText === undefined) {
     profileViolation("WriteStuff profile V12 requires the exact server-held source during sealing.");
+  }
+  if (expected.snapshotVersion === 8 && mode === "producer" && sourceText !== undefined) {
+    let derivedPlan: SquareToCircleV8PositionPlan;
+    try {
+      derivedPlan = FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expected.sourceHash)
+        ? SQUARE_TO_CIRCLE_V8_EMPTY_PLAN
+        : expected.sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8
+          ? deriveSquareToCircleV8PositionPlan(sourceText, expected.sceneName)
+          : profileViolation("SquareToCircle profile V8 source path is outside its audited source family.");
+    } catch {
+      derivedPlan = profileViolation("SquareToCircle profile V8 source does not match its audited position edit.");
+    }
+    if (squareToCircleV8Plan && canonicalJsonV1(squareToCircleV8Plan) !== canonicalJsonV1(derivedPlan)) {
+      profileViolation("The retained SquareToCircle position plan does not match the server-held source.");
+    }
+    squareToCircleV8Plan = derivedPlan;
   }
   if (expected.snapshotVersion === 9 && mode === "producer" && sourceText !== undefined) {
     const derivedPlan = deriveWarpSquareV9TransformPlan(sourceText, expected.sceneName);
@@ -4704,6 +4823,7 @@ async function parseFastManimSnapshotResultV1(
     hermeticMathTexV3Plan,
     hermeticPngV4Plan,
     hermeticMathTexMorphV5Plan,
+    squareToCircleV8Plan,
     warpSquareV9Plan,
     lineJointsV10Plan,
     writeStuffV12Plan,

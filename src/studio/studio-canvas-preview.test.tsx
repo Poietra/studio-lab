@@ -663,6 +663,81 @@ describe("StudioCanvas retained preview layer", () => {
     expect(interactiveMarkup).toContain(`data-studio-resize-handle="${t2.id}"`);
   });
 
+  it("keeps the producer-backed SquareToCircle V8 target position-only", () => {
+    const squareId = "source:example_scenes/basic.py#SquareToCircle:square";
+    const runtimeId = "scene:square-to-circle/entity:0";
+    const square: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "known", value: { height: 2, width: 2 } },
+      },
+      id: squareId,
+      sourceIdentity: { kind: "known", value: "square" },
+      type: "Square",
+    };
+    const sourceRuntimeIdentity = new Map([
+      ["square", { bindingId: "source-binding:square", entityId: runtimeId, sourceName: "square" }],
+    ]);
+    const initialEditRuntimeAuthority = {
+      baseCenter: { x: 320, y: 180 },
+      duration: 3,
+      lifetime: { end: 3, start: 0 },
+      profile: "square-to-circle-v8" as const,
+      relativeScale: 1,
+      runtimeEntityId: runtimeId,
+      studioEntityId: squareId,
+      studioSceneId: "example_scenes/basic.py#SquareToCircle",
+    } satisfies NonNullable<StudioPreviewRendererViewV1["initialEditRuntimeAuthority"]>;
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [square],
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:square-to-circle-v8",
+            revision: "8".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map(),
+        sourceRuntimeIdentity,
+        { kind: "interactive" },
+        initialEditRuntimeAuthority,
+      ),
+      selectedIds: new Set([squareId]),
+    };
+    expect(findEntityButton(StudioCanvas(props), squareId).props.onPointerMove).toBe(props.onEntityPointerMove);
+    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
+    expect(markup).toContain(`data-studio-entity="${squareId}"`);
+    expect(markup).not.toContain("data-studio-runtime-entity");
+    expect(markup).not.toContain("data-studio-resize-handle");
+
+    const inactiveMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...props}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:square-to-circle-v8-inactive",
+              revision: "8".repeat(64),
+              sampleTime: 3,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map(),
+          sourceRuntimeIdentity,
+          { kind: "interactive" },
+          initialEditRuntimeAuthority,
+        )}
+      />,
+    );
+    expect(inactiveMarkup).not.toContain(`data-studio-entity="${squareId}"`);
+  });
+
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {
     const squareId = "source:example_scenes/basic.py#UpdatersExample:square";
     const decimalId = "source:example_scenes/basic.py#UpdatersExample:decimal";

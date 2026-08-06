@@ -412,22 +412,24 @@ function decodeJson(bytes: Uint8Array) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
 }
 
-function runtimeTraceRevision(snapshotJson: ArrayBuffer, expectedRevision: string) {
+function serverBackedRevision(snapshotJson: ArrayBuffer, expectedRevision: string) {
   const bundle = decodeJson(new Uint8Array(snapshotJson));
   const scene = bundle.scene;
   if (typeof scene !== "object" || scene === null || !("source" in scene)) {
     throw new Error("The retained readback bundle has no Scene source.");
   }
   const source = scene.source;
-  if (
-    typeof source !== "object" ||
-    source === null ||
-    !("kind" in source) ||
-    source.kind !== "imported-manim-runtime-trace" ||
-    !("traceDigest" in source) ||
-    source.traceDigest !== expectedRevision
-  ) {
-    throw new Error("The retained readback bundle does not match the expected Runtime Trace revision.");
+  if (typeof source !== "object" || source === null || !("kind" in source)) {
+    throw new Error("The retained readback bundle has no supported Scene source.");
+  }
+  const revision =
+    source.kind === "imported-manim-runtime-trace" && "traceDigest" in source
+      ? source.traceDigest
+      : source.kind === "imported-manim-server-snapshot" && "snapshotHash" in source
+        ? source.snapshotHash
+        : null;
+  if (revision !== expectedRevision) {
+    throw new Error("The retained readback bundle does not match the expected server-backed revision.");
   }
   return expectedRevision;
 }
@@ -444,7 +446,7 @@ async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofReq
     ids.add(frame.id);
   }
 
-  const revision = runtimeTraceRevision(request.snapshotJson, request.expectedRevision);
+  const revision = serverBackedRevision(request.snapshotJson, request.expectedRevision);
   const canvas = new OffscreenCanvas(request.viewport.widthPx, request.viewport.heightPx);
   const hooks = installReadbackHooks(canvas, request.viewport);
   const bindings = (await import(/* @vite-ignore */ request.wasmModuleUrl)) as WasmBindingsV1;

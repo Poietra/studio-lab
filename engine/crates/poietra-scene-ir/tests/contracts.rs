@@ -329,7 +329,9 @@ fn imported_snapshot_source_accepts_profiles_one_through_twelve_only() {
             scene.source.render_compositing(),
             if matches!(
                 snapshot_version,
-                SnapshotProfileVersionV1::V11 | SnapshotProfileVersionV1::V12
+                SnapshotProfileVersionV1::V8
+                    | SnapshotProfileVersionV1::V11
+                    | SnapshotProfileVersionV1::V12
             ) {
                 RenderCompositingV1::ManimCairoSrgb
             } else {

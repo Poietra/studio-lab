@@ -202,6 +202,38 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     await compiledRunner.close();
   });
 
+  it("admits exact SquareToCircle V8 candidate bytes without reading project source", async () => {
+    const root = await projectRoot();
+    const official = await readFile(
+      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const anchor = "        circle.set_fill(PINK, opacity=0.5)\n";
+    const sourceText = official.replace(
+      anchor,
+      `${anchor}        square.move_to((2, 1, 0))\n        circle.move_to((2, 1, 0))\n`,
+    );
+    const runner = createRunner(root, producerCommand("--mode=unsupported"), {
+      snapshotVersion: 8,
+      sourceReadHooks: {
+        beforeOpen: () => {
+          throw new Error("Candidate preflight must not read project source.");
+        },
+      },
+    });
+
+    const result = await runner.runCandidateUnpublished(sourceText, {
+      projectId: "default",
+      requestId: "snapshot-request-v8-candidate",
+      sceneName: "SquareToCircle",
+      sourcePath: "example_scenes/basic.py",
+    });
+
+    expect(result).toMatchObject({ requestId: "snapshot-request-v8-candidate", status: "unsupported" });
+    expect(result.runtimeConfigHash).toBe(digestFastManimSnapshotRuntimeConfigV1(runtimeConfig(8)));
+    await runner.close();
+  });
+
   it.each([
     ["explicit", producerCommand("--mode=unsupported"), { snapshotVersion: 10 }],
     ["automatic", producerCommand("--mode=unsupported", "--select-version=10"), { automaticProfileSelection: true }],

@@ -51,9 +51,36 @@ type CandidateProfileV1 = Readonly<{
   label: string;
   logEvent: string;
   snapshotVersion: FastManimSnapshotProfileVersionV1;
+  sourceNames: readonly string[];
 }>;
 
 const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
+  [
+    "fast-manim-square-to-circle-v8",
+    {
+      bindings: [
+        {
+          columnEnd: 14,
+          familyPath: [],
+          line: 75,
+          name: "square",
+          ordinal: 2,
+          parentSceneOrder: null,
+          sceneOrder: 0,
+        },
+      ],
+      entityCount: 1,
+      kind: "fast-manim-square-to-circle-v8",
+      label: "SquareToCircle",
+      logEvent: "render.square_to_circle_v8_candidate_preflight_rejected",
+      snapshotVersion: 8,
+      // `circle` is a source dependency and must receive the same initial
+      // position, but only the transformed `square` survives as runtime
+      // identity. Keep those two authorities explicit instead of inventing a
+      // runtime entity for the hidden Transform target.
+      sourceNames: ["circle", "square"],
+    },
+  ],
   [
     "fast-manim-warp-square-v9",
     {
@@ -73,6 +100,7 @@ const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
       label: "WarpSquare",
       logEvent: "render.warp_square_v9_candidate_preflight_rejected",
       snapshotVersion: 9,
+      sourceNames: ["square"],
     },
   ],
   [
@@ -121,6 +149,7 @@ const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
       label: "LineJoints",
       logEvent: "render.line_joints_v10_candidate_preflight_rejected",
       snapshotVersion: 10,
+      sourceNames: ["t1", "t2", "t3", "grp"],
     },
   ],
   [
@@ -160,6 +189,7 @@ const CANDIDATE_PROFILES_V1 = new Map<string, CandidateProfileV1>([
       label: "WriteStuff",
       logEvent: "render.write_stuff_v12_candidate_preflight_rejected",
       snapshotVersion: 12,
+      sourceNames: ["example_text", "example_tex", "group"],
     },
   ],
 ]);
@@ -222,7 +252,7 @@ export class ManimRenderCandidateVerifierV1 {
     const bindingsByName = new Map(
       request.sourceBindings.map(({ entityId, sourceVariable }) => [sourceVariable, entityId]),
     );
-    const expectedSourceNames = profile.bindings.map(({ name }) => name);
+    const expectedSourceNames = profile.sourceNames;
     if (
       !candidateScene ||
       candidateScene.sourceHash !== candidateHash ||

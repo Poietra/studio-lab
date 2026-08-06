@@ -15,11 +15,13 @@ import {
   deriveWarpSquareV9TransformPlan,
   deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
+  FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
   type FastManimSnapshotRunViewV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
 import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
 import { DurableFastManimSnapshotSourceProviderV1 } from "./fast-manim-snapshot-source-provider";
+import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 import { HttpError } from "./http/json";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import type { SnapshotArtifactReceiptV1, SnapshotPublicationV1 } from "./storage/snapshot-publication-repository";
@@ -39,6 +41,7 @@ const PROFILE_DIGEST = "c".repeat(64);
 const RESULT_DIGEST = "d".repeat(64);
 const SNAPSHOT_DIGEST = "e".repeat(64);
 const RELEASE_RUNTIME_DIGEST = "f".repeat(64);
+const V8_RUNTIME_CONFIG_HASH = "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2";
 const V9_RUNTIME_CONFIG_HASH = "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a";
 const V12_RUNTIME_CONFIG_HASH = "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593";
 const PUBLISHED_AT = new Date("2026-07-28T01:02:03.000Z");
@@ -167,6 +170,26 @@ function v9VerifiedView(sourceHash: string) {
       sourceHash,
     } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
     sourcePath: "example_scenes/basic.py",
+  } satisfies FastManimUnpublishedSnapshotRunViewV1;
+}
+
+function v8VerifiedView(sourceHash: string, sourcePath = "example_scenes/basic.py") {
+  return {
+    ...verifiedView,
+    runtimeConfigHash: V8_RUNTIME_CONFIG_HASH,
+    sceneName: "SquareToCircle",
+    snapshot: {
+      ...compiledSnapshot,
+      bundle: {
+        ...compiledSnapshot.bundle,
+        scene: {
+          ...compiledSnapshot.bundle.scene,
+          source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 8, sourceHash },
+        },
+      },
+      sourceHash,
+    } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
+    sourcePath,
   } satisfies FastManimUnpublishedSnapshotRunViewV1;
 }
 
@@ -560,6 +583,69 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       expect.objectContaining({ runtimeConfigHash: V9_RUNTIME_CONFIG_HASH }),
       undefined,
     );
+  });
+
+  it("retains the server-derived edited V8 position plan at the durable publication boundary", async () => {
+    const official = await readFile(
+      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const anchor = "        circle.set_fill(PINK, opacity=0.5)\n";
+    const source = official.replace(
+      anchor,
+      `${anchor}        square.move_to((1.25, -0.5, 0))\n        circle.move_to((1.25, -0.5, 0))\n`,
+    );
+    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+    const view = v8VerifiedView(sourceHash);
+    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V8_RUNTIME_CONFIG_HASH);
+    const head = {
+      ...sourceHead(7n, sourceHash),
+      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
+      sourcePath: "example_scenes/basic.py",
+    };
+    fixture.readSourceHead.mockResolvedValue(head);
+    fixture.readSource.mockResolvedValue(source);
+    const v8Request = {
+      ...request,
+      sceneName: "SquareToCircle",
+      sourcePath: "example_scenes/basic.py",
+    };
+
+    await expect(fixture.service.run(v8Request)).resolves.toMatchObject({ status: "verified" });
+
+    expect(fixture.publish).toHaveBeenCalledOnce();
+    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
+      expected: {
+        runtimeConfigHash: V8_RUNTIME_CONFIG_HASH,
+        snapshotVersion: 8,
+        squareToCircleV8Plan: deriveSquareToCircleV8PositionPlan(source, "SquareToCircle"),
+      },
+      runtimeConfigHash: V8_RUNTIME_CONFIG_HASH,
+      snapshot: view.snapshot,
+    });
+  });
+
+  it("publishes a legacy minimal V8 source without requiring a new source-blob read", async () => {
+    const view = v8VerifiedView(FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8, SOURCE_PATH);
+    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V8_RUNTIME_CONFIG_HASH);
+    const head = sourceHead(7n, FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8);
+    fixture.readSourceHead.mockResolvedValue(head);
+
+    await expect(fixture.service.run({ ...request, sceneName: "SquareToCircle" })).resolves.toMatchObject({
+      status: "verified",
+    });
+
+    expect(fixture.readSource).not.toHaveBeenCalled();
+    expect(fixture.publish).toHaveBeenCalledOnce();
+    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
+      expected: {
+        snapshotVersion: 8,
+        sourceHash: FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
+        sourcePath: SOURCE_PATH,
+      },
+      snapshot: view.snapshot,
+    });
+    expect(fixture.publish.mock.calls[0]?.[0].expected.squareToCircleV8Plan).toBeUndefined();
   });
 
   it("retains the server-derived edited V12 plan at the durable publication boundary", async () => {

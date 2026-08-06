@@ -1029,6 +1029,7 @@ export function App({
       workspaceProjection?.visibleEntities ?? [],
       presentedInitialEditAuthority,
       initialEditInteractionGeometry,
+      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -1049,6 +1050,7 @@ export function App({
       workspaceProjection?.editableEntities ?? [],
       presentedInitialEditAuthority,
       initialEditInteractionGeometry,
+      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -2238,6 +2240,14 @@ export function App({
       return;
     }
     if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This SquareToCircle proof currently supports position only.");
+      return;
+    }
+    if (
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId &&
       interactionMode !== "position"
     ) {
@@ -2398,6 +2408,14 @@ export function App({
     event.stopPropagation();
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
+      return;
+    }
+    if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2689,6 +2707,13 @@ export function App({
       setDraftError("This source-bound grid title supports terminal position only.");
       return false;
     }
+    if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setDraftError("This SquareToCircle proof currently supports position only.");
+      return false;
+    }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {
       return installRuntimeTraceTerminalResizeDraft(
         entityId,
@@ -2768,7 +2793,11 @@ export function App({
     }
     if (initialTransformAuthority?.studioEntityId === entityId) {
       if (!("baseCenter" in initialTransformAuthority) || !edits.position || edits.content || edits.dimensions) {
-        setDraftError("This runtime-backed object currently supports position and uniform scale only.");
+        setDraftError(
+          initialTransformAuthority.profile === "square-to-circle-v8"
+            ? "This SquareToCircle proof currently supports position only."
+            : "This runtime-backed object currently supports position and uniform scale only.",
+        );
         return false;
       }
       if (!draftBaseState) return false;

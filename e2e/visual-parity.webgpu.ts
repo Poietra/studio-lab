@@ -5,7 +5,7 @@ import { join } from "node:path";
 
 import { expect, type Page, test } from "@playwright/test";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
-import { sceneIrSourceRevisionHash } from "../src/engine/scene-ir";
+import { sceneIrSourceRevisionHash, sceneSourceRenderCompositingV1 } from "../src/engine/scene-ir";
 import {
   LINE_JOINTS_CAIRO_PARITY_THRESHOLDS_V1,
   LINE_JOINTS_CAIRO_REFERENCE_ENTRY_IDS_V1,
@@ -288,9 +288,7 @@ async function proveVisualParityEntry(page: Page, entryId: string) {
     sampleTime: entry.sample.sampleTime,
     viewport: entry.sample.viewport,
   });
-  const usesManimCairoCompositing =
-    fixtureBundle.scene.source.kind === "imported-manim-server-snapshot" &&
-    (fixtureBundle.scene.source.snapshotVersion === 11 || fixtureBundle.scene.source.snapshotVersion === 12);
+  const usesManimCairoCompositing = sceneSourceRenderCompositingV1(fixtureBundle.scene.source) === "manim-cairo-srgb";
   const expectedBrowserViewFormat = usesManimCairoCompositing
     ? browserProof.pixels.surfaceFormat === "bgra8unorm"
       ? "Bgra8Unorm"

@@ -16,6 +16,7 @@ import type {
 } from "../fast-manim-sandbox-backend";
 import {
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11,
@@ -322,15 +323,17 @@ export function runtimeConfig(
     capabilities:
       snapshotVersion === 4
         ? ["png-image"]
-        : snapshotVersion === 9
-          ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9]
-          : snapshotVersion === 10
-            ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10]
-            : snapshotVersion === 11
-              ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11]
-              : snapshotVersion === 12
-                ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12]
-                : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
+        : snapshotVersion === 8
+          ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V8]
+          : snapshotVersion === 9
+            ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V9]
+            : snapshotVersion === 10
+              ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V10]
+              : snapshotVersion === 11
+                ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V11]
+                : snapshotVersion === 12
+                  ? [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V12]
+                  : [...FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1],
     frame: { height: 8, width: 14.222222222222221 },
     randomSeed: 0,
     schema: FAST_MANIM_SNAPSHOT_RUNTIME_CONFIG_SCHEMA_V1,

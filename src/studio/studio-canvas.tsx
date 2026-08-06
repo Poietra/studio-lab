@@ -485,13 +485,26 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
+            const geometrylessInitialTargetIsRetained =
+              (preview?.state.phase === "presented" && preview.state.frame.sampleTime === 0) ||
+              dragPreview?.entityIds.includes(entity.id) === true;
+            const sealedPositionOnlyTarget =
+              preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+              preview.initialEditRuntimeAuthority.studioEntityId === entity.id &&
+              geometrylessInitialTargetIsRetained &&
+              !positionUnknown &&
+              !dimensionsUnknown &&
+              !scaleUnknown;
             // A logical source group with no requested prepared bounds must
             // not mint a semantic hit target beside the WebGPU frame. The
             // bounded V10/V12 targets are admitted only by runtime identity.
+            // Exact V8 is position-only and its sealed source projection owns
+            // the hit target even when the retained packet has no AABB table.
             if (
               (selectionOnlyPreview || boundedRuntimeEditAuthority !== null) &&
               showingCanvasPixels &&
-              presentedIdentity === null
+              presentedIdentity === null &&
+              !sealedPositionOnlyTarget
             )
               return null;
             const runtimeTraceTargetGhost =
@@ -533,8 +546,10 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             const runtimePositionOnly =
-              preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
-              preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id;
+              (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
+                preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
+              (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+                preview.initialEditRuntimeAuthority.studioEntityId === entity.id);
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
