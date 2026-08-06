@@ -856,8 +856,10 @@ describe("StudioCanvas retained preview layer", () => {
   });
 
   it("opens only the OpeningManim grid title move at t=14 without resize handles", () => {
+    const gridId = "source:example_scenes/basic.py#OpeningManim:grid";
     const gridTitleId = "source:example_scenes/basic.py#OpeningManim:grid_title";
     const titleId = "source:example_scenes/basic.py#OpeningManim:title";
+    const gridRuntimeId = "scene:opening/runtime-root:grid";
     const gridTitleRuntimeId = "scene:opening/runtime-root:grid-title";
     const titleRuntimeId = "scene:opening/runtime-root:title";
     const unknownDimensions = {
@@ -877,11 +879,20 @@ describe("StudioCanvas retained preview layer", () => {
       id: titleId,
       sourceIdentity: { kind: "known", value: "title" },
     };
+    const grid: ProjectedEntity = {
+      ...gridTitle,
+      content: { displayLines: ["grid"], label: "grid" },
+      id: gridId,
+      sourceIdentity: { kind: "known", value: "grid" },
+      type: "NumberPlane",
+    };
     const interactionGeometry = new Map([
+      [gridRuntimeId, { dimensions: { height: 360, width: 640 }, position: { x: 320, y: 180 } }],
       [gridTitleRuntimeId, { dimensions: { height: 54, width: 305 }, position: { x: 145, y: 42 } }],
       [titleRuntimeId, { dimensions: { height: 48, width: 220 }, position: { x: 160, y: 55 } }],
     ]);
     const sourceRuntimeIdentity = new Map([
+      ["grid", { bindingId: "source-binding:grid", entityId: gridRuntimeId, sourceName: "grid" }],
       [
         "grid_title",
         { bindingId: "source-binding:grid-title", entityId: gridTitleRuntimeId, sourceName: "grid_title" },
@@ -902,11 +913,11 @@ describe("StudioCanvas retained preview layer", () => {
       kind: "bounded-interactive" as const,
       reason: "runtime-trace-terminal-edit" as const,
       sourceAnchor: 14 as const,
-      verifiedRuntimeEntityIds: [titleRuntimeId, gridTitleRuntimeId],
+      verifiedRuntimeEntityIds: [titleRuntimeId, gridRuntimeId, gridTitleRuntimeId],
     };
     const activeProps: StudioCanvasProps = {
       ...baseProps(),
-      entities: [gridTitle, title],
+      entities: [grid, gridTitle, title],
       preview: previewView(
         {
           frame: {
@@ -926,11 +937,21 @@ describe("StudioCanvas retained preview layer", () => {
       selectedIds: new Set([gridTitleId]),
     };
     const activeTree = StudioCanvas(activeProps);
+    expect(findEntityButton(activeTree, gridId).props.onPointerMove).toBeUndefined();
     expect(findEntityButton(activeTree, gridTitleId).props.onPointerMove).toBe(activeProps.onEntityPointerMove);
     expect(findEntityButton(activeTree, titleId).props.onPointerMove).toBeUndefined();
     const activeMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} />);
     expect(activeMarkup).toContain("Grid title terminal edit at 14.00s");
     expect(activeMarkup).not.toContain("data-studio-resize-handle");
+    const selectedGridMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} selectedIds={new Set([gridId])} />);
+    const gridWrapperMarker = `data-studio-entity-wrapper="${gridId}"`;
+    const gridWrapperMarkerIndex = selectedGridMarkup.indexOf(gridWrapperMarker);
+    const gridWrapperStart = selectedGridMarkup.lastIndexOf("<div", gridWrapperMarkerIndex);
+    const gridWrapperEnd = selectedGridMarkup.indexOf(">", gridWrapperMarkerIndex);
+    const selectedGridWrapper = selectedGridMarkup.slice(gridWrapperStart, gridWrapperEnd);
+    expect(gridWrapperMarkerIndex).toBeGreaterThan(-1);
+    expect(selectedGridWrapper).toContain("z-10");
+    expect(selectedGridWrapper).not.toContain("z-20");
 
     const pendingGridTitle: ProjectedEntity = {
       ...gridTitle,
@@ -943,7 +964,7 @@ describe("StudioCanvas retained preview layer", () => {
     const pendingMarkup = renderToStaticMarkup(
       <StudioCanvas
         {...activeProps}
-        entities={[pendingGridTitle, title]}
+        entities={[grid, pendingGridTitle, title]}
         preview={previewView(
           { detail: "Real Manim validation is pending.", phase: "fallback", reason: "snapshot-uncorrelated" },
           interactionGeometry,

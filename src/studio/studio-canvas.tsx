@@ -552,7 +552,7 @@ export function StudioCanvas({
               <div
                 className={cn(
                   "absolute -translate-x-1/2 -translate-y-1/2",
-                  selected ? "z-20" : "z-10",
+                  selected && !selectionOnlyEntity ? "z-20" : "z-10",
                   remoteSelectorOrdinals.length > 0 && "outline outline-1 outline-offset-2 outline-sky-800",
                 )}
                 data-studio-geometry={approximate ? "approximate" : "known"}

@@ -598,6 +598,8 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
     "title",
     "This verified object can be selected, but source rewriting is unavailable.",
   );
+  await gridTarget.click();
+  await expect(gridTarget).toHaveAttribute("aria-pressed", "true");
   await expect(gridTitleTarget).toBeVisible();
   await expect(gridTitleTarget).not.toHaveAttribute(
     "title",
