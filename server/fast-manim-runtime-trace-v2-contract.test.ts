@@ -42,18 +42,18 @@ function producerRequest() {
 }
 
 describe("fast-manim Runtime Trace V2 request contract", () => {
-  it("seals the exact OpeningManim 0–3 second producer request", () => {
+  it("seals the exact OpeningManim 0–5 second producer request", () => {
     const value = producerRequest();
     const parsed = parseFastManimRuntimeTraceProducerRequestJsonV2(canonicalJsonV1(value));
 
     expect(FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2).toBe(
-      "9fd2f025662f618dfae3f5e9c570e060b465b8c825b586161a0675274c4d27d1",
+      "9844e214f8ffe18883a4faecb6bf33360c5ec3fdb7532ab3a419e71a5071c4ea",
     );
     expect(parsed).toEqual(value);
     expect(parsed).toMatchObject({
       profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
       runtimeConfig: {
-        durationSeconds: 3,
+        durationSeconds: 5,
         frameRate: 60,
         profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
         version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
@@ -85,8 +85,8 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     const v1 = trustedFastManimRuntimeTraceProducerV1();
     const v2 = trustedFastManimRuntimeTraceProducerV2();
     const producerIdentity = {
-      fastManimCommit: "1227d2c03f16a6d504e90ffc23ba574ee0a88b37",
-      fastManimTree: "63e0e988235fb103aa01288593c5d7dbe7421564",
+      fastManimCommit: "b0147ec8b5dd2f11809816043d666d6981652c50",
+      fastManimTree: "d27cf706cc62892a5dc1d42b289691113efe0472",
     };
 
     expect(v1.producer).toMatchObject(producerIdentity);

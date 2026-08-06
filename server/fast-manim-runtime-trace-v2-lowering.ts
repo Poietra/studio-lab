@@ -18,7 +18,11 @@ import {
 } from "./fast-manim-runtime-trace-v2-contract";
 import {
   expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2,
   type FastManimRuntimeTraceV2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2,
   parseFastManimRuntimeTraceProducerJsonV2,
   type TrustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
@@ -70,8 +74,8 @@ function frameRuns(frameIndexes: readonly number[]) {
   return runs;
 }
 
-function lifetimes(draws: readonly RuntimeTraceDrawV2[]) {
-  return frameRuns(draws.flatMap((draw, frameIndex) => (draw.present ? [frameIndex] : []))).map((run) => ({
+function lifetimes(frameIndexes: readonly number[]) {
+  return frameRuns(frameIndexes).map((run) => ({
     end: (run.endFrame + 1) / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
     start: run.startFrame / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
   }));
@@ -91,10 +95,12 @@ function groupEntity(id: string, parentId: string | null, sceneOrder: number, pr
   };
 }
 
-function keyframes<T>(values: readonly T[]) {
-  return values.map((value, frameIndex) => ({
-    at: frameIndex / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
-    easingToNext: frameIndex === values.length - 1 ? null : ({ kind: "linear" } as const),
+function keyframes<T>(values: readonly T[], frameIndexes: readonly number[]) {
+  if (values.length !== frameIndexes.length)
+    failSemantic("Runtime Trace V2 channel samples lost their frame identity.");
+  return values.map((value, index) => ({
+    at: frameIndexes[index]! / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
+    easingToNext: index === values.length - 1 ? null : ({ kind: "linear" } as const),
     value,
   }));
 }
@@ -102,6 +108,52 @@ function keyframes<T>(values: readonly T[]) {
 function valuesChange<T>(values: readonly T[]) {
   const first = values[0];
   return first !== undefined && values.slice(1).some((value) => !sameValue(first, value));
+}
+
+function pathTopology(path: CubicPathV2) {
+  return path.subpaths.map((subpath) => `${subpath.closed ? 1 : 0}:${subpath.segments.length}`).join("|");
+}
+
+type DrawTopologyRun = Readonly<{
+  draws: readonly RuntimeTraceDrawV2[];
+  frameIndexes: readonly number[];
+  paths: readonly CubicPathV2[];
+  topology: string;
+}>;
+
+function drawTopologyRuns(draws: readonly RuntimeTraceDrawV2[], paths: ReadonlyMap<string, CubicPathV2>) {
+  const mutableRuns: Array<{
+    draws: RuntimeTraceDrawV2[];
+    frameIndexes: number[];
+    paths: CubicPathV2[];
+    topology: string;
+  }> = [];
+  draws.forEach((draw, frameIndex) => {
+    if (!draw.present) return;
+    const path = paths.get(draw.pathId);
+    if (!path) failSemantic(`Runtime Trace V2 draw ${draw.drawId} references a missing path.`);
+    const topology = pathTopology(path);
+    let run = mutableRuns.at(-1);
+    if (!run || run.topology !== topology || run.frameIndexes.at(-1) !== frameIndex - 1) {
+      run = { draws: [], frameIndexes: [], paths: [], topology };
+      mutableRuns.push(run);
+    }
+    run.draws.push(draw);
+    run.frameIndexes.push(frameIndex);
+    run.paths.push(path);
+  });
+  return mutableRuns as readonly DrawTopologyRun[];
+}
+
+function compactPathSamples(paths: readonly CubicPathV2[], frameIndexes: readonly number[]) {
+  const keep = paths.map((path, index) => {
+    if (index === 0 || index === paths.length - 1) return true;
+    return !sameValue(path, paths[index - 1]) || !sameValue(path, paths[index + 1]);
+  });
+  return {
+    frameIndexes: frameIndexes.filter((_, index) => keep[index]),
+    paths: paths.filter((_, index) => keep[index]),
+  };
 }
 
 function traceDigest(trace: VerifiedFastManimRuntimeTraceV2) {
@@ -113,19 +165,24 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.durationSeconds !== FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2 ||
     trace.frames.length !== FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires its complete three-second presentation grid.");
+    failSemantic("Runtime Trace V2 lowering requires its complete five-second presentation grid.");
   }
   const roots = new Set(trace.roots.map((root) => root.id));
   if (trace.roots.length !== 2 || trace.roots[0]?.role !== "title" || trace.roots[1]?.role !== "basel") {
     failSemantic("Runtime Trace V2 lowering requires the exact title and basel source roots.");
   }
   const initial = trace.frames[0]?.draws;
-  if (!initial || initial.length !== 29 || trace.resources.paths.length < 1 || trace.resources.paths.length > 29) {
-    failSemantic("Runtime Trace V2 lowering requires exactly 29 stable draws.");
+  if (
+    !initial ||
+    initial.length !== FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 ||
+    trace.resources.paths.length < 1 ||
+    trace.resources.paths.length > MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2
+  ) {
+    failSemantic("Runtime Trace V2 lowering requires exactly 31 stable union draw slots.");
   }
   const drawIds = new Set(initial.map((draw) => draw.drawId));
   if (drawIds.size !== initial.length) failSemantic("Runtime Trace V2 draw identities must be unique.");
-  const referencedPathIds = new Set(initial.map((draw) => draw.pathId));
+  const referencedPathIds = new Set(trace.frames.flatMap((frame) => frame.draws.map((draw) => draw.pathId)));
   const resourcePathIds = new Set(trace.resources.paths.map((path) => path.id));
   if (
     resourcePathIds.size !== trace.resources.paths.length ||
@@ -141,24 +198,27 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     }
     frame.draws.forEach((draw, drawIndex) => {
       const expected = initial[drawIndex];
-      const localOrder = drawIndex < 15 ? drawIndex : drawIndex - 15;
-      const expectedRoot = drawIndex < 15 ? trace.roots[0]?.id : trace.roots[1]?.id;
+      const title = drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+      const localOrder = title
+        ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[drawIndex]
+        : drawIndex - FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+      const familyOrder = title ? drawIndex : localOrder;
+      const expectedRoot = title ? trace.roots[0]?.id : trace.roots[1]?.id;
       if (
         !expected ||
         draw.drawId !== `${expectedRoot}/runtime-draw:${localOrder}` ||
         draw.rootId !== expectedRoot ||
-        draw.pathId !== expected.pathId ||
         draw.paintOrder !== drawIndex ||
-        !draw.present ||
         draw.sourceZIndex !== 0 ||
-        !sameValue(draw.familyPath, [0, localOrder]) ||
+        !sameValue(draw.familyPath, [0, familyOrder]) ||
         !roots.has(draw.rootId)
       ) {
         failSemantic(`Runtime Trace V2 frame ${frameIndex} changed draw identity at paint order ${drawIndex}.`);
       }
     });
-    if (frameIndex > 120 && !sameValue(frame.draws, trace.frames[120]?.draws)) {
-      failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during the sealed terminal hold.`);
+    const holdStart = frameIndex >= 240 ? 240 : frameIndex >= 120 && frameIndex < 180 ? 120 : null;
+    if (holdStart !== null && frameIndex > holdStart && !sameValue(frame.draws, trace.frames[holdStart]?.draws)) {
+      failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during a sealed Wait hold.`);
     }
   });
 }
@@ -223,6 +283,8 @@ function paintParts(draws: readonly RuntimeTraceDrawV2[], values: readonly Vecto
 function drawChannels(
   draws: readonly RuntimeTraceDrawV2[],
   appearanceValues: readonly VectorAppearanceV2[],
+  paths: readonly CubicPathV2[],
+  frameIndexes: readonly number[],
   entityId: string,
   trim: boolean,
   provenanceId: string,
@@ -236,7 +298,7 @@ function drawChannels(
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-translation`,
-      keyframes: keyframes(transforms),
+      keyframes: keyframes(transforms, frameIndexes),
       kind: "affine-transform",
     });
   }
@@ -245,7 +307,7 @@ function drawChannels(
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-opacity`,
-      keyframes: keyframes(opacities),
+      keyframes: keyframes(opacities, frameIndexes),
       kind: "opacity",
     });
   }
@@ -254,7 +316,7 @@ function drawChannels(
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-path-trim`,
-      keyframes: keyframes(trims),
+      keyframes: keyframes(trims, frameIndexes),
       kind: "path-trim",
       parameterization: "uniform-cubic-parameter-v1",
     });
@@ -263,8 +325,17 @@ function drawChannels(
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-appearance`,
-      keyframes: keyframes(appearanceValues),
+      keyframes: keyframes(appearanceValues, frameIndexes),
       kind: "vector-appearance",
+    });
+  }
+  if (valuesChange(paths)) {
+    const compacted = compactPathSamples(paths, frameIndexes);
+    channels.push({
+      ...base,
+      id: `${entityId}/channel:runtime-trace-path-morph`,
+      keyframes: keyframes(compacted.paths, compacted.frameIndexes),
+      kind: "path-morph",
     });
   }
   return channels;
@@ -277,34 +348,43 @@ function lowerDrawTimeline(
   provenanceId: string,
   firstSceneOrder: number,
 ) {
-  const firstPresent = draws.find((draw) => draw.present);
-  if (!firstPresent) return { channels: [] as AnimationChannelV2[], entities: [] as SceneEntityV1[] };
-  const path = paths.get(firstPresent.pathId);
-  if (!path) failSemantic(`Runtime Trace V2 draw ${firstPresent.drawId} references a missing path.`);
-  const activeLifetimes = lifetimes(draws);
-  if (activeLifetimes.length === 0 || activeLifetimes.length > 64) {
-    failSemantic(`Runtime Trace V2 draw ${firstPresent.drawId} exceeds the Scene IR lifetime budget.`);
-  }
-  const values = traceAppearances(draws, appearances);
-  const parts = paintParts(draws, values);
   const entities: SceneEntityV1[] = [];
   const channels: AnimationChannelV2[] = [];
-  parts.forEach((part, partIndex) => {
-    const entityId = `${firstPresent.drawId}${part.suffix}`;
-    const baseAppearance = part.appearances[draws.indexOf(firstPresent)];
-    if (!baseAppearance) failSemantic(`Runtime Trace V2 draw ${firstPresent.drawId} has no base appearance.`);
-    entities.push({
-      appearance: { ...baseAppearance, kind: "vector", opacity: firstPresent.opacity },
-      geometry: { kind: "cubic-path", path },
-      id: entityId,
-      lifetimes: activeLifetimes,
-      parentId: firstPresent.rootId,
-      provenanceId,
-      sceneOrder: firstSceneOrder + partIndex,
-      sourceZIndex: firstPresent.sourceZIndex,
-      transform: { ...IDENTITY, tx: firstPresent.translation.x, ty: firstPresent.translation.y },
+  const topologyRuns = drawTopologyRuns(draws, paths);
+  if (topologyRuns.length > 64) {
+    const drawId = draws.find((draw) => draw.present)?.drawId ?? "unknown";
+    failSemantic(`Runtime Trace V2 draw ${drawId} exceeds the topology-run budget.`);
+  }
+  topologyRuns.forEach((run, runIndex) => {
+    const firstPresent = run.draws[0];
+    const path = run.paths[0];
+    if (!firstPresent || !path) return;
+    const activeLifetimes = lifetimes(run.frameIndexes);
+    if (activeLifetimes.length === 0 || activeLifetimes.length > 64) {
+      failSemantic(`Runtime Trace V2 draw ${firstPresent.drawId} exceeds the Scene IR lifetime budget.`);
+    }
+    const values = traceAppearances(run.draws, appearances);
+    const parts = paintParts(run.draws, values);
+    parts.forEach((part) => {
+      const topologySuffix = runIndex === 0 ? "" : `/topology:${runIndex}`;
+      const entityId = `${firstPresent.drawId}${topologySuffix}${part.suffix}`;
+      const baseAppearance = part.appearances[0];
+      if (!baseAppearance) failSemantic(`Runtime Trace V2 draw ${firstPresent.drawId} has no base appearance.`);
+      entities.push({
+        appearance: { ...baseAppearance, kind: "vector", opacity: firstPresent.opacity },
+        geometry: { kind: "cubic-path", path },
+        id: entityId,
+        lifetimes: activeLifetimes,
+        parentId: firstPresent.rootId,
+        provenanceId,
+        sceneOrder: firstSceneOrder + entities.length,
+        sourceZIndex: firstPresent.sourceZIndex,
+        transform: { ...IDENTITY, tx: firstPresent.translation.x, ty: firstPresent.translation.y },
+      });
+      channels.push(
+        ...drawChannels(run.draws, part.appearances, run.paths, run.frameIndexes, entityId, part.trim, provenanceId),
+      );
     });
-    channels.push(...drawChannels(draws, part.appearances, entityId, part.trim, provenanceId));
   });
   return { channels, entities };
 }
@@ -314,6 +394,7 @@ function requiredCapabilities(channels: readonly AnimationChannelV2[]) {
   for (const channel of channels) {
     if (channel.kind === "affine-transform") capabilities.add("affine-transform-animation");
     if (channel.kind === "opacity") capabilities.add("opacity-animation");
+    if (channel.kind === "path-morph") capabilities.add("path-morph-animation");
     if (channel.kind === "path-trim") capabilities.add("path-trim-animation");
     if (channel.kind === "vector-appearance") capabilities.add("vector-appearance-animation");
   }
@@ -401,7 +482,11 @@ export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastMa
     },
     version: 1,
   });
-  return parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
+  const bundle = await parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
+  if (Buffer.byteLength(canonicalJsonV1(bundle), "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2) {
+    failSemantic("Runtime Trace V2 normalized Scene IR exceeds its measured eight-MiB budget.");
+  }
+  return bundle;
 }
 
 /** Verifies producer bytes and trusted request correlation before lowering OpeningManim. */

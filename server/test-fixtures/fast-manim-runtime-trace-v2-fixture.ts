@@ -11,10 +11,13 @@ import {
   digestFastManimRuntimeTracePathV2,
   digestFastManimRuntimeTraceVisualSemanticsV2,
   type ExpectedFastManimRuntimeTraceCorrelationV2,
+  FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
   FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2,
   FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_TITLE_EXTENSION_SLOTS_V2,
+  FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2,
 } from "../fast-manim-runtime-trace-v2-result-contract";
 
 export const RUNTIME_TRACE_V2_SCENE_ID =
@@ -102,31 +105,41 @@ function buildFastManimRuntimeTraceV2Fixture() {
     compositing: runtimeConfig.compositing,
     coordinatePrecisionDigits: runtimeConfig.coordinatePrecisionDigits,
     durationSeconds: runtimeConfig.durationSeconds,
-    frameCount: 180 as const,
+    frameCount: 300 as const,
     frameRate: runtimeConfig.frameRate,
-    frames: Array.from({ length: 180 }, (_, frameIndex) => {
-      const transitioning = frameIndex < 60;
-      const trimEnd = transitioning ? frameIndex / 60 : 1;
+    frames: Array.from({ length: 300 }, (_, frameIndex) => {
+      const openingTransition = frameIndex < 60;
+      const transformProgress =
+        frameIndex >= 180 && frameIndex < 240 ? (frameIndex - 180) / 60 : frameIndex >= 240 ? 1 : 0;
+      const trimEnd = openingTransition ? frameIndex / 60 : 1;
       return {
-        draws: Array.from({ length: 29 }, (_, paintOrder) => {
-          const title = paintOrder < 15;
-          const localOrder = title ? paintOrder : paintOrder - 15;
+        draws: Array.from({ length: FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 }, (_, paintOrder) => {
+          const title = paintOrder < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+          const localOrder = title
+            ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[paintOrder]!
+            : paintOrder - FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+          const familyOrder = title ? paintOrder : localOrder;
           const rootId = title ? RUNTIME_TRACE_V2_TITLE_ROOT : RUNTIME_TRACE_V2_BASEL_ROOT;
-          const appearanceId = appearances[transitioning ? (title ? 0 : 2) : 1]!.id;
+          const present = title
+            ? frameIndex >= 180 ||
+              !FAST_MANIM_RUNTIME_TRACE_TITLE_EXTENSION_SLOTS_V2.some((slot) => slot === paintOrder)
+            : frameIndex < 240;
+          const appearanceId = appearances[openingTransition && present ? (title ? 0 : 2) : 1]!.id;
+          const pathShift = transformProgress >= 0.5 ? 1 : 0;
           return {
             appearanceId,
             drawId: `${rootId}/runtime-draw:${localOrder}`,
-            familyPath: [0, localOrder],
-            opacity: 1,
+            familyPath: [0, familyOrder],
+            opacity: present ? (title ? 1 : canonicalFastManimRuntimeTraceCoordinateV2(1 - transformProgress)) : 0,
             paintOrder,
-            pathId: paths[paintOrder % paths.length]!.id,
-            pathTrim: { end: title ? trimEnd : 1, start: 0 as const },
-            present: true as const,
+            pathId: paths[(paintOrder + (title ? pathShift : 0)) % paths.length]!.id,
+            pathTrim: { end: title && present ? trimEnd : 1, start: 0 as const },
+            present,
             rootId,
             sourceZIndex: 0 as const,
             translation: {
-              x: title ? 0 : canonicalFastManimRuntimeTraceCoordinateV2(transitioning ? frameIndex / 60 : 1),
-              y: 0,
+              x: title ? 0 : canonicalFastManimRuntimeTraceCoordinateV2(openingTransition ? frameIndex / 60 : 1),
+              y: title || !present ? 0 : canonicalFastManimRuntimeTraceCoordinateV2(-transformProgress),
             },
           };
         }),

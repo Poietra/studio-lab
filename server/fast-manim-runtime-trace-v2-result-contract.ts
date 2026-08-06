@@ -30,22 +30,28 @@ import {
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2 = "poietra.fast-manim-runtime-trace" as const;
-export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 = 29 as const;
-export const FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2 = 24 as const;
+export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 = 31 as const;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2 = 933;
 export const FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2 =
-  "c3c1ca1b0e4d4301e8f3bba25db2133e479ef90bf532f1139cabbf626328b680" as const;
+  "d395df3b9362e21c8307ae4f1e4fc513538e8176e8d76e18ea317ccfa1284de2" as const;
 export const FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2 =
   "c08c8616a0b95c16cd0c1bfcae0f30361e8bb89868bfdb5135369d3b59b56b5e" as const;
 export const FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2 =
-  "efdfd8cd0a01c820f6333f83874d5d20cf4b0b1566baada43e4a4b5bf30996a3" as const;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 = 4 * 1024 * 1024;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2 = 320;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V2 = 512;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V2 = 120_000;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2 = 120_000;
+  "160436934a3de173a1fd8a415d3da5bd63a95d8ff498371e708197a804f12e89" as const;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 = 16 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 = 8 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2 = 384;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V2 = 28_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V2 = 500_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2 = 500_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_DEPTH_V2 = 16;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V2 = 320;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V2 = 1_024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_OBJECT_FIELDS_V2 = 32;
+
+export const FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2 = [
+  0, 15, 1, 2, 3, 4, 5, 6, 7, 16, 8, 9, 10, 11, 12, 13, 14,
+] as const;
+export const FAST_MANIM_RUNTIME_TRACE_TITLE_EXTENSION_SLOTS_V2 = [1, 9] as const;
 
 const gitObjectIdV2Schema = z.string().regex(/^[0-9a-f]{40}$/u, "Git object IDs must be lower-case SHA-1 hex.");
 const runtimeTracePathIdV2Schema = z.string().regex(/^path:[0-9a-f]{64}$/u);
@@ -140,7 +146,7 @@ const runtimeTraceDrawV2Schema = z
   .object({
     appearanceId: runtimeTraceAppearanceIdV2Schema,
     drawId: sourceIdentityV1Schema,
-    familyPath: z.array(z.number().int().nonnegative().max(14)).length(2),
+    familyPath: z.array(z.number().int().nonnegative().max(16)).length(2),
     opacity: normalizedNumberV1Schema,
     paintOrder: z
       .number()
@@ -149,7 +155,7 @@ const runtimeTraceDrawV2Schema = z
       .max(FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 - 1),
     pathId: runtimeTracePathIdV2Schema,
     pathTrim: z.object({ end: normalizedNumberV1Schema, start: z.literal(0) }).strict(),
-    present: z.literal(true),
+    present: z.boolean(),
     rootId: sourceIdentityV1Schema,
     sourceZIndex: z.literal(0),
     translation: runtimeTracePointV2Schema,
@@ -199,7 +205,7 @@ const fastManimRuntimeTraceV2BaseSchema = z
           .array(runtimeTraceAppearanceResourceV2Schema)
           .min(1)
           .max(MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2),
-        paths: z.array(runtimeTracePathResourceV2Schema).length(FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2),
+        paths: z.array(runtimeTracePathResourceV2Schema).min(1).max(MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2),
       })
       .strict(),
     roots: z.array(runtimeTraceRootV2Schema).length(2),
@@ -258,15 +264,24 @@ function runtimeTraceV2PathPoints(path: z.infer<typeof cubicPathV1Schema>) {
 }
 
 function runtimeTraceV2DrawIdentity(sceneId: string, paintOrder: number) {
-  const role = paintOrder < 15 ? "title" : "basel";
-  const order = role === "title" ? paintOrder : paintOrder - 15;
+  const role = paintOrder < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length ? "title" : "basel";
+  const familyOrder =
+    role === "title" ? paintOrder : paintOrder - FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+  const order = role === "title" ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[paintOrder] : familyOrder;
   const rootId = `${sceneId}/runtime-root:${role}`;
   return {
     drawId: `${rootId}/runtime-draw:${order}`,
-    familyPath: [0, order],
+    familyPath: [0, familyOrder],
     rootId,
     role,
   } as const;
+}
+
+function runtimeTraceV2DrawIsPresent(frameIndex: number, drawIndex: number) {
+  if (drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length) {
+    return frameIndex >= 180 || !FAST_MANIM_RUNTIME_TRACE_TITLE_EXTENSION_SLOTS_V2.some((slot) => slot === drawIndex);
+  }
+  return frameIndex < 240;
 }
 
 export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.superRefine((trace, context) => {
@@ -332,7 +347,7 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
   const appearances = new Map(trace.resources.appearances.map((appearance) => [appearance.id, appearance]));
   const pathIds = new Set(trace.resources.paths.map(({ id }) => id));
   const referencedAppearanceIds = new Set<string>();
-  const stablePaths = new Map<string, string>();
+  const referencedPathIds = new Set<string>();
   trace.frames.forEach((frame, frameIndex) => {
     if (frame.frameIndex !== frameIndex) {
       context.addIssue({
@@ -355,6 +370,20 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
           path: ["frames", frameIndex, "draws", drawIndex],
         });
       }
+      if (draw.present !== runtimeTraceV2DrawIsPresent(frameIndex, drawIndex)) {
+        context.addIssue({
+          code: "custom",
+          message: "Runtime Trace V2 draw presence changed outside the reviewed Transform and FadeOut phases.",
+          path: ["frames", frameIndex, "draws", drawIndex, "present"],
+        });
+      }
+      if (!draw.present && (draw.opacity !== 0 || draw.pathTrim.start !== 0 || draw.pathTrim.end !== 1)) {
+        context.addIssue({
+          code: "custom",
+          message: "An absent Runtime Trace V2 draw must retain an inert canonical witness.",
+          path: ["frames", frameIndex, "draws", drawIndex],
+        });
+      }
       const appearance = appearances.get(draw.appearanceId);
       referencedAppearanceIds.add(draw.appearanceId);
       if (!appearance) {
@@ -371,15 +400,7 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
           path: ["frames", frameIndex, "draws", drawIndex, "pathId"],
         });
       }
-      const stablePath = stablePaths.get(draw.drawId);
-      if (stablePath === undefined) stablePaths.set(draw.drawId, draw.pathId);
-      else if (stablePath !== draw.pathId) {
-        context.addIssue({
-          code: "custom",
-          message: "Runtime Trace V2 full draw geometry changed between frames.",
-          path: ["frames", frameIndex, "draws", drawIndex, "pathId"],
-        });
-      }
+      referencedPathIds.add(draw.pathId);
       if (expected.role === "basel" && draw.pathTrim.end !== 1) {
         context.addIssue({
           code: "custom",
@@ -427,24 +448,28 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
       path: ["resources", "appearances"],
     });
   }
-  const stablePathIds = new Set(stablePaths.values());
-  if (stablePathIds.size !== pathIds.size || [...pathIds].some((pathId) => !stablePathIds.has(pathId))) {
+  if (referencedPathIds.size !== pathIds.size || [...pathIds].some((pathId) => !referencedPathIds.has(pathId))) {
     context.addIssue({
       code: "custom",
-      message: "Runtime Trace V2 path resources must exactly match stable draw geometry.",
+      message: "Runtime Trace V2 path resources must all be referenced by a draw.",
       path: ["resources", "paths"],
     });
   }
 
-  const terminal = canonicalJsonV1(trace.frames[120]?.draws);
-  for (let index = 121; index < trace.frames.length; index += 1) {
-    if (canonicalJsonV1(trace.frames[index]?.draws) !== terminal) {
-      context.addIssue({
-        code: "custom",
-        message: "Runtime Trace V2 requires an exact one-second terminal hold.",
-        path: ["frames", index, "draws"],
-      });
-      break;
+  for (const [start, end] of [
+    [120, 180],
+    [240, 300],
+  ] as const) {
+    const hold = canonicalJsonV1(trace.frames[start]?.draws);
+    for (let index = start + 1; index < end; index += 1) {
+      if (canonicalJsonV1(trace.frames[index]?.draws) !== hold) {
+        context.addIssue({
+          code: "custom",
+          message: "Runtime Trace V2 requires each exact one-second Wait hold.",
+          path: ["frames", index, "draws"],
+        });
+        break;
+      }
     }
   }
 });

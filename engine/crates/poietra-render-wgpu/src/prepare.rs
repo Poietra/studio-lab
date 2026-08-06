@@ -43,8 +43,6 @@ pub enum UnsupportedDrawReasonV1 {
     ImageWithManimCairoSrgbCompositing,
     #[error("path draws must contain a solid fill or stroke")]
     MissingPaint,
-    #[error("open subpaths are not implemented")]
-    OpenSubpath,
     #[error("the filled path is degenerate after bounded screen-space conversion")]
     DegenerateFill,
     #[error("the stroked path contains a degenerate cubic segment")]
@@ -1897,12 +1895,6 @@ fn validate_fill_source_limits(
 ) -> Result<(), PrepareFrameErrorV1> {
     let mut source_cubics = 0usize;
     for subpath in &path.subpaths {
-        if !subpath.closed {
-            return Err(PrepareFrameErrorV1::Unsupported {
-                draw_id: draw_id.to_owned(),
-                reason: UnsupportedDrawReasonV1::OpenSubpath,
-            });
-        }
         source_cubics = source_cubics.saturating_add(subpath.segments.len());
         if source_cubics > MAX_FILL_SOURCE_CUBICS_PER_DRAW_V1 {
             return Err(PrepareFrameErrorV1::FillSourceCubicLimit {

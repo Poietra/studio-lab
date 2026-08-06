@@ -70,7 +70,7 @@ export function isManimBrowserProjectImportRequest(method: string | undefined, p
 }
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
-const MAX_RUNTIME_TRACE_RUN_RESPONSE_JSON_BYTES = MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + 64 * 1024;
+const RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES = 64 * 1024;
 
 export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
@@ -491,12 +491,15 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     throw new HttpError("The Runtime Trace operation returned stale correlation.", 502);
   }
 
+  let maxResponseBytes =
+    MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
   let safeView: typeof run = run;
   if (run.status === "verified") {
     const profile = selectFastManimRuntimeTraceProfile(request);
     if (profile === null || run.runtimeConfigHash !== profile.runtimeConfigHash) {
       throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
     }
+    maxResponseBytes = profile.maxNormalizedBytes + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
     let bundle;
     try {
       bundle = await parseVerifiedSceneIrBundleV1(run.bundle);
@@ -541,7 +544,7 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     }
     safeView = { ...run, bundle };
   }
-  if (Buffer.byteLength(JSON.stringify(safeView), "utf8") > MAX_RUNTIME_TRACE_RUN_RESPONSE_JSON_BYTES) {
+  if (Buffer.byteLength(JSON.stringify(safeView), "utf8") > maxResponseBytes) {
     throw new HttpError("The Runtime Trace operation response is too large.", 502);
   }
   return safeView;

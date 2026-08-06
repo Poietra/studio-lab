@@ -28,15 +28,19 @@ export const UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
   sample("bottom-repeat", 150, 150 / 60),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
-/** Five OpeningManim slice frames followed by repeat seeks at animation and hold time. */
-export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
+/** Eight OpeningManim frames followed by repeat seeks across its transition boundary at 3s. */
+export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2 = [
   sample("initial", 0, 0),
-  sample("write-progress", 30, 0.5),
-  sample("animation-progress", 60, 1),
-  sample("hold", 120, 2),
-  sample("duration-end", 179, 3),
-  sample("animation-progress-repeat", 60, 1),
-  sample("hold-repeat", 120, 2),
+  sample("opening-animation-midpoint", 60, 1),
+  sample("opening-play-end", 120, 2),
+  sample("opening-hold-last", 179, 179 / 60),
+  sample("transform-start", 180, 3),
+  sample("transform-midpoint", 210, 3.5),
+  sample("transform-play-end", 240, 4),
+  sample("wait-end", 299, 5),
+  sample("transform-midpoint-repeat", 210, 3.5),
+  sample("opening-hold-last-repeat", 179, 179 / 60),
+  sample("transform-start-repeat", 180, 3),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
 type RetainedFrameSequenceProofWireV1 = Readonly<{

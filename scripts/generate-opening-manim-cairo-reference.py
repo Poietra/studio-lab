@@ -1,4 +1,4 @@
-"""Generate bounded independent Cairo evidence for OpeningManim's 0-3s slice.
+"""Generate bounded independent Cairo evidence for OpeningManim's 0-5s slice.
 
 The official Scene is executed unchanged.  In particular, ``Tex`` and
 ``MathTex`` use Manim's normal LaTeX/dvisvgm path; this generator never imports
@@ -31,22 +31,26 @@ import PIL._imaging as pillow_imaging
 from manim import tempconfig
 
 
-FAST_MANIM_COMMIT = "1227d2c03f16a6d504e90ffc23ba574ee0a88b37"
-FAST_MANIM_TREE = "63e0e988235fb103aa01288593c5d7dbe7421564"
+FAST_MANIM_COMMIT = "b0147ec8b5dd2f11809816043d666d6981652c50"
+FAST_MANIM_TREE = "d27cf706cc62892a5dc1d42b289691113efe0472"
 SOURCE_PATH = Path("example_scenes/basic.py")
 SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
 FRAME = {"height": 8, "width": 128.0 / 9.0}
 VIEWPORT = {"heightPx": 360, "widthPx": 640}
 FRAME_RATE = 60
-SLICE_FRAME_COUNT = 180
-SLICE_DURATION_SECONDS = 3
+SLICE_FRAME_COUNT = 300
+SLICE_DURATION_SECONDS = 5
 RGBA_BYTES = VIEWPORT["widthPx"] * VIEWPORT["heightPx"] * 4
 SAMPLES = (
     ("initial", 0, 0.0),
-    ("animation-midpoint", 60, 1.0),
-    ("play-end", 120, 2.0),
+    ("opening-animation-midpoint", 60, 1.0),
+    ("opening-play-end", 120, 2.0),
+    ("opening-hold-last", 179, 179 / FRAME_RATE),
+    ("transform-start", 180, 3.0),
+    ("transform-midpoint", 210, 3.5),
+    ("transform-play-end", 240, 4.0),
     # A duration-end request retains the final captured presentation frame.
-    ("wait-end", 179, 3.0),
+    ("wait-end", 299, 5.0),
 )
 
 EXPECTED_TEX_TOOLCHAIN = {
@@ -91,11 +95,24 @@ EXPECTED_TEX_ARTIFACTS = (
             "sha256": "e931457a6a9eb28bf2c3d4be9881d4070484a446f60454f37df94fb5eff7ffe3",
         },
     },
+    {
+        "role": "transform-title",
+        "svg": {
+            "byteLength": 10_990,
+            "fileName": "476ae3b33141b587.svg",
+            "sha256": "9c3c9259ea9028133a56221d2ba8d7ba4ad563df01f18b81e66382660098c912",
+        },
+        "tex": {
+            "byteLength": 252,
+            "fileName": "476ae3b33141b587.tex",
+            "sha256": "476ae3b33141b5871c85e4a346270324d88b8afea0f441a8ae59f424162834e9",
+        },
+    },
 )
 
 
 class OpeningSliceComplete(BaseException):
-    """Producer-owned sentinel raised after the bounded 180th frame."""
+    """Producer-owned sentinel raised after the bounded 300th frame."""
 
 
 def sha256(data: bytes) -> str:
@@ -344,7 +361,7 @@ def render_sample_frames(scene_type: type[manim.Scene]) -> dict[str, bytes]:
     finally:
         scene.tear_down()
     if not completed or round(renderer.time * FRAME_RATE) != SLICE_FRAME_COUNT:
-        raise RuntimeError("official OpeningManim did not complete its exact 0-3s slice")
+        raise RuntimeError("official OpeningManim did not complete its exact 0-5s slice")
     expected_ids = {sample_id for sample_id, _, _ in SAMPLES}
     if set(captured) != expected_ids:
         raise RuntimeError(
@@ -510,7 +527,7 @@ def generate(output: Path, fast_manim: Path) -> None:
             "texImplementation": "normal-manim-latex-dvisvgm",
         },
         "schema": "poietra.opening-manim-cairo-reference",
-        "version": 1,
+        "version": 2,
     }
     (output / "reference.json").write_text(
         json.dumps(document, allow_nan=False, ensure_ascii=False, indent=2, sort_keys=True)

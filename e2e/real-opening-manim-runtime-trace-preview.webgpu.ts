@@ -1,11 +1,11 @@
 import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
-import { compareOpeningManimCairoWebGpuFramesV1, type OpeningManimWebGpuFrameV1 } from "./opening-manim-cairo-parity";
-import { OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1 } from "./opening-manim-cairo-reference";
+import { compareOpeningManimCairoWebGpuFramesV2, type OpeningManimWebGpuFrameV2 } from "./opening-manim-cairo-parity";
+import { OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 } from "./opening-manim-cairo-reference";
 import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
 import {
   captureRuntimeTraceWebGpuFramesV1,
-  OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
+  OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2,
   RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
 } from "./runtime-trace-webgpu-readback";
 
@@ -146,11 +146,11 @@ function expectSameFullRgba(
   expect(right.rgba.every((byte, index) => byte === left.rgba[index])).toBe(true);
 }
 
-async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFrameV1[]) {
+async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFrameV2[]) {
   return withGeneratedRuntimeTraceCairoReferenceV1({
     generatorPath: "scripts/generate-opening-manim-cairo-reference.py",
     read: (referenceRoot) =>
-      compareOpeningManimCairoWebGpuFramesV1({
+      compareOpeningManimCairoWebGpuFramesV2({
         cairoReferenceRoot: referenceRoot,
         frames,
         outputRoot:
@@ -161,15 +161,16 @@ async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFr
   });
 }
 
-test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
+test("renders the official OpeningManim 0-5s slice through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
   test.setTimeout(300_000);
   const run = await verifiedOpeningRuntimeTrace(page);
   expect(run.bundle.scene).toMatchObject({
-    duration: 3,
+    duration: 5,
     requiredCapabilities: [
       "affine-transform-animation",
       "cubic-path-geometry",
       "logical-group",
+      "path-morph-animation",
       "path-trim-animation",
       "vector-appearance-animation",
     ],
@@ -182,12 +183,17 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
       traceVersion: 2,
     },
   });
-  expect(run.bundle.scene.entities).toHaveLength(47);
-  expect(run.bundle.scene.animationChannels).toHaveLength(73);
+  expect(run.bundle.scene.entities).toHaveLength(69);
+  expect(run.bundle.scene.animationChannels).toHaveLength(113);
+  expect(run.bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(
+    21_081,
+  );
   const channelKinds = run.bundle.scene.animationChannels.map(({ kind }) => kind);
-  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(44);
+  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(46);
   expect(channelKinds.filter((kind) => kind === "path-trim")).toHaveLength(15);
-  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(14);
+  expect(channelKinds.filter((kind) => kind === "path-morph")).toHaveLength(17);
+  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(35);
+  expect(channelKinds.filter((kind) => kind === "opacity")).toHaveLength(0);
   expect(run.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel"]);
   const rootEntityIds = run.roots.map(({ entityId }) => entityId);
   expect(rootEntityIds).toEqual([`${run.sceneId}/runtime-root:title`, `${run.sceneId}/runtime-root:basel`]);
@@ -200,9 +206,12 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
   await expect(page.locator("[data-studio-preview-canvas]")).toBeVisible();
 
   const playhead = page.getByRole("slider", { name: "Scene playhead" });
-  await expect(playhead).toHaveAttribute("max", "3");
+  await expect(playhead).toHaveAttribute("max", "5");
   const packetIds = new Set<string>();
-  for (const sampleTime of [0, 0.5, 1, 2, 3]) {
+  // The editor playhead is a 0.01-step range input, so use its representable
+  // pre-boundary value here. The exact frame-179 sample is exercised below by
+  // the retained-engine readback, which is not quantized by the UI control.
+  for (const sampleTime of [0, 0.5, 1, 2, 2.98, 3, 3.5, 4, 5]) {
     await playhead.fill(String(sampleTime));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
@@ -210,7 +219,13 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
     if (!packetId) throw new Error(`OpeningManim sample ${sampleTime} has no retained packet identity.`);
     packetIds.add(packetId);
   }
-  expect(packetIds.size).toBe(5);
+  expect(packetIds.size).toBe(9);
+
+  // Return to a frame where both source roots are alive before asserting the
+  // Studio selection proxies. The basel root has completed FadeOut at 5s.
+  await playhead.fill("0");
+  await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "0");
 
   for (const [sourceName, runtimeEntityId] of [
     ["title", rootEntityIds[0]],
@@ -250,20 +265,20 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
   const fullRgba = await captureRuntimeTraceWebGpuFramesV1(page, {
     bundle: run.bundle,
     revision: run.traceDigest,
-    samples: OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
+    samples: OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2,
     viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
   });
   expect(fullRgba).toMatchObject({
     capture: {
       installCount: 1,
       policy: "one-retained-engine",
-      renderSubmissionCounts: OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1.map(() => 1),
+      renderSubmissionCounts: OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2.map(() => 1),
     },
     revision: run.traceDigest,
     viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
   });
   expect(fullRgba.frames.map(({ frameIndex, id, requestSampleTime }) => [id, frameIndex, requestSampleTime])).toEqual(
-    OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1.map(({ frameIndex, id, sampleTime }) => [id, frameIndex, sampleTime]),
+    OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2.map(({ frameIndex, id, sampleTime }) => [id, frameIndex, sampleTime]),
   );
   for (const frame of fullRgba.frames) {
     expect(frame.presentedSampleTime).toBe(frame.requestSampleTime);
@@ -284,7 +299,15 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
   }
   const frames = new Map(fullRgba.frames.map((frame) => [frame.id, frame]));
   expect(frames.get("initial")?.pixels.nonBlackBounds).toBeNull();
-  for (const id of ["write-progress", "animation-progress", "hold", "duration-end"] as const) {
+  for (const id of [
+    "opening-animation-midpoint",
+    "opening-play-end",
+    "opening-hold-last",
+    "transform-start",
+    "transform-midpoint",
+    "transform-play-end",
+    "wait-end",
+  ] as const) {
     const bounds = frames.get(id)?.pixels.nonBlackBounds;
     expect(bounds, `OpeningManim frame ${id} must contain visible geometry`).not.toBeNull();
     if (!bounds) throw new Error(`OpeningManim frame ${id} has no visible bounds.`);
@@ -292,19 +315,24 @@ test("renders the official OpeningManim 0-3s slice through Runtime Trace V2 and 
     expect(bounds[2]).toBeGreaterThan(bounds[0]);
     expect(bounds[3]).toBeGreaterThan(bounds[1]);
   }
-  expectSameFullRgba(frames, "animation-progress", "animation-progress-repeat");
-  expectSameFullRgba(frames, "hold", "hold-repeat");
-  expectSameFullRgba(frames, "hold", "duration-end");
-  expect(frames.get("initial")?.sha256).not.toBe(frames.get("write-progress")?.sha256);
-  expect(frames.get("write-progress")?.sha256).not.toBe(frames.get("animation-progress")?.sha256);
+  expectSameFullRgba(frames, "transform-midpoint", "transform-midpoint-repeat");
+  expectSameFullRgba(frames, "opening-hold-last", "opening-hold-last-repeat");
+  expectSameFullRgba(frames, "transform-start", "transform-start-repeat");
+  expectSameFullRgba(frames, "transform-play-end", "wait-end");
+  expectSameFullRgba(frames, "opening-play-end", "opening-hold-last");
+  expect(frames.get("initial")?.sha256).not.toBe(frames.get("opening-animation-midpoint")?.sha256);
+  expect(frames.get("opening-animation-midpoint")?.sha256).not.toBe(frames.get("opening-play-end")?.sha256);
+  expect(frames.get("opening-hold-last")?.sha256).not.toBe(frames.get("transform-start")?.sha256);
+  expect(frames.get("transform-start")?.sha256).not.toBe(frames.get("transform-midpoint")?.sha256);
+  expect(frames.get("transform-midpoint")?.sha256).not.toBe(frames.get("transform-play-end")?.sha256);
 
   if (CAIRO_PARITY_REQUIRED) {
-    const parityFrames = OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1.map(([id, frameIndex, sampleTime]) => {
+    const parityFrames = OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2.map(([id, frameIndex, sampleTime]) => {
       const frame = fullRgba.frames.find(
         (candidate) => candidate.frameIndex === frameIndex && candidate.requestSampleTime === sampleTime,
       );
       if (!frame) throw new Error(`The retained WebGPU readback is missing the ${id} Cairo parity sample.`);
-      return { frameIndex, id, rgba: frame.rgba, sampleTime } satisfies OpeningManimWebGpuFrameV1;
+      return { frameIndex, id, rgba: frame.rgba, sampleTime } satisfies OpeningManimWebGpuFrameV2;
     });
     const comparisons = await compareWithIndependentCairo(parityFrames);
     expect(

@@ -1,8 +1,9 @@
 //! Minimal browser/native WGPU renderer for validated Poietra `RenderPacketV1` frames.
 //!
-//! CPU preparation supports non-convex solid fills across closed cubic subpaths,
-//! including holes and both v1 fill rules, plus bounded cubic-path strokes across
-//! open, closed, and multiple subpaths with v1 caps, joins, and miter limits. A
+//! CPU preparation supports non-convex solid fills across cubic subpaths with
+//! Cairo-compatible implicit closure, including holes and both v1 fill rules, plus
+//! bounded cubic-path strokes across open, closed, and multiple subpaths with v1
+//! caps, joins, and miter limits. A
 //! path's fill and stroke become consecutive paint phases with distinct materials.
 //! A verified decoded-asset resolver enables affine PNG quads with row-zero-top UVs,
 //! premultiplied linear-light samples, and exact nearest/linear clamp filtering.

@@ -3,7 +3,9 @@ mod support;
 
 use std::collections::HashSet;
 
-use poietra_render_wgpu::{PrepareFrameErrorV1, UnsupportedDrawReasonV1, prepare_frame_v1};
+use poietra_render_wgpu::{
+    PrepareFrameErrorV1, PreparedGeometryVertexV1, UnsupportedDrawReasonV1, prepare_frame_v1,
+};
 use poietra_scene_ir::{
     AffineTransformV1, CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, PointV1,
     RenderCapabilityV1, RenderDrawV1,
@@ -199,6 +201,34 @@ fn fill_rules_cover_holes_and_disjoint_subpaths() {
         draw_area(&prepare_frame_v1(&winding_hole).unwrap(), 0),
         49.0 / 36.0,
     );
+}
+
+#[test]
+fn open_fill_subpaths_use_cairo_implicit_closure() {
+    const SQUARE: &[(f64, f64)] = &[(-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)];
+    let mut closed = fill_packet(&[SQUARE], FillRuleV1::NonZero);
+    let mut open = fill_packet(&[SQUARE], FillRuleV1::NonZero);
+    use_square_view(&mut closed, 3.0);
+    use_square_view(&mut open, 3.0);
+    let RenderDrawV1::Path { path, .. } = &mut open.draws[0] else {
+        unreachable!()
+    };
+    path.subpaths[0].closed = false;
+
+    let closed = prepare_frame_v1(&closed).expect("closed fill must tessellate");
+    let open = prepare_frame_v1(&open).expect("Cairo implicitly closes open fill contours");
+    let positions = |frame: &poietra_render_wgpu::PreparedFrameV1| {
+        frame
+            .geometry_plan()
+            .vertices()
+            .iter()
+            .map(PreparedGeometryVertexV1::position)
+            .collect::<Vec<_>>()
+    };
+
+    assert_eq!(open.indices(), closed.indices());
+    assert_eq!(positions(&open), positions(&closed));
+    assert_close(draw_area(&open, 0), draw_area(&closed, 0));
 }
 
 #[test]
