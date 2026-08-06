@@ -9,7 +9,8 @@ import { encodeRgbaPngV1 } from "./e2e/png-rgba";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
 const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
-const runtimeTraceProfile = snapshotProfile === "runtime-trace";
+const openingRuntimeTraceProfile = snapshotProfile === "runtime-trace-opening";
+const runtimeTraceProfile = snapshotProfile === "runtime-trace" || openingRuntimeTraceProfile;
 const producerCommand = process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND?.trim() ?? "";
 const runtimeTraceCommand = process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND?.trim() ?? "";
 if (runtimeTraceProfile ? !runtimeTraceCommand : !producerCommand) {
@@ -29,6 +30,7 @@ const WRITE_STUFF_TEX_CACHE_V1 = {
 } as const;
 if (
   snapshotProfile !== "runtime-trace" &&
+  snapshotProfile !== "runtime-trace-opening" &&
   snapshotProfile !== "2" &&
   snapshotProfile !== "3" &&
   snapshotProfile !== "4" &&
@@ -40,7 +42,9 @@ if (
   snapshotProfile !== "11" &&
   snapshotProfile !== "12"
 ) {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be runtime-trace, 2, 3, 4, 5, 7, 8, 9, 10, 11, or 12.");
+  throw new Error(
+    "POIETRA_E2E_REAL_PREVIEW_PROFILE must be runtime-trace, runtime-trace-opening, 2, 3, 4, 5, 7, 8, 9, 10, 11, or 12.",
+  );
 }
 const externalBaseUrl = (() => {
   const configured = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
@@ -185,7 +189,9 @@ export default defineConfig({
   projects: [
     {
       name: runtimeTraceProfile
-        ? "real-runtime-trace-preview-webgpu"
+        ? openingRuntimeTraceProfile
+          ? "real-opening-manim-runtime-trace-preview-webgpu"
+          : "real-runtime-trace-preview-webgpu"
         : snapshotProfile === "12"
           ? "real-write-stuff-in-preview-webgpu"
           : snapshotProfile === "11"
@@ -206,7 +212,9 @@ export default defineConfig({
                           ? "real-image-preview-webgpu"
                           : "real-preview-webgpu",
       testMatch: runtimeTraceProfile
-        ? "**/real-runtime-trace-preview.webgpu.ts"
+        ? openingRuntimeTraceProfile
+          ? "**/real-opening-manim-runtime-trace-preview.webgpu.ts"
+          : "**/real-runtime-trace-preview.webgpu.ts"
         : snapshotProfile === "12"
           ? "**/real-write-stuff-in-preview.webgpu.ts"
           : snapshotProfile === "11"
