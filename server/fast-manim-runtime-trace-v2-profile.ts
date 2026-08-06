@@ -27,6 +27,17 @@ export const FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 = "example_scenes/basic.py"
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 = "OpeningManim" as const;
 export const FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+/**
+ * Source-space center of grid_title after OpeningManim's final Transform.
+ *
+ * This is a server-owned property of the sealed Runtime Trace V2 profile. It
+ * must not be replaced with geometry or coordinates supplied by a browser
+ * request when authorizing source rewrites.
+ */
+export const FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2 = Object.freeze({
+  x: -3.0510343486111,
+  y: 3.132129525,
+});
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2 = Object.freeze({
   constructStartLine: 19,
   definitionOrdinal: 1,

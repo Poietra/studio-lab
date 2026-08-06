@@ -3,6 +3,7 @@ import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
   lowerLineJointsInitialTransformSourceV10,
+  lowerOpeningManimTerminalPositionSourceV2,
   lowerUpdatersTerminalTransformSourceV1,
   lowerWarpSquareInitialTransformSourceV9,
   lowerWriteStuffInitialTransformSourceV12,
@@ -10,6 +11,12 @@ import {
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
+import {
+  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+} from "./fast-manim-runtime-trace-v2-profile";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
@@ -86,6 +93,21 @@ export function lowerManimRenderRequest({
       null,
     );
     if (updatersTerminalV1) return { lowered: updatersTerminalV1, renderRequest: request };
+    if (
+      request.sourcePath === FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 &&
+      request.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 &&
+      request.sourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2
+    ) {
+      const openingTerminalV2 = lowerOpeningManimTerminalPositionSourceV2(
+        originalSource,
+        request,
+        orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+        frame,
+        null,
+        FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
+      );
+      if (openingTerminalV2) return { lowered: openingTerminalV2, renderRequest: request };
+    }
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

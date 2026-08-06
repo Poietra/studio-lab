@@ -7,8 +7,12 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
-import { createFastManimRuntimeTraceProducerRequestV2 } from "./fast-manim-runtime-trace-v2-profile";
 import {
+  createFastManimRuntimeTraceProducerRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
+} from "./fast-manim-runtime-trace-v2-profile";
+import {
+  canonicalFastManimRuntimeTraceCoordinateV2,
   digestFastManimRuntimeTraceAppearanceV2,
   digestFastManimRuntimeTracePathV2,
   digestFastManimRuntimeTraceV2,
@@ -104,6 +108,29 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
       roots: untrusted.roots,
     });
     const trace = parseFastManimRuntimeTraceProducerJsonV2(artifactBytes, expected);
+
+    const gridTitleRoot = trace.roots.find(({ role }) => role === "grid-title");
+    const terminalFrame = trace.frames[840];
+    if (!gridTitleRoot || !terminalFrame) throw new Error("Expected the sealed grid_title terminal frame.");
+    const terminalDraws = terminalFrame.draws.filter(({ present, rootId }) => present && rootId === gridTitleRoot.id);
+    expect(terminalFrame.frameIndex).toBe(840);
+    expect(terminalDraws).toHaveLength(42);
+    const paths = new Map(trace.resources.paths.map(({ id, path }) => [id, path]));
+    const terminalPoints = terminalDraws.flatMap((draw) => {
+      const path = paths.get(draw.pathId);
+      if (!path) throw new Error(`Expected sealed path ${draw.pathId}.`);
+      return path.subpaths.flatMap((subpath) =>
+        [subpath.start, ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end])].map(
+          ({ x, y }) => ({ x: x + draw.translation.x, y: y + draw.translation.y }),
+        ),
+      );
+    });
+    const xs = terminalPoints.map(({ x }) => x);
+    const ys = terminalPoints.map(({ y }) => y);
+    expect({
+      x: canonicalFastManimRuntimeTraceCoordinateV2((Math.min(...xs) + Math.max(...xs)) / 2),
+      y: canonicalFastManimRuntimeTraceCoordinateV2((Math.min(...ys) + Math.max(...ys)) / 2),
+    }).toEqual(FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2);
 
     expect(trace.frames).toHaveLength(900);
     expect(trace.frames.every((frame) => frame.draws.length === 97)).toBe(true);
