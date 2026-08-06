@@ -5,7 +5,7 @@ import { canonicalEngineBenchmarkJsonV1 } from "../engine/benchmark";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../engine/reference-evaluator";
-import type { SceneIrV1 } from "../engine/scene-ir";
+import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import {
@@ -44,6 +44,7 @@ const STUDIO_CIRCLE_ID = "source:fixtures/real-preview-harness/scene_square_to_c
 const SOURCE_PATH = "fixtures/real-preview-harness/scene_square_to_circle.py";
 const STUDIO_SCENE_ID = `${SOURCE_PATH}#SquareToCircle`;
 const SOURCE_HASH = "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40";
+const OFFICIAL_BASIC_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const SNAPSHOT_HASH = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
 const SOURCE_BINDING_ID = "source-binding:555240577158406fa67c9ef3fd4eced1471249d8e97362c3939e8a8a6f1e9b0f";
 const WORKING_REVISION = "4".repeat(64);
@@ -563,6 +564,33 @@ async function squareToCircleInput(kind: EditKind = "combined") {
   return { mapping, proposedState: editedState(base, kind), snapshot };
 }
 
+function officialSquareToCircleSnapshot(
+  input: Awaited<ReturnType<typeof squareToCircleInput>>,
+): StudioVerifiedPreviewSnapshotV1 {
+  const source = input.snapshot.snapshot.scene.source;
+  if (source.kind !== "imported-manim-server-snapshot") {
+    throw new Error("The SquareToCircle fixture lost its server source seal.");
+  }
+  const scene = {
+    ...input.snapshot.snapshot.scene,
+    source: { ...source, sourceHash: OFFICIAL_BASIC_SOURCE_HASH },
+  };
+  return {
+    ...input.snapshot,
+    correlation: {
+      ...input.snapshot.correlation,
+      context: {
+        ...input.snapshot.correlation.context,
+        sourceHash: OFFICIAL_BASIC_SOURCE_HASH,
+        sourcePath: "example_scenes/basic.py",
+      },
+      engineRevisionHash: sceneIrSourceRevisionHash(scene),
+    },
+    snapshot: { ...input.snapshot.snapshot, scene },
+    sourceLabel: "example_scenes/basic.py · SquareToCircle",
+  };
+}
+
 function compile(input: Awaited<ReturnType<typeof squareToCircleInput>>) {
   return compileStudioPreviewTemporalRebaseV1({
     frame: FRAME,
@@ -618,6 +646,37 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       studioPreviewSyntheticInitialEditAnchorV1({
         ...input.snapshot,
         correlation: { ...input.snapshot.correlation, sceneDuration: 4 },
+      }),
+    ).toBeNull();
+  });
+
+  it("promotes only the exact official V8 source seal to producer-backed position authority", async () => {
+    const input = await squareToCircleInput("position");
+    const snapshot = officialSquareToCircleSnapshot(input);
+    expect(studioPreviewInitialEditRuntimeAuthorityV1(snapshot)).toMatchObject({
+      baseCenter: { x: 320, y: 180 },
+      duration: 3,
+      lifetime: { end: 3, start: 0 },
+      profile: "square-to-circle-v8",
+      relativeScale: 1,
+      runtimeEntityId: input.mapping.entityId,
+      studioEntityId: "source:example_scenes/basic.py#SquareToCircle:square",
+      studioSceneId: "example_scenes/basic.py#SquareToCircle",
+    });
+    expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
+    expect(
+      studioPreviewInitialEditRuntimeAuthorityV1({
+        ...snapshot,
+        correlation: {
+          ...snapshot.correlation,
+          context: { ...snapshot.correlation.context, sceneName: "CopiedSquareToCircle" },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewInitialEditRuntimeAuthorityV1({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map([["circle", { ...input.mapping, sourceName: "circle" }]]),
       }),
     ).toBeNull();
   });

@@ -53,6 +53,16 @@ const WRITE_STUFF_V12_PROFILE = {
 
 export type StudioPreviewInitialEditRuntimeAuthorityV1 =
   | Readonly<{
+      baseCenter: Point;
+      duration: 3;
+      lifetime: Readonly<{ end: 3; start: 0 }>;
+      profile: "square-to-circle-v8";
+      relativeScale: 1;
+      runtimeEntityId: string;
+      studioEntityId: string;
+      studioSceneId: string;
+    }>
+  | Readonly<{
       duration: 4;
       profile: "warp-square-v9";
       runtimeEntityId: string;
@@ -295,6 +305,42 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
   const { context } = snapshot.correlation;
   const source = snapshot.snapshot.scene.source;
   const identity = snapshot.sourceRuntimeIdentity;
+  const square = identity?.get("square");
+  if (
+    source.kind === "imported-manim-server-snapshot" &&
+    Number(source.snapshotVersion) === 8 &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    context.sourcePath === "example_scenes/basic.py" &&
+    context.sceneName === "SquareToCircle" &&
+    identity?.size === 1 &&
+    square?.sourceName === "square" &&
+    isExactStableSquareToCircleV8(snapshot.snapshot.scene, square.entityId)
+  ) {
+    const target = snapshot.snapshot.scene.entities.find(({ id }) => id === square.entityId);
+    const localCenter = target ? localBoundaryCenter(snapshot.snapshot.scene, target) : null;
+    const sourceTransform = target && localCenter ? uniformSourceTransform(target, localCenter) : null;
+    if (sourceTransform?.scale === 1) {
+      return {
+        baseCenter: scenePointToStudioPoint(
+          sourceTransform.worldCenter,
+          {
+            height: snapshot.snapshot.scene.camera.view.frameHeight,
+            width: snapshot.snapshot.scene.camera.view.frameWidth,
+          },
+          snapshot.snapshot.scene.camera.view.center,
+        ),
+        duration: 3,
+        lifetime: { end: 3, start: 0 },
+        profile: "square-to-circle-v8",
+        relativeScale: 1,
+        runtimeEntityId: square.entityId,
+        studioEntityId: `source:${context.sourcePath}#${context.sceneName}:square`,
+        studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+      };
+    }
+    return null;
+  }
   if (
     source.kind === "imported-manim-server-snapshot" &&
     Number(source.snapshotVersion) === 12 &&
@@ -396,7 +442,7 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
     }
     return null;
   }
-  const mapping = identity?.get("square");
+  const mapping = square;
   if (
     source.kind !== "imported-manim-server-snapshot" ||
     Number(source.snapshotVersion) !== 9 ||

@@ -2238,6 +2238,14 @@ export function App({
       return;
     }
     if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This SquareToCircle proof currently supports position only.");
+      return;
+    }
+    if (
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId &&
       interactionMode !== "position"
     ) {
@@ -2398,6 +2406,14 @@ export function App({
     event.stopPropagation();
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) {
       setSelectedObjectIds([entityId]);
+      return;
+    }
+    if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2687,6 +2703,13 @@ export function App({
       previewRenderer.runtimeTraceTerminalEditAuthority.studioEntityId === entityId
     ) {
       setDraftError("This source-bound grid title supports terminal position only.");
+      return false;
+    }
+    if (
+      previewRenderer?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+      previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
+    ) {
+      setDraftError("This SquareToCircle proof currently supports position only.");
       return false;
     }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {

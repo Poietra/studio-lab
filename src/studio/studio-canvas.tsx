@@ -533,8 +533,10 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             const runtimePositionOnly =
-              preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
-              preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id;
+              (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
+                preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
+              (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
+                preview.initialEditRuntimeAuthority.studioEntityId === entity.id);
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
