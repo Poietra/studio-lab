@@ -12,6 +12,7 @@ import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import type {
   FastManimSandboxBackendV1,
   FastManimSandboxJobContextV1,
@@ -25,6 +26,7 @@ import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-back
 
 const artifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-updaters-v1.json.gz", import.meta.url);
 const openingArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url);
+const genericArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-v3-generic.json", import.meta.url);
 const FAST_MANIM_COMMIT = "350363a6baed0ba48d3da11f1299c1e2e5f56d46";
 const FAST_MANIM_TREE = "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf";
 const PREVIOUS_FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c";
@@ -42,6 +44,22 @@ const openingRequest = {
   sceneName: "OpeningManim",
   sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
   sourcePath: "example_scenes/basic.py",
+} as const satisfies FastManimRuntimeTraceRunRequestV1;
+const GENERIC_SOURCE = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(1 / 60)
+`;
+const genericRequest = {
+  projectId: "demo",
+  requestId: "req-generic-runtime-trace-hook",
+  sceneName: "StaticSquare",
+  sourceHash: createHash("sha256").update(GENERIC_SOURCE).digest("hex"),
+  sourcePath: "scenes/staticsquare.py",
 } as const satisfies FastManimRuntimeTraceRunRequestV1;
 
 class ArtifactBackend implements FastManimSandboxBackendV1 {
@@ -103,11 +121,26 @@ async function officialOpeningArtifact() {
   return Buffer.from(artifact, "utf8");
 }
 
+async function genericArtifact() {
+  const artifact = JSON.parse(await readFile(genericArtifactPath, "utf8"));
+  const trusted = trustedFastManimRuntimeTraceProducerV3();
+  Object.assign(artifact, { projectId: genericRequest.projectId, requestId: genericRequest.requestId });
+  Object.assign(artifact.producer, trusted);
+  return Buffer.from(JSON.stringify(artifact), "utf8");
+}
+
 async function projectRoot() {
   const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-"));
   roots.push(root);
   await mkdir(join(root, "example_scenes"));
   await writeFile(join(root, request.sourcePath), RUNTIME_TRACE_SOURCE_TEXT, "utf8");
+  return root;
+}
+
+async function genericProjectRoot() {
+  const root = await projectRoot();
+  await mkdir(join(root, "scenes"));
+  await writeFile(join(root, genericRequest.sourcePath), GENERIC_SOURCE, "utf8");
   return root;
 }
 
@@ -190,6 +223,28 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     const responseBytes = Buffer.byteLength(JSON.stringify(view), "utf8");
     expect(responseBytes).toBe(5_490_431);
     expect(responseBytes).toBeLessThan(8 * 1024 * 1024 + 64 * 1024);
+  });
+
+  it("dispatches a non-profile Scene through generic preview-only V3", async () => {
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(await genericProjectRoot(), backend).runRuntimeTrace(genericRequest);
+
+    if (view.status !== "verified") throw new Error(JSON.stringify(view));
+    const bundle = await parseVerifiedSceneIrBundleV1(view.bundle);
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-runtime-trace",
+      sourceHash: genericRequest.sourceHash,
+      traceVersion: 3,
+    });
+    expect(view.roots).toEqual([]);
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({
+      profileVersion: 3,
+      sceneOccurrence: { constructStartLine: 4, definitionOrdinal: 1 },
+      sceneName: genericRequest.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-producer-request",
+      version: 3,
+    });
   });
 
   it("rejects stale source correlation before consulting the sandbox", async () => {
