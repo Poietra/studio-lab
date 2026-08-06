@@ -41,7 +41,7 @@ import {
   type StudioPreviewInteractionGeometryV1,
   snapStudioPreviewViewportV1,
   studioPreviewHostBindingCurrentV1,
-  studioPreviewSnapshotCorrelatesV1,
+  studioPreviewSnapshotMatchesSourceV1,
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
@@ -1777,7 +1777,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     runtimeTraceTerminalSeed !== null &&
     context !== null &&
     snapshot !== null &&
-    studioPreviewSnapshotCorrelatesV1(snapshot.correlation, context);
+    studioPreviewSnapshotMatchesSourceV1(snapshot.correlation, context);
   const atRuntimeTraceTerminalAnchor =
     runtimeTraceTerminalSeed !== null &&
     studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime, runtimeTraceTerminalSeed.sourceAnchor);

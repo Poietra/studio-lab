@@ -94,7 +94,8 @@ export function studioPreviewSnapshotCorrelatesV1(
   );
 }
 
-function studioPreviewSnapshotMatchesSourceV1(
+/** Matches immutable source identity without conflating it with edit or timing state. */
+export function studioPreviewSnapshotMatchesSourceV1(
   correlation: StudioPreviewSnapshotCorrelationV1,
   context: StudioPreviewEditingContextV1,
 ) {
