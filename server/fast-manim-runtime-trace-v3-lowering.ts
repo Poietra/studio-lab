@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import {
   type AnimationChannelV1,
   assetManifestV1Schema,
+  countCubicPathSegments,
+  countLoweredSceneGeometrySegmentsV1,
   digestAssetManifestV1,
   parseVerifiedSceneIrBundleV1,
   type SceneEntityV1,
@@ -17,7 +19,11 @@ import {
 } from "./fast-manim-runtime-trace-v3-contract";
 import {
   type FastManimRuntimeTraceV3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3,
   parseFastManimRuntimeTraceProducerJsonV3,
   type TrustedFastManimRuntimeTraceProducerV3,
 } from "./fast-manim-runtime-trace-v3-result-contract";
@@ -29,6 +35,24 @@ type StateV3 = FastManimRuntimeTraceV3["frames"][number]["states"][number];
 type PathV3 = FastManimRuntimeTraceV3["resources"]["paths"][number]["path"];
 type AppearanceV3 = Omit<FastManimRuntimeTraceV3["resources"]["appearances"][number], "id">;
 type EntityChannelV3 = Exclude<AnimationChannelV1, { kind: "camera" }>;
+type PaintPartV3 = Readonly<{ kind: "both" | "fill" | "stroke"; trim: boolean }>;
+type CompactedSamplesV3<T> = Readonly<{ frameIndexes: readonly number[]; values: readonly T[] }>;
+type PaintPartPlanV3 = PaintPartV3 &
+  Readonly<{
+    compactedAppearanceSamples: CompactedSamplesV3<AppearanceV3> | null;
+    paint: readonly AppearanceV3[];
+  }>;
+type DrawPlanV3 = Readonly<{
+  compactedOpacitySamples: CompactedSamplesV3<number> | null;
+  compactedPathSamples: CompactedSamplesV3<string> | null;
+  compactedTransformSamples: CompactedSamplesV3<ReturnType<typeof transform>> | null;
+  compactedTrimSamples: CompactedSamplesV3<number> | null;
+  draw: FastManimRuntimeTraceV3["draws"][number];
+  first: StateV3;
+  firstPath: PathV3;
+  parts: readonly PaintPartPlanV3[];
+  sourceZIndex: number;
+}>;
 
 export class FastManimRuntimeTraceV3LoweringError extends Error {
   readonly code = "semantic-mismatch" as const;
@@ -44,7 +68,12 @@ function fail(message: string): never {
 }
 
 function sameValue(left: unknown, right: unknown) {
+  if (left === right) return true;
   return canonicalJsonV1(left) === canonicalJsonV1(right);
+}
+
+function sameIdentity<T>(left: T, right: T) {
+  return left === right;
 }
 
 function pathTopology(path: PathV3) {
@@ -64,12 +93,16 @@ function derivedId(trace: FastManimRuntimeTraceV3, kind: string, value: unknown)
   return `${trace.sceneId}/runtime-v3-${kind}:${digest}`;
 }
 
-function valuesChange<T>(values: readonly T[]) {
+function valuesChange<T>(values: readonly T[], equal: (left: T, right: T) => boolean = sameValue) {
   const first = values[0];
-  return first !== undefined && values.slice(1).some((value) => !sameValue(first, value));
+  return first !== undefined && values.slice(1).some((value) => !equal(first, value));
 }
 
-function compactSamples<T>(values: readonly T[], frameIndexes: readonly number[]) {
+function compactSamples<T>(
+  values: readonly T[],
+  frameIndexes: readonly number[],
+  equal: (left: T, right: T) => boolean = sameValue,
+): CompactedSamplesV3<T> {
   if (values.length !== frameIndexes.length || values.length === 0)
     fail("Runtime Trace V3 samples lost frame identity.");
   const keep = values.map((value, index) => {
@@ -77,7 +110,7 @@ function compactSamples<T>(values: readonly T[], frameIndexes: readonly number[]
     if (frameIndexes[index] !== frameIndexes[index - 1]! + 1 || frameIndexes[index + 1] !== frameIndexes[index]! + 1) {
       return true;
     }
-    return !sameValue(value, values[index - 1]) || !sameValue(value, values[index + 1]);
+    return !equal(value, values[index - 1]!) || !equal(value, values[index + 1]!);
   });
   return {
     frameIndexes: frameIndexes.filter((_, index) => keep[index]),
@@ -85,12 +118,19 @@ function compactSamples<T>(values: readonly T[], frameIndexes: readonly number[]
   };
 }
 
-function keyframes<T>(values: readonly T[], frameIndexes: readonly number[]) {
-  const compacted = compactSamples(values, frameIndexes);
+function compactChangedSamples<T>(
+  values: readonly T[],
+  frameIndexes: readonly number[],
+  equal: (left: T, right: T) => boolean = sameValue,
+) {
+  return valuesChange(values, equal) ? compactSamples(values, frameIndexes, equal) : null;
+}
+
+function keyframesFromCompactedSamples<T, U>(compacted: CompactedSamplesV3<T>, materialize: (value: T) => U) {
   return compacted.values.map((value, index) => ({
     at: seconds(compacted.frameIndexes[index]!),
     easingToNext: index === compacted.values.length - 1 ? null : ({ kind: "linear" } as const),
-    value,
+    value: materialize(value),
   }));
 }
 
@@ -239,6 +279,18 @@ async function emptyManifest(trace: FastManimRuntimeTraceV3) {
 
 export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRuntimeTraceV3) {
   const paths = new Map(trace.resources.paths.map((resource) => [resource.id, resource.path]));
+  const pathTopologies = new Map(
+    trace.resources.paths.map((resource) => [resource.id, pathTopology(resource.path)] as const),
+  );
+  const pathSegmentCounts = new Map(
+    trace.resources.paths.map((resource) => [resource.id, countCubicPathSegments(resource.path)] as const),
+  );
+  const pathGeometrySegmentCounts = new Map(
+    trace.resources.paths.map(
+      (resource) =>
+        [resource.id, countLoweredSceneGeometrySegmentsV1({ kind: "cubic-path", path: resource.path })] as const,
+    ),
+  );
   const appearances = new Map(
     trace.resources.appearances.map(({ fill, id, stroke }) => [id, { fill, stroke }] as const),
   );
@@ -257,30 +309,30 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
     transform: IDENTITY,
   }));
   const groups = familyGroups(trace);
-  const groupEntities: SceneEntityV1[] = groups.map((group, index) => ({
-    appearance: { kind: "group", opacity: 1 },
-    geometry: { kind: "group" },
-    id: group.id,
-    lifetimes: group.lifetimes,
-    parentId: group.parentId,
-    provenanceId,
-    sceneOrder: rootEntities.length + index,
-    sourceZIndex: 0,
-    transform: IDENTITY,
-  }));
   const familyIds = new Map(groups.map((group) => [`${group.rootId}\0${group.path.join(".")}`, group.id]));
-  const entities: SceneEntityV1[] = [];
-  const channels: EntityChannelV3[] = [];
   const orderedDraws = [...trace.draws].sort((left, right) => drawOrder.get(left.id)! - drawOrder.get(right.id)!);
+  const drawPlans: DrawPlanV3[] = [];
+  let normalizedEntityCount = rootEntities.length + groups.length;
+  let normalizedChannelCount = 0;
+  let normalizedKeyframeCount = 0;
+  let normalizedPathSegmentCount = 0;
+  if (normalizedEntityCount > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3) {
+    fail(
+      `Runtime Trace V3 normalized Scene IR exceeds its ${MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3} entity budget.`,
+    );
+  }
   for (const draw of orderedDraws) {
     const timeline = timelines.get(draw.id)!;
     const first = timeline.states[0];
     if (!first) fail(`Runtime Trace V3 draw ${draw.id} has no presentation state.`);
-    const timelinePaths = timeline.states.map(
-      (state) => paths.get(state.pathId) ?? fail(`Missing path ${state.pathId}.`),
-    );
-    const topology = pathTopology(timelinePaths[0]!);
-    if (timelinePaths.some((path) => pathTopology(path) !== topology)) {
+    const pathIds = timeline.states.map((state) => {
+      if (!paths.has(state.pathId)) fail(`Missing path ${state.pathId}.`);
+      return state.pathId;
+    });
+    const firstPathId = pathIds[0]!;
+    const firstPath = paths.get(firstPathId)!;
+    const topology = pathTopologies.get(firstPathId)!;
+    if (pathIds.some((pathId) => pathTopologies.get(pathId) !== topology)) {
       fail(`Runtime Trace V3 draw ${draw.id} changed topology without opening a new draw epoch.`);
     }
     const timelineAppearances = timeline.states.map(
@@ -311,7 +363,7 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
     }
     const hasFill = timelineAppearances.some(({ fill }) => fill !== null);
     const hasStroke = timelineAppearances.some(({ stroke }) => stroke !== null);
-    const parts: Array<{ kind: "both" | "fill" | "stroke"; trim: boolean }> = trimChanges
+    const parts: PaintPartV3[] = trimChanges
       ? [
           ...(hasFill ? [{ kind: "fill" as const, trim: false }] : []),
           ...(hasStroke ? [{ kind: "stroke" as const, trim: true }] : []),
@@ -320,76 +372,192 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
     if (parts.length === 0) fail(`Runtime Trace V3 draw ${draw.id} has no lowerable paint.`);
     const sourceZIndexes = timeline.states.map(({ sourceZIndex }) => sourceZIndex);
     if (valuesChange(sourceZIndexes)) fail(`Runtime Trace V3 draw ${draw.id} changes source z-index.`);
+    const transforms = timeline.states.map(transform);
+    const opacities = timeline.states.map(({ opacity }) => opacity);
+    const compactedTransformSamples = compactChangedSamples(transforms, timeline.frameIndexes);
+    const compactedOpacitySamples = compactChangedSamples(opacities, timeline.frameIndexes);
+    const compactedPathSamples = compactChangedSamples(pathIds, timeline.frameIndexes, sameIdentity);
+    const compactedTrimSamples = compactChangedSamples(trimValues, timeline.frameIndexes);
+    const partPlans = parts.map((part): PaintPartPlanV3 => {
+      const paint = normalizedAppearances(timelineAppearances, part.kind);
+      return {
+        ...part,
+        compactedAppearanceSamples: compactChangedSamples(paint, timeline.frameIndexes),
+        paint,
+      };
+    });
+    const basePathSegments = pathGeometrySegmentCounts.get(firstPathId)!;
+    const pathMorphSegments =
+      compactedPathSamples?.values.reduce(
+        (total, pathId) => total + (pathSegmentCounts.get(pathId) ?? fail(`Missing path ${pathId}.`)),
+        0,
+      ) ?? 0;
+    normalizedEntityCount += partPlans.length;
+    normalizedPathSegmentCount += partPlans.length * (basePathSegments + pathMorphSegments);
+    for (const part of partPlans) {
+      for (const samples of [
+        compactedTransformSamples,
+        compactedOpacitySamples,
+        compactedPathSamples,
+        part.compactedAppearanceSamples,
+        part.trim ? compactedTrimSamples : null,
+      ]) {
+        if (!samples) continue;
+        normalizedChannelCount += 1;
+        normalizedKeyframeCount += samples.values.length;
+      }
+    }
+    if (normalizedEntityCount > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3) {
+      fail(
+        `Runtime Trace V3 normalized Scene IR exceeds its ${MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3} entity budget.`,
+      );
+    }
+    if (normalizedPathSegmentCount > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3) {
+      fail(
+        `Runtime Trace V3 normalized Scene IR exceeds its ${MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3} path-segment budget.`,
+      );
+    }
+    if (normalizedChannelCount > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3) {
+      fail(
+        `Runtime Trace V3 normalized Scene IR exceeds its ${MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3} channel budget.`,
+      );
+    }
+    if (normalizedKeyframeCount > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3) {
+      fail(
+        `Runtime Trace V3 normalized Scene IR exceeds its ${MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3} keyframe budget.`,
+      );
+    }
+    drawPlans.push({
+      compactedOpacitySamples,
+      compactedPathSamples,
+      compactedTransformSamples,
+      compactedTrimSamples,
+      draw,
+      first,
+      firstPath,
+      parts: partPlans,
+      sourceZIndex: sourceZIndexes[0]!,
+    });
+  }
+
+  const groupEntities: SceneEntityV1[] = groups.map((group, index) => ({
+    appearance: { kind: "group", opacity: 1 },
+    geometry: { kind: "group" },
+    id: group.id,
+    lifetimes: group.lifetimes,
+    parentId: group.parentId,
+    provenanceId,
+    sceneOrder: rootEntities.length + index,
+    sourceZIndex: 0,
+    transform: IDENTITY,
+  }));
+  const entities: SceneEntityV1[] = [];
+  const channels: EntityChannelV3[] = [];
+  for (const plan of drawPlans) {
+    const {
+      compactedOpacitySamples,
+      compactedPathSamples,
+      compactedTransformSamples,
+      compactedTrimSamples,
+      draw,
+      first,
+      firstPath,
+      parts,
+      sourceZIndex,
+    } = plan;
     const parentKey = `${draw.rootId}\0${draw.familyPath.join(".")}`;
     const parentId = draw.familyPath.length === 0 ? draw.rootId : familyIds.get(parentKey)!;
     for (const part of parts) {
       const entityId = parts.length === 1 ? draw.id : derivedId(trace, `paint-${part.kind}`, draw.id);
-      const paint = normalizedAppearances(timelineAppearances, part.kind);
-      const basePaint = paint[0];
+      const basePaint = part.paint[0];
       if (!basePaint || (basePaint.fill === null && basePaint.stroke === null)) {
         fail(`Runtime Trace V3 draw ${draw.id} lost its base paint.`);
       }
       entities.push({
         appearance: { ...basePaint, kind: "vector", opacity: first.opacity },
-        geometry: { kind: "cubic-path", path: timelinePaths[0]! },
+        geometry: { kind: "cubic-path", path: firstPath },
         id: entityId,
         lifetimes: lifetimes(draw.lifetimes),
         parentId,
         provenanceId,
         sceneOrder: rootEntities.length + groupEntities.length + entities.length,
-        sourceZIndex: sourceZIndexes[0]!,
+        sourceZIndex,
         transform: transform(first),
       });
       const addChannel = <T extends EntityChannelV3>(channel: T) => channels.push(channel);
-      const transforms = timeline.states.map(transform);
-      if (valuesChange(transforms)) {
+      if (compactedTransformSamples) {
         addChannel({
           entityId,
           id: derivedId(trace, "channel-affine", entityId),
-          keyframes: keyframes(transforms, timeline.frameIndexes),
+          keyframes: keyframesFromCompactedSamples(compactedTransformSamples, (value) => value),
           kind: "affine-transform",
           provenanceId,
         });
       }
-      const opacities = timeline.states.map(({ opacity }) => opacity);
-      if (valuesChange(opacities)) {
+      if (compactedOpacitySamples) {
         addChannel({
           entityId,
           id: derivedId(trace, "channel-opacity", entityId),
-          keyframes: keyframes(opacities, timeline.frameIndexes),
+          keyframes: keyframesFromCompactedSamples(compactedOpacitySamples, (value) => value),
           kind: "opacity",
           provenanceId,
         });
       }
-      if (valuesChange(timelinePaths)) {
+      if (compactedPathSamples) {
         addChannel({
           entityId,
           id: derivedId(trace, "channel-path", entityId),
-          keyframes: keyframes(timelinePaths, timeline.frameIndexes),
+          keyframes: keyframesFromCompactedSamples(
+            compactedPathSamples,
+            (pathId) => paths.get(pathId) ?? fail(`Missing path ${pathId}.`),
+          ),
           kind: "path-morph",
           provenanceId,
         });
       }
-      if (valuesChange(paint)) {
+      if (part.compactedAppearanceSamples) {
         addChannel({
           entityId,
           id: derivedId(trace, "channel-appearance", entityId),
-          keyframes: keyframes(paint, timeline.frameIndexes),
+          keyframes: keyframesFromCompactedSamples(part.compactedAppearanceSamples, (value) => value),
           kind: "vector-appearance",
           provenanceId,
         });
       }
-      if (part.trim) {
+      if (part.trim && compactedTrimSamples) {
         addChannel({
           entityId,
           id: derivedId(trace, "channel-trim", entityId),
-          keyframes: keyframes(trimValues, timeline.frameIndexes),
+          keyframes: keyframesFromCompactedSamples(compactedTrimSamples, (value) => value),
           kind: "path-trim",
           parameterization: "uniform-cubic-parameter-v1",
           provenanceId,
         });
       }
     }
+  }
+
+  const normalizedEntities = [...rootEntities, ...groupEntities, ...entities];
+  const measuredEntityCount = normalizedEntities.length;
+  const measuredChannelCount = channels.length;
+  const measuredKeyframeCount = channels.reduce((total, channel) => total + channel.keyframes.length, 0);
+  const measuredPathSegmentCount =
+    normalizedEntities.reduce((total, entity) => total + countLoweredSceneGeometrySegmentsV1(entity.geometry), 0) +
+    channels.reduce(
+      (total, channel) =>
+        total +
+        (channel.kind === "path-morph"
+          ? channel.keyframes.reduce((subtotal, keyframe) => subtotal + countCubicPathSegments(keyframe.value), 0)
+          : 0),
+      0,
+    );
+  if (
+    measuredEntityCount !== normalizedEntityCount ||
+    measuredChannelCount !== normalizedChannelCount ||
+    measuredKeyframeCount !== normalizedKeyframeCount ||
+    measuredPathSegmentCount !== normalizedPathSegmentCount
+  ) {
+    fail("Runtime Trace V3 normalization changed after its bounded Scene IR preflight.");
   }
 
   const assets = await emptyManifest(trace);

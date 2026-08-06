@@ -5,6 +5,10 @@ import { describe, expect, it } from "vitest";
 
 import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import {
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V3,
   parseFastManimRuntimeTraceProducerJsonV3,
 } from "./fast-manim-runtime-trace-v3-result-contract";
@@ -56,6 +60,12 @@ describe("generic Runtime Trace V3 producer result", () => {
     expect(trace.frames).toHaveLength(1);
     expect(trace.roots).toHaveLength(1);
     expect(MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V3).toBe(100_000);
+    expect({
+      channels: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
+      entities: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3,
+      keyframes: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3,
+      pathSegments: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3,
+    }).toEqual({ channels: 10_000, entities: 10_000, keyframes: 100_000, pathSegments: 100_000 });
   });
 
   it("rejects stale source, untrusted producer, and state/lifetime drift", async () => {
