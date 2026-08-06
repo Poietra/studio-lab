@@ -767,6 +767,7 @@ describe("StudioCanvas retained preview layer", () => {
           null,
           {
             baseFrameRetained: true,
+            dimensions: { height: 3, width: 3 },
             position: { x: 400, y: 90 },
             profile: "updaters-terminal-v1",
             sourceAnchor: 5,
@@ -779,7 +780,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(pendingMarkup).not.toContain('invisible" data-studio-preview-canvas');
     expect(pendingMarkup).toContain('data-studio-semantic-paint="painted"');
     expect(pendingMarkup.match(/data-studio-semantic-paint="deferred-to-canvas"/g)).toHaveLength(1);
-    expect(pendingMarkup).toContain('data-studio-entity-width="90.0000"');
+    expect(pendingMarkup).toContain('data-studio-entity-width="3.0000"');
     expect(pendingMarkup).toContain("left:62.5%;top:25%");
     expect(pendingMarkup).not.toContain("data-studio-resize-handle");
 
@@ -800,6 +801,7 @@ describe("StudioCanvas retained preview layer", () => {
           null,
           {
             baseFrameRetained: false,
+            dimensions: { height: 3, width: 3 },
             position: { x: 400, y: 90 },
             profile: "updaters-terminal-v1",
             sourceAnchor: 5,
@@ -831,6 +833,26 @@ describe("StudioCanvas retained preview layer", () => {
     expect(transientMarkup).not.toContain('invisible" data-studio-preview-canvas');
     expect(transientMarkup).toContain(`data-studio-entity="${decimalId}"`);
     expect(transientMarkup).toContain('data-studio-semantic-paint="painted"');
+
+    const transientResizeMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        preview={previewView(
+          { detail: null, phase: "fallback", reason: "transient-edit" },
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          boundedAuthority,
+          null,
+          terminalAuthority,
+          null,
+          true,
+        )}
+        scalePreview={{ entityId: squareId, scale: 1.5 }}
+      />,
+    );
+    expect(transientResizeMarkup).toContain('data-studio-entity-width="2.0000"');
+    expect(transientResizeMarkup).toContain('style="scale:1.5"');
+    expect(transientResizeMarkup).toContain('data-studio-semantic-paint="painted"');
   });
 
   it("keeps an exact position refiner beside one direct-manipulation draft", () => {

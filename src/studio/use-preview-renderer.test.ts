@@ -16,7 +16,7 @@ import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
-import { evaluateWorkingState, programRecord } from "./evaluator";
+import { evaluateWorkingState, programRecord, sampleProposedState } from "./evaluator";
 import {
   type ProgramRecord,
   type ProposedState,
@@ -34,6 +34,7 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
+import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -1272,6 +1273,7 @@ describe("compileStudioPreviewSceneV1", () => {
       authority,
       {
         baseFrameRetained: true,
+        dimensions: authority.sourceDimensions,
         position: draftPosition,
         profile: "updaters-terminal-v1",
         sourceAnchor: 5,
@@ -1281,6 +1283,37 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(pendingProjection[0]).toEqual(
       expect.objectContaining({
         geometry: expect.objectContaining({ position: { kind: "known", value: draftPosition } }),
+        position: draftPosition,
+      }),
+    );
+    const completedBatchProjection = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+      [
+        {
+          ...pendingProjection[0]!,
+          geometry: {
+            ...pendingProjection[0]!.geometry,
+            dimensions: { kind: "known", value: { height: 3, width: 3 } },
+            position: { kind: "known", value: authority.baseCenter },
+          },
+          position: authority.baseCenter,
+        },
+      ],
+      null,
+      {
+        baseFrameRetained: true,
+        dimensions: { height: 3, width: 3 },
+        position: draftPosition,
+        profile: "updaters-terminal-v1",
+        sourceAnchor: 5,
+        studioEntityId: authority.studioEntityId,
+      },
+    );
+    expect(completedBatchProjection[0]).toEqual(
+      expect.objectContaining({
+        geometry: expect.objectContaining({
+          dimensions: { kind: "known", value: { height: 3, width: 3 } },
+          position: { kind: "known", value: draftPosition },
+        }),
         position: draftPosition,
       }),
     );
@@ -1294,6 +1327,7 @@ describe("compileStudioPreviewSceneV1", () => {
         authority,
         {
           baseFrameRetained: true,
+          dimensions: authority.sourceDimensions,
           position: draftPosition,
           profile: "updaters-terminal-v1",
           sourceAnchor: 5,
@@ -1388,6 +1422,50 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(position.program, authority)).toBe(true);
     const resizeRecord = programRecord(resize.program, resize);
     const positionRecord = programRecord(position.program, position);
+    const movedCenter = { x: authority.baseCenter.x + 24, y: authority.baseCenter.y + 12 };
+    const movedState = evaluateWorkingState({
+      ...base.proposedState.base,
+      appliedPrograms: [positionRecord],
+      runtimeSceneState: validationScene,
+      stagedPrograms: [],
+    });
+    const movedResize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: authority.studioEntityId,
+      from: { dimensions: authority.sourceDimensions, position: movedCenter },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+        projectRuntimeSceneToSourceTimeline(movedState.evaluatedScene, [position.program]),
+        authority,
+      ),
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 3 }, position: movedCenter },
+      transactionId: "runtime-trace-terminal-square-moved-resize",
+    });
+    expect(movedResize.kind, JSON.stringify(movedResize.issues)).toBe("valid");
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(movedResize.program, authority)).toBe(false);
+    const movedResizeRecord = programRecord(movedResize.program, movedResize);
+    const movedAndResized = evaluateWorkingState({
+      ...base.proposedState.base,
+      appliedPrograms: [positionRecord, movedResizeRecord],
+      runtimeSceneState: validationScene,
+      stagedPrograms: [],
+    });
+    expect(movedAndResized.programs.map(({ validation }) => validation.status)).toEqual(["valid", "valid"]);
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord, movedResizeRecord], authority)).toMatchObject(
+      { kind: "authorized", remainingOperations: [] },
+    );
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([movedResizeRecord], authority)).toEqual({
+      kind: "unauthorized",
+    });
+    expect(sampleProposedState(movedAndResized, 5).find(({ id }) => id === authority.studioEntityId)).toMatchObject({
+      geometry: {
+        dimensions: { kind: "known", value: { height: 3, width: 3 } },
+        position: { kind: "known", value: movedCenter },
+      },
+      position: movedCenter,
+    });
     expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord], authority)).toMatchObject({
       kind: "authorized",
       operationKinds: ["position"],
@@ -1422,7 +1500,11 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(exactPending).toMatchObject({
       authority,
       baseFrameRetained: true,
-      pending: { baseFrameRetained: true, studioEntityId: authority.studioEntityId },
+      pending: {
+        baseFrameRetained: true,
+        dimensions: authority.sourceDimensions,
+        studioEntityId: authority.studioEntityId,
+      },
       programSet: { kind: "authorized", remainingOperations: ["resize"] },
     });
     const scrubbedPending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
@@ -1437,7 +1519,11 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(scrubbedPending).toMatchObject({
       authority: null,
       baseFrameRetained: false,
-      pending: { baseFrameRetained: false, studioEntityId: authority.studioEntityId },
+      pending: {
+        baseFrameRetained: false,
+        dimensions: authority.sourceDimensions,
+        studioEntityId: authority.studioEntityId,
+      },
     });
     const completePending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
       atExactAnchor: true,
@@ -1451,7 +1537,11 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(completePending).toMatchObject({
       authority: null,
       baseFrameRetained: true,
-      pending: { baseFrameRetained: true, studioEntityId: authority.studioEntityId },
+      pending: {
+        baseFrameRetained: true,
+        dimensions: { height: 3, width: 3 },
+        studioEntityId: authority.studioEntityId,
+      },
       programSet: { kind: "authorized", remainingOperations: [] },
     });
     expect(

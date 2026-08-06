@@ -2533,6 +2533,8 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
       return false;
     }
+    const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
+    if (!entity || !Number.isFinite(entity.position.x) || !Number.isFinite(entity.position.y)) return false;
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return false;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -2552,16 +2554,17 @@ export function App({
         : { sourceTime: capturedSourceAnchor };
     if (!anchor || Math.abs(anchor.sourceTime - authority.sourceAnchor) >= 0.0005) return false;
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(sourceScene, authority);
+    const currentCenter = entity.position;
     const from = {
       dimensions: authority.sourceDimensions,
-      position: authority.baseCenter,
+      position: currentCenter,
     };
     const to = {
       dimensions: {
         height: authority.sourceDimensions.height * factor,
         width: authority.sourceDimensions.width * factor,
       },
-      position: authority.baseCenter,
+      position: currentCenter,
     };
     try {
       const validation = createDirectManipulationResizeProgram({

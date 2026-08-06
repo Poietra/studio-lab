@@ -512,9 +512,7 @@ export function StudioCanvas({
               : null;
             const previewGeometry = presentedGeometry
               ? (compensatedRuntimeGeometry ?? semanticPreviewGeometry)
-              : runtimeTraceTargetGhost && compensatedRuntimeGeometry
-                ? { dimensions: compensatedRuntimeGeometry.dimensions, position: semanticPreviewGeometry.position }
-                : semanticPreviewGeometry;
+              : semanticPreviewGeometry;
             const position = {
               x: previewGeometry.position.x + localDelta.x,
               y: previewGeometry.position.y + localDelta.y,

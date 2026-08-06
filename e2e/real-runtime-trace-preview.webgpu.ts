@@ -650,17 +650,47 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   );
   await expect(page.locator("[data-studio-preview-canvas]")).not.toHaveClass(/invisible/u);
 
+  const squareAfterMove = await squareTarget.boundingBox();
+  if (!squareAfterMove) throw new Error("The applied terminal Square move disappeared before resize.");
+  const resizeHandle = page.getByRole("button", { name: /Resize square from/u });
+  await expect(resizeHandle).toBeVisible();
+  await dragBy(page, resizeHandle, { x: 36, y: 36 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.locator("[data-studio-preview-status]")).toContainText(
+    "Draft ghost · dependent updater validation pending",
+  );
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  const squareAfterResize = await squareTarget.boundingBox();
+  if (!squareAfterResize) throw new Error("The updater-backed Square resize ghost disappeared.");
+  expect(squareAfterResize.width).toBeGreaterThan(squareAfterMove.width * 1.1);
+  expect(squareAfterResize.height).toBeGreaterThan(squareAfterMove.height * 1.1);
+  expect(boxCenter(squareAfterResize).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);
+  expect(boxCenter(squareAfterResize).y).toBeCloseTo(boxCenter(squareAfterMove).y, 0);
+  await expect(resizeHandle).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const squareAfterResizeApply = await squareTarget.boundingBox();
+  if (!squareAfterResizeApply) throw new Error("The applied terminal Square resize ghost disappeared.");
+  expect(squareAfterResizeApply.width).toBeCloseTo(squareAfterResize.width, 0);
+  expect(squareAfterResizeApply.height).toBeCloseTo(squareAfterResize.height, 0);
+  expect(boxCenter(squareAfterResizeApply).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);
+  expect(boxCenter(squareAfterResizeApply).y).toBeCloseTo(boxCenter(squareAfterMove).y, 0);
+
   const candidateSource = await exportedSource(page);
   const candidateSourceHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
   const animationEnd = candidateSource.indexOf("            run_time=5,\n        )");
   const terminalMove = candidateSource.indexOf("        square.move_to((", animationEnd);
-  const dependentUpdaterRefresh = candidateSource.indexOf("        decimal.update(0)", terminalMove);
+  const terminalScale = candidateSource.indexOf("        square.scale(", terminalMove);
+  const dependentUpdaterRefresh = candidateSource.indexOf("        decimal.update(0)", terminalScale);
   const terminalWait = candidateSource.indexOf("        self.wait()", dependentUpdaterRefresh);
   expect(animationEnd).toBeGreaterThanOrEqual(0);
   expect(terminalMove).toBeGreaterThan(animationEnd);
-  expect(dependentUpdaterRefresh).toBeGreaterThan(terminalMove);
+  expect(terminalScale).toBeGreaterThan(terminalMove);
+  expect(dependentUpdaterRefresh).toBeGreaterThan(terminalScale);
   expect(terminalWait).toBeGreaterThan(dependentUpdaterRefresh);
   expect(candidateSource.match(/^\s*square\.move_to\(\(/gmu)).toHaveLength(1);
+  expect(candidateSource.match(/^\s*square\.scale\(/gmu)).toHaveLength(1);
   expect(candidateSource.match(/^\s*decimal\.update\(0\)$/gmu)).toHaveLength(1);
 
   const edited = await renderCommitAndFreshRuntimeTrace(page);
@@ -702,7 +732,12 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   };
   expect(squareDomShift.x).toBeCloseTo(draftDomShift.x, 0);
   expect(squareDomShift.y).toBeCloseTo(draftDomShift.y, 0);
-  expect(decimalDomShift.x).toBeCloseTo(squareDomShift.x, 0);
+  // The semantic draft box excludes paint, while fresh retained interaction
+  // bounds include the Square stroke. Their centers and scale must agree, with
+  // only that small paint expansion left after the candidate is re-executed.
+  expect(Math.abs(editedSquareBox.width - squareAfterResizeApply.width)).toBeLessThan(3);
+  expect(Math.abs(editedSquareBox.height - squareAfterResizeApply.height)).toBeLessThan(3);
+  expect(decimalDomShift.x).toBeCloseTo(squareDomShift.x + (editedSquareBox.width - squareBefore.width) / 2, 0);
   expect(decimalDomShift.y).toBeCloseTo(squareDomShift.y, 0);
 
   for (const selector of [editedSquare, editedDecimal]) {
@@ -746,8 +781,8 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
     const height = entry.bounds[3] - entry.bounds[1];
     const nextHeight = next.bounds[3] - next.bounds[1];
     if (index === 0) {
-      expect(nextWidth).toBeCloseTo(width, 5);
-      expect(nextHeight).toBeCloseTo(height, 5);
+      expect(nextWidth).toBeGreaterThan(width * 1.1);
+      expect(nextHeight).toBeGreaterThan(height * 1.1);
     } else {
       expect(Math.hypot(nextWidth - width, nextHeight - height)).toBeGreaterThan(0.0001);
     }
@@ -755,7 +790,17 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   });
   expect(terminalShifts).toHaveLength(2);
   expect(Math.hypot(terminalShifts[0]?.x ?? 0, terminalShifts[0]?.y ?? 0)).toBeGreaterThan(0.01);
-  expect(terminalShifts[1]?.x).toBeCloseTo(terminalShifts[0]?.x ?? Number.NaN, 2);
+  const officialSquareEntry = officialTerminal.frame.interaction.entries[0];
+  const editedSquareEntry = editedTerminal.frame.interaction.entries[0];
+  if (officialSquareEntry?.status !== "present" || editedSquareEntry?.status !== "present") {
+    throw new Error("The Square needs retained terminal bounds for updater placement evidence.");
+  }
+  const squareHalfWidthGrowth =
+    (editedSquareEntry.bounds[2] -
+      editedSquareEntry.bounds[0] -
+      (officialSquareEntry.bounds[2] - officialSquareEntry.bounds[0])) /
+    2;
+  expect(terminalShifts[1]?.x).toBeCloseTo((terminalShifts[0]?.x ?? Number.NaN) + squareHalfWidthGrowth, 2);
   expect(terminalShifts[1]?.y).toBeCloseTo(terminalShifts[0]?.y ?? Number.NaN, 2);
 
   const editedFullRgba = await captureRuntimeTraceWebGpuFramesV1(page, {

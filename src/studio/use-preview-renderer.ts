@@ -58,6 +58,7 @@ import {
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
+import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
 
 export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -126,6 +127,7 @@ export type StudioPreviewRuntimeTraceTerminalEditAuthorityV1 = Readonly<{
 
 export type StudioPreviewRuntimeTraceValidationPendingV1 = Readonly<{
   baseFrameRetained: boolean;
+  dimensions: Readonly<{ height: number; width: number }>;
   position: Point;
   profile: "updaters-terminal-v1";
   sourceAnchor: 5;
@@ -323,29 +325,51 @@ function studioRuntimeTraceTerminalTargetMatches(
   );
 }
 
-/** Runtime geometry supplies only the exact terminal center, never source dimensions. */
+/** Runtime evidence supplies the terminal center; only authorized resize Programs may replace source dimensions. */
 export function projectStudioPreviewRuntimeTraceTerminalEntityV1(
   entities: readonly ProjectedEntity[],
   authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null,
   pending: StudioPreviewRuntimeTraceValidationPendingV1 | null = null,
 ) {
-  if (!authority) return entities;
-  const target = entities.find(({ id }) => id === authority.studioEntityId);
-  if (!target || !studioRuntimeTraceTerminalTargetMatches(target, authority)) return entities;
+  if (!authority && !pending) return entities;
+  const targetId = authority?.studioEntityId ?? pending?.studioEntityId;
+  const target = entities.find(({ id }) => id === targetId);
+  const targetMatchesPending =
+    pending !== null &&
+    target?.id === pending.studioEntityId &&
+    target.type === "Square" &&
+    !target.provisional &&
+    target.transactionId === undefined &&
+    target.sourceIdentity.kind === "known" &&
+    target.sourceIdentity.value === "square";
+  const targetMatchesAuthority = authority !== null && studioRuntimeTraceTerminalTargetMatches(target, authority);
+  if (!target || (!targetMatchesAuthority && !targetMatchesPending)) {
+    return entities;
+  }
   const projectedPosition =
-    pending?.profile === authority.profile &&
-    pending.studioEntityId === authority.studioEntityId &&
-    pending.sourceAnchor === authority.sourceAnchor &&
+    pending?.profile === "updaters-terminal-v1" &&
+    pending.studioEntityId === target.id &&
+    pending.sourceAnchor === 5 &&
     Number.isFinite(pending.position.x) &&
     Number.isFinite(pending.position.y)
       ? pending.position
-      : authority.baseCenter;
+      : authority?.baseCenter;
+  if (!projectedPosition) return entities;
+  const projectedDimensions =
+    pending &&
+    Number.isFinite(pending.dimensions.height) &&
+    pending.dimensions.height > 0 &&
+    Number.isFinite(pending.dimensions.width) &&
+    pending.dimensions.width > 0
+      ? pending.dimensions
+      : null;
   return entities.map((entity) =>
     entity.id === target.id
       ? {
           ...entity,
           geometry: {
             ...entity.geometry,
+            ...(projectedDimensions ? { dimensions: { kind: "known" as const, value: projectedDimensions } } : {}),
             position: { kind: "known" as const, value: projectedPosition },
           },
           position: projectedPosition,
@@ -385,19 +409,25 @@ export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
     const channel = propertyChannels[channelId];
     if (!channel || channel.entityId !== target.id || channel.key !== key) return scene;
     const value = terminalValues[key];
+    const samples = [
+      ...channel.samples,
+      {
+        interval: { end: authority.sourceAnchor, start: authority.sourceAnchor },
+        kind: "exact" as const,
+        knowledge: { kind: "known" as const, value },
+        provenanceId: `${target.id}/runtime-trace-terminal-${key}`,
+        sameAnchorOrder: "before-studio-insertion" as const,
+        value,
+      },
+    ];
     propertyChannels[channelId] = {
       ...channel,
-      samples: [
-        ...channel.samples,
-        {
-          interval: { end: authority.sourceAnchor, start: authority.sourceAnchor },
-          kind: "exact",
-          knowledge: { kind: "known", value },
-          provenanceId: `${target.id}/runtime-trace-terminal-${key}`,
-          sameAnchorOrder: "before-studio-insertion",
-          value,
-        },
-      ],
+      samples:
+        key === "dimensions"
+          ? normalizeDimensionsSamples(samples)
+          : key === "position"
+            ? normalizePositionSamples(samples)
+            : normalizeScaleSamples(samples),
     };
   }
   return {
@@ -426,6 +456,7 @@ export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
 export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
   program: CanonicalEditProgram,
   authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
+  authorizedResizeCenters: readonly Point[] = [authority.baseCenter],
 ) {
   const [operation] = program.operations;
   if (
@@ -489,10 +520,17 @@ export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
     Number.isFinite(factor) &&
     factor > 0 &&
     Math.abs(to.height / authority.sourceDimensions.height - factor) < 0.000001 &&
-    Math.abs(operation.from.position.x - authority.baseCenter.x) < 0.000001 &&
-    Math.abs(operation.from.position.y - authority.baseCenter.y) < 0.000001 &&
+    Number.isFinite(operation.from.position.x) &&
+    Number.isFinite(operation.from.position.y) &&
+    Number.isFinite(operation.to.position.x) &&
+    Number.isFinite(operation.to.position.y) &&
     Math.abs(operation.from.position.x - operation.to.position.x) < 0.000001 &&
-    Math.abs(operation.from.position.y - operation.to.position.y) < 0.000001
+    Math.abs(operation.from.position.y - operation.to.position.y) < 0.000001 &&
+    authorizedResizeCenters.some(
+      (center) =>
+        Math.abs(operation.from.position.x - center.x) < 0.000001 &&
+        Math.abs(operation.from.position.y - center.y) < 0.000001,
+    )
   );
 }
 
@@ -530,6 +568,7 @@ export function studioPreviewRuntimeTraceTerminalProgramSetV1(
   const allOperations = ["position", "resize"] as const;
   if (records.length === 0) return { kind: "none", remainingOperations: allOperations };
   if (records.length > 2) return { kind: "unauthorized" };
+  const authorizedResizeCenters = [authority.baseCenter, runtimeTraceTerminalPendingPositionV1(records, authority)];
   const operationKinds: StudioPreviewRuntimeTraceTerminalOperationKindV1[] = [];
   for (const record of records) {
     const operationKind = runtimeTraceTerminalOperationKindV1(record.program);
@@ -537,7 +576,7 @@ export function studioPreviewRuntimeTraceTerminalProgramSetV1(
       record.validation.status !== "valid" ||
       operationKind === null ||
       operationKinds.includes(operationKind) ||
-      !studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(record.program, authority)
+      !studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(record.program, authority, authorizedResizeCenters)
     ) {
       return { kind: "unauthorized" };
     }
@@ -587,6 +626,24 @@ function runtimeTraceTerminalPendingPositionV1(
   return authority.baseCenter;
 }
 
+function runtimeTraceTerminalPendingDimensionsV1(
+  records: readonly ProgramRecord[],
+  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
+) {
+  for (const record of records) {
+    const operation = record.program.operations[0];
+    if (
+      operation?.kind === "ResizeEntity" &&
+      operation.shape === "rectangle" &&
+      typeof operation.to.dimensions.height === "number" &&
+      typeof operation.to.dimensions.width === "number"
+    ) {
+      return { height: operation.to.dimensions.height, width: operation.to.dimensions.width };
+    }
+  }
+  return authority.sourceDimensions;
+}
+
 /**
  * Small, profile-specific state machine for the only updater-backed edit
  * family. An authorized edit remains pending across scrub and Apply; a second
@@ -613,6 +670,7 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiStateV1(
   const pending = authorizedEdit
     ? {
         baseFrameRetained: input.atExactAnchor && input.retainedAuthority !== null,
+        dimensions: runtimeTraceTerminalPendingDimensionsV1(input.programRecords, evidenceAuthority),
         position: runtimeTraceTerminalPendingPositionV1(input.programRecords, evidenceAuthority),
         profile: "updaters-terminal-v1" as const,
         sourceAnchor: evidenceAuthority.sourceAnchor,
