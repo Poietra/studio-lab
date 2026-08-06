@@ -8,6 +8,7 @@ import {
 
 const requiredEnvironment = {
   POIETRA_STRIPE_E2E_DATABASE_URL: "postgresql://stripe_e2e:password@127.0.0.1:5432/poietra_stripe_e2e",
+  POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID: "bpc_sandbox_portal",
   POIETRA_STRIPE_E2E_PRICE_ID: "price_sandbox_pro",
   POIETRA_STRIPE_E2E_REQUIRED: "1",
   POIETRA_STRIPE_E2E_SECRET_KEY: "sk_test_sandbox_secret",
@@ -33,6 +34,18 @@ describe("Stripe Sandbox E2E support", () => {
           POIETRA_STRIPE_E2E_SECRET_KEY: "sk_test_sandbox_secret",
         }),
       ).toThrow(/POIETRA_STRIPE_E2E_PRICE_ID/u);
+      expect(() =>
+        resolveStripeSandboxE2eConfigurationV1({
+          ...requiredEnvironment,
+          POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID: "",
+        }),
+      ).toThrow(/POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID/u);
+      expect(() =>
+        resolveStripeSandboxE2eConfigurationV1({
+          ...requiredEnvironment,
+          POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID: "bpc-live-or-malformed",
+        }),
+      ).toThrow(/Customer Portal configuration ID/u);
       expect(fetchRequest).not.toHaveBeenCalled();
     } finally {
       fetchRequest.mockRestore();
@@ -42,6 +55,7 @@ describe("Stripe Sandbox E2E support", () => {
   it("accepts only an exact active recurring test Price", async () => {
     const configuration = resolveStripeSandboxE2eConfigurationV1(requiredEnvironment);
     if (!configuration) throw new Error("The required Stripe Sandbox fixture did not resolve.");
+    expect(configuration.portalConfigurationId).toBe(requiredEnvironment.POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID);
     const fetchRequest = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(
         JSON.stringify({

@@ -484,6 +484,15 @@ function checkoutCleanupLocators(value: unknown) {
   } as const;
 }
 
+function isCredentialFreeHttpsUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.origin !== "null" && !url.username && !url.password;
+  } catch {
+    return false;
+  }
+}
+
 async function usageEvidence(pool: Pool, tenantId: string) {
   const result = await pool.query<{ events: string; reservations: string }>(
     `SELECT (SELECT count(*)::text FROM public.usage_reservations WHERE tenant_id = $1) AS reservations,
@@ -495,8 +504,8 @@ async function usageEvidence(pool: Pool, tenantId: string) {
   return row;
 }
 
-describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admission", () => {
-  it("proves signed webhook reconciliation, deduplication, cancellation, and bounded cleanup", async () => {
+describe.skipIf(configuration === null)("Stripe Sandbox Checkout, Portal, and render admission", () => {
+  it("proves Portal binding, signed webhook reconciliation, deduplication, cancellation, and bounded cleanup", async () => {
     const options = configuredLane(configuration);
     await expect(validateStripeSandboxPriceV1(options)).resolves.toEqual({ id: options.priceId, livemode: false });
 
@@ -523,6 +532,14 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
     const stripeCustomerIds = new Set<string>();
     const stripeSubscriptionIds = new Set<string>();
     const canceledSubscriptionIds = new Set<string>();
+    let expectedPortalCustomerId: string | null = null;
+    let portalBindingEvidence: Readonly<{
+      configuredByServer: boolean;
+      customerBoundByServer: boolean;
+      responseBoundToRequest: boolean;
+      returnedInTestMode: boolean;
+      returnUrlBoundByServer: boolean;
+    }> | null = null;
     try {
       try {
         browserHome = await mkdtemp(join(tmpdir(), "poietra-stripe-browser-"));
@@ -557,6 +574,21 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
           stripeCheckoutSessionIds.add(checkout.id);
           return checkout;
         },
+        async createPortalSession(...args: Parameters<typeof stripeGateway.createPortalSession>) {
+          const [input] = args;
+          const portal = await stripeGateway.createPortalSession(...args);
+          portalBindingEvidence = Object.freeze({
+            configuredByServer: input.configurationId === options.portalConfigurationId,
+            customerBoundByServer: expectedPortalCustomerId !== null && input.customerId === expectedPortalCustomerId,
+            responseBoundToRequest:
+              portal.configurationId === input.configurationId &&
+              portal.customerId === input.customerId &&
+              portal.returnUrl === input.returnUrl,
+            returnedInTestMode: portal.livemode === false,
+            returnUrlBoundByServer: input.returnUrl === "https://stripe-e2e.poietra.invalid/?billing=portal-return",
+          });
+          return portal;
+        },
       });
       service = createStripeBillingServiceV1({
         catalog: createStripeCheckoutPlanCatalogV1({
@@ -564,6 +596,7 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
         }),
         gateway: recordingGateway,
         livemode: false,
+        portalConfigurationId: options.portalConfigurationId,
         publicOrigin: "https://stripe-e2e.poietra.invalid",
         repository: stripeRepository,
         webhookSigningSecret: forwarder.signingSecret,
@@ -637,6 +670,23 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
       stripeCustomerIds.add(stripeCustomerId);
       stripeSubscriptionIds.add(stripeSubscriptionId);
       expect(subscription).toMatchObject({ livemode: false, planKey: "pro", status: "active" });
+
+      expectedPortalCustomerId = stripeCustomerId;
+      const statusBeforePortal = await service.readStatus({ principal });
+      const accountBeforePortal = await stripeRepository.readAccount(tenantId);
+      const subscriptionBeforePortal = await stripeRepository.readCurrentSubscription(tenantId);
+      const portal = await service.openPortal({ principal });
+      expect(isCredentialFreeHttpsUrl(portal.portalUrl)).toBe(true);
+      expect(portalBindingEvidence).toEqual({
+        configuredByServer: true,
+        customerBoundByServer: true,
+        responseBoundToRequest: true,
+        returnedInTestMode: true,
+        returnUrlBoundByServer: true,
+      });
+      await expect(service.readStatus({ principal })).resolves.toEqual(statusBeforePortal);
+      await expect(stripeRepository.readAccount(tenantId)).resolves.toEqual(accountBeforePortal);
+      await expect(stripeRepository.readCurrentSubscription(tenantId)).resolves.toEqual(subscriptionBeforePortal);
 
       const canceled = await stripeSandboxRequestV1(
         options,

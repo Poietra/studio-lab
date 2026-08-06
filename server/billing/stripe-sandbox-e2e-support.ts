@@ -24,6 +24,7 @@ const priceSchemaV1 = z
 
 export type StripeSandboxE2eConfigurationV1 = Readonly<{
   databaseUrl: string;
+  portalConfigurationId: string;
   priceId: string;
   secretKey: string;
   stripeCliPath: string;
@@ -84,12 +85,17 @@ export function resolveStripeSandboxE2eConfigurationV1(
   if (!/^price_[A-Za-z0-9_]{1,247}$/u.test(priceId)) {
     throw new TypeError("Stripe Sandbox E2E price ID is invalid.");
   }
+  const portalConfigurationId = requiredEnvironmentValue(environment, "POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID");
+  if (!/^bpc_[A-Za-z0-9_]{1,247}$/u.test(portalConfigurationId)) {
+    throw new TypeError("Stripe Sandbox E2E Customer Portal configuration ID is invalid.");
+  }
   const stripeCliPath = environment.POIETRA_STRIPE_E2E_STRIPE_CLI ?? "stripe";
   if (stripeCliPath.length === 0 || stripeCliPath.length > 4_096 || /[\u0000-\u001f\u007f]/u.test(stripeCliPath)) {
     throw new TypeError("Stripe Sandbox E2E CLI path is invalid.");
   }
   return Object.freeze({
     databaseUrl: databaseUrl(requiredEnvironmentValue(environment, "POIETRA_STRIPE_E2E_DATABASE_URL")),
+    portalConfigurationId,
     priceId,
     secretKey,
     stripeCliPath,
