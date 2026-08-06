@@ -106,3 +106,46 @@ fn prepared_clip_bounds_follow_dynamic_camera_hierarchy_and_lifetime() {
     assert_eq!(samples["a-repeat"], samples["a-first"]);
     assert_eq!(samples["a-after-end"], samples["a-first"]);
 }
+
+#[test]
+fn interaction_bounds_keep_drawable_parent_separate_from_descendants() {
+    let (fixture, bundle) = load_fixture();
+    let session = EngineSessionV1::new(bundle.clone()).expect("dynamic fixture must install");
+    let sample = fixture
+        .samples
+        .iter()
+        .find(|sample| sample.id == "a-first")
+        .expect("dynamic fixture must retain the first repeated sample");
+    let packet = session
+        .sample_render_packet(SampleEngineSessionOptionsV1 {
+            evidence: &[fixture.id, sample.id.clone()],
+            packet_id: &sample.packet_id,
+            sample_time: sample.sample_time,
+            viewport: sample.viewport.clone(),
+        })
+        .expect("the first dynamic sample must evaluate");
+    let prepared = prepare_frame_v1(&packet).expect("the first dynamic sample must prepare");
+    let parent_bounds = prepared
+        .clip_bounds_for_entity("dynamic-parent")
+        .expect("the drawable parent must have direct bounds");
+    let child_bounds = prepared
+        .clip_bounds_for_entity("asymmetric-child")
+        .expect("the drawable child must have direct bounds");
+    assert!(
+        child_bounds[0] < parent_bounds[0],
+        "the fixture child must extend beyond the parent so a descendant union is observable"
+    );
+
+    let interaction_bounds = prepared
+        .interaction_clip_bounds_by_entity(&bundle.scene)
+        .expect("the installed Scene must match its prepared packet");
+    assert_eq!(
+        interaction_bounds.get("dynamic-parent"),
+        Some(&parent_bounds),
+        "a drawable parent hit target must not absorb descendant-only geometry"
+    );
+    assert_eq!(
+        interaction_bounds.get("asymmetric-child"),
+        Some(&child_bounds)
+    );
+}
