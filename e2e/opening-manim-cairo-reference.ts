@@ -9,22 +9,26 @@ const SHA256 = z.string().regex(/^[0-9a-f]{64}$/u);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 const RGBA_BYTE_LENGTH = VIEWPORT.widthPx * VIEWPORT.heightPx * 4;
 
-export const OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V1 = {
+export const OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2 = {
   maximumPixelFractionAboveThreshold: 0.008,
   minimumSsim: 0.999,
   reason:
     "Independent Cairo and retained WebGPU edge antialiasing differ while preserving the exact OpeningManim geometry, timing, paint, and hold.",
 } as const;
 
-export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1 = [
+export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 = [
   ["initial", 0, 0],
-  ["animation-midpoint", 60, 1],
-  ["play-end", 120, 2],
-  ["wait-end", 179, 3],
+  ["opening-animation-midpoint", 60, 1],
+  ["opening-play-end", 120, 2],
+  ["opening-hold-last", 179, 179 / 60],
+  ["transform-start", 180, 3],
+  ["transform-midpoint", 210, 3.5],
+  ["transform-play-end", 240, 4],
+  ["wait-end", 299, 5],
 ] as const;
 
 function frameSchema(
-  id: (typeof OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1)[number][0],
+  id: (typeof OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2)[number][0],
   capturedFrameIndex: number,
   requestSampleTime: number,
 ) {
@@ -59,7 +63,7 @@ function artifactFileSchema(cacheFileName: string, path: string, byteLength: num
   });
 }
 
-export const openingManimCairoReferenceV1Schema = z.strictObject({
+export const openingManimCairoReferenceV2Schema = z.strictObject({
   frame: z.strictObject({
     background: z.literal("opaque-black"),
     camera: z.strictObject({ height: z.literal(8), width: z.literal(128 / 9) }),
@@ -69,9 +73,13 @@ export const openingManimCairoReferenceV1Schema = z.strictObject({
   }),
   frames: z.tuple([
     frameSchema("initial", 0, 0),
-    frameSchema("animation-midpoint", 60, 1),
-    frameSchema("play-end", 120, 2),
-    frameSchema("wait-end", 179, 3),
+    frameSchema("opening-animation-midpoint", 60, 1),
+    frameSchema("opening-play-end", 120, 2),
+    frameSchema("opening-hold-last", 179, 179 / 60),
+    frameSchema("transform-start", 180, 3),
+    frameSchema("transform-midpoint", 210, 3.5),
+    frameSchema("transform-play-end", 240, 4),
+    frameSchema("wait-end", 299, 5),
   ]),
   producer: z.strictObject({
     cairoLibrarySha256: SHA256,
@@ -119,6 +127,21 @@ export const openingManimCairoReferenceV1Schema = z.strictObject({
           "tex/basel.tex",
           281,
           "e931457a6a9eb28bf2c3d4be9881d4070484a446f60454f37df94fb5eff7ffe3",
+        ),
+      }),
+      z.strictObject({
+        role: z.literal("transform-title"),
+        svg: artifactFileSchema(
+          "476ae3b33141b587.svg",
+          "tex/transform-title.svg",
+          10_990,
+          "9c3c9259ea9028133a56221d2ba8d7ba4ad563df01f18b81e66382660098c912",
+        ),
+        tex: artifactFileSchema(
+          "476ae3b33141b587.tex",
+          "tex/transform-title.tex",
+          252,
+          "476ae3b33141b5871c85e4a346270324d88b8afea0f441a8ae59f424162834e9",
         ),
       }),
     ]),
@@ -169,8 +192,8 @@ export const openingManimCairoReferenceV1Schema = z.strictObject({
     className: z.literal("OpeningManim"),
     repository: z.literal("Poietra/fast-manim"),
     slice: z.strictObject({
-      duration: z.literal(3),
-      frameCount: z.literal(180),
+      duration: z.literal(5),
+      frameCount: z.literal(300),
       start: z.literal(0),
     }),
     sourcePath: z.literal("example_scenes/basic.py"),
@@ -178,7 +201,7 @@ export const openingManimCairoReferenceV1Schema = z.strictObject({
     texImplementation: z.literal("normal-manim-latex-dvisvgm"),
   }),
   schema: z.literal("poietra.opening-manim-cairo-reference"),
-  version: z.literal(1),
+  version: z.literal(2),
 });
 
 function sha256(bytes: Uint8Array | string) {
@@ -189,8 +212,8 @@ function requireDigest(actual: string, expected: string, label: string) {
   if (actual !== expected) throw new Error(`${label} hashes to ${actual}, expected ${expected}`);
 }
 
-export async function readOpeningManimCairoReferenceV1(root: string) {
-  const reference = openingManimCairoReferenceV1Schema.parse(
+export async function readOpeningManimCairoReferenceV2(root: string) {
+  const reference = openingManimCairoReferenceV2Schema.parse(
     JSON.parse(await readFile(join(root, "reference.json"), "utf8")),
   );
   const { identitySha256: producerDigest, ...producerIdentity } = reference.producer;
@@ -213,7 +236,7 @@ export async function readOpeningManimCairoReferenceV1(root: string) {
   }
 
   const frames = new Map<
-    (typeof OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V1)[number][0],
+    (typeof OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2)[number][0],
     Readonly<{ capturedFrameIndex: number; requestSampleTime: number; rgba: Uint8Array }>
   >();
   for (const frame of reference.frames) {
