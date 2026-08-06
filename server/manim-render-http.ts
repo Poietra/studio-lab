@@ -34,7 +34,10 @@ import {
   fastManimRuntimeTraceSceneIdV1,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
 } from "./fast-manim-runtime-trace-contract";
-import { selectFastManimRuntimeTraceProfile } from "./fast-manim-runtime-trace-profiles";
+import {
+  selectFastManimRuntimeTraceProfile,
+  selectFastManimRuntimeTraceSceneProfile,
+} from "./fast-manim-runtime-trace-profiles";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -495,7 +498,7 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
   let safeView: typeof run = run;
   if (run.status === "verified") {
-    const profile = selectFastManimRuntimeTraceProfile(request);
+    const profile = selectFastManimRuntimeTraceProfile(request) ?? selectFastManimRuntimeTraceSceneProfile(request);
     if (profile === null || run.runtimeConfigHash !== profile.runtimeConfigHash) {
       throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
     }

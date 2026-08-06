@@ -118,7 +118,7 @@ function safeInteger(value: unknown, minimum: number, maximum: number, label: st
   return value;
 }
 
-function bindingIdentifier(
+export function fastManimSourceBindingIdentifierV1(
   sourceHash: string,
   sceneId: string,
   binding: Readonly<{ name: string; ordinal: number; span: SourceBindingV1["span"] }>,
@@ -503,7 +503,8 @@ function parseBinding(
   };
   const id = boundedString(value.id, MAX_IDENTITY_STRING_BYTES, "binding.id");
   requireIdentity(
-    /^source-binding:[0-9a-f]{64}$/.test(id) && id === bindingIdentifier(sourceHash, sceneId, { name, ordinal, span }),
+    /^source-binding:[0-9a-f]{64}$/.test(id) &&
+      id === fastManimSourceBindingIdentifierV1(sourceHash, sceneId, { name, ordinal, span }),
     "A source binding identifier cannot be re-derived from its correlated source claim.",
   );
   const binding = { id, name, ordinal, span };

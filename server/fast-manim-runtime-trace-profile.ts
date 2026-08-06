@@ -35,8 +35,8 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
-    fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
+    fastManimCommit: "4ed7d01176438e612a8e9b6a080bf61ff906226e",
+    fastManimTree: "e1d62d7d0d4ceb238ea9afb68cfdedf1510e9a03",
     glyphProviderSha256: "b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322",
     manimVersion: "0.20.1",
     semanticsSha256: "abf581019158101abbe1597d265fcafa8da2fc9e40d986492e180a3f4ddc2172",
@@ -123,6 +123,42 @@ export function createFastManimRuntimeTraceProducerRequestV1(
     runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1
   ) {
     throw new TypeError("Runtime Trace V1 accepts only the exact reviewed UpdatersExample profile.");
+  }
+  return fastManimRuntimeTraceProducerRequestV1Schema.parse({
+    profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1,
+    projectId: run.projectId,
+    requestId: run.requestId,
+    runtimeConfig,
+    runtimeConfigHash,
+    sceneId,
+    sceneName: run.sceneName,
+    sceneOccurrence: FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V1,
+    schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V1,
+    sourceHash,
+    sourcePath: run.sourcePath,
+    sourceText,
+    version: FAST_MANIM_RUNTIME_TRACE_VERSION_V1,
+  });
+}
+
+/** Builds the wire request only; candidate authority is established later by
+ * exact source-plan and base-trace delta verification. */
+export function createFastManimRuntimeTraceCandidateProducerRequestV1(
+  run: FastManimRuntimeTraceRunRequestV1,
+  sourceText: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const runtimeConfig = createFastManimRuntimeTraceConfigV1(frame);
+  const runtimeConfigHash = digestFastManimRuntimeTraceConfigV1(runtimeConfig);
+  if (
+    run.sourcePath !== FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1 ||
+    run.sceneName !== FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1 ||
+    run.sourceHash !== sourceHash ||
+    sourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 ||
+    runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1
+  ) {
+    throw new TypeError("Runtime Trace V1 candidate request is outside the reviewed UpdatersExample profile.");
   }
   return fastManimRuntimeTraceProducerRequestV1Schema.parse({
     profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V1,

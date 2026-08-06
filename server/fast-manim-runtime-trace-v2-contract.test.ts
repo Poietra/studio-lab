@@ -85,8 +85,8 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     const v1 = trustedFastManimRuntimeTraceProducerV1();
     const v2 = trustedFastManimRuntimeTraceProducerV2();
     const producerIdentity = {
-      fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
-      fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
+      fastManimCommit: "4ed7d01176438e612a8e9b6a080bf61ff906226e",
+      fastManimTree: "e1d62d7d0d4ceb238ea9afb68cfdedf1510e9a03",
     };
 
     expect(v1.producer).toMatchObject(producerIdentity);
