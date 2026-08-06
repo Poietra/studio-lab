@@ -452,6 +452,7 @@ async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofReq
   if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
     throw new Error("Unexpected canvas ABI version.");
   }
+  let installCount = 0;
   const engine = await createCanvasEngine(
     bindings,
     request.snapshotJson,
@@ -459,6 +460,7 @@ async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofReq
     request.assetMetadataJson,
     request.assetBytes,
   );
+  installCount += 1;
 
   const frames = [];
   const renderSubmissionCounts: number[] = [];
@@ -475,7 +477,7 @@ async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofReq
 
   return {
     capture: {
-      installCount: 1,
+      installCount,
       policy: "one-retained-engine",
       renderSubmissionCounts,
     },

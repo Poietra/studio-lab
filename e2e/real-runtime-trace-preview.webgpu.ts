@@ -107,6 +107,12 @@ async function openOfficialRuntimeTrace(page: Page) {
 async function verifiedRuntimeTrace(page: Page) {
   const response = await openOfficialRuntimeTrace(page);
   expect(response.ok()).toBe(true);
+  const responseFailure = await response.finished();
+  if (responseFailure) {
+    throw new Error("The verified Runtime Trace response body did not finish downloading.", {
+      cause: responseFailure,
+    });
+  }
   const request = response.request().postDataJSON() as Record<string, unknown>;
   expect(request).toMatchObject({
     projectId: "real-preview-harness",
