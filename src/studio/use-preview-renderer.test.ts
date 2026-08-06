@@ -56,6 +56,7 @@ import {
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
+  studioPreviewRuntimeTraceOpeningSelectionProfileV2,
   studioPreviewRuntimeTraceOpeningTerminalEditSeedV2,
   studioPreviewRuntimeTraceTerminalAnchorIsExactV1,
   studioPreviewRuntimeTraceTerminalEditSeedV1,
@@ -1635,6 +1636,12 @@ describe("compileStudioPreviewSceneV1", () => {
         ]),
       ),
     };
+    const selectionProfile = studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
+    expect(selectionProfile).toEqual({
+      profile: "opening-grid-title-terminal-v2",
+      runtimeEntityId: trace.roots[3]?.id,
+      studioSceneId: "example_scenes/basic.py#OpeningManim",
+    });
     const seed = studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(snapshot);
     expect(seed).toEqual({
       duration: 15,
@@ -1652,6 +1659,56 @@ describe("compileStudioPreviewSceneV1", () => {
       sourceAnchor: 14,
       verifiedRuntimeEntityIds: trace.roots.map(({ id }) => id),
     });
+    const gridRuntimeId = trace.roots[2]?.id;
+    if (!seed || !gridRuntimeId) throw new Error("Expected the verified OpeningManim grid root.");
+    expect(
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+        authority: selectionProfile,
+        interactionGeometry: new Map([
+          [gridRuntimeId, { dimensions: { height: 310, width: 620 }, position: { x: 320, y: 180 } }],
+        ]),
+        sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        id: "source:example_scenes/basic.py#OpeningManim:grid",
+        position: { x: 320, y: 180 },
+        sourceIdentity: { kind: "known", value: "grid" },
+        type: "NumberPlane",
+      }),
+    ]);
+    expect(
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+        authority: selectionProfile,
+        interactionGeometry: new Map(),
+        sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
+      }),
+    ).toEqual([]);
+    const candidateSourceHash = HASH_C;
+    const candidateSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...snapshot,
+      correlation: {
+        ...snapshot.correlation,
+        context: { ...snapshot.correlation.context, sourceHash: candidateSourceHash },
+      },
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          source: { ...source, sourceHash: candidateSourceHash },
+        },
+      },
+    };
+    expect(studioPreviewRuntimeTraceOpeningSelectionProfileV2(candidateSnapshot)).toEqual(selectionProfile);
+    expect(studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(candidateSnapshot)).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceOpeningSelectionProfileV2({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map(
+          [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName !== "grid"),
+        ),
+      }),
+    ).toBeNull();
     expect(
       studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
         ...snapshot,

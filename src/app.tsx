@@ -1034,11 +1034,15 @@ export function App({
     previewRenderer?.runtimeTraceValidationPending ?? null,
   );
   const semanticVisibleEntityIds = new Set(semanticVisibleEntities.map(({ id }) => id));
+  const runtimeTraceOpaqueSelectionEntities = (previewRenderer?.runtimeTraceOpaqueSelectionEntities ?? []).filter(
+    ({ id }) => !semanticVisibleEntityIds.has(id),
+  );
   const visibleEntities = [
+    // Runtime-only groups such as NumberPlane can span the full frame. Keep
+    // their selection-only hit targets below semantic edit targets so the
+    // editable grid_title remains directly draggable at the same timestamp.
+    ...runtimeTraceOpaqueSelectionEntities,
     ...semanticVisibleEntities,
-    ...(previewRenderer?.runtimeTraceOpaqueSelectionEntities ?? []).filter(
-      ({ id }) => !semanticVisibleEntityIds.has(id),
-    ),
   ];
   const editableEntities = projectStudioPreviewRuntimeTraceTerminalEntityV1(
     projectStudioPreviewInitialEntityPresenceV1(

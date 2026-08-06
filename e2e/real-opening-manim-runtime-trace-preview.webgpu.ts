@@ -712,6 +712,12 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
   await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
   await expect(page.locator("[data-studio-preview-status]")).toContainText("selection only");
 
+  const editedGrid = page.getByRole("button", { exact: true, name: "Move grid" });
+  await expect(editedGrid).toBeVisible();
+  await expect(editedGrid).toHaveAttribute(
+    "title",
+    "This verified object can be selected, but source rewriting is unavailable.",
+  );
   const editedGridTitle = page.getByRole("button", { exact: true, name: "Move grid title" });
   await expect(editedGridTitle).toBeVisible();
   await dragBy(page, editedGridTitle, { x: 16, y: -8 });

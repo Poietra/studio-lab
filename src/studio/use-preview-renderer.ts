@@ -235,6 +235,12 @@ type StudioPreviewRuntimeTraceUpdatersSelectionProfileV1 = Readonly<{
   studioSceneId: string;
 }>;
 
+type StudioPreviewRuntimeTraceOpeningSelectionProfileV2 = Readonly<{
+  profile: "opening-grid-title-terminal-v2";
+  runtimeEntityId: string;
+  studioSceneId: string;
+}>;
+
 function runtimeTraceSnapshotCorrelationIsExact(
   snapshot: StudioVerifiedPreviewSnapshotV1,
   requirePristineWorkingRevision: boolean,
@@ -339,7 +345,33 @@ function studioPreviewRuntimeTraceUpdatersTerminalEditSeedV1(
 export function studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
 ): StudioPreviewRuntimeTraceTerminalEditSeedV1 | null {
-  if (!snapshot || !runtimeTraceSnapshotCorrelationIsExact(snapshot, true)) return null;
+  const selectionProfile = studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
+  if (!snapshot || !selectionProfile) return null;
+  const source = snapshot.snapshot.scene.source;
+  const context = snapshot.correlation.context;
+  if (
+    source.kind !== "imported-manim-runtime-trace" ||
+    source.sourceHash !== OPENING_TERMINAL_SOURCE_HASH_V2 ||
+    context.sourceHash !== OPENING_TERMINAL_SOURCE_HASH_V2 ||
+    context.workingRevision !== PRISTINE_WORKING_REVISION
+  ) {
+    return null;
+  }
+  return {
+    duration: 15,
+    profile: selectionProfile.profile,
+    runtimeEntityId: selectionProfile.runtimeEntityId,
+    sourceAnchor: OPENING_TERMINAL_SOURCE_ANCHOR_V2,
+    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:grid_title`,
+    studioSceneId: selectionProfile.studioSceneId,
+  };
+}
+
+/** Keeps reviewed OpeningManim roots selectable after a verified candidate reimport. */
+export function studioPreviewRuntimeTraceOpeningSelectionProfileV2(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+): StudioPreviewRuntimeTraceOpeningSelectionProfileV2 | null {
+  if (!snapshot || !runtimeTraceSnapshotCorrelationIsExact(snapshot, false)) return null;
   const scene = snapshot.snapshot.scene;
   const source = scene.source;
   const context = snapshot.correlation.context;
@@ -347,12 +379,9 @@ export function studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(
   if (
     source.kind !== "imported-manim-runtime-trace" ||
     source.traceVersion !== 2 ||
-    source.sourceHash !== OPENING_TERMINAL_SOURCE_HASH_V2 ||
     source.runtimeConfigHash !== OPENING_TERMINAL_RUNTIME_CONFIG_HASH_V2 ||
-    context.sourceHash !== OPENING_TERMINAL_SOURCE_HASH_V2 ||
     context.sourcePath !== OPENING_TERMINAL_SOURCE_PATH_V2 ||
     context.sceneName !== OPENING_TERMINAL_SCENE_NAME_V2 ||
-    context.workingRevision !== PRISTINE_WORKING_REVISION ||
     scene.duration !== 15 ||
     identity?.size !== 4
   ) {
@@ -390,11 +419,8 @@ export function studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(
   const gridTitle = identity.get("grid_title");
   if (!gridTitle) return null;
   return {
-    duration: 15,
     profile: "opening-grid-title-terminal-v2",
     runtimeEntityId: gridTitle.entityId,
-    sourceAnchor: OPENING_TERMINAL_SOURCE_ANCHOR_V2,
-    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:grid_title`,
     studioSceneId: `${context.sourcePath}#${context.sceneName}`,
   };
 }
@@ -845,8 +871,9 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiStateV1(
 }
 
 /**
- * The static importer intentionally does not model DecimalNumber/updaters.
- * For the sealed profile only, expose its verified runtime root as an opaque
+ * The static importer intentionally does not model runtime-only roots such as
+ * UpdatersExample's DecimalNumber or OpeningManim's generated NumberPlane.
+ * For the sealed profiles only, expose the exact verified root as an opaque
  * selector. Every semantic geometry field remains unknown and it is never
  * added to App's editable entity collection.
  */
@@ -858,8 +885,12 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1(
   }>,
 ): readonly ProjectedEntity[] {
   if (!input.authority || !input.interactionGeometry || !input.sourceRuntimeIdentity) return [];
-  const mapping = input.sourceRuntimeIdentity.get("decimal");
-  if (mapping?.sourceName !== "decimal") return [];
+  const target =
+    input.authority.profile === "updaters-terminal-v1"
+      ? { label: "decimal · runtime", sourceName: "decimal", type: "DecimalNumber" }
+      : { label: "grid", sourceName: "grid", type: "NumberPlane" };
+  const mapping = input.sourceRuntimeIdentity.get(target.sourceName);
+  if (mapping?.sourceName !== target.sourceName) return [];
   const geometry = input.interactionGeometry.get(mapping.entityId);
   if (!geometry) return [];
   const runtimeOnly = (field: string) => ({
@@ -868,21 +899,21 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1(
   });
   return [
     {
-      content: { displayLines: ["decimal"], label: "decimal · runtime" },
+      content: { displayLines: [target.sourceName], label: target.label },
       geometry: {
         dimensions: runtimeOnly("visual bounds"),
         position: runtimeOnly("position"),
         scale: runtimeOnly("scale"),
         style: runtimeOnly("paint"),
       },
-      id: `source:${input.authority.studioSceneId}:decimal`,
+      id: `source:${input.authority.studioSceneId}:${target.sourceName}`,
       opacity: 1,
       position: geometry.position,
       present: true,
       provisional: false,
       scale: 1,
-      sourceIdentity: { kind: "known", value: "decimal" },
-      type: "DecimalNumber",
+      sourceIdentity: { kind: "known", value: target.sourceName },
+      type: target.type,
     },
   ];
 }
@@ -1434,7 +1465,9 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const currentMetadata = studioPreviewSnapshotMetadataForWorkspaceV1(metadata, { provider, workspaceKey });
   const snapshot = currentMetadata.phase === "ready" ? currentMetadata.snapshot : null;
   const snapshotError = currentMetadata.phase === "failed" ? currentMetadata.error : null;
-  const runtimeTraceSelectionProfile = studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot);
+  const runtimeTraceSelectionProfile =
+    studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot) ??
+    studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
   const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
 
   useEffect(() => {
