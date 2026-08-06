@@ -17,13 +17,13 @@ import {
   createFastManimSnapshotProfileSelectionRequestV1,
 } from "./fast-manim-snapshot-profile-selection";
 import { MAX_PROJECT_PNG_BYTES_V1 } from "./storage/project-png-storage";
+import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import {
   localSandboxReadyStatus,
   productionSandboxReadyStatus,
   sandboxProducerRequest,
   sandboxProducerRequestV9,
 } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
-import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 function crc32(bytes: Uint8Array) {
