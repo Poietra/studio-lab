@@ -376,9 +376,21 @@ async function validateVerifiedRuntimeTraceRun(
 
   const expectedProfile =
     identity.sceneName === "UpdatersExample" && source.traceVersion === 1 && bundle.scene.duration === 6
-      ? ({ rootNames: ["square", "decimal"] } as const)
-      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 5
-        ? ({ rootNames: ["title", "basel"] } as const)
+      ? ({
+          roots: [
+            { bindingName: "square", role: "square" },
+            { bindingName: "decimal", role: "decimal" },
+          ],
+        } as const)
+      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 9
+        ? ({
+            roots: [
+              { bindingName: "title", role: "title" },
+              { bindingName: "basel", role: "basel" },
+              { bindingName: "grid", role: "grid" },
+              { bindingName: "grid_title", role: "grid-title" },
+            ],
+          } as const)
         : null;
   if (!expectedProfile) {
     throw providerError("The Runtime Trace preview does not match a reviewed Scene profile.");
@@ -390,13 +402,16 @@ async function validateVerifiedRuntimeTraceRun(
     Readonly<{ bindingId: string; entityId: string; sourceName: string }>
   >();
   let motionRootId: string | null = null;
-  for (const [index, sourceName] of expectedProfile.rootNames.entries()) {
+  if (run.roots.length !== expectedProfile.roots.length) {
+    throw providerError("The Runtime Trace source roots do not match the reviewed profile.");
+  }
+  for (const [index, expectedRoot] of expectedProfile.roots.entries()) {
     const root = run.roots[index];
     const entity = root ? entities.get(root.entityId) : undefined;
     if (
       !root ||
-      root.binding.name !== sourceName ||
-      root.entityId !== `${canonicalSceneId}/runtime-root:${sourceName}` ||
+      root.binding.name !== expectedRoot.bindingName ||
+      root.entityId !== `${canonicalSceneId}/runtime-root:${expectedRoot.role}` ||
       !entity ||
       entity.geometry.kind !== "group" ||
       entity.parentId === null ||
@@ -405,10 +420,10 @@ async function validateVerifiedRuntimeTraceRun(
       throw providerError("The Runtime Trace source roots do not name the exact reviewed nested groups.");
     }
     motionRootId = entity.parentId;
-    sourceRuntimeIdentity.set(sourceName, {
+    sourceRuntimeIdentity.set(expectedRoot.bindingName, {
       bindingId: root.binding.id,
       entityId: root.entityId,
-      sourceName,
+      sourceName: expectedRoot.bindingName,
     });
   }
   const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);

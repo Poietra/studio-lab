@@ -279,20 +279,26 @@ async function verifiedOpeningRuntimeTraceRun() {
   const traceDigest = "e".repeat(64);
   const provenanceId = `${sceneId}/provenance:runtime-trace-v2`;
   const rootId = `${sceneId}/runtime-trace-v2:root`;
-  const roots = (["title", "basel"] as const).map((name, index) => ({
+  const profiles = [
+    { line: 20, name: "title", ordinal: 1, role: "title" },
+    { line: 21, name: "basel", ordinal: 2, role: "basel" },
+    { line: 37, name: "grid", ordinal: 4, role: "grid" },
+    { line: 38, name: "grid_title", ordinal: 5, role: "grid-title" },
+  ] as const;
+  const roots = profiles.map(({ line, name, ordinal, role }, index) => ({
     binding: {
       id: `source-binding:${String(index + 1).repeat(64)}`,
       name,
-      ordinal: index + 1,
-      span: { endColumn: 13, endLine: 20 + index, startColumn: 8, startLine: 20 + index },
+      ordinal,
+      span: { endColumn: 13, endLine: line, startColumn: 8, startLine: line },
     },
-    entityId: `${sceneId}/runtime-root:${name}`,
+    entityId: `${sceneId}/runtime-root:${role}`,
   }));
   const group = (id: string, parentId: string | null, sceneOrder: number) => ({
     appearance: { kind: "group" as const, opacity: 1 },
     geometry: { kind: "group" as const },
     id,
-    lifetimes: [{ end: 5, start: 0 }],
+    lifetimes: [{ end: 9, start: 0 }],
     parentId,
     provenanceId,
     sceneOrder,
@@ -300,19 +306,19 @@ async function verifiedOpeningRuntimeTraceRun() {
     transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
   });
   const leaves = roots.map((root, index) => ({
-    ...bundleFixture.scene.entities[index]!,
+    ...bundleFixture.scene.entities[index % bundleFixture.scene.entities.length]!,
     id: `${root.entityId}/runtime-draw:0`,
-    lifetimes: [{ end: 5, start: 0 }],
+    lifetimes: [{ end: 9, start: 0 }],
     parentId: root.entityId,
     provenanceId,
-    sceneOrder: index + 3,
+    sceneOrder: index + 5,
   }));
   const bundle = await parseVerifiedSceneIrBundleV1({
     assets: bundleFixture.assets,
     scene: {
       ...bundleFixture.scene,
       animationChannels: [],
-      duration: 5,
+      duration: 9,
       entities: [
         group(rootId, null, 0),
         ...roots.map((root, index) => group(root.entityId, rootId, index + 1)),
@@ -403,7 +409,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
-  it("accepts the reviewed five-second OpeningManim V2 profile and its title/basel roots", async () => {
+  it("accepts the reviewed nine-second OpeningManim V2 profile and all four source roots", async () => {
     const run = await verifiedOpeningRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
     const loaded = await createServerPreviewSnapshotProviderV1({
@@ -414,15 +420,15 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
     expect(loaded).toMatchObject({
       correlation: {
-        context: { ...openingRuntimeTraceIdentity, sourceDuration: 5, workingRevision: "pristine" },
+        context: { ...openingRuntimeTraceIdentity, sourceDuration: 9, workingRevision: "pristine" },
         engineRevisionHash: run.traceDigest,
-        sceneDuration: 5,
+        sceneDuration: 9,
         serverPublicationRevision: null,
       },
-      duration: 5,
+      duration: 9,
       sourceLabel: "verified Runtime Trace",
     });
-    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel"]);
+    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel", "grid", "grid_title"]);
   });
 
   it("rejects downgraded, mistimed, reordered, or substituted OpeningManim V2 evidence", async () => {
@@ -447,10 +453,13 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     await expect(
       load({
         ...run,
-        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 6 } },
+        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 10 } },
       }),
     ).rejects.toThrow("reviewed Scene profile");
-    await expect(load({ ...run, roots: [run.roots[1], run.roots[0]] })).rejects.toThrow("exact reviewed nested groups");
+    await expect(load({ ...run, roots: run.roots.slice(0, 3) })).rejects.toThrow("malformed evidence");
+    await expect(load({ ...run, roots: [run.roots[1], run.roots[0], ...run.roots.slice(2)] })).rejects.toThrow(
+      "exact reviewed nested groups",
+    );
 
     const runtimeLeaf = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
     if (!runtimeLeaf) throw new Error("OpeningManim V2 provider fixture has no drawable leaf.");

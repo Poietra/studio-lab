@@ -116,12 +116,12 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "e503b49d5eb54ee0e754a24b49ab1dd7040ff93c0a169391671b99c090d4045b",
+      "fedab2da1c26a9a39aa98388ac3321fa51d58f1006813c7af58fb096f66f8bc8",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
-        fastManimCommit: "b0147ec8b5dd2f11809816043d666d6981652c50",
-        fastManimTree: "d27cf706cc62892a5dc1d42b289691113efe0472",
+        fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
+        fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
       },
     });
     const backend = new ArtifactBackend(artifact);
@@ -135,7 +135,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "8e0bd0aec40783c5f5d64aad9fd14d7880ddeb5444293d40168749508dd2456a",
+        traceDigest: "1811e029cc91072e45fee831403f61952d84c820f0137ec7a02c76132420ce04",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
@@ -150,24 +150,24 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     expect(JSON.stringify(view)).not.toContain(RUNTIME_TRACE_SOURCE_TEXT.slice(0, 32));
   });
 
-  it("dispatches the exact OpeningManim request to V2 and lowers its real artifact", async () => {
+  it("dispatches the exact OpeningManim request to V2 and lowers its real artifact", { timeout: 30_000 }, async () => {
     const backend = new ArtifactBackend(await officialOpeningArtifact());
     const view = await runner(await projectRoot(), backend).runRuntimeTrace(openingRequest);
 
     if (view.status !== "verified") throw new Error(JSON.stringify(view));
     const bundle = await parseVerifiedSceneIrBundleV1(view.bundle);
     expect(bundle.scene).toMatchObject({
-      duration: 5,
+      duration: 9,
       source: {
         kind: "imported-manim-runtime-trace",
-        runtimeConfigHash: "9844e214f8ffe18883a4faecb6bf33360c5ec3fdb7532ab3a419e71a5071c4ea",
+        runtimeConfigHash: "9a43934058d9d90db28661a310c9a6aa177826b2ba8baf42b42d4691dcf5c1c4",
         traceVersion: 2,
       },
     });
-    expect(bundle.scene.entities).toHaveLength(69);
-    expect(bundle.scene.animationChannels).toHaveLength(113);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(21_081);
-    expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel"]);
+    expect(bundle.scene.entities).toHaveLength(106);
+    expect(bundle.scene.animationChannels).toHaveLength(171);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(10_559);
+    expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
     expect(backend.requests).toHaveLength(1);
     expect(backend.requests[0]).toMatchObject({
       profileVersion: 2,
@@ -176,7 +176,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       version: 2,
     });
     const responseBytes = Buffer.byteLength(JSON.stringify(view), "utf8");
-    expect(responseBytes).toBe(8_200_241);
+    expect(responseBytes).toBe(6_817_262);
     expect(responseBytes).toBeLessThan(8 * 1024 * 1024 + 64 * 1024);
   });
 
@@ -220,12 +220,18 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       root,
       new ArtifactBackend(new Uint8Array(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2)),
     ).runRuntimeTrace(openingRequest);
+    const atBodyLimitWithCliLineFeed = new Uint8Array(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1);
+    atBodyLimitWithCliLineFeed[atBodyLimitWithCliLineFeed.length - 1] = 0x0a;
+    const withCliLineFeed = await runner(root, new ArtifactBackend(atBodyLimitWithCliLineFeed)).runRuntimeTrace(
+      openingRequest,
+    );
     const overLimit = await runner(
       root,
       new ArtifactBackend(new Uint8Array(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1)),
     ).runRuntimeTrace(openingRequest);
 
     expect(atLimit).toMatchObject({ failure: { code: "result-rejected" }, status: "failed" });
+    expect(withCliLineFeed).toMatchObject({ failure: { code: "result-rejected" }, status: "failed" });
     expect(overLimit).toMatchObject({ failure: { code: "producer-output-overflow" }, status: "failed" });
   });
 });

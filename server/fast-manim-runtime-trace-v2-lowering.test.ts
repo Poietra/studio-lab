@@ -19,16 +19,35 @@ async function frameAt(bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimR
   return result.frame;
 }
 
+function expectCompactedPlateausToRemainExact(
+  bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>,
+) {
+  const channel = bundle.scene.animationChannels.find(
+    (candidate) =>
+      candidate.kind === "vector-appearance" &&
+      candidate.entityId.endsWith("/runtime-root:title/runtime-draw:0/paint:fill"),
+  );
+  if (!channel) throw new Error("Expected the title fill appearance channel.");
+  const plateauEdges = channel.keyframes.slice(1).flatMap((current, index) => {
+    const previous = channel.keyframes[index]!;
+    return current.at - previous.at > 1 / 60 + 1e-12 ? [{ current, previous }] : [];
+  });
+  expect(plateauEdges.length).toBeGreaterThanOrEqual(2);
+  for (const { current, previous } of plateauEdges) {
+    expect(current.value).toEqual(previous.value);
+  }
+}
+
 describe("OpeningManim Runtime Trace V2 lowering", () => {
   it("maps captured presentation frames to existing retained Scene IR channels", async () => {
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(fixture());
 
     expect(bundle.scene.source).toMatchObject({ kind: "imported-manim-runtime-trace", traceVersion: 2 });
-    expect(bundle.scene.entities).toHaveLength(49);
-    expect(bundle.scene.entities.filter((entity) => entity.geometry.kind === "group")).toHaveLength(3);
-    expect(bundle.scene.animationChannels).toHaveLength(119);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(23_708);
-    expect(bundle.scene.entities.slice(3, 5).map(({ id }) => id)).toEqual([
+    expect(bundle.scene.entities).toHaveLength(86);
+    expect(bundle.scene.entities.filter((entity) => entity.geometry.kind === "group")).toHaveLength(5);
+    expect(bundle.scene.animationChannels).toHaveLength(197);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(9_345);
+    expect(bundle.scene.entities.slice(5, 7).map(({ id }) => id)).toEqual([
       expect.stringMatching(/runtime-draw:0\/paint:fill$/),
       expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
     ]);
@@ -41,6 +60,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
       "path-trim-animation",
       "vector-appearance-animation",
     ]);
+    expectCompactedPlateausToRemainExact(bundle);
 
     const initial = await frameAt(bundle, 0);
     expect(initial.packet.draws).toHaveLength(44);
@@ -61,6 +81,19 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     });
     expect(hold.packet.draws[32].opacity).toBe(1);
     expect(hold.packet.draws[32].transform.tx).toBe(1);
+
+    const gridStart = await frameAt(bundle, 5);
+    const gridMidpoint = await frameAt(bundle, 6.5);
+    const gridComplete = await frameAt(bundle, 479 / 60);
+    const finalHold = await frameAt(bundle, 539 / 60);
+    expect([gridStart, gridMidpoint, gridComplete, finalHold].map(({ packet }) => packet.draws.length)).toEqual([
+      67, 67, 67, 35,
+    ]);
+    expect(
+      [gridStart, gridMidpoint, gridComplete, finalHold].map(
+        ({ packet }) => packet.draws.filter((draw) => draw.kind === "path").length,
+      ),
+    ).toEqual([43, 66, 67, 35]);
 
     expect(await frameAt(bundle, 0.5)).toEqual(midpoint);
   });

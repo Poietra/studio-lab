@@ -1454,12 +1454,15 @@ export class FastManimSnapshotRunner {
       if (parsed.data.kind === "ok") {
         let resultBytes: Uint8Array;
         try {
-          resultBytes = copyFastManimSandboxUint8ArrayV1(
-            parsed.data.resultBytes,
+          const resultByteLimit =
             request.producerKind === "runtime-trace"
-              ? runtimeTraceResultMaxBytes
-              : MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
-          );
+              ? runtimeTraceResultMaxBytes + 1
+              : MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
+          resultBytes = copyFastManimSandboxUint8ArrayV1(parsed.data.resultBytes, resultByteLimit);
+          if (request.producerKind === "runtime-trace" && resultBytes.byteLength > runtimeTraceResultMaxBytes) {
+            if (resultBytes.at(-1) !== 0x0a) throw new RangeError("Runtime Trace output exceeds its JSON body limit.");
+            resultBytes = resultBytes.slice(0, -1);
+          }
         } catch (error) {
           if (request.producerKind === "runtime-trace" && error instanceof RangeError) {
             return {

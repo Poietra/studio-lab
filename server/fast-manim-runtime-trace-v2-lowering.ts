@@ -18,8 +18,8 @@ import {
 } from "./fast-manim-runtime-trace-v2-contract";
 import {
   expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  fastManimRuntimeTraceDrawIdentityV2,
   FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2,
   type FastManimRuntimeTraceV2,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
   MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2,
@@ -95,12 +95,24 @@ function groupEntity(id: string, parentId: string | null, sceneOrder: number, pr
   };
 }
 
-function keyframes<T>(values: readonly T[], frameIndexes: readonly number[]) {
+function compactChannelSamples<T>(values: readonly T[], frameIndexes: readonly number[]) {
   if (values.length !== frameIndexes.length)
     failSemantic("Runtime Trace V2 channel samples lost their frame identity.");
-  return values.map((value, index) => ({
-    at: frameIndexes[index]! / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
-    easingToNext: index === values.length - 1 ? null : ({ kind: "linear" } as const),
+  const keep = values.map((value, index) => {
+    if (index === 0 || index === values.length - 1) return true;
+    return !sameValue(value, values[index - 1]) || !sameValue(value, values[index + 1]);
+  });
+  return {
+    frameIndexes: frameIndexes.filter((_, index) => keep[index]),
+    values: values.filter((_, index) => keep[index]),
+  };
+}
+
+function keyframes<T>(values: readonly T[], frameIndexes: readonly number[]) {
+  const compacted = compactChannelSamples(values, frameIndexes);
+  return compacted.values.map((value, index) => ({
+    at: compacted.frameIndexes[index]! / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
+    easingToNext: index === compacted.values.length - 1 ? null : ({ kind: "linear" } as const),
     value,
   }));
 }
@@ -145,17 +157,6 @@ function drawTopologyRuns(draws: readonly RuntimeTraceDrawV2[], paths: ReadonlyM
   return mutableRuns as readonly DrawTopologyRun[];
 }
 
-function compactPathSamples(paths: readonly CubicPathV2[], frameIndexes: readonly number[]) {
-  const keep = paths.map((path, index) => {
-    if (index === 0 || index === paths.length - 1) return true;
-    return !sameValue(path, paths[index - 1]) || !sameValue(path, paths[index + 1]);
-  });
-  return {
-    frameIndexes: frameIndexes.filter((_, index) => keep[index]),
-    paths: paths.filter((_, index) => keep[index]),
-  };
-}
-
 function traceDigest(trace: VerifiedFastManimRuntimeTraceV2) {
   return createHash("sha256").update(canonicalJsonV1(trace), "utf8").digest("hex");
 }
@@ -165,11 +166,17 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.durationSeconds !== FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2 ||
     trace.frames.length !== FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires its complete five-second presentation grid.");
+    failSemantic("Runtime Trace V2 lowering requires its complete nine-second presentation grid.");
   }
   const roots = new Set(trace.roots.map((root) => root.id));
-  if (trace.roots.length !== 2 || trace.roots[0]?.role !== "title" || trace.roots[1]?.role !== "basel") {
-    failSemantic("Runtime Trace V2 lowering requires the exact title and basel source roots.");
+  if (
+    trace.roots.length !== 4 ||
+    !sameValue(
+      trace.roots.map((root) => root.role),
+      ["title", "basel", "grid", "grid-title"],
+    )
+  ) {
+    failSemantic("Runtime Trace V2 lowering requires the exact title, basel, grid, and grid-title source roots.");
   }
   const initial = trace.frames[0]?.draws;
   if (
@@ -178,7 +185,7 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.resources.paths.length < 1 ||
     trace.resources.paths.length > MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires exactly 31 stable union draw slots.");
+    failSemantic("Runtime Trace V2 lowering requires exactly 66 stable union draw slots.");
   }
   const drawIds = new Set(initial.map((draw) => draw.drawId));
   if (drawIds.size !== initial.length) failSemantic("Runtime Trace V2 draw identities must be unique.");
@@ -198,25 +205,27 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     }
     frame.draws.forEach((draw, drawIndex) => {
       const expected = initial[drawIndex];
-      const title = drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
-      const localOrder = title
-        ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[drawIndex]
-        : drawIndex - FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
-      const familyOrder = title ? drawIndex : localOrder;
-      const expectedRoot = title ? trace.roots[0]?.id : trace.roots[1]?.id;
+      const identity = fastManimRuntimeTraceDrawIdentityV2(trace.sceneId, drawIndex);
       if (
         !expected ||
-        draw.drawId !== `${expectedRoot}/runtime-draw:${localOrder}` ||
-        draw.rootId !== expectedRoot ||
+        draw.drawId !== identity.drawId ||
+        draw.rootId !== identity.rootId ||
         draw.paintOrder !== drawIndex ||
         draw.sourceZIndex !== 0 ||
-        !sameValue(draw.familyPath, [0, familyOrder]) ||
+        !sameValue(draw.familyPath, identity.familyPath) ||
         !roots.has(draw.rootId)
       ) {
         failSemantic(`Runtime Trace V2 frame ${frameIndex} changed draw identity at paint order ${drawIndex}.`);
       }
     });
-    const holdStart = frameIndex >= 240 ? 240 : frameIndex >= 120 && frameIndex < 180 ? 120 : null;
+    const holdStart =
+      frameIndex >= 480
+        ? 480
+        : frameIndex >= 240 && frameIndex < 300
+          ? 240
+          : frameIndex >= 120 && frameIndex < 180
+            ? 120
+            : null;
     if (holdStart !== null && frameIndex > holdStart && !sameValue(frame.draws, trace.frames[holdStart]?.draws)) {
       failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during a sealed Wait hold.`);
     }
@@ -330,11 +339,10 @@ function drawChannels(
     });
   }
   if (valuesChange(paths)) {
-    const compacted = compactPathSamples(paths, frameIndexes);
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-path-morph`,
-      keyframes: keyframes(compacted.paths, compacted.frameIndexes),
+      keyframes: keyframes(paths, frameIndexes),
       kind: "path-morph",
     });
   }

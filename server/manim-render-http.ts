@@ -509,13 +509,16 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     const source = bundle.scene.source;
     const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
     let motionRootId: string | null = null;
-    for (const [index, name] of profile.rootNames.entries()) {
+    if (run.roots.length !== profile.roots.length) {
+      throw new HttpError("The Runtime Trace operation returned invalid source roots.", 502);
+    }
+    for (const [index, expectedRoot] of profile.roots.entries()) {
       const root = run.roots[index];
       const entity = root ? entities.get(root.entityId) : undefined;
       if (
         !root ||
-        root.binding.name !== name ||
-        root.entityId !== `${sceneId}/runtime-root:${name}` ||
+        root.binding.name !== expectedRoot.bindingName ||
+        root.entityId !== `${sceneId}/runtime-root:${expectedRoot.role}` ||
         !entity ||
         entity.geometry.kind !== "group" ||
         entity.parentId === null ||

@@ -42,18 +42,18 @@ function producerRequest() {
 }
 
 describe("fast-manim Runtime Trace V2 request contract", () => {
-  it("seals the exact OpeningManim 0–5 second producer request", () => {
+  it("seals the exact OpeningManim 0–9 second producer request", () => {
     const value = producerRequest();
     const parsed = parseFastManimRuntimeTraceProducerRequestJsonV2(canonicalJsonV1(value));
 
     expect(FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2).toBe(
-      "9844e214f8ffe18883a4faecb6bf33360c5ec3fdb7532ab3a419e71a5071c4ea",
+      "9a43934058d9d90db28661a310c9a6aa177826b2ba8baf42b42d4691dcf5c1c4",
     );
     expect(parsed).toEqual(value);
     expect(parsed).toMatchObject({
       profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
       runtimeConfig: {
-        durationSeconds: 5,
+        durationSeconds: 9,
         frameRate: 60,
         profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
         version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
@@ -85,8 +85,8 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     const v1 = trustedFastManimRuntimeTraceProducerV1();
     const v2 = trustedFastManimRuntimeTraceProducerV2();
     const producerIdentity = {
-      fastManimCommit: "b0147ec8b5dd2f11809816043d666d6981652c50",
-      fastManimTree: "d27cf706cc62892a5dc1d42b289691113efe0472",
+      fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
+      fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
     };
 
     expect(v1.producer).toMatchObject(producerIdentity);
@@ -95,7 +95,7 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
       POIETRA_FAST_MANIM_COMMIT: producerIdentity.fastManimCommit,
       POIETRA_FAST_MANIM_TREE: producerIdentity.fastManimTree,
     });
-    expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel"]);
+    expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
   });
 
   it("rejects stale source, scene, config, and occurrence correlation", () => {
@@ -125,7 +125,7 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
   it("requires the canonical Cairo camera and exact V2 temporal profile", () => {
     const config = createFastManimRuntimeTraceConfigV2(frame);
     for (const changed of [
-      { ...config, durationSeconds: 6 },
+      { ...config, durationSeconds: 5 },
       { ...config, frameRate: 30 },
       { ...config, profileVersion: 1 },
       { ...config, camera: { ...config.camera, frameWidth: 16 } },

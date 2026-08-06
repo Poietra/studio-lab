@@ -45,22 +45,24 @@ const runtimeTraceRunBaseShape = {
   version: z.literal(1),
 };
 
+const runtimeTraceRunRootV1Schema = z
+  .object({
+    binding: sourceBindingV1Schema,
+    entityId: sourceIdentityV1Schema,
+  })
+  .strict();
+const runtimeTraceRunRootsV1Schema = z.union([
+  z.array(runtimeTraceRunRootV1Schema).length(2),
+  z.array(runtimeTraceRunRootV1Schema).length(4),
+]);
+
 /** Unpublished, request-scoped response consumed directly by Studio preview. */
 export const fastManimRuntimeTraceRunViewV1Schema = z.discriminatedUnion("status", [
   z
     .object({
       ...runtimeTraceRunBaseShape,
       bundle: z.unknown(),
-      roots: z
-        .array(
-          z
-            .object({
-              binding: sourceBindingV1Schema,
-              entityId: sourceIdentityV1Schema,
-            })
-            .strict(),
-        )
-        .length(2),
+      roots: runtimeTraceRunRootsV1Schema,
       status: z.literal("verified"),
       traceDigest: sha256V1Schema,
     })
