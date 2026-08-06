@@ -60,6 +60,7 @@ export type LoweredProgramBatchSource = Readonly<{
     kind:
       | "fast-manim-line-joints-v10"
       | "fast-manim-opening-terminal-v2"
+      | "fast-manim-square-to-circle-v8"
       | "fast-manim-updaters-terminal-v1"
       | "fast-manim-warp-square-v9"
       | "fast-manim-write-stuff-v12";
@@ -105,6 +106,10 @@ const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
+const SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_PATH_V8 = "example_scenes/basic.py";
+const SQUARE_TO_CIRCLE_SCENE_NAME_V8 = "SquareToCircle";
+const SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 =
+  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
 const WARP_SQUARE_OFFICIAL_SOURCE_PATH_V9 = "example_scenes/basic.py";
 const WARP_SQUARE_SCENE_NAME_V9 = "WarpSquare";
 const WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9 =
@@ -2022,6 +2027,159 @@ function boundedInitialTransformPlan(
   return { position, scale } as const;
 }
 
+function squareToCircleV8LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `SquareToCircle V8 initial position: ${message}`);
+}
+
+/**
+ * Lowers the one position edit admitted by the exact official SquareToCircle
+ * source family. The hidden Circle is dependency closure for Transform, not a
+ * second editable runtime entity: both source objects receive the same center
+ * before Create so the complete timeline remains one world-space translation.
+ */
+export function lowerSquareToCircleInitialPositionSourceV8(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramBatchSource | null {
+  if (
+    request.sourcePath !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_PATH_V8 ||
+    request.sceneName !== SQUARE_TO_CIRCLE_SCENE_NAME_V8
+  ) {
+    return null;
+  }
+  if (request.sourceHash !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8) {
+    squareToCircleV8LoweringError("the edit must be rebased from the pinned official source generation.");
+  }
+  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
+  if (!imported || imported.sourceHash !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8) {
+    squareToCircleV8LoweringError("the current source bytes are not the pinned official source generation.");
+  }
+  if (incoming !== null || request.destination !== null) {
+    squareToCircleV8LoweringError("Scene transitions are outside this bounded round-trip profile.");
+  }
+  if (
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0
+  ) {
+    squareToCircleV8LoweringError("the Studio frame and viewport must be finite and positive.");
+  }
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  if (
+    !Number.isFinite(cameraCenter.x) ||
+    !Number.isFinite(cameraCenter.y) ||
+    cameraCenter.x !== 0 ||
+    cameraCenter.y !== 0
+  ) {
+    squareToCircleV8LoweringError("the pinned static camera must remain centered.");
+  }
+
+  const expectedVariables = new Set(["circle", "square"]);
+  if (
+    Object.keys(imported.sourceVariables).length !== expectedVariables.size ||
+    request.sourceBindings.length !== expectedVariables.size ||
+    new Set(request.sourceBindings.map(({ sourceVariable }) => sourceVariable)).size !== expectedVariables.size ||
+    request.sourceBindings.some(
+      ({ entityId, sourceVariable }) =>
+        !expectedVariables.has(sourceVariable) || imported.sourceVariables[entityId] !== sourceVariable,
+    )
+  ) {
+    squareToCircleV8LoweringError("the exact imported `circle` and `square` source bindings are required.");
+  }
+  const squareBinding = request.sourceBindings.find(({ sourceVariable }) => sourceVariable === "square");
+  if (!squareBinding) squareToCircleV8LoweringError("the source-bound `square` target is unavailable.");
+
+  const programs = renderRequestPrograms(request);
+  if (programs.length !== 1 || entries.length !== 1) {
+    squareToCircleV8LoweringError("exactly one correlated position Program is accepted.");
+  }
+  const program = programs[0]!;
+  const sourceAnchorIsZero =
+    (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
+    (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0);
+  if (!sourceAnchorIsZero) {
+    squareToCircleV8LoweringError("the Program source authority must resolve exactly to source time zero.");
+  }
+  const { position, scale } = boundedInitialTransformPlan(
+    request,
+    entries,
+    squareBinding.entityId,
+    "`square`",
+    squareToCircleV8LoweringError,
+  );
+  if (position === null || scale !== null) {
+    squareToCircleV8LoweringError("only one finite absolute position edit is accepted.");
+  }
+  const worldPosition = {
+    x: (position.x / request.viewport.width - 0.5) * frame.width,
+    y: (0.5 - position.y / request.viewport.height) * frame.height,
+  };
+  if (
+    !Number.isFinite(worldPosition.x) ||
+    !Number.isFinite(worldPosition.y) ||
+    Math.abs(worldPosition.x) > MAX_COORDINATE ||
+    Math.abs(worldPosition.y) > MAX_COORDINATE
+  ) {
+    squareToCircleV8LoweringError("the requested position is outside Studio's bounded coordinate range.");
+  }
+  const target = pointExpression(position, frame, request.viewport);
+  if (target === "(0, 0, 0)") {
+    throw new ProgramLoweringError("zero-delta", "SquareToCircle V8 position must change the source center.");
+  }
+
+  const statements = findSourceSceneStatements(source, request.sceneName, request.sourcePath);
+  const expectedStatements = [
+    "circle = Circle()",
+    "square = Square()",
+    "square.flip(RIGHT)",
+    "square.rotate(-3 * TAU / 8)",
+    "circle.set_fill(PINK, opacity=0.5)",
+    "self.play(Create(square))",
+    "self.play(Transform(square, circle))",
+    "self.play(FadeOut(square))",
+  ] as const;
+  if (
+    statements.length !== expectedStatements.length ||
+    expectedStatements.some((text, index) => statements[index]?.text !== text)
+  ) {
+    squareToCircleV8LoweringError(
+      "the exact Square to Circle Transform dependency and pre-play boundary are unavailable.",
+    );
+  }
+  const setup = statements[4]!;
+  const firstPlay = statements[5]!;
+  if (setup.line >= firstPlay.line) {
+    squareToCircleV8LoweringError("the paired position edit must precede the first play.");
+  }
+
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const indentation = lines[setup.line]?.match(/^\s*/)?.[0] ?? "";
+  if (indentation !== "        ") {
+    squareToCircleV8LoweringError("the pinned pre-play setup indentation changed.");
+  }
+  const insertedLines = [`${indentation}square.move_to(${target})`, `${indentation}circle.move_to(${target})`];
+  lines.splice(setup.line + 1, 0, ...insertedLines);
+  return {
+    anchorLine: setup.line + 1,
+    anchorLines: [setup.line + 1],
+    insertedCode: insertedLines.join(newline),
+    preflight: {
+      baseSourceHash: SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
+      kind: "fast-manim-square-to-circle-v8",
+    },
+    source: lines.join(newline),
+  };
+}
+
 export function lowerWarpSquareInitialTransformSourceV9(
   source: string,
   request: ProgramRenderRequest,
@@ -3072,6 +3230,8 @@ export function lowerCanonicalProgramBatchSource(
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
 ): LoweredProgramBatchSource {
+  const squareToCircleV8 = lowerSquareToCircleInitialPositionSourceV8(source, request, entries, frame, incoming);
+  if (squareToCircleV8) return squareToCircleV8;
   const warpSquareV9 = lowerWarpSquareInitialTransformSourceV9(source, request, entries, frame, incoming);
   if (warpSquareV9) return warpSquareV9;
   const lineJointsV10 = lowerLineJointsInitialTransformSourceV10(source, request, entries, frame, incoming);

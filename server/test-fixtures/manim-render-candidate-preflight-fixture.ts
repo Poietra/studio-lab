@@ -15,6 +15,9 @@ export const CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1 = await readFile(
 const warpSquareEngineFixture = JSON.parse(
   await readFile(new URL("../../fixtures/engine-v1/real-warp-square-v9.json", import.meta.url), "utf8"),
 ) as { assets: unknown; scene: Record<string, unknown> };
+const squareToCircleEngineFixture = JSON.parse(
+  await readFile(new URL("../../fixtures/engine-v1/real-square-to-circle-v8.json", import.meta.url), "utf8"),
+) as { assets: unknown; scene: Record<string, unknown> };
 const lineJointsEngineFixture = JSON.parse(
   await readFile(new URL("../../fixtures/engine-v1/real-line-joints-v10.json", import.meta.url), "utf8"),
 ) as { assets: unknown; scene: Record<string, unknown> };
@@ -29,9 +32,9 @@ type VerifiedCandidateBuilderV1 = (
 
 export type CandidatePreflightProfileFixtureV1 = Readonly<{
   candidateSnippet: string;
-  label: "LineJoints V10" | "WarpSquare V9" | "WriteStuff V12";
+  label: "LineJoints V10" | "SquareToCircle V8" | "WarpSquare V9" | "WriteStuff V12";
   request: () => ProgramRenderRequest;
-  snapshotVersion: 9 | 10 | 12;
+  snapshotVersion: 8 | 9 | 10 | 12;
   verifiedCandidate: VerifiedCandidateBuilderV1;
 }>;
 
@@ -154,6 +157,17 @@ function verifiedCandidate(
 }
 
 export const CANDIDATE_PREFLIGHT_PROFILES_V1: readonly CandidatePreflightProfileFixtureV1[] = [
+  {
+    candidateSnippet: "        circle.move_to(",
+    label: "SquareToCircle V8",
+    request: () =>
+      renderRequest("SquareToCircle", ["circle", "square"], "square", "square-to-circle-v8-initial-position"),
+    snapshotVersion: 8,
+    verifiedCandidate: (candidateSource, request) =>
+      verifiedCandidate(squareToCircleEngineFixture, candidateSource, request, [
+        { columnEnd: 14, familyPath: [], line: 75, name: "square", ordinal: 2, sceneOrder: 0 },
+      ]),
+  },
   {
     candidateSnippet: "        square.move_to(",
     label: "WarpSquare V9",
