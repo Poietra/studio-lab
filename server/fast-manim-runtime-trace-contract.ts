@@ -805,6 +805,17 @@ export function parseFastManimRuntimeTraceProducerJsonV1(
   value: string | Uint8Array,
   expected: ExpectedFastManimRuntimeTraceCorrelationV1,
 ) {
+  const parsed = parseFastManimRuntimeTraceSelfSealedJsonV1(value);
+  assertRuntimeTraceCorrelation(parsed, expectedFastManimRuntimeTraceCorrelationV1Schema.parse(expected));
+  return parsed;
+}
+
+/**
+ * Crosses only the bounded wire and content-addressing contract. The returned
+ * document is not publication authority until a caller independently verifies
+ * its request correlation, producer identity, roots, and visual semantics.
+ */
+export function parseFastManimRuntimeTraceSelfSealedJsonV1(value: string | Uint8Array) {
   const parsed = fastManimRuntimeTraceV1Schema.safeParse(
     parseRuntimeTraceJson(value, MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1, "result"),
   );
@@ -813,7 +824,6 @@ export function parseFastManimRuntimeTraceProducerJsonV1(
       cause: parsed.error,
     });
   }
-  assertRuntimeTraceCorrelation(parsed.data, expectedFastManimRuntimeTraceCorrelationV1Schema.parse(expected));
   return parsed.data;
 }
 

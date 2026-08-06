@@ -14,16 +14,25 @@ import {
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
-import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
+import {
+  canonicalFastManimRuntimeTraceCoordinateV1,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
+} from "./fast-manim-runtime-trace-contract";
+import {
+  lowerFastManimRuntimeTraceProducerJsonV1,
+  lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1,
+} from "./fast-manim-runtime-trace-lowering";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
 import {
+  RUNTIME_TRACE_SOURCE_TEXT,
   runtimeTraceFixture,
   runtimeTraceRequestFixture,
+  sealRuntimeTraceFixture,
   trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
@@ -632,6 +641,48 @@ describe("Runtime Trace preview routing", () => {
     } as const satisfies FastManimRuntimeTraceRunViewV1;
   }
 
+  async function verifiedEditedView() {
+    const source = RUNTIME_TRACE_SOURCE_TEXT.replace(
+      "            run_time=5,\n        )\n        self.wait()\n",
+      "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        decimal.update(0)\n        self.wait()\n",
+    );
+    const producerRequest = runtimeTraceRequestFixture(source);
+    const editedTrace = structuredClone(runtimeTraceFixture());
+    editedTrace.sourceHash = producerRequest.sourceHash;
+    editedTrace.roots.forEach((root) => {
+      root.binding.id = fastManimSourceBindingIdentifierV1(editedTrace.sourceHash, editedTrace.sceneId, root.binding);
+    });
+    for (let frameIndex = 300; frameIndex < editedTrace.frames.length; frameIndex += 1) {
+      const frame = editedTrace.frames[frameIndex];
+      frame.motionY = 2.5;
+      frame.draws[0].localPosition.x = 1.25;
+      for (const draw of frame.draws.slice(1)) {
+        draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + 1.25);
+      }
+    }
+    sealRuntimeTraceFixture(editedTrace);
+    const bundle = await lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(editedTrace);
+    const evidence = bundle.scene.source;
+    if (evidence.kind !== "imported-manim-runtime-trace") {
+      throw new Error("Expected edited Runtime Trace source evidence.");
+    }
+    return {
+      bundle,
+      projectId: editedTrace.projectId,
+      requestId: editedTrace.requestId,
+      roots: editedTrace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
+      runtimeConfigHash: editedTrace.runtimeConfigHash,
+      sceneId: editedTrace.sceneId,
+      sceneName: editedTrace.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: editedTrace.sourceHash,
+      sourcePath: editedTrace.sourcePath,
+      status: "verified",
+      traceDigest: evidence.traceDigest,
+      version: 1,
+    } as const satisfies FastManimRuntimeTraceRunViewV1;
+  }
+
   it("routes one correlated POST and leaves the endpoint unpublished", async () => {
     const view = await verifiedView();
     const runRuntimeTrace = vi.fn(async () => view);
@@ -657,6 +708,49 @@ describe("Runtime Trace preview routing", () => {
       expect(get.status).toBe(405);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("accepts an edited verified view but rejects an official bundle relabeled as that edit", async () => {
+    const [editedView, officialView] = await Promise.all([verifiedEditedView(), verifiedView()]);
+    const editedRequest = {
+      projectId: editedView.projectId,
+      requestId: editedView.requestId,
+      sceneName: editedView.sceneName,
+      sourceHash: editedView.sourceHash,
+      sourcePath: editedView.sourcePath,
+    };
+    const acceptedServer = await listen({
+      runRuntimeTrace: async () => editedView,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-edited" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    const staleServer = await listen({
+      runRuntimeTrace: async () => ({ ...editedView, bundle: officialView.bundle }),
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-edited-stale" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    const post = (port: number) =>
+      send(port, "/api/manim/projects/demo/runtime-traces", {
+        body: JSON.stringify(editedRequest),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+    try {
+      const [accepted, rejected] = await Promise.all([
+        post((acceptedServer.address() as AddressInfo).port),
+        post((staleServer.address() as AddressInfo).port),
+      ]);
+      expect(accepted.status).toBe(200);
+      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(editedView);
+      expect(rejected.status).toBe(502);
+    } finally {
+      await Promise.all(
+        [acceptedServer, staleServer].map(
+          (server) =>
+            new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+        ),
+      );
     }
   });
 

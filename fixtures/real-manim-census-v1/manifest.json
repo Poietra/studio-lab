@@ -10,9 +10,9 @@
   ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
-    "tree": "f6cae74330644d19bd0a5bf12a092c9840a83e90",
-    "digest": "952c5cc71da55f77c03d3b06a94742c3861c283d7bd935c7c51e7e06d1d4e919",
+    "revision": "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3",
+    "tree": "41516d8b866a891adb22f47064b9bba5545fae15",
+    "digest": "7575fce685f89bb42eaff86b01a505bc8d59ad61feaf849c7128141734e7c9c6",
     "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
     "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
     "module": "manim.renderer.source_runtime_identity",

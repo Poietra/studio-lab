@@ -356,6 +356,7 @@ export class ManimRenderManager {
       frame: this.frame,
       logger: this.logger,
       runner: this.snapshotRunner,
+      ...(this.runtimeTraceRunner ? { runtimeTraceRunner: this.runtimeTraceRunner } : {}),
     });
     const thumbnailCacheRoot = options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails");
     this.storageRoots = normalizeManimStorageRoots([this.projectRoot, thumbnailCacheRoot]);

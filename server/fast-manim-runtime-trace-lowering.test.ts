@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
+import { verifyFastManimRuntimeTraceTerminalCandidateV1 } from "./fast-manim-runtime-trace-candidate";
 import {
   canonicalFastManimRuntimeTraceCoordinateV1,
   digestFastManimRuntimeTraceAppearanceV1,
   digestFastManimRuntimeTracePathV1,
   type TrustedFastManimRuntimeTraceProducerV1,
 } from "./fast-manim-runtime-trace-contract";
-import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
+import {
+  lowerFastManimRuntimeTraceProducerJsonV1,
+  lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1,
+} from "./fast-manim-runtime-trace-lowering";
+import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import {
   RUNTIME_TRACE_CONFIG_HASH,
   RUNTIME_TRACE_SOURCE_TEXT,
@@ -38,7 +43,112 @@ async function frameAt(bundle: Awaited<ReturnType<typeof lower>>, sampleTime: nu
   return result.frame;
 }
 
+const terminalCandidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
+  "            run_time=5,\n        )\n        self.wait()\n",
+  "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        square.scale(0.5)\n        decimal.update(0)\n        self.wait()\n",
+);
+
+function terminalCandidateFixture() {
+  const base = runtimeTraceFixture();
+  const candidate = structuredClone(base);
+  const request = runtimeTraceRequestFixture(terminalCandidateSource);
+  candidate.sourceHash = request.sourceHash;
+  candidate.roots.forEach((root) => {
+    root.binding.id = fastManimSourceBindingIdentifierV1(candidate.sourceHash, candidate.sceneId, root.binding);
+  });
+
+  const officialSquarePath = candidate.resources.paths[0];
+  if (!officialSquarePath) throw new Error("Expected the Square path fixture.");
+  const scaledSquarePath = structuredClone(officialSquarePath.path);
+  for (const subpath of scaledSquarePath.subpaths) {
+    subpath.start.x = canonicalFastManimRuntimeTraceCoordinateV1(subpath.start.x * 0.5);
+    subpath.start.y = canonicalFastManimRuntimeTraceCoordinateV1(subpath.start.y * 0.5);
+    for (const segment of subpath.segments) {
+      for (const point of [segment.control1, segment.control2, segment.end]) {
+        point.x = canonicalFastManimRuntimeTraceCoordinateV1(point.x * 0.5);
+        point.y = canonicalFastManimRuntimeTraceCoordinateV1(point.y * 0.5);
+      }
+    }
+  }
+  const scaledSquarePathId = `path:${digestFastManimRuntimeTracePathV1(scaledSquarePath)}`;
+  candidate.resources.paths.push({ id: scaledSquarePathId, path: scaledSquarePath });
+
+  for (let frameIndex = 300; frameIndex < candidate.frames.length; frameIndex += 1) {
+    const frame = candidate.frames[frameIndex];
+    frame.motionY = 2.5;
+    frame.draws[0].localPosition.x = 1.25;
+    frame.draws[0].pathId = scaledSquarePathId;
+    for (const draw of frame.draws.slice(1)) {
+      draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + 0.75);
+    }
+  }
+  sealRuntimeTraceFixture(candidate);
+  return {
+    base,
+    request,
+    verified: verifyFastManimRuntimeTraceTerminalCandidateV1({
+      base,
+      candidate,
+      candidateRequest: request,
+      trusted: trustedRuntimeTraceProducer(base),
+    }),
+  };
+}
+
+function comparablePathDraw(draw: Awaited<ReturnType<typeof frameAt>>["packet"]["draws"][number]) {
+  if (draw.kind !== "path") throw new Error("Expected a path draw.");
+  return {
+    fill: draw.fill,
+    opacity: draw.opacity,
+    path: draw.path,
+    stroke: draw.stroke,
+    transform: draw.transform,
+  };
+}
+
 describe("fast-manim Runtime Trace V1 lowering", () => {
+  it("preserves frame 299 and folds terminal move, scale, and updater geometry into frame 300", async () => {
+    const { base, request, verified } = terminalCandidateFixture();
+    const [officialBundle, candidateBundle] = await Promise.all([
+      lower(base),
+      lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(verified),
+    ]);
+
+    expect(candidateBundle.scene.source).toMatchObject({
+      kind: "imported-manim-runtime-trace",
+      sourceHash: request.sourceHash,
+      traceVersion: 1,
+    });
+    expect(candidateBundle.scene.animationChannels).toEqual(officialBundle.scene.animationChannels);
+
+    const [officialProtected, candidateProtected, officialTerminal, candidateTerminal] = await Promise.all([
+      frameAt(officialBundle, 299 / 60),
+      frameAt(candidateBundle, 299 / 60),
+      frameAt(officialBundle, 5),
+      frameAt(candidateBundle, 5),
+    ]);
+    expect(candidateProtected.packet.draws.map(comparablePathDraw)).toEqual(
+      officialProtected.packet.draws.map(comparablePathDraw),
+    );
+
+    const officialSquare = comparablePathDraw(officialTerminal.packet.draws[0]);
+    const candidateSquare = comparablePathDraw(candidateTerminal.packet.draws[0]);
+    expect(candidateSquare.transform.tx).toBeCloseTo(1.25, 12);
+    expect(candidateSquare.transform.ty).toBeCloseTo(2.5, 12);
+    expect(candidateSquare.path.subpaths[0].segments[0].end.x).toBeCloseTo(
+      officialSquare.path.subpaths[0].segments[0].end.x * 0.5,
+      12,
+    );
+
+    const officialDecimal = officialTerminal.packet.draws.slice(1).map(comparablePathDraw);
+    const candidateDecimal = candidateTerminal.packet.draws.slice(1).map(comparablePathDraw);
+    expect(candidateDecimal).toHaveLength(9);
+    candidateDecimal.forEach((draw, index) => {
+      expect(draw.transform.tx).toBeCloseTo(officialDecimal[index].transform.tx + 0.75, 12);
+      expect(draw.transform.ty).toBeCloseTo(2.5, 12);
+    });
+  });
+
   it("normalizes the measured trace into existing Scene IR groups, states, and motion", async () => {
     const trace = runtimeTraceFixture();
     const bundle = await lower(trace);

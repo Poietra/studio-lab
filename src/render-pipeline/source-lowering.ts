@@ -1,3 +1,4 @@
+import { MAX_COORDINATE } from "../engine/primitives";
 import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
@@ -56,7 +57,11 @@ export type LoweredProgramBatchSource = Readonly<{
   insertedCode: string;
   preflight?: Readonly<{
     baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
-    kind: "fast-manim-line-joints-v10" | "fast-manim-warp-square-v9" | "fast-manim-write-stuff-v12";
+    kind:
+      | "fast-manim-line-joints-v10"
+      | "fast-manim-updaters-terminal-v1"
+      | "fast-manim-warp-square-v9"
+      | "fast-manim-write-stuff-v12";
   }>;
   source: string;
 }>;
@@ -109,6 +114,10 @@ const LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10 = WARP_SQUARE_OFFICIAL_SOURCE_SHA25
 const WRITE_STUFF_OFFICIAL_SOURCE_PATH_V12 = "example_scenes/basic.py";
 const WRITE_STUFF_SCENE_NAME_V12 = "WriteStuff";
 const WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
+const UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1 = "example_scenes/basic.py";
+const UPDATERS_TERMINAL_SCENE_NAME_V1 = "UpdatersExample";
+const UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
+const UPDATERS_TERMINAL_SOURCE_TIME_V1 = 5;
 
 type TemporalSourceMarker =
   | Readonly<{
@@ -2330,6 +2339,447 @@ export function lowerWriteStuffInitialTransformSourceV12(
   };
 }
 
+function updatersTerminalV1LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `UpdatersExample terminal edit V1: ${message}`);
+}
+
+function nearlyEqual(left: number, right: number) {
+  return Math.abs(left - right) <= 0.000001 * Math.max(1, Math.abs(left), Math.abs(right));
+}
+
+function exactUpdatersTerminalAnchor(program: CanonicalEditProgram) {
+  const source = program.anchor.source;
+  return (
+    (source.kind === "absolute" && source.seconds === UPDATERS_TERMINAL_SOURCE_TIME_V1) ||
+    (source.kind === "playhead" && source.referenceSeconds === UPDATERS_TERMINAL_SOURCE_TIME_V1)
+  );
+}
+
+function boundedUpdatersTerminalEditPlan(
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  squareEntityId: string,
+) {
+  const programs = renderRequestPrograms(request);
+  if (
+    programs.length < 1 ||
+    programs.length > 2 ||
+    entries.length !== programs.length ||
+    programs.some((program, index) => JSON.stringify(program) !== JSON.stringify(entries[index]?.program))
+  ) {
+    updatersTerminalV1LoweringError("one or two correlated terminal Programs are accepted.");
+  }
+
+  let position: Readonly<{ x: number; y: number }> | null = null;
+  let scale: number | null = null;
+  for (const { program, sourceAnchor } of entries) {
+    const operation = program.operations[0];
+    const expectedMode = operation?.kind === "ResizeEntity" ? "sequence" : "parallel";
+    if (
+      sourceAnchor !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
+      program.version !== EDIT_OPERATION_VERSION ||
+      program.anchor.capturedPlayhead !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
+      program.anchor.resolvedSeconds !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
+      !exactUpdatersTerminalAnchor(program) ||
+      program.intentCount !== 1 ||
+      program.loweringStatus !== "supported" ||
+      program.provenance.origin !== "direct-manipulation" ||
+      program.requestedExecution !== expectedMode ||
+      program.operations.length !== 1 ||
+      !operation ||
+      operation.dependsOn.length !== 0 ||
+      operation.provenance.origin !== "direct-manipulation" ||
+      program.schedule.mode !== expectedMode ||
+      program.schedule.edges.length !== 0 ||
+      program.schedule.order.length !== 1 ||
+      program.schedule.order[0] !== operation.id ||
+      operation.interval.start !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
+      operation.interval.end !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
+      !("entityId" in operation) ||
+      operation.entityId !== squareEntityId
+    ) {
+      updatersTerminalV1LoweringError(
+        "each edit must be one exact direct-manipulation operation on `square` at source time five.",
+      );
+    }
+
+    if (operation.kind === "SetProperty" && operation.key === "position") {
+      if (
+        position !== null ||
+        !isPoint(operation.value) ||
+        !Number.isFinite(operation.value.x) ||
+        !Number.isFinite(operation.value.y)
+      ) {
+        updatersTerminalV1LoweringError("position must be one finite absolute point.");
+      }
+      position = { x: operation.value.x, y: operation.value.y };
+      continue;
+    }
+
+    if (operation.kind === "ResizeEntity") {
+      const from = operation.from.dimensions;
+      const to = operation.to.dimensions;
+      const fromWidth = from.width;
+      const fromHeight = from.height;
+      const toWidth = to.width;
+      const toHeight = to.height;
+      const sameCenter =
+        Number.isFinite(operation.from.position.x) &&
+        Number.isFinite(operation.from.position.y) &&
+        Number.isFinite(operation.to.position.x) &&
+        Number.isFinite(operation.to.position.y) &&
+        nearlyEqual(operation.from.position.x, operation.to.position.x) &&
+        nearlyEqual(operation.from.position.y, operation.to.position.y);
+      if (
+        scale !== null ||
+        operation.shape !== "rectangle" ||
+        operation.scale !== 1 ||
+        from.radius !== undefined ||
+        to.radius !== undefined ||
+        typeof fromWidth !== "number" ||
+        typeof fromHeight !== "number" ||
+        typeof toWidth !== "number" ||
+        typeof toHeight !== "number" ||
+        !Number.isFinite(fromWidth) ||
+        !Number.isFinite(fromHeight) ||
+        !Number.isFinite(toWidth) ||
+        !Number.isFinite(toHeight) ||
+        fromWidth <= 0 ||
+        fromHeight <= 0 ||
+        toWidth <= 0 ||
+        toHeight <= 0 ||
+        !nearlyEqual(fromWidth, 2) ||
+        !nearlyEqual(fromHeight, 2) ||
+        !nearlyEqual(fromWidth, fromHeight) ||
+        !nearlyEqual(toWidth, toHeight) ||
+        !sameCenter
+      ) {
+        updatersTerminalV1LoweringError(
+          "resize must be one center-preserving positive uniform resize from the pinned 2x2 Square.",
+        );
+      }
+      const widthFactor = toWidth / fromWidth;
+      const heightFactor = toHeight / fromHeight;
+      if (
+        !Number.isFinite(widthFactor) ||
+        widthFactor <= 0 ||
+        widthFactor > MAX_COORDINATE ||
+        !nearlyEqual(widthFactor, heightFactor)
+      ) {
+        updatersTerminalV1LoweringError(
+          `resize must have one finite positive uniform scale factor at most ${MAX_COORDINATE}.`,
+        );
+      }
+      scale = widthFactor;
+      continue;
+    }
+
+    updatersTerminalV1LoweringError("only canonical position and positive uniform resize operations are accepted.");
+  }
+
+  if (position === null && scale === null) {
+    updatersTerminalV1LoweringError("the Programs contain no supported terminal edit.");
+  }
+  return { position, scale } as const;
+}
+
+export type UpdatersTerminalSourceEditPlanV1 = Readonly<{
+  anchorLine: number;
+  moveTo: Readonly<{ x: number; y: number; z: 0 }> | null;
+  refreshDependentUpdater: boolean;
+  scale: number | null;
+  sourceTime: typeof UPDATERS_TERMINAL_SOURCE_TIME_V1;
+}>;
+
+const UPDATERS_TERMINAL_BASE_STATEMENTS_V1 = [
+  "decimal = DecimalNumber(\n0,\nshow_ellipsis=True,\nnum_decimal_places=3,\ninclude_sign=True,\n)",
+  "square = Square().to_edge(UP)",
+  "decimal.add_updater(lambda d: d.next_to(square, RIGHT))",
+  "decimal.add_updater(lambda d: d.set_value(square.get_center()[1]))",
+  "self.add(square, decimal)",
+  "self.play(\nsquare.animate.to_edge(DOWN),\nrate_func=there_and_back,\nrun_time=5,\n)",
+] as const;
+
+function parseCanonicalUpdatersMoveV1(statement: string) {
+  const match = statement.match(/^square\.move_to\(\(([^,()]+), ([^,()]+), 0\)\)$/);
+  if (!match) return null;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    Math.abs(x) > MAX_COORDINATE ||
+    Math.abs(y) > MAX_COORDINATE ||
+    formatPointCoordinate(x) !== match[1] ||
+    formatPointCoordinate(y) !== match[2]
+  ) {
+    return null;
+  }
+  return { x, y, z: 0 as const };
+}
+
+function parseCanonicalUpdatersScaleV1(statement: string) {
+  const match = statement.match(/^square\.scale\(([^()]+)\)$/);
+  if (!match) return null;
+  const scale = Number(match[1]);
+  if (!Number.isFinite(scale) || scale <= 0 || scale > MAX_COORDINATE || formatPositiveAmount(scale) !== match[1]) {
+    return null;
+  }
+  return scale;
+}
+
+/**
+ * Independently derives the only edited-source plan admitted for the pinned
+ * UpdatersExample family. Removing the optional canonical statements must
+ * reproduce the exact official source bytes, so aliases, control flow,
+ * updater changes, reordered statements, and any unrelated edit fail closed.
+ */
+function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: string) {
+  if (sceneName !== UPDATERS_TERMINAL_SCENE_NAME_V1) {
+    updatersTerminalV1LoweringError("candidate Scene identity is outside the pinned profile.");
+  }
+  const analysis = analyzePythonSource(candidateSource);
+  const block = findSourceSceneBlock(
+    candidateSource,
+    UPDATERS_TERMINAL_SCENE_NAME_V1,
+    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
+  );
+  const statements = findSourceSceneStatements(
+    candidateSource,
+    UPDATERS_TERMINAL_SCENE_NAME_V1,
+    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
+  );
+  const play = statements[UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length - 1];
+  const wait = statements.at(-1);
+  const editStatements = statements.slice(UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length, -1);
+  const directStatementLines = block
+    ? analysis.lines
+        .slice(block.bodyStart, block.bodyEnd)
+        .flatMap((line, offset) => (isPythonStatementStart(line) ? [block.bodyStart + offset] : []))
+    : [];
+  if (
+    !analysis.valid ||
+    !block ||
+    block.bodyIndent !== 8 ||
+    statements.length < UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 1 ||
+    statements.length > UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 4 ||
+    UPDATERS_TERMINAL_BASE_STATEMENTS_V1.some((text, index) => statements[index]?.text !== text) ||
+    wait?.text !== "self.wait()" ||
+    directStatementLines.length !== statements.length ||
+    directStatementLines.some((line, index) => line !== statements[index]?.line) ||
+    directStatementLines.some((line) => analysis.lines[line]?.indentation !== block.bodyIndent) ||
+    !play ||
+    !wait ||
+    play.line + play.text.split("\n").length !== (editStatements[0]?.line ?? wait.line) ||
+    editStatements.some((statement, index) => statement.line + 1 !== (editStatements[index + 1]?.line ?? wait.line)) ||
+    analysis.lines[play.line]?.code.trim() !== "self.play(" ||
+    analysis.lines[wait.line]?.code.trim() !== "self.wait()" ||
+    analysis.lines[(editStatements[0]?.line ?? wait.line) - 1]?.bracketDepthAfter !== 0
+  ) {
+    updatersTerminalV1LoweringError(
+      "SourceAnalysis could not prove the direct boundary after the five-second play and before the final wait.",
+    );
+  }
+
+  const refreshDependentUpdater = editStatements.length > 0;
+  const transformStatements = refreshDependentUpdater ? editStatements.slice(0, -1) : editStatements;
+  if (refreshDependentUpdater && editStatements.at(-1)?.text !== "decimal.update(0)") {
+    updatersTerminalV1LoweringError(
+      "candidate edits must end with the exact `decimal.update(0)` dependent-updater refresh.",
+    );
+  }
+
+  let moveTo: Readonly<{ x: number; y: number; z: 0 }> | null = null;
+  let scale: number | null = null;
+  for (const [index, statement] of transformStatements.entries()) {
+    const parsedMove = parseCanonicalUpdatersMoveV1(statement.text);
+    if (parsedMove && moveTo === null && scale === null && index === 0) {
+      moveTo = parsedMove;
+      continue;
+    }
+    const parsedScale = parseCanonicalUpdatersScaleV1(statement.text);
+    if (parsedScale !== null && scale === null && (index === 0 || (index === 1 && moveTo !== null))) {
+      scale = parsedScale;
+      continue;
+    }
+    updatersTerminalV1LoweringError("candidate edits must be one canonical move followed by one canonical scale.");
+  }
+  if (refreshDependentUpdater && moveTo === null && scale === null) {
+    updatersTerminalV1LoweringError("the dependent-updater refresh requires one preceding terminal Square edit.");
+  }
+
+  const newline = candidateSource.includes("\r\n") ? "\r\n" : "\n";
+  const baseLines = candidateSource.split(/\r?\n/);
+  for (const statement of [...editStatements].reverse()) baseLines.splice(statement.line, 1);
+  const baseSource = baseLines.join(newline);
+  const importedBase = importManimScene(
+    baseSource,
+    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
+    UPDATERS_TERMINAL_SCENE_NAME_V1,
+  );
+  if (
+    !importedBase ||
+    importedBase.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1 ||
+    Object.keys(importedBase.sourceVariables).length !== 1 ||
+    !Object.values(importedBase.sourceVariables).includes("square")
+  ) {
+    updatersTerminalV1LoweringError("candidate bytes do not reduce to the pinned official source generation.");
+  }
+  return {
+    officialSource: baseSource,
+    plan: {
+      anchorLine: wait.line - editStatements.length,
+      moveTo,
+      refreshDependentUpdater,
+      scale,
+      sourceTime: UPDATERS_TERMINAL_SOURCE_TIME_V1,
+    } satisfies UpdatersTerminalSourceEditPlanV1,
+  } as const;
+}
+
+export function deriveUpdatersTerminalSourceEditPlanV1(
+  candidateSource: string,
+  sceneName: string,
+): UpdatersTerminalSourceEditPlanV1 {
+  return inspectUpdatersTerminalSourceV1(candidateSource, sceneName).plan;
+}
+
+/** Recovers only the exact pinned generation after the candidate family has
+ * passed the same SourceAnalysis proof used by lowering. */
+export function recoverUpdatersTerminalOfficialSourceV1(candidateSource: string, sceneName: string) {
+  const inspected = inspectUpdatersTerminalSourceV1(candidateSource, sceneName);
+  if ((inspected.plan.moveTo === null && inspected.plan.scale === null) || !inspected.plan.refreshDependentUpdater) {
+    updatersTerminalV1LoweringError("candidate source must contain one supported terminal edit.");
+  }
+  return inspected.officialSource;
+}
+
+/**
+ * Lowers the first bounded dynamic-Python edit family. SourceAnalysis owns the
+ * rewrite boundary; Runtime Trace evidence may identify the terminal Square,
+ * but it never authorizes source mutation by itself.
+ */
+export function lowerUpdatersTerminalTransformSourceV1(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramBatchSource | null {
+  if (
+    request.sourcePath !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1 ||
+    request.sceneName !== UPDATERS_TERMINAL_SCENE_NAME_V1
+  ) {
+    return null;
+  }
+  if (request.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1) {
+    updatersTerminalV1LoweringError("the edit must be rebased from the pinned official source generation.");
+  }
+  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
+  if (!imported || imported.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1) {
+    updatersTerminalV1LoweringError("the current source bytes are not the pinned official source generation.");
+  }
+  if (incoming !== null || request.destination !== null) {
+    updatersTerminalV1LoweringError("Scene transitions are outside this bounded round-trip profile.");
+  }
+  if (
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0
+  ) {
+    updatersTerminalV1LoweringError("the Studio frame and viewport must be finite and positive.");
+  }
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  if (
+    !Number.isFinite(cameraCenter.x) ||
+    !Number.isFinite(cameraCenter.y) ||
+    cameraCenter.x !== 0 ||
+    cameraCenter.y !== 0
+  ) {
+    updatersTerminalV1LoweringError("the pinned static camera must remain centered.");
+  }
+
+  if (
+    Object.keys(imported.sourceVariables).length !== 1 ||
+    request.sourceBindings.length !== 1 ||
+    request.sourceBindings[0]?.sourceVariable !== "square"
+  ) {
+    updatersTerminalV1LoweringError("the one exact imported `square` source binding is required.");
+  }
+  const binding = request.sourceBindings[0]!;
+  if (imported.sourceVariables[binding.entityId] !== "square") {
+    updatersTerminalV1LoweringError("the target does not match the pinned source-bound Square identity.");
+  }
+  const { position, scale } = boundedUpdatersTerminalEditPlan(request, entries, binding.entityId);
+  const expectedMove =
+    position === null
+      ? null
+      : {
+          x: (request.cameraCenter?.x ?? 0) + (position.x / request.viewport.width - 0.5) * frame.width,
+          y: (request.cameraCenter?.y ?? 0) + (0.5 - position.y / request.viewport.height) * frame.height,
+          z: 0 as const,
+        };
+  if (
+    expectedMove !== null &&
+    (!Number.isFinite(expectedMove.x) ||
+      !Number.isFinite(expectedMove.y) ||
+      Math.abs(expectedMove.x) > MAX_COORDINATE ||
+      Math.abs(expectedMove.y) > MAX_COORDINATE)
+  ) {
+    updatersTerminalV1LoweringError(
+      `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
+    );
+  }
+
+  const basePlan = deriveUpdatersTerminalSourceEditPlanV1(source, request.sceneName);
+  if (basePlan.moveTo !== null || basePlan.scale !== null || basePlan.refreshDependentUpdater) {
+    updatersTerminalV1LoweringError("the pinned base source must not contain a prior terminal edit.");
+  }
+
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const indentation = lines[basePlan.anchorLine]?.match(/^\s*/)?.[0] ?? "";
+  if (indentation !== "        ") {
+    updatersTerminalV1LoweringError("the pinned final-wait indentation changed.");
+  }
+  const insertedLines = [
+    ...(position === null
+      ? []
+      : [`${indentation}square.move_to(${pointExpression(position, frame, request.viewport)})`]),
+    ...(scale === null ? [] : [`${indentation}square.scale(${formatPositiveAmount(scale)})`]),
+    `${indentation}decimal.update(0)`,
+  ];
+  lines.splice(basePlan.anchorLine, 0, ...insertedLines);
+  const loweredSource = lines.join(newline);
+  const derivedPlan = deriveUpdatersTerminalSourceEditPlanV1(loweredSource, request.sceneName);
+  if (
+    (expectedMove === null) !== (derivedPlan.moveTo === null) ||
+    (expectedMove !== null &&
+      derivedPlan.moveTo !== null &&
+      (!nearlyEqual(expectedMove.x, derivedPlan.moveTo.x) || !nearlyEqual(expectedMove.y, derivedPlan.moveTo.y))) ||
+    (scale === null) !== (derivedPlan.scale === null) ||
+    (scale !== null && derivedPlan.scale !== null && !nearlyEqual(scale, derivedPlan.scale)) ||
+    !derivedPlan.refreshDependentUpdater
+  ) {
+    updatersTerminalV1LoweringError("the emitted source does not re-derive the requested terminal edit plan.");
+  }
+  return {
+    anchorLine: basePlan.anchorLine,
+    anchorLines: [basePlan.anchorLine],
+    insertedCode: insertedLines.join(newline),
+    preflight: {
+      baseSourceHash: UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1,
+      kind: "fast-manim-updaters-terminal-v1",
+    },
+    source: loweredSource,
+  };
+}
+
 /**
  * Lowers validated Programs as one atomic source export. Entries carry both
  * their rebased runtime Program and the immutable source anchor that selected
@@ -2349,6 +2799,8 @@ export function lowerCanonicalProgramBatchSource(
   if (lineJointsV10) return lineJointsV10;
   const writeStuffV12 = lowerWriteStuffInitialTransformSourceV12(source, request, entries, frame, incoming);
   if (writeStuffV12) return writeStuffV12;
+  const updatersTerminalV1 = lowerUpdatersTerminalTransformSourceV1(source, request, entries, frame, incoming);
+  if (updatersTerminalV1) return updatersTerminalV1;
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
   }

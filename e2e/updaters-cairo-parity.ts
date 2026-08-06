@@ -23,12 +23,13 @@ function sha256(bytes: Uint8Array) {
 export async function compareUpdatersCairoWebGpuFramesV1(
   input: Readonly<{
     cairoReferenceRoot: string;
+    expectedSourceSha256: string;
     frames: readonly UpdatersWebGpuFrameV1[];
     outputRoot: string;
   }>,
 ) {
   const [cairo, corpus] = await Promise.all([
-    readUpdatersCairoReferenceV1(input.cairoReferenceRoot),
+    readUpdatersCairoReferenceV1(input.cairoReferenceRoot, input.expectedSourceSha256),
     readFile("fixtures/visual-parity-v1/corpus.json", "utf8").then((text) =>
       visualParityCorpusV1Schema.parse(JSON.parse(text)),
     ),

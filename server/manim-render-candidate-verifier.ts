@@ -21,6 +21,19 @@ export interface ManimRenderCandidateSnapshotRunnerV1 {
   ): Promise<FastManimUnpublishedSnapshotRunViewV1>;
 }
 
+export interface ManimRenderCandidateRuntimeTraceRunnerV1 {
+  runRuntimeTraceCandidateUnpublished(
+    sourceText: string,
+    request: Readonly<{
+      projectId: string;
+      requestId: string;
+      sceneName: string;
+      sourcePath: string;
+    }>,
+    signal?: AbortSignal,
+  ): Promise<Readonly<{ sourceHash: string; status: "verified"; traceDigest: string }>>;
+}
+
 type CandidateBindingProfileV1 = Readonly<{
   columnEnd: number;
   familyPath: readonly number[];
@@ -155,6 +168,7 @@ export type ManimRenderCandidateVerifierOptionsV1 = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   logger?: StructuredLogger;
   runner: ManimRenderCandidateSnapshotRunnerV1;
+  runtimeTraceRunner?: ManimRenderCandidateRuntimeTraceRunnerV1;
 }>;
 
 /**
@@ -165,17 +179,23 @@ export class ManimRenderCandidateVerifierV1 {
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #logger: StructuredLogger;
   readonly #runner: ManimRenderCandidateSnapshotRunnerV1;
+  readonly #runtimeTraceRunner: ManimRenderCandidateRuntimeTraceRunnerV1 | undefined;
 
   constructor(options: ManimRenderCandidateVerifierOptionsV1) {
     this.#frame = options.frame;
     this.#logger = options.logger ?? nullLogger;
     this.#runner = options.runner;
+    this.#runtimeTraceRunner = options.runtimeTraceRunner;
   }
 
   async verify(lowered: LoweredProgramBatchSource, request: ProgramRenderRequest, signal?: AbortSignal): Promise<void> {
     const preflight = lowered.preflight;
     if (!preflight) return;
     signal?.throwIfAborted();
+    if (preflight.kind === "fast-manim-updaters-terminal-v1") {
+      await this.#verifyUpdatersTerminalRuntimeTrace(lowered, request, signal);
+      return;
+    }
     const profile = CANDIDATE_PROFILES_V1.get((preflight as Readonly<{ kind: string }>).kind);
     if (!profile) {
       throw new HttpError("The edited Manim source uses an unsupported candidate verification profile.", 409);
@@ -299,6 +319,53 @@ export class ManimRenderCandidateVerifierV1 {
       })
     ) {
       reject();
+    }
+  }
+
+  async #verifyUpdatersTerminalRuntimeTrace(
+    lowered: LoweredProgramBatchSource,
+    request: ProgramRenderRequest,
+    signal?: AbortSignal,
+  ) {
+    const preflight = lowered.preflight;
+    const reject = (failure: string): never => {
+      this.#logger.warn("render.updaters_terminal_runtime_trace_candidate_preflight_rejected", {
+        failure,
+        sourcePath: request.sourcePath,
+      });
+      throw new HttpError(
+        "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        409,
+      );
+    };
+    if (preflight?.kind !== "fast-manim-updaters-terminal-v1" || request.sourceHash !== preflight.baseSourceHash) {
+      reject("runtime-trace-authority-unavailable");
+    }
+    const runtimeTraceRunner = this.#runtimeTraceRunner ?? reject("runtime-trace-authority-unavailable");
+    const candidateHash = sourceHash(lowered.source);
+    let result: Awaited<ReturnType<ManimRenderCandidateRuntimeTraceRunnerV1["runRuntimeTraceCandidateUnpublished"]>>;
+    try {
+      result = await runtimeTraceRunner.runRuntimeTraceCandidateUnpublished(
+        lowered.source,
+        {
+          projectId: request.projectId,
+          requestId: renderRequestId(request),
+          sceneName: request.sceneName,
+          sourcePath: request.sourcePath,
+        },
+        signal,
+      );
+    } catch {
+      signal?.throwIfAborted();
+      return reject("runtime-trace-run-rejected");
+    }
+    signal?.throwIfAborted();
+    if (
+      result.status !== "verified" ||
+      result.sourceHash !== candidateHash ||
+      !/^[0-9a-f]{64}$/u.test(result.traceDigest)
+    ) {
+      reject("runtime-trace-correlation-rejected");
     }
   }
 }

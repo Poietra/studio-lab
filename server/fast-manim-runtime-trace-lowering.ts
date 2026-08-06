@@ -19,6 +19,7 @@ import {
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V1,
   type FastManimRuntimeTraceProducerRequestV1,
   type FastManimRuntimeTraceV1,
+  fastManimRuntimeTraceV1Schema,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V1,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_LIFETIME_RUNS_V1,
@@ -65,10 +66,10 @@ function expectedMotionY(frameIndex: number) {
   return canonicalFastManimRuntimeTraceCoordinateV1(firstHalf ? 2.5 - 5 * eased : -2.5 + 5 * eased);
 }
 
-function assertExactOfficialMotion(trace: FastManimRuntimeTraceV1) {
+function assertReviewedMotion(trace: FastManimRuntimeTraceV1, terminalEdit: boolean) {
   if (
     trace.sourcePath !== "example_scenes/basic.py" ||
-    trace.sourceHash !== OFFICIAL_SOURCE_HASH ||
+    (terminalEdit ? trace.sourceHash === OFFICIAL_SOURCE_HASH : trace.sourceHash !== OFFICIAL_SOURCE_HASH) ||
     trace.sceneName !== "UpdatersExample" ||
     trace.sceneId !== OFFICIAL_SCENE_ID ||
     trace.sceneOccurrence.constructStartLine !== 113 ||
@@ -81,7 +82,7 @@ function assertExactOfficialMotion(trace: FastManimRuntimeTraceV1) {
     failSemantic("Runtime Trace lowering requires the official default Cairo camera.");
   }
   trace.frames.forEach((frame, frameIndex) => {
-    if (frame.motionY !== expectedMotionY(frameIndex)) {
+    if ((!terminalEdit || frameIndex < 300) && frame.motionY !== expectedMotionY(frameIndex)) {
       failSemantic(`Runtime Trace frame ${frameIndex} does not follow the exact there_and_back Square motion.`);
     }
   });
@@ -144,7 +145,7 @@ type RuntimeTraceStatePlanV1 = Readonly<{
   stateKey: string;
 }>;
 
-function collectStatePlans(trace: FastManimRuntimeTraceV1) {
+function collectStatePlans(trace: FastManimRuntimeTraceV1, terminalEdit: boolean) {
   const paths = new Map(trace.resources.paths.map((resource) => [resource.id, resource.path]));
   const appearances = new Map(trace.resources.appearances.map((resource) => [resource.id, resource]));
   const states = Array.from(
@@ -153,10 +154,21 @@ function collectStatePlans(trace: FastManimRuntimeTraceV1) {
   );
   trace.frames.forEach((frame) => {
     frame.draws.forEach((draw, drawIndex) => {
-      const key = canonicalJsonV1(draw);
+      const motionDelta = terminalEdit ? frame.motionY - expectedMotionY(frame.frameIndex) : 0;
+      const normalizedDraw =
+        motionDelta === 0
+          ? draw
+          : {
+              ...draw,
+              localPosition: {
+                ...draw.localPosition,
+                y: canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.y + motionDelta),
+              },
+            };
+      const key = canonicalJsonV1(normalizedDraw);
       const state = states[drawIndex].get(key);
       if (state) state.frames.push(frame.frameIndex);
-      else states[drawIndex].set(key, { draw, frames: [frame.frameIndex] });
+      else states[drawIndex].set(key, { draw: normalizedDraw, frames: [frame.frameIndex] });
     });
   });
 
@@ -385,8 +397,8 @@ function runtimeTraceSceneDraft(
   };
 }
 
-async function lowerParsedRuntimeTrace(trace: FastManimRuntimeTraceV1) {
-  assertExactOfficialMotion(trace);
+async function lowerParsedRuntimeTrace(trace: FastManimRuntimeTraceV1, terminalEdit = false) {
+  assertReviewedMotion(trace, terminalEdit);
   const traceDigest = digestFastManimRuntimeTraceV1(trace);
   const provenanceId = `${trace.sceneId}/provenance:runtime-trace`;
   const motionRootId = `${trace.sceneId}/runtime-trace:motion-root`;
@@ -395,7 +407,7 @@ async function lowerParsedRuntimeTrace(trace: FastManimRuntimeTraceV1) {
     groupEntity(motionRootId, null, 0, provenanceId),
     ...trace.roots.map((root, index) => groupEntity(root.id, motionRootId, index + 1, provenanceId, root.offset)),
   ];
-  const plans = collectStatePlans(trace);
+  const plans = collectStatePlans(trace, terminalEdit);
   const sceneWithoutEntities = runtimeTraceSceneDraft(trace, assets, traceDigest, provenanceId, motionRootId, []);
   const projectedMetrics = assertNormalizationPreflight(
     trace,
@@ -424,4 +436,13 @@ export async function lowerFastManimRuntimeTraceProducerJsonV1(
 ) {
   const expected = expectedFastManimRuntimeTraceCorrelationFromRequestV1(request, trusted);
   return lowerParsedRuntimeTrace(parseFastManimRuntimeTraceProducerJsonV1(value, expected));
+}
+
+/** Lowers an edited terminal trace only after its source family and protected
+ * prefix have been independently verified by the candidate verifier. The
+ * terminal motion is folded into draw-local positions so the original smooth
+ * channel remains byte-for-byte truthful through frame 299 and jumps only at
+ * the five-second edit boundary. */
+export async function lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(value: FastManimRuntimeTraceV1) {
+  return lowerParsedRuntimeTrace(fastManimRuntimeTraceV1Schema.parse(value), true);
 }

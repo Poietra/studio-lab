@@ -1,4 +1,4 @@
-"""Generate bounded Cairo RGBA evidence for the official UpdatersExample."""
+"""Generate bounded Cairo RGBA evidence for an UpdatersExample source."""
 
 from __future__ import annotations
 
@@ -29,8 +29,8 @@ from manim.renderer._runtime_trace.decimal_glyphs import (
 )
 
 
-FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c"
-FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90"
+FAST_MANIM_COMMIT = "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3"
+FAST_MANIM_TREE = "41516d8b866a891adb22f47064b9bba5545fae15"
 GLYPH_PROVIDER_SHA256 = (
     "b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322"
 )
@@ -302,7 +302,7 @@ def render_sample_frames(scene_type: type[manim.Scene]) -> dict[str, bytes]:
     return captured
 
 
-def generate(output: Path, fast_manim: Path) -> None:
+def generate(output: Path, fast_manim: Path, source_override: Path | None) -> None:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite generator output: {output}")
     if not output.parent.is_dir():
@@ -311,8 +311,13 @@ def generate(output: Path, fast_manim: Path) -> None:
         raise RuntimeError("PYTHONHASHSEED=0 must be set before starting the generator")
     fast_manim = fast_manim.resolve(strict=True)
     require_exact_checkout(fast_manim)
-    source = fast_manim / SOURCE_PATH
-    if sha256_file(source) != SOURCE_SHA256:
+    source = (
+        fast_manim / SOURCE_PATH
+        if source_override is None
+        else source_override.resolve(strict=True)
+    )
+    source_sha256 = sha256_file(source)
+    if source_override is None and source_sha256 != SOURCE_SHA256:
         raise RuntimeError("official UpdatersExample source bytes do not match the pin")
     manim_module = Path(manim.__file__).resolve()
     if not manim_module.is_relative_to(fast_manim / "manim"):
@@ -376,7 +381,7 @@ def generate(output: Path, fast_manim: Path) -> None:
             "decimalImplementation": "hermetic-runtime-trace-v1",
             "repository": "Poietra/fast-manim",
             "sourcePath": SOURCE_PATH.as_posix(),
-            "sourceSha256": SOURCE_SHA256,
+            "sourceSha256": source_sha256,
         },
         "schema": "poietra.updaters-cairo-reference",
         "version": 1,
@@ -391,8 +396,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fast-manim", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--source", type=Path)
     arguments = parser.parse_args()
-    generate(arguments.output.resolve(), arguments.fast_manim)
+    generate(arguments.output.resolve(), arguments.fast_manim, arguments.source)
 
 
 if __name__ == "__main__":

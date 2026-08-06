@@ -25,6 +25,10 @@ import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-back
 
 const artifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-updaters-v1.json.gz", import.meta.url);
 const openingArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url);
+const FAST_MANIM_COMMIT = "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3";
+const FAST_MANIM_TREE = "41516d8b866a891adb22f47064b9bba5545fae15";
+const PREVIOUS_FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c";
+const PREVIOUS_FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90";
 const request = {
   projectId: "demo",
   requestId: "req-runtime-trace-hook",
@@ -80,14 +84,22 @@ afterEach(async () => {
 });
 
 async function officialArtifact() {
-  return gunzipSync(await readFile(artifactPath));
+  return Buffer.from(
+    gunzipSync(await readFile(artifactPath))
+      .toString("utf8")
+      .replace(PREVIOUS_FAST_MANIM_COMMIT, FAST_MANIM_COMMIT)
+      .replace(PREVIOUS_FAST_MANIM_TREE, FAST_MANIM_TREE),
+    "utf8",
+  );
 }
 
 async function officialOpeningArtifact() {
   const artifact = gunzipSync(await readFile(openingArtifactPath))
     .toString("utf8")
     .replace('"projectId":"opening-manim"', `"projectId":"${openingRequest.projectId}"`)
-    .replace('"requestId":"request-opening-manim-v2"', `"requestId":"${openingRequest.requestId}"`);
+    .replace('"requestId":"request-opening-manim-v2"', `"requestId":"${openingRequest.requestId}"`)
+    .replace(PREVIOUS_FAST_MANIM_COMMIT, FAST_MANIM_COMMIT)
+    .replace(PREVIOUS_FAST_MANIM_TREE, FAST_MANIM_TREE);
   return Buffer.from(artifact, "utf8");
 }
 
@@ -116,12 +128,12 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "c8cb6fd6678b5764321f86d11dd914eca4588fb909b37da777b88347dd9366ac",
+      "35866f2e364746565de4881c42c33917e729ea638aa11373a8e978d54e118fbe",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
-        fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
-        fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
+        fastManimCommit: FAST_MANIM_COMMIT,
+        fastManimTree: FAST_MANIM_TREE,
       },
     });
     const backend = new ArtifactBackend(artifact);
@@ -135,7 +147,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "2ba133ad602e932c05c5cc58b72149a9ee08b203953df82c05fbe99f16e7f987",
+        traceDigest: "5731705c23de335ff7a5721a9846da68f857a8030a8c4f59b9eaf6519d35ec59",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
@@ -180,11 +192,11 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     expect(responseBytes).toBeLessThan(8 * 1024 * 1024 + 64 * 1024);
   });
 
-  it("rejects non-profile source correlation before consulting the sandbox", async () => {
+  it("rejects stale source correlation before consulting the sandbox", async () => {
     const backend = new ArtifactBackend(await officialArtifact());
     const view = await runner(await projectRoot(), backend).runRuntimeTrace({ ...request, sourceHash: "f".repeat(64) });
 
-    expect(view).toMatchObject({ failure: { code: "unsupported-profile" }, status: "failed" });
+    expect(view).toMatchObject({ failure: { code: "source-correlation-stale" }, status: "failed" });
     expect(backend.statuses).toBe(0);
     expect(backend.requests).toHaveLength(0);
   });

@@ -31,8 +31,8 @@ import PIL._imaging as pillow_imaging
 from manim import tempconfig
 
 
-FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c"
-FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90"
+FAST_MANIM_COMMIT = "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3"
+FAST_MANIM_TREE = "41516d8b866a891adb22f47064b9bba5545fae15"
 SOURCE_PATH = Path("example_scenes/basic.py")
 SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
 FRAME = {"height": 8, "width": 128.0 / 9.0}

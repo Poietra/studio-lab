@@ -255,6 +255,7 @@ async function compareWithIndependentCairo(frames: readonly UpdatersWebGpuFrameV
     read: (referenceRoot) =>
       compareUpdatersCairoWebGpuFramesV1({
         cairoReferenceRoot: referenceRoot,
+        expectedSourceSha256: SOURCE_SHA256,
         frames,
         outputRoot:
           process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/runtime-trace-cairo-parity",

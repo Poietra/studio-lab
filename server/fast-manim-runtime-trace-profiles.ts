@@ -102,6 +102,20 @@ export function selectFastManimRuntimeTraceProfile(
   return selected;
 }
 
+/** Selects only the reviewed Scene family. A verified response may use this
+ * after the runner has independently proved an edited source generation; it
+ * must never authorize producer execution by itself. */
+export function selectFastManimRuntimeTraceSceneProfile(
+  request: FastManimRuntimeTraceRunRequestV1,
+): FastManimRuntimeTraceProfile | null {
+  const profile = runtimeTraceProfiles.find(
+    (candidate) => request.sourcePath === candidate.sourcePath && request.sceneName === candidate.sceneName,
+  );
+  if (!profile) return null;
+  const { sceneName: _sceneName, sourceHash: _sourceHash, sourcePath: _sourcePath, ...selected } = profile;
+  return selected;
+}
+
 /** Recomputes the selected profile's sealed config against the runner-owned frame. */
 export function digestSelectedFastManimRuntimeTraceConfig(
   profile: FastManimRuntimeTraceProfile,
