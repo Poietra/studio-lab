@@ -368,6 +368,75 @@ fn imported_snapshot_source_accepts_profiles_one_through_twelve_only() {
 }
 
 #[test]
+fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() {
+    let mut scene = empty_scene();
+    scene.duration = 6.0;
+    scene.source = SceneSourceV1::ImportedManimRuntimeTrace {
+        runtime_config_hash: REVISION.to_owned(),
+        source_hash: REVISION.to_owned(),
+        trace_digest: REVISION.to_owned(),
+        trace_version: ContractVersionV1,
+    };
+    scene.provenance[0].origin = ProvenanceOriginV1::FastManimRuntimeTrace;
+
+    assert_eq!(scene.source.revision_hash(), REVISION);
+    assert_eq!(
+        scene.source.render_compositing(),
+        RenderCompositingV1::ManimCairoSrgb
+    );
+    assert_eq!(scene.state_sample_time(0.0).to_bits(), 0.0_f64.to_bits());
+    assert_eq!(
+        scene.state_sample_time(1.0 / 60.0 - 1e-9).to_bits(),
+        0.0_f64.to_bits()
+    );
+    assert_eq!(
+        scene.state_sample_time(1.0 / 60.0).to_bits(),
+        (1.0_f64 / 60.0).to_bits()
+    );
+    assert_eq!(
+        scene.state_sample_time(1.0 / 60.0 + 1e-9).to_bits(),
+        (1.0_f64 / 60.0).to_bits()
+    );
+    assert_eq!(
+        scene.state_sample_time(6.0 - 1e-9).to_bits(),
+        (359.0_f64 / 60.0).to_bits()
+    );
+    assert_eq!(
+        scene.state_sample_time(6.0).to_bits(),
+        (359.0_f64 / 60.0).to_bits()
+    );
+    validate_scene_ir_v1(&scene).unwrap();
+
+    let json = serde_json::to_value(&scene).unwrap();
+    assert_eq!(json["source"]["kind"], "imported-manim-runtime-trace");
+    assert_eq!(json["provenance"][0]["origin"], "fast-manim-runtime-trace");
+    assert_eq!(
+        parse_scene_ir_json_v1(&serde_json::to_vec(&json).unwrap()).unwrap(),
+        scene
+    );
+
+    let mut invalid_duration = scene.clone();
+    invalid_duration.duration = 5.0;
+    assert!(
+        validate_scene_ir_v1(&invalid_duration)
+            .unwrap_err()
+            .contains_message("six-second")
+    );
+
+    let mut invalid_digest = scene;
+    let SceneSourceV1::ImportedManimRuntimeTrace { trace_digest, .. } = &mut invalid_digest.source
+    else {
+        unreachable!()
+    };
+    *trace_digest = "not-a-digest".to_owned();
+    assert!(
+        validate_scene_ir_v1(&invalid_digest)
+            .unwrap_err()
+            .contains_message("lower-case SHA-256")
+    );
+}
+
+#[test]
 fn linear_compositing_keeps_the_existing_packet_wire_while_cairo_is_explicit() {
     let packet = empty_packet();
     assert_eq!(
