@@ -102,7 +102,7 @@ describe("fast-manim Runtime Trace V1 contract", () => {
   it("matches Python resource and visual-semantics digest goldens", () => {
     const trace = runtimeTraceFixture();
     expect(digestFastManimRuntimeTracePathV1(trace.resources.paths[0].path)).toBe(
-      "0831c3ce008105c35bd2177d825e833e652c7f39b4cdcec7cc5f8335aea220b0",
+      "a473c0f2ccbe3c833ff46828324729dc68046f6f21a81934196d85a8d6956fd1",
     );
     expect(
       digestFastManimRuntimeTraceAppearanceV1({
@@ -115,7 +115,7 @@ describe("fast-manim Runtime Trace V1 contract", () => {
       frame.motionY = canonicalFastManimRuntimeTraceCoordinateV1(frameIndex < 300 ? frameIndex / 300 : 1);
     });
     expect(digestFastManimRuntimeTraceVisualSemanticsV1(trace)).toBe(
-      "0fc7b20c2f452aca2c9a1ca70a698612b1c4d01a544ee6809a418996561e4de7",
+      "d6f97235a58fa90e76fde9e7c0b2fda95b5eacd7ed9c518c0c8bf583c582cf60",
     );
   });
 

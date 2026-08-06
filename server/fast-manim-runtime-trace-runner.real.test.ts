@@ -64,7 +64,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       await writeFile(join(root, "example_scenes/basic.py"), RUNTIME_TRACE_SOURCE_TEXT, "utf8");
       const candidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
         "            run_time=5,\n        )\n        self.wait()\n",
-        "            run_time=5,\n        )\n        square.move_to((1.25, -1.5, 0))\n        square.scale(0.5)\n        decimal.update(0)\n        self.wait()\n",
+        "            run_time=5,\n        )\n        square.move_to((0.806934594169, 2.096532702916, 0))\n        square.scale(1.6071941072)\n        decimal.update(0)\n        self.wait()\n",
       );
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
@@ -118,12 +118,14 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         });
         expect(terminal.kind).toBe("ready");
         if (terminal.kind !== "ready") throw new Error(terminal.message);
-        expect(terminal.frame.packet.draws[0]?.transform.tx).toBeCloseTo(1.25, 12);
-        expect(terminal.frame.packet.draws[0]?.transform.ty).toBeCloseTo(-1.5, 12);
+        expect(terminal.frame.packet.draws[0]?.transform.tx).toBeCloseTo(0.806934594169, 12);
+        expect(terminal.frame.packet.draws[0]?.transform.ty).toBeCloseTo(2.096532702916, 12);
         const decimalDraws = terminal.frame.packet.draws.slice(1);
         expect(decimalDraws).not.toEqual([]);
-        expect(Math.min(...decimalDraws.map(({ transform }) => transform.tx))).toBeGreaterThan(1.25);
-        expect(Math.max(...decimalDraws.map(({ transform }) => Math.abs(transform.ty + 1.5)))).toBeLessThan(0.2);
+        expect(Math.min(...decimalDraws.map(({ transform }) => transform.tx))).toBeGreaterThan(0.806934594169);
+        expect(Math.max(...decimalDraws.map(({ transform }) => Math.abs(transform.ty - 2.096532702916)))).toBeLessThan(
+          0.2,
+        );
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });

@@ -12,6 +12,7 @@ import {
   RUNTIME_TRACE_SOURCE_TEXT,
   runtimeTraceFixture,
   runtimeTraceRequestFixture,
+  runtimeTraceSquarePath,
   sealRuntimeTraceFixture,
   trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
@@ -43,20 +44,14 @@ const combinedEdit = {
   scale: 0.5,
   source: editedSource("square.move_to((1.25, 2.5, 0))", "square.scale(0.5)"),
 } as const;
+const arbitraryScaleEdit = {
+  moveTo: null,
+  scale: 1.6071941072,
+  source: editedSource("square.scale(1.6071941072)"),
+} as const;
 
 function scaleSquarePath(trace: ReturnType<typeof runtimeTraceFixture>, factor: number) {
-  const official = trace.resources.paths[0];
-  if (!official) throw new Error("Expected the fixture Square path.");
-  const path = structuredClone(official.path);
-  for (const subpath of path.subpaths) {
-    for (const point of [
-      subpath.start,
-      ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
-    ]) {
-      point.x = canonicalFastManimRuntimeTraceCoordinateV1(point.x * factor);
-      point.y = canonicalFastManimRuntimeTraceCoordinateV1(point.y * factor);
-    }
-  }
+  const path = runtimeTraceSquarePath(factor);
   const id = `path:${digestFastManimRuntimeTracePathV1(path)}`;
   if (!trace.resources.paths.some((resource) => resource.id === id)) trace.resources.paths.push({ id, path });
   return id;
@@ -76,6 +71,25 @@ function applyTerminalEdit(trace: ReturnType<typeof runtimeTraceFixture>, edit: 
     for (const draw of frame.draws.slice(1)) {
       draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + decimalShift);
     }
+  }
+}
+
+function replaceTerminalSquarePath(
+  trace: ReturnType<typeof runtimeTraceFixture>,
+  mutate: (path: ReturnType<typeof runtimeTraceFixture>["resources"]["paths"][number]["path"]) => void,
+) {
+  const previousId = trace.frames[300]!.draws[0]!.pathId;
+  const previous = trace.resources.paths.find(({ id }) => id === previousId);
+  if (!previous) throw new Error("Expected the terminal Square path resource.");
+  const path = structuredClone(previous.path);
+  mutate(path);
+  const id = `path:${digestFastManimRuntimeTracePathV1(path)}`;
+  trace.resources.paths.push({ id, path });
+  trace.frames.slice(300).forEach((frame) => {
+    frame.draws[0]!.pathId = id;
+  });
+  if (!trace.frames.some((frame) => frame.draws.some((draw) => draw.pathId === previousId))) {
+    trace.resources.paths.splice(trace.resources.paths.indexOf(previous), 1);
   }
 }
 
@@ -112,6 +126,22 @@ describe("fast-manim Runtime Trace V1 terminal candidate", () => {
     const { request, trace } = candidateFixture(edit);
     expect(verify(trace, request)).toEqual(trace);
     expect(trace.frames.slice(0, 300)).toEqual(runtimeTraceFixture().frames.slice(0, 300));
+  });
+
+  it("accepts arbitrary producer-exact scaling but rejects a one-quantum control-point forgery", () => {
+    const producerExact = candidateFixture(arbitraryScaleEdit);
+    expect(verify(producerExact.trace, producerExact.request)).toEqual(producerExact.trace);
+
+    const forged = candidateFixture(arbitraryScaleEdit, (trace) => {
+      applyTerminalEdit(trace, arbitraryScaleEdit);
+      replaceTerminalSquarePath(trace, (path) => {
+        const control = path.subpaths[0]!.segments[0]!.control1;
+        control.x = canonicalFastManimRuntimeTraceCoordinateV1(control.x + 1e-13);
+      });
+    });
+    expect(() => verify(forged.trace, forged.request)).toThrowError(
+      expect.objectContaining<Partial<FastManimRuntimeTraceCandidateErrorV1>>({ code: "candidate-semantic" }),
+    );
   });
 
   it("rejects any change during the protected updater animation", () => {
