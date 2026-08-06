@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  assertRealManimEditabilityCensusCaseFloor,
+  REAL_MANIM_EDITABILITY_CAPABILITIES,
+} from "../scripts/real-manim-editability-census-report";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
 import {
@@ -842,4 +846,14 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
 
   await dragBy(page, editedSquare, { x: 24, y: -12 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+
+  const editabilityBaseline = JSON.parse(
+    await readFile(new URL("../fixtures/real-manim-editability-census-v1/baseline.json", import.meta.url), "utf8"),
+  ) as unknown;
+  const caseId = "fast-manim-basic/UpdatersExample/runtime-trace-v1" as const;
+  assertRealManimEditabilityCensusCaseFloor(
+    caseId,
+    REAL_MANIM_EDITABILITY_CAPABILITIES.map((capability) => ({ capability, caseId, status: "proven" as const })),
+    editabilityBaseline,
+  );
 });
