@@ -9,7 +9,7 @@ import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.j
 import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
 import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
-import type { StudioPreviewSceneIdentityV1 } from "./preview-snapshot-provider";
+import { type StudioPreviewSceneIdentityV1, StudioPreviewSnapshotLoadErrorV1 } from "./preview-snapshot-provider";
 import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provider.server";
 
 const REQUEST_ID = "studio-preview:test-request";
@@ -409,6 +409,35 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
+  it("classifies an unsupported Runtime Trace profile as terminal rather than retryable", async () => {
+    const verified = await verifiedRuntimeTraceRun();
+    const unsupported = {
+      failure: {
+        code: "unsupported-profile",
+        message: "Runtime Trace currently supports only its reviewed Scene profiles.",
+      },
+      projectId: verified.projectId,
+      requestId: verified.requestId,
+      runtimeConfigHash: verified.runtimeConfigHash,
+      sceneId: verified.sceneId,
+      sceneName: verified.sceneName,
+      schema: verified.schema,
+      sourceHash: verified.sourceHash,
+      sourcePath: verified.sourcePath,
+      status: "failed",
+      version: verified.version,
+    } as const;
+    const provider = createServerPreviewSnapshotProviderV1({
+      fetcher: vi.fn(async () => jsonResponse(unsupported)),
+      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+    });
+
+    await expect(provider.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toMatchObject({
+      failureKind: "unsupported",
+      name: StudioPreviewSnapshotLoadErrorV1.name,
+    });
+  });
+
   it("accepts the reviewed fifteen-second OpeningManim V2 profile and all four source roots", async () => {
     const run = await verifiedOpeningRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
@@ -641,7 +670,12 @@ describe("createServerPreviewSnapshotProviderV1", () => {
 
   it.each(["failed", "stale", "unsupported"] as const)("fails closed for a %s run", async (status) => {
     const { provider } = providerReturning({ status });
-    await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toThrow(`did not verify this Scene (${status})`);
+    const request = provider.loadVerifiedSnapshot({ identity });
+    await expect(request).rejects.toThrow(`did not verify this Scene (${status})`);
+    await expect(request).rejects.toMatchObject({
+      failureKind: status === "unsupported" ? "unsupported" : "failed",
+      name: StudioPreviewSnapshotLoadErrorV1.name,
+    });
   });
 
   it("rejects malformed envelopes and every cross-boundary correlation mismatch", async () => {

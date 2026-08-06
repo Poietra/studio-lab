@@ -79,16 +79,22 @@ function snapshotResponse(page: Page) {
   );
 }
 
-async function openRealWorkspace(page: Page) {
-  await page.goto(`/${SERVER_QUERY}`);
+async function openRealWorkspace(page: Page, entry: "query" | "standard-ui" = "query") {
+  await page.goto(entry === "query" ? `/${SERVER_QUERY}` : "/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByLabel("Active imported Scene").selectOption({ label: "scene.py · RealPreviewScene" });
-  await page.getByRole("button", { name: "Enable preview…" }).click();
+  if (entry === "standard-ui") {
+    expect(new URL(page.url()).search).toBe("");
+    await page.getByRole("button", { name: "Manim Preview", exact: true }).click();
+  } else {
+    await page.getByRole("button", { name: "Enable preview…" }).click();
+  }
   await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
   const response = snapshotResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expect(page.locator('[data-studio-manim-preview-state="loading"]')).toBeVisible();
   return response;
 }
 
@@ -184,6 +190,7 @@ async function expectPresented(page: Page, revision: number) {
   await expect(page.locator("[data-studio-preview-canvas]")).toBeVisible();
   await expect(page.locator("[data-studio-preview-status]")).toContainText(`verified server snapshot r${revision}`);
   await expect(page.locator("[data-studio-preview-status]")).toContainText("editing preview only");
+  await expect(page.locator('[data-studio-manim-preview-state="presented"]')).toContainText("Manim Preview · Verified");
 }
 
 /**
@@ -281,6 +288,10 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
   await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-unavailable");
   await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
   await expect(page.locator("[data-studio-preview-status]")).toHaveAttribute("title", new RegExp(`\\(${status}\\)`));
+  const control = page.locator(`[data-studio-manim-preview-state="${status}"]`);
+  await expect(control).toBeVisible();
+  if (status === "failed") await expect(control.getByRole("button", { name: "Retry" })).toBeVisible();
+  else await expect(control.getByRole("button", { name: "Retry" })).toHaveCount(0);
   const semanticPaint = page.locator("[data-studio-semantic-paint]");
   await expect(semanticPaint).toHaveCount(1);
   await expect(semanticPaint).toHaveAttribute("data-studio-semantic-paint", "painted");
@@ -289,7 +300,7 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
 
 test("correlates a real fast-manim Scene with the retained host and verifies GPU texture output", async ({ page }) => {
   test.setTimeout(120_000);
-  const run = await expectVerifiedRun(await openRealWorkspace(page));
+  const run = await expectVerifiedRun(await openRealWorkspace(page, "standard-ui"));
   expect(run.snapshot?.bundle?.scene?.entities).toHaveLength(3);
   expect(run.snapshot?.bundle?.scene.duration).toBe(1);
   await expectPresented(page, run.revision);
@@ -1206,4 +1217,10 @@ test("falls back the whole Scene for real producer unsupported and exit results"
   expect(failed.failure?.code).toBe("producer-exit");
   await expectWholeSceneFallback(page, "failed");
   await expect(page.getByRole("button", { name: "Move circle", exact: true })).toBeVisible();
+
+  const retryResponse = snapshotResponse(page);
+  await page.locator('[data-studio-manim-preview-state="failed"]').getByRole("button", { name: "Retry" }).click();
+  await expect(page.locator('[data-studio-manim-preview-state="loading"]')).toBeVisible();
+  await expectRunStatus(retryResponse, "failed");
+  await expectWholeSceneFallback(page, "failed");
 });

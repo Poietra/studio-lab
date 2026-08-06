@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 import type { StudioPreviewSnapshotProviderV1 } from "./preview-snapshot-provider";
 import {
   createStudioPreviewAuthorityStateV1,
+  effectiveStudioPreviewRendererSearchV1,
   reduceStudioPreviewAuthorityV1,
   requestedStudioPreviewRendererSearchV1,
+  STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1,
   studioPreviewLocationSearchSnapshotV1,
   subscribeStudioPreviewLocationSearchChangesV1,
 } from "./use-preview-authority-controller";
@@ -24,6 +26,15 @@ describe("requestedStudioPreviewRendererSearchV1", () => {
     expect(requestedStudioPreviewRendererSearchV1(null, true)).toBeNull();
     expect(requestedStudioPreviewRendererSearchV1("", true)).toBeNull();
     expect(requestedStudioPreviewRendererSearchV1("?previewRenderer=other", true)).toBeNull();
+  });
+
+  it("keeps a standard-UI server request tab-local without overriding an admitted URL request", () => {
+    expect(effectiveStudioPreviewRendererSearchV1(null, false, false)).toBeNull();
+    expect(effectiveStudioPreviewRendererSearchV1(null, false, true)).toBe(STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1);
+    expect(effectiveStudioPreviewRendererSearchV1(FIXTURE_SEARCH, true, true)).toBe(FIXTURE_SEARCH);
+    expect(effectiveStudioPreviewRendererSearchV1("?previewRenderer=unknown", false, true)).toBe(
+      STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1,
+    );
   });
 
   it("admits server authority in production but fixture authority only in development", () => {
@@ -125,5 +136,26 @@ describe("reduceStudioPreviewAuthorityV1", () => {
         type: "provider-resolved",
       }),
     ).toBe(reconfigured);
+  });
+
+  it("retries only an already-consented authority and rejects its stale provider", () => {
+    const requested = createStudioPreviewAuthorityStateV1(SERVER_SEARCH);
+    const firstResolution = reduceStudioPreviewAuthorityV1(requested, { allowed: true, type: "activate" });
+    const active = reduceStudioPreviewAuthorityV1(firstResolution, {
+      generation: firstResolution.generation,
+      provider,
+      type: "provider-resolved",
+    });
+    const retrying = reduceStudioPreviewAuthorityV1(active, { allowed: true, type: "retry" });
+
+    expect(reduceStudioPreviewAuthorityV1(requested, { allowed: true, type: "retry" })).toBe(requested);
+    expect(retrying).toMatchObject({ generation: 2, phase: "resolving", provider: null });
+    expect(
+      reduceStudioPreviewAuthorityV1(retrying, {
+        generation: firstResolution.generation,
+        provider,
+        type: "provider-resolved",
+      }),
+    ).toBe(retrying);
   });
 });

@@ -70,6 +70,25 @@ export type StudioPreviewSnapshotRequestV1 = Readonly<{
   signal?: AbortSignal;
 }>;
 
+export type StudioPreviewSnapshotFailureKindV1 = "failed" | "unsupported";
+
+/** Preserves a producer's bounded unsupported outcome without forcing the UI
+ * to infer it from human-readable error text. All untyped transport,
+ * validation, and renderer errors remain ordinary failures. */
+export class StudioPreviewSnapshotLoadErrorV1 extends Error {
+  readonly failureKind: StudioPreviewSnapshotFailureKindV1;
+
+  constructor(message: string, failureKind: StudioPreviewSnapshotFailureKindV1, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "StudioPreviewSnapshotLoadErrorV1";
+    this.failureKind = failureKind;
+  }
+}
+
+export function studioPreviewSnapshotFailureKindV1(cause: unknown): StudioPreviewSnapshotFailureKindV1 {
+  return cause instanceof StudioPreviewSnapshotLoadErrorV1 ? cause.failureKind : "failed";
+}
+
 /**
  * Supplies one verified Scene snapshot for the retained WebGPU preview. Both
  * the production server endpoint and the checked-in dev fixture implement
