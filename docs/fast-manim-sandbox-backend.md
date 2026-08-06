@@ -129,6 +129,22 @@ The configured fast-manim checkout must match the commit and tree pinned by
 `fast-manim-runtime-trace-profile.ts`. This path is preview-only: it neither
 publishes a reusable snapshot nor grants source-edit authority.
 
+The required local visual-parity lane renders seven independent Cairo frames
+from that same pinned checkout, installs the verified Studio Runtime Trace
+bundle into one retained WebGPU engine, and compares their full 640x360 RGBA
+outputs with the repository's standard SSIM and pixel-difference contract:
+
+```sh
+POIETRA_FAST_MANIM_RUNTIME_TRACE_REPOSITORY=/path/to/fast-manim \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.runtime_trace"]' \
+pnpm test:e2e:preview:real:runtime-trace:cairo-parity
+```
+
+The Cairo RGBA files live only under an owned temporary directory and are
+removed after comparison. The lane writes expected, actual, diff, and report
+artifacts for every measured frame under
+`test-results/runtime-trace-cairo-parity` so a failed gate remains diagnosable.
+
 This is not a production enablement recipe. The child-process adapter filters
 environment and uses a private runtime directory, but it is not an OS isolation
 boundary and cannot contain every fork/setsid escape.

@@ -1,0 +1,289 @@
+import { createHash } from "node:crypto";
+
+import type { Page } from "@playwright/test";
+import type { SceneIrBundleV1 } from "../src/engine/contracts";
+
+export const RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1 = { heightPx: 360, widthPx: 640 } as const;
+
+export type RuntimeTraceWebGpuReadbackSampleV1 = Readonly<{
+  frameIndex: number;
+  id: string;
+  packetId: string;
+  sampleTime: number;
+}>;
+
+function sample(id: string, frameIndex: number, sampleTime: number): RuntimeTraceWebGpuReadbackSampleV1 {
+  return { frameIndex, id, packetId: `runtime-trace:full-rgba:${id}`, sampleTime };
+}
+
+/** Seven Cairo comparison frames followed by one backward seek to `bottom`. */
+export const UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
+  sample("initial", 0, 0),
+  sample("descent", 75, 75 / 60),
+  sample("bottom", 150, 150 / 60),
+  sample("return", 225, 225 / 60),
+  sample("play-end", 299, 299 / 60),
+  sample("hold", 330, 330 / 60),
+  sample("duration-end", 359, 6),
+  sample("bottom-repeat", 150, 150 / 60),
+] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
+
+type RetainedFrameSequenceProofWireV1 = Readonly<{
+  capture: Readonly<{
+    installCount: number;
+    policy: string;
+    renderSubmissionCounts: readonly number[];
+  }>;
+  frames: readonly Readonly<{
+    id: string;
+    pixels: Readonly<{
+      nonBlackBounds: readonly [number, number, number, number] | null;
+      surfaceFormat: string;
+      viewFormat: string;
+    }>;
+    response: Readonly<{
+      result?: Readonly<{
+        kind?: string;
+        packetId?: string;
+        sampleTime?: number;
+        suboptimal?: boolean;
+        viewport?: Readonly<{ heightPx: number; widthPx: number }>;
+      }>;
+      schema?: string;
+      version?: number;
+    }>;
+    rgba: ArrayBuffer;
+  }>[];
+  kind: "retained-frame-sequence-proof";
+  revision: string;
+  viewport: Readonly<{ heightPx: number; widthPx: number }>;
+}>;
+
+type RetainedFrameSequenceProofBridgeV1 = Omit<RetainedFrameSequenceProofWireV1, "frames"> &
+  Readonly<{
+    frames: readonly Readonly<{
+      id: string;
+      pixels: RetainedFrameSequenceProofWireV1["frames"][number]["pixels"];
+      response: RetainedFrameSequenceProofWireV1["frames"][number]["response"];
+      rgbaBase64: string;
+    }>[];
+  }>;
+
+export type RuntimeTraceWebGpuReadbackFrameV1 = Readonly<{
+  frameIndex: number;
+  frameSampleTime: number;
+  id: string;
+  packetId: string;
+  pixels: RetainedFrameSequenceProofWireV1["frames"][number]["pixels"];
+  presentedSampleTime: number;
+  requestSampleTime: number;
+  rgba: Uint8Array;
+  sha256: string;
+}>;
+
+export type RuntimeTraceWebGpuReadbackV1 = Readonly<{
+  capture: Readonly<{
+    installCount: 1;
+    policy: "one-retained-engine";
+    renderSubmissionCounts: readonly 1[];
+  }>;
+  frames: readonly RuntimeTraceWebGpuReadbackFrameV1[];
+  revision: string;
+  viewport: typeof RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1;
+}>;
+
+const MAX_READBACK_FRAME_COUNT = 16;
+const MAX_READBACK_RGBA_BYTES =
+  MAX_READBACK_FRAME_COUNT *
+  RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx *
+  RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.heightPx *
+  4;
+
+function validateCaptureInput(
+  input: Readonly<{
+    bundle: SceneIrBundleV1;
+    revision: string;
+    samples: readonly RuntimeTraceWebGpuReadbackSampleV1[];
+    viewport: Readonly<{ heightPx: number; widthPx: number }>;
+  }>,
+) {
+  if (
+    input.bundle.scene.source.kind !== "imported-manim-runtime-trace" ||
+    input.bundle.scene.source.traceDigest !== input.revision
+  ) {
+    throw new Error("The full RGBA capture requires the verified Runtime Trace bundle revision.");
+  }
+  if (
+    input.viewport.widthPx !== RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx ||
+    input.viewport.heightPx !== RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.heightPx
+  ) {
+    throw new Error("The Runtime Trace Cairo parity capture is sealed to 640x360.");
+  }
+  if (input.samples.length < 1 || input.samples.length > MAX_READBACK_FRAME_COUNT) {
+    throw new Error(`The Runtime Trace readback requires 1-${MAX_READBACK_FRAME_COUNT} samples.`);
+  }
+  const ids = new Set<string>();
+  const packetIds = new Set<string>();
+  for (const entry of input.samples) {
+    if (!entry.id || ids.has(entry.id) || !entry.packetId || packetIds.has(entry.packetId)) {
+      throw new Error("Runtime Trace readback ids and packet ids must be non-empty and unique.");
+    }
+    if (!Number.isSafeInteger(entry.frameIndex) || entry.frameIndex < 0 || entry.frameIndex > 359) {
+      throw new Error(`Runtime Trace readback sample ${entry.id} has an invalid frame index.`);
+    }
+    if (!Number.isFinite(entry.sampleTime) || entry.sampleTime < 0 || entry.sampleTime > 6) {
+      throw new Error(`Runtime Trace readback sample ${entry.id} has an invalid request time.`);
+    }
+    const expectedFrame = entry.sampleTime === 6 ? 359 : entry.sampleTime * 60;
+    if (Math.abs(expectedFrame - entry.frameIndex) > 1e-9) {
+      throw new Error(`Runtime Trace readback sample ${entry.id} is not backed by frame ${entry.frameIndex}.`);
+    }
+    ids.add(entry.id);
+    packetIds.add(entry.packetId);
+  }
+  const rgbaBytes = input.samples.length * input.viewport.widthPx * input.viewport.heightPx * 4;
+  if (!Number.isSafeInteger(rgbaBytes) || rgbaBytes > MAX_READBACK_RGBA_BYTES) {
+    throw new Error("The Runtime Trace readback exceeds its bounded RGBA byte budget.");
+  }
+}
+
+function decodeBase64Rgba(base64: string) {
+  return Uint8Array.from(Buffer.from(base64, "base64"));
+}
+
+function sha256(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Captures an ordered frame sequence from one retained WASM/WebGPU engine. */
+export async function captureRuntimeTraceWebGpuFramesV1(
+  page: Page,
+  input: Readonly<{
+    bundle: SceneIrBundleV1;
+    revision: string;
+    samples: readonly RuntimeTraceWebGpuReadbackSampleV1[];
+    viewport: Readonly<{ heightPx: number; widthPx: number }>;
+  }>,
+): Promise<RuntimeTraceWebGpuReadbackV1> {
+  validateCaptureInput(input);
+  const bridge = await page.evaluate(async ({ bundle, revision, samples, viewport }) => {
+    const worker = new Worker("/e2e/engine-canvas-readback.worker.ts", { type: "module" });
+    const proof = new Promise<RetainedFrameSequenceProofWireV1>((resolve, reject) => {
+      worker.addEventListener(
+        "error",
+        (event) => reject(new Error(event.message || "The retained Runtime Trace readback worker crashed.")),
+        { once: true },
+      );
+      worker.addEventListener(
+        "message",
+        (event: MessageEvent<RetainedFrameSequenceProofWireV1 | Readonly<{ kind: "error"; message: string }>>) => {
+          if (event.data.kind === "error") reject(new Error(event.data.message));
+          else resolve(event.data);
+        },
+        { once: true },
+      );
+    });
+    const snapshotJson = new TextEncoder().encode(JSON.stringify(bundle)).buffer;
+    const frames = samples.map((entry) => ({
+      id: entry.id,
+      requestJson: new TextEncoder().encode(
+        JSON.stringify({
+          evidence: ["Runtime Trace full RGBA readback v1", entry.id, revision],
+          packetId: entry.packetId,
+          sampleTime: entry.sampleTime,
+          schema: "poietra.engine-sample-request",
+          version: 1,
+          viewport,
+        }),
+      ).buffer,
+    }));
+    worker.postMessage(
+      {
+        expectedRevision: revision,
+        frames,
+        kind: "prove-retained-frame-sequence",
+        snapshotJson,
+        viewport,
+        wasmModuleUrl: new URL("/engine-wasm/poietra_wasm.js", location.href).href,
+      },
+      [snapshotJson, ...frames.map(({ requestJson }) => requestJson)],
+    );
+    try {
+      const result = await proof;
+      const rgbaBase64 = (rgba: ArrayBuffer) => {
+        const bytes = new Uint8Array(rgba);
+        const chunks: string[] = [];
+        for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+          chunks.push(String.fromCharCode(...bytes.subarray(offset, offset + 0x8000)));
+        }
+        return btoa(chunks.join(""));
+      };
+      return {
+        ...result,
+        frames: result.frames.map(({ rgba, ...frame }) => ({ ...frame, rgbaBase64: rgbaBase64(rgba) })),
+      } satisfies RetainedFrameSequenceProofBridgeV1;
+    } finally {
+      worker.terminate();
+    }
+  }, input);
+
+  if (
+    bridge.kind !== "retained-frame-sequence-proof" ||
+    bridge.revision !== input.revision ||
+    bridge.capture.policy !== "one-retained-engine" ||
+    bridge.capture.installCount !== 1 ||
+    bridge.frames.length !== input.samples.length ||
+    bridge.capture.renderSubmissionCounts.length !== input.samples.length ||
+    bridge.capture.renderSubmissionCounts.some((count) => count !== 1)
+  ) {
+    throw new Error("The retained Runtime Trace readback returned an invalid capture envelope.");
+  }
+  if (bridge.viewport.widthPx !== input.viewport.widthPx || bridge.viewport.heightPx !== input.viewport.heightPx) {
+    throw new Error("The retained Runtime Trace readback changed its viewport.");
+  }
+
+  const expectedRgbaBytes = input.viewport.widthPx * input.viewport.heightPx * 4;
+  const frames = bridge.frames.map((frame, index): RuntimeTraceWebGpuReadbackFrameV1 => {
+    const requested = input.samples[index];
+    const presented = frame.response.result;
+    if (
+      !requested ||
+      frame.id !== requested.id ||
+      frame.response.schema !== "poietra.canvas-render-response" ||
+      frame.response.version !== 1 ||
+      presented?.kind !== "presented" ||
+      presented.packetId !== requested.packetId ||
+      presented.sampleTime !== requested.sampleTime ||
+      presented.viewport?.widthPx !== input.viewport.widthPx ||
+      presented.viewport.heightPx !== input.viewport.heightPx
+    ) {
+      throw new Error(`The retained Runtime Trace frame at index ${index} lost packet/sample correlation.`);
+    }
+    const rgba = decodeBase64Rgba(frame.rgbaBase64);
+    if (rgba.byteLength !== expectedRgbaBytes) {
+      throw new Error(`The retained Runtime Trace frame ${requested.id} has an invalid RGBA byte length.`);
+    }
+    return {
+      frameIndex: requested.frameIndex,
+      frameSampleTime: requested.frameIndex / 60,
+      id: requested.id,
+      packetId: requested.packetId,
+      pixels: frame.pixels,
+      presentedSampleTime: presented.sampleTime,
+      requestSampleTime: requested.sampleTime,
+      rgba,
+      sha256: sha256(rgba),
+    };
+  });
+
+  return {
+    capture: {
+      installCount: 1,
+      policy: "one-retained-engine",
+      renderSubmissionCounts: bridge.capture.renderSubmissionCounts as readonly 1[],
+    },
+    frames,
+    revision: bridge.revision,
+    viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
+  };
+}

@@ -76,6 +76,20 @@ type ProofRequestV1 = Readonly<{
   wasmModuleUrl: string;
 }>;
 
+type RetainedFrameSequenceProofRequestV1 = Readonly<{
+  assetBytes?: readonly ArrayBuffer[];
+  assetMetadataJson?: ArrayBuffer;
+  expectedRevision: string;
+  frames: readonly Readonly<{
+    id: string;
+    requestJson: ArrayBuffer;
+  }>[];
+  kind: "prove-retained-frame-sequence";
+  snapshotJson: ArrayBuffer;
+  viewport: Readonly<{ heightPx: number; widthPx: number }>;
+  wasmModuleUrl: string;
+}>;
+
 type ErrorScopeProbeRequestV1 = Readonly<{
   fallbackRequestJson: ArrayBuffer;
   kind: "probe-error-scopes";
@@ -86,7 +100,7 @@ type ErrorScopeProbeRequestV1 = Readonly<{
   wasmModuleUrl: string;
 }>;
 
-type WorkerRequestV1 = ErrorScopeProbeRequestV1 | ProofRequestV1;
+type WorkerRequestV1 = ErrorScopeProbeRequestV1 | ProofRequestV1 | RetainedFrameSequenceProofRequestV1;
 
 const GPU_BUFFER_USAGE_MAP_READ = 1;
 const GPU_BUFFER_USAGE_COPY_DST = 8;
@@ -94,6 +108,7 @@ const GPU_MAP_MODE_READ = 1;
 const GPU_TEXTURE_USAGE_COPY_SRC = 1;
 const GPU_TEXTURE_USAGE_RENDER_ATTACHMENT = 16;
 const EMPTY_ASSET_METADATA_JSON = new TextEncoder().encode("[]");
+const MAX_RETAINED_FRAME_SEQUENCE_COUNT = 16;
 
 function createCanvasEngine(
   bindings: WasmBindingsV1,
@@ -397,6 +412,82 @@ function decodeJson(bytes: Uint8Array) {
   return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
 }
 
+function runtimeTraceRevision(snapshotJson: ArrayBuffer, expectedRevision: string) {
+  const bundle = decodeJson(new Uint8Array(snapshotJson));
+  const scene = bundle.scene;
+  if (typeof scene !== "object" || scene === null || !("source" in scene)) {
+    throw new Error("The retained readback bundle has no Scene source.");
+  }
+  const source = scene.source;
+  if (
+    typeof source !== "object" ||
+    source === null ||
+    !("kind" in source) ||
+    source.kind !== "imported-manim-runtime-trace" ||
+    !("traceDigest" in source) ||
+    source.traceDigest !== expectedRevision
+  ) {
+    throw new Error("The retained readback bundle does not match the expected Runtime Trace revision.");
+  }
+  return expectedRevision;
+}
+
+async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofRequestV1) {
+  if (request.frames.length < 1 || request.frames.length > MAX_RETAINED_FRAME_SEQUENCE_COUNT) {
+    throw new Error(`A retained readback sequence requires 1-${MAX_RETAINED_FRAME_SEQUENCE_COUNT} frames.`);
+  }
+  const ids = new Set<string>();
+  for (const frame of request.frames) {
+    if (!frame.id || frame.id.length > 128 || ids.has(frame.id)) {
+      throw new Error("Retained readback frame ids must be unique non-empty strings of at most 128 characters.");
+    }
+    ids.add(frame.id);
+  }
+
+  const revision = runtimeTraceRevision(request.snapshotJson, request.expectedRevision);
+  const canvas = new OffscreenCanvas(request.viewport.widthPx, request.viewport.heightPx);
+  const hooks = installReadbackHooks(canvas, request.viewport);
+  const bindings = (await import(/* @vite-ignore */ request.wasmModuleUrl)) as WasmBindingsV1;
+  await bindings.default();
+  if (bindings.poietraCanvasAbiVersion() !== POIETRA_CANVAS_ABI_VERSION) {
+    throw new Error("Unexpected canvas ABI version.");
+  }
+  let installCount = 0;
+  const engine = await createCanvasEngine(
+    bindings,
+    request.snapshotJson,
+    canvas,
+    request.assetMetadataJson,
+    request.assetBytes,
+  );
+  installCount += 1;
+
+  const frames = [];
+  const renderSubmissionCounts: number[] = [];
+  for (const frame of request.frames) {
+    hooks.arm();
+    const responseJson = await engine.render(new Uint8Array(frame.requestJson));
+    const renderSubmissionCount = hooks.finishCapture();
+    const response = decodeJson(responseJson);
+    const { fullRgba, pixels } = await hooks.readPixels({}, true);
+    if (!fullRgba) throw new Error(`The retained readback frame ${frame.id} has no full RGBA payload.`);
+    renderSubmissionCounts.push(renderSubmissionCount);
+    frames.push({ id: frame.id, pixels, response, rgba: fullRgba.buffer });
+  }
+
+  return {
+    capture: {
+      installCount,
+      policy: "one-retained-engine",
+      renderSubmissionCounts,
+    },
+    frames,
+    kind: "retained-frame-sequence-proof" as const,
+    revision,
+    viewport: request.viewport,
+  };
+}
+
 function scopeCallDelta(
   before: Readonly<{ pops: number; pushes: number }>,
   after: Readonly<{ pops: number; pushes: number }>,
@@ -627,6 +718,11 @@ self.addEventListener("message", (event: MessageEvent<WorkerRequestV1>) => {
     const request = event.data;
     if (request.kind === "probe-error-scopes") {
       self.postMessage({ kind: "error-scope-proof", value: await probeErrorScopes(request) });
+      return;
+    }
+    if (request.kind === "prove-retained-frame-sequence") {
+      const proof = await proveRetainedFrameSequence(request);
+      self.postMessage(proof, { transfer: proof.frames.map(({ rgba }) => rgba) });
       return;
     }
     if (request.kind !== "prove-frame") throw new Error("Unknown E2E canvas proof request.");

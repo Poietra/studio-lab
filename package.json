@@ -32,6 +32,7 @@
     "test:e2e:preview:webgpu": "playwright test --config playwright.preview.config.ts --project preview-webgpu --workers 1",
     "test:e2e:preview:real": "playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:runtime-trace": "POIETRA_E2E_REAL_PREVIEW_PROFILE=runtime-trace playwright test --config playwright.real-preview.config.ts",
+    "test:e2e:preview:real:runtime-trace:cairo-parity": "POIETRA_E2E_REAL_PREVIEW_PROFILE=runtime-trace POIETRA_RUNTIME_TRACE_CAIRO_PARITY_REQUIRED=1 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mathtex": "POIETRA_E2E_REAL_PREVIEW_PROFILE=3 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mathtex-morph": "POIETRA_E2E_REAL_PREVIEW_PROFILE=5 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:image": "POIETRA_E2E_REAL_PREVIEW_PROFILE=4 playwright test --config playwright.real-preview.config.ts",
