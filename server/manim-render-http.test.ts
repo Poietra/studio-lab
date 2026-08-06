@@ -24,6 +24,8 @@ import {
 } from "./fast-manim-runtime-trace-lowering";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { lowerVerifiedFastManimRuntimeTraceV3 } from "./fast-manim-runtime-trace-v3-lowering";
+import { fastManimRuntimeTraceV3Schema } from "./fast-manim-runtime-trace-v3-result-contract";
 import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
@@ -36,6 +38,7 @@ import {
   trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
+import genericRuntimeTraceFixture from "./test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 
 async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: StructuredLogger) {
   const server = createServer((request, response) => {
@@ -641,6 +644,28 @@ describe("Runtime Trace preview routing", () => {
     } as const satisfies FastManimRuntimeTraceRunViewV1;
   }
 
+  async function verifiedGenericView() {
+    const genericTrace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV3(genericTrace);
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    return {
+      bundle,
+      projectId: genericTrace.projectId,
+      requestId: genericTrace.requestId,
+      roots: [],
+      runtimeConfigHash: genericTrace.runtimeConfigHash,
+      sceneId: genericTrace.sceneId,
+      sceneName: genericTrace.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: genericTrace.sourceHash,
+      sourcePath: genericTrace.sourcePath,
+      status: "verified",
+      traceDigest: source.traceDigest,
+      version: 1,
+    } as const satisfies FastManimRuntimeTraceRunViewV1;
+  }
+
   async function verifiedEditedView() {
     const source = RUNTIME_TRACE_SOURCE_TEXT.replace(
       "            run_time=5,\n        )\n        self.wait()\n",
@@ -706,6 +731,37 @@ describe("Runtime Trace preview routing", () => {
 
       const get = await send(port, path);
       expect(get.status).toBe(405);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("admits correlated generic V3 preview evidence without source roots", async () => {
+    const view = await verifiedGenericView();
+    const genericRequest = {
+      projectId: view.projectId,
+      requestId: view.requestId,
+      sceneName: view.sceneName,
+      sourceHash: view.sourceHash,
+      sourcePath: view.sourcePath,
+    };
+    const server = await listen({
+      runRuntimeTrace: async () => view,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v3" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const response = await send(
+        (server.address() as AddressInfo).port,
+        `/api/manim/projects/${view.projectId}/runtime-traces`,
+        {
+          body: JSON.stringify(genericRequest),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

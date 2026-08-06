@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import { lowerFastManimRuntimeTraceProducerJsonV1 } from "../../server/fast-manim-runtime-trace-lowering";
+import { lowerVerifiedFastManimRuntimeTraceV3 } from "../../server/fast-manim-runtime-trace-v3-lowering";
+import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-trace-v3-result-contract";
 import {
   runtimeTraceFixture,
   runtimeTraceRequestFixture,
   trustedRuntimeTraceProducer,
 } from "../../server/test-fixtures/fast-manim-runtime-trace-fixture";
+import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
 import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
 import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
@@ -363,8 +366,26 @@ function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
 
+function unsupportedRuntimeTraceRun() {
+  return {
+    failure: { code: "unsupported-profile", message: "The selected Scene requires snapshot fallback." },
+    projectId: "default",
+    requestId: REQUEST_ID,
+    runtimeConfigHash: "0".repeat(64),
+    sceneId: `scene:${"0".repeat(64)}`,
+    sceneName: "ExampleScene",
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: SOURCE_HASH,
+    sourcePath: "scene.py",
+    status: "failed",
+    version: 1,
+  } as const;
+}
+
 function providerReturning(value: unknown) {
-  const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(value));
+  const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+    String(input).endsWith("/runtime-traces") ? jsonResponse(unsupportedRuntimeTraceRun()) : jsonResponse(value),
+  );
   return {
     fetcher,
     provider: createServerPreviewSnapshotProviderV1({ fetcher, requestIdFactory: () => REQUEST_ID }),
@@ -409,7 +430,46 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
-  it("classifies an unsupported Runtime Trace profile as terminal rather than retryable", async () => {
+  it("accepts a generic V3 trace as preview-only without inventing edit authority", async () => {
+    const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    const run = {
+      bundle,
+      projectId: trace.projectId,
+      requestId: trace.requestId,
+      roots: [],
+      runtimeConfigHash: trace.runtimeConfigHash,
+      sceneId: trace.sceneId,
+      sceneName: trace.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: trace.sourceHash,
+      sourcePath: trace.sourcePath,
+      status: "verified",
+      traceDigest: source.traceDigest,
+      version: 1,
+    } as const;
+    const genericIdentity = {
+      projectId: trace.projectId,
+      sceneName: trace.sceneName,
+      sourceHash: trace.sourceHash,
+      sourcePath: trace.sourcePath,
+    };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL) => jsonResponse(run));
+
+    const loaded = await createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => trace.requestId,
+    }).loadVerifiedSnapshot({ identity: genericIdentity });
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/manim/projects/${trace.projectId}/runtime-traces`);
+    expect(loaded.sourceLabel).toBe("verified Runtime Trace (preview-only)");
+    expect(loaded.sourceRuntimeIdentity).toEqual(new Map());
+    expect(loaded.snapshot.scene.source).toMatchObject({ traceVersion: 3 });
+  });
+
+  it("falls back to the snapshot endpoint only after a structured unsupported Runtime Trace result", async () => {
     const verified = await verifiedRuntimeTraceRun();
     const unsupported = {
       failure: {
@@ -427,8 +487,11 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       status: "failed",
       version: verified.version,
     } as const;
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/runtime-traces") ? jsonResponse(unsupported) : jsonResponse({ status: "unsupported" }),
+    );
     const provider = createServerPreviewSnapshotProviderV1({
-      fetcher: vi.fn(async () => jsonResponse(unsupported)),
+      fetcher,
       requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
     });
 
@@ -436,6 +499,10 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       failureKind: "unsupported",
       name: StudioPreviewSnapshotLoadErrorV1.name,
     });
+    expect(fetcher.mock.calls.map(([input]) => String(input))).toEqual([
+      "/api/manim/projects/demo/runtime-traces",
+      "/api/manim/projects/demo/scene-snapshots",
+    ]);
   });
 
   it("accepts the reviewed fifteen-second OpeningManim V2 profile and all four source roots", async () => {
@@ -506,8 +573,9 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     const controller = new AbortController();
     const loaded = await provider.loadVerifiedSnapshot({ identity, signal: controller.signal });
 
-    expect(fetcher).toHaveBeenCalledOnce();
-    const [url, init] = fetcher.mock.calls[0]!;
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/default/runtime-traces");
+    const [url, init] = fetcher.mock.calls[1]!;
     expect(url).toBe("/api/manim/projects/default/scene-snapshots");
     expect(init).toMatchObject({ method: "POST", signal: controller.signal });
     expect(JSON.parse(String(init?.body))).toEqual({ ...identity, requestId: REQUEST_ID });
@@ -535,7 +603,9 @@ describe("createServerPreviewSnapshotProviderV1", () => {
 
   it("loads only the exact three nested WriteStuff V12 source mappings", async () => {
     const run = await verifiedWriteStuffRun();
-    const fetcher = vi.fn(async () => jsonResponse(run));
+    const fetcher = vi.fn(async (input: RequestInfo | URL) =>
+      String(input).endsWith("/runtime-traces") ? jsonResponse(unsupportedRuntimeTraceRun()) : jsonResponse(run),
+    );
     const loaded = await createServerPreviewSnapshotProviderV1({
       fetcher,
       requestIdFactory: () => WRITE_STUFF_REQUEST_ID,
@@ -579,7 +649,11 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       },
     };
     const rejected = createServerPreviewSnapshotProviderV1({
-      fetcher: vi.fn(async () => jsonResponse(wrongPath)),
+      fetcher: vi.fn(async (input: RequestInfo | URL) =>
+        String(input).endsWith("/runtime-traces")
+          ? jsonResponse(unsupportedRuntimeTraceRun())
+          : jsonResponse(wrongPath),
+      ),
       requestIdFactory: () => WRITE_STUFF_REQUEST_ID,
     });
     await expect(rejected.loadVerifiedSnapshot({ identity: writeStuffIdentity })).rejects.toThrow(
@@ -591,6 +665,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     const run = await verifiedRun({ pngAsset: true });
     const asset = run.snapshot.bundle.assets.assets[0]!;
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/runtime-traces")) return jsonResponse(unsupportedRuntimeTraceRun());
       if (String(input).endsWith("/scene-snapshots")) return jsonResponse(run);
       expect(String(input)).toBe(`/api/manim/projects/default/scene-snapshot-assets/${asset.sha256}`);
       expect(init).toMatchObject({ headers: { accept: "image/png" }, method: "GET" });
@@ -603,7 +678,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       requestIdFactory: () => REQUEST_ID,
     }).loadVerifiedSnapshot({ identity });
 
-    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(fetcher).toHaveBeenCalledTimes(3);
     expect(loaded.assetPayloads).toHaveLength(1);
     expect(loaded.assetPayloads[0]).toMatchObject({
       assetId: asset.id,
@@ -652,7 +727,11 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     ];
     for (const variant of variants) {
       const fetcher = vi.fn(async (input: RequestInfo | URL) =>
-        String(input).endsWith("/scene-snapshots") ? jsonResponse(run) : variant.response(),
+        String(input).endsWith("/runtime-traces")
+          ? jsonResponse(unsupportedRuntimeTraceRun())
+          : String(input).endsWith("/scene-snapshots")
+            ? jsonResponse(run)
+            : variant.response(),
       );
       await expect(
         createServerPreviewSnapshotProviderV1({ fetcher, requestIdFactory: () => REQUEST_ID }).loadVerifiedSnapshot({
@@ -802,10 +881,12 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     await expect(httpFailure.loadVerifiedSnapshot({ identity })).rejects.toThrow("HTTP 503");
 
     const streamedOversize = createServerPreviewSnapshotProviderV1({
-      fetcher: async () =>
-        new Response(new Uint8Array(8 * 1024 * 1024 + 64 * 1024 + 1), {
-          headers: { "content-type": "application/json" },
-        }),
+      fetcher: async (input) =>
+        String(input).endsWith("/runtime-traces")
+          ? jsonResponse(unsupportedRuntimeTraceRun())
+          : new Response(new Uint8Array(8 * 1024 * 1024 + 64 * 1024 + 1), {
+              headers: { "content-type": "application/json" },
+            }),
       requestIdFactory: () => REQUEST_ID,
     });
     await expect(streamedOversize.loadVerifiedSnapshot({ identity })).rejects.toThrow("response is too large");

@@ -17,13 +17,13 @@ import {
 } from "./fast-manim-runtime-trace-v3-contract";
 import {
   type FastManimRuntimeTraceV3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
   parseFastManimRuntimeTraceProducerJsonV3,
   type TrustedFastManimRuntimeTraceProducerV3,
 } from "./fast-manim-runtime-trace-v3-result-contract";
 
 const ZERO_SHA256 = "0".repeat(64);
 const IDENTITY = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
-const MAX_NORMALIZED_RUNTIME_TRACE_V3_BYTES = 88 * 1024 * 1024;
 
 type StateV3 = FastManimRuntimeTraceV3["frames"][number]["states"][number];
 type PathV3 = FastManimRuntimeTraceV3["resources"]["paths"][number]["path"];
@@ -447,7 +447,7 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
     });
   }
   const bundle = await parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
-  if (Buffer.byteLength(canonicalJsonV1(bundle), "utf8") > MAX_NORMALIZED_RUNTIME_TRACE_V3_BYTES) {
+  if (Buffer.byteLength(canonicalJsonV1(bundle), "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3) {
     fail("Runtime Trace V3 normalized Scene IR exceeds its byte budget.");
   }
   return bundle;

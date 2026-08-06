@@ -52,6 +52,7 @@ const runtimeTraceRunRootV1Schema = z
   })
   .strict();
 const runtimeTraceRunRootsV1Schema = z.union([
+  z.array(runtimeTraceRunRootV1Schema).length(0),
   z.array(runtimeTraceRunRootV1Schema).length(2),
   z.array(runtimeTraceRunRootV1Schema).length(4),
 ]);
