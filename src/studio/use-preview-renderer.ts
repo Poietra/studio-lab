@@ -317,14 +317,6 @@ export function studioPreviewInteractionEntityIdsV1(
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
     if (
-      authority.kind === "selection-only" &&
-      authority.reason === "runtime-trace-preview-only" &&
-      mapping.sourceName !== "square" &&
-      mapping.sourceName !== "decimal"
-    ) {
-      continue;
-    }
-    if (
       seen.has(mapping.entityId) ||
       !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||
       (drawableEntityIds !== null && !drawableEntityIds.has(mapping.entityId))

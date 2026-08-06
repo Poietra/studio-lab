@@ -27,7 +27,7 @@ const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
 const ZERO_SHA256 = "0".repeat(64);
 const RUNTIME_TRACE_SOURCE_PATH = "example_scenes/basic.py";
-const RUNTIME_TRACE_SCENE_NAME = "UpdatersExample";
+const RUNTIME_TRACE_SCENE_NAMES = new Set(["OpeningManim", "UpdatersExample"]);
 
 const identitySchema = z
   .object({
@@ -371,7 +371,17 @@ async function validateVerifiedRuntimeTraceRun(
   assertEqual("engine revision", sceneIrSourceRevisionHash(bundle.scene), run.traceDigest);
   assertEqual("asset manifest", bundle.scene.assetManifest.manifestDigest, bundle.assets.manifestDigest);
   if (bundle.assets.assets.length !== 0) {
-    throw providerError("Runtime Trace V1 must not publish unrelated asset payloads.");
+    throw providerError("Runtime Trace must not publish unrelated asset payloads.");
+  }
+
+  const expectedProfile =
+    identity.sceneName === "UpdatersExample" && source.traceVersion === 1 && bundle.scene.duration === 6
+      ? ({ rootNames: ["square", "decimal"] } as const)
+      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 3
+        ? ({ rootNames: ["title", "basel"] } as const)
+        : null;
+  if (!expectedProfile) {
+    throw providerError("The Runtime Trace preview does not match a reviewed Scene profile.");
   }
 
   const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
@@ -380,7 +390,7 @@ async function validateVerifiedRuntimeTraceRun(
     Readonly<{ bindingId: string; entityId: string; sourceName: string }>
   >();
   let motionRootId: string | null = null;
-  for (const [index, sourceName] of ["square", "decimal"].entries()) {
+  for (const [index, sourceName] of expectedProfile.rootNames.entries()) {
     const root = run.roots[index];
     const entity = root ? entities.get(root.entityId) : undefined;
     if (
@@ -392,7 +402,7 @@ async function validateVerifiedRuntimeTraceRun(
       entity.parentId === null ||
       (motionRootId !== null && entity.parentId !== motionRootId)
     ) {
-      throw providerError("The Runtime Trace source roots do not name the exact nested Square and Decimal groups.");
+      throw providerError("The Runtime Trace source roots do not name the exact reviewed nested groups.");
     }
     motionRootId = entity.parentId;
     sourceRuntimeIdentity.set(sourceName, {
@@ -436,7 +446,7 @@ export function createServerPreviewSnapshotProviderV1(
       if (!opaqueIdV1Schema.safeParse(requestId).success)
         throw providerError("The Scene snapshot request ID is invalid.");
       const runtimeTrace =
-        identity.sourcePath === RUNTIME_TRACE_SOURCE_PATH && identity.sceneName === RUNTIME_TRACE_SCENE_NAME;
+        identity.sourcePath === RUNTIME_TRACE_SOURCE_PATH && RUNTIME_TRACE_SCENE_NAMES.has(identity.sceneName);
       const endpoint = runtimeTrace ? "runtime-traces" : "scene-snapshots";
       const response = await fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/${endpoint}`, {
         body: JSON.stringify({ ...identity, requestId }),

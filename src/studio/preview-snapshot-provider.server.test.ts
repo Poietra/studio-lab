@@ -38,13 +38,21 @@ const runtimeTraceIdentity: StudioPreviewSceneIdentityV1 = {
   sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
   sourcePath: "example_scenes/basic.py",
 };
+const openingRuntimeTraceIdentity: StudioPreviewSceneIdentityV1 = {
+  ...runtimeTraceIdentity,
+  sceneName: "OpeningManim",
+};
 
-async function sceneId() {
+async function sceneIdFor(value: StudioPreviewSceneIdentityV1) {
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(`${identity.sourcePath}\u0000${identity.sceneName}`),
+    new TextEncoder().encode(`${value.sourcePath}\u0000${value.sceneName}`),
   );
   return `scene:${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
+}
+
+async function sceneId() {
+  return sceneIdFor(identity);
 }
 
 async function verifiedRun(options: Readonly<{ identityMap?: boolean; pngAsset?: boolean }> = {}) {
@@ -266,6 +274,85 @@ async function verifiedRuntimeTraceRun() {
   } as const;
 }
 
+async function verifiedOpeningRuntimeTraceRun() {
+  const sceneId = await sceneIdFor(openingRuntimeTraceIdentity);
+  const traceDigest = "e".repeat(64);
+  const provenanceId = `${sceneId}/provenance:runtime-trace-v2`;
+  const rootId = `${sceneId}/runtime-trace-v2:root`;
+  const roots = (["title", "basel"] as const).map((name, index) => ({
+    binding: {
+      id: `source-binding:${String(index + 1).repeat(64)}`,
+      name,
+      ordinal: index + 1,
+      span: { endColumn: 13, endLine: 20 + index, startColumn: 8, startLine: 20 + index },
+    },
+    entityId: `${sceneId}/runtime-root:${name}`,
+  }));
+  const group = (id: string, parentId: string | null, sceneOrder: number) => ({
+    appearance: { kind: "group" as const, opacity: 1 },
+    geometry: { kind: "group" as const },
+    id,
+    lifetimes: [{ end: 3, start: 0 }],
+    parentId,
+    provenanceId,
+    sceneOrder,
+    sourceZIndex: 0,
+    transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+  });
+  const leaves = roots.map((root, index) => ({
+    ...bundleFixture.scene.entities[index]!,
+    id: `${root.entityId}/runtime-draw:0`,
+    lifetimes: [{ end: 3, start: 0 }],
+    parentId: root.entityId,
+    provenanceId,
+    sceneOrder: index + 3,
+  }));
+  const bundle = await parseVerifiedSceneIrBundleV1({
+    assets: bundleFixture.assets,
+    scene: {
+      ...bundleFixture.scene,
+      animationChannels: [],
+      duration: 3,
+      entities: [
+        group(rootId, null, 0),
+        ...roots.map((root, index) => group(root.entityId, rootId, index + 1)),
+        ...leaves,
+      ],
+      provenance: [
+        {
+          evidence: ["OpeningManim Runtime Trace V2 provider fixture"],
+          id: provenanceId,
+          origin: "fast-manim-runtime-trace",
+        },
+      ],
+      requiredCapabilities: ["cubic-path-geometry", "logical-group"],
+      sceneId,
+      source: {
+        kind: "imported-manim-runtime-trace",
+        runtimeConfigHash: RUNTIME_HASH,
+        sourceHash: openingRuntimeTraceIdentity.sourceHash,
+        traceDigest,
+        traceVersion: 2,
+      },
+    },
+  });
+  return {
+    bundle,
+    projectId: openingRuntimeTraceIdentity.projectId,
+    requestId: RUNTIME_TRACE_REQUEST_ID,
+    roots,
+    runtimeConfigHash: RUNTIME_HASH,
+    sceneId,
+    sceneName: openingRuntimeTraceIdentity.sceneName,
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: openingRuntimeTraceIdentity.sourceHash,
+    sourcePath: openingRuntimeTraceIdentity.sourcePath,
+    status: "verified",
+    traceDigest,
+    version: 1,
+  } as const;
+}
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
@@ -279,7 +366,7 @@ function providerReturning(value: unknown) {
 }
 
 describe("createServerPreviewSnapshotProviderV1", () => {
-  it("requests and verifies Runtime Trace evidence only for the exact UpdatersExample", async () => {
+  it("requests and verifies Runtime Trace evidence for the exact UpdatersExample profile", async () => {
     const run = await verifiedRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
     const provider = createServerPreviewSnapshotProviderV1({
@@ -312,8 +399,30 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
     });
     await expect(rejected.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toThrow(
-      "exact nested Square and Decimal groups",
+      "exact reviewed nested groups",
     );
+  });
+
+  it("accepts the reviewed three-second OpeningManim V2 profile and its title/basel roots", async () => {
+    const run = await verifiedOpeningRuntimeTraceRun();
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
+    const loaded = await createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+    }).loadVerifiedSnapshot({ identity: openingRuntimeTraceIdentity });
+
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
+    expect(loaded).toMatchObject({
+      correlation: {
+        context: { ...openingRuntimeTraceIdentity, sourceDuration: 3, workingRevision: "pristine" },
+        engineRevisionHash: run.traceDigest,
+        sceneDuration: 3,
+        serverPublicationRevision: null,
+      },
+      duration: 3,
+      sourceLabel: "verified Runtime Trace",
+    });
+    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel"]);
   });
 
   it("posts the full request identity and returns independently correlated engine and publication revisions", async () => {

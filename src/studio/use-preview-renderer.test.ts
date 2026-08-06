@@ -748,6 +748,16 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     const authority = studioPreviewInteractionAuthorityV1(runtimeTrace);
     expect(authority).toEqual({ kind: "selection-only", reason: "runtime-trace-preview-only" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([squareRootId, decimalRootId]);
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+          ["title", { bindingId: "binding:title", entityId: squareRootId, sourceName: "title" }],
+          ["basel", { bindingId: "binding:basel", entityId: decimalRootId, sourceName: "basel" }],
+        ]),
+        authority,
+        entities,
+      ),
+    ).toEqual([squareRootId, decimalRootId]);
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
   });
 
