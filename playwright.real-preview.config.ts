@@ -89,6 +89,7 @@ if (
   (runtimeTraceProfile ||
     snapshotProfile === "4" ||
     snapshotProfile === "7" ||
+    snapshotProfile === "8" ||
     snapshotProfile === "9" ||
     snapshotProfile === "10" ||
     snapshotProfile === "12") &&
@@ -115,6 +116,7 @@ const mutableHarness =
   runtimeTraceProfile ||
   snapshotProfile === "4" ||
   snapshotProfile === "7" ||
+  snapshotProfile === "8" ||
   snapshotProfile === "9" ||
   snapshotProfile === "10" ||
   snapshotProfile === "12";
@@ -123,6 +125,19 @@ const harnessRoot = mutableHarness
   : join(process.cwd(), "fixtures", "real-preview-harness");
 if (mutableHarness) {
   cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+}
+if (snapshotProfile === "8" && !externalBaseUrl) {
+  if (!officialV8ProjectRoot) throw new Error("The official SquareToCircle V8 source root is unavailable.");
+  const relativeSourcePath = join("example_scenes", "basic.py");
+  const officialSource = readFileSync(join(officialV8ProjectRoot, relativeSourcePath));
+  const mutableSource = readFileSync(join(harnessRoot, relativeSourcePath));
+  const expectedSourceSha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+  if (
+    !officialSource.equals(mutableSource) ||
+    createHash("sha256").update(officialSource).digest("hex") !== expectedSourceSha256
+  ) {
+    throw new Error("The mutable SquareToCircle V8 harness must begin from the byte-exact official fast-manim source.");
+  }
 }
 let writeStuffTexCacheRoot: string | null = null;
 if (snapshotProfile === "12" && !externalBaseUrl) {
@@ -274,7 +289,7 @@ export default defineConfig({
               {
                 id: "real-preview-harness",
                 name: "Real Preview Harness",
-                root: snapshotProfile === "8" ? officialV8ProjectRoot : harnessRoot,
+                root: harnessRoot,
               },
             ]),
             POIETRA_STUDIO_DATA_ROOT: dataRoot,
