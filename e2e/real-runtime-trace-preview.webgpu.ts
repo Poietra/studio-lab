@@ -6,6 +6,7 @@ const SOURCE_PATH = "example_scenes/basic.py";
 const SCENE_NAME = "UpdatersExample";
 const SCENE_LABEL = `${SOURCE_PATH} · ${SCENE_NAME}`;
 const SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const ROOT_EVIDENCE_POINT_COUNT = 5;
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 
 type RuntimeTraceRunBody = Readonly<{
@@ -42,6 +43,39 @@ function runtimeTraceResponse(page: Page) {
 }
 
 async function openOfficialRuntimeTrace(page: Page) {
+  await page.addInitScript(() => {
+    const requestKinds: string[] = [];
+    const NativeWorker = globalThis.Worker;
+    const studioCanvasWorkers = new WeakSet<Worker>();
+    class ObservedWorker extends NativeWorker {
+      constructor(scriptURL: string | URL, options?: WorkerOptions) {
+        super(scriptURL, options);
+        if (new URL(String(scriptURL), location.href).pathname.includes("poietra-canvas")) {
+          studioCanvasWorkers.add(this);
+        }
+      }
+
+      override postMessage(message: unknown, transferOrOptions?: StructuredSerializeOptions | Transferable[]) {
+        if (studioCanvasWorkers.has(this)) {
+          const kind = (message as Readonly<{ kind?: unknown }>).kind;
+          if (typeof kind === "string") requestKinds.push(kind);
+        }
+        if (Array.isArray(transferOrOptions)) super.postMessage(message, transferOrOptions);
+        else super.postMessage(message, transferOrOptions);
+      }
+    }
+    Object.defineProperty(globalThis, "__poietraStudioCanvasWorkerRequestKindsV1", {
+      configurable: false,
+      enumerable: false,
+      value: requestKinds,
+      writable: false,
+    });
+    Object.defineProperty(globalThis, "Worker", {
+      configurable: true,
+      value: ObservedWorker,
+      writable: true,
+    });
+  });
   await page.goto("/?previewRenderer=server");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
@@ -101,7 +135,7 @@ async function retainedWebGpuEvidence(
   input: Readonly<{ bundle: SceneIrBundleV1; entityIds: readonly string[]; revision: string }>,
 ) {
   return page.evaluate(
-    async ({ bundle, entityIds, revision, viewport }) => {
+    async ({ bundle, entityIds, revision, rootEvidencePointCount, viewport }) => {
       const { PoietraCanvasWorkerClient } = (await import(
         "/src/engine/canvas-worker-client.ts"
       )) as typeof import("../src/engine/canvas-worker-client");
@@ -109,25 +143,16 @@ async function retainedWebGpuEvidence(
         "/src/engine/canvas-worker-evidence.ts"
       )) as typeof import("../src/engine/canvas-worker-evidence");
 
-      type ObservedRequest = Readonly<{ kind?: string }>;
-      const lifecycle: string[] = [];
-      const NativeWorker = globalThis.Worker;
-      class ObservedCanvasWorker extends NativeWorker {
+      class EvidenceCanvasWorker extends globalThis.Worker {
         constructor() {
           super(new URL("/src/engine/poietra-canvas.dev.worker.ts", location.href), { type: "module" });
-        }
-
-        override postMessage(message: unknown, transferOrOptions?: StructuredSerializeOptions | Transferable[]) {
-          lifecycle.push((message as ObservedRequest).kind ?? "unknown");
-          if (Array.isArray(transferOrOptions)) super.postMessage(message, transferOrOptions);
-          else super.postMessage(message, transferOrOptions);
         }
       }
 
       const client = new PoietraCanvasWorkerClient({
         evidence: createCanvasWorkerClientEvidenceAdapterV1(),
         requestTimeoutMs: 60_000,
-        workerFactory: () => new ObservedCanvasWorker(),
+        workerFactory: () => new EvidenceCanvasWorker(),
       });
       const canvas = Object.assign(document.createElement("canvas"), {
         height: viewport.heightPx,
@@ -149,6 +174,7 @@ async function retainedWebGpuEvidence(
             [centerX, maximumY - onePixelY],
             [centerX, centerY],
           ];
+          if (clipPoints.length !== rootEvidencePointCount) throw new Error("Unexpected root evidence point count.");
           for (const [x, y] of clipPoints) {
             points.push({ fractionX: (x! + 1) / 2, fractionY: (1 - y!) / 2 });
           }
@@ -178,19 +204,19 @@ async function retainedWebGpuEvidence(
           });
           const entries = frame.interaction.status === "available" ? frame.interaction.entries : [];
           const evidence = await client.captureFrameEvidence({ revision, samples: evidencePoints(entries) });
-          results.push({ evidence, frame, id: sample.id });
+          results.push({ evidence, frame, id: sample.id, requestedInteractionEntityIds: [...entityIds] });
         }
-        return { lifecycle, results };
+        return results;
       } finally {
         client.dispose();
       }
     },
-    { ...input, viewport: VIEWPORT },
+    { ...input, rootEvidencePointCount: ROOT_EVIDENCE_POINT_COUNT, viewport: VIEWPORT },
   );
 }
 
 function expectSamePreparedFrame(
-  samples: Map<string, Awaited<ReturnType<typeof retainedWebGpuEvidence>>["results"][number]>,
+  samples: Map<string, Awaited<ReturnType<typeof retainedWebGpuEvidence>>[number]>,
   leftId: string,
   rightId: string,
 ) {
@@ -221,10 +247,8 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   expect(run.bundle.scene.entities).toHaveLength(570);
   expect(run.bundle.scene.animationChannels).toHaveLength(1);
   expect(run.roots.map(({ binding }) => binding.name)).toEqual(["square", "decimal"]);
-  expect(run.roots.map(({ entityId }) => entityId)).toEqual([
-    `${run.sceneId}/runtime-root:square`,
-    `${run.sceneId}/runtime-root:decimal`,
-  ]);
+  const rootEntityIds = run.roots.map(({ entityId }) => entityId);
+  expect(rootEntityIds).toEqual([`${run.sceneId}/runtime-root:square`, `${run.sceneId}/runtime-root:decimal`]);
 
   const canvas = page.locator("[data-studio-canvas]");
   await expect(canvas).toHaveAttribute("data-preview-renderer", "presented", { timeout: 60_000 });
@@ -255,23 +279,51 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   await expect(page.locator(`[data-studio-runtime-entity="${run.roots[0]?.entityId}"]`)).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 
+  const studioWorkerRequestKinds = await page.evaluate(() => {
+    const observed = (
+      globalThis as typeof globalThis & {
+        __poietraStudioCanvasWorkerRequestKindsV1?: readonly string[];
+      }
+    ).__poietraStudioCanvasWorkerRequestKindsV1;
+    return observed ? [...observed] : null;
+  });
+  expect(studioWorkerRequestKinds).not.toBeNull();
+  expect(studioWorkerRequestKinds?.filter((kind) => kind === "install-canvas")).toHaveLength(1);
+  expect(studioWorkerRequestKinds?.filter((kind) => kind === "replace-scene")).toHaveLength(0);
+
   const retained = await retainedWebGpuEvidence(page, {
     bundle: run.bundle,
-    entityIds: run.roots.map(({ entityId }) => entityId),
+    entityIds: rootEntityIds,
     revision: run.traceDigest,
   });
-  expect(retained.lifecycle.filter((kind) => kind === "install-canvas" || kind === "replace-scene")).toEqual([
-    "install-canvas",
-  ]);
-  const samples = new Map(retained.results.map((sample) => [sample.id, sample]));
-  for (const sample of retained.results) {
+  const samples = new Map(retained.map((sample) => [sample.id, sample]));
+  for (const sample of retained) {
     expect(sample.frame).toMatchObject({
       interaction: { entries: [expect.any(Object), expect.any(Object)], space: "clip-v1", status: "available" },
       kind: "frame-presented",
       revision: run.traceDigest,
       viewport: VIEWPORT,
     });
-    expect(sample.frame.interaction.entries.every(({ status }) => status === "present")).toBe(true);
+    if (sample.frame.interaction.status !== "available") {
+      throw new Error(`Runtime Trace interaction evidence is unavailable at ${sample.id}.`);
+    }
+    expect(sample.requestedInteractionEntityIds).toEqual(rootEntityIds);
+    expect(sample.frame.interaction.entries).toHaveLength(rootEntityIds.length);
+    for (const [index, entry] of sample.frame.interaction.entries.entries()) {
+      const rootEntityId = rootEntityIds[index];
+      if (!rootEntityId) throw new Error(`Runtime Trace root identity is missing at positional entry ${index}.`);
+      expect(entry.status).toBe("present");
+      if (entry.status !== "present") throw new Error(`Runtime Trace root ${rootEntityId} is absent at ${sample.id}.`);
+      expect(entry.bounds.every(Number.isFinite)).toBe(true);
+      expect(entry.bounds[2]).toBeGreaterThan(entry.bounds[0]);
+      expect(entry.bounds[3]).toBeGreaterThan(entry.bounds[1]);
+      const rootPixels = sample.evidence.samples.slice(
+        1 + index * ROOT_EVIDENCE_POINT_COUNT,
+        1 + (index + 1) * ROOT_EVIDENCE_POINT_COUNT,
+      );
+      expect(rootPixels).toHaveLength(ROOT_EVIDENCE_POINT_COUNT);
+      expect(rootPixels.some(([red, green, blue]) => Math.max(red, green, blue) > 8)).toBe(true);
+    }
     expect(sample.evidence).toMatchObject({
       packetId: sample.frame.packetId,
       revision: run.traceDigest,
@@ -279,11 +331,17 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
       viewport: VIEWPORT,
     });
     expect(sample.evidence.samples[0]).toEqual([0, 0, 0, 255]);
-    expect(sample.evidence.samples.slice(1).some(([red, green, blue]) => Math.max(red, green, blue) > 8)).toBe(true);
+    expect(sample.evidence.samples).toHaveLength(1 + rootEntityIds.length * ROOT_EVIDENCE_POINT_COUNT);
   }
   expectSamePreparedFrame(samples, "zero", "before-first-boundary");
   expectSamePreparedFrame(samples, "first-boundary", "after-first-boundary");
+  expectSamePreparedFrame(samples, "top-return", "before-end");
   expectSamePreparedFrame(samples, "before-end", "end");
   expectSamePreparedFrame(samples, "bottom", "bottom-repeat");
-  expect(samples.get("zero")?.frame.interaction).not.toEqual(samples.get("bottom")?.frame.interaction);
+  const zero = samples.get("zero");
+  const firstBoundary = samples.get("first-boundary");
+  const bottom = samples.get("bottom");
+  if (!zero || !firstBoundary || !bottom) throw new Error("Missing Runtime Trace difference sample.");
+  expect(firstBoundary.frame.interaction).not.toEqual(zero.frame.interaction);
+  expect(bottom.frame.interaction).not.toEqual(zero.frame.interaction);
 });
