@@ -1,5 +1,6 @@
 import { z } from "zod";
 
+import { readBoundedJsonResponseV1 } from "./bounded-json-response";
 import {
   type CanonicalStripeSubscriptionV1,
   type CreateStripeCheckoutInputV1,
@@ -90,25 +91,8 @@ function retryableStatus(status: number) {
 }
 
 async function boundedJsonResponse(response: Response): Promise<unknown> {
-  const contentLength = response.headers.get("content-length");
-  if (
-    contentLength !== null &&
-    (!/^\d+$/u.test(contentLength) || Number(contentLength) > MAX_STRIPE_RESPONSE_BYTES_V1)
-  ) {
-    throw new StripeGatewayErrorV1("Stripe returned an invalid response.", {
-      retryable: true,
-      status: response.status,
-    });
-  }
-  const text = await response.text();
-  if (new TextEncoder().encode(text).byteLength > MAX_STRIPE_RESPONSE_BYTES_V1) {
-    throw new StripeGatewayErrorV1("Stripe returned an invalid response.", {
-      retryable: true,
-      status: response.status,
-    });
-  }
   try {
-    return JSON.parse(text) as unknown;
+    return await readBoundedJsonResponseV1(response, MAX_STRIPE_RESPONSE_BYTES_V1);
   } catch {
     throw new StripeGatewayErrorV1("Stripe returned an invalid response.", {
       retryable: true,

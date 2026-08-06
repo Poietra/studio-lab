@@ -210,6 +210,26 @@ describe("Stripe HTTP billing gateway", () => {
     expect(thrownError).not.toHaveProperty("cause");
     expect(String(thrownError)).not.toContain(providerSecret);
   });
+
+  it("cancels an undeclared oversized Stripe response before buffering it", async () => {
+    let canceled = false;
+    const responseBody = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+      start(controller) {
+        controller.enqueue(new Uint8Array(512 * 1_024));
+        controller.enqueue(Uint8Array.of(0));
+      },
+    });
+    const gateway = createStripeHttpBillingGatewayV1({
+      fetch: vi.fn(async () => new Response(responseBody, { status: 200 })),
+      secretKey,
+    });
+
+    await expect(gateway.createCheckoutSession(checkoutInput)).rejects.toBeInstanceOf(StripeGatewayErrorV1);
+    expect(canceled).toBe(true);
+  });
 });
 
 describe("fake Stripe billing gateway", () => {
