@@ -679,6 +679,39 @@ describe("Runtime Trace preview routing", () => {
     }
   });
 
+  it("preserves a correlated fail-closed result for the browser fallback", async () => {
+    const failed = {
+      failure: { code: "unsupported-profile", message: "This profile is unavailable." },
+      projectId: requestBody.projectId,
+      requestId: requestBody.requestId,
+      runtimeConfigHash: "e".repeat(64),
+      sceneId: trace.sceneId,
+      sceneName: requestBody.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: requestBody.sourceHash,
+      sourcePath: requestBody.sourcePath,
+      status: "failed",
+      version: 1,
+    } as const satisfies FastManimRuntimeTraceRunViewV1;
+    const server = await listen({
+      runRuntimeTrace: async () => failed,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-fallback" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
+        body: JSON.stringify(requestBody),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(200);
+      expect(JSON.parse(response.body.toString("utf8"))).toEqual(failed);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
   it("rejects malformed verified evidence without returning backend-controlled data", async () => {
     const view = await verifiedView();
     const leakedSource = "private source text must not cross the HTTP boundary";

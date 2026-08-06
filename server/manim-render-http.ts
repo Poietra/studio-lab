@@ -486,14 +486,16 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     run.sceneId !== sceneId ||
     run.sceneName !== request.sceneName ||
     run.sourceHash !== request.sourceHash ||
-    run.sourcePath !== request.sourcePath ||
-    run.runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1
+    run.sourcePath !== request.sourcePath
   ) {
     throw new HttpError("The Runtime Trace operation returned stale correlation.", 502);
   }
 
   let safeView: typeof run = run;
   if (run.status === "verified") {
+    if (run.runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1) {
+      throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
+    }
     let bundle;
     try {
       bundle = await parseVerifiedSceneIrBundleV1(run.bundle);
