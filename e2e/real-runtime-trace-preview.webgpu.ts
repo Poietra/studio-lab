@@ -1,5 +1,10 @@
 import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
+import {
+  captureRuntimeTraceWebGpuFramesV1,
+  RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
+  UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
+} from "./runtime-trace-webgpu-readback";
 
 const RUNTIME_TRACE_PATH = "/api/manim/projects/real-preview-harness/runtime-traces";
 const SOURCE_PATH = "example_scenes/basic.py";
@@ -227,6 +232,19 @@ function expectSamePreparedFrame(
   expect(right.evidence.samples).toEqual(left.evidence.samples);
 }
 
+function expectSameFullRgba(
+  frames: Map<string, Awaited<ReturnType<typeof captureRuntimeTraceWebGpuFramesV1>>["frames"][number]>,
+  leftId: string,
+  rightId: string,
+) {
+  const left = frames.get(leftId);
+  const right = frames.get(rightId);
+  if (!left || !right) throw new Error(`Missing full RGBA comparison ${leftId}/${rightId}.`);
+  expect(right.sha256).toBe(left.sha256);
+  expect(right.rgba.byteLength).toBe(left.rgba.byteLength);
+  expect(right.rgba.every((byte, index) => byte === left.rgba[index])).toBe(true);
+}
+
 test("renders official UpdatersExample through an unpublished Runtime Trace and one retained WebGPU Scene", async ({
   page,
 }) => {
@@ -344,4 +362,52 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   if (!zero || !firstBoundary || !bottom) throw new Error("Missing Runtime Trace difference sample.");
   expect(firstBoundary.frame.interaction).not.toEqual(zero.frame.interaction);
   expect(bottom.frame.interaction).not.toEqual(zero.frame.interaction);
+
+  const fullRgba = await captureRuntimeTraceWebGpuFramesV1(page, {
+    bundle: run.bundle,
+    revision: run.traceDigest,
+    samples: UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
+    viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
+  });
+  expect(fullRgba).toMatchObject({
+    capture: {
+      installCount: 1,
+      policy: "one-retained-engine",
+      renderSubmissionCounts: UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1.map(() => 1),
+    },
+    revision: run.traceDigest,
+    viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
+  });
+  expect(fullRgba.frames.map(({ frameIndex, id, requestSampleTime }) => [id, frameIndex, requestSampleTime])).toEqual(
+    UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1.map(({ frameIndex, id, sampleTime }) => [id, frameIndex, sampleTime]),
+  );
+  for (const frame of fullRgba.frames) {
+    expect(frame.presentedSampleTime).toBe(frame.requestSampleTime);
+    expect(frame.rgba.byteLength).toBe(
+      RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx * RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.heightPx * 4,
+    );
+    expect(frame.sha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect([...frame.rgba.subarray(0, 4)]).toEqual([0, 0, 0, 255]);
+    expect(frame.pixels.nonBlackBounds).not.toBeNull();
+    if (!frame.pixels.nonBlackBounds) throw new Error(`Full RGBA frame ${frame.id} has no visible bounds.`);
+    expect(frame.pixels.nonBlackBounds.every(Number.isFinite)).toBe(true);
+    expect(frame.pixels.nonBlackBounds[2]).toBeGreaterThan(frame.pixels.nonBlackBounds[0]);
+    expect(frame.pixels.nonBlackBounds[3]).toBeGreaterThan(frame.pixels.nonBlackBounds[1]);
+    expect(frame.pixels.surfaceFormat).toMatch(/^(?:bgra|rgba)8unorm$/u);
+    expect(frame.pixels.viewFormat).toBe(frame.pixels.surfaceFormat === "bgra8unorm" ? "Bgra8Unorm" : "Rgba8Unorm");
+    let opaque = true;
+    for (let index = 3; index < frame.rgba.length; index += 4) {
+      if (frame.rgba[index] === 255) continue;
+      opaque = false;
+      break;
+    }
+    expect(opaque, `full RGBA frame ${frame.id} must retain the opaque-black contract`).toBe(true);
+  }
+  const fullRgbaFrames = new Map(fullRgba.frames.map((frame) => [frame.id, frame]));
+  expectSameFullRgba(fullRgbaFrames, "initial", "hold");
+  expectSameFullRgba(fullRgbaFrames, "descent", "return");
+  expectSameFullRgba(fullRgbaFrames, "hold", "duration-end");
+  expectSameFullRgba(fullRgbaFrames, "bottom", "bottom-repeat");
+  expect(fullRgbaFrames.get("initial")?.sha256).not.toBe(fullRgbaFrames.get("bottom")?.sha256);
+  expect(fullRgbaFrames.get("play-end")?.sha256).not.toBe(fullRgbaFrames.get("hold")?.sha256);
 });
