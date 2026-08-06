@@ -28,7 +28,7 @@ export const UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
   sample("bottom-repeat", 150, 150 / 60),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
-/** Eight OpeningManim frames followed by repeat seeks across its transition boundary at 3s. */
+/** Fourteen OpeningManim frames followed by backward seeks into both animated phases. */
 export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2 = [
   sample("initial", 0, 0),
   sample("opening-animation-midpoint", 60, 1),
@@ -37,10 +37,15 @@ export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2 = [
   sample("transform-start", 180, 3),
   sample("transform-midpoint", 210, 3.5),
   sample("transform-play-end", 240, 4),
-  sample("wait-end", 299, 5),
+  sample("wait-end", 299, 299 / 60),
+  sample("grid-create-start", 300, 5),
+  sample("grid-create-early", 330, 5.5),
+  sample("grid-create-midpoint", 390, 6.5),
+  sample("grid-create-last", 479, 479 / 60),
+  sample("grid-play-end", 480, 8),
+  sample("grid-wait-end", 539, 9),
   sample("transform-midpoint-repeat", 210, 3.5),
-  sample("opening-hold-last-repeat", 179, 179 / 60),
-  sample("transform-start-repeat", 180, 3),
+  sample("grid-create-midpoint-repeat", 390, 6.5),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
 type RetainedFrameSequenceProofWireV1 = Readonly<{
@@ -109,7 +114,7 @@ export type RuntimeTraceWebGpuReadbackV1 = Readonly<{
 
 const MAX_READBACK_FRAME_COUNT = 16;
 const RUNTIME_TRACE_FRAMES_PER_SECOND = 60;
-const MAX_RUNTIME_TRACE_DURATION_SECONDS = 6;
+const MAX_RUNTIME_TRACE_DURATION_SECONDS = 9;
 const MAX_READBACK_RGBA_BYTES =
   MAX_READBACK_FRAME_COUNT *
   RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx *

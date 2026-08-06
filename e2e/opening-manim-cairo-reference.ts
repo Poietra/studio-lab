@@ -16,6 +16,13 @@ export const OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2 = {
     "Independent Cairo and retained WebGPU edge antialiasing differ while preserving the exact OpeningManim geometry, timing, paint, and hold.",
 } as const;
 
+export const OPENING_MANIM_CAIRO_DENSE_GRID_PARITY_THRESHOLDS_V2 = {
+  maximumPixelFractionAboveThreshold: 0.06,
+  minimumSsim: 0.995,
+  reason:
+    "The dense one-pixel NumberPlane covers much of the viewport, so Cairo and WebGPU edge antialiasing differ on many low-intensity pixels while preserving its geometry, timing, paint, and hold.",
+} as const;
+
 export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 = [
   ["initial", 0, 0],
   ["opening-animation-midpoint", 60, 1],
@@ -24,7 +31,13 @@ export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 = [
   ["transform-start", 180, 3],
   ["transform-midpoint", 210, 3.5],
   ["transform-play-end", 240, 4],
-  ["wait-end", 299, 5],
+  ["wait-end", 299, 299 / 60],
+  ["grid-create-start", 300, 5],
+  ["grid-create-early", 330, 5.5],
+  ["grid-create-midpoint", 390, 6.5],
+  ["grid-create-last", 479, 479 / 60],
+  ["grid-play-end", 480, 8],
+  ["grid-wait-end", 539, 9],
 ] as const;
 
 function frameSchema(
@@ -79,13 +92,19 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
     frameSchema("transform-start", 180, 3),
     frameSchema("transform-midpoint", 210, 3.5),
     frameSchema("transform-play-end", 240, 4),
-    frameSchema("wait-end", 299, 5),
+    frameSchema("wait-end", 299, 299 / 60),
+    frameSchema("grid-create-start", 300, 5),
+    frameSchema("grid-create-early", 330, 5.5),
+    frameSchema("grid-create-midpoint", 390, 6.5),
+    frameSchema("grid-create-last", 479, 479 / 60),
+    frameSchema("grid-play-end", 480, 8),
+    frameSchema("grid-wait-end", 539, 9),
   ]),
   producer: z.strictObject({
     cairoLibrarySha256: SHA256,
     cairoVersion: z.string().min(1),
-    fastManimCommit: z.literal("b0147ec8b5dd2f11809816043d666d6981652c50"),
-    fastManimTree: z.literal("d27cf706cc62892a5dc1d42b289691113efe0472"),
+    fastManimCommit: z.literal("82353666a30abf48390d98eb796e1573a149030e"),
+    fastManimTree: z.literal("2b95349bd0647908189e4db9be4d18a5b368db25"),
     identitySha256: SHA256,
     manimVersion: z.literal("0.20.1"),
     numpyVersion: z.string().min(1),
@@ -144,6 +163,21 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
           "476ae3b33141b5871c85e4a346270324d88b8afea0f441a8ae59f424162834e9",
         ),
       }),
+      z.strictObject({
+        role: z.literal("grid-title"),
+        svg: artifactFileSchema(
+          "0b81212898da17f3.svg",
+          "tex/grid-title.svg",
+          8_749,
+          "f51da30b13a215ebd513c8004011a1281c46d34e52fc911da49d212c3c56c00a",
+        ),
+        tex: artifactFileSchema(
+          "0b81212898da17f3.tex",
+          "tex/grid-title.tex",
+          246,
+          "0b81212898da17f3454281eb8d87490e33e0fbe83a402ed262e53cd7925dd2e2",
+        ),
+      }),
     ]),
     texToolchain: z.strictObject({
       dvisvgm: executableSchema("f71f47113ad9a77b9d2b01dd5d938e3537c60d1ee7f342ec273ed061d5e51b38", "dvisvgm 3.6"),
@@ -192,8 +226,8 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
     className: z.literal("OpeningManim"),
     repository: z.literal("Poietra/fast-manim"),
     slice: z.strictObject({
-      duration: z.literal(5),
-      frameCount: z.literal(300),
+      duration: z.literal(9),
+      frameCount: z.literal(540),
       start: z.literal(0),
     }),
     sourcePath: z.literal("example_scenes/basic.py"),
