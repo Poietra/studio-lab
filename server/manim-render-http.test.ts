@@ -15,6 +15,7 @@ import {
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
+import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
@@ -23,6 +24,7 @@ import {
   runtimeTraceRequestFixture,
   trustedRuntimeTraceProducer,
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
 async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: StructuredLogger) {
   const server = createServer((request, response) => {
@@ -606,6 +608,28 @@ describe("Runtime Trace preview routing", () => {
     } as const satisfies FastManimRuntimeTraceRunViewV1;
   }
 
+  async function verifiedOpeningView() {
+    const openingTrace = fastManimRuntimeTraceV2Fixture();
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(openingTrace);
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    return {
+      bundle,
+      projectId: openingTrace.projectId,
+      requestId: openingTrace.requestId,
+      roots: openingTrace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
+      runtimeConfigHash: openingTrace.runtimeConfigHash,
+      sceneId: openingTrace.sceneId,
+      sceneName: openingTrace.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: openingTrace.sourceHash,
+      sourcePath: openingTrace.sourcePath,
+      status: "verified",
+      traceDigest: source.traceDigest,
+      version: 1,
+    } as const satisfies FastManimRuntimeTraceRunViewV1;
+  }
+
   it("routes one correlated POST and leaves the endpoint unpublished", async () => {
     const view = await verifiedView();
     const runRuntimeTrace = vi.fn(async () => view);
@@ -631,6 +655,57 @@ describe("Runtime Trace preview routing", () => {
       expect(get.status).toBe(405);
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("validates the sealed OpeningManim V2 duration, trace version, and source roots", async () => {
+    const view = await verifiedOpeningView();
+    const request = {
+      projectId: view.projectId,
+      requestId: view.requestId,
+      sceneName: view.sceneName,
+      sourceHash: view.sourceHash,
+      sourcePath: view.sourcePath,
+    };
+    const valid = await listen({
+      runRuntimeTrace: async () => view,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    const staleVersion = await listen({
+      runRuntimeTrace: async () => ({
+        ...view,
+        bundle: {
+          ...view.bundle,
+          scene: {
+            ...view.bundle.scene,
+            source: { ...view.bundle.scene.source, traceVersion: 1 },
+          },
+        },
+      }),
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2-stale" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const post = (port: number) =>
+        send(port, "/api/manim/projects/demo/runtime-traces", {
+          body: JSON.stringify(request),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        });
+      const accepted = await post((valid.address() as AddressInfo).port);
+      const rejected = await post((staleVersion.address() as AddressInfo).port);
+
+      expect(accepted.status).toBe(200);
+      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(view);
+      expect(rejected.status).toBe(502);
+    } finally {
+      await Promise.all(
+        [valid, staleVersion].map(
+          (server) =>
+            new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+        ),
+      );
     }
   });
 

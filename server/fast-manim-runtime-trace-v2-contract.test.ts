@@ -4,7 +4,11 @@ import { describe, expect, it } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
-import { createFastManimRuntimeTraceProducerRequestV1 } from "./fast-manim-runtime-trace-profile";
+import {
+  createFastManimRuntimeTraceProducerRequestV1,
+  fastManimRuntimeTraceProducerEnvironmentV1,
+  trustedFastManimRuntimeTraceProducerV1,
+} from "./fast-manim-runtime-trace-profile";
 import {
   FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
   FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
@@ -19,6 +23,7 @@ import {
   FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+  trustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-profile";
 import { FastManimSandboxRequestBundleV1, verifyFastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
@@ -74,6 +79,23 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
         frame,
       ),
     ).toThrowError(/OpeningManim/);
+  });
+
+  it("pins both profiles to the shared merged producer command", () => {
+    const v1 = trustedFastManimRuntimeTraceProducerV1();
+    const v2 = trustedFastManimRuntimeTraceProducerV2();
+    const producerIdentity = {
+      fastManimCommit: "1227d2c03f16a6d504e90ffc23ba574ee0a88b37",
+      fastManimTree: "63e0e988235fb103aa01288593c5d7dbe7421564",
+    };
+
+    expect(v1.producer).toMatchObject(producerIdentity);
+    expect(v2.producer).toMatchObject(producerIdentity);
+    expect(fastManimRuntimeTraceProducerEnvironmentV1()).toEqual({
+      POIETRA_FAST_MANIM_COMMIT: producerIdentity.fastManimCommit,
+      POIETRA_FAST_MANIM_TREE: producerIdentity.fastManimTree,
+    });
+    expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel"]);
   });
 
   it("rejects stale source, scene, config, and occurrence correlation", () => {

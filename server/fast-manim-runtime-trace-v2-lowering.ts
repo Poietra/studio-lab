@@ -14,8 +14,14 @@ import {
   FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
   FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2,
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
+  type FastManimRuntimeTraceProducerRequestV2,
 } from "./fast-manim-runtime-trace-v2-contract";
-import type { FastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import {
+  expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  type FastManimRuntimeTraceV2,
+  parseFastManimRuntimeTraceProducerJsonV2,
+  type TrustedFastManimRuntimeTraceProducerV2,
+} from "./fast-manim-runtime-trace-v2-result-contract";
 
 const ZERO_SHA256 = "0".repeat(64);
 const IDENTITY = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
@@ -396,4 +402,14 @@ export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastMa
     version: 1,
   });
   return parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
+}
+
+/** Verifies producer bytes and trusted request correlation before lowering OpeningManim. */
+export async function lowerFastManimRuntimeTraceProducerJsonV2(
+  value: string | Uint8Array,
+  request: FastManimRuntimeTraceProducerRequestV2,
+  trusted: TrustedFastManimRuntimeTraceProducerV2,
+) {
+  const expected = expectedFastManimRuntimeTraceCorrelationFromRequestV2(request, trusted);
+  return lowerVerifiedFastManimRuntimeTraceV2(parseFastManimRuntimeTraceProducerJsonV2(value, expected));
 }

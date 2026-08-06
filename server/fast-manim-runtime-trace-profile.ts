@@ -35,8 +35,8 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "07ec3bb1f860e2e466801f8e71735310819d98c7",
-    fastManimTree: "3e94ab796e733cbe057a146c0cce5089c0d5d2bc",
+    fastManimCommit: "1227d2c03f16a6d504e90ffc23ba574ee0a88b37",
+    fastManimTree: "63e0e988235fb103aa01288593c5d7dbe7421564",
     glyphProviderSha256: "b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322",
     manimVersion: "0.20.1",
     semanticsSha256: "abf581019158101abbe1597d265fcafa8da2fc9e40d986492e180a3f4ddc2172",

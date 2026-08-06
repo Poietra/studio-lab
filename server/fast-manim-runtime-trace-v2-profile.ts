@@ -15,6 +15,13 @@ import {
   fastManimRuntimeTraceConfigV2Schema,
   fastManimRuntimeTraceProducerRequestV2Schema,
 } from "./fast-manim-runtime-trace-v2-contract";
+import {
+  expectedFastManimRuntimeTraceCorrelationV2Schema,
+  FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
+  type TrustedFastManimRuntimeTraceProducerV2,
+} from "./fast-manim-runtime-trace-v2-result-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 = "example_scenes/basic.py" as const;
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 = "OpeningManim" as const;
@@ -24,6 +31,55 @@ export const FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2 = Object.freeze({
   constructStartLine: 19,
   definitionOrdinal: 1,
 });
+
+const sceneId = fastManimRuntimeTraceSceneIdV1(
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+);
+
+const trustedProfile = {
+  producer: {
+    fastManimCommit: "1227d2c03f16a6d504e90ffc23ba574ee0a88b37",
+    fastManimTree: "63e0e988235fb103aa01288593c5d7dbe7421564",
+    geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
+    manimVersion: "0.20.1",
+    semanticsSha256: "60023712a80e500a9a0ebf98b69b8734532dafd1fb6d02b1c00fda592fe65239",
+    texFontBundleSha256: FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
+    texToolchainSha256: FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
+  },
+  roots: [
+    {
+      binding: {
+        id: "source-binding:a1b835eb80e612c3c14e229911579f5acd96e41cbde381feeafef51d191e2a76",
+        name: "title",
+        ordinal: 1,
+        span: { endColumn: 13, endLine: 20, startColumn: 8, startLine: 20 },
+      },
+      id: `${sceneId}/runtime-root:title`,
+      role: "title",
+    },
+    {
+      binding: {
+        id: "source-binding:7bbcedf39b0c7451eb6632b82cd1058e6b9bfefc7971e36ad17208dd42610b95",
+        name: "basel",
+        ordinal: 2,
+        span: { endColumn: 13, endLine: 21, startColumn: 8, startLine: 21 },
+      },
+      id: `${sceneId}/runtime-root:basel`,
+      role: "basel",
+    },
+  ],
+} as const satisfies TrustedFastManimRuntimeTraceProducerV2;
+
+const trustedProfileSchema = expectedFastManimRuntimeTraceCorrelationV2Schema.pick({
+  producer: true,
+  roots: true,
+});
+
+/** Returns a fresh validated copy so callers cannot mutate the V2 trust anchor. */
+export function trustedFastManimRuntimeTraceProducerV2(): TrustedFastManimRuntimeTraceProducerV2 {
+  return trustedProfileSchema.parse(trustedProfile);
+}
 
 export function createFastManimRuntimeTraceConfigV2(frame: Readonly<{ height: number; width: number }>) {
   return fastManimRuntimeTraceConfigV2Schema.parse({
