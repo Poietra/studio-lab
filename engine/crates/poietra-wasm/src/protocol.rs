@@ -768,6 +768,10 @@ mod tests {
                 sampled.correlation.sample_time.to_bits(),
                 sample_time.to_bits()
             );
+            assert_eq!(
+                sampled.packet.compositing,
+                poietra_scene_ir::RenderCompositingV1::ManimCairoSrgb
+            );
             if sample_time == 3.0 {
                 assert!(sampled.packet.draws.is_empty());
             } else {

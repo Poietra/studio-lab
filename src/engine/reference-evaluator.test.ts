@@ -149,6 +149,9 @@ describe("Poietra TypeScript reference evaluator v1", () => {
       snapshotVersion: 11 as const,
       sourceHash: SCENE_HASH,
     };
+    const v8 = await compile({ ...base, source: { ...importedSource, snapshotVersion: 8 as const } }, assets, 0.5);
+    expect(v8.packet.compositing).toBe("manim-cairo-srgb");
+
     const v11 = await compile({ ...base, source: importedSource }, assets, 0.5);
     expect(v11.packet.compositing).toBe("manim-cairo-srgb");
 

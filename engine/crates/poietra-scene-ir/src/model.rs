@@ -677,14 +677,17 @@ impl SceneSourceV1 {
 
     /// Returns the renderer compositing semantics required by this source profile.
     ///
-    /// The V11 and V12 importers seal colors and opacity against Manim's Cairo
-    /// output. Older imported profiles and Studio-authored scenes retain the
-    /// engine's original linear-light contract.
+    /// The audited V8, V11, and V12 importers seal colors and opacity against
+    /// Manim's Cairo output. Other imported profiles and Studio-authored scenes
+    /// retain the engine's original linear-light contract.
     #[must_use]
     pub const fn render_compositing(&self) -> RenderCompositingV1 {
         match self {
             Self::ImportedManimServerSnapshot {
-                snapshot_version: SnapshotProfileVersionV1::V11 | SnapshotProfileVersionV1::V12,
+                snapshot_version:
+                    SnapshotProfileVersionV1::V8
+                    | SnapshotProfileVersionV1::V11
+                    | SnapshotProfileVersionV1::V12,
                 ..
             }
             | Self::ImportedManimRuntimeTrace { .. } => RenderCompositingV1::ManimCairoSrgb,

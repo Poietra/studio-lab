@@ -154,8 +154,8 @@ reported separately by opt-in telemetry.
 The shared browser/native WGPU 30 pipeline accepts caller-owned `Device`, `Queue`,
 and single-sample `TextureView` values. The portable `linear-light` path and image
 pipelines draw directly through an `Rgba8UnormSrgb` or `Bgra8UnormSrgb` view.
-Imported Manim V11 and V12 vector packets select the explicit `manim-cairo-srgb`
-contract instead: premultiplied sRGB values are blended through the matching base
+Audited imported Manim V8, V11, and V12 vector packets select the explicit
+`manim-cairo-srgb` contract instead: premultiplied sRGB values are blended through the matching base
 Unorm view into a retained four-sample attachment, then resolved into the caller's
 target. Resizing a Cairo frame replaces the attachment; its exact RGBA8 sample bytes
 are reported separately in opt-in memory telemetry and remain bounded at 512 MiB by

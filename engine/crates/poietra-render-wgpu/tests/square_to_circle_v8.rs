@@ -7,7 +7,7 @@ use poietra_eval::{
 };
 use poietra_geometry::apply_easing_v1;
 use poietra_render_wgpu::{PreparedGeometryCacheV1, prepare_frame_v1, prepare_frame_with_cache_v1};
-use poietra_scene_ir::{EasingV1, RenderDrawV1, SceneIrBundleV1, ViewportV1};
+use poietra_scene_ir::{EasingV1, RenderCompositingV1, RenderDrawV1, SceneIrBundleV1, ViewportV1};
 use serde_json::Value;
 
 const CUBIC_SIGNED_AREA_ROOT_PROGRESS: f64 = 0.530_158_360_440_676_8;
@@ -119,6 +119,7 @@ fn real_v8_retained_sampling_and_wgpu_prepare_agree_through_the_winding_root() {
             retained, reference,
             "retained sample diverged at {sample_time}"
         );
+        assert_eq!(retained.compositing, RenderCompositingV1::ManimCairoSrgb);
 
         let direct = prepare_frame_v1(&retained)
             .unwrap_or_else(|error| panic!("direct WGPU prepare failed at {sample_time}: {error}"));
@@ -175,6 +176,23 @@ fn real_v8_retained_sampling_and_wgpu_prepare_agree_through_the_winding_root() {
                 direct.draws().len(),
                 2,
                 "fill and stroke must both prepare at {sample_time}"
+            );
+        }
+        if sample_time == 2.5 {
+            let RenderDrawV1::Path {
+                fill: Some(fill),
+                opacity,
+                ..
+            } = &retained.draws[0]
+            else {
+                panic!("Fade midpoint must retain one filled path");
+            };
+            assert_eq!(opacity.to_bits(), 0.5_f64.to_bits());
+            assert_eq!(fill.color.alpha.to_bits(), 0.5_f64.to_bits());
+            assert_eq!(
+                direct.material_plan().materials()[0].premultiplied_srgb_color()[3].to_bits(),
+                0.25_f32.to_bits(),
+                "Cairo preparation must multiply fill alpha by animated opacity"
             );
         }
     }

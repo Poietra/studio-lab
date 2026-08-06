@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn emits_explicit_cairo_compositing_for_imported_v11_and_v12() {
+    fn emits_explicit_cairo_compositing_for_audited_imported_profiles() {
         let (assets, mut scene) = fixture();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash: "0".repeat(64),
@@ -959,9 +959,17 @@ mod tests {
             };
             *snapshot_version = version;
         };
+        set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V8);
+        let v8 = compile(&scene, "packet:v8");
+        assert_eq!(v8.compositing, RenderCompositingV1::ManimCairoSrgb);
+
         set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V12);
         let v12 = compile(&scene, "packet:v12");
         assert_eq!(v12.compositing, RenderCompositingV1::ManimCairoSrgb);
+
+        set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V9);
+        let v9 = compile(&scene, "packet:v9");
+        assert_eq!(v9.compositing, RenderCompositingV1::LinearLight);
 
         set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V10);
         let v10 = compile(&scene, "packet:v10");

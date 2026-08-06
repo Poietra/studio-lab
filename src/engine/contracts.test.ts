@@ -281,6 +281,9 @@ describe("Poietra Engine v1 contracts", () => {
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 10 })).toEqual({ ...source, snapshotVersion: 10 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 11 })).toEqual({ ...source, snapshotVersion: 11 });
     expect(sceneSourceV1Schema.parse({ ...source, snapshotVersion: 12 })).toEqual({ ...source, snapshotVersion: 12 });
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 7 })).toBe("linear-light");
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 8 })).toBe("manim-cairo-srgb");
+    expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 9 })).toBe("linear-light");
     expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 10 })).toBe("linear-light");
     expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 11 })).toBe("manim-cairo-srgb");
     expect(sceneSourceRenderCompositingV1({ ...source, snapshotVersion: 12 })).toBe("manim-cairo-srgb");

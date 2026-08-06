@@ -2394,6 +2394,10 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
         REAL_SQUARE_TO_CIRCLE_V8_SNAPSHOT_HASH
     );
     assert_eq!(bundle.scene.duration.to_bits(), 3.0_f64.to_bits());
+    assert_eq!(
+        bundle.scene.source.render_compositing(),
+        RenderCompositingV1::ManimCairoSrgb
+    );
     assert_eq!(bundle.scene.entities.len(), 1);
     assert_eq!(bundle.scene.animation_channels.len(), 4);
 
@@ -2453,6 +2457,7 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
                     viewport: sample.viewport.clone(),
                 })
                 .unwrap_or_else(|error| panic!("{} must sample: {error}", sample.id));
+            assert_eq!(packet.compositing, RenderCompositingV1::ManimCairoSrgb);
             let semantic_digest = render_packet_semantic_digest(&packet);
             (packet, semantic_digest)
         })
@@ -2556,7 +2561,7 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
             usize::from(emit_native_visual_parity_artifact(
                 entry,
                 &adapter_info,
-                TARGET_FORMAT,
+                MANIM_CAIRO_TARGET_FORMAT,
                 &frames_by_sample[&entry.sample.id],
             ))
         })

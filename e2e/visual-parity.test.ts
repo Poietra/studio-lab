@@ -392,31 +392,31 @@ describe("visual parity v1 contracts", () => {
         "real-square-to-circle-v8--create-midpoint",
         "create-midpoint",
         0.5,
-        "2c894c6d88d7c14cc8f3b06c1df1b3b53ea3d6f715368cc5cac11d60135fd6d7",
+        "52ff334baaa31dd518c3310e5d9d4e0b5dc993fb8b9c5d01f84bab89c1d85d11",
       ],
       [
         "real-square-to-circle-v8--square",
         "square",
         1,
-        "30f8fa1d7a9b844eba679f06e70aa0ee40ba3e0239f705515aa327930670985d",
+        "1f3964983f864af023b7f8753debeedb1050cce981fff45f9dbfa657581f1554",
       ],
       [
         "real-square-to-circle-v8--analytic-winding-root",
         "analytic-winding-root",
         1.5119159473817447,
-        "b2573ce64a89fc3639fd9338672f58f64feb9e33d76076cb616129699d37e77d",
+        "202f38ab181c09c8b9ebe5a2cb4eed0b7cdf2ed7be84fe453df5efb6661db0f3",
       ],
       [
         "real-square-to-circle-v8--circle",
         "circle",
         2,
-        "cee317729cdea55294e3450710191d85e11a72519612dd67f78316a1ba091d2c",
+        "641817594b8a9e6c6af8e1c9c7bbc2499740672ba11d96971cc4055269b8a470",
       ],
       [
         "real-square-to-circle-v8--fade-midpoint",
         "fade-midpoint",
         2.5,
-        "1f44bd7fbc2c7310fdcf1ec3b964bbd996ee65078c54dd0e7a39ac509215a00a",
+        "2489a3989fd4a1a86a971c2f0f7510475e316f965093013bd0a92bcffe7ceddf",
       ],
     ] as const;
     const entries = expectedSamples.map(([entryId]) => {

@@ -851,7 +851,7 @@ export type SceneSourceV1 = z.infer<typeof sceneSourceV1Schema>;
 export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
   return source.kind === "imported-manim-runtime-trace" ||
     (source.kind === "imported-manim-server-snapshot" &&
-      (source.snapshotVersion === 11 || source.snapshotVersion === 12))
+      (source.snapshotVersion === 8 || source.snapshotVersion === 11 || source.snapshotVersion === 12))
     ? ("manim-cairo-srgb" as const)
     : ("linear-light" as const);
 }
