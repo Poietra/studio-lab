@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
+import { digestFastManimRuntimeTracePathV2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
 const fixture = fastManimRuntimeTraceV2Fixture;
@@ -99,5 +100,53 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
       ),
     };
     await expect(lowerVerifiedFastManimRuntimeTraceV2(trace)).rejects.toThrow(/visible partial fill/);
+  });
+
+  it("splits only a draw whose captured cubic topology changes", async () => {
+    const trace = fixture();
+    const source = structuredClone(trace.resources.paths[0]!.path);
+    const prior = source.subpaths[0]!.segments[0]!;
+    source.subpaths[0]!.segments.push({
+      control1: { x: prior.end.x + 0.025, y: 0.05 },
+      control2: { x: prior.end.x + 0.075, y: 0.05 },
+      end: { x: prior.end.x + 0.1, y: 0 },
+    });
+    const pathId = `path:${digestFastManimRuntimeTracePathV2(source)}` as const;
+    trace.resources.paths.push({ id: pathId, path: source });
+    trace.frames.slice(1).forEach((frame) => {
+      frame.draws[15]!.pathId = pathId;
+    });
+
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
+    const drawId = `${trace.roots[1]!.id}/runtime-draw:0`;
+    const split = bundle.scene.entities.filter((entity) => entity.id === drawId || entity.id.startsWith(`${drawId}/`));
+
+    expect(split.map(({ id, lifetimes }) => ({ id, lifetimes }))).toEqual([
+      { id: drawId, lifetimes: [{ end: 1 / 60, start: 0 }] },
+      { id: `${drawId}/topology:1`, lifetimes: [{ end: 3, start: 1 / 60 }] },
+    ]);
+    expect(bundle.scene.entities.filter((entity) => entity.id.includes("/topology:"))).toHaveLength(1);
+  });
+
+  it("lowers same-topology path changes through one compact path-morph channel", async () => {
+    const trace = fixture();
+    const changed = structuredClone(trace.resources.paths[0]!.path);
+    changed.subpaths[0]!.segments[0]!.control1.x += 0.01;
+    const pathId = `path:${digestFastManimRuntimeTracePathV2(changed)}` as const;
+    trace.resources.paths.push({ id: pathId, path: changed });
+    trace.frames.slice(1, 61).forEach((frame) => {
+      frame.draws[15]!.pathId = pathId;
+    });
+
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
+    const drawId = `${trace.roots[1]!.id}/runtime-draw:0`;
+    const channels = bundle.scene.animationChannels.filter(
+      (channel) => channel.kind === "path-morph" && channel.entityId === drawId,
+    );
+
+    expect(bundle.scene.entities.filter((entity) => entity.id.includes("/topology:"))).toHaveLength(0);
+    expect(channels).toHaveLength(1);
+    expect(channels[0]?.keyframes.map(({ at }) => at)).toEqual([0, 1 / 60, 1, 61 / 60, 179 / 60]);
+    expect(bundle.scene.requiredCapabilities).toContain("path-morph-animation");
   });
 });
