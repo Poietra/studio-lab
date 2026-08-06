@@ -204,8 +204,88 @@ describe("Studio workspace projection", () => {
       { end: 0.5, start: 0.05 },
     ]);
     const invalid = withOnlyEntityLifetimes(projectedScene, [{ end: 1, start: 0.75 }]);
-    expect(projectVerifiedSourceDuration(invalid, 0.5)).toBe(invalid);
+    const prefixWithoutFutureLifetime = projectVerifiedSourceDuration(invalid, 0.5);
+    expect(prefixWithoutFutureLifetime.runtimeSceneState.duration).toBe(0.5);
+    expect(prefixWithoutFutureLifetime.runtimeSceneState.objectGraph.entities[entityId]?.lifetime).toEqual([]);
     expect(projectVerifiedSourceDuration(projectedScene, 0.09)).toBe(projectedScene);
+  });
+
+  it("projects a shorter verified runtime as a safe source prefix", () => {
+    const imported = workspaceScene("First", null);
+    const [entityId, entity] = Object.entries(imported.runtimeSceneState.objectGraph.entities)[0]!;
+    const futureEntityId = "source:scene.py#First:future";
+    const sourceScene = {
+      ...imported,
+      anchors: [0, 2, 3, 4, 14],
+      runtimeSceneState: {
+        ...imported.runtimeSceneState,
+        duration: 14,
+        eventTrack: {
+          events: [
+            { at: 2, id: "before", kind: "wait", label: "Before verified end" },
+            { id: "crossing", interval: { end: 5, start: 2 }, kind: "play", label: "Crossing verified end" },
+            { at: 4, id: "future", kind: "wait", label: "After verified end" },
+          ],
+        },
+        objectGraph: {
+          entities: {
+            [entityId]: { ...entity, lifetime: [{ end: 14, start: 0 }] },
+            [futureEntityId]: { ...entity, id: futureEntityId, lifetime: [{ end: 14, start: 4 }] },
+          },
+          lineage: [
+            { at: 2, from: entityId, operationId: "before", relation: "created", to: entityId },
+            { at: 4, from: entityId, operationId: "future", relation: "created", to: futureEntityId },
+          ],
+        },
+        propertyChannels: {
+          [`${entityId}/position`]: {
+            entityId,
+            key: "position",
+            samples: [
+              {
+                interval: { end: 14, start: 0 },
+                kind: "exact",
+                provenanceId: "imported-position",
+                value: { x: 0, y: 0 },
+              },
+            ],
+          },
+          [`${futureEntityId}/position`]: {
+            entityId: futureEntityId,
+            key: "position",
+            samples: [
+              {
+                interval: { end: 14, start: 4 },
+                kind: "exact",
+                provenanceId: "future-position",
+                value: { x: 1, y: 1 },
+              },
+            ],
+          },
+        },
+      },
+    } satisfies ManimWorkspaceScene;
+
+    const projected = projectVerifiedSourceDuration(sourceScene, 3);
+
+    expect(projected.runtimeSceneState.duration).toBe(3);
+    expect(projected.anchors).toEqual([0, 2, 3]);
+    expect(projected.runtimeSceneState.objectGraph.entities[entityId]?.lifetime).toEqual([{ end: 3, start: 0 }]);
+    expect(projected.runtimeSceneState.objectGraph.entities[futureEntityId]?.lifetime).toEqual([]);
+    expect(projected.runtimeSceneState.eventTrack.events).toEqual([
+      { at: 2, id: "before", kind: "wait", label: "Before verified end" },
+      { id: "crossing", interval: { end: 3, start: 2 }, kind: "play", label: "Crossing verified end" },
+    ]);
+    expect(projected.runtimeSceneState.objectGraph.lineage.map(({ at }) => at)).toEqual([2]);
+    expect(projected.runtimeSceneState.propertyChannels[`${entityId}/position`]?.samples[0]?.interval).toEqual({
+      end: 3,
+      start: 0,
+    });
+    expect(projected.runtimeSceneState.propertyChannels[`${futureEntityId}/position`]?.samples).toEqual([]);
+    expect(sourceScene.runtimeSceneState.duration).toBe(14);
+    expect(sourceScene.runtimeSceneState.objectGraph.entities[futureEntityId]?.lifetime).toEqual([
+      { end: 14, start: 4 },
+    ]);
   });
 
   it("evaluates an existing canonical duration edit on top of verified source time", () => {

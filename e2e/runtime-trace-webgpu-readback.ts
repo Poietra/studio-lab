@@ -28,6 +28,17 @@ export const UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
   sample("bottom-repeat", 150, 150 / 60),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
+/** Five OpeningManim slice frames followed by repeat seeks at animation and hold time. */
+export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
+  sample("initial", 0, 0),
+  sample("write-progress", 30, 0.5),
+  sample("animation-progress", 60, 1),
+  sample("hold", 120, 2),
+  sample("duration-end", 179, 3),
+  sample("animation-progress-repeat", 60, 1),
+  sample("hold-repeat", 120, 2),
+] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
+
 type RetainedFrameSequenceProofWireV1 = Readonly<{
   capture: Readonly<{
     installCount: number;
@@ -93,6 +104,8 @@ export type RuntimeTraceWebGpuReadbackV1 = Readonly<{
 }>;
 
 const MAX_READBACK_FRAME_COUNT = 16;
+const RUNTIME_TRACE_FRAMES_PER_SECOND = 60;
+const MAX_RUNTIME_TRACE_DURATION_SECONDS = 6;
 const MAX_READBACK_RGBA_BYTES =
   MAX_READBACK_FRAME_COUNT *
   RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx *
@@ -107,11 +120,18 @@ function validateCaptureInput(
     viewport: Readonly<{ heightPx: number; widthPx: number }>;
   }>,
 ) {
+  const source = input.bundle.scene.source;
   if (
-    input.bundle.scene.source.kind !== "imported-manim-runtime-trace" ||
-    input.bundle.scene.source.traceDigest !== input.revision
+    source.kind !== "imported-manim-runtime-trace" ||
+    source.traceDigest !== input.revision ||
+    (source.traceVersion !== 1 && source.traceVersion !== 2)
   ) {
     throw new Error("The full RGBA capture requires the verified Runtime Trace bundle revision.");
+  }
+  const duration = input.bundle.scene.duration;
+  const frameCount = duration * RUNTIME_TRACE_FRAMES_PER_SECOND;
+  if (!Number.isSafeInteger(frameCount) || frameCount < 1 || duration > MAX_RUNTIME_TRACE_DURATION_SECONDS) {
+    throw new Error("The Runtime Trace readback requires a bounded 60 fps Scene duration.");
   }
   if (
     input.viewport.widthPx !== RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx ||
@@ -128,13 +148,14 @@ function validateCaptureInput(
     if (!entry.id || ids.has(entry.id) || !entry.packetId || packetIds.has(entry.packetId)) {
       throw new Error("Runtime Trace readback ids and packet ids must be non-empty and unique.");
     }
-    if (!Number.isSafeInteger(entry.frameIndex) || entry.frameIndex < 0 || entry.frameIndex > 359) {
+    if (!Number.isSafeInteger(entry.frameIndex) || entry.frameIndex < 0 || entry.frameIndex >= frameCount) {
       throw new Error(`Runtime Trace readback sample ${entry.id} has an invalid frame index.`);
     }
-    if (!Number.isFinite(entry.sampleTime) || entry.sampleTime < 0 || entry.sampleTime > 6) {
+    if (!Number.isFinite(entry.sampleTime) || entry.sampleTime < 0 || entry.sampleTime > duration) {
       throw new Error(`Runtime Trace readback sample ${entry.id} has an invalid request time.`);
     }
-    const expectedFrame = entry.sampleTime === 6 ? 359 : entry.sampleTime * 60;
+    const expectedFrame =
+      entry.sampleTime === duration ? frameCount - 1 : entry.sampleTime * RUNTIME_TRACE_FRAMES_PER_SECOND;
     if (Math.abs(expectedFrame - entry.frameIndex) > 1e-9) {
       throw new Error(`Runtime Trace readback sample ${entry.id} is not backed by frame ${entry.frameIndex}.`);
     }
