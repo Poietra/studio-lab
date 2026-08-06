@@ -247,6 +247,29 @@ logs, traces, request-body logging, and raw Tail/Logpush disabled for this
 deployment. The Stripe key, webhook secret, signature header, and webhook body
 must never enter application logs or error responses.
 
+The opt-in Stripe Sandbox evidence lane exercises Hosted Checkout, a temporary
+Stripe CLI signing secret, canonical Subscription reconciliation, render quota,
+exact webhook replay, and immediate cancellation. Install the Stripe CLI and a
+Playwright Chromium browser, then provide a dedicated disposable PostgreSQL
+database plus one active recurring Sandbox Price:
+
+```sh
+POIETRA_STRIPE_E2E_SECRET_KEY="$STRIPE_SANDBOX_SECRET" \
+POIETRA_STRIPE_E2E_PRICE_ID="$STRIPE_SANDBOX_PRO_PRICE" \
+POIETRA_STRIPE_E2E_DATABASE_URL="$STRIPE_SANDBOX_DATABASE_URL" \
+pnpm test:billing:stripe:required
+```
+
+`POIETRA_STRIPE_E2E_STRIPE_CLI` can select a non-default CLI executable and
+`POIETRA_STRIPE_E2E_TEST_EMAIL` can override the generated test address. The
+required command rejects missing settings and every key except `sk_test_...`
+before opening Stripe or PostgreSQL. The default test suites skip the live lane
+and never contact Stripe. CLI output, its ephemeral `whsec_...` value, payment
+fields, signed raw bodies, and Stripe secrets are retained only in memory and
+are not emitted as evidence artifacts. The lane uses bounded requests and
+best-effort cancellation/Customer deletion; a passing local run is still not a
+claim that production billing credentials or routes are configured.
+
 ## Runtime cell routing
 
 Every runtime API remains tenant-fixed, but one server may now own a bounded
