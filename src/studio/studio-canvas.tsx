@@ -341,9 +341,12 @@ export function StudioCanvas({
   // fully interactive as a paint-free overlay, and any fallback restores the
   // semantic paint in the same render.
   const presentingCanvasPixels = preview?.state.phase === "presented";
+  const retainingRuntimeTraceBasePixels = preview?.runtimeTraceBaseFrameRetained === true;
+  const showingCanvasPixels = presentingCanvasPixels || retainingRuntimeTraceBasePixels;
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
-  const boundedInitialEditAuthority = preview?.initialEditRuntimeAuthority ?? null;
+  const boundedRuntimeEditAuthority =
+    preview?.initialEditRuntimeAuthority ?? preview?.runtimeTraceTerminalEditAuthority ?? null;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -354,7 +357,7 @@ export function StudioCanvas({
     }
   });
   const studioEntityIdByUniqueSourceName = new Map<string, string | null>();
-  if (presentingCanvasPixels && preview?.sourceRuntimeIdentity && preview.interactionGeometry) {
+  if (showingCanvasPixels && preview?.sourceRuntimeIdentity && preview.interactionGeometry) {
     for (const entity of entities) {
       if (entity.sourceIdentity.kind !== "known") continue;
       const sourceName = entity.sourceIdentity.value;
@@ -410,10 +413,7 @@ export function StudioCanvas({
       >
         {preview ? (
           <canvas
-            className={cn(
-              "pointer-events-none absolute inset-0 z-0 size-full",
-              preview.state.phase !== "presented" && "invisible",
-            )}
+            className={cn("pointer-events-none absolute inset-0 z-0 size-full", !showingCanvasPixels && "invisible")}
             data-studio-preview-canvas=""
             key={`preview-${preview.epoch}`}
             ref={preview.attachCanvas}
@@ -422,7 +422,7 @@ export function StudioCanvas({
         <div className="absolute inset-0 origin-center" data-studio-transform-layer style={{ scale: cameraScale }}>
           <svg
             aria-hidden="true"
-            className={cn("absolute inset-0 size-full", presentingCanvasPixels ? "opacity-0" : "opacity-10")}
+            className={cn("absolute inset-0 size-full", showingCanvasPixels ? "opacity-0" : "opacity-10")}
             viewBox="0 0 640 360"
           >
             <g stroke="#a1a1aa" strokeWidth="1">
@@ -443,8 +443,15 @@ export function StudioCanvas({
             onMotionControlChange={onMotionControlChange}
           />
           {entities.map((entity) => {
+            const pendingRuntimeTraceTargetId = preview?.runtimeTraceValidationPending?.studioEntityId ?? null;
+            if (
+              pendingRuntimeTraceTargetId !== null &&
+              !retainingRuntimeTraceBasePixels &&
+              entity.id !== pendingRuntimeTraceTargetId
+            )
+              return null;
             const presentedIdentity =
-              presentingCanvasPixels && preview
+              showingCanvasPixels && preview
                 ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
                 : null;
             // Source projection does not expand a directly-added VGroup into
@@ -452,7 +459,9 @@ export function StudioCanvas({
             // runtime identity plus prepared bounds are sufficient to expose
             // a paint-free selector, but never a mutation gesture.
             const runtimePresentSelectionEntity =
-              selectionOnlyPreview && presentingCanvasPixels && presentedIdentity !== null;
+              (selectionOnlyPreview || preview?.interactionAuthority.kind === "bounded-interactive") &&
+              showingCanvasPixels &&
+              presentedIdentity !== null;
             if (!entity.present && !runtimePresentSelectionEntity) return null;
             // Aggregate morph identity is intentionally ambiguous. Once its
             // verified pixels are presented, retaining source-projected hit
@@ -469,7 +478,7 @@ export function StudioCanvas({
               displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
             const runtimeMutationLocked =
-              boundedInitialEditAuthority !== null && entity.id !== boundedInitialEditAuthority.studioEntityId;
+              boundedRuntimeEditAuthority !== null && entity.id !== boundedRuntimeEditAuthority.studioEntityId;
             const selectionOnlyEntity = selectionOnlyPreview || runtimeMutationLocked;
             const mutationLocked = selectionLocked || selectionOnlyEntity;
             const positionUnknown = entity.geometry.position.kind === "unknown";
@@ -480,25 +489,39 @@ export function StudioCanvas({
             // not mint a semantic hit target beside the WebGPU frame. The
             // bounded V10/V12 targets are admitted only by runtime identity.
             if (
-              (selectionOnlyPreview || boundedInitialEditAuthority !== null) &&
-              presentingCanvasPixels &&
+              (selectionOnlyPreview || boundedRuntimeEditAuthority !== null) &&
+              showingCanvasPixels &&
               presentedIdentity === null
             )
               return null;
-            const presentedGeometry = presentedIdentity?.geometry ?? null;
+            const runtimeTraceTargetGhost =
+              pendingRuntimeTraceTargetId === entity.id ||
+              (retainingRuntimeTraceBasePixels &&
+                boundedRuntimeEditAuthority?.studioEntityId === entity.id &&
+                (dragPreview?.entityIds.includes(entity.id) === true ||
+                  scalePreview?.entityId === entity.id ||
+                  geometryPreview?.entityId === entity.id));
+            const runtimeGeometry = presentedIdentity?.geometry ?? null;
+            const presentedGeometry = runtimeTraceTargetGhost ? null : runtimeGeometry;
             const moveLocked = selectionLocked || (positionUnknown && presentedGeometry === null);
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const displayedScale = entityPreviewScale(scalePreview, entity);
+            const semanticPreviewGeometry = entityPreviewGeometry(geometryPreview, entity);
+            const compensatedRuntimeGeometry = runtimeGeometry
+              ? compensatePreviewGeometryForSemanticScalesV1(runtimeGeometry, cameraScale, displayedScale)
+              : null;
             const previewGeometry = presentedGeometry
-              ? compensatePreviewGeometryForSemanticScalesV1(presentedGeometry, cameraScale, displayedScale)
-              : entityPreviewGeometry(geometryPreview, entity);
+              ? (compensatedRuntimeGeometry ?? semanticPreviewGeometry)
+              : runtimeTraceTargetGhost && compensatedRuntimeGeometry
+                ? { dimensions: compensatedRuntimeGeometry.dimensions, position: semanticPreviewGeometry.position }
+                : semanticPreviewGeometry;
             const position = {
               x: previewGeometry.position.x + localDelta.x,
               y: previewGeometry.position.y + localDelta.y,
             };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const shape = resizeKindForType(entity.type);
-            const runtimeUniformScaleOnly = preview?.initialEditRuntimeAuthority?.studioEntityId === entity.id;
+            const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
@@ -569,7 +592,11 @@ export function StudioCanvas({
                     }}
                     onPointerMove={selectionOnlyEntity ? undefined : onEntityPointerMove}
                     onPointerUp={selectionOnlyEntity ? undefined : onEntityPointerUp}
-                    style={presentedGeometry ? entityDimensionStyle(previewGeometry.dimensions, frame) : undefined}
+                    style={
+                      presentedGeometry || runtimeTraceTargetGhost
+                        ? entityDimensionStyle(previewGeometry.dimensions, frame)
+                        : undefined
+                    }
                     title={
                       selectionOnlyEntity
                         ? "This verified object can be selected, but source rewriting is unavailable."
@@ -580,8 +607,14 @@ export function StudioCanvas({
                     type="button"
                   >
                     <span
-                      className={cn("block", presentingCanvasPixels && "pointer-events-none opacity-0")}
-                      data-studio-semantic-paint={presentingCanvasPixels ? "deferred-to-canvas" : "painted"}
+                      className={cn(
+                        "block",
+                        showingCanvasPixels && !runtimeTraceTargetGhost && "pointer-events-none opacity-0",
+                        runtimeTraceTargetGhost && "opacity-60",
+                      )}
+                      data-studio-semantic-paint={
+                        showingCanvasPixels && !runtimeTraceTargetGhost ? "deferred-to-canvas" : "painted"
+                      }
                     >
                       <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
                     </span>
@@ -623,11 +656,19 @@ export function StudioCanvas({
             data-studio-preview-status={preview.state.phase}
             title={preview.state.phase === "fallback" ? (preview.state.detail ?? undefined) : undefined}
           >
-            {preview.state.phase === "presented"
-              ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
-                  displayOnlyPreview ? "display only" : selectionOnlyPreview ? "selection only" : "editing preview only"
-                }`
-              : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
+            {preview.runtimeTraceValidationPending
+              ? "Draft ghost · dependent updater validation pending"
+              : preview.state.phase === "presented"
+                ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
+                    displayOnlyPreview
+                      ? "display only"
+                      : selectionOnlyPreview
+                        ? "selection only"
+                        : preview.interactionAuthority.kind === "bounded-interactive"
+                          ? "Square terminal edit at 5.00s"
+                          : "editing preview only"
+                  }`
+                : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
           </div>
         ) : null}
         <StudioPresenceOverlay participants={presenceParticipants} />

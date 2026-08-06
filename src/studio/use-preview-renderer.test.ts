@@ -34,17 +34,30 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
-import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationResizeProgram,
+  createDirectManipulationScaleProgram,
+} from "./suggestion-program";
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
   createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
+  projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1,
+  projectStudioPreviewRuntimeTraceTerminalEntityV1,
+  projectStudioPreviewRuntimeTraceTerminalValidationSceneV1,
+  resolveStudioPreviewRuntimeTraceTerminalUiStateV1,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewEditedV9SampleFallbackV1,
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
+  studioPreviewRuntimeTraceTerminalAnchorIsExactV1,
+  studioPreviewRuntimeTraceTerminalEditSeedV1,
+  studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1,
+  studioPreviewRuntimeTraceTerminalProgramSetV1,
+  studioPreviewRuntimeTraceUpdatersSelectionProfileV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
 
@@ -1110,7 +1123,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
-  it("passes a pristine verified Runtime Trace through as selection-only root evidence", async () => {
+  it("passes the exact Updaters trace through with one bounded terminal edit target", async () => {
     const base = await compilablePreviewInput();
     const trace = runtimeTraceFixture();
     const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
@@ -1173,10 +1186,324 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle).toBe(bundle);
     expect(result.scene.interactionEntityIds).toEqual(trace.roots.map(({ id }) => id));
     expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
-      kind: "selection-only",
-      reason: "runtime-trace-preview-only",
+      editableRuntimeEntityId: trace.roots[0]?.id,
+      kind: "bounded-interactive",
+      reason: "runtime-trace-terminal-edit",
+      sourceAnchor: 5,
       verifiedRuntimeEntityIds: trace.roots.map(({ id }) => id),
     });
+    const seed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
+    expect(seed).toEqual({
+      duration: 6,
+      profile: "updaters-terminal-v1",
+      relativeScale: 1,
+      runtimeEntityId: trace.roots[0]?.id,
+      sourceAnchor: 5,
+      sourceDimensions: { height: 2, width: 2 },
+      studioEntityId: "source:example_scenes/basic.py#UpdatersExample:square",
+      studioSceneId: "example_scenes/basic.py#UpdatersExample",
+    });
+
+    expect(
+      studioPreviewRuntimeTraceTerminalEditSeedV1({
+        ...snapshot,
+        correlation: {
+          ...snapshot.correlation,
+          context: { ...snapshot.correlation.context, workingRevision: "stale-runtime-trace" },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceTerminalEditSeedV1({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map(
+          [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName === "decimal"),
+        ),
+      }),
+    ).toBeNull();
+
+    const source = await readFile(
+      new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const imported = importManimScene(source, "example_scenes/basic.py", "UpdatersExample", {
+      height: 8,
+      width: 14.222222222222221,
+    });
+    if (!seed || !imported) throw new Error("Expected exact UpdatersExample Studio authority.");
+    expect(Object.values(imported.sourceVariables)).toEqual(["square"]);
+    const authority = { ...seed, baseCenter: { x: 320, y: 67.5 } } as const;
+    const square = imported.runtimeSceneState.objectGraph.entities[authority.studioEntityId];
+    if (!square?.geometry) throw new Error("Expected the source-bound Square.");
+    const projected = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+      [
+        {
+          ...square,
+          geometry: square.geometry,
+          opacity: 1,
+          position: { x: 320, y: 180 },
+          present: true,
+          scale: 1,
+        },
+      ],
+      authority,
+    );
+    expect(projected[0]).toEqual(
+      expect.objectContaining({
+        geometry: expect.objectContaining({ position: { kind: "known", value: authority.baseCenter } }),
+        position: authority.baseCenter,
+      }),
+    );
+    const draftPosition = { x: 356, y: 86 };
+    const pendingProjection = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+      [
+        {
+          ...square,
+          geometry: {
+            ...square.geometry,
+            position: { kind: "known", value: draftPosition },
+          },
+          opacity: 1,
+          position: draftPosition,
+          present: true,
+          scale: 1,
+        },
+      ],
+      authority,
+      {
+        baseFrameRetained: true,
+        position: draftPosition,
+        profile: "updaters-terminal-v1",
+        sourceAnchor: 5,
+        studioEntityId: authority.studioEntityId,
+      },
+    );
+    expect(pendingProjection[0]).toEqual(
+      expect.objectContaining({
+        geometry: expect.objectContaining({ position: { kind: "known", value: draftPosition } }),
+        position: draftPosition,
+      }),
+    );
+    expect(
+      projectStudioPreviewRuntimeTraceTerminalEntityV1(
+        [
+          {
+            ...pendingProjection[0]!,
+          },
+        ],
+        authority,
+        {
+          baseFrameRetained: true,
+          position: draftPosition,
+          profile: "updaters-terminal-v1",
+          sourceAnchor: 5,
+          studioEntityId: "another-entity",
+        },
+      )[0],
+    ).toEqual(
+      expect.objectContaining({
+        geometry: expect.objectContaining({ position: { kind: "known", value: authority.baseCenter } }),
+        position: authority.baseCenter,
+      }),
+    );
+    const decimalRuntimeId = snapshot.sourceRuntimeIdentity?.get("decimal")?.entityId;
+    if (!decimalRuntimeId) throw new Error("Expected the verified runtime Decimal root.");
+    const selectionProfile = studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot);
+    expect(selectionProfile).not.toBeNull();
+    const opaqueSelection = projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+      authority: selectionProfile,
+      interactionGeometry: new Map([
+        [decimalRuntimeId, { dimensions: { height: 0.8, width: 2.1 }, position: { x: 440, y: 67.5 } }],
+      ]),
+      sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
+    });
+    expect(opaqueSelection).toEqual([
+      expect.objectContaining({
+        id: "source:example_scenes/basic.py#UpdatersExample:decimal",
+        position: { x: 440, y: 67.5 },
+        sourceIdentity: { kind: "known", value: "decimal" },
+        type: "DecimalNumber",
+      }),
+    ]);
+    const importedTraceSource = snapshot.snapshot.scene.source;
+    if (importedTraceSource.kind !== "imported-manim-runtime-trace") {
+      throw new Error("Expected Runtime Trace source evidence.");
+    }
+    const candidateSourceHash = "c".repeat(64);
+    const candidateSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...snapshot,
+      correlation: {
+        ...snapshot.correlation,
+        context: {
+          ...snapshot.correlation.context,
+          sourceHash: candidateSourceHash,
+          workingRevision: "verified-candidate-revision",
+        },
+      },
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          source: { ...importedTraceSource, sourceHash: candidateSourceHash },
+        },
+      },
+    };
+    expect(studioPreviewRuntimeTraceTerminalEditSeedV1(candidateSnapshot)).toBeNull();
+    expect(studioPreviewRuntimeTraceUpdatersSelectionProfileV1(candidateSnapshot)).toEqual(selectionProfile);
+    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+      imported.runtimeSceneState,
+      authority,
+    );
+    const resize = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: authority.studioEntityId,
+      from: { dimensions: authority.sourceDimensions, position: authority.baseCenter },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: validationScene,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 3 }, position: authority.baseCenter },
+      transactionId: "runtime-trace-terminal-square-resize",
+    });
+    expect(resize.kind).toBe("valid");
+    expect(resize.program.operations).toEqual([
+      expect.objectContaining({
+        entityId: authority.studioEntityId,
+        interval: { end: 5, start: 5 },
+        kind: "ResizeEntity",
+        shape: "rectangle",
+      }),
+    ]);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(resize.program, authority)).toBe(true);
+    const position = createDirectManipulationPositionProgram({
+      capturedPlayhead: 5,
+      delta: { x: 24, y: 12 },
+      positions: { [authority.studioEntityId]: authority.baseCenter },
+      scene: validationScene,
+      start: 5,
+      targetEntityIds: [authority.studioEntityId],
+      transactionId: "runtime-trace-terminal-square-position",
+    });
+    expect(position.kind).toBe("valid");
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(position.program, authority)).toBe(true);
+    const resizeRecord = programRecord(resize.program, resize);
+    const positionRecord = programRecord(position.program, position);
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord], authority)).toMatchObject({
+      kind: "authorized",
+      operationKinds: ["position"],
+      remainingOperations: ["resize"],
+    });
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([resizeRecord], authority)).toMatchObject({
+      kind: "authorized",
+      operationKinds: ["resize"],
+      remainingOperations: ["position"],
+    });
+    for (const records of [
+      [positionRecord, resizeRecord],
+      [resizeRecord, positionRecord],
+    ]) {
+      expect(studioPreviewRuntimeTraceTerminalProgramSetV1(records, authority)).toMatchObject({
+        kind: "authorized",
+        remainingOperations: [],
+      });
+    }
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord, positionRecord], authority)).toEqual({
+      kind: "unauthorized",
+    });
+    const exactPending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      atExactAnchor: true,
+      contextMatches: true,
+      presentedAuthority: null,
+      programRecords: [positionRecord],
+      retainedAuthority: authority,
+      transientEdit: false,
+      workingRevisionPristine: false,
+    });
+    expect(exactPending).toMatchObject({
+      authority,
+      baseFrameRetained: true,
+      pending: { baseFrameRetained: true, studioEntityId: authority.studioEntityId },
+      programSet: { kind: "authorized", remainingOperations: ["resize"] },
+    });
+    const scrubbedPending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      atExactAnchor: false,
+      contextMatches: true,
+      presentedAuthority: null,
+      programRecords: [positionRecord],
+      retainedAuthority: authority,
+      transientEdit: false,
+      workingRevisionPristine: false,
+    });
+    expect(scrubbedPending).toMatchObject({
+      authority: null,
+      baseFrameRetained: false,
+      pending: { baseFrameRetained: false, studioEntityId: authority.studioEntityId },
+    });
+    const completePending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      atExactAnchor: true,
+      contextMatches: true,
+      presentedAuthority: null,
+      programRecords: [positionRecord, resizeRecord],
+      retainedAuthority: authority,
+      transientEdit: false,
+      workingRevisionPristine: false,
+    });
+    expect(completePending).toMatchObject({
+      authority: null,
+      baseFrameRetained: true,
+      pending: { baseFrameRetained: true, studioEntityId: authority.studioEntityId },
+      programSet: { kind: "authorized", remainingOperations: [] },
+    });
+    expect(
+      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+        atExactAnchor: true,
+        contextMatches: true,
+        presentedAuthority: null,
+        programRecords: [positionRecord, positionRecord],
+        retainedAuthority: authority,
+        transientEdit: false,
+        workingRevisionPristine: false,
+      }),
+    ).toMatchObject({ authority: null, pending: null, programSet: { kind: "unauthorized" } });
+    expect(
+      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+        atExactAnchor: true,
+        contextMatches: true,
+        presentedAuthority: null,
+        programRecords: [],
+        retainedAuthority: authority,
+        transientEdit: true,
+        workingRevisionPristine: true,
+      }),
+    ).toMatchObject({ authority, baseFrameRetained: true, pending: null });
+    expect(
+      [4.9996, 5, 5.0004].map((sampleTime) => studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime)),
+    ).toEqual([false, true, false]);
+    const nonUniform = createDirectManipulationResizeProgram({
+      capturedPlayhead: 5,
+      entityId: authority.studioEntityId,
+      from: { dimensions: authority.sourceDimensions, position: authority.baseCenter },
+      interval: { end: 5, start: 5 },
+      scale: 1,
+      scene: validationScene,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 4 }, position: authority.baseCenter },
+      transactionId: "runtime-trace-terminal-square-nonuniform-resize",
+    });
+    expect(nonUniform.kind).toBe("invalid");
+    expect(nonUniform.issues).toContainEqual(
+      expect.objectContaining({ message: expect.stringMatching(/positive uniform factor/i) }),
+    );
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(nonUniform.program, authority)).toBe(false);
+    expect(
+      studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
+        {
+          ...position.program,
+          anchor: { ...position.program.anchor, capturedPlayhead: 4.999 },
+        },
+        authority,
+      ),
+    ).toBe(false);
   });
 
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {

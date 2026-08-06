@@ -132,6 +132,33 @@ describe("render pipeline lifecycle policy", () => {
     expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedInitialEditAnchor");
   });
 
+  it("uses only the exact correlated Updaters terminal authority without widening source anchors", () => {
+    const terminalProgram = {
+      ...program(),
+      anchor: {
+        ...program().anchor,
+        capturedPlayhead: 5,
+        resolvedSeconds: 5,
+        source: { kind: "playhead" as const, referenceSeconds: 5 },
+      },
+    };
+    const exact = candidate({
+      anchors: [],
+      program: terminalProgram,
+      programs: [terminalProgram],
+      verifiedRuntimeTraceTerminalEditAnchor: 5,
+    });
+    const otherTime = {
+      ...exact,
+      program: { ...terminalProgram, anchor: { ...terminalProgram.anchor, resolvedSeconds: 4.99 } },
+      programs: [{ ...terminalProgram, anchor: { ...terminalProgram.anchor, resolvedSeconds: 4.99 } }],
+    };
+
+    expect(renderCandidateMissingAnchor(exact)).toBeNull();
+    expect(renderCandidateMissingAnchor(otherTime)).toBe(4.99);
+    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedRuntimeTraceTerminalEditAnchor");
+  });
+
   it.each([
     ["local-command-unavailable", "The configured Manim command is unavailable."],
     ["durable-render-unconfigured", "Durable rendering is not configured for this workspace."],

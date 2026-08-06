@@ -1,20 +1,19 @@
 import { z } from "zod";
-
+import { canonicalEditableContent } from "./editable-content";
+import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type {
   ConstraintGraph,
   EntityDimensions,
   IdentityLineage,
   PropertyChannel,
-  PropertyChannels,
   PropertyChannelSample,
+  PropertyChannels,
   ProvenanceRecord,
   RuntimeEntity,
   RuntimeSceneState,
   SceneConstraint,
   TimelineEvent,
 } from "./model";
-import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
-import { canonicalEditableContent } from "./editable-content";
 import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import {
@@ -868,7 +867,12 @@ export const OPERATION_REGISTRY = {
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       const entity = scene.objectGraph.entities[operation.entityId];
-      const expectedShape = entity?.type === "Circle" ? "circle" : entity?.type === "Rectangle" ? "rectangle" : null;
+      const expectedShape =
+        entity?.type === "Circle"
+          ? "circle"
+          : entity?.type === "Rectangle" || entity?.type === "Square"
+            ? "rectangle"
+            : null;
       if (entity && expectedShape !== operation.shape) {
         issues.push({
           code: "schema-invalid",
@@ -882,6 +886,28 @@ export const OPERATION_REGISTRY = {
           code: "schema-invalid",
           field: "from",
           message: "ResizeEntity must start from the target's known current geometry and scale.",
+          operationId: operation.id,
+          severity: "error",
+        });
+      }
+      if (
+        entity?.type === "Square" &&
+        (operation.shape !== "rectangle" ||
+          operation.from.dimensions.width === undefined ||
+          operation.from.dimensions.height === undefined ||
+          operation.to.dimensions.width === undefined ||
+          operation.to.dimensions.height === undefined ||
+          !closeEnough(operation.from.dimensions.width, operation.from.dimensions.height) ||
+          !closeEnough(operation.to.dimensions.width, operation.to.dimensions.height) ||
+          !closeEnough(
+            operation.to.dimensions.width / operation.from.dimensions.width,
+            operation.to.dimensions.height / operation.from.dimensions.height,
+          ))
+      ) {
+        issues.push({
+          code: "schema-invalid",
+          field: "dimensions",
+          message: "Square ResizeEntity operations must preserve equal sides with one positive uniform factor.",
           operationId: operation.id,
           severity: "error",
         });
