@@ -9,7 +9,7 @@ import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.j
 import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
 import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
-import type { StudioPreviewSceneIdentityV1 } from "./preview-snapshot-provider";
+import { type StudioPreviewSceneIdentityV1, StudioPreviewSnapshotLoadErrorV1 } from "./preview-snapshot-provider";
 import { createServerPreviewSnapshotProviderV1 } from "./preview-snapshot-provider.server";
 
 const REQUEST_ID = "studio-preview:test-request";
@@ -641,7 +641,12 @@ describe("createServerPreviewSnapshotProviderV1", () => {
 
   it.each(["failed", "stale", "unsupported"] as const)("fails closed for a %s run", async (status) => {
     const { provider } = providerReturning({ status });
-    await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toThrow(`did not verify this Scene (${status})`);
+    const request = provider.loadVerifiedSnapshot({ identity });
+    await expect(request).rejects.toThrow(`did not verify this Scene (${status})`);
+    await expect(request).rejects.toMatchObject({
+      failureKind: status === "unsupported" ? "unsupported" : "failed",
+      name: StudioPreviewSnapshotLoadErrorV1.name,
+    });
   });
 
   it("rejects malformed envelopes and every cross-boundary correlation mismatch", async () => {

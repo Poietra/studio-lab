@@ -93,6 +93,7 @@ import {
   sameShapeGeometry,
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
+import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import type { StudioTool } from "./studio/studio-toolbar";
 import {
@@ -759,7 +760,9 @@ export function App({
     activationRequested: previewRendererRequested,
     activated: previewRendererActivated,
     providerPending: previewProviderPending,
+    requestServer: requestServerPreviewAuthority,
     renderer: previewRenderer,
+    retry: retryPreviewAuthority,
   } = useStudioPreviewAuthorityController({
     committedProposedState: committedPreviewState,
     context: editorDocumentPresentationReady ? editorRevision.previewContext : null,
@@ -804,12 +807,22 @@ export function App({
     sourceLifecycle.studioAuthoringLocked ||
     (editorRevision.selectionAligned && !editorRevision.sessionReady);
   const sourceDurationSessionKey = editorRevision.sessionKey;
-  function activatePreviewRenderer() {
-    if (!activatePreviewAuthority()) return;
+  function startPreviewRenderer(action: () => boolean) {
+    if (!action()) return;
     previewActivationDialog.current?.close();
     cancelSuggestionRequest();
     setIsPlaying(false);
     blockDurationAuthority(SOURCE_TIMING_LOADING_BLOCKER);
+  }
+  function activatePreviewRenderer() {
+    startPreviewRenderer(activatePreviewAuthority);
+  }
+  function retryPreviewRenderer() {
+    startPreviewRenderer(retryPreviewAuthority);
+  }
+  function requestPreviewRenderer() {
+    if (!requestServerPreviewAuthority()) return;
+    previewActivationDialog.current?.showModal();
   }
   useEffect(() => {
     const targetSessionKey = sourceTimingResolutionTarget.current;
@@ -3239,6 +3252,16 @@ export function App({
                 session={accountSession}
               />
             ) : null}
+            <StudioPreviewControl
+              activated={previewRendererActivated}
+              activationAllowed={previewActivationAllowed}
+              activationRequested={previewRendererRequested}
+              disabled={!activeScene || sessionTransitionPending}
+              onRequest={requestPreviewRenderer}
+              onRetry={retryPreviewRenderer}
+              providerPending={previewProviderPending}
+              renderer={previewRenderer}
+            />
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={
@@ -3323,6 +3346,7 @@ export function App({
           <section
             aria-labelledby="preview-activation-title"
             className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-950 bg-sky-950/30 px-3 py-2"
+            data-studio-manim-preview-state="awaiting-consent"
           >
             <div className="min-w-0">
               <h2 className="text-balance text-xs font-medium text-sky-200" id="preview-activation-title">
@@ -3588,6 +3612,7 @@ export function App({
           aria-describedby="enable-preview-description"
           aria-labelledby="enable-preview-title"
           className="m-auto w-full max-w-md border border-zinc-700 bg-zinc-950 p-0 text-zinc-100 shadow-xl backdrop:bg-black/70"
+          id="enable-preview-dialog"
           ref={previewActivationDialog}
           role="alertdialog"
         >

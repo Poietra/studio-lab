@@ -48,9 +48,11 @@ import {
   loadStudioPreviewSnapshotMetadataV1,
   PRISTINE_WORKING_REVISION,
   type StudioPreviewEditingContextV1,
+  type StudioPreviewSnapshotFailureKindV1,
   type StudioPreviewSnapshotProviderV1,
   type StudioPreviewSourceRuntimeIdentityV1,
   type StudioVerifiedPreviewSnapshotV1,
+  studioPreviewSnapshotFailureKindV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
@@ -83,6 +85,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   /** A base Runtime Trace plus target-only ghost is awaiting real-Manim validation. */
   runtimeTraceValidationPending: StudioPreviewRuntimeTraceValidationPendingV1 | null;
   sourceLabel: string | null;
+  /** Typed provider outcome; never inferred from diagnostic text. */
+  sourceMetadataFailureKind: StudioPreviewSnapshotFailureKindV1 | null;
   /** Lifecycle of verified source metadata for the current provider/Scene. */
   sourceMetadataPhase: "failed" | "inactive" | "loading" | "ready";
   /** Server-verified source name to runtime entity mapping for this snapshot. */
@@ -1384,6 +1388,7 @@ export type StudioPreviewSnapshotMetadataStateV1 =
     }>
   | Readonly<{
       error: string;
+      failureKind: StudioPreviewSnapshotFailureKindV1;
       phase: "failed";
       provider: StudioPreviewSnapshotProviderV1;
       snapshot: null;
@@ -1561,6 +1566,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
         if (!controller.signal.aborted) {
           setMetadata({
             error: error instanceof Error ? error.message : String(error),
+            failureKind: studioPreviewSnapshotFailureKindV1(error),
             phase: "failed",
             provider,
             snapshot: null,
@@ -1850,6 +1856,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     runtimeTraceOpaqueSelectionEntities,
     runtimeTraceValidationPending,
     sourceLabel: snapshot?.sourceLabel ?? null,
+    sourceMetadataFailureKind: currentMetadata.phase === "failed" ? currentMetadata.failureKind : null,
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
     state,

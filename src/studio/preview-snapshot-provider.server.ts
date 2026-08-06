@@ -19,6 +19,7 @@ import { fastManimRuntimeTraceRunViewV1Schema } from "../render-pipeline/runtime
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
+  StudioPreviewSnapshotLoadErrorV1,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
 
@@ -79,8 +80,8 @@ export type ServerPreviewSnapshotProviderOptionsV1 = Readonly<{
   requestIdFactory?: () => string;
 }>;
 
-function providerError(message: string, cause?: unknown) {
-  return new Error(message, cause === undefined ? undefined : { cause });
+function providerError(message: string, cause?: unknown, failureKind: "failed" | "unsupported" = "failed") {
+  return new StudioPreviewSnapshotLoadErrorV1(message, failureKind, cause === undefined ? undefined : { cause });
 }
 
 function assertEqual(label: string, actual: string, expected: string) {
@@ -207,7 +208,11 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
   const status = runStatusSchema.safeParse(value);
   if (!status.success) throw providerError("The Scene snapshot endpoint returned a malformed run state.", status.error);
   if (status.data.status !== "verified") {
-    throw providerError(`The Scene snapshot endpoint did not verify this Scene (${status.data.status}).`);
+    throw providerError(
+      `The Scene snapshot endpoint did not verify this Scene (${status.data.status}).`,
+      undefined,
+      status.data.status === "unsupported" ? "unsupported" : "failed",
+    );
   }
   const parsed = verifiedRunViewSchema.safeParse(value);
   if (!parsed.success)

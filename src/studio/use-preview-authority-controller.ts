@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useState, useSyncExternalStore } from "react";
 import type { ProgramRecord, ProposedState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
@@ -32,6 +32,7 @@ export type StudioPreviewAuthorityStateV1 =
 export type StudioPreviewAuthorityActionV1 =
   | Readonly<{ requestSearch: string | null; type: "configure" }>
   | Readonly<{ allowed: boolean; type: "activate" }>
+  | Readonly<{ allowed: boolean; type: "retry" }>
   | Readonly<{
       generation: number;
       provider: StudioPreviewSnapshotProviderV1 | null;
@@ -55,8 +56,12 @@ export type StudioPreviewAuthorityControllerViewV1 = Readonly<{
   activationRequested: boolean;
   activated: boolean;
   providerPending: boolean;
+  requestServer: () => boolean;
   renderer: StudioPreviewRendererViewV1 | null;
+  retry: () => boolean;
 }>;
+
+export const STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1 = `?${STUDIO_PREVIEW_RENDERER_QUERY_PARAM}=server`;
 
 function authorityStateForRequest(
   state: StudioPreviewAuthorityStateV1,
@@ -90,6 +95,10 @@ export function reduceStudioPreviewAuthorityV1(
     if (!action.allowed || state.phase !== "awaiting-consent") return state;
     return { ...state, generation: state.generation + 1, phase: "resolving" };
   }
+  if (action.type === "retry") {
+    if (!action.allowed || state.phase !== "active") return state;
+    return { ...state, generation: state.generation + 1, phase: "resolving", provider: null };
+  }
   if (state.phase !== "resolving" || state.generation !== action.generation) return state;
   return { ...state, phase: "active", provider: action.provider };
 }
@@ -102,6 +111,22 @@ export function requestedStudioPreviewRendererSearchV1(search: string | null, fi
   return requested === "server" || (fixtureAllowed && (requested === "fixture" || requested === "mathtex-fixture"))
     ? search
     : null;
+}
+
+/**
+ * URL requests remain an independent developer/fixture entry point. The
+ * standard UI contributes only a tab-local server request, so it neither
+ * rewrites the address bar nor accidentally grants fixture authority.
+ */
+export function effectiveStudioPreviewRendererSearchV1(
+  browserSearch: string | null,
+  fixtureAllowed: boolean,
+  manualServerRequested: boolean,
+) {
+  return (
+    requestedStudioPreviewRendererSearchV1(browserSearch, fixtureAllowed) ??
+    (manualServerRequested ? STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1 : null)
+  );
 }
 
 type StudioPreviewLocationSearchSourcesV1 = Readonly<{
@@ -179,7 +204,12 @@ export function useStudioPreviewAuthorityController({
   transientEdit,
 }: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerViewV1 {
   const browserSearch = useSyncExternalStore(subscribeBrowserSearch, currentBrowserSearch, serverBrowserSearch);
-  const requestSearch = requestedStudioPreviewRendererSearchV1(browserSearch, import.meta.env.DEV);
+  const [manualServerRequested, setManualServerRequested] = useState(false);
+  const requestSearch = effectiveStudioPreviewRendererSearchV1(
+    browserSearch,
+    import.meta.env.DEV,
+    manualServerRequested,
+  );
   const [authority, dispatch] = useReducer(
     reduceStudioPreviewAuthorityV1,
     requestSearch,
@@ -232,6 +262,16 @@ export function useStudioPreviewAuthorityController({
     dispatch({ allowed, type: "activate" });
     return true;
   }, [allowed, currentAuthority.phase]);
+  const requestServer = useCallback(() => {
+    if (!allowed) return false;
+    setManualServerRequested(true);
+    return true;
+  }, [allowed]);
+  const retry = useCallback(() => {
+    if (!allowed || currentAuthority.phase !== "active") return false;
+    dispatch({ allowed, type: "retry" });
+    return true;
+  }, [allowed, currentAuthority.phase]);
 
   return {
     activate,
@@ -239,6 +279,8 @@ export function useStudioPreviewAuthorityController({
     activationRequested: currentAuthority.phase !== "disabled",
     activated: currentAuthority.phase === "resolving" || currentAuthority.phase === "active",
     providerPending: currentAuthority.phase === "resolving",
+    requestServer,
     renderer,
+    retry,
   };
 }

@@ -159,6 +159,7 @@ function previewView(
     runtimeTraceOpaqueSelectionEntities,
     runtimeTraceValidationPending,
     sourceLabel: "verified fixture",
+    sourceMetadataFailureKind: null,
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity,
     state,
