@@ -9,12 +9,13 @@ import {
 } from "../engine/contracts";
 import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import { sourceBindingV1Schema, verifiedSourceRuntimeIdentityMapV1Schema } from "../engine/source-runtime-identity";
+import { verifiedSourceRuntimeIdentityMapV1Schema } from "../engine/source-runtime-identity";
 import {
   manimProjectIdSchema,
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
+import { fastManimRuntimeTraceRunViewV1Schema } from "../render-pipeline/runtime-trace-preview-contract";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
@@ -23,7 +24,6 @@ import {
 
 const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
-const RUNTIME_TRACE_RUN_SCHEMA = "poietra.fast-manim-runtime-trace-run";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
 const ZERO_SHA256 = "0".repeat(64);
 const RUNTIME_TRACE_SOURCE_PATH = "example_scenes/basic.py";
@@ -68,33 +68,6 @@ const verifiedRunViewSchema = z
     sourceRuntimeIdentity: verifiedSourceRuntimeIdentityMapV1Schema.optional(),
     sourcePath: manimSourcePathSchema,
     status: z.literal("verified"),
-    version: z.literal(1),
-  })
-  .strict();
-
-const verifiedRuntimeTraceRunViewSchema = z
-  .object({
-    bundle: z.unknown(),
-    projectId: manimProjectIdSchema,
-    requestId: opaqueIdV1Schema,
-    roots: z
-      .array(
-        z
-          .object({
-            binding: sourceBindingV1Schema,
-            entityId: sourceIdentityV1Schema,
-          })
-          .strict(),
-      )
-      .length(2),
-    runtimeConfigHash: sha256V1Schema,
-    sceneId: sourceIdentityV1Schema,
-    sceneName: z.literal(RUNTIME_TRACE_SCENE_NAME),
-    schema: z.literal(RUNTIME_TRACE_RUN_SCHEMA),
-    sourceHash: sha256V1Schema,
-    sourcePath: z.literal(RUNTIME_TRACE_SOURCE_PATH),
-    status: z.literal("verified"),
-    traceDigest: sha256V1Schema,
     version: z.literal(1),
   })
   .strict();
@@ -367,14 +340,12 @@ async function validateVerifiedRuntimeTraceRun(
   identity: StudioPreviewSceneIdentityV1,
   requestId: string,
 ) {
-  const status = runStatusSchema.safeParse(value);
-  if (!status.success) throw providerError("The Runtime Trace endpoint returned a malformed run state.", status.error);
-  if (status.data.status !== "verified") {
-    throw providerError(`The Runtime Trace endpoint did not verify this Scene (${status.data.status}).`);
-  }
-  const parsed = verifiedRuntimeTraceRunViewSchema.safeParse(value);
+  const parsed = fastManimRuntimeTraceRunViewV1Schema.safeParse(value);
   if (!parsed.success) throw providerError("The Runtime Trace endpoint returned malformed evidence.", parsed.error);
   const run = parsed.data;
+  if (run.status !== "verified") {
+    throw providerError(`The Runtime Trace endpoint did not verify this Scene (${run.status}).`);
+  }
   assertEqual("project", run.projectId, identity.projectId);
   assertEqual("request", run.requestId, requestId);
   assertEqual("source path", run.sourcePath, identity.sourcePath);
