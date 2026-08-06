@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { MAX_COORDINATE } from "../engine/primitives";
 import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
@@ -19,6 +21,13 @@ import {
   referencedPythonReferences,
 } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
+import {
+  composeSourceRuntimeOperationCapabilityV1,
+  insertAtSourceBoundaryV1,
+  removeDirectSourceStatementsV1,
+  SourceAnalysisError,
+  studioSourceAnalysisProviderV1,
+} from "./source-analysis";
 import {
   findSourceComments,
   findSourceSceneBlock,
@@ -2053,10 +2062,6 @@ export function lowerSquareToCircleInitialPositionSourceV8(
   if (request.sourceHash !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8) {
     squareToCircleV8LoweringError("the edit must be rebased from the pinned official source generation.");
   }
-  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
-  if (!imported || imported.sourceHash !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8) {
-    squareToCircleV8LoweringError("the current source bytes are not the pinned official source generation.");
-  }
   if (incoming !== null || request.destination !== null) {
     squareToCircleV8LoweringError("Scene transitions are outside this bounded round-trip profile.");
   }
@@ -2072,6 +2077,31 @@ export function lowerSquareToCircleInitialPositionSourceV8(
   ) {
     squareToCircleV8LoweringError("the Studio frame and viewport must be finite and positive.");
   }
+  let sourceAnalysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
+  try {
+    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: request.sourceHash,
+      sceneName: request.sceneName,
+      sourcePath: request.sourcePath,
+      sourceText: source,
+    });
+  } catch (error) {
+    if (error instanceof SourceAnalysisError) {
+      squareToCircleV8LoweringError(
+        error.code === "stale-source"
+          ? "the current source bytes are not the pinned official source generation."
+          : `source analysis rejected the selected Scene (${error.code}).`,
+      );
+    }
+    throw error;
+  }
+  if (sourceAnalysis.sourceHash !== SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8) {
+    squareToCircleV8LoweringError("the current source bytes are not the pinned official source generation.");
+  }
+  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
+  if (!imported || imported.sourceHash !== sourceAnalysis.sourceHash) {
+    squareToCircleV8LoweringError("the selected Scene cannot produce correlated runtime import evidence.");
+  }
   const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
   if (
     !Number.isFinite(cameraCenter.x) ||
@@ -2083,19 +2113,34 @@ export function lowerSquareToCircleInitialPositionSourceV8(
   }
 
   const expectedVariables = new Set(["circle", "square"]);
+  const sourceBindings = sourceAnalysis.bindings.filter(
+    ({ kind, name, scopeId }) =>
+      kind === "assignment" && scopeId === sourceAnalysis.scene.construct.scopeId && expectedVariables.has(name),
+  );
+  const circleCapability = composeSourceRuntimeOperationCapabilityV1(
+    sourceAnalysis,
+    "circle",
+    "move",
+    request.sourceBindings,
+    imported.sourceVariables,
+  );
+  const squareCapability = composeSourceRuntimeOperationCapabilityV1(
+    sourceAnalysis,
+    "square",
+    "move",
+    request.sourceBindings,
+    imported.sourceVariables,
+  );
   if (
-    Object.keys(imported.sourceVariables).length !== expectedVariables.size ||
+    sourceBindings.length !== expectedVariables.size ||
     request.sourceBindings.length !== expectedVariables.size ||
     new Set(request.sourceBindings.map(({ sourceVariable }) => sourceVariable)).size !== expectedVariables.size ||
-    request.sourceBindings.some(
-      ({ entityId, sourceVariable }) =>
-        !expectedVariables.has(sourceVariable) || imported.sourceVariables[entityId] !== sourceVariable,
-    )
+    request.sourceBindings.some(({ sourceVariable }) => !expectedVariables.has(sourceVariable)) ||
+    !circleCapability ||
+    !squareCapability
   ) {
     squareToCircleV8LoweringError("the exact imported `circle` and `square` source bindings are required.");
   }
-  const squareBinding = request.sourceBindings.find(({ sourceVariable }) => sourceVariable === "square");
-  if (!squareBinding) squareToCircleV8LoweringError("the source-bound `square` target is unavailable.");
 
   const programs = renderRequestPrograms(request);
   if (programs.length !== 1 || entries.length !== 1) {
@@ -2111,7 +2156,7 @@ export function lowerSquareToCircleInitialPositionSourceV8(
   const { position, scale } = boundedInitialTransformPlan(
     request,
     entries,
-    squareBinding.entityId,
+    squareCapability.entityId,
     "`square`",
     squareToCircleV8LoweringError,
   );
@@ -2135,7 +2180,7 @@ export function lowerSquareToCircleInitialPositionSourceV8(
     throw new ProgramLoweringError("zero-delta", "SquareToCircle V8 position must change the source center.");
   }
 
-  const statements = findSourceSceneStatements(source, request.sceneName, request.sourcePath);
+  const statements = sourceAnalysis.scene.statements;
   const expectedStatements = [
     "circle = Circle()",
     "square = Square()",
@@ -2159,24 +2204,24 @@ export function lowerSquareToCircleInitialPositionSourceV8(
   if (setup.line >= firstPlay.line) {
     squareToCircleV8LoweringError("the paired position edit must precede the first play.");
   }
-
-  const newline = source.includes("\r\n") ? "\r\n" : "\n";
-  const lines = source.split(/\r?\n/);
-  const indentation = lines[setup.line]?.match(/^\s*/)?.[0] ?? "";
+  const boundary = setup.insertionAfter;
+  if (!boundary) {
+    squareToCircleV8LoweringError("the pre-play setup has no proven direct insertion boundary.");
+  }
+  const indentation = boundary.indentation;
   if (indentation !== "        ") {
     squareToCircleV8LoweringError("the pinned pre-play setup indentation changed.");
   }
   const insertedLines = [`${indentation}square.move_to(${target})`, `${indentation}circle.move_to(${target})`];
-  lines.splice(setup.line + 1, 0, ...insertedLines);
   return {
-    anchorLine: setup.line + 1,
-    anchorLines: [setup.line + 1],
-    insertedCode: insertedLines.join(newline),
+    anchorLine: setup.line,
+    anchorLines: [setup.line],
+    insertedCode: insertedLines.join(boundary.newline),
     preflight: {
       baseSourceHash: SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
       kind: "fast-manim-square-to-circle-v8",
     },
-    source: lines.join(newline),
+    source: insertAtSourceBoundaryV1(source, sourceAnalysis, boundary, insertedLines),
   };
 }
 
@@ -2536,22 +2581,21 @@ function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sc
   if (sceneName !== OPENING_TERMINAL_SCENE_NAME_V2) {
     openingTerminalV2LoweringError("candidate Scene identity is outside the pinned profile.");
   }
-  const analysis = analyzePythonSource(candidateSource);
-  let block: ReturnType<typeof findSourceSceneBlock>;
+  const candidateHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
+  let sourceAnalysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
   try {
-    block = findSourceSceneBlock(
-      candidateSource,
-      OPENING_TERMINAL_SCENE_NAME_V2,
-      OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
+    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: candidateHash,
+      sceneName: OPENING_TERMINAL_SCENE_NAME_V2,
+      sourcePath: OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
+      sourceText: candidateSource,
+    });
+  } catch (error) {
+    openingTerminalV2LoweringError(
+      `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
     );
-  } catch {
-    openingTerminalV2LoweringError("SourceAnalysis found an ambiguous Scene occurrence.");
   }
-  const statements = findSourceSceneStatements(
-    candidateSource,
-    OPENING_TERMINAL_SCENE_NAME_V2,
-    OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
-  );
+  const statements = sourceAnalysis.scene.statements;
   const assignments = statements.filter(({ text }) => text === 'grid_title = Tex("This is a grid", font_size=72)');
   const transforms = statements.filter(({ text }) => text === "self.play(Transform(grid_title, grid_transform_title))");
   const assignment = assignments[0];
@@ -2560,33 +2604,30 @@ function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sc
   const trailing = transformIndex < 0 ? [] : statements.slice(transformIndex + 1);
   const wait = trailing.at(-1);
   const translationStatement = trailing.length === 2 ? trailing[0] : undefined;
-  const directStatementLines = block
-    ? analysis.lines
-        .slice(block.bodyStart, block.bodyEnd)
-        .flatMap((line, offset) => (isPythonStatementStart(line) ? [block.bodyStart + offset] : []))
-    : [];
+  const sourceBinding = sourceAnalysis.bindings.filter(
+    ({ kind, name, scopeId }) =>
+      kind === "assignment" && name === "grid_title" && scopeId === sourceAnalysis.scene.construct.scopeId,
+  );
   if (
-    !analysis.valid ||
-    !block ||
-    block.classLine !== 17 ||
-    block.bodyIndent !== 8 ||
+    sourceAnalysis.scene.classLine !== 18 ||
     assignments.length !== 1 ||
     transforms.length !== 1 ||
+    sourceBinding.length !== 1 ||
+    sourceBinding[0]?.capabilities.move.status !== "source-eligible" ||
     !assignment ||
-    assignment.line !== 37 ||
+    assignment.line !== 38 ||
     !transform ||
-    transform.line !== 67 ||
+    transform.line !== 68 ||
     trailing.length < 1 ||
     trailing.length > 2 ||
     wait?.text !== "self.wait()" ||
     transform.line + 1 !== (translationStatement?.line ?? wait.line) ||
     (translationStatement !== undefined && translationStatement.line + 1 !== wait.line) ||
-    directStatementLines.length !== statements.length ||
-    directStatementLines.some((line, index) => line !== statements[index]?.line) ||
-    directStatementLines.some((line) => analysis.lines[line]?.indentation !== block.bodyIndent) ||
-    analysis.lines[transform.line]?.code.trim() !== "self.play(Transform(grid_title, grid_transform_title))" ||
-    analysis.lines[wait.line]?.code.trim() !== "self.wait()" ||
-    analysis.lines[(translationStatement?.line ?? wait.line) - 1]?.bracketDepthAfter !== 0
+    assignment.indentation !== "        " ||
+    transform.rawText !== `        ${transform.text}` ||
+    wait.rawText !== `        ${wait.text}` ||
+    !wait.insertionBefore ||
+    wait.insertionBefore.indentation !== "        "
   ) {
     openingTerminalV2LoweringError(
       "SourceAnalysis could not prove the grid_title occurrence and direct final-Transform-to-wait boundary.",
@@ -2597,10 +2638,16 @@ function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sc
   if (translationStatement && !translation) {
     openingTerminalV2LoweringError("candidate edit must be one canonical finite bounded grid_title translation.");
   }
-  const newline = candidateSource.includes("\r\n") ? "\r\n" : "\n";
-  const baseLines = candidateSource.split(/\r?\n/);
-  if (translationStatement) baseLines.splice(translationStatement.line, 1);
-  const officialSource = baseLines.join(newline);
+  let officialSource = candidateSource;
+  if (translationStatement) {
+    try {
+      officialSource = removeDirectSourceStatementsV1(candidateSource, sourceAnalysis, [
+        { expectedText: translationStatement.text, statementId: translationStatement.id },
+      ]);
+    } catch {
+      openingTerminalV2LoweringError("candidate edit does not have one canonical removable statement span.");
+    }
+  }
   const imported = importManimScene(
     officialSource,
     OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
@@ -2612,13 +2659,16 @@ function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sc
   }
   return {
     bindingEntityId: bindingEntries[0]![0],
+    importedSourceVariables: imported.sourceVariables,
+    insertionBoundary: wait.insertionBefore,
     officialSource,
     plan: {
-      anchorLine: wait.line - Number(translationStatement !== undefined),
+      anchorLine: wait.line - 1 - Number(translationStatement !== undefined),
       binding: { name: "grid_title", sourceLine: 38 },
       sourceTime: OPENING_TERMINAL_SOURCE_TIME_V2,
       translation,
     } satisfies OpeningManimTerminalPositionSourceEditPlanV2,
+    sourceAnalysis,
   } as const;
 }
 
@@ -2673,14 +2723,14 @@ export function lowerOpeningManimTerminalPositionSourceV2(
   }
   const base = inspectOpeningManimTerminalPositionSourceV2(source, request.sceneName);
   if (base.plan.translation) openingTerminalV2LoweringError("the pinned base source must not contain a prior edit.");
-  const bindings = request.sourceBindings.filter(
-    ({ entityId, sourceVariable }) => sourceVariable === "grid_title" || entityId === base.bindingEntityId,
+  const capability = composeSourceRuntimeOperationCapabilityV1(
+    base.sourceAnalysis,
+    "grid_title",
+    "move",
+    request.sourceBindings,
+    base.importedSourceVariables,
   );
-  if (
-    bindings.length !== 1 ||
-    bindings[0]?.entityId !== base.bindingEntityId ||
-    bindings[0].sourceVariable !== "grid_title"
-  ) {
+  if (request.sourceBindings.length !== 1 || !capability || capability.entityId !== base.bindingEntityId) {
     openingTerminalV2LoweringError("one exact SourceAnalysis grid_title binding is required.");
   }
   const programs = renderRequestPrograms(request);
@@ -2749,13 +2799,10 @@ export function lowerOpeningManimTerminalPositionSourceV2(
   ) {
     openingTerminalV2LoweringError("the correlated position must produce one finite nonzero bounded translation.");
   }
-  const newline = source.includes("\r\n") ? "\r\n" : "\n";
-  const indentation = source.split(/\r?\n/)[base.plan.anchorLine]?.match(/^\s*/)?.[0] ?? "";
+  const indentation = base.insertionBoundary.indentation;
   if (indentation !== "        ") openingTerminalV2LoweringError("the pinned final-wait indentation changed.");
   const insertedCode = `${indentation}grid_title.shift((${formatPointCoordinate(translation.x)}, ${formatPointCoordinate(translation.y)}, 0))`;
-  const lines = source.split(/\r?\n/);
-  lines.splice(base.plan.anchorLine, 0, insertedCode);
-  const loweredSource = lines.join(newline);
+  const loweredSource = insertAtSourceBoundaryV1(source, base.sourceAnalysis, base.insertionBoundary, [insertedCode]);
   const derived = deriveOpeningManimTerminalPositionSourceEditPlanV2(loweredSource, request.sceneName);
   if (
     !derived.translation ||
@@ -2975,43 +3022,45 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
   if (sceneName !== UPDATERS_TERMINAL_SCENE_NAME_V1) {
     updatersTerminalV1LoweringError("candidate Scene identity is outside the pinned profile.");
   }
-  const analysis = analyzePythonSource(candidateSource);
-  const block = findSourceSceneBlock(
-    candidateSource,
-    UPDATERS_TERMINAL_SCENE_NAME_V1,
-    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
-  );
-  const statements = findSourceSceneStatements(
-    candidateSource,
-    UPDATERS_TERMINAL_SCENE_NAME_V1,
-    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
-  );
+  const candidateHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
+  let sourceAnalysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
+  try {
+    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: candidateHash,
+      sceneName: UPDATERS_TERMINAL_SCENE_NAME_V1,
+      sourcePath: UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
+      sourceText: candidateSource,
+    });
+  } catch (error) {
+    updatersTerminalV1LoweringError(
+      `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
+    );
+  }
+  const statements = sourceAnalysis.scene.statements;
   const play = statements[UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length - 1];
   const wait = statements.at(-1);
   const editStatements = statements.slice(UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length, -1);
-  const directStatementLines = block
-    ? analysis.lines
-        .slice(block.bodyStart, block.bodyEnd)
-        .flatMap((line, offset) => (isPythonStatementStart(line) ? [block.bodyStart + offset] : []))
-    : [];
+  const squareBinding = sourceAnalysis.bindings.filter(
+    ({ kind, name, scopeId }) =>
+      kind === "assignment" && name === "square" && scopeId === sourceAnalysis.scene.construct.scopeId,
+  );
   if (
-    !analysis.valid ||
-    !block ||
-    block.bodyIndent !== 8 ||
+    sourceAnalysis.scene.classLine !== 112 ||
+    squareBinding.length !== 1 ||
+    squareBinding[0]?.capabilities.move.status !== "source-eligible" ||
+    squareBinding[0]?.capabilities.uniformResize.status !== "source-eligible" ||
     statements.length < UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 1 ||
     statements.length > UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 4 ||
     UPDATERS_TERMINAL_BASE_STATEMENTS_V1.some((text, index) => statements[index]?.text !== text) ||
     wait?.text !== "self.wait()" ||
-    directStatementLines.length !== statements.length ||
-    directStatementLines.some((line, index) => line !== statements[index]?.line) ||
-    directStatementLines.some((line) => analysis.lines[line]?.indentation !== block.bodyIndent) ||
     !play ||
     !wait ||
-    play.line + play.text.split("\n").length !== (editStatements[0]?.line ?? wait.line) ||
+    play.span.endLine + 1 !== (editStatements[0]?.line ?? wait.line) ||
     editStatements.some((statement, index) => statement.line + 1 !== (editStatements[index + 1]?.line ?? wait.line)) ||
-    analysis.lines[play.line]?.code.trim() !== "self.play(" ||
-    analysis.lines[wait.line]?.code.trim() !== "self.wait()" ||
-    analysis.lines[(editStatements[0]?.line ?? wait.line) - 1]?.bracketDepthAfter !== 0
+    play.indentation !== "        " ||
+    wait.rawText !== `        ${wait.text}` ||
+    !wait.insertionBefore ||
+    wait.insertionBefore.indentation !== "        "
   ) {
     updatersTerminalV1LoweringError(
       "SourceAnalysis could not prove the direct boundary after the five-second play and before the final wait.",
@@ -3045,10 +3094,18 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
     updatersTerminalV1LoweringError("the dependent-updater refresh requires one preceding terminal Square edit.");
   }
 
-  const newline = candidateSource.includes("\r\n") ? "\r\n" : "\n";
-  const baseLines = candidateSource.split(/\r?\n/);
-  for (const statement of [...editStatements].reverse()) baseLines.splice(statement.line, 1);
-  const baseSource = baseLines.join(newline);
+  let baseSource = candidateSource;
+  if (editStatements.length > 0) {
+    try {
+      baseSource = removeDirectSourceStatementsV1(
+        candidateSource,
+        sourceAnalysis,
+        editStatements.map((statement) => ({ expectedText: statement.text, statementId: statement.id })),
+      );
+    } catch {
+      updatersTerminalV1LoweringError("candidate edits do not have canonical removable statement spans.");
+    }
+  }
   const importedBase = importManimScene(
     baseSource,
     UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
@@ -3063,14 +3120,17 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
     updatersTerminalV1LoweringError("candidate bytes do not reduce to the pinned official source generation.");
   }
   return {
+    importedSourceVariables: importedBase.sourceVariables,
+    insertionBoundary: wait.insertionBefore,
     officialSource: baseSource,
     plan: {
-      anchorLine: wait.line - editStatements.length,
+      anchorLine: wait.line - 1 - editStatements.length,
       moveTo,
       refreshDependentUpdater,
       scale,
       sourceTime: UPDATERS_TERMINAL_SOURCE_TIME_V1,
     } satisfies UpdatersTerminalSourceEditPlanV1,
+    sourceAnalysis,
   } as const;
 }
 
@@ -3141,18 +3201,34 @@ export function lowerUpdatersTerminalTransformSourceV1(
     updatersTerminalV1LoweringError("the pinned static camera must remain centered.");
   }
 
+  const base = inspectUpdatersTerminalSourceV1(source, request.sceneName);
+  if (base.plan.moveTo !== null || base.plan.scale !== null || base.plan.refreshDependentUpdater) {
+    updatersTerminalV1LoweringError("the pinned base source must not contain a prior terminal edit.");
+  }
+  const moveCapability = composeSourceRuntimeOperationCapabilityV1(
+    base.sourceAnalysis,
+    "square",
+    "move",
+    request.sourceBindings,
+    imported.sourceVariables,
+  );
+  const resizeCapability = composeSourceRuntimeOperationCapabilityV1(
+    base.sourceAnalysis,
+    "square",
+    "uniformResize",
+    request.sourceBindings,
+    imported.sourceVariables,
+  );
   if (
     Object.keys(imported.sourceVariables).length !== 1 ||
     request.sourceBindings.length !== 1 ||
-    request.sourceBindings[0]?.sourceVariable !== "square"
+    !moveCapability ||
+    !resizeCapability ||
+    moveCapability.entityId !== resizeCapability.entityId
   ) {
     updatersTerminalV1LoweringError("the one exact imported `square` source binding is required.");
   }
-  const binding = request.sourceBindings[0]!;
-  if (imported.sourceVariables[binding.entityId] !== "square") {
-    updatersTerminalV1LoweringError("the target does not match the pinned source-bound Square identity.");
-  }
-  const { position, scale } = boundedUpdatersTerminalEditPlan(request, entries, binding.entityId);
+  const { position, scale } = boundedUpdatersTerminalEditPlan(request, entries, moveCapability.entityId);
   const expectedMove =
     position === null
       ? null
@@ -3173,14 +3249,7 @@ export function lowerUpdatersTerminalTransformSourceV1(
     );
   }
 
-  const basePlan = deriveUpdatersTerminalSourceEditPlanV1(source, request.sceneName);
-  if (basePlan.moveTo !== null || basePlan.scale !== null || basePlan.refreshDependentUpdater) {
-    updatersTerminalV1LoweringError("the pinned base source must not contain a prior terminal edit.");
-  }
-
-  const newline = source.includes("\r\n") ? "\r\n" : "\n";
-  const lines = source.split(/\r?\n/);
-  const indentation = lines[basePlan.anchorLine]?.match(/^\s*/)?.[0] ?? "";
+  const indentation = base.insertionBoundary.indentation;
   if (indentation !== "        ") {
     updatersTerminalV1LoweringError("the pinned final-wait indentation changed.");
   }
@@ -3191,8 +3260,7 @@ export function lowerUpdatersTerminalTransformSourceV1(
     ...(scale === null ? [] : [`${indentation}square.scale(${formatPositiveAmount(scale)})`]),
     `${indentation}decimal.update(0)`,
   ];
-  lines.splice(basePlan.anchorLine, 0, ...insertedLines);
-  const loweredSource = lines.join(newline);
+  const loweredSource = insertAtSourceBoundaryV1(source, base.sourceAnalysis, base.insertionBoundary, insertedLines);
   const derivedPlan = deriveUpdatersTerminalSourceEditPlanV1(loweredSource, request.sceneName);
   if (
     (expectedMove === null) !== (derivedPlan.moveTo === null) ||
@@ -3206,9 +3274,9 @@ export function lowerUpdatersTerminalTransformSourceV1(
     updatersTerminalV1LoweringError("the emitted source does not re-derive the requested terminal edit plan.");
   }
   return {
-    anchorLine: basePlan.anchorLine,
-    anchorLines: [basePlan.anchorLine],
-    insertedCode: insertedLines.join(newline),
+    anchorLine: base.plan.anchorLine,
+    anchorLines: [base.plan.anchorLine],
+    insertedCode: insertedLines.join(base.insertionBoundary.newline),
     preflight: {
       baseSourceHash: UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1,
       kind: "fast-manim-updaters-terminal-v1",
