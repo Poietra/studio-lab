@@ -1,0 +1,32 @@
+{
+  "capabilities": ["preview", "selection", "edit", "edited-export", "validated-roundtrip"],
+  "manifestDigest": "003aa8bc4df88d6111dfd5ae3eafa0d3d7a143f2f11a84a59c9c4f497941de8c",
+  "manifestVersion": 1,
+  "producerDigest": "7575fce685f89bb42eaff86b01a505bc8d59ad61feaf849c7128141734e7c9c6",
+  "results": {
+    "fast-manim-basic/OpeningManim/runtime-trace-v2": {
+      "capabilities": {
+        "preview": { "status": "proven" },
+        "selection": { "status": "proven" },
+        "edit": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" },
+        "edited-export": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" },
+        "validated-roundtrip": { "status": "blocked", "blocker": "source-edit-anchor-unavailable" }
+      },
+      "runtimeTraceVersion": 2,
+      "sceneName": "OpeningManim"
+    },
+    "fast-manim-basic/UpdatersExample/runtime-trace-v1": {
+      "capabilities": {
+        "preview": { "status": "proven" },
+        "selection": { "status": "proven" },
+        "edit": { "status": "proven" },
+        "edited-export": { "status": "proven" },
+        "validated-roundtrip": { "status": "proven" }
+      },
+      "runtimeTraceVersion": 1,
+      "sceneName": "UpdatersExample"
+    }
+  },
+  "schema": "poietra.real-manim-editability-census-report",
+  "version": 1
+}
