@@ -249,13 +249,15 @@ must never enter application logs or error responses.
 
 The opt-in Stripe Sandbox evidence lane exercises Hosted Checkout, a temporary
 Stripe CLI signing secret, canonical Subscription reconciliation, render quota,
-exact webhook replay, and immediate cancellation. Install the Stripe CLI and a
-Playwright Chromium browser, then provide a dedicated disposable PostgreSQL
-database plus one active recurring Sandbox Price:
+an actual Customer Portal Session, exact webhook replay, and immediate
+cancellation. Install the Stripe CLI and a Playwright Chromium browser, then
+provide a dedicated disposable PostgreSQL database, one active recurring
+Sandbox Price, and one fixed test-mode Customer Portal configuration:
 
 ```sh
 POIETRA_STRIPE_E2E_SECRET_KEY="$STRIPE_SANDBOX_SECRET" \
 POIETRA_STRIPE_E2E_PRICE_ID="$STRIPE_SANDBOX_PRO_PRICE" \
+POIETRA_STRIPE_E2E_PORTAL_CONFIGURATION_ID="$STRIPE_SANDBOX_PORTAL_CONFIGURATION" \
 POIETRA_STRIPE_E2E_DATABASE_URL="$STRIPE_SANDBOX_DATABASE_URL" \
 pnpm test:billing:stripe:required
 ```
@@ -265,8 +267,11 @@ pnpm test:billing:stripe:required
 required command rejects missing settings and every key except `sk_test_...`
 before opening Stripe or PostgreSQL. The default test suites skip the live lane
 and never contact Stripe. CLI output, its ephemeral `whsec_...` value, payment
-fields, signed raw bodies, and Stripe secrets are retained only in memory and
-are not emitted as evidence artifacts. The lane uses bounded requests and
+fields, signed raw bodies, Stripe secrets, and the ephemeral Portal URL are
+retained only in memory and are not emitted as evidence artifacts. The Portal
+smoke uses the durable server-bound Customer, the configured Portal ID, and the
+server-owned return URL; it validates the credential-free HTTPS response but
+does not persist, log, or navigate to it. The lane uses bounded requests and
 best-effort cancellation/Customer deletion; a passing local run is still not a
 claim that production billing credentials or routes are configured.
 
