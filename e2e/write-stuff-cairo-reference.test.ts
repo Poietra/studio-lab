@@ -10,9 +10,11 @@ import {
   readWriteStuffCairoReferenceV1,
   WRITE_STUFF_CAIRO_PARITY_THRESHOLDS_V1,
   WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1,
+  WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1,
   WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1,
   WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1,
   WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1,
+  writeStuffCairoReferenceSampleForEntryV1,
   writeStuffCairoReferenceV1Schema,
 } from "./write-stuff-cairo-reference";
 
@@ -58,6 +60,10 @@ const EXPECTED_FRAMES = {
     sha256: "c586befe504be8053f6469d5aeb855e5eeaf992771b4cc3413aecff48644c642",
   },
 } as const;
+
+function sha256(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 describe("WriteStuff Cairo reference v1", () => {
   it("pins the official source, producer, renderer configuration, and eight full RGBA frames", async () => {
@@ -116,6 +122,12 @@ describe("WriteStuff Cairo reference v1", () => {
 
   it("pins the independently rendered Studio equation move and scale", async () => {
     const result = await readWriteStuffCairoReferenceV1(WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1);
+    expect(writeStuffCairoReferenceSampleForEntryV1(WRITE_STUFF_EDITED_CAIRO_REFERENCE_ENTRY_IDS_V1[0]!)).toEqual({
+      entryId: "real-write-stuff-v12-edited--hold",
+      root: WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1,
+      sampleId: "hold",
+      sampleTime: 3.5,
+    });
     expect(result.reference).toMatchObject({
       producer: {
         fastManimCommit: "8a1a4feb68c3ba47a2ff26c83b9bed4a6b095063",
@@ -173,28 +185,33 @@ describe("WriteStuff Cairo reference v1", () => {
 
   it("proves both Writes advance and the completed glyphs remain through the duration endpoint", async () => {
     const { frames } = await readWriteStuffCairoReferenceV1();
-    const rgba = (id: (typeof WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1)[number][1]) => {
+    const rgbaSha256 = (id: (typeof WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1)[number][1]) => {
       const frame = frames.get(id);
       if (!frame) throw new Error(`Missing Cairo frame ${id}.`);
-      return frame.rgba;
+      return sha256(frame.rgba);
     };
-    expect(rgba("tex-early")).not.toEqual(rgba("start"));
-    expect(rgba("tex-midpoint")).not.toEqual(rgba("tex-early"));
-    expect(rgba("math-start")).not.toEqual(rgba("tex-midpoint"));
-    expect(rgba("math-midpoint")).not.toEqual(rgba("math-start"));
-    expect(rgba("math-end")).not.toEqual(rgba("math-midpoint"));
-    expect(rgba("hold")).toEqual(rgba("math-end"));
-    expect(rgba("end")).toEqual(rgba("hold"));
+    expect(rgbaSha256("tex-early")).not.toBe(rgbaSha256("start"));
+    expect(rgbaSha256("tex-midpoint")).not.toBe(rgbaSha256("tex-early"));
+    expect(rgbaSha256("math-start")).not.toBe(rgbaSha256("tex-midpoint"));
+    expect(rgbaSha256("math-midpoint")).not.toBe(rgbaSha256("math-start"));
+    expect(rgbaSha256("math-end")).not.toBe(rgbaSha256("math-midpoint"));
+    expect(rgbaSha256("hold")).toBe(rgbaSha256("math-end"));
+    expect(rgbaSha256("end")).toBe(rgbaSha256("hold"));
   });
 
   it("binds every Cairo sample to the exact V12 visual-parity corpus entry", async () => {
-    const corpus = visualParityCorpusV1Schema.parse(
-      JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")),
-    );
+    const [cairoReference, corpusText] = await Promise.all([
+      readWriteStuffCairoReferenceV1(),
+      readFile("fixtures/visual-parity-v1/corpus.json", "utf8"),
+    ]);
+    const corpus = visualParityCorpusV1Schema.parse(JSON.parse(corpusText));
     for (const [entryId, sampleId, sampleTime] of WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1) {
       const entry = corpus.entries.find(({ id }) => id === entryId);
       if (!entry) throw new Error(`The WriteStuff V12 corpus entry ${entryId} is missing.`);
-      const cairo = await readWriteStuffCairoReferenceForEntryV1(entryId);
+      const resolved = writeStuffCairoReferenceSampleForEntryV1(entryId);
+      expect(resolved).toEqual({ entryId, root: WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1, sampleId, sampleTime });
+      const cairo = cairoReference.frames.get(resolved.sampleId);
+      if (!cairo) throw new Error(`WriteStuff Cairo reference is missing ${sampleId}.`);
       expect(entry).toMatchObject({
         fixture: {
           id: "eng-v1-real-write-stuff-v12",
@@ -210,6 +227,7 @@ describe("WriteStuff Cairo reference v1", () => {
       expect(cairo.sampleTime).toBe(sampleTime);
     }
     expect(WRITE_STUFF_CAIRO_REFERENCE_ENTRY_IDS_V1).toHaveLength(8);
+    expect(() => writeStuffCairoReferenceSampleForEntryV1("unknown-entry")).toThrow(/no independent/u);
   });
 
   it("keeps the timeline envelope strict", () => {
