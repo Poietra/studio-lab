@@ -21,7 +21,11 @@ import {
   sourceIdentityV1Schema,
   strokeStyleV1Schema,
 } from "./primitives";
-import { runtimeTraceFrameSampleTimeV1 } from "./runtime-trace-time";
+import {
+  runtimeTraceDurationIsOnFrameGridV2,
+  runtimeTraceFrameSampleTimeV1,
+  runtimeTraceFrameSampleTimeV2,
+} from "./runtime-trace-time";
 
 const MAX_ENTITIES = 10_000;
 const MAX_CHANNELS = 10_000;
@@ -323,7 +327,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
       runtimeConfigHash: sha256V1Schema,
       sourceHash: sha256V1Schema,
       traceDigest: sha256V1Schema,
-      traceVersion: z.literal(1),
+      traceVersion: z.union([z.literal(1), z.literal(2)]),
     })
     .strict(),
 ]);
@@ -815,12 +819,22 @@ export const sceneIrV1Schema = sceneIrV1BaseSchema.superRefine((scene, context) 
   validateEntities(scene, context);
   validateChannels(scene, context);
   validateCapabilities(scene, context);
-  if (scene.source.kind === "imported-manim-runtime-trace" && scene.duration !== 6) {
-    context.addIssue({
-      code: "custom",
-      message: "Runtime Trace V1 Scene IR requires its sealed six-second presentation grid.",
-      path: ["duration"],
-    });
+  if (scene.source.kind === "imported-manim-runtime-trace") {
+    if (scene.source.traceVersion === 1 && scene.duration !== 6) {
+      context.addIssue({
+        code: "custom",
+        message: "Runtime Trace V1 Scene IR requires its sealed six-second presentation grid.",
+        path: ["duration"],
+      });
+    }
+    if (scene.source.traceVersion === 2 && !runtimeTraceDurationIsOnFrameGridV2(scene.duration)) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "Runtime Trace V2 Scene IR duration must contain a positive, JavaScript-safe whole number of 60 fps frames.",
+        path: ["duration"],
+      });
+    }
   }
   if (totalPathSegments(scene) > MAX_TOTAL_PATH_SEGMENTS) {
     context.addIssue({
@@ -849,7 +863,9 @@ export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
  */
 export function sceneEvaluationSampleTimeV1(scene: SceneIrV1, requestedSampleTime: number) {
   if (scene.source.kind === "imported-manim-runtime-trace") {
-    return runtimeTraceFrameSampleTimeV1(requestedSampleTime);
+    return scene.source.traceVersion === 1
+      ? runtimeTraceFrameSampleTimeV1(requestedSampleTime)
+      : runtimeTraceFrameSampleTimeV2(requestedSampleTime, scene.duration);
   }
   if (
     scene.source.kind !== "imported-manim-server-snapshot" ||

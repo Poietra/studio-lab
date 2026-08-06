@@ -73,6 +73,41 @@ impl<'de> Deserialize<'de> for ContractVersionV1 {
     }
 }
 
+/// The fast-manim Runtime Trace profile carried inside the Scene IR v1 envelope.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RuntimeTraceVersionV1 {
+    #[default]
+    V1,
+    V2,
+}
+
+impl Serialize for RuntimeTraceVersionV1 {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_u8(match self {
+            Self::V1 => 1,
+            Self::V2 => 2,
+        })
+    }
+}
+
+impl<'de> Deserialize<'de> for RuntimeTraceVersionV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match deserialize_js_safe_u64(deserializer)? {
+            1 => Ok(Self::V1),
+            2 => Ok(Self::V2),
+            version => Err(de::Error::custom(format!(
+                "unsupported fast-manim Runtime Trace version {version}; expected 1 or 2"
+            ))),
+        }
+    }
+}
+
 /// The fast-manim snapshot profile carried inside the Scene IR v1 envelope.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SnapshotProfileVersionV1 {
@@ -626,7 +661,7 @@ pub enum SceneSourceV1 {
         #[serde(rename = "traceDigest")]
         trace_digest: String,
         #[serde(rename = "traceVersion")]
-        trace_version: ContractVersionV1,
+        trace_version: RuntimeTraceVersionV1,
     },
 }
 
@@ -826,9 +861,12 @@ impl SceneIrV1 {
     /// which preserves its final hold without changing any older Scene.
     #[must_use]
     pub fn state_sample_time(&self, requested_time: f64) -> f64 {
-        if matches!(self.source, SceneSourceV1::ImportedManimRuntimeTrace { .. }) {
+        if let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = self.source {
             const FRAME_RATE: f64 = 60.0;
-            const FINAL_FRAME: f64 = 359.0;
+            let final_frame = match trace_version {
+                RuntimeTraceVersionV1::V1 => 359.0,
+                RuntimeTraceVersionV1::V2 => (self.duration * FRAME_RATE).round() - 1.0,
+            };
             let scaled = requested_time * FRAME_RATE;
             let nearest_frame = scaled.round();
             let grid_tolerance = 4.0 * f64::EPSILON * scaled.abs().max(1.0);
@@ -837,7 +875,7 @@ impl SceneIrV1 {
             } else {
                 scaled.floor()
             };
-            return frame.min(FINAL_FRAME) / FRAME_RATE;
+            return frame.min(final_frame) / FRAME_RATE;
         }
         if requested_time.to_bits() == self.duration.to_bits()
             && self.duration.is_finite()
@@ -1038,6 +1076,11 @@ mod integer_wire_tests {
             serde_json::from_str::<SnapshotProfileVersionV1>("2.0").unwrap(),
             SnapshotProfileVersionV1::V2
         );
+        assert_eq!(
+            serde_json::from_str::<RuntimeTraceVersionV1>("2.0").unwrap(),
+            RuntimeTraceVersionV1::V2
+        );
+        assert!(serde_json::from_str::<RuntimeTraceVersionV1>("3").is_err());
         assert_eq!(
             serde_json::from_str::<SnapshotProfileVersionV1>("3.0").unwrap(),
             SnapshotProfileVersionV1::V3

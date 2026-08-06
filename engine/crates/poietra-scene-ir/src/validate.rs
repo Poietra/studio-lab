@@ -6,8 +6,8 @@ use crate::model::{
     AffineTransformV1, AnimationChannelV1, AssetManifestReferenceV1, AssetManifestV1,
     AssetReferenceV1, CubicPathV1, EasingV1, FidelityV1, FillStyleV1, ImageLocalRectV1, IntervalV1,
     KeyframeV1, PointV1, RenderCapabilityV1, RenderCompositingV1, RenderDrawV1,
-    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, SceneAppearanceV1, SceneCameraViewV1,
-    SceneCapabilityV1, SceneGeometryV1, SceneIrV1, SceneSourceV1, StrokeStyleV1,
+    RenderEmptyReasonV1, RenderPacketV1, RgbaColorV1, RuntimeTraceVersionV1, SceneAppearanceV1,
+    SceneCameraViewV1, SceneCapabilityV1, SceneGeometryV1, SceneIrV1, SceneSourceV1, StrokeStyleV1,
 };
 
 pub const MAX_COORDINATE_V1: f64 = 1_000_000_000.0;
@@ -22,6 +22,8 @@ pub const MAX_KEYFRAMES_V1: usize = 100_000;
 pub const MAX_DRAWS_V1: usize = 100_000;
 pub const MAX_VIEWPORT_PIXELS_V1: u64 = 33_554_432;
 pub const MAX_VALIDATION_ISSUES_V1: usize = 128;
+const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
+const RUNTIME_TRACE_FRAME_RATE_V1: f64 = 60.0;
 
 fn omitted_issues_marker() -> ValidationIssue {
     ValidationIssue {
@@ -132,6 +134,17 @@ fn validate_positive(value: f64, path: &str, validator: &mut Validator) {
     if value.is_finite() && value <= 0.0 {
         validator.issue(path, "must be positive");
     }
+}
+
+fn runtime_trace_duration_is_on_frame_grid_v2(duration: f64) -> bool {
+    if !duration.is_finite() || duration <= 0.0 {
+        return false;
+    }
+    let scaled = duration * RUNTIME_TRACE_FRAME_RATE_V1;
+    let nearest_frame = scaled.round();
+    let grid_tolerance = 4.0 * f64::EPSILON * scaled.abs().max(1.0);
+    (1.0..=JAVASCRIPT_MAX_SAFE_INTEGER_F64).contains(&nearest_frame)
+        && (scaled - nearest_frame).abs() <= grid_tolerance
 }
 
 fn validate_normalized(value: f64, path: &str, validator: &mut Validator) {
@@ -759,15 +772,24 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
     validate_source_identity(&scene.scene_id, "$.sceneId", &mut validator);
     validate_manifest_reference(&scene.asset_manifest, "$.assetManifest", &mut validator);
     validate_positive(scene.duration, "$.duration", &mut validator);
-    if matches!(
-        scene.source,
-        SceneSourceV1::ImportedManimRuntimeTrace { .. }
-    ) && scene.duration.to_bits() != 6.0_f64.to_bits()
-    {
-        validator.issue(
-            "$.duration",
-            "Runtime Trace V1 requires its sealed six-second presentation grid",
-        );
+    if let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = scene.source {
+        match trace_version {
+            RuntimeTraceVersionV1::V1 if scene.duration.to_bits() != 6.0_f64.to_bits() => {
+                validator.issue(
+                    "$.duration",
+                    "Runtime Trace V1 requires its sealed six-second presentation grid",
+                );
+            }
+            RuntimeTraceVersionV1::V2
+                if !runtime_trace_duration_is_on_frame_grid_v2(scene.duration) =>
+            {
+                validator.issue(
+                    "$.duration",
+                    "Runtime Trace V2 duration must contain a positive, JavaScript-safe whole number of 60 fps frames",
+                );
+            }
+            RuntimeTraceVersionV1::V1 | RuntimeTraceVersionV1::V2 => {}
+        }
     }
     validate_color(
         &scene.camera.background,
