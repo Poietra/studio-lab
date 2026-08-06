@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
-import type { ProposedState } from "./model";
+import type { ProgramRecord, ProposedState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
   resolveStudioPreviewSnapshotProviderV1,
@@ -44,6 +44,7 @@ type UseStudioPreviewAuthorityControllerInput = Readonly<{
   draftProposedState: ProposedState | null;
   frame: Readonly<{ height: number; width: number }>;
   retainedSourceDuration: number | null;
+  runtimeTraceTerminalProgramRecords: readonly ProgramRecord[];
   sampleTime: number;
   transientEdit: boolean;
 }>;
@@ -173,6 +174,7 @@ export function useStudioPreviewAuthorityController({
   draftProposedState,
   frame,
   retainedSourceDuration,
+  runtimeTraceTerminalProgramRecords,
   sampleTime,
   transientEdit,
 }: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerViewV1 {
@@ -220,6 +222,7 @@ export function useStudioPreviewAuthorityController({
     frame,
     provider,
     retainedSourceDuration,
+    runtimeTraceTerminalProgramRecords,
     sampleTime,
     transientEdit,
   });

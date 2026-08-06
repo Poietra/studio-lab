@@ -21,6 +21,8 @@ export type RenderProgramCandidate = Readonly<{
   sourcePath: string;
   /** Producer-backed t=0 authority for one exact initial-edit slice. */
   verifiedInitialEditAnchor?: 0;
+  /** Correlated Runtime Trace authority for the sealed Updaters terminal edit. */
+  verifiedRuntimeTraceTerminalEditAnchor?: 5;
   viewport: ProgramRenderRequest["viewport"];
 }>;
 
@@ -65,6 +67,7 @@ export function renderCandidateRequestKey(candidate: RenderProgramCandidate) {
     anchors: candidate.anchors,
     request: renderCandidateRequest(candidate),
     verifiedInitialEditAnchor: candidate.verifiedInitialEditAnchor ?? null,
+    verifiedRuntimeTraceTerminalEditAnchor: candidate.verifiedRuntimeTraceTerminalEditAnchor ?? null,
   });
 }
 
@@ -73,7 +76,8 @@ export function renderCandidateMissingAnchor(candidate: RenderProgramCandidate |
     candidate?.programs.find(
       (program) =>
         !candidate.anchors.some((anchor) => Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005) &&
-        candidate.verifiedInitialEditAnchor !== program.anchor.resolvedSeconds,
+        candidate.verifiedInitialEditAnchor !== program.anchor.resolvedSeconds &&
+        candidate.verifiedRuntimeTraceTerminalEditAnchor !== program.anchor.resolvedSeconds,
     )?.anchor.resolvedSeconds ?? null
   );
 }

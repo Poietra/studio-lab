@@ -76,6 +76,36 @@ function path(offset = 0) {
   };
 }
 
+export function runtimeTraceSquarePath(factor = 1) {
+  const anchors = [
+    { x: 1, y: 1 },
+    { x: -1, y: 1 },
+    { x: -1, y: -1 },
+    { x: 1, y: -1 },
+    { x: 1, y: 1 },
+  ] as const;
+  const point = (start: (typeof anchors)[number], end: (typeof anchors)[number], alpha: number) => ({
+    x: canonicalFastManimRuntimeTraceCoordinateV1(((1 - alpha) * start.x + alpha * end.x) * factor),
+    y: canonicalFastManimRuntimeTraceCoordinateV1(((1 - alpha) * start.y + alpha * end.y) * factor),
+  });
+  return {
+    subpaths: [
+      {
+        closed: true,
+        segments: anchors.slice(0, -1).map((start, index) => {
+          const end = anchors[index + 1]!;
+          return {
+            control1: point(start, end, 1 / 3),
+            control2: point(start, end, 2 / 3),
+            end: point(start, end, 1),
+          };
+        }),
+        start: point(anchors[0], anchors[1], 0),
+      },
+    ],
+  };
+}
+
 function roots() {
   const squareSpan = { endColumn: 14, endLine: 120, startColumn: 8, startLine: 120 };
   const decimalSpan = { endColumn: 15, endLine: 114, startColumn: 8, startLine: 114 };
@@ -123,7 +153,7 @@ function officialMotionY(frameIndex: number) {
 
 function buildRuntimeTraceFixture() {
   const traceRoots = roots();
-  const squarePath = path();
+  const squarePath = runtimeTraceSquarePath();
   const glyphPath = path(2);
   const squarePathId = `path:${digestFastManimRuntimeTracePathV1(squarePath)}`;
   const glyphPathId = `path:${digestFastManimRuntimeTracePathV1(glyphPath)}`;

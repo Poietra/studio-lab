@@ -167,21 +167,39 @@ function pathSize(path: RuntimeTracePathV1) {
   };
 }
 
-function scaledPath(path: RuntimeTracePathV1, factor: number): RuntimeTracePathV1 {
-  const point = ({ x, y }: Readonly<{ x: number; y: number }>) => ({
-    x: canonicalFastManimRuntimeTraceCoordinateV1(x * factor),
-    y: canonicalFastManimRuntimeTraceCoordinateV1(y * factor),
+function canonicalSquarePath(factor: number): RuntimeTracePathV1 {
+  const anchors = [
+    { x: 1, y: 1 },
+    { x: -1, y: 1 },
+    { x: -1, y: -1 },
+    { x: 1, y: -1 },
+    { x: 1, y: 1 },
+  ] as const;
+  const point = (
+    start: Readonly<{ x: number; y: number }>,
+    end: Readonly<{ x: number; y: number }>,
+    alpha: number,
+  ) => ({
+    // Preserve the pinned Manim/NumPy operation order: Square constructs each
+    // cubic point before scale(), and the producer quantizes only afterwards.
+    x: canonicalFastManimRuntimeTraceCoordinateV1(((1 - alpha) * start.x + alpha * end.x) * factor),
+    y: canonicalFastManimRuntimeTraceCoordinateV1(((1 - alpha) * start.y + alpha * end.y) * factor),
   });
   return {
-    subpaths: path.subpaths.map((subpath) => ({
-      closed: subpath.closed,
-      segments: subpath.segments.map((segment) => ({
-        control1: point(segment.control1),
-        control2: point(segment.control2),
-        end: point(segment.end),
-      })),
-      start: point(subpath.start),
-    })),
+    subpaths: [
+      {
+        closed: true,
+        segments: anchors.slice(0, -1).map((start, index) => {
+          const end = anchors[index + 1]!;
+          return {
+            control1: point(start, end, 1 / 3),
+            control2: point(start, end, 2 / 3),
+            end: point(start, end, 1),
+          };
+        }),
+        start: point(anchors[0], anchors[1], 0),
+      },
+    ],
   };
 }
 
@@ -249,9 +267,12 @@ function expectedTerminalDraws(
   const oracle = decimalGlyphOracle(base);
   const baseSquarePath = oracle.paths.get(baseSquare.pathId);
   if (!baseSquarePath) reject("base-mismatch", "The trusted Runtime Trace base has no Square path.");
+  if (!same(baseSquarePath, canonicalSquarePath(1))) {
+    reject("base-mismatch", "The trusted Runtime Trace base diverged from the pinned Square geometry.");
+  }
 
   const terminalScale = plan.scale ?? 1;
-  const expectedSquarePath = scaledPath(baseSquarePath, terminalScale);
+  const expectedSquarePath = canonicalSquarePath(terminalScale);
   const expectedSquarePathId = `path:${digestFastManimRuntimeTracePathV1(expectedSquarePath)}`;
   const squareX = canonicalFastManimRuntimeTraceCoordinateV1(plan.moveTo?.x ?? baseSquare.localPosition.x);
   const squareY = canonicalFastManimRuntimeTraceCoordinateV1(plan.moveTo?.y ?? baseTerminal.motionY);

@@ -67,8 +67,9 @@ const externalBaseUrl = (() => {
 function resolveManimCommand() {
   const explicit = process.env.POIETRA_MANIM_COMMAND?.trim();
   if (explicit) return explicit;
+  const activeProducerCommand = runtimeTraceProfile ? runtimeTraceCommand : producerCommand;
   try {
-    const producerArgv: unknown = JSON.parse(producerCommand);
+    const producerArgv: unknown = JSON.parse(activeProducerCommand);
     if (
       Array.isArray(producerArgv) &&
       producerArgv.length >= 3 &&
@@ -85,7 +86,8 @@ function resolveManimCommand() {
 
 const manimCommand = resolveManimCommand();
 if (
-  (snapshotProfile === "4" ||
+  (snapshotProfile === "runtime-trace" ||
+    snapshotProfile === "4" ||
     snapshotProfile === "7" ||
     snapshotProfile === "9" ||
     snapshotProfile === "10" ||
@@ -96,7 +98,7 @@ if (
     "The real editable Scene E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
   );
 }
-if (snapshotProfile === "7" && !externalBaseUrl) {
+if ((snapshotProfile === "runtime-trace" || snapshotProfile === "7") && !externalBaseUrl) {
   for (const command of ["latex", "dvisvgm"]) {
     if (spawnSync(command, ["--version"], { stdio: "ignore" }).status !== 0) {
       throw new Error(`The real mixed V7 E2E requires ${command} on PATH for the full Manim render.`);
@@ -110,6 +112,7 @@ if (snapshotProfile === "8" && !externalBaseUrl && !officialV8ProjectRoot) {
   throw new Error("The real SquareToCircle V8 E2E requires POIETRA_FAST_MANIM_V8_PROJECT_ROOT.");
 }
 const mutableHarness =
+  snapshotProfile === "runtime-trace" ||
   snapshotProfile === "4" ||
   snapshotProfile === "7" ||
   snapshotProfile === "9" ||

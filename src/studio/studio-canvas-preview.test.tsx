@@ -7,7 +7,10 @@ import type { ProjectedEntity } from "./model";
 import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
-import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
+import {
+  projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1,
+  type StudioPreviewRendererViewV1,
+} from "./use-preview-renderer";
 
 const CIRCLE_ENTITY: ProjectedEntity = {
   geometry: {
@@ -139,6 +142,10 @@ function previewView(
   sourceRuntimeIdentity: StudioPreviewRendererViewV1["sourceRuntimeIdentity"] = null,
   interactionAuthority: StudioPreviewRendererViewV1["interactionAuthority"] = { kind: "interactive" },
   initialEditRuntimeAuthority: StudioPreviewRendererViewV1["initialEditRuntimeAuthority"] = null,
+  runtimeTraceTerminalEditAuthority: StudioPreviewRendererViewV1["runtimeTraceTerminalEditAuthority"] = null,
+  runtimeTraceValidationPending: StudioPreviewRendererViewV1["runtimeTraceValidationPending"] = null,
+  runtimeTraceBaseFrameRetained = runtimeTraceValidationPending?.baseFrameRetained === true,
+  runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererViewV1["runtimeTraceOpaqueSelectionEntities"] = [],
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
@@ -147,6 +154,10 @@ function previewView(
     initialEditRuntimeAuthority,
     interactionGeometry,
     interactionAuthority,
+    runtimeTraceBaseFrameRetained,
+    runtimeTraceTerminalEditAuthority,
+    runtimeTraceOpaqueSelectionEntities,
+    runtimeTraceValidationPending,
     sourceLabel: "verified fixture",
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity,
@@ -650,6 +661,198 @@ describe("StudioCanvas retained preview layer", () => {
     expect(interactiveMarkup).not.toContain(`data-studio-entity="${group.id}"`);
     expect(interactiveMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
     expect(interactiveMarkup).toContain(`data-studio-resize-handle="${t2.id}"`);
+  });
+
+  it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {
+    const squareId = "source:example_scenes/basic.py#UpdatersExample:square";
+    const decimalId = "source:example_scenes/basic.py#UpdatersExample:decimal";
+    const squareRuntimeId = "scene:updaters/runtime-root:square";
+    const decimalRuntimeId = "scene:updaters/runtime-root:decimal";
+    const square: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "known", value: { height: 2, width: 2 } },
+      },
+      id: squareId,
+      sourceIdentity: { kind: "known", value: "square" },
+      type: "Square",
+    };
+    const interactionGeometry = new Map([
+      [squareRuntimeId, { dimensions: { height: 90, width: 90 }, position: { x: 320, y: 67.5 } }],
+      [decimalRuntimeId, { dimensions: { height: 36, width: 130 }, position: { x: 440, y: 67.5 } }],
+    ]);
+    const sourceRuntimeIdentity = new Map([
+      ["square", { bindingId: "source-binding:square", entityId: squareRuntimeId, sourceName: "square" }],
+      ["decimal", { bindingId: "source-binding:decimal", entityId: decimalRuntimeId, sourceName: "decimal" }],
+    ]);
+    const terminalAuthority = {
+      baseCenter: { x: 320, y: 67.5 },
+      duration: 6 as const,
+      profile: "updaters-terminal-v1" as const,
+      relativeScale: 1 as const,
+      runtimeEntityId: squareRuntimeId,
+      sourceAnchor: 5 as const,
+      sourceDimensions: { height: 2 as const, width: 2 as const },
+      studioEntityId: squareId,
+      studioSceneId: "example_scenes/basic.py#UpdatersExample",
+    };
+    const [decimal] = projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+      authority: terminalAuthority,
+      interactionGeometry,
+      sourceRuntimeIdentity,
+    });
+    if (!decimal || decimal.id !== decimalId) throw new Error("Expected the opaque runtime Decimal selector.");
+    const boundedAuthority = {
+      editableRuntimeEntityId: squareRuntimeId,
+      kind: "bounded-interactive" as const,
+      reason: "runtime-trace-terminal-edit" as const,
+      sourceAnchor: 5 as const,
+      verifiedRuntimeEntityIds: [squareRuntimeId, decimalRuntimeId],
+    };
+    const onPointerDown = vi.fn();
+    const activeProps: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [square, decimal],
+      onEntityPointerDown: onPointerDown,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:updaters-terminal",
+            revision: "a".repeat(64),
+            sampleTime: 5,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        interactionGeometry,
+        sourceRuntimeIdentity,
+        boundedAuthority,
+        null,
+        terminalAuthority,
+      ),
+      selectedIds: new Set([squareId]),
+    };
+    const activeTree = StudioCanvas(activeProps);
+    expect(findEntityButton(activeTree, squareId).props.onPointerMove).toBe(activeProps.onEntityPointerMove);
+    expect(findEntityButton(activeTree, decimalId).props.onPointerMove).toBeUndefined();
+    const activeMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} />);
+    expect(activeMarkup).toContain("Square terminal edit at 5.00s");
+    expect(activeMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(activeMarkup).toContain(`data-studio-resize-handle="${squareId}"`);
+
+    const pendingSquare: ProjectedEntity = {
+      ...square,
+      geometry: {
+        ...square.geometry,
+        dimensions: { kind: "known", value: { height: 3, width: 3 } },
+        position: { kind: "known", value: { x: 400, y: 90 } },
+      },
+      position: { x: 400, y: 90 },
+    };
+    const pendingMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        entities={[pendingSquare, decimal]}
+        preview={previewView(
+          { detail: "Real Manim validation is pending.", phase: "fallback", reason: "snapshot-uncorrelated" },
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          {
+            kind: "selection-only",
+            reason: "runtime-trace-preview-only",
+            verifiedRuntimeEntityIds: [squareRuntimeId, decimalRuntimeId],
+          },
+          null,
+          null,
+          {
+            baseFrameRetained: true,
+            dimensions: { height: 3, width: 3 },
+            position: { x: 400, y: 90 },
+            profile: "updaters-terminal-v1",
+            sourceAnchor: 5,
+            studioEntityId: squareId,
+          },
+        )}
+      />,
+    );
+    expect(pendingMarkup).toContain("Draft ghost · dependent updater validation pending");
+    expect(pendingMarkup).not.toContain('invisible" data-studio-preview-canvas');
+    expect(pendingMarkup).toContain('data-studio-semantic-paint="painted"');
+    expect(pendingMarkup.match(/data-studio-semantic-paint="deferred-to-canvas"/g)).toHaveLength(1);
+    expect(pendingMarkup).toContain('data-studio-entity-width="3.0000"');
+    expect(pendingMarkup).toContain("left:62.5%;top:25%");
+    expect(pendingMarkup).not.toContain("data-studio-resize-handle");
+
+    const scrubbedPendingMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        entities={[pendingSquare, decimal]}
+        preview={previewView(
+          { detail: "Real Manim validation is pending.", phase: "fallback", reason: "snapshot-uncorrelated" },
+          null,
+          sourceRuntimeIdentity,
+          {
+            kind: "selection-only",
+            reason: "runtime-trace-preview-only",
+            verifiedRuntimeEntityIds: [squareRuntimeId, decimalRuntimeId],
+          },
+          null,
+          null,
+          {
+            baseFrameRetained: false,
+            dimensions: { height: 3, width: 3 },
+            position: { x: 400, y: 90 },
+            profile: "updaters-terminal-v1",
+            sourceAnchor: 5,
+            studioEntityId: squareId,
+          },
+        )}
+      />,
+    );
+    expect(scrubbedPendingMarkup).toContain(`data-studio-entity="${squareId}"`);
+    expect(scrubbedPendingMarkup).not.toContain(`data-studio-entity="${decimalId}"`);
+    expect(scrubbedPendingMarkup).toContain("dependent updater validation pending");
+
+    const transientMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        dragPreview={{ delta: { x: 20, y: 10 }, entityIds: [squareId] }}
+        preview={previewView(
+          { detail: null, phase: "fallback", reason: "transient-edit" },
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          boundedAuthority,
+          null,
+          terminalAuthority,
+          null,
+          true,
+        )}
+      />,
+    );
+    expect(transientMarkup).not.toContain('invisible" data-studio-preview-canvas');
+    expect(transientMarkup).toContain(`data-studio-entity="${decimalId}"`);
+    expect(transientMarkup).toContain('data-studio-semantic-paint="painted"');
+
+    const transientResizeMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        preview={previewView(
+          { detail: null, phase: "fallback", reason: "transient-edit" },
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          boundedAuthority,
+          null,
+          terminalAuthority,
+          null,
+          true,
+        )}
+        scalePreview={{ entityId: squareId, scale: 1.5 }}
+      />,
+    );
+    expect(transientResizeMarkup).toContain('data-studio-entity-width="2.0000"');
+    expect(transientResizeMarkup).toContain('style="scale:1.5"');
+    expect(transientResizeMarkup).toContain('data-studio-semantic-paint="painted"');
   });
 
   it("keeps an exact position refiner beside one direct-manipulation draft", () => {

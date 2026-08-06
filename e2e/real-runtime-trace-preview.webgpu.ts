@@ -1,4 +1,7 @@
-import { expect, type Page, test } from "@playwright/test";
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
 import {
@@ -54,6 +57,8 @@ function runtimeTraceResponse(page: Page) {
 async function openOfficialRuntimeTrace(page: Page) {
   await page.addInitScript(() => {
     const requestKinds: string[] = [];
+    const runtimeTraceBodies = new Map<string, unknown>();
+    const nativeFetch = globalThis.fetch.bind(globalThis);
     const NativeWorker = globalThis.Worker;
     const studioCanvasWorkers = new WeakSet<Worker>();
     class ObservedWorker extends NativeWorker {
@@ -79,6 +84,28 @@ async function openOfficialRuntimeTrace(page: Page) {
       value: requestKinds,
       writable: false,
     });
+    Object.defineProperty(globalThis, "__poietraRuntimeTraceBodiesV1", {
+      configurable: false,
+      enumerable: false,
+      value: runtimeTraceBodies,
+      writable: false,
+    });
+    globalThis.fetch = async (...arguments_) => {
+      const response = await nativeFetch(...arguments_);
+      const input = arguments_[0];
+      const url = new URL(input instanceof Request ? input.url : String(input), location.href);
+      const method = arguments_[1]?.method ?? (input instanceof Request ? input.method : "GET");
+      if (method.toUpperCase() === "POST" && url.pathname.endsWith("/runtime-traces") && response.ok) {
+        void response
+          .clone()
+          .json()
+          .then((body: unknown) => {
+            const requestId = (body as Readonly<{ requestId?: unknown }>).requestId;
+            if (typeof requestId === "string") runtimeTraceBodies.set(requestId, body);
+          });
+      }
+      return response;
+    };
     Object.defineProperty(globalThis, "Worker", {
       configurable: true,
       value: ObservedWorker,
@@ -89,6 +116,7 @@ async function openOfficialRuntimeTrace(page: Page) {
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
   await page.getByLabel("Active imported Scene").selectOption({ label: SCENE_LABEL });
 
   await page.getByRole("button", { name: "Enable preview…" }).click();
@@ -96,6 +124,31 @@ async function openOfficialRuntimeTrace(page: Page) {
   const response = runtimeTraceResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   return response;
+}
+
+async function capturedRuntimeTraceBody(page: Page, requestId: string) {
+  await expect
+    .poll(() =>
+      page.evaluate((expectedRequestId) => {
+        const bodies = (
+          globalThis as typeof globalThis & {
+            __poietraRuntimeTraceBodiesV1?: ReadonlyMap<string, RuntimeTraceRunBody>;
+          }
+        ).__poietraRuntimeTraceBodiesV1;
+        return bodies?.has(expectedRequestId) ?? false;
+      }, requestId),
+    )
+    .toBe(true);
+  return page.evaluate((expectedRequestId) => {
+    const bodies = (
+      globalThis as typeof globalThis & {
+        __poietraRuntimeTraceBodiesV1?: ReadonlyMap<string, RuntimeTraceRunBody>;
+      }
+    ).__poietraRuntimeTraceBodiesV1;
+    const body = bodies?.get(expectedRequestId);
+    if (!body) throw new Error("The browser did not retain the Runtime Trace response body.");
+    return body;
+  }, requestId);
 }
 
 async function verifiedRuntimeTrace(page: Page) {
@@ -109,7 +162,8 @@ async function verifiedRuntimeTrace(page: Page) {
     sourcePath: SOURCE_PATH,
   });
 
-  const body = (await response.json()) as RuntimeTraceRunBody;
+  if (typeof request.requestId !== "string") throw new Error("The Runtime Trace request has no identity.");
+  const body = await capturedRuntimeTraceBody(page, request.requestId);
   expect(body).toMatchObject({
     projectId: "real-preview-harness",
     requestId: request.requestId,
@@ -135,6 +189,75 @@ async function verifiedRuntimeTrace(page: Page) {
     roots: body.roots,
     runtimeConfigHash: body.runtimeConfigHash,
     sceneId: body.sceneId,
+    traceDigest: body.traceDigest,
+  };
+}
+
+async function exportedSource(page: Page) {
+  const exportButton = page.getByRole("button", { name: "Export .py" });
+  await expect(exportButton).toBeEnabled({ timeout: 30_000 });
+  const downloadPromise = page.waitForEvent("download");
+  await exportButton.click();
+  const download = await downloadPromise;
+  const path = await download.path();
+  if (!path) throw new Error("The exported UpdatersExample candidate source was not persisted by Playwright.");
+  return readFile(path, "utf8");
+}
+
+async function dragBy(page: Page, target: Locator, delta: Readonly<{ x: number; y: number }>) {
+  const box = await target.boundingBox();
+  if (!box) throw new Error("The Runtime Trace edit target is not visible.");
+  const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await page.mouse.move(origin.x, origin.y);
+  await page.mouse.down();
+  await page.mouse.move(origin.x + delta.x, origin.y + delta.y, { steps: 4 });
+  await page.mouse.up();
+}
+
+async function renderCommitAndFreshRuntimeTrace(page: Page) {
+  const render = page.getByRole("button", { name: "Render program" });
+  await expect(render).toBeEnabled();
+  await render.click();
+  const commit = page.getByRole("button", { name: "Commit to source" });
+  await expect(commit).toBeVisible({ timeout: 180_000 });
+  await expect(commit).toBeEnabled();
+  await expect(page.getByLabel(`Rendered Manim preview of ${SCENE_NAME}`)).toBeVisible();
+  await commit.click();
+  const dialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
+  await expect(dialog).toBeVisible();
+  const mutationResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.startsWith("/api/manim/renders/") &&
+      new URL(response.url()).pathname.endsWith("/commit"),
+  );
+  const traceResponse = runtimeTraceResponse(page);
+  await dialog.getByRole("button", { name: "Commit source" }).click();
+  const mutation = await mutationResponse;
+  expect(mutation.ok(), `Commit returned HTTP ${mutation.status()}.`).toBe(true);
+  const response = await traceResponse;
+  expect(response.ok()).toBe(true);
+  const request = response.request().postDataJSON() as Record<string, unknown>;
+  if (typeof request.requestId !== "string") throw new Error("The edited Runtime Trace request has no identity.");
+  const body = await capturedRuntimeTraceBody(page, request.requestId);
+  expect(body).toMatchObject({
+    projectId: "real-preview-harness",
+    requestId: request.requestId,
+    sceneName: SCENE_NAME,
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: request.sourceHash,
+    sourcePath: SOURCE_PATH,
+    status: "verified",
+    traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    version: 1,
+  });
+  if (!body.bundle || !body.roots || !body.sourceHash || !body.traceDigest) {
+    throw new Error("The edited Runtime Trace response is incomplete.");
+  }
+  return {
+    bundle: body.bundle,
+    roots: body.roots,
+    sourceHash: body.sourceHash,
     traceDigest: body.traceDigest,
   };
 }
@@ -249,17 +372,22 @@ function expectSameFullRgba(
   expect(right.rgba.every((byte, index) => byte === left.rgba[index])).toBe(true);
 }
 
-async function compareWithIndependentCairo(frames: readonly UpdatersWebGpuFrameV1[]) {
+async function compareWithIndependentCairo(
+  frames: readonly UpdatersWebGpuFrameV1[],
+  candidate?: Readonly<{ sourceHash: string; sourceText: string }>,
+) {
+  const outputRoot =
+    process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/runtime-trace-cairo-parity";
   return withGeneratedRuntimeTraceCairoReferenceV1({
     generatorPath: "scripts/generate-updaters-cairo-reference.py",
     read: (referenceRoot) =>
       compareUpdatersCairoWebGpuFramesV1({
         cairoReferenceRoot: referenceRoot,
-        expectedSourceSha256: SOURCE_SHA256,
+        expectedSourceSha256: candidate?.sourceHash ?? SOURCE_SHA256,
         frames,
-        outputRoot:
-          process.env.POIETRA_RUNTIME_TRACE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/runtime-trace-cairo-parity",
+        outputRoot: candidate ? `${outputRoot}/candidate` : `${outputRoot}/official`,
       }),
+    ...(candidate ? { sourceText: candidate.sourceText } : {}),
     temporaryPrefix: "poietra-updaters-cairo-parity-",
   });
 }
@@ -288,7 +416,18 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   expect(rootEntityIds).toEqual([`${run.sceneId}/runtime-root:square`, `${run.sceneId}/runtime-root:decimal`]);
 
   const canvas = page.locator("[data-studio-canvas]");
-  await expect(canvas).toHaveAttribute("data-preview-renderer", "presented", { timeout: 60_000 });
+  await expect
+    .poll(
+      async () => {
+        const phase = await canvas.getAttribute("data-preview-renderer");
+        if (phase !== "fallback") return phase;
+        const reason = await canvas.getAttribute("data-preview-fallback-reason");
+        if (reason !== "install-failed") return phase;
+        return `install-failed: ${await page.locator("[data-studio-preview-status]").getAttribute("title")}`;
+      },
+      { timeout: 60_000 },
+    )
+    .toBe("presented");
   await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
   await expect(canvas).toHaveAttribute("data-preview-revision", run.traceDigest);
   await expect(page.locator("[data-studio-preview-status]")).toContainText("verified Runtime Trace · selection only");
@@ -301,9 +440,9 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
     await playhead.fill(String(sampleTime));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
-    // Static Studio projection currently exposes the source-bound Square row;
-    // both verified Runtime Trace roots are exercised directly below.
-    await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(1);
+    // Square is source-bound; DecimalNumber is an opaque, selection-only row
+    // projected from the same verified Runtime Trace frame.
+    await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(2);
     const packet = await canvas.getAttribute("data-preview-packet-id");
     if (!packet) throw new Error(`Runtime Trace sample ${sampleTime} has no retained packet identity.`);
     packets.add(packet);
@@ -455,4 +594,252 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
       JSON.stringify(comparisons, null, 2),
     ).toEqual([]);
   }
+
+  // Mutation authority exists at one exact source boundary only.
+  await playhead.fill("4.99");
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  await playhead.fill("5");
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "bounded-interactive");
+  await expect(page.locator("[data-studio-preview-status]")).toContainText("Square terminal edit at 5.00s");
+  await playhead.fill("5.01");
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  await playhead.fill("5");
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "bounded-interactive");
+
+  const decimalTarget = page.getByRole("button", { exact: true, name: "Move decimal · runtime" });
+  await expect(decimalTarget).toBeVisible();
+  await decimalTarget.click();
+  await expect(decimalTarget).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await squareTarget.click();
+  await expect(squareTarget).toHaveAttribute("aria-pressed", "true");
+  await page.getByRole("button", { name: "Set position" }).click();
+  await expect(page.getByRole("button", { name: "Set position" })).toHaveAttribute("aria-pressed", "true");
+
+  const [squareBefore, decimalBefore] = await Promise.all([squareTarget.boundingBox(), decimalTarget.boundingBox()]);
+  if (!squareBefore || !decimalBefore) {
+    throw new Error("The updater-backed Square and DecimalNumber need interaction bounds at five seconds.");
+  }
+  const boxCenter = (box: Readonly<{ height: number; width: number; x: number; y: number }>) => ({
+    x: box.x + box.width / 2,
+    y: box.y + box.height / 2,
+  });
+  const squareBeforeCenter = boxCenter(squareBefore);
+  const decimalBeforeCenter = boxCenter(decimalBefore);
+  await dragBy(page, squareTarget, { x: 48, y: 24 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.locator("[data-studio-preview-status]")).toContainText(
+    "Draft ghost · dependent updater validation pending",
+  );
+  await expect(page.locator("[data-studio-preview-canvas]")).not.toHaveClass(/invisible/u);
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "bounded-interactive");
+  const squareAfter = await squareTarget.boundingBox();
+  if (!squareAfter) throw new Error("The updater-backed Square draft ghost disappeared.");
+  const squareAfterCenter = boxCenter(squareAfter);
+  const draftDomShift = {
+    x: squareAfterCenter.x - squareBeforeCenter.x,
+    y: squareAfterCenter.y - squareBeforeCenter.y,
+  };
+  expect(draftDomShift.x).toBeCloseTo(48, 0);
+  expect(draftDomShift.y).toBeCloseTo(24, 0);
+
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expect(page.locator("[data-studio-preview-status]")).toContainText(
+    "Draft ghost · dependent updater validation pending",
+  );
+  await expect(page.locator("[data-studio-preview-canvas]")).not.toHaveClass(/invisible/u);
+
+  const squareAfterMove = await squareTarget.boundingBox();
+  if (!squareAfterMove) throw new Error("The applied terminal Square move disappeared before resize.");
+  const resizeHandle = page.getByRole("button", { name: /Resize square from/u });
+  await expect(resizeHandle).toBeVisible();
+  await dragBy(page, resizeHandle, { x: 36, y: 36 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(page.locator("[data-studio-preview-status]")).toContainText(
+    "Draft ghost · dependent updater validation pending",
+  );
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  const squareAfterResize = await squareTarget.boundingBox();
+  if (!squareAfterResize) throw new Error("The updater-backed Square resize ghost disappeared.");
+  expect(squareAfterResize.width).toBeGreaterThan(squareAfterMove.width * 1.1);
+  expect(squareAfterResize.height).toBeGreaterThan(squareAfterMove.height * 1.1);
+  expect(boxCenter(squareAfterResize).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);
+  expect(boxCenter(squareAfterResize).y).toBeCloseTo(boxCenter(squareAfterMove).y, 0);
+  await expect(resizeHandle).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  const squareAfterResizeApply = await squareTarget.boundingBox();
+  if (!squareAfterResizeApply) throw new Error("The applied terminal Square resize ghost disappeared.");
+  expect(squareAfterResizeApply.width).toBeCloseTo(squareAfterResize.width, 0);
+  expect(squareAfterResizeApply.height).toBeCloseTo(squareAfterResize.height, 0);
+  expect(boxCenter(squareAfterResizeApply).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);
+  expect(boxCenter(squareAfterResizeApply).y).toBeCloseTo(boxCenter(squareAfterMove).y, 0);
+
+  const candidateSource = await exportedSource(page);
+  const candidateSourceHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
+  const animationEnd = candidateSource.indexOf("            run_time=5,\n        )");
+  const terminalMove = candidateSource.indexOf("        square.move_to((", animationEnd);
+  const terminalScale = candidateSource.indexOf("        square.scale(", terminalMove);
+  const dependentUpdaterRefresh = candidateSource.indexOf("        decimal.update(0)", terminalScale);
+  const terminalWait = candidateSource.indexOf("        self.wait()", dependentUpdaterRefresh);
+  expect(animationEnd).toBeGreaterThanOrEqual(0);
+  expect(terminalMove).toBeGreaterThan(animationEnd);
+  expect(terminalScale).toBeGreaterThan(terminalMove);
+  expect(dependentUpdaterRefresh).toBeGreaterThan(terminalScale);
+  expect(terminalWait).toBeGreaterThan(dependentUpdaterRefresh);
+  expect(candidateSource.match(/^\s*square\.move_to\(\(/gmu)).toHaveLength(1);
+  expect(candidateSource.match(/^\s*square\.scale\(/gmu)).toHaveLength(1);
+  expect(candidateSource.match(/^\s*decimal\.update\(0\)$/gmu)).toHaveLength(1);
+
+  const edited = await renderCommitAndFreshRuntimeTrace(page);
+  expect(edited.sourceHash).toBe(candidateSourceHash);
+  expect(edited.sourceHash).not.toBe(SOURCE_SHA256);
+  expect(edited.traceDigest).not.toBe(run.traceDigest);
+  expect(edited.bundle.scene.source).toMatchObject({
+    kind: "imported-manim-runtime-trace",
+    sourceHash: edited.sourceHash,
+    traceDigest: edited.traceDigest,
+    traceVersion: 1,
+  });
+  expect(edited.roots.map(({ binding }) => binding.name)).toEqual(["square", "decimal"]);
+  await expect(canvas).toHaveAttribute("data-preview-revision", edited.traceDigest, { timeout: 60_000 });
+  await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+  await playhead.fill("5");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "5");
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  await expect(page.locator("[data-studio-preview-status]")).toContainText("selection only");
+
+  const editedSquare = page.getByRole("button", { exact: true, name: "Move square" });
+  const editedDecimal = page.getByRole("button", { exact: true, name: "Move decimal · runtime" });
+  const [editedSquareBox, editedDecimalBox] = await Promise.all([
+    editedSquare.boundingBox(),
+    editedDecimal.boundingBox(),
+  ]);
+  if (!editedSquareBox || !editedDecimalBox) {
+    throw new Error("The edited Square and dependent DecimalNumber need interaction bounds at five seconds.");
+  }
+  const editedSquareCenter = boxCenter(editedSquareBox);
+  const editedDecimalCenter = boxCenter(editedDecimalBox);
+  const squareDomShift = {
+    x: editedSquareCenter.x - squareBeforeCenter.x,
+    y: editedSquareCenter.y - squareBeforeCenter.y,
+  };
+  const decimalDomShift = {
+    x: editedDecimalCenter.x - decimalBeforeCenter.x,
+    y: editedDecimalCenter.y - decimalBeforeCenter.y,
+  };
+  expect(squareDomShift.x).toBeCloseTo(draftDomShift.x, 0);
+  expect(squareDomShift.y).toBeCloseTo(draftDomShift.y, 0);
+  // The semantic draft box excludes paint, while fresh retained interaction
+  // bounds include the Square stroke. Their centers and scale must agree, with
+  // only that small paint expansion left after the candidate is re-executed.
+  expect(Math.abs(editedSquareBox.width - squareAfterResizeApply.width)).toBeLessThan(3);
+  expect(Math.abs(editedSquareBox.height - squareAfterResizeApply.height)).toBeLessThan(3);
+  expect(decimalDomShift.x).toBeCloseTo(squareDomShift.x + (editedSquareBox.width - squareBefore.width) / 2, 0);
+  expect(decimalDomShift.y).toBeCloseTo(squareDomShift.y, 0);
+
+  for (const selector of [editedSquare, editedDecimal]) {
+    await expect(selector).toBeVisible();
+    await selector.click();
+    await expect(selector).toHaveAttribute("aria-pressed", "true");
+  }
+  await expect(page.getByRole("button", { name: /Resize square from/u })).toHaveCount(0);
+
+  const editedRootEntityIds = edited.roots.map(({ entityId }) => entityId);
+  const editedRetained = await retainedWebGpuEvidence(page, {
+    bundle: edited.bundle,
+    entityIds: editedRootEntityIds,
+    revision: edited.traceDigest,
+  });
+  const editedSamples = new Map(editedRetained.map((sample) => [sample.id, sample]));
+  expectSamePreparedFrame(editedSamples, "bottom", "bottom-repeat");
+  const officialTerminal = samples.get("top-return");
+  const editedTerminal = editedSamples.get("top-return");
+  if (
+    !officialTerminal ||
+    !editedTerminal ||
+    officialTerminal.frame.interaction.status !== "available" ||
+    editedTerminal.frame.interaction.status !== "available"
+  ) {
+    throw new Error("The official and edited terminal frames need interaction evidence.");
+  }
+  const terminalShifts = officialTerminal.frame.interaction.entries.map((entry, index) => {
+    const next = editedTerminal.frame.interaction.entries[index];
+    if (entry.status !== "present" || next?.status !== "present") {
+      throw new Error(`Runtime Trace root ${index} is absent from the terminal comparison.`);
+    }
+    const center = (bounds: readonly [number, number, number, number]) => ({
+      x: (bounds[0] + bounds[2]) / 2,
+      y: (bounds[1] + bounds[3]) / 2,
+    });
+    const before = center(entry.bounds);
+    const after = center(next.bounds);
+    const width = entry.bounds[2] - entry.bounds[0];
+    const nextWidth = next.bounds[2] - next.bounds[0];
+    const height = entry.bounds[3] - entry.bounds[1];
+    const nextHeight = next.bounds[3] - next.bounds[1];
+    if (index === 0) {
+      expect(nextWidth).toBeGreaterThan(width * 1.1);
+      expect(nextHeight).toBeGreaterThan(height * 1.1);
+    } else {
+      expect(Math.hypot(nextWidth - width, nextHeight - height)).toBeGreaterThan(0.0001);
+    }
+    return { x: after.x - before.x, y: after.y - before.y };
+  });
+  expect(terminalShifts).toHaveLength(2);
+  expect(Math.hypot(terminalShifts[0]?.x ?? 0, terminalShifts[0]?.y ?? 0)).toBeGreaterThan(0.01);
+  const officialSquareEntry = officialTerminal.frame.interaction.entries[0];
+  const editedSquareEntry = editedTerminal.frame.interaction.entries[0];
+  if (officialSquareEntry?.status !== "present" || editedSquareEntry?.status !== "present") {
+    throw new Error("The Square needs retained terminal bounds for updater placement evidence.");
+  }
+  const squareHalfWidthGrowth =
+    (editedSquareEntry.bounds[2] -
+      editedSquareEntry.bounds[0] -
+      (officialSquareEntry.bounds[2] - officialSquareEntry.bounds[0])) /
+    2;
+  expect(terminalShifts[1]?.x).toBeCloseTo((terminalShifts[0]?.x ?? Number.NaN) + squareHalfWidthGrowth, 2);
+  expect(terminalShifts[1]?.y).toBeCloseTo(terminalShifts[0]?.y ?? Number.NaN, 2);
+
+  const editedFullRgba = await captureRuntimeTraceWebGpuFramesV1(page, {
+    bundle: edited.bundle,
+    revision: edited.traceDigest,
+    samples: UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1,
+    viewport: RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1,
+  });
+  expect(editedFullRgba.capture).toEqual({
+    installCount: 1,
+    policy: "one-retained-engine",
+    renderSubmissionCounts: UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1.map(() => 1),
+  });
+  const editedFullRgbaFrames = new Map(editedFullRgba.frames.map((frame) => [frame.id, frame]));
+  expectSameFullRgba(editedFullRgbaFrames, "bottom", "bottom-repeat");
+  expectSameFullRgba(editedFullRgbaFrames, "hold", "duration-end");
+  expect(editedFullRgbaFrames.get("initial")?.sha256).not.toBe(editedFullRgbaFrames.get("hold")?.sha256);
+
+  if (CAIRO_PARITY_REQUIRED) {
+    const parityFrames = UPDATERS_CAIRO_REFERENCE_SAMPLES_V1.map(([id]) => {
+      const frame = editedFullRgbaFrames.get(id);
+      if (!frame) throw new Error(`The edited WebGPU readback is missing the ${id} Cairo parity sample.`);
+      return {
+        frameIndex: frame.frameIndex,
+        id,
+        rgba: frame.rgba,
+        sampleTime: frame.requestSampleTime,
+      } satisfies UpdatersWebGpuFrameV1;
+    });
+    const comparisons = await compareWithIndependentCairo(parityFrames, {
+      sourceHash: edited.sourceHash,
+      sourceText: candidateSource,
+    });
+    expect(
+      comparisons.filter(({ passed }) => !passed),
+      JSON.stringify(comparisons, null, 2),
+    ).toEqual([]);
+  }
+
+  await dragBy(page, editedSquare, { x: 24, y: -12 });
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 });
