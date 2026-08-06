@@ -425,6 +425,43 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel"]);
   });
 
+  it("rejects downgraded, mistimed, reordered, or substituted OpeningManim V2 evidence", async () => {
+    const run = await verifiedOpeningRuntimeTraceRun();
+    const source = run.bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    const load = (value: unknown) =>
+      createServerPreviewSnapshotProviderV1({
+        fetcher: vi.fn(async () => jsonResponse(value)),
+        requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+      }).loadVerifiedSnapshot({ identity: openingRuntimeTraceIdentity });
+
+    await expect(
+      load({
+        ...run,
+        bundle: {
+          ...run.bundle,
+          scene: { ...run.bundle.scene, source: { ...source, traceVersion: 1 } },
+        },
+      }),
+    ).rejects.toThrow("invalid Scene IR bundle");
+    await expect(
+      load({
+        ...run,
+        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 6 } },
+      }),
+    ).rejects.toThrow("reviewed Scene profile");
+    await expect(load({ ...run, roots: [run.roots[1], run.roots[0]] })).rejects.toThrow("exact reviewed nested groups");
+
+    const runtimeLeaf = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
+    if (!runtimeLeaf) throw new Error("OpeningManim V2 provider fixture has no drawable leaf.");
+    await expect(
+      load({
+        ...run,
+        roots: run.roots.map((root, index) => (index === 0 ? { ...root, entityId: runtimeLeaf.id } : root)),
+      }),
+    ).rejects.toThrow("exact reviewed nested groups");
+  });
+
   it("posts the full request identity and returns independently correlated engine and publication revisions", async () => {
     const run = await verifiedRun();
     const { fetcher, provider } = providerReturning(run);

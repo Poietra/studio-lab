@@ -361,6 +361,14 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   await expect(squareTarget).toHaveAttribute("aria-pressed", "true");
   await expect(page.locator(`[data-studio-runtime-entity="${run.roots[0]?.entityId}"]`)).toHaveCount(1);
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  // Runtime Trace roots are selection evidence only. Keyboard commands share
+  // the same draft boundary as pointer/Inspector/timeline authoring and must
+  // never turn this verified mapping into source-rewrite authority.
+  await page.keyboard.press("Delete");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await page.keyboard.press("Control+d");
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expect(squareTarget).toHaveAttribute("aria-pressed", "true");
 
   const studioWorkerRequestKinds = await page.evaluate(() => {
     const observed = (

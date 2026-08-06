@@ -80,8 +80,10 @@ export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
   | Readonly<{
       kind: "selection-only";
-      reason: "runtime-trace-preview-only" | "source-edit-anchor-unavailable";
+      reason: "runtime-trace-preview-only";
+      verifiedRuntimeEntityIds: readonly string[];
     }>
+  | Readonly<{ kind: "selection-only"; reason: "source-edit-anchor-unavailable" }>
   | Readonly<{
       kind: "display-only";
       reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
@@ -161,7 +163,13 @@ export function studioPreviewInteractionAuthorityV1(
 ): StudioPreviewInteractionAuthorityV1 {
   const source = snapshot?.snapshot.scene.source;
   if (source?.kind === "imported-manim-runtime-trace") {
-    return { kind: "selection-only", reason: "runtime-trace-preview-only" };
+    return {
+      kind: "selection-only",
+      reason: "runtime-trace-preview-only",
+      verifiedRuntimeEntityIds: snapshot?.sourceRuntimeIdentity
+        ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
+        : [],
+    };
   }
   if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
   if (Number(source.snapshotVersion) === 5) {
@@ -297,6 +305,7 @@ export function studioPreviewInteractionEntityIdsV1(
     authority.kind === "interactive" ? new Set(authority.nestedGroupEntityIds ?? []) : new Set<string>();
   const runtimeTraceSelection =
     authority.kind === "selection-only" && authority.reason === "runtime-trace-preview-only";
+  const verifiedRuntimeEntityIds = new Set(runtimeTraceSelection ? authority.verifiedRuntimeEntityIds : []);
   const drawableEntityIds =
     entities === null
       ? authority.kind === "selection-only"
@@ -316,6 +325,7 @@ export function studioPreviewInteractionEntityIdsV1(
   const entityIds: string[] = [];
   const seen = new Set<string>();
   for (const mapping of identity.values()) {
+    if (runtimeTraceSelection && !verifiedRuntimeEntityIds.has(mapping.entityId)) continue;
     if (
       seen.has(mapping.entityId) ||
       !sourceIdentityV1Schema.safeParse(mapping.entityId).success ||
