@@ -11,6 +11,7 @@ import {
   renderPacketCompositingV1,
   renderPacketV1Schema,
   type SceneIrV1,
+  sceneEvaluationSampleTimeV1,
   sceneIrBundleV1Schema,
   sceneIrV1Schema,
   sceneSourceRenderCompositingV1,
@@ -237,6 +238,34 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
+  it("admits Runtime Trace V2 whole-frame durations without widening the sealed V1 grid", async () => {
+    const assets = await manifest();
+    const base = scene(assets);
+    const source = {
+      kind: "imported-manim-runtime-trace" as const,
+      runtimeConfigHash: ZERO_HASH,
+      sourceHash: SCENE_HASH,
+      traceDigest: ASSET_HASH,
+      traceVersion: 1 as const,
+    };
+
+    expect(sceneSourceV1Schema.parse(source)).toEqual(source);
+    expect(sceneSourceV1Schema.parse({ ...source, traceVersion: 2 })).toEqual({ ...source, traceVersion: 2 });
+    for (const unsupported of [0, 1.5, 3]) {
+      expect(sceneSourceV1Schema.safeParse({ ...source, traceVersion: unsupported }).success).toBe(false);
+    }
+
+    expect(sceneIrV1Schema.safeParse({ ...base, duration: 3, source }).success).toBe(false);
+    const v2 = sceneIrV1Schema.parse({ ...base, duration: 3, source: { ...source, traceVersion: 2 } });
+    expect(sceneEvaluationSampleTimeV1(v2, 0)).toBe(0);
+    expect(sceneEvaluationSampleTimeV1(v2, 1 / 60 + 1e-9)).toBe(1 / 60);
+    expect(sceneEvaluationSampleTimeV1(v2, 3)).toBe(179 / 60);
+    expect(sceneIrV1Schema.safeParse({ ...v2, duration: 3.01 }).success).toBe(false);
+
+    const v1 = sceneIrV1Schema.parse({ ...base, duration: 6, source });
+    expect(sceneEvaluationSampleTimeV1(v1, 6)).toBe(359 / 60);
+  });
+
   it("round-trips imported snapshot profiles V6 through V12 without coercing the negotiated integer union", () => {
     const source = {
       kind: "imported-manim-server-snapshot" as const,

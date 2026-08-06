@@ -375,7 +375,7 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         runtime_config_hash: REVISION.to_owned(),
         source_hash: REVISION.to_owned(),
         trace_digest: REVISION.to_owned(),
-        trace_version: ContractVersionV1,
+        trace_version: RuntimeTraceVersionV1::V1,
     };
     scene.provenance[0].origin = ProvenanceOriginV1::FastManimRuntimeTrace;
 
@@ -421,6 +421,30 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         validate_scene_ir_v1(&invalid_duration)
             .unwrap_err()
             .contains_message("six-second")
+    );
+
+    let mut v2 = invalid_duration;
+    let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = &mut v2.source else {
+        unreachable!()
+    };
+    *trace_version = RuntimeTraceVersionV1::V2;
+    v2.duration = 3.0;
+    validate_scene_ir_v1(&v2).unwrap();
+    assert_eq!(
+        v2.state_sample_time(3.0).to_bits(),
+        (179.0_f64 / 60.0).to_bits()
+    );
+    assert_eq!(
+        v2.state_sample_time(1.0 / 60.0 + 1e-9).to_bits(),
+        (1.0_f64 / 60.0).to_bits()
+    );
+
+    let mut off_grid_v2 = v2;
+    off_grid_v2.duration = 3.01;
+    assert!(
+        validate_scene_ir_v1(&off_grid_v2)
+            .unwrap_err()
+            .contains_message("whole number of 60 fps frames")
     );
 
     let mut invalid_digest = scene;
