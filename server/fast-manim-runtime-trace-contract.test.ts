@@ -9,6 +9,7 @@ import {
   digestFastManimRuntimeTraceVisualSemanticsV1,
   expectedFastManimRuntimeTraceCorrelationFromRequestV1,
   FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V1,
+  fastManimRuntimeTraceConfigV1Schema,
   fastManimRuntimeTraceFrameIndexAtTimeV1,
   fastManimRuntimeTraceV1Schema,
   fastManimRuntimeTraceWorldPositionV1,
@@ -63,6 +64,24 @@ describe("fast-manim Runtime Trace V1 contract", () => {
     expect(parseFastManimRuntimeTraceProducerRequestJsonV1(escapedSourceJson).sourceHash).toBe(
       escapedSourceRequest.sourceHash,
     );
+  });
+
+  it("matches the producer's exact camera and source-occurrence bounds", () => {
+    const request = runtimeTraceRequestFixture();
+    for (const camera of [
+      { ...request.runtimeConfig.camera, frameHeight: 9 },
+      { ...request.runtimeConfig.camera, frameWidth: 16 },
+      { ...request.runtimeConfig.camera, center: { x: 0.25, y: 0 } },
+      { ...request.runtimeConfig.camera, background: { ...request.runtimeConfig.camera.background, red: 0.25 } },
+    ]) {
+      expect(fastManimRuntimeTraceConfigV1Schema.safeParse({ ...request.runtimeConfig, camera }).success).toBe(false);
+    }
+
+    expect(() =>
+      parseFastManimRuntimeTraceProducerRequestJsonV1(
+        canonicalJsonV1({ ...request, sceneOccurrence: { ...request.sceneOccurrence, constructStartLine: 10_001 } }),
+      ),
+    ).toThrowError(/request is invalid/);
   });
 
   it("accepts one complete preview-only 60 fps trace and produces a stable digest", () => {

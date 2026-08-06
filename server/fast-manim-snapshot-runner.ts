@@ -2,6 +2,29 @@ import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 
 import {
+  FAST_MANIM_RUNTIME_TRACE_RUN_SCHEMA_V1,
+  type FastManimRuntimeTraceRunFailureCodeV1,
+  type FastManimRuntimeTraceRunRequestV1,
+  type FastManimRuntimeTraceRunViewV1,
+  fastManimRuntimeTraceRunRequestV1Schema,
+  fastManimRuntimeTraceRunViewV1Schema,
+} from "../src/render-pipeline/runtime-trace-preview-contract";
+import {
+  digestFastManimRuntimeTraceConfigV1,
+  fastManimRuntimeTraceSceneIdV1,
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1,
+} from "./fast-manim-runtime-trace-contract";
+import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
+import {
+  createFastManimRuntimeTraceConfigV1,
+  createFastManimRuntimeTraceProducerRequestV1,
+  FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1,
+  trustedFastManimRuntimeTraceProducerV1,
+} from "./fast-manim-runtime-trace-profile";
+import {
   copyFastManimSandboxUint8ArrayV1,
   type FastManimSandboxAttestationVerifierV1,
   FastManimSandboxBackendControlError,
@@ -227,6 +250,22 @@ const FAILURE_MESSAGES: Readonly<Record<FastManimSnapshotRunFailureCodeV1, strin
   "snapshot-too-large": "The verified snapshot exceeds the server publication byte budget.",
   "source-changed": "The Python source changed while the snapshot producer was running.",
   "source-correlation-stale": "The request source hash no longer matches the Python source on disk.",
+};
+
+const RUNTIME_TRACE_FAILURE_MESSAGES: Readonly<Record<FastManimRuntimeTraceRunFailureCodeV1, string>> = {
+  "producer-exit": "The fast-manim Runtime Trace producer exited without a usable result.",
+  "producer-output-overflow": "The fast-manim Runtime Trace producer exceeded its output byte budget.",
+  "producer-spawn-failed": "The fast-manim Runtime Trace producer could not be started.",
+  "producer-timeout": "The fast-manim Runtime Trace producer did not complete before its deadline.",
+  "result-rejected": "The Runtime Trace result failed server verification.",
+  "runtime-config-changed": "The Runtime Trace configuration changed while the producer was running.",
+  "sandbox-attestation-rejected": "The Runtime Trace sandbox did not provide a current verified attestation.",
+  "sandbox-execution-failed": "The sandbox could not complete the Runtime Trace job.",
+  "sandbox-result-rejected": "The sandbox returned a Runtime Trace result for another request or runtime.",
+  "sandbox-unavailable": "No verified Runtime Trace sandbox is available.",
+  "source-changed": "The Python source changed while the Runtime Trace producer was running.",
+  "source-correlation-stale": "The request source hash no longer matches the Python source.",
+  "unsupported-profile": "Runtime Trace currently supports only the reviewed UpdatersExample profile.",
 };
 
 function sceneKey(sourcePath: string, sceneName: string) {
@@ -703,6 +742,145 @@ export class FastManimSnapshotRunner {
     signal?: AbortSignal,
   ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
     return this.runRequest(requestValue, false, signal) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
+  }
+
+  /** Execute the one bounded dynamic profile without publication or cache state. */
+  async runRuntimeTrace(
+    requestValue: FastManimRuntimeTraceRunRequestV1,
+    signal?: AbortSignal,
+  ): Promise<FastManimRuntimeTraceRunViewV1> {
+    const request = fastManimRuntimeTraceRunRequestV1Schema.parse(requestValue);
+    signal?.throwIfAborted();
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    const key = `runtime-trace\u0000${sceneKey(request.sourcePath, request.sceneName)}`;
+    if (this.activeKeys.has(key)) {
+      throw new HttpError("A Runtime Trace run is already in progress for this source and Scene.", 409);
+    }
+    if (this.activeKeys.size >= this.maxConcurrentRuns) {
+      throw new HttpError("Too many concurrent Runtime Trace runs.", 429);
+    }
+    this.activeKeys.add(key);
+    const pending = this.runRuntimeTraceLocked(request, signal);
+    this.activeRuns.add(pending);
+    pending.catch(() => undefined);
+    try {
+      return fastManimRuntimeTraceRunViewV1Schema.parse(await pending);
+    } finally {
+      this.activeKeys.delete(key);
+      this.activeRuns.delete(pending);
+    }
+  }
+
+  private async runRuntimeTraceLocked(
+    request: FastManimRuntimeTraceRunRequestV1,
+    signal?: AbortSignal,
+  ): Promise<FastManimRuntimeTraceRunViewV1> {
+    const throwIfHalted = () => {
+      if (signal?.aborted || this.closing) throw abortError();
+    };
+    const runtimeConfig = createFastManimRuntimeTraceConfigV1(this.frame);
+    const runtimeConfigHash = digestFastManimRuntimeTraceConfigV1(runtimeConfig);
+    const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
+    const base = () =>
+      ({
+        projectId: request.projectId,
+        requestId: request.requestId,
+        runtimeConfigHash,
+        sceneId,
+        sceneName: request.sceneName,
+        schema: FAST_MANIM_RUNTIME_TRACE_RUN_SCHEMA_V1,
+        sourceHash: request.sourceHash,
+        sourcePath: request.sourcePath,
+        version: 1,
+      }) as const;
+    const failed = (code: FastManimRuntimeTraceRunFailureCodeV1): FastManimRuntimeTraceRunViewV1 => {
+      this.logger.warn("runtime_trace.run_failed", { code, requestId: request.requestId });
+      return {
+        ...base(),
+        failure: { code, message: RUNTIME_TRACE_FAILURE_MESSAGES[code] },
+        status: "failed",
+      };
+    };
+
+    if (
+      request.sourcePath !== FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1 ||
+      request.sceneName !== FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1 ||
+      request.sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 ||
+      runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1
+    ) {
+      return failed("unsupported-profile");
+    }
+
+    let before: FastManimSnapshotSourceReadV1;
+    try {
+      before = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch (error) {
+      throwIfHalted();
+      throw error;
+    }
+    throwIfHalted();
+    if (before.hash !== request.sourceHash) return failed("source-correlation-stale");
+
+    let producerRequest;
+    try {
+      producerRequest = createFastManimRuntimeTraceProducerRequestV1(request, before.source, this.frame);
+    } catch {
+      return failed("unsupported-profile");
+    }
+
+    let readiness: ReturnType<typeof resolveFastManimSandboxReadiness>;
+    try {
+      readiness = await this.sandboxReadiness(request.requestId, this.sandboxStatusDeadline(), signal);
+    } catch {
+      throwIfHalted();
+      return failed("sandbox-unavailable");
+    }
+    throwIfHalted();
+    if (readiness.kind !== "ready") return failed(readiness.code);
+
+    const sandboxRequest = new FastManimSandboxRequestBundleV1(producerRequest);
+    const produced = await this.produce(sandboxRequest, readiness.attestationDigest, request, signal);
+    throwIfHalted();
+    if (produced.kind !== "ok") return failed(produced.code);
+
+    let bundle;
+    try {
+      bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
+        produced.resultBytes,
+        producerRequest,
+        trustedFastManimRuntimeTraceProducerV1(),
+      );
+    } catch {
+      throwIfHalted();
+      return failed("result-rejected");
+    }
+    throwIfHalted();
+
+    let after: FastManimSnapshotSourceReadV1;
+    try {
+      after = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch {
+      throwIfHalted();
+      return failed("source-changed");
+    }
+    throwIfHalted();
+    if (after.hash !== before.hash || after.versionToken !== before.versionToken) return failed("source-changed");
+    if (digestFastManimRuntimeTraceConfigV1(createFastManimRuntimeTraceConfigV1(this.frame)) !== runtimeConfigHash) {
+      return failed("runtime-config-changed");
+    }
+
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") return failed("result-rejected");
+    const trusted = trustedFastManimRuntimeTraceProducerV1();
+    this.logger.info("runtime_trace.verified", { requestId: request.requestId });
+    return {
+      ...base(),
+      bundle,
+      roots: trusted.roots.map(({ binding, id }) => ({ binding, entityId: id })),
+      status: "verified",
+      traceDigest: source.traceDigest,
+    };
   }
 
   /**
@@ -1252,9 +1430,19 @@ export class FastManimSnapshotRunner {
         try {
           resultBytes = copyFastManimSandboxUint8ArrayV1(
             parsed.data.resultBytes,
-            MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+            request.producerKind === "runtime-trace"
+              ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1
+              : MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
           );
-        } catch {
+        } catch (error) {
+          if (request.producerKind === "runtime-trace" && error instanceof RangeError) {
+            return {
+              attestationDigest,
+              code: "producer-output-overflow",
+              kind: "failed",
+              requestDigest: request.requestDigest,
+            };
+          }
           this.backendLifecycleRejected = true;
           this.logger.warn("snapshot.sandbox_result_shape_rejected", { requestId: runRequest.requestId });
           return {

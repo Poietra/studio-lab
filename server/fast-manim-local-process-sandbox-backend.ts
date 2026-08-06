@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
 import {
   FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1,
   FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1,
@@ -22,6 +23,7 @@ import {
   UnavailableFastManimSandboxBackendV1,
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
+import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import {
   abortError,
   defaultKillProcessGroup,
@@ -271,6 +273,10 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
         requestId: context.identity.requestId,
         requestJson: Buffer.from(request.copyProducerRequestBytes()).toString("utf8"),
         signal: context.signal,
+        stdoutByteLimit:
+          request.producerKind === "runtime-trace"
+            ? MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1
+            : MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
         timings: this.#producerProcessTimings,
         timeoutMs,
       });

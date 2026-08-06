@@ -7,6 +7,7 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import type {
   FastManimSandboxAttestationVerifierV1,
   FastManimSandboxBackendV1,
@@ -40,6 +41,8 @@ export class ManimProjectRegistry {
   private readonly maxConcurrentRenders: number | undefined;
   private readonly maxRetainedSessions: number | undefined;
   private readonly renderTimeoutMs: number | undefined;
+  private readonly runtimeTraceProducerCommand: readonly string[] | undefined;
+  private readonly runtimeTraceProducerDevOptIn: boolean | undefined;
   private readonly sessionProjects = new Map<string, string>();
   private readonly sessionRetentionMs: number | undefined;
   private readonly snapshotSandboxAttestationVerifier: FastManimSandboxAttestationVerifierV1 | undefined;
@@ -65,6 +68,8 @@ export class ManimProjectRegistry {
       maxRetainedSessions?: number;
       projects: readonly ManimProjectConfig[];
       renderTimeoutMs?: number;
+      runtimeTraceProducerCommand?: readonly string[];
+      runtimeTraceProducerDevOptIn?: boolean;
       sessionRetentionMs?: number;
       snapshotSandboxAttestationVerifier?: FastManimSandboxAttestationVerifierV1;
       snapshotSandboxBackendFactory?: (
@@ -90,6 +95,8 @@ export class ManimProjectRegistry {
     this.maxConcurrentRenders = options.maxConcurrentRenders;
     this.maxRetainedSessions = options.maxRetainedSessions;
     this.renderTimeoutMs = options.renderTimeoutMs;
+    this.runtimeTraceProducerCommand = options.runtimeTraceProducerCommand;
+    this.runtimeTraceProducerDevOptIn = options.runtimeTraceProducerDevOptIn;
     this.sessionRetentionMs = options.sessionRetentionMs;
     this.snapshotSandboxAttestationVerifier = options.snapshotSandboxAttestationVerifier;
     this.snapshotSandboxBackendFactory = options.snapshotSandboxBackendFactory;
@@ -134,6 +141,8 @@ export class ManimProjectRegistry {
         projectName,
         projectRoot: canonicalRoot,
         renderTimeoutMs: this.renderTimeoutMs,
+        runtimeTraceProducerCommand: this.runtimeTraceProducerCommand,
+        runtimeTraceProducerDevOptIn: this.runtimeTraceProducerDevOptIn,
         sessionRetentionMs: this.sessionRetentionMs,
         snapshotSandboxAttestationVerifier: this.snapshotSandboxAttestationVerifier,
         snapshotSandboxBackend: this.snapshotSandboxBackendFactory?.({
@@ -286,6 +295,10 @@ export class ManimProjectRegistry {
 
   runSceneSnapshot(request: FastManimSnapshotRunRequestV1, signal?: AbortSignal) {
     return this.project(request.projectId).runSceneSnapshot(request, signal);
+  }
+
+  runRuntimeTrace(request: FastManimRuntimeTraceRunRequestV1, signal?: AbortSignal) {
+    return this.project(request.projectId).runRuntimeTrace(request, signal);
   }
 
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {

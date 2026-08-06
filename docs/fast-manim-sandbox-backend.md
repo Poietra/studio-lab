@@ -104,6 +104,31 @@ pnpm dev:web
 Profile V1 remains the default. Set version 2 only with a producer that
 supports the bounded variable frozen-wait snapshot contract.
 
+The exact official `UpdatersExample` Runtime Trace uses a separate local-only
+producer command and opt-in. Give the demo its own temporary workspace catalog
+and seed the checked-in real preview harness under a stable project ID, then open
+Studio with `?previewRenderer=server` and explicitly request the Scene preview:
+
+```sh
+demo_data_root="$(mktemp -d)"
+trap 'rm -rf -- "$demo_data_root"' EXIT
+POIETRA_STUDIO_DATA_ROOT="$demo_data_root" \
+POIETRA_MANIM_PROJECTS="[{\"id\":\"real-preview-harness\",\"name\":\"Real Preview Harness\",\"root\":\"$PWD/fixtures/real-preview-harness\"}]" \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN=1 \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.runtime_trace"]' \
+pnpm dev:web
+```
+
+Project environment variables seed a catalog only when that catalog is first
+created. The isolated data root above therefore both preserves the developer's
+normal `.poietra/workspace-catalog.json` and prevents its persisted workspace
+selection from overriding this demo. The temporary catalog is removed when the
+shell exits.
+
+The configured fast-manim checkout must match the commit and tree pinned by
+`fast-manim-runtime-trace-profile.ts`. This path is preview-only: it neither
+publishes a reusable snapshot nor grants source-edit authority.
+
 This is not a production enablement recipe. The child-process adapter filters
 environment and uses a private runtime directory, but it is not an OS isolation
 boundary and cannot contain every fork/setsid escape.

@@ -37,6 +37,7 @@ const completed = spawnSync(
     encoding: "utf8",
     env: {
       ...process.env,
+      POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND: JSON.stringify([python, "-m", "manim.renderer.runtime_trace"]),
       POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: JSON.stringify([python, "-m", "manim.renderer.source_runtime_identity"]),
       POIETRA_REAL_MANIM_CENSUS_FAST_MANIM_ROOT: fastManimRoot,
       POIETRA_REAL_MANIM_CENSUS_REPLACE_CORPUS: replaceCorpus ? "1" : "0",

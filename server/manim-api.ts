@@ -13,6 +13,10 @@ import type {
   RenderSourceActionCancellationView,
 } from "../src/render-pipeline/contracts";
 import type {
+  FastManimRuntimeTraceRunRequestV1,
+  FastManimRuntimeTraceRunViewV1,
+} from "../src/render-pipeline/runtime-trace-preview-contract";
+import type {
   FastManimSnapshotQueryV1,
   FastManimSnapshotRunRequestV1,
   FastManimSnapshotRunViewV1,
@@ -91,6 +95,10 @@ export interface ManimApiOperations {
     request: FastManimSnapshotRunRequestV1,
     signal?: AbortSignal,
   ): ManimApiResult<FastManimSnapshotRunViewV1>;
+  runRuntimeTrace?(
+    request: FastManimRuntimeTraceRunRequestV1,
+    signal?: AbortSignal,
+  ): ManimApiResult<FastManimRuntimeTraceRunViewV1>;
   sceneSnapshotAsset?(projectId: string, digest: string, signal?: AbortSignal): ManimApiResult<ManimSnapshotPngAssetV1>;
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1): ManimApiResult<FastManimSnapshotRunViewV1>;
   start(request: ProgramRenderRequest, signal?: AbortSignal): ManimApiResult<RenderSessionView>;

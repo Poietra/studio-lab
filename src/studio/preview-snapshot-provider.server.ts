@@ -15,6 +15,7 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
+import { fastManimRuntimeTraceRunViewV1Schema } from "../render-pipeline/runtime-trace-preview-contract";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
@@ -25,6 +26,8 @@ const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
 const ZERO_SHA256 = "0".repeat(64);
+const RUNTIME_TRACE_SOURCE_PATH = "example_scenes/basic.py";
+const RUNTIME_TRACE_SCENE_NAME = "UpdatersExample";
 
 const identitySchema = z
   .object({
@@ -323,7 +326,92 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
     }
     return bySourceName;
   })();
-  return { bundle, engineRevisionHash, run, sourceRuntimeIdentity };
+  return {
+    bundle,
+    engineRevisionHash,
+    publicationRevision: run.revision,
+    sourceLabel: `verified server snapshot r${run.revision}`,
+    sourceRuntimeIdentity,
+  };
+}
+
+async function validateVerifiedRuntimeTraceRun(
+  value: unknown,
+  identity: StudioPreviewSceneIdentityV1,
+  requestId: string,
+) {
+  const parsed = fastManimRuntimeTraceRunViewV1Schema.safeParse(value);
+  if (!parsed.success) throw providerError("The Runtime Trace endpoint returned malformed evidence.", parsed.error);
+  const run = parsed.data;
+  if (run.status !== "verified") {
+    throw providerError(`The Runtime Trace endpoint did not verify this Scene (${run.status}).`);
+  }
+  assertEqual("project", run.projectId, identity.projectId);
+  assertEqual("request", run.requestId, requestId);
+  assertEqual("source path", run.sourcePath, identity.sourcePath);
+  assertEqual("Scene name", run.sceneName, identity.sceneName);
+  assertEqual("source hash", run.sourceHash, identity.sourceHash);
+
+  let bundle;
+  try {
+    bundle = await parseVerifiedSceneIrBundleV1(run.bundle);
+  } catch (cause) {
+    throw providerError("The Runtime Trace endpoint contains an invalid Scene IR bundle.", cause);
+  }
+  const canonicalSceneId = await expectedSceneId(identity);
+  assertEqual("canonical Scene ID", run.sceneId, canonicalSceneId);
+  assertEqual("Scene IR ID", bundle.scene.sceneId, canonicalSceneId);
+  const source = bundle.scene.source;
+  if (source.kind !== "imported-manim-runtime-trace") {
+    throw providerError("The Runtime Trace preview does not carry runtime source evidence.");
+  }
+  assertEqual("Scene IR source hash", source.sourceHash, identity.sourceHash);
+  assertEqual("Scene IR runtime configuration", source.runtimeConfigHash, run.runtimeConfigHash);
+  assertEqual("Scene IR trace seal", source.traceDigest, run.traceDigest);
+  assertEqual("engine revision", sceneIrSourceRevisionHash(bundle.scene), run.traceDigest);
+  assertEqual("asset manifest", bundle.scene.assetManifest.manifestDigest, bundle.assets.manifestDigest);
+  if (bundle.assets.assets.length !== 0) {
+    throw providerError("Runtime Trace V1 must not publish unrelated asset payloads.");
+  }
+
+  const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+  const sourceRuntimeIdentity = new Map<
+    string,
+    Readonly<{ bindingId: string; entityId: string; sourceName: string }>
+  >();
+  let motionRootId: string | null = null;
+  for (const [index, sourceName] of ["square", "decimal"].entries()) {
+    const root = run.roots[index];
+    const entity = root ? entities.get(root.entityId) : undefined;
+    if (
+      !root ||
+      root.binding.name !== sourceName ||
+      root.entityId !== `${canonicalSceneId}/runtime-root:${sourceName}` ||
+      !entity ||
+      entity.geometry.kind !== "group" ||
+      entity.parentId === null ||
+      (motionRootId !== null && entity.parentId !== motionRootId)
+    ) {
+      throw providerError("The Runtime Trace source roots do not name the exact nested Square and Decimal groups.");
+    }
+    motionRootId = entity.parentId;
+    sourceRuntimeIdentity.set(sourceName, {
+      bindingId: root.binding.id,
+      entityId: root.entityId,
+      sourceName,
+    });
+  }
+  const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
+  if (!motionRoot || motionRoot.geometry.kind !== "group" || motionRoot.parentId !== null) {
+    throw providerError("The Runtime Trace source roots do not share one top-level motion group.");
+  }
+  return {
+    bundle,
+    engineRevisionHash: run.traceDigest,
+    publicationRevision: null,
+    sourceLabel: "verified Runtime Trace",
+    sourceRuntimeIdentity,
+  };
 }
 
 /**
@@ -347,7 +435,10 @@ export function createServerPreviewSnapshotProviderV1(
       const requestId = requestIdFactory();
       if (!opaqueIdV1Schema.safeParse(requestId).success)
         throw providerError("The Scene snapshot request ID is invalid.");
-      const response = await fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/scene-snapshots`, {
+      const runtimeTrace =
+        identity.sourcePath === RUNTIME_TRACE_SOURCE_PATH && identity.sceneName === RUNTIME_TRACE_SCENE_NAME;
+      const endpoint = runtimeTrace ? "runtime-traces" : "scene-snapshots";
+      const response = await fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/${endpoint}`, {
         body: JSON.stringify({ ...identity, requestId }),
         headers: { accept: "application/json", "content-type": "application/json" },
         method: "POST",
@@ -357,11 +448,9 @@ export function createServerPreviewSnapshotProviderV1(
       if (!response.ok) throw providerError(`The Scene snapshot endpoint failed with HTTP ${response.status}.`);
       const value = await readBoundedJson(response);
       signal?.throwIfAborted();
-      const { bundle, engineRevisionHash, run, sourceRuntimeIdentity } = await validateVerifiedRun(
-        value,
-        identity,
-        requestId,
-      );
+      const { bundle, engineRevisionHash, publicationRevision, sourceLabel, sourceRuntimeIdentity } = runtimeTrace
+        ? await validateVerifiedRuntimeTraceRun(value, identity, requestId)
+        : await validateVerifiedRun(value, identity, requestId);
       signal?.throwIfAborted();
       const assetPayloads = await loadSnapshotAssetPayloads(fetcher, identity.projectId, bundle.assets.assets, signal);
       signal?.throwIfAborted();
@@ -377,12 +466,12 @@ export function createServerPreviewSnapshotProviderV1(
           engineRevisionHash,
           sceneDuration: bundle.scene.duration,
           sceneId: bundle.scene.sceneId,
-          serverPublicationRevision: run.revision,
+          serverPublicationRevision: publicationRevision,
         },
         duration: bundle.scene.duration,
         sceneId: bundle.scene.sceneId,
         snapshot: bundle,
-        sourceLabel: `verified server snapshot r${run.revision}`,
+        sourceLabel,
         sourceRuntimeIdentity,
       };
     },

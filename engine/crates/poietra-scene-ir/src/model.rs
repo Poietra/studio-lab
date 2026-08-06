@@ -617,6 +617,17 @@ pub enum SceneSourceV1 {
         #[serde(rename = "sourceHash")]
         source_hash: String,
     },
+    #[serde(rename = "imported-manim-runtime-trace")]
+    ImportedManimRuntimeTrace {
+        #[serde(rename = "runtimeConfigHash")]
+        runtime_config_hash: String,
+        #[serde(rename = "sourceHash")]
+        source_hash: String,
+        #[serde(rename = "traceDigest")]
+        trace_digest: String,
+        #[serde(rename = "traceVersion")]
+        trace_version: ContractVersionV1,
+    },
 }
 
 impl SceneSourceV1 {
@@ -625,6 +636,7 @@ impl SceneSourceV1 {
         match self {
             Self::StudioEditProgram { revision_hash, .. } => revision_hash,
             Self::ImportedManimServerSnapshot { snapshot_hash, .. } => snapshot_hash,
+            Self::ImportedManimRuntimeTrace { trace_digest, .. } => trace_digest,
         }
     }
 
@@ -639,7 +651,8 @@ impl SceneSourceV1 {
             Self::ImportedManimServerSnapshot {
                 snapshot_version: SnapshotProfileVersionV1::V11 | SnapshotProfileVersionV1::V12,
                 ..
-            } => RenderCompositingV1::ManimCairoSrgb,
+            }
+            | Self::ImportedManimRuntimeTrace { .. } => RenderCompositingV1::ManimCairoSrgb,
             Self::StudioEditProgram { .. } | Self::ImportedManimServerSnapshot { .. } => {
                 RenderCompositingV1::LinearLight
             }
@@ -666,6 +679,8 @@ impl SceneSourceV1 {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ProvenanceOriginV1 {
+    #[serde(rename = "fast-manim-runtime-trace")]
+    FastManimRuntimeTrace,
     #[serde(rename = "fast-manim-server-snapshot")]
     FastManimServerSnapshot,
     #[serde(rename = "fixture")]
@@ -811,6 +826,19 @@ impl SceneIrV1 {
     /// which preserves its final hold without changing any older Scene.
     #[must_use]
     pub fn state_sample_time(&self, requested_time: f64) -> f64 {
+        if matches!(self.source, SceneSourceV1::ImportedManimRuntimeTrace { .. }) {
+            const FRAME_RATE: f64 = 60.0;
+            const FINAL_FRAME: f64 = 359.0;
+            let scaled = requested_time * FRAME_RATE;
+            let nearest_frame = scaled.round();
+            let grid_tolerance = 4.0 * f64::EPSILON * scaled.abs().max(1.0);
+            let frame = if (scaled - nearest_frame).abs() <= grid_tolerance {
+                nearest_frame
+            } else {
+                scaled.floor()
+            };
+            return frame.min(FINAL_FRAME) / FRAME_RATE;
+        }
         if requested_time.to_bits() == self.duration.to_bits()
             && self.duration.is_finite()
             && self.duration > 0.0

@@ -4,6 +4,7 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { isNativeError, isProxy } from "node:util/types";
 
+import { parseVerifiedSceneIrBundleV1, sceneIrSourceRevisionHash } from "../src/engine/contracts";
 import {
   browserManimProjectImportRequestV1Schema,
   createManimProjectRequestSchema,
@@ -23,7 +24,17 @@ import {
   renderSourceActionCancellationRequestSchema,
   renderSourceActionRequestSchema,
 } from "../src/render-pipeline/contracts";
+import {
+  type FastManimRuntimeTraceRunRequestV1,
+  fastManimRuntimeTraceRunRequestV1Schema,
+  fastManimRuntimeTraceRunViewV1Schema,
+} from "../src/render-pipeline/runtime-trace-preview-contract";
 import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
+import {
+  fastManimRuntimeTraceSceneIdV1,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
+} from "./fast-manim-runtime-trace-contract";
+import { FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -42,6 +53,7 @@ const RENDER_ROUTE =
 const PROJECT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/(workspace|renders|export)$/;
 const PROJECT_THUMBNAIL_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/thumbnail(?:\/(status|generate))?$/;
 const PROJECT_SCENE_SNAPSHOT_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshots$/;
+const PROJECT_RUNTIME_TRACE_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/runtime-traces$/;
 const PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE =
   /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})\/scene-snapshot-assets\/([0-9a-f]{64})$/;
 const PROJECT_ITEM_ROUTE = /^\/api\/manim\/projects\/([a-z][a-z0-9_-]{0,63})$/;
@@ -58,6 +70,7 @@ export function isManimBrowserProjectImportRequest(method: string | undefined, p
 }
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
+const MAX_RUNTIME_TRACE_RUN_RESPONSE_JSON_BYTES = MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + 64 * 1024;
 
 export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
@@ -190,6 +203,7 @@ function requestRouteTemplate(rawUrl: string | undefined) {
   )
     return pathname;
   if (PROJECT_SCENE_SNAPSHOT_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/scene-snapshots";
+  if (PROJECT_RUNTIME_TRACE_ROUTE.test(pathname)) return "/api/manim/projects/:projectId/runtime-traces";
   if (PROJECT_SCENE_SNAPSHOT_ASSET_ROUTE.test(pathname)) {
     return "/api/manim/projects/:projectId/scene-snapshot-assets/:digest";
   }
@@ -461,6 +475,77 @@ function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body
   });
 }
 
+async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRuntimeTraceRunRequestV1) {
+  const parsed = fastManimRuntimeTraceRunViewV1Schema.safeParse(value);
+  if (!parsed.success) throw new HttpError("The Runtime Trace operation returned an invalid response.", 502);
+  const run = parsed.data;
+  const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
+  if (
+    run.projectId !== request.projectId ||
+    run.requestId !== request.requestId ||
+    run.sceneId !== sceneId ||
+    run.sceneName !== request.sceneName ||
+    run.sourceHash !== request.sourceHash ||
+    run.sourcePath !== request.sourcePath
+  ) {
+    throw new HttpError("The Runtime Trace operation returned stale correlation.", 502);
+  }
+
+  let safeView: typeof run = run;
+  if (run.status === "verified") {
+    if (run.runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1) {
+      throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
+    }
+    let bundle;
+    try {
+      bundle = await parseVerifiedSceneIrBundleV1(run.bundle);
+    } catch {
+      throw new HttpError("The Runtime Trace operation returned an invalid Scene IR bundle.", 502);
+    }
+    const source = bundle.scene.source;
+    const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+    const expectedRootNames = ["square", "decimal"] as const;
+    let motionRootId: string | null = null;
+    for (const [index, name] of expectedRootNames.entries()) {
+      const root = run.roots[index];
+      const entity = root ? entities.get(root.entityId) : undefined;
+      if (
+        !root ||
+        root.binding.name !== name ||
+        root.entityId !== `${sceneId}/runtime-root:${name}` ||
+        !entity ||
+        entity.geometry.kind !== "group" ||
+        entity.parentId === null ||
+        (motionRootId !== null && entity.parentId !== motionRootId)
+      ) {
+        throw new HttpError("The Runtime Trace operation returned invalid source roots.", 502);
+      }
+      motionRootId = entity.parentId;
+    }
+    const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
+    if (
+      bundle.scene.duration !== 6 ||
+      bundle.scene.sceneId !== sceneId ||
+      source.kind !== "imported-manim-runtime-trace" ||
+      source.sourceHash !== request.sourceHash ||
+      source.runtimeConfigHash !== run.runtimeConfigHash ||
+      source.traceDigest !== run.traceDigest ||
+      sceneIrSourceRevisionHash(bundle.scene) !== run.traceDigest ||
+      bundle.assets.assets.length !== 0 ||
+      !motionRoot ||
+      motionRoot.geometry.kind !== "group" ||
+      motionRoot.parentId !== null
+    ) {
+      throw new HttpError("The Runtime Trace operation returned stale Scene IR evidence.", 502);
+    }
+    safeView = { ...run, bundle };
+  }
+  if (Buffer.byteLength(JSON.stringify(safeView), "utf8") > MAX_RUNTIME_TRACE_RUN_RESPONSE_JSON_BYTES) {
+    throw new HttpError("The Runtime Trace operation response is too large.", 502);
+  }
+  return safeView;
+}
+
 async function routeManimRequest(
   manager: ManimApi,
   request: IncomingMessage,
@@ -570,6 +655,26 @@ async function routeManimRequest(
     const snapshot = await manager.runSceneSnapshot(parsed.data, signal);
     if (!(await sendJsonAndWaitForFinish(response, 200, snapshot))) {
       const error = new Error("The Scene snapshot request was disconnected before its response was sent.");
+      error.name = "AbortError";
+      throw error;
+    }
+    return;
+  }
+  const runtimeTraceMatch = url.pathname.match(PROJECT_RUNTIME_TRACE_ROUTE);
+  if (runtimeTraceMatch) {
+    if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
+    if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 503);
+    const projectId = runtimeTraceMatch[1]!;
+    const parsed = fastManimRuntimeTraceRunRequestV1Schema.safeParse(
+      await readBoundedJsonBody(request, policy, 16 * 1024),
+    );
+    if (!parsed.success) throw new HttpError(parsed.error.issues[0]?.message ?? "Invalid Runtime Trace request.", 400);
+    if (parsed.data.projectId !== projectId) {
+      throw new HttpError("The request project does not match the project endpoint.", 409);
+    }
+    const trace = await verifiedRuntimeTraceHttpView(await manager.runRuntimeTrace(parsed.data, signal), parsed.data);
+    if (!(await sendJsonAndWaitForFinish(response, 200, trace))) {
+      const error = new Error("The Runtime Trace request was disconnected before its response was sent.");
       error.name = "AbortError";
       throw error;
     }

@@ -8,13 +8,17 @@ import { defineConfig } from "@playwright/test";
 import { encodeRgbaPngV1 } from "./e2e/png-rgba";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
-const producerCommand = process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND?.trim();
-if (!producerCommand) {
+const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
+const runtimeTraceProfile = snapshotProfile === "runtime-trace";
+const producerCommand = process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND?.trim() ?? "";
+const runtimeTraceCommand = process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND?.trim() ?? "";
+if (runtimeTraceProfile ? !runtimeTraceCommand : !producerCommand) {
   throw new Error(
-    "POIETRA_FAST_MANIM_SNAPSHOT_COMMAND must name the real fast-manim snapshot producer as a command or JSON argv array.",
+    runtimeTraceProfile
+      ? "POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND must name the real fast-manim Runtime Trace producer as a command or JSON argv array."
+      : "POIETRA_FAST_MANIM_SNAPSHOT_COMMAND must name the real fast-manim snapshot producer as a command or JSON argv array.",
   );
 }
-const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
 const WRITE_STUFF_TEX_CACHE_V1 = {
   "2001da0d734dc8fc.svg": "8e6c76607b68689555296fc8039cf6c82ea29bf9ef0445a4dc6c030e9e13efa7",
   "2001da0d734dc8fc.tex": "2001da0d734dc8fcaf7e6d3d0b5035e82d71733ab5feca774aa5740e8b099716",
@@ -24,6 +28,7 @@ const WRITE_STUFF_TEX_CACHE_V1 = {
   "8f249e3b899ba7b1.tex": "8f249e3b899ba7b13ac37b744ca8509b929b2431baf1d2ff07d28892576ac419",
 } as const;
 if (
+  snapshotProfile !== "runtime-trace" &&
   snapshotProfile !== "2" &&
   snapshotProfile !== "3" &&
   snapshotProfile !== "4" &&
@@ -35,7 +40,7 @@ if (
   snapshotProfile !== "11" &&
   snapshotProfile !== "12"
 ) {
-  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be 2, 3, 4, 5, 7, 8, 9, 10, 11, or 12.");
+  throw new Error("POIETRA_E2E_REAL_PREVIEW_PROFILE must be runtime-trace, 2, 3, 4, 5, 7, 8, 9, 10, 11, or 12.");
 }
 const externalBaseUrl = (() => {
   const configured = process.env.POIETRA_E2E_EXTERNAL_BASE_URL?.trim();
@@ -179,8 +184,9 @@ export default defineConfig({
   fullyParallel: false,
   projects: [
     {
-      name:
-        snapshotProfile === "12"
+      name: runtimeTraceProfile
+        ? "real-runtime-trace-preview-webgpu"
+        : snapshotProfile === "12"
           ? "real-write-stuff-in-preview-webgpu"
           : snapshotProfile === "11"
             ? "real-spiral-in-preview-webgpu"
@@ -199,8 +205,9 @@ export default defineConfig({
                         : snapshotProfile === "4"
                           ? "real-image-preview-webgpu"
                           : "real-preview-webgpu",
-      testMatch:
-        snapshotProfile === "12"
+      testMatch: runtimeTraceProfile
+        ? "**/real-runtime-trace-preview.webgpu.ts"
+        : snapshotProfile === "12"
           ? "**/real-write-stuff-in-preview.webgpu.ts"
           : snapshotProfile === "11"
             ? "**/real-spiral-in-preview.webgpu.ts"
@@ -241,9 +248,16 @@ export default defineConfig({
           command: `pnpm dev:web --port ${port}`,
           env: {
             POIETRA_AI_DEBUG_LOG: "off",
-            POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
-            POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
-            POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
+            ...(runtimeTraceProfile
+              ? {
+                  POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND: runtimeTraceCommand,
+                  POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN: "1",
+                }
+              : {
+                  POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: producerCommand,
+                  POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
+                  POIETRA_FAST_MANIM_SNAPSHOT_VERSION: snapshotProfile,
+                }),
             ...(effectiveManimCommand ? { POIETRA_MANIM_COMMAND: effectiveManimCommand } : {}),
             POIETRA_MANIM_PROJECTS: JSON.stringify([
               {

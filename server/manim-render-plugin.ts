@@ -45,6 +45,8 @@ export function manimRenderPipeline(options: ManimRenderPipelineOptions = {}): P
         },
         logger,
         projects: seedProjects,
+        runtimeTraceProducerCommand: options.runtimeTraceProducerCommand,
+        runtimeTraceProducerDevOptIn: options.runtimeTraceProducerDevOptIn ?? false,
         snapshotSandboxDeployment: options.snapshotSandboxDeployment ?? "production",
         snapshotProducerCommand: options.snapshotProducerCommand,
         snapshotProducerDevOptIn: options.snapshotProducerDevOptIn ?? false,

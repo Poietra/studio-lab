@@ -7,6 +7,7 @@ import {
   copyFastManimSandboxUint8ArrayV1,
   FastManimSandboxRequestBundleV1,
   MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+  MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES,
   MAX_FAST_MANIM_SANDBOX_STATUS_RAW_JSON_BYTES,
   resolveFastManimSandboxReadiness,
   verifyFastManimSandboxRequestBundleV1,
@@ -16,6 +17,7 @@ import {
   createFastManimSnapshotProfileSelectionRequestV1,
 } from "./fast-manim-snapshot-profile-selection";
 import { MAX_PROJECT_PNG_BYTES_V1 } from "./storage/project-png-storage";
+import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import {
   localSandboxReadyStatus,
   productionSandboxReadyStatus,
@@ -75,6 +77,21 @@ describe("fast-manim sandbox request bundle", () => {
     expect(JSON.parse(Buffer.from(rebuilt.copyProducerRequestBytes()).toString("utf8"))).toEqual(producer);
     expect(producer.snapshotVersion).toBe(9);
     expect(producer.runtimeConfig.snapshotVersion).toBe(9);
+  });
+
+  it("round-trips a bounded Runtime Trace request without changing snapshot envelopes", () => {
+    const producer = runtimeTraceRequestFixture();
+    const bundle = new FastManimSandboxRequestBundleV1(producer);
+    const rebuilt = FastManimSandboxRequestBundleV1.fromBytes(bundle.copyBytes());
+
+    expect(bundle.version).toBe(1);
+    expect(bundle.copyPngBytes()).toBeUndefined();
+    expect(bundle.byteLength).toBeLessThanOrEqual(MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES);
+    expect(rebuilt.requestDigest).toBe(bundle.requestDigest);
+    expect(JSON.parse(Buffer.from(rebuilt.copyProducerRequestBytes()).toString("utf8"))).toEqual(producer);
+    expect(() => new FastManimSandboxRequestBundleV1(producer, { pngBytes: sandboxPngBytes() })).toThrow(
+      /accepted only by producer profile 4/i,
+    );
   });
 
   it("seals one profile-4 PNG into a V2 envelope while preserving strict producer JSON", () => {

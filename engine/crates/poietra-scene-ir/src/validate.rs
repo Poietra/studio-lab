@@ -634,6 +634,20 @@ fn validate_scene_source(source: &SceneSourceV1, path: &str, validator: &mut Val
             validate_sha256(snapshot_hash, &format!("{path}.snapshotHash"), validator);
             validate_sha256(source_hash, &format!("{path}.sourceHash"), validator);
         }
+        SceneSourceV1::ImportedManimRuntimeTrace {
+            runtime_config_hash,
+            source_hash,
+            trace_digest,
+            ..
+        } => {
+            validate_sha256(
+                runtime_config_hash,
+                &format!("{path}.runtimeConfigHash"),
+                validator,
+            );
+            validate_sha256(source_hash, &format!("{path}.sourceHash"), validator);
+            validate_sha256(trace_digest, &format!("{path}.traceDigest"), validator);
+        }
     }
 }
 
@@ -745,6 +759,16 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
     validate_source_identity(&scene.scene_id, "$.sceneId", &mut validator);
     validate_manifest_reference(&scene.asset_manifest, "$.assetManifest", &mut validator);
     validate_positive(scene.duration, "$.duration", &mut validator);
+    if matches!(
+        scene.source,
+        SceneSourceV1::ImportedManimRuntimeTrace { .. }
+    ) && scene.duration.to_bits() != 6.0_f64.to_bits()
+    {
+        validator.issue(
+            "$.duration",
+            "Runtime Trace V1 requires its sealed six-second presentation grid",
+        );
+    }
     validate_color(
         &scene.camera.background,
         "$.camera.background",

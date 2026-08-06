@@ -10,6 +10,8 @@ export type ManimRenderPipelineOptions = Readonly<{
   frameWidth?: number;
   projects?: readonly ManimProjectConfig[];
   projectRoot?: string;
+  runtimeTraceProducerCommand?: readonly string[];
+  runtimeTraceProducerDevOptIn?: boolean;
   snapshotSandboxDeployment?: "development" | "production" | "test";
   snapshotProducerCommand?: readonly string[];
   snapshotProducerDevOptIn?: boolean;

@@ -427,10 +427,12 @@ export async function compileStudioPreviewSceneV1(
   }
   if (input.proposedState.programs.length === 0) {
     const { correlation, snapshot } = input.snapshot;
+    const importedSource = snapshot.scene.source;
     if (
-      snapshot.scene.source.kind !== "imported-manim-server-snapshot" ||
+      (importedSource.kind !== "imported-manim-server-snapshot" &&
+        importedSource.kind !== "imported-manim-runtime-trace") ||
       sceneIrSourceRevisionHash(snapshot.scene) !== correlation.engineRevisionHash ||
-      snapshot.scene.source.sourceHash !== correlation.context.sourceHash ||
+      importedSource.sourceHash !== correlation.context.sourceHash ||
       snapshot.assets.manifestDigest !== correlation.assetsManifestDigest ||
       snapshot.scene.sceneId !== correlation.sceneId ||
       input.snapshot.sceneId !== correlation.sceneId ||
@@ -439,7 +441,7 @@ export async function compileStudioPreviewSceneV1(
       correlation.sceneDuration !== correlation.context.sourceDuration ||
       correlation.context.workingRevision !== PRISTINE_WORKING_REVISION
     ) {
-      return { error: "The base server snapshot has inconsistent revision evidence.", kind: "unsupported" };
+      return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
     }
     return {
       kind: "compiled",

@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import { lowerFastManimRuntimeTraceProducerJsonV1 } from "../../server/fast-manim-runtime-trace-lowering";
+import {
+  runtimeTraceFixture,
+  runtimeTraceRequestFixture,
+  trustedRuntimeTraceProducer,
+} from "../../server/test-fixtures/fast-manim-runtime-trace-fixture";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
 import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
 import { digestAssetManifestV1, parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
@@ -10,6 +16,7 @@ const REQUEST_ID = "studio-preview:test-request";
 const SOURCE_HASH = "a".repeat(64);
 const RUNTIME_HASH = "b".repeat(64);
 const WRITE_STUFF_REQUEST_ID = "req-1";
+const RUNTIME_TRACE_REQUEST_ID = "req-runtime-trace-1";
 const PNG_BYTES = Uint8Array.from(
   Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=", "base64"),
 );
@@ -22,6 +29,12 @@ const identity: StudioPreviewSceneIdentityV1 = {
 const writeStuffIdentity: StudioPreviewSceneIdentityV1 = {
   projectId: "demo",
   sceneName: "WriteStuff",
+  sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+  sourcePath: "example_scenes/basic.py",
+};
+const runtimeTraceIdentity: StudioPreviewSceneIdentityV1 = {
+  projectId: "demo",
+  sceneName: "UpdatersExample",
   sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
   sourcePath: "example_scenes/basic.py",
 };
@@ -227,6 +240,32 @@ async function verifiedWriteStuffRun() {
   };
 }
 
+async function verifiedRuntimeTraceRun() {
+  const trace = runtimeTraceFixture();
+  const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
+    JSON.stringify(trace),
+    runtimeTraceRequestFixture(),
+    trustedRuntimeTraceProducer(trace),
+  );
+  const source = bundle.scene.source;
+  if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+  return {
+    bundle,
+    projectId: trace.projectId,
+    requestId: trace.requestId,
+    roots: trace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
+    runtimeConfigHash: trace.runtimeConfigHash,
+    sceneId: trace.sceneId,
+    sceneName: trace.sceneName,
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: trace.sourceHash,
+    sourcePath: trace.sourcePath,
+    status: "verified",
+    traceDigest: source.traceDigest,
+    version: 1,
+  } as const;
+}
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
@@ -240,6 +279,43 @@ function providerReturning(value: unknown) {
 }
 
 describe("createServerPreviewSnapshotProviderV1", () => {
+  it("requests and verifies Runtime Trace evidence only for the exact UpdatersExample", async () => {
+    const run = await verifiedRuntimeTraceRun();
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
+    const provider = createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+    });
+    const loaded = await provider.loadVerifiedSnapshot({ identity: runtimeTraceIdentity });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
+    expect(loaded).toMatchObject({
+      correlation: {
+        context: { ...runtimeTraceIdentity, sourceDuration: 6, workingRevision: "pristine" },
+        engineRevisionHash: run.traceDigest,
+        sceneDuration: 6,
+        serverPublicationRevision: null,
+      },
+      sourceLabel: "verified Runtime Trace",
+    });
+    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["square", "decimal"]);
+
+    const runtimeLeaf = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
+    if (!runtimeLeaf) throw new Error("Runtime Trace fixture has no drawable leaf.");
+    const substitutedRoot = {
+      ...run,
+      roots: run.roots.map((root, index) => (index === 0 ? { ...root, entityId: runtimeLeaf.id } : root)),
+    };
+    const rejected = createServerPreviewSnapshotProviderV1({
+      fetcher: vi.fn(async () => jsonResponse(substitutedRoot)),
+      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+    });
+    await expect(rejected.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toThrow(
+      "exact nested Square and Decimal groups",
+    );
+  });
+
   it("posts the full request identity and returns independently correlated engine and publication revisions", async () => {
     const run = await verifiedRun();
     const { fetcher, provider } = providerReturning(run);
