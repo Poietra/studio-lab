@@ -5,6 +5,13 @@ import { join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
+import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
+import { captureRetainedWebGpuFramesV1 } from "./runtime-trace-webgpu-readback";
+import {
+  compareSquareToCircleCairoWebGpuFramesV1,
+  type SquareToCircleWebGpuFrameV1,
+} from "./square-to-circle-cairo-parity";
+import { SQUARE_TO_CIRCLE_CAIRO_REFERENCE_SAMPLES_V1 } from "./square-to-circle-cairo-reference";
 
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
 const SOURCE_PATH = "example_scenes/basic.py";
@@ -24,6 +31,12 @@ const RANDOM_SAMPLE_TIMES = [
   3,
   CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
 ] as const;
+const CAIRO_PARITY_REQUIRED = process.env.POIETRA_SQUARE_TO_CIRCLE_CAIRO_PARITY_REQUIRED === "1";
+const CAIRO_READBACK_SAMPLES = SQUARE_TO_CIRCLE_CAIRO_REFERENCE_SAMPLES_V1.map(([id, sampleTime]) => ({
+  id,
+  packetId: `square-to-circle:full-rgba:${id}`,
+  sampleTime,
+}));
 
 type SnapshotRunBody = Readonly<{
   revision?: number;
@@ -335,6 +348,57 @@ function hasVisiblePixel(samples: readonly (readonly number[])[]) {
   return samples.some(([red = 0, green = 0, blue = 0]) => Math.max(red, green, blue) > 8);
 }
 
+async function compareWithIndependentCairo(
+  frames: readonly SquareToCircleWebGpuFrameV1[],
+  candidate?: Readonly<{ sourceHash: string; sourceText: string }>,
+) {
+  const outputRoot =
+    process.env.POIETRA_SQUARE_TO_CIRCLE_CAIRO_PARITY_OUTPUT_DIR ?? "test-results/square-to-circle-cairo-parity";
+  return withGeneratedRuntimeTraceCairoReferenceV1({
+    generatorPath: "scripts/generate-square-to-circle-cairo-reference.py",
+    read: (referenceRoot) =>
+      compareSquareToCircleCairoWebGpuFramesV1({
+        cairoReferenceRoot: referenceRoot,
+        expectedSourceSha256: candidate?.sourceHash ?? OFFICIAL_SOURCE_SHA256,
+        frames,
+        outputRoot: `${outputRoot}/${candidate ? "candidate" : "official"}`,
+      }),
+    ...(candidate ? { sourceText: candidate.sourceText } : {}),
+    temporaryPrefix: "poietra-square-to-circle-cairo-parity-",
+  });
+}
+
+async function expectIndependentCairoParity(
+  page: Page,
+  input: Readonly<{
+    bundle: SceneIrBundleV1;
+    candidate?: Readonly<{ sourceHash: string; sourceText: string }>;
+    revision: string;
+  }>,
+) {
+  const capture = await captureRetainedWebGpuFramesV1(page, {
+    bundle: input.bundle,
+    revision: input.revision,
+    samples: CAIRO_READBACK_SAMPLES,
+    viewport: VIEWPORT,
+  });
+  expect(capture.capture).toEqual({
+    installCount: 1,
+    policy: "one-retained-engine",
+    renderSubmissionCounts: CAIRO_READBACK_SAMPLES.map(() => 1),
+  });
+  const frames = capture.frames.map((frame) => ({
+    id: frame.id as SquareToCircleWebGpuFrameV1["id"],
+    rgba: frame.rgba,
+    sampleTime: frame.requestSampleTime,
+  }));
+  const comparisons = await compareWithIndependentCairo(frames, input.candidate);
+  expect(
+    comparisons.filter(({ passed }) => !passed),
+    JSON.stringify(comparisons, null, 2),
+  ).toEqual([]);
+}
+
 test("round-trips an official SquareToCircle V8 position edit through real Manim and retained WebGPU", async ({
   page,
 }) => {
@@ -464,6 +528,10 @@ test("round-trips an official SquareToCircle V8 position edit through real Manim
   }
   const root = forward.get(CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME);
   expect(root?.evidence.samples[0], "the winding-root frame must remain visibly rendered").not.toEqual([0, 0, 0, 255]);
+
+  if (CAIRO_PARITY_REQUIRED) {
+    await expectIndependentCairoParity(page, { bundle: run.bundle, revision: run.snapshotHash });
+  }
 
   for (const sampleTime of RANDOM_SAMPLE_TIMES) {
     // The user-facing range input intentionally snaps to 10 ms. Exact root
@@ -612,5 +680,13 @@ test("round-trips an official SquareToCircle V8 position edit through real Manim
     expect(after[1] - before[1]).toBeCloseTo(clipTranslation.y, 6);
     expect(after[2] - before[2]).toBeCloseTo(clipTranslation.x, 6);
     expect(after[3] - before[3]).toBeCloseTo(clipTranslation.y, 6);
+  }
+
+  if (CAIRO_PARITY_REQUIRED) {
+    await expectIndependentCairoParity(page, {
+      bundle: edited.bundle,
+      candidate: { sourceHash: candidateSourceHash, sourceText: candidateSource },
+      revision: edited.snapshotHash,
+    });
   }
 });

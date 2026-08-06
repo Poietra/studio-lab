@@ -39,6 +39,7 @@
     "test:e2e:preview:real:image": "POIETRA_E2E_REAL_PREVIEW_PROFILE=4 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mixed": "POIETRA_E2E_REAL_PREVIEW_PROFILE=7 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:square-to-circle": "POIETRA_E2E_REAL_PREVIEW_PROFILE=8 playwright test --config playwright.real-preview.config.ts",
+    "test:e2e:preview:real:square-to-circle:cairo-parity": "POIETRA_E2E_REAL_PREVIEW_PROFILE=8 POIETRA_SQUARE_TO_CIRCLE_CAIRO_PARITY_REQUIRED=1 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:warp-square": "POIETRA_E2E_REAL_PREVIEW_PROFILE=9 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:line-joints": "POIETRA_E2E_REAL_PREVIEW_PROFILE=10 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:spiral-in": "POIETRA_E2E_REAL_PREVIEW_PROFILE=11 playwright test --config playwright.real-preview.config.ts",

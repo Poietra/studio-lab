@@ -63,6 +63,11 @@ const externalBaseUrl = (() => {
   }
   return url.origin;
 })();
+if (snapshotProfile === "8" && externalBaseUrl) {
+  throw new Error(
+    "The real SquareToCircle V8 E2E mutates its isolated source harness and cannot target an external server.",
+  );
+}
 
 function resolveManimCommand() {
   const explicit = process.env.POIETRA_MANIM_COMMAND?.trim();
