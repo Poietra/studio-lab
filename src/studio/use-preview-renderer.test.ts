@@ -708,6 +708,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     const motionRootId = "runtime-trace-motion-root";
     const squareRootId = "runtime-trace-square-root";
     const decimalRootId = "runtime-trace-decimal-root";
+    const unverifiedRootId = "runtime-trace-unverified-root";
     const glyphId = "runtime-trace-glyph";
     const group = {
       ...leaf,
@@ -718,6 +719,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       { ...group, id: motionRootId, parentId: null },
       { ...group, id: squareRootId, parentId: motionRootId },
       { ...group, id: decimalRootId, parentId: motionRootId },
+      { ...group, id: unverifiedRootId, parentId: motionRootId },
       { ...leaf, id: glyphId, parentId: decimalRootId },
     ];
     const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
@@ -742,12 +744,35 @@ describe("studioPreviewInteractionAuthorityV1", () => {
           },
         },
       },
-      sourceRuntimeIdentity: identity,
+      sourceRuntimeIdentity: new Map([...identity].filter(([name]) => name === "square" || name === "decimal")),
     } as StudioVerifiedPreviewSnapshotV1;
 
     const authority = studioPreviewInteractionAuthorityV1(runtimeTrace);
-    expect(authority).toEqual({ kind: "selection-only", reason: "runtime-trace-preview-only" });
+    expect(authority).toEqual({
+      kind: "selection-only",
+      reason: "runtime-trace-preview-only",
+      verifiedRuntimeEntityIds: [squareRootId, decimalRootId],
+    });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([squareRootId, decimalRootId]);
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+          ["title", { bindingId: "binding:title", entityId: squareRootId, sourceName: "title" }],
+          ["basel", { bindingId: "binding:basel", entityId: decimalRootId, sourceName: "basel" }],
+        ]),
+        authority,
+        entities,
+      ),
+    ).toEqual([squareRootId, decimalRootId]);
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+          ["unverified", { bindingId: "binding:unverified", entityId: unverifiedRootId, sourceName: "unverified" }],
+        ]),
+        authority,
+        entities,
+      ),
+    ).toEqual([]);
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
   });
 
@@ -1150,6 +1175,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
       kind: "selection-only",
       reason: "runtime-trace-preview-only",
+      verifiedRuntimeEntityIds: trace.roots.map(({ id }) => id),
     });
   });
 

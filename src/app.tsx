@@ -813,7 +813,18 @@ export function App({
       sourceTimingResolutionDialog.current?.close();
     }
   }, [sourceDurationBasisMismatch, sourceDurationSessionKey]);
+  function rejectSelectionOnlyPreviewMutation() {
+    if (!previewSelectionOnly) return false;
+    setDraftError("This verified preview is selection-only and cannot authorize source changes.");
+    setIsPlaying(false);
+    return true;
+  }
+
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
+    // This is the common authoring boundary for pointer, Inspector, timeline,
+    // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
+    // presentation evidence and can never authorize a Program.
+    if (rejectSelectionOnlyPreviewMutation()) return false;
     if (editorDocumentAuthority.enabled && !editorDocumentAuthority.canAuthor()) {
       setDraftError(editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
       setIsPlaying(false);
@@ -1469,6 +1480,9 @@ export function App({
 
   async function applyDraft() {
     if (!draftProgram || !renderCandidate || draftApplyPending) return;
+    // A draft may predate preview activation; keep the final source-export
+    // boundary fail-closed as well as blocking new drafts in `stageDraft`.
+    if (rejectSelectionOnlyPreviewMutation()) return;
     const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setDraftError(initialLifecycleBlocker);
@@ -1662,7 +1676,7 @@ export function App({
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      installCanonicalDraft(validated.record);
+      if (!installCanonicalDraft(validated.record)) return false;
       setDurationError(null);
       return true;
     } catch (error) {
@@ -1678,6 +1692,7 @@ export function App({
     workingLifetimeStart: number,
     target: Readonly<{ end: number; start: number }>,
   ) {
+    if (rejectSelectionOnlyPreviewMutation()) return false;
     if (!projectedActiveScene || !draftSourceScene) return false;
     if (draftProgram) {
       const message = "Apply or discard the current draft before editing an object lifetime.";
@@ -1745,10 +1760,14 @@ export function App({
         const validated = validatedProgramRecord(validation);
         if (validated.kind === "invalid") throw new Error(validated.message);
         assertCompatibleWithAppliedPrograms(validated.record, owner);
-        installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
-          index: owner.index,
-          original: owner.record,
-        });
+        if (
+          !installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
+            index: owner.index,
+            original: owner.record,
+          })
+        ) {
+          return false;
+        }
         setLifetimeEditMessage(null);
         return true;
       }
@@ -1803,13 +1822,17 @@ export function App({
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
       assertCompatibleWithAppliedPrograms(validated.record, existing);
-      installCanonicalDraft(
-        validated.record,
-        [entityId],
-        preceding?.canonical ?? appliedCanonicalPrograms,
-        null,
-        existing ? { index: existing.index, original: existing.record } : null,
-      );
+      if (
+        !installCanonicalDraft(
+          validated.record,
+          [entityId],
+          preceding?.canonical ?? appliedCanonicalPrograms,
+          null,
+          existing ? { index: existing.index, original: existing.record } : null,
+        )
+      ) {
+        return false;
+      }
       setLifetimeEditMessage(null);
       return true;
     } catch (error) {
@@ -1821,6 +1844,7 @@ export function App({
   }
 
   function deleteSelection() {
+    if (rejectSelectionOnlyPreviewMutation()) return false;
     if (!draftBaseState || !draftSourceScene || selectedObjectIds.length === 0) return false;
     if (draftProgram) {
       const ownsSelectedDraftEntity = selectedObjectIds.some((entityId) =>
@@ -1851,8 +1875,7 @@ export function App({
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      installCanonicalDraft(validated.record, selectedObjectIds);
-      return true;
+      return installCanonicalDraft(validated.record, selectedObjectIds);
     } catch (error) {
       setDraftError(error instanceof Error ? error.message : "The selected objects could not be deleted.");
       return false;
@@ -1886,6 +1909,7 @@ export function App({
   }
 
   function duplicateSelection() {
+    if (rejectSelectionOnlyPreviewMutation()) return false;
     const inputs = editableEntities.flatMap((entity) => {
       if (!selectedSet.has(entity.id) || !entity.present) return [];
       const input = duplicateEntityInput(entity);
