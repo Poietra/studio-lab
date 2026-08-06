@@ -132,7 +132,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     );
   });
 
-  it("requires every sealed resource and stable draw geometry to be used", () => {
+  it("requires every sealed resource to be used while allowing content-addressed geometry changes", () => {
     const unusedAppearance = fastManimRuntimeTraceV2Fixture();
     const appearance = {
       fill: { color: { alpha: 1, blue: 0.25, green: 0.5, red: 0.75 }, rule: "nonzero" as const },
@@ -159,7 +159,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     const unstablePath = fastManimRuntimeTraceV2Fixture();
     unstablePath.frames[1]!.draws[0]!.pathId = unstablePath.resources.paths[1]!.id;
     sealFastManimRuntimeTraceV2Fixture(unstablePath);
-    expect(fastManimRuntimeTraceV2Schema.safeParse(unstablePath).success).toBe(false);
+    expect(fastManimRuntimeTraceV2Schema.safeParse(unstablePath).success).toBe(true);
   });
 
   it("allows invisible partial fills but rejects visible partial fills", () => {

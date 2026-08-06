@@ -130,7 +130,7 @@ function drawTopologyRuns(draws: readonly RuntimeTraceDrawV2[], paths: ReadonlyM
     if (!path) failSemantic(`Runtime Trace V2 draw ${draw.drawId} references a missing path.`);
     const topology = pathTopology(path);
     let run = mutableRuns.at(-1);
-    if (!run || run.topology !== topology) {
+    if (!run || run.topology !== topology || run.frameIndexes.at(-1) !== frameIndex - 1) {
       run = { draws: [], frameIndexes: [], paths: [], topology };
       mutableRuns.push(run);
     }

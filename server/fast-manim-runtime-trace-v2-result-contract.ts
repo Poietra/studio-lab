@@ -332,7 +332,7 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
   const appearances = new Map(trace.resources.appearances.map((appearance) => [appearance.id, appearance]));
   const pathIds = new Set(trace.resources.paths.map(({ id }) => id));
   const referencedAppearanceIds = new Set<string>();
-  const stablePaths = new Map<string, string>();
+  const referencedPathIds = new Set<string>();
   trace.frames.forEach((frame, frameIndex) => {
     if (frame.frameIndex !== frameIndex) {
       context.addIssue({
@@ -371,15 +371,7 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
           path: ["frames", frameIndex, "draws", drawIndex, "pathId"],
         });
       }
-      const stablePath = stablePaths.get(draw.drawId);
-      if (stablePath === undefined) stablePaths.set(draw.drawId, draw.pathId);
-      else if (stablePath !== draw.pathId) {
-        context.addIssue({
-          code: "custom",
-          message: "Runtime Trace V2 full draw geometry changed between frames.",
-          path: ["frames", frameIndex, "draws", drawIndex, "pathId"],
-        });
-      }
+      referencedPathIds.add(draw.pathId);
       if (expected.role === "basel" && draw.pathTrim.end !== 1) {
         context.addIssue({
           code: "custom",
@@ -427,11 +419,10 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
       path: ["resources", "appearances"],
     });
   }
-  const stablePathIds = new Set(stablePaths.values());
-  if (stablePathIds.size !== pathIds.size || [...pathIds].some((pathId) => !stablePathIds.has(pathId))) {
+  if (referencedPathIds.size !== pathIds.size || [...pathIds].some((pathId) => !referencedPathIds.has(pathId))) {
     context.addIssue({
       code: "custom",
-      message: "Runtime Trace V2 path resources must exactly match stable draw geometry.",
+      message: "Runtime Trace V2 path resources must all be referenced by a draw.",
       path: ["resources", "paths"],
     });
   }
