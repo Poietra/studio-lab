@@ -1,4 +1,10 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { expect, type Page, test } from "@playwright/test";
+import {
+  assertRealManimEditabilityCensusCaseFloor,
+  REAL_MANIM_EDITABILITY_CAPABILITIES,
+} from "../scripts/real-manim-editability-census-report";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { compareOpeningManimCairoWebGpuFramesV2, type OpeningManimWebGpuFrameV2 } from "./opening-manim-cairo-parity";
 import { OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 } from "./opening-manim-cairo-reference";
@@ -161,6 +167,28 @@ async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFr
   });
 }
 
+async function exportedOriginalSource(page: Page) {
+  const exportButton = page.getByRole("button", { name: "Export .py" });
+  await expect(exportButton).toBeEnabled({ timeout: 30_000 });
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/api/manim/projects/real-preview-harness/export",
+  );
+  const downloadPromise = page.waitForEvent("download");
+  await exportButton.click();
+  const [download, response] = await Promise.all([downloadPromise, responsePromise]);
+  expect(response.ok()).toBe(true);
+  expect(response.request().postDataJSON()).toEqual({
+    projectId: "real-preview-harness",
+    sourceHash: SOURCE_SHA256,
+    sourcePath: SOURCE_PATH,
+  });
+  const path = await download.path();
+  if (!path) throw new Error("The exported OpeningManim source was not persisted by Playwright.");
+  return readFile(path);
+}
+
 test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
   test.setTimeout(300_000);
   const run = await verifiedOpeningRuntimeTrace(page);
@@ -260,6 +288,17 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
   await expect(title).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByRole("button", { name: /Resize title/ })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Render program" })).toBeDisabled();
+
+  // Selection-only Runtime Trace evidence cannot manufacture an edited
+  // candidate, while the independently authorized original-source download
+  // remains available and must preserve every source byte.
+  const [expectedOriginalSource, downloadedOriginalSource] = await Promise.all([
+    readFile(new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url)),
+    exportedOriginalSource(page),
+  ]);
+  expect(downloadedOriginalSource.equals(expectedOriginalSource)).toBe(true);
+  expect(createHash("sha256").update(downloadedOriginalSource).digest("hex")).toBe(SOURCE_SHA256);
 
   const studioWorkerRequestKinds = await page.evaluate(() => {
     const observed = (
@@ -368,4 +407,18 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
       JSON.stringify(comparisons, null, 2),
     ).toEqual([]);
   }
+
+  const editabilityBaseline = JSON.parse(
+    await readFile(new URL("../fixtures/real-manim-editability-census-v1/baseline.json", import.meta.url), "utf8"),
+  ) as unknown;
+  const caseId = "fast-manim-basic/OpeningManim/runtime-trace-v2" as const;
+  assertRealManimEditabilityCensusCaseFloor(
+    caseId,
+    REAL_MANIM_EDITABILITY_CAPABILITIES.map((capability, index) =>
+      index < 2
+        ? { capability, caseId, status: "proven" as const }
+        : { blocker: "source-edit-anchor-unavailable" as const, capability, caseId, status: "blocked" as const },
+    ),
+    editabilityBaseline,
+  );
 });
