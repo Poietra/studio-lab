@@ -8,6 +8,13 @@ import {
   renderRequestId,
 } from "./contracts";
 
+export type VerifiedRuntimeTraceTerminalEditProofV1 =
+  | Readonly<{ profile: "opening-grid-title-terminal-v2"; sourceAnchor: 14 }>
+  | Readonly<{ profile: "updaters-terminal-v1"; sourceAnchor: 5 }>;
+
+const RUNTIME_TRACE_TERMINAL_SOURCE_PATH_V1 = "example_scenes/basic.py";
+const RUNTIME_TRACE_TERMINAL_SOURCE_HASH_V1 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+
 export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
   cameraCenter?: ProgramRenderRequest["cameraCenter"];
@@ -21,8 +28,8 @@ export type RenderProgramCandidate = Readonly<{
   sourcePath: string;
   /** Producer-backed t=0 authority for one exact initial-edit slice. */
   verifiedInitialEditAnchor?: 0;
-  /** Correlated Runtime Trace authority for the sealed Updaters terminal edit. */
-  verifiedRuntimeTraceTerminalEditAnchor?: 5;
+  /** Correlated Runtime Trace authority for one sealed terminal edit profile. */
+  verifiedRuntimeTraceTerminalEdit?: VerifiedRuntimeTraceTerminalEditProofV1;
   viewport: ProgramRenderRequest["viewport"];
 }>;
 
@@ -67,8 +74,28 @@ export function renderCandidateRequestKey(candidate: RenderProgramCandidate) {
     anchors: candidate.anchors,
     request: renderCandidateRequest(candidate),
     verifiedInitialEditAnchor: candidate.verifiedInitialEditAnchor ?? null,
-    verifiedRuntimeTraceTerminalEditAnchor: candidate.verifiedRuntimeTraceTerminalEditAnchor ?? null,
+    verifiedRuntimeTraceTerminalEdit: candidate.verifiedRuntimeTraceTerminalEdit ?? null,
   });
+}
+
+function verifiedRuntimeTraceTerminalEditMatches(candidate: RenderProgramCandidate, program: CanonicalEditProgram) {
+  const proof = candidate.verifiedRuntimeTraceTerminalEdit;
+  if (
+    !proof ||
+    candidate.sourcePath !== RUNTIME_TRACE_TERMINAL_SOURCE_PATH_V1 ||
+    candidate.sourceHash !== RUNTIME_TRACE_TERMINAL_SOURCE_HASH_V1 ||
+    program.anchor.capturedPlayhead !== proof.sourceAnchor ||
+    program.anchor.resolvedSeconds !== proof.sourceAnchor ||
+    !(
+      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === proof.sourceAnchor) ||
+      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === proof.sourceAnchor)
+    )
+  ) {
+    return false;
+  }
+  return proof.profile === "updaters-terminal-v1"
+    ? candidate.sceneName === "UpdatersExample" && proof.sourceAnchor === 5
+    : candidate.sceneName === "OpeningManim" && proof.sourceAnchor === 14;
 }
 
 export function renderCandidateMissingAnchor(candidate: RenderProgramCandidate | null) {
@@ -77,7 +104,7 @@ export function renderCandidateMissingAnchor(candidate: RenderProgramCandidate |
       (program) =>
         !candidate.anchors.some((anchor) => Math.abs(anchor - program.anchor.resolvedSeconds) < 0.0005) &&
         candidate.verifiedInitialEditAnchor !== program.anchor.resolvedSeconds &&
-        candidate.verifiedRuntimeTraceTerminalEditAnchor !== program.anchor.resolvedSeconds,
+        !verifiedRuntimeTraceTerminalEditMatches(candidate, program),
     )?.anchor.resolvedSeconds ?? null
   );
 }

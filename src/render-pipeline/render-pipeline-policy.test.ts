@@ -146,7 +146,10 @@ describe("render pipeline lifecycle policy", () => {
       anchors: [],
       program: terminalProgram,
       programs: [terminalProgram],
-      verifiedRuntimeTraceTerminalEditAnchor: 5,
+      sceneName: "UpdatersExample",
+      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      sourcePath: "example_scenes/basic.py",
+      verifiedRuntimeTraceTerminalEdit: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
     });
     const otherTime = {
       ...exact,
@@ -156,7 +159,41 @@ describe("render pipeline lifecycle policy", () => {
 
     expect(renderCandidateMissingAnchor(exact)).toBeNull();
     expect(renderCandidateMissingAnchor(otherTime)).toBe(4.99);
-    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedRuntimeTraceTerminalEditAnchor");
+    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedRuntimeTraceTerminalEdit");
+  });
+
+  it("binds the OpeningManim terminal proof to its exact Scene and t=14 anchor", () => {
+    const terminalProgram = {
+      ...program(),
+      anchor: {
+        ...program().anchor,
+        capturedPlayhead: 14,
+        resolvedSeconds: 14,
+        source: { kind: "playhead" as const, referenceSeconds: 14 },
+      },
+    };
+    const exact = candidate({
+      anchors: [],
+      program: terminalProgram,
+      programs: [terminalProgram],
+      sceneName: "OpeningManim",
+      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      sourcePath: "example_scenes/basic.py",
+      verifiedRuntimeTraceTerminalEdit: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
+    });
+
+    expect(renderCandidateMissingAnchor(exact)).toBeNull();
+    expect(renderCandidateMissingAnchor({ ...exact, sceneName: "UpdatersExample" })).toBe(14);
+    expect(renderCandidateMissingAnchor({ ...exact, sourceHash: "b".repeat(64) })).toBe(14);
+    expect(
+      renderCandidateMissingAnchor({
+        ...exact,
+        verifiedRuntimeTraceTerminalEdit: {
+          profile: "updaters-terminal-v1",
+          sourceAnchor: 5,
+        },
+      }),
+    ).toBe(14);
   });
 
   it.each([
