@@ -24,6 +24,8 @@ pub const MAX_VIEWPORT_PIXELS_V1: u64 = 33_554_432;
 pub const MAX_VALIDATION_ISSUES_V1: usize = 128;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 const RUNTIME_TRACE_FRAME_RATE_V1: f64 = 60.0;
+const MAX_PATH_MORPH_KEYFRAMES_V1: usize = 256;
+const MAX_RUNTIME_TRACE_V3_PATH_MORPH_KEYFRAMES: usize = 900;
 
 fn omitted_issues_marker() -> ValidationIssue {
     ValidationIssue {
@@ -780,15 +782,15 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                     "Runtime Trace V1 requires its sealed six-second presentation grid",
                 );
             }
-            RuntimeTraceVersionV1::V2
+            RuntimeTraceVersionV1::V2 | RuntimeTraceVersionV1::V3
                 if !runtime_trace_duration_is_on_frame_grid_v2(scene.duration) =>
             {
                 validator.issue(
                     "$.duration",
-                    "Runtime Trace V2 duration must contain a positive, JavaScript-safe whole number of 60 fps frames",
+                    "Runtime Trace V2/V3 duration must contain a positive, JavaScript-safe whole number of 60 fps frames",
                 );
             }
-            RuntimeTraceVersionV1::V1 | RuntimeTraceVersionV1::V2 => {}
+            RuntimeTraceVersionV1::V1 | RuntimeTraceVersionV1::V2 | RuntimeTraceVersionV1::V3 => {}
         }
     }
     validate_color(
@@ -1157,7 +1159,17 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                 }
                 validate_keyframes(
                     keyframes,
-                    256,
+                    if matches!(
+                        &scene.source,
+                        SceneSourceV1::ImportedManimRuntimeTrace {
+                            trace_version: RuntimeTraceVersionV1::V3,
+                            ..
+                        }
+                    ) {
+                        MAX_RUNTIME_TRACE_V3_PATH_MORPH_KEYFRAMES
+                    } else {
+                        MAX_PATH_MORPH_KEYFRAMES_V1
+                    },
                     scene.duration,
                     &format!("{path}.keyframes"),
                     &mut validator,

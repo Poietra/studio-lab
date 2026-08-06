@@ -79,6 +79,7 @@ pub enum RuntimeTraceVersionV1 {
     #[default]
     V1,
     V2,
+    V3,
 }
 
 impl Serialize for RuntimeTraceVersionV1 {
@@ -89,6 +90,7 @@ impl Serialize for RuntimeTraceVersionV1 {
         serializer.serialize_u8(match self {
             Self::V1 => 1,
             Self::V2 => 2,
+            Self::V3 => 3,
         })
     }
 }
@@ -101,8 +103,9 @@ impl<'de> Deserialize<'de> for RuntimeTraceVersionV1 {
         match deserialize_js_safe_u64(deserializer)? {
             1 => Ok(Self::V1),
             2 => Ok(Self::V2),
+            3 => Ok(Self::V3),
             version => Err(de::Error::custom(format!(
-                "unsupported fast-manim Runtime Trace version {version}; expected 1 or 2"
+                "unsupported fast-manim Runtime Trace version {version}; expected 1, 2, or 3"
             ))),
         }
     }
@@ -868,7 +871,9 @@ impl SceneIrV1 {
             const FRAME_RATE: f64 = 60.0;
             let final_frame = match trace_version {
                 RuntimeTraceVersionV1::V1 => 359.0,
-                RuntimeTraceVersionV1::V2 => (self.duration * FRAME_RATE).round() - 1.0,
+                RuntimeTraceVersionV1::V2 | RuntimeTraceVersionV1::V3 => {
+                    (self.duration * FRAME_RATE).round() - 1.0
+                }
             };
             let scaled = requested_time * FRAME_RATE;
             let nearest_frame = scaled.round();

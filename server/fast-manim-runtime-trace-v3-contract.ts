@@ -95,14 +95,17 @@ function digestValueV3(value: unknown): unknown {
   throw new TypeError("Runtime Trace V3 digest input must be finite plain JSON.");
 }
 
-function digestDomainV3(domain: string, value: unknown) {
+export function digestFastManimRuntimeTraceDomainV3(domain: string, value: unknown) {
   return createHash("sha256")
     .update(canonicalJsonV1({ domain, value: digestValueV3(value) }))
     .digest("hex");
 }
 
 export function digestFastManimRuntimeTraceConfigV3(value: FastManimRuntimeTraceConfigV3) {
-  return digestDomainV3("poietra.fast-manim-runtime-trace-config.v3", fastManimRuntimeTraceConfigV3Schema.parse(value));
+  return digestFastManimRuntimeTraceDomainV3(
+    "poietra.fast-manim-runtime-trace-config.v3",
+    fastManimRuntimeTraceConfigV3Schema.parse(value),
+  );
 }
 
 function isUnicodeScalarSequence(value: string) {
