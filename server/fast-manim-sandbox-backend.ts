@@ -6,6 +6,11 @@ import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { opaqueIdV1Schema, sha256V1Schema } from "../src/engine/primitives";
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
+  type FastManimRuntimeTraceProducerRequestV1,
+  fastManimRuntimeTraceProducerRequestV1Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
+} from "./fast-manim-runtime-trace-contract";
+import {
   type FastManimSnapshotProducerRequestV1,
   fastManimSnapshotProducerRequestV1Schema,
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
@@ -27,9 +32,13 @@ export const FAST_MANIM_SANDBOX_STATUS_VERSION_V1 = 1 as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.fast-manim-sandbox-request" as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3 = "poietra.fast-manim-sandbox-request" as const;
 export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 64 * 1024;
+export const MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES = Math.max(
+  MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+  MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
+);
 const MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES = 4 * Math.ceil(MAX_PROJECT_PNG_BYTES_V1 / 3);
 export const MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES =
-  MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES + MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES + 64 * 1024;
+  MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES + MAX_FAST_MANIM_SANDBOX_PNG_BASE64_BYTES + 64 * 1024;
 export const MAX_FAST_MANIM_SANDBOX_STATUS_CANONICAL_JSON_BYTES = 4 * 1024;
 export const MAX_FAST_MANIM_SANDBOX_STATUS_FIELD_UTF8_BYTES = 512;
 /** Production adapters must enforce this limit before parsing a raw status response as JSON. */
@@ -120,6 +129,16 @@ export type FastManimSnapshotProducerOrSelectionRequestV1 =
 export const fastManimSnapshotProducerOrSelectionRequestV1Schema = z.union([
   fastManimSnapshotProducerRequestV1Schema,
   fastManimSnapshotProfileSelectionRequestV1Schema,
+]);
+
+export type FastManimSandboxProducerRequestV1 =
+  | FastManimSnapshotProducerOrSelectionRequestV1
+  | FastManimRuntimeTraceProducerRequestV1;
+
+export const fastManimSandboxProducerRequestV1Schema = z.union([
+  fastManimSnapshotProducerRequestV1Schema,
+  fastManimSnapshotProfileSelectionRequestV1Schema,
+  fastManimRuntimeTraceProducerRequestV1Schema,
 ]);
 
 const fastManimSandboxCapabilityV1Schema = z.enum(FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1);
@@ -282,26 +301,34 @@ export function resolveFastManimSandboxReadiness(
  * verified PNG while copyProducerRequestBytes() still returns the unchanged
  * strict producer JSON. No host workspace or object-store locator enters either
  * form. Producer-owned profile selection remains raw without assets and uses
- * the V3 attachment envelope when its offer includes the PNG profile.
+ * the V3 attachment envelope when its offer includes the PNG profile. Runtime
+ * Trace requests are a separate plain V1 schema with their own byte ceiling.
  */
 export class FastManimSandboxRequestBundleV1 {
   readonly byteLength: number;
+  readonly producerKind: "runtime-trace" | "snapshot";
   readonly requestDigest: string;
   readonly version: 1 | 2 | 3;
   readonly #bytes: Uint8Array;
   readonly #pngBytes: Uint8Array | undefined;
   readonly #producerRequestBytes: Uint8Array;
 
-  constructor(value: FastManimSnapshotProducerOrSelectionRequestV1, options?: Readonly<{ pngBytes: Uint8Array }>) {
-    const request = fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(value);
+  constructor(value: FastManimSandboxProducerRequestV1, options?: Readonly<{ pngBytes: Uint8Array }>) {
+    const request = fastManimSandboxProducerRequestV1Schema.parse(value);
+    const runtimeTraceRequest = request.schema === "poietra.fast-manim-runtime-trace-producer-request";
+    const plainRequestMaximumBytes = runtimeTraceRequest
+      ? MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1
+      : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES;
     const producerRequestBytes = copyFastManimSandboxUint8ArrayV1(
       Buffer.from(canonicalJsonV1(request), "utf8"),
-      MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+      plainRequestMaximumBytes,
     );
     const selectionRequest = request.schema === "poietra.fast-manim-snapshot-profile-selection-request";
-    const offersPng = selectionRequest
-      ? request.policy.candidates.some(({ snapshotVersion }) => snapshotVersion === 4)
-      : request.snapshotVersion === 4;
+    const offersPng = runtimeTraceRequest
+      ? false
+      : selectionRequest
+        ? request.policy.candidates.some(({ snapshotVersion }) => snapshotVersion === 4)
+        : request.snapshotVersion === 4;
     if (offersPng && options === undefined) {
       throw new TypeError("Snapshot producer profile 4 requires one verified image.png asset.");
     }
@@ -330,13 +357,13 @@ export class FastManimSandboxRequestBundleV1 {
       const envelope: FastManimSandboxRequestEnvelopeV2 | FastManimSandboxRequestEnvelopeV3 = selectionRequest
         ? {
             assets: [asset],
-            producerRequest: request,
+            producerRequest: fastManimSnapshotProfileSelectionRequestV1Schema.parse(request),
             schema: FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3,
             version: 3,
           }
         : {
             assets: [asset],
-            producerRequest: request,
+            producerRequest: fastManimSnapshotProducerRequestV1Schema.parse(request),
             schema: FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2,
             version: 2,
           };
@@ -345,7 +372,7 @@ export class FastManimSandboxRequestBundleV1 {
     }
     const owned = copyFastManimSandboxUint8ArrayV1(
       encoded,
-      this.version === 1 ? MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES : MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
+      this.version === 1 ? plainRequestMaximumBytes : MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
     );
     const ownedByteLength = inspectedFastManimSandboxUint8ArrayByteLengthV1(owned);
     if (ownedByteLength === null) throw new Error("The server-owned sandbox request copy is not a Uint8Array.");
@@ -353,6 +380,7 @@ export class FastManimSandboxRequestBundleV1 {
     this.#pngBytes = pngBytes;
     this.#producerRequestBytes = producerRequestBytes;
     this.byteLength = ownedByteLength;
+    this.producerKind = runtimeTraceRequest ? "runtime-trace" : "snapshot";
     this.requestDigest = createHash("sha256").update(owned).digest("hex");
     Object.freeze(this);
   }
@@ -372,7 +400,7 @@ export class FastManimSandboxRequestBundleV1 {
       ? new FastManimSandboxRequestBundleV1(envelope.producerRequest, {
           pngBytes: Uint8Array.from(Buffer.from(envelope.assets[0].bytesBase64, "base64")),
         })
-      : new FastManimSandboxRequestBundleV1(fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(parsed));
+      : new FastManimSandboxRequestBundleV1(fastManimSandboxProducerRequestV1Schema.parse(parsed));
     if (!Buffer.from(bundle.copyBytes()).equals(Buffer.from(bytes))) {
       throw new TypeError("Sandbox request bytes are not in canonical sealed form.");
     }
@@ -390,14 +418,23 @@ export class FastManimSandboxRequestBundleV1 {
   }
 
   copyProducerRequestBytes() {
-    return copyFastManimSandboxUint8ArrayV1(this.#producerRequestBytes, MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES);
+    return copyFastManimSandboxUint8ArrayV1(
+      this.#producerRequestBytes,
+      this.producerKind === "runtime-trace"
+        ? MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1
+        : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+    );
   }
 }
 
 export function verifyFastManimSandboxRequestBundleV1(bundle: FastManimSandboxRequestBundleV1) {
   const bytes = bundle.copyBytes();
   const maximumBytes =
-    bundle.version === 1 ? MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES : MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES;
+    bundle.version === 1
+      ? bundle.producerKind === "runtime-trace"
+        ? MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1
+        : MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES
+      : MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES;
   if (bytes.byteLength !== bundle.byteLength || bytes.byteLength > maximumBytes) return false;
   return createHash("sha256").update(bytes).digest("hex") === bundle.requestDigest;
 }

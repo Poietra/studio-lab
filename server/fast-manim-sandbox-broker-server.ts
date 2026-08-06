@@ -11,7 +11,7 @@ import {
   fastManimSandboxBackendControlErrorCode,
   fastManimSandboxBackendResultV1Schema,
   fastManimSandboxBackendStatusV1Schema,
-  fastManimSnapshotProducerOrSelectionRequestV1Schema,
+  fastManimSandboxProducerRequestV1Schema,
 } from "./fast-manim-sandbox-backend";
 import { acquireFastManimSandboxBrokerLeaseV1 } from "./fast-manim-sandbox-broker-lease";
 import {
@@ -255,7 +255,7 @@ function createBrokerConnection(
       const bytes = decodeFastManimSandboxBrokerRequestBytesV1(request.requestBytesBase64);
       if (createHash("sha256").update(bytes).digest("hex") !== request.requestDigest) throw new Error();
       bundle = FastManimSandboxRequestBundleV1.fromBytes(bytes);
-      const producer = fastManimSnapshotProducerOrSelectionRequestV1Schema.parse(
+      const producer = fastManimSandboxProducerRequestV1Schema.parse(
         JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bundle.copyProducerRequestBytes())),
       );
       if (producer.projectId !== request.identity.projectId || producer.requestId !== request.identity.requestId) {
