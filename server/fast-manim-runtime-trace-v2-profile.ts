@@ -39,8 +39,8 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "4ed7d01176438e612a8e9b6a080bf61ff906226e",
-    fastManimTree: "e1d62d7d0d4ceb238ea9afb68cfdedf1510e9a03",
+    fastManimCommit: "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3",
+    fastManimTree: "41516d8b866a891adb22f47064b9bba5545fae15",
     geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
     manimVersion: "0.20.1",
     semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",

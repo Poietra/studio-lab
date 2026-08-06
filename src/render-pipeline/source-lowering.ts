@@ -1,3 +1,4 @@
+import { MAX_COORDINATE } from "../engine/primitives";
 import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
@@ -2459,8 +2460,15 @@ function boundedUpdatersTerminalEditPlan(
       }
       const widthFactor = toWidth / fromWidth;
       const heightFactor = toHeight / fromHeight;
-      if (!Number.isFinite(widthFactor) || widthFactor <= 0 || !nearlyEqual(widthFactor, heightFactor)) {
-        updatersTerminalV1LoweringError("resize must have one finite positive uniform scale factor.");
+      if (
+        !Number.isFinite(widthFactor) ||
+        widthFactor <= 0 ||
+        widthFactor > MAX_COORDINATE ||
+        !nearlyEqual(widthFactor, heightFactor)
+      ) {
+        updatersTerminalV1LoweringError(
+          `resize must have one finite positive uniform scale factor at most ${MAX_COORDINATE}.`,
+        );
       }
       scale = widthFactor;
       continue;
@@ -2478,6 +2486,7 @@ function boundedUpdatersTerminalEditPlan(
 export type UpdatersTerminalSourceEditPlanV1 = Readonly<{
   anchorLine: number;
   moveTo: Readonly<{ x: number; y: number; z: 0 }> | null;
+  refreshDependentUpdater: boolean;
   scale: number | null;
   sourceTime: typeof UPDATERS_TERMINAL_SOURCE_TIME_V1;
 }>;
@@ -2499,6 +2508,8 @@ function parseCanonicalUpdatersMoveV1(statement: string) {
   if (
     !Number.isFinite(x) ||
     !Number.isFinite(y) ||
+    Math.abs(x) > MAX_COORDINATE ||
+    Math.abs(y) > MAX_COORDINATE ||
     formatPointCoordinate(x) !== match[1] ||
     formatPointCoordinate(y) !== match[2]
   ) {
@@ -2511,7 +2522,9 @@ function parseCanonicalUpdatersScaleV1(statement: string) {
   const match = statement.match(/^square\.scale\(([^()]+)\)$/);
   if (!match) return null;
   const scale = Number(match[1]);
-  if (!Number.isFinite(scale) || scale <= 0 || formatPositiveAmount(scale) !== match[1]) return null;
+  if (!Number.isFinite(scale) || scale <= 0 || scale > MAX_COORDINATE || formatPositiveAmount(scale) !== match[1]) {
+    return null;
+  }
   return scale;
 }
 
@@ -2549,7 +2562,7 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
     !block ||
     block.bodyIndent !== 8 ||
     statements.length < UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 1 ||
-    statements.length > UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 3 ||
+    statements.length > UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 4 ||
     UPDATERS_TERMINAL_BASE_STATEMENTS_V1.some((text, index) => statements[index]?.text !== text) ||
     wait?.text !== "self.wait()" ||
     directStatementLines.length !== statements.length ||
@@ -2568,9 +2581,17 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
     );
   }
 
+  const refreshDependentUpdater = editStatements.length > 0;
+  const transformStatements = refreshDependentUpdater ? editStatements.slice(0, -1) : editStatements;
+  if (refreshDependentUpdater && editStatements.at(-1)?.text !== "decimal.update(0)") {
+    updatersTerminalV1LoweringError(
+      "candidate edits must end with the exact `decimal.update(0)` dependent-updater refresh.",
+    );
+  }
+
   let moveTo: Readonly<{ x: number; y: number; z: 0 }> | null = null;
   let scale: number | null = null;
-  for (const [index, statement] of editStatements.entries()) {
+  for (const [index, statement] of transformStatements.entries()) {
     const parsedMove = parseCanonicalUpdatersMoveV1(statement.text);
     if (parsedMove && moveTo === null && scale === null && index === 0) {
       moveTo = parsedMove;
@@ -2582,6 +2603,9 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
       continue;
     }
     updatersTerminalV1LoweringError("candidate edits must be one canonical move followed by one canonical scale.");
+  }
+  if (refreshDependentUpdater && moveTo === null && scale === null) {
+    updatersTerminalV1LoweringError("the dependent-updater refresh requires one preceding terminal Square edit.");
   }
 
   const newline = candidateSource.includes("\r\n") ? "\r\n" : "\n";
@@ -2606,6 +2630,7 @@ function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: str
     plan: {
       anchorLine: wait.line - editStatements.length,
       moveTo,
+      refreshDependentUpdater,
       scale,
       sourceTime: UPDATERS_TERMINAL_SOURCE_TIME_V1,
     } satisfies UpdatersTerminalSourceEditPlanV1,
@@ -2623,7 +2648,7 @@ export function deriveUpdatersTerminalSourceEditPlanV1(
  * passed the same SourceAnalysis proof used by lowering. */
 export function recoverUpdatersTerminalOfficialSourceV1(candidateSource: string, sceneName: string) {
   const inspected = inspectUpdatersTerminalSourceV1(candidateSource, sceneName);
-  if (inspected.plan.moveTo === null && inspected.plan.scale === null) {
+  if ((inspected.plan.moveTo === null && inspected.plan.scale === null) || !inspected.plan.refreshDependentUpdater) {
     updatersTerminalV1LoweringError("candidate source must contain one supported terminal edit.");
   }
   return inspected.officialSource;
@@ -2691,9 +2716,28 @@ export function lowerUpdatersTerminalTransformSourceV1(
     updatersTerminalV1LoweringError("the target does not match the pinned source-bound Square identity.");
   }
   const { position, scale } = boundedUpdatersTerminalEditPlan(request, entries, binding.entityId);
+  const expectedMove =
+    position === null
+      ? null
+      : {
+          x: (request.cameraCenter?.x ?? 0) + (position.x / request.viewport.width - 0.5) * frame.width,
+          y: (request.cameraCenter?.y ?? 0) + (0.5 - position.y / request.viewport.height) * frame.height,
+          z: 0 as const,
+        };
+  if (
+    expectedMove !== null &&
+    (!Number.isFinite(expectedMove.x) ||
+      !Number.isFinite(expectedMove.y) ||
+      Math.abs(expectedMove.x) > MAX_COORDINATE ||
+      Math.abs(expectedMove.y) > MAX_COORDINATE)
+  ) {
+    updatersTerminalV1LoweringError(
+      `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
+    );
+  }
 
   const basePlan = deriveUpdatersTerminalSourceEditPlanV1(source, request.sceneName);
-  if (basePlan.moveTo !== null || basePlan.scale !== null) {
+  if (basePlan.moveTo !== null || basePlan.scale !== null || basePlan.refreshDependentUpdater) {
     updatersTerminalV1LoweringError("the pinned base source must not contain a prior terminal edit.");
   }
 
@@ -2708,25 +2752,19 @@ export function lowerUpdatersTerminalTransformSourceV1(
       ? []
       : [`${indentation}square.move_to(${pointExpression(position, frame, request.viewport)})`]),
     ...(scale === null ? [] : [`${indentation}square.scale(${formatPositiveAmount(scale)})`]),
+    `${indentation}decimal.update(0)`,
   ];
   lines.splice(basePlan.anchorLine, 0, ...insertedLines);
   const loweredSource = lines.join(newline);
   const derivedPlan = deriveUpdatersTerminalSourceEditPlanV1(loweredSource, request.sceneName);
-  const expectedMove =
-    position === null
-      ? null
-      : {
-          x: (request.cameraCenter?.x ?? 0) + (position.x / request.viewport.width - 0.5) * frame.width,
-          y: (request.cameraCenter?.y ?? 0) + (0.5 - position.y / request.viewport.height) * frame.height,
-          z: 0 as const,
-        };
   if (
     (expectedMove === null) !== (derivedPlan.moveTo === null) ||
     (expectedMove !== null &&
       derivedPlan.moveTo !== null &&
       (!nearlyEqual(expectedMove.x, derivedPlan.moveTo.x) || !nearlyEqual(expectedMove.y, derivedPlan.moveTo.y))) ||
     (scale === null) !== (derivedPlan.scale === null) ||
-    (scale !== null && derivedPlan.scale !== null && !nearlyEqual(scale, derivedPlan.scale))
+    (scale !== null && derivedPlan.scale !== null && !nearlyEqual(scale, derivedPlan.scale)) ||
+    !derivedPlan.refreshDependentUpdater
   ) {
     updatersTerminalV1LoweringError("the emitted source does not re-derive the requested terminal edit plan.");
   }

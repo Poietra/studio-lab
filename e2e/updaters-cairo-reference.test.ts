@@ -27,7 +27,7 @@ async function moveAndScaleCandidateSource() {
   );
   const anchor = "            run_time=5,\n        )\n        self.wait()\n\n\nclass SpiralInExample";
   const replacement =
-    "            run_time=5,\n        )\n        square.move_to((2, 1, 0))\n        square.scale(1.5)\n        self.wait()\n\n\nclass SpiralInExample";
+    "            run_time=5,\n        )\n        square.move_to((2, 1, 0))\n        square.scale(1.5)\n        decimal.update(0)\n        self.wait()\n\n\nclass SpiralInExample";
   const candidate = official.replace(anchor, replacement);
   if (candidate === official || candidate.includes(anchor)) {
     throw new Error("The UpdatersExample move-and-scale candidate source anchor is not unique.");

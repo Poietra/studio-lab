@@ -330,7 +330,7 @@ describe("Manim render request lowering", () => {
 
     expect(result.lowered.preflight?.kind).toBe("fast-manim-updaters-terminal-v1");
     expect(result.lowered.source).toContain(
-      "            run_time=5,\n        )\n        square.scale(1.5)\n        self.wait()",
+      "            run_time=5,\n        )\n        square.scale(1.5)\n        decimal.update(0)\n        self.wait()",
     );
   });
 

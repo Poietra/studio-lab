@@ -14,7 +14,10 @@ import {
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import {
+  canonicalFastManimRuntimeTraceCoordinateV1,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
+} from "./fast-manim-runtime-trace-contract";
 import {
   lowerFastManimRuntimeTraceProducerJsonV1,
   lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1,
@@ -641,7 +644,7 @@ describe("Runtime Trace preview routing", () => {
   async function verifiedEditedView() {
     const source = RUNTIME_TRACE_SOURCE_TEXT.replace(
       "            run_time=5,\n        )\n        self.wait()\n",
-      "            run_time=5,\n        )\n        square.move_to((1.25, 1.5, 0))\n        self.wait()\n",
+      "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        decimal.update(0)\n        self.wait()\n",
     );
     const producerRequest = runtimeTraceRequestFixture(source);
     const editedTrace = structuredClone(runtimeTraceFixture());
@@ -650,8 +653,12 @@ describe("Runtime Trace preview routing", () => {
       root.binding.id = fastManimSourceBindingIdentifierV1(editedTrace.sourceHash, editedTrace.sceneId, root.binding);
     });
     for (let frameIndex = 300; frameIndex < editedTrace.frames.length; frameIndex += 1) {
-      editedTrace.frames[frameIndex].motionY = 1.5;
-      editedTrace.frames[frameIndex].draws[0].localPosition.x = 1.25;
+      const frame = editedTrace.frames[frameIndex];
+      frame.motionY = 2.5;
+      frame.draws[0].localPosition.x = 1.25;
+      for (const draw of frame.draws.slice(1)) {
+        draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + 1.25);
+      }
     }
     sealRuntimeTraceFixture(editedTrace);
     const bundle = await lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(editedTrace);

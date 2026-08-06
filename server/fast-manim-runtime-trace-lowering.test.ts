@@ -45,7 +45,7 @@ async function frameAt(bundle: Awaited<ReturnType<typeof lower>>, sampleTime: nu
 
 const terminalCandidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
   "            run_time=5,\n        )\n        self.wait()\n",
-  "            run_time=5,\n        )\n        square.move_to((1.25, -1.5, 0))\n        square.scale(0.5)\n        self.wait()\n",
+  "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        square.scale(0.5)\n        decimal.update(0)\n        self.wait()\n",
 );
 
 function terminalCandidateFixture() {
@@ -75,7 +75,7 @@ function terminalCandidateFixture() {
 
   for (let frameIndex = 300; frameIndex < candidate.frames.length; frameIndex += 1) {
     const frame = candidate.frames[frameIndex];
-    frame.motionY = -1.5;
+    frame.motionY = 2.5;
     frame.draws[0].localPosition.x = 1.25;
     frame.draws[0].pathId = scaledSquarePathId;
     for (const draw of frame.draws.slice(1)) {
@@ -134,7 +134,7 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     const officialSquare = comparablePathDraw(officialTerminal.packet.draws[0]);
     const candidateSquare = comparablePathDraw(candidateTerminal.packet.draws[0]);
     expect(candidateSquare.transform.tx).toBeCloseTo(1.25, 12);
-    expect(candidateSquare.transform.ty).toBeCloseTo(-1.5, 12);
+    expect(candidateSquare.transform.ty).toBeCloseTo(2.5, 12);
     expect(candidateSquare.path.subpaths[0].segments[0].end.x).toBeCloseTo(
       officialSquare.path.subpaths[0].segments[0].end.x * 0.5,
       12,
@@ -145,7 +145,7 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     expect(candidateDecimal).toHaveLength(9);
     candidateDecimal.forEach((draw, index) => {
       expect(draw.transform.tx).toBeCloseTo(officialDecimal[index].transform.tx + 0.75, 12);
-      expect(draw.transform.ty).toBeCloseTo(-1.5, 12);
+      expect(draw.transform.ty).toBeCloseTo(2.5, 12);
     });
   });
 

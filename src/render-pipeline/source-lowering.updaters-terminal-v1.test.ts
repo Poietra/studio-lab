@@ -9,6 +9,7 @@ import {
   deriveUpdatersTerminalSourceEditPlanV1,
   lowerCanonicalProgramBatchSource,
   ProgramLoweringError,
+  recoverUpdatersTerminalOfficialSourceV1,
 } from "./source-lowering";
 
 const sourcePath = "example_scenes/basic.py";
@@ -145,22 +146,28 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
       baseSourceHash: sourceHash,
       kind: "fast-manim-updaters-terminal-v1",
     });
-    expect(lowered.insertedCode).toBe("        square.move_to((2, 1, 0))\n        square.scale(1.5)");
+    expect(lowered.insertedCode).toBe(
+      "        square.move_to((2, 1, 0))\n        square.scale(1.5)\n        decimal.update(0)",
+    );
     const playEnd = lowered.source.indexOf("            run_time=5,\n        )");
     const move = lowered.source.indexOf("        square.move_to((2, 1, 0))");
     const scale = lowered.source.indexOf("        square.scale(1.5)");
-    const wait = lowered.source.indexOf("        self.wait()", move);
+    const refresh = lowered.source.indexOf("        decimal.update(0)", scale);
+    const wait = lowered.source.indexOf("        self.wait()", refresh);
     expect(playEnd).toBeGreaterThan(-1);
     expect(playEnd).toBeLessThan(move);
     expect(move).toBeLessThan(scale);
-    expect(scale).toBeLessThan(wait);
+    expect(scale).toBeLessThan(refresh);
+    expect(refresh).toBeLessThan(wait);
     expect(lowered.source.replace(`${lowered.insertedCode}\n`, "")).toBe(source);
     expect(deriveUpdatersTerminalSourceEditPlanV1(lowered.source, sceneName)).toEqual({
       anchorLine: 129,
       moveTo: { x: 2, y: 1, z: 0 },
+      refreshDependentUpdater: true,
       scale: 1.5,
       sourceTime: 5,
     });
+    expect(recoverUpdatersTerminalOfficialSourceV1(lowered.source, sceneName)).toBe(source);
 
     const reimported = importManimScene(lowered.source, sourcePath, sceneName, frame)!;
     expect(reimported.sourceVariables).toEqual(imported.sourceVariables);
@@ -177,6 +184,7 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
     const lowered = lower(operations);
     expect(lowered.source).toContain(present);
     expect(lowered.source).not.toContain(absent);
+    expect(lowered.source.match(/^\s*decimal\.update\(0\)$/gmu)).toHaveLength(1);
   });
 
   it("rejects another target and every ambiguous source binding", () => {
@@ -225,12 +233,21 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
 
   it.each([
     ["negative resize", resizeOperation(-1)],
+    ["out-of-domain resize", resizeOperation(1_000_000_001)],
     ["nonuniform resize", resizeOperation(1.5, { toHeight: 4 })],
     ["center-moving resize", resizeOperation(1.5, { toPosition: { x: 321, y: 45 } })],
     ["animated resize", { ...resizeOperation(), interval: { end: 5.25, start: 5 } }],
     ["wrong operation kind", { ...positionOperation(), key: "scale", value: 2 }],
   ] as const)("fails closed for %s", (_label, operation) => {
     expect(() => lower([operation as CanonicalEditOperation])).toThrow(ProgramLoweringError);
+  });
+
+  it("rejects a viewport point that lowers outside the Runtime Trace coordinate domain", () => {
+    const worldX = 1_000_000_001;
+    const viewportX = viewport.width * (0.5 + worldX / frame.width);
+    expect(() => lower([positionOperation({ x: viewportX, y: viewport.height / 2 })])).toThrowError(
+      /between -1000000000 and 1000000000/,
+    );
   });
 
   it("rejects re-edit, control-flow/source changes, and copied profile identities", () => {
@@ -260,6 +277,7 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
     expect(deriveUpdatersTerminalSourceEditPlanV1(source, sceneName)).toEqual({
       anchorLine: 129,
       moveTo: null,
+      refreshDependentUpdater: false,
       scale: null,
       sourceTime: 5,
     });
@@ -268,6 +286,8 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
       "        alias = square",
       "        decimal.move_to((2, 1, 0))",
       "        square.scale(factor)",
+      "        square.scale(1e+308)",
+      "        square.move_to((1e+308, 1, 0))",
       "        square.move_to((2.0, 1, 0))",
     ]) {
       const candidate = source.replace(boundary, `        )\n${invalidStatement}\n        self.wait()`);
@@ -275,7 +295,7 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
     }
     const reordered = source.replace(
       boundary,
-      "        )\n        square.scale(1.5)\n        square.move_to((2, 1, 0))\n        self.wait()",
+      "        )\n        square.scale(1.5)\n        square.move_to((2, 1, 0))\n        decimal.update(0)\n        self.wait()",
     );
     expect(() => deriveUpdatersTerminalSourceEditPlanV1(reordered, sceneName)).toThrow(ProgramLoweringError);
     const nested = source.replace(
@@ -284,5 +304,18 @@ describe("UpdatersExample terminal edit V1 source lowering", () => {
     );
     expect(() => deriveUpdatersTerminalSourceEditPlanV1(nested, sceneName)).toThrow(ProgramLoweringError);
     expect(() => deriveUpdatersTerminalSourceEditPlanV1(source, "OpeningManim")).toThrow(ProgramLoweringError);
+  });
+
+  it.each([
+    ["missing", "        square.move_to((2, 1, 0))"],
+    ["reordered", "        decimal.update(0)\n        square.move_to((2, 1, 0))"],
+    ["repeated", "        square.move_to((2, 1, 0))\n        decimal.update(0)\n        decimal.update(0)"],
+    ["wrong target", "        square.move_to((2, 1, 0))\n        square.update(0)"],
+    ["wrong argument", "        square.move_to((2, 1, 0))\n        decimal.update(1)"],
+  ] as const)("rejects a %s dependent-updater sentinel", (_label, statements) => {
+    const boundary = "        )\n        self.wait()";
+    const candidate = source.replace(boundary, `        )\n${statements}\n        self.wait()`);
+    expect(() => deriveUpdatersTerminalSourceEditPlanV1(candidate, sceneName)).toThrow(ProgramLoweringError);
+    expect(() => recoverUpdatersTerminalOfficialSourceV1(candidate, sceneName)).toThrow(ProgramLoweringError);
   });
 });

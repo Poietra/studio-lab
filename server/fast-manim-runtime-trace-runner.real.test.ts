@@ -64,7 +64,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       await writeFile(join(root, "example_scenes/basic.py"), RUNTIME_TRACE_SOURCE_TEXT, "utf8");
       const candidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
         "            run_time=5,\n        )\n        self.wait()\n",
-        "            run_time=5,\n        )\n        square.move_to((1.25, -1.5, 0))\n        square.scale(0.5)\n        self.wait()\n",
+        "            run_time=5,\n        )\n        square.move_to((1.25, -1.5, 0))\n        square.scale(0.5)\n        decimal.update(0)\n        self.wait()\n",
       );
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({

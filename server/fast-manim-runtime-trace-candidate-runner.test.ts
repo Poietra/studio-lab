@@ -33,7 +33,7 @@ const sourcePath = "example_scenes/basic.py";
 const sceneName = "UpdatersExample";
 const candidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
   "            run_time=5,\n        )\n        self.wait()\n",
-  "            run_time=5,\n        )\n        square.move_to((1.25, 1.5, 0))\n        self.wait()\n",
+  "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        decimal.update(0)\n        self.wait()\n",
 );
 
 function exactJson(value: unknown): string {
@@ -91,8 +91,12 @@ class CandidateArtifactBackend implements FastManimSandboxBackendV1 {
     });
     if (request.sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1) {
       for (let frameIndex = 300; frameIndex < trace.frames.length; frameIndex += 1) {
-        trace.frames[frameIndex].motionY = 1.5;
-        trace.frames[frameIndex].draws[0].localPosition.x = 1.25;
+        const frame = trace.frames[frameIndex];
+        frame.motionY = 2.5;
+        frame.draws[0].localPosition.x = 1.25;
+        for (const draw of frame.draws.slice(1)) {
+          draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + 1.25);
+        }
       }
       if (this.corruptPrefix) {
         trace.frames[299].motionY = canonicalFastManimRuntimeTraceCoordinateV1(trace.frames[299].motionY + 0.125);
