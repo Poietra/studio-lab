@@ -15,6 +15,7 @@ import {
   FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2,
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
 } from "./fast-manim-runtime-trace-v2-contract";
+import type { FastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-result-contract";
 
 const ZERO_SHA256 = "0".repeat(64);
 const IDENTITY = { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 } as const;
@@ -23,47 +24,9 @@ type CubicPathV2 = Extract<SceneEntityV1["geometry"], { kind: "cubic-path" }>["p
 type VectorAppearanceV2 = Pick<Extract<SceneEntityV1["appearance"], { kind: "vector" }>, "fill" | "stroke">;
 type AnimationChannelV2 = SceneIrV1["animationChannels"][number];
 
-type RuntimeTraceDrawV2 = Readonly<{
-  appearanceId: string;
-  drawId: string;
-  familyPath: readonly number[];
-  opacity: number;
-  paintOrder: number;
-  pathId: string;
-  pathTrim: Readonly<{ end: number; start: 0 }>;
-  present: boolean;
-  rootId: string;
-  sourceZIndex: 0;
-  translation: Readonly<{ x: number; y: number }>;
-}>;
+type RuntimeTraceDrawV2 = FastManimRuntimeTraceV2["frames"][number]["draws"][number];
 
-export type VerifiedFastManimRuntimeTraceV2 = Readonly<{
-  camera: Readonly<{
-    background: SceneIrV1["camera"]["background"];
-    center: SceneIrV1["camera"]["view"]["center"];
-    frameHeight: number;
-    frameWidth: number;
-  }>;
-  durationSeconds: 3;
-  frames: readonly Readonly<{ draws: readonly RuntimeTraceDrawV2[]; frameIndex: number }>[];
-  producer: Readonly<{
-    fastManimCommit: string;
-    geometryResourceSha256: string;
-    texToolchainSha256: string;
-  }>;
-  resources: Readonly<{
-    appearances: readonly Readonly<VectorAppearanceV2 & { id: string }>[];
-    paths: readonly Readonly<{ id: string; path: CubicPathV2 }>[];
-  }>;
-  roots: readonly Readonly<{
-    binding: Readonly<{ id: string }>;
-    id: string;
-    role: "basel" | "title";
-  }>[];
-  runtimeConfigHash: string;
-  sceneId: string;
-  sourceHash: string;
-}>;
+export type VerifiedFastManimRuntimeTraceV2 = FastManimRuntimeTraceV2;
 
 export type FastManimRuntimeTraceV2LoweringErrorCode = "semantic-mismatch";
 
