@@ -22,6 +22,7 @@
     "test:mathtex:wasm-size": "node scripts/measure-mathtex-wasm.mjs --check",
     "test:manim-smoke": "node scripts/run-manim-smoke.mjs",
     "census:manim": "node scripts/run-real-manim-census.mjs",
+    "census:manim:v2": "POIETRA_REAL_MANIM_PROJECT_CENSUS_REQUIRED=1 vitest run scripts/run-real-manim-project-census.real.test.ts",
     "census:fast-manim:mathtex": "python3 scripts/verify-fast-manim-mathtex-callsite-corpus.py --repository ../fast-manim",
     "test:render-sandbox:oci:required": "POIETRA_MANIM_RENDER_GATED_OCI_REQUIRED=1 vitest run server/manim-render-gated-oci.real.test.ts",
     "test:render-sandbox:production:required": "POIETRA_MANIM_RENDER_PRODUCTION_REQUIRED=1 vitest run server/manim-render-production-sandbox-broker-service.real.test.ts",

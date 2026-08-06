@@ -1,0 +1,271 @@
+{
+  "schema": "poietra.real-manim-project-census-report",
+  "version": 2,
+  "manifestDigest": "faf0cfdd734b4b7dfa5f81cd02debdb81716c92687118fae6f4e54e873a8921d",
+  "executionConfigDigest": "5b0e8e2af387fe611a2894ecef5afb245877b28f27dd28d64907c631782f7651",
+  "producerDigest": "8af0df2e33117f3b0ea3aebb2a5855559d406fbc8a68724956f452f4867c101d",
+  "producerSnapshotProfile": 2,
+  "featureCounts": {
+    "always-redraw": 1,
+    "mathtex": 2,
+    "mobject-updater": 2,
+    "multiple-objects": 3,
+    "plugin-scene": 1,
+    "value-tracker": 2
+  },
+  "results": {
+    "math-to-manim": {
+      "execution": {
+        "artifactBytes": 89953,
+        "artifactDigest": "45d48c46a6c296d7800b1057d5782072912d5f63e4fa1775be7b530dc7552a93",
+        "status": "passed"
+      },
+      "sceneName": "FourierSeriesSquareWave",
+      "snapshotProbe": {
+        "outcome": "fallback",
+        "reasons": ["unsupported:animation-evidence-incomplete"]
+      },
+      "stages": {
+        "edit": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:selection"]
+        },
+        "export": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:edit"]
+        },
+        "fresh-validation": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:export"]
+        },
+        "runtime-trace-preview": {
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:unsupported-profile"]
+        },
+        "selection": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:runtime-trace-preview"]
+        },
+        "static-import": {
+          "entityCount": 0,
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:runtime-semantics-unsupported"],
+          "sceneRecognized": true,
+          "unknownCount": 0
+        }
+      }
+    },
+    "manim-ml": {
+      "execution": {
+        "reason": "external-dependencies-unpinned",
+        "status": "blocked"
+      },
+      "sceneName": "EpsilonNearestNeighborScene",
+      "snapshotProbe": {
+        "outcome": "fallback",
+        "reasons": ["unsupported:animation-evidence-incomplete"]
+      },
+      "stages": {
+        "edit": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:selection"]
+        },
+        "export": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:edit"]
+        },
+        "fresh-validation": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:export"]
+        },
+        "runtime-trace-preview": {
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:unsupported-profile"]
+        },
+        "selection": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:runtime-trace-preview"]
+        },
+        "static-import": {
+          "entityCount": 0,
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:runtime-semantics-unsupported"],
+          "sceneRecognized": true,
+          "unknownCount": 0
+        }
+      }
+    },
+    "manim-slides": {
+      "execution": {
+        "reason": "plugin-runtime-not-installed",
+        "status": "blocked"
+      },
+      "sceneName": "BasicExample",
+      "snapshotProbe": {
+        "outcome": "rejected",
+        "reasons": ["contract:identity-evidence-invalid", "failure:result-rejected"]
+      },
+      "stages": {
+        "edit": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:selection"]
+        },
+        "export": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:edit"]
+        },
+        "fresh-validation": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:export"]
+        },
+        "runtime-trace-preview": {
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:unsupported-profile"]
+        },
+        "selection": {
+          "measured": false,
+          "outcome": "fallback",
+          "reasons": ["blocked-by:runtime-trace-preview"]
+        },
+        "static-import": {
+          "entityCount": 0,
+          "measured": true,
+          "outcome": "fallback",
+          "reasons": ["unsupported:scene-base-unsupported"],
+          "sceneRecognized": false,
+          "unknownCount": 0
+        }
+      }
+    }
+  },
+  "stageSummary": {
+    "static-import": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 3,
+      "unmeasured": 0
+    },
+    "runtime-trace-preview": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 3,
+      "unmeasured": 0
+    },
+    "selection": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 0,
+      "unmeasured": 3
+    },
+    "edit": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 0,
+      "unmeasured": 3
+    },
+    "export": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 0,
+      "unmeasured": 3
+    },
+    "fresh-validation": {
+      "accepted": 0,
+      "fallback": 3,
+      "rejected": 0,
+      "total": 3,
+      "measured": 0,
+      "unmeasured": 3
+    }
+  },
+  "targetSelection": {
+    "candidates": [
+      {
+        "codebaseId": "math-to-manim",
+        "demoValue": 3,
+        "featureOccurrenceTotal": 10,
+        "implementationCost": 2,
+        "runtimeTraceOutcome": "fallback",
+        "snapshotOutcome": "fallback",
+        "producerCompatible": true,
+        "sceneRecognized": true,
+        "sourceExecution": "passed"
+      },
+      {
+        "codebaseId": "manim-ml",
+        "demoValue": 3,
+        "featureOccurrenceTotal": 9,
+        "implementationCost": 3,
+        "runtimeTraceOutcome": "fallback",
+        "snapshotOutcome": "fallback",
+        "producerCompatible": false,
+        "sceneRecognized": true,
+        "sourceExecution": "blocked"
+      },
+      {
+        "codebaseId": "manim-slides",
+        "demoValue": 2,
+        "featureOccurrenceTotal": 4,
+        "implementationCost": 2,
+        "runtimeTraceOutcome": "fallback",
+        "snapshotOutcome": "rejected",
+        "producerCompatible": false,
+        "sceneRecognized": false,
+        "sourceExecution": "blocked"
+      }
+    ],
+    "followUpIssue": 509,
+    "selectedCodebaseId": "math-to-manim",
+    "reasons": [
+      "bounded-source-execution-passed",
+      "generic-runtime-trace-gap-observed",
+      "safe-snapshot-fallback",
+      "source-scene-recognized",
+      "producer-compatible-dependencies"
+    ]
+  },
+  "v1Reference": {
+    "compatibilityAttempts": {
+      "accepted": 7,
+      "fallback": 49,
+      "rejected": 0,
+      "total": 56
+    },
+    "compatibilityScenes": {
+      "accepted": 7,
+      "fallback": 0,
+      "rejected": 0,
+      "total": 7
+    },
+    "sceneSpecificRuntimeTrace": {
+      "accepted": 2,
+      "scenes": ["OpeningManim", "UpdatersExample"]
+    }
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "schema": "poietra.real-manim-project-census-manifest",
+  "version": 2,
+  "execution": {
+    "digest": "5b0e8e2af387fe611a2894ecef5afb245877b28f27dd28d64907c631782f7651",
+    "disableCaching": true,
+    "frame": {
+      "height": 8,
+      "width": 14.222222222222221
+    },
+    "pixelHeight": 480,
+    "pixelWidth": 854,
+    "quality": "low_quality",
+    "renderer": "cairo",
+    "saveLastFrame": true
+  },
+  "producer": {
+    "repository": "https://github.com/Poietra/fast-manim.git",
+    "revision": "68c1c9a649abcc64b36e80f967aac262a7ba92ac",
+    "tree": "4e647408991999f132b5d48a6705571e8a82906f",
+    "digest": "8af0df2e33117f3b0ea3aebb2a5855559d406fbc8a68724956f452f4867c101d",
+    "runtimeTraceModule": "manim.renderer.runtime_trace",
+    "snapshotModule": "manim.renderer.source_runtime_identity",
+    "manimVersion": "0.20.1",
+    "pythonVersion": "3.13.11",
+    "snapshotProfile": 2,
+    "files": [
+      {
+        "path": "LICENSE",
+        "sha256": "c6a922fc1cfaed7ac0f87aa1dc77ebf5a3c8d1ccc5ab01da33153f0d013bf019"
+      },
+      {
+        "path": "pyproject.toml",
+        "sha256": "f791e3ab6ef3e12457e3f36f5d7d7d4c249ae97678d23607781556556a5d6012"
+      },
+      {
+        "path": "uv.lock",
+        "sha256": "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753"
+      }
+    ]
+  },
+  "codebases": [
+    {
+      "id": "math-to-manim",
+      "repository": "https://github.com/HarleyCoops/Math-To-Manim.git",
+      "revision": "fcad0674c9791690d47664492fd1a052024b63a0",
+      "tree": "d71dcdbdac8bf52bd8fd2e6540d36136ce9ae698",
+      "digest": "ee757ac799a316da520fd652ed2deee9332ccf1a2414dddae3884b3c3084f9ef",
+      "license": {
+        "path": "LICENSE",
+        "sha256": "012582c4fc97fbf72a15b0e252fcf73f92e37e55df7730e96886867722b201f5",
+        "spdx": "MIT"
+      },
+      "toolchain": [
+        {
+          "path": "pyproject.toml",
+          "sha256": "d70fef183270b9fe5ca541ca9ae35f618808ffe7d19c2ab8063efb60204a943b"
+        },
+        {
+          "path": "requirements-render.txt",
+          "sha256": "713f65a5529de197c5950b7847723a69938de2a7a8a613c00bd5c7e95fc72730"
+        }
+      ],
+      "runtimeDependencies": "producer-compatible",
+      "source": {
+        "path": "legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py",
+        "sha256": "3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72",
+        "sceneName": "FourierSeriesSquareWave",
+        "features": ["always-redraw", "mathtex", "mobject-updater", "multiple-objects", "value-tracker"]
+      },
+      "demoValue": 3,
+      "implementationCost": 2
+    },
+    {
+      "id": "manim-ml",
+      "repository": "https://github.com/helblazer811/ManimML.git",
+      "revision": "5e8f7cb69f23919f9ec7e880fb22c1ca2f841c08",
+      "tree": "171beb7d3c17db83ec44c633f6c14c6b332e58d6",
+      "digest": "6c19f30b6d92cd1f551426731c471ec6b3b5c5ed8251d53d25c918e173b8a466",
+      "license": {
+        "path": "LICENSE.md",
+        "sha256": "eedcf903d0297d6256d36cb301602e8d652160de9af09a6291eb0f65d7942433",
+        "spdx": "MIT"
+      },
+      "toolchain": [
+        {
+          "path": "setup.py",
+          "sha256": "5539226d27f0687059eb64f722cd47df64bd5bb8909d3ad805678372f3f0938e"
+        }
+      ],
+      "runtimeDependencies": "external-unpinned",
+      "source": {
+        "path": "examples/epsilon_nn_graph/epsilon_nn_graph.py",
+        "sha256": "0acea239ae1e90a7c9d041479d173b1cd1427720b7d6e3bfd73cc02869a12505",
+        "sceneName": "EpsilonNearestNeighborScene",
+        "features": ["mathtex", "mobject-updater", "multiple-objects", "value-tracker"]
+      },
+      "demoValue": 3,
+      "implementationCost": 3
+    },
+    {
+      "id": "manim-slides",
+      "repository": "https://github.com/jeertmans/manim-slides.git",
+      "revision": "722c2ae6e0d28dde294221259be41f82103edcec",
+      "tree": "7d11ab28d838dade1fd5de130b8fc2af2db4145f",
+      "digest": "b6ca99cc32069136775861dbd1aca650db73f52ba435bdf7f2dd17d2a0e9f32e",
+      "license": {
+        "path": "LICENSE.md",
+        "sha256": "37fcd52cd81b702664fa6a04e6659265d43e599df3b831f63fafdfb8d6c46bbd",
+        "spdx": "MIT"
+      },
+      "toolchain": [
+        {
+          "path": ".python-version",
+          "sha256": "49a506dd32096b010d75205acf3430c9ae6c40351888129499e5a5e487126c93"
+        },
+        {
+          "path": "pyproject.toml",
+          "sha256": "0c1a2b311c9edce0f18e3b89da3f9fba117504f04e0414ca8919a62828062968"
+        },
+        {
+          "path": "uv.lock",
+          "sha256": "0e5217e694f8dbd98f829b28f9d179b1c920752c29566193070ddb70b97a55a0"
+        }
+      ],
+      "runtimeDependencies": "external-locked",
+      "source": {
+        "path": "example.py",
+        "sha256": "56606a20b1ce800bb8a7bfc7955ed3b8c91c99674a09de6388a3bf99d23bf7f6",
+        "sceneName": "BasicExample",
+        "features": ["multiple-objects", "plugin-scene"]
+      },
+      "demoValue": 2,
+      "implementationCost": 2
+    }
+  ]
+}
