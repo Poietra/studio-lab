@@ -30,22 +30,22 @@ import {
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2 = "poietra.fast-manim-runtime-trace" as const;
-export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 = 66 as const;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2 = 944;
+export const FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 = 97 as const;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2 = 6_566;
 export const FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2 =
-  "f1942bd6e7990e095a23f6ba4e3ad6d8b942648e0ce1d1e69441c114739109ac" as const;
+  "e320c06f761da474719723b20c4ddb335ecea45904da985647079705ece52013" as const;
 export const FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2 =
   "c08c8616a0b95c16cd0c1bfcae0f30361e8bb89868bfdb5135369d3b59b56b5e" as const;
 export const FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2 =
   "160436934a3de173a1fd8a415d3da5bd63a95d8ff498371e708197a804f12e89" as const;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 = 24 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 = 88 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 = 8 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2 = 384;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V2 = 28_000;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V2 = 1_000_000;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2 = 1_000_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V2 = 260_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_ENTRIES_V2 = 4_300_000;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2 = 4_300_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_DEPTH_V2 = 16;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V2 = 1_024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V2 = 7_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_OBJECT_FIELDS_V2 = 32;
 
 export const FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2 = [
@@ -57,6 +57,13 @@ export const FAST_MANIM_RUNTIME_TRACE_GRID_FAMILY_PATHS_V2 = Object.freeze([
   [2] as const,
   [3] as const,
 ]);
+export const FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2 = [
+  0, 11, 12, 13, 1, 14, 15, 16, 2, 17, 18, 19, 3, 20, 21, 22, 4, 23, 24, 25, 5, 26, 27, 6, 28, 29, 30, 7, 31, 32, 33, 8,
+  34, 35, 36, 9, 37, 38, 39, 10, 40, 41,
+] as const;
+export const FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_EXTENSION_SLOTS_V2 = Object.freeze([
+  1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19, 21, 22, 24, 25, 26, 28, 29, 30, 32, 33, 34, 36, 37, 38, 40, 41,
+] as const);
 
 const gitObjectIdV2Schema = z.string().regex(/^[0-9a-f]{40}$/u, "Git object IDs must be lower-case SHA-1 hex.");
 const runtimeTracePathIdV2Schema = z.string().regex(/^path:[0-9a-f]{64}$/u);
@@ -151,7 +158,7 @@ const runtimeTraceDrawV2Schema = z
   .object({
     appearanceId: runtimeTraceAppearanceIdV2Schema,
     drawId: sourceIdentityV1Schema,
-    familyPath: z.array(z.number().int().nonnegative().max(21)).min(1).max(2),
+    familyPath: z.array(z.number().int().nonnegative().max(41)).min(1).max(2),
     opacity: normalizedNumberV1Schema,
     paintOrder: z
       .number()
@@ -261,17 +268,30 @@ function reportDuplicateRuntimeTraceV2Id(
   });
 }
 
-function runtimeTraceV2PathPoints(path: z.infer<typeof cubicPathV1Schema>) {
-  return path.subpaths.flatMap((subpath) => [
-    subpath.start,
-    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
-  ]);
+function forEachRuntimeTraceV2PathPoint(
+  path: z.infer<typeof cubicPathV1Schema>,
+  visit: (point: Readonly<{ x: number; y: number }>, pointIndex: number) => void,
+) {
+  let pointIndex = 0;
+  const visitNext = (point: Readonly<{ x: number; y: number }>) => {
+    visit(point, pointIndex);
+    pointIndex += 1;
+  };
+  for (const subpath of path.subpaths) {
+    visitNext(subpath.start);
+    for (const segment of subpath.segments) {
+      visitNext(segment.control1);
+      visitNext(segment.control2);
+      visitNext(segment.end);
+    }
+  }
 }
 
 export function fastManimRuntimeTraceDrawIdentityV2(sceneId: string, paintOrder: number) {
   const titleCount = FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
   const baselCount = 14;
   const gridCount = FAST_MANIM_RUNTIME_TRACE_GRID_FAMILY_PATHS_V2.length;
+  const gridTitleCount = FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2.length;
   const role =
     paintOrder < titleCount
       ? "title"
@@ -279,7 +299,10 @@ export function fastManimRuntimeTraceDrawIdentityV2(sceneId: string, paintOrder:
         ? "basel"
         : paintOrder < titleCount + baselCount + gridCount
           ? "grid"
-          : "grid-title";
+          : paintOrder < titleCount + baselCount + gridCount + gridTitleCount
+            ? "grid-title"
+            : null;
+  if (role === null) throw new RangeError(`Runtime Trace V2 paint order ${paintOrder} is outside its union layout.`);
   const familyOrder =
     role === "title"
       ? paintOrder
@@ -288,7 +311,13 @@ export function fastManimRuntimeTraceDrawIdentityV2(sceneId: string, paintOrder:
         : role === "grid"
           ? paintOrder - titleCount - baselCount
           : paintOrder - titleCount - baselCount - gridCount;
-  const order = role === "title" ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[paintOrder] : familyOrder;
+  const order =
+    role === "title"
+      ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[paintOrder]
+      : role === "grid-title"
+        ? FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2[familyOrder]
+        : familyOrder;
+  if (order === undefined) throw new RangeError(`Runtime Trace V2 paint order ${paintOrder} has no union identity.`);
   const rootId = `${sceneId}/runtime-root:${role}`;
   return {
     drawId: `${rootId}/runtime-draw:${order}`,
@@ -300,14 +329,23 @@ export function fastManimRuntimeTraceDrawIdentityV2(sceneId: string, paintOrder:
 }
 
 export function fastManimRuntimeTraceDrawIsPresentV2(frameIndex: number, drawIndex: number) {
-  if (drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length) {
+  const titleCount = FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+  const baselEnd = titleCount + 14;
+  const gridEnd = baselEnd + FAST_MANIM_RUNTIME_TRACE_GRID_FAMILY_PATHS_V2.length;
+  if (drawIndex < titleCount) {
     return (
       frameIndex < 480 &&
       (frameIndex >= 180 || !FAST_MANIM_RUNTIME_TRACE_TITLE_EXTENSION_SLOTS_V2.some((slot) => slot === drawIndex))
     );
   }
-  if (drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length + 14) return frameIndex < 240;
-  return frameIndex >= 300;
+  if (drawIndex < baselEnd) return frameIndex < 240;
+  if (drawIndex < gridEnd) return frameIndex >= 300;
+  const gridTitleSlot = drawIndex - gridEnd;
+  return (
+    frameIndex >= 300 &&
+    (frameIndex >= 780 ||
+      !(FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_EXTENSION_SLOTS_V2 as readonly number[]).includes(gridTitleSlot))
+  );
 }
 
 export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.superRefine((trace, context) => {
@@ -356,8 +394,8 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
         path: ["resources", "paths", index, "path"],
       });
     }
-    const points = runtimeTraceV2PathPoints(path);
-    points.forEach((point, pointIndex) => {
+    const bounds = { maxX: -Infinity, maxY: -Infinity, minX: Infinity, minY: Infinity };
+    forEachRuntimeTraceV2PathPoint(path, (point, pointIndex) => {
       if (
         point.x !== canonicalFastManimRuntimeTraceCoordinateV2(point.x) ||
         point.y !== canonicalFastManimRuntimeTraceCoordinateV2(point.y)
@@ -368,13 +406,12 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
           path: ["resources", "paths", index, "path", "points", pointIndex],
         });
       }
+      bounds.maxX = Math.max(bounds.maxX, point.x);
+      bounds.maxY = Math.max(bounds.maxY, point.y);
+      bounds.minX = Math.min(bounds.minX, point.x);
+      bounds.minY = Math.min(bounds.minY, point.y);
     });
-    pathBounds.set(id, {
-      maxX: Math.max(...points.map(({ x }) => x)),
-      maxY: Math.max(...points.map(({ y }) => y)),
-      minX: Math.min(...points.map(({ x }) => x)),
-      minY: Math.min(...points.map(({ y }) => y)),
-    });
+    pathBounds.set(id, bounds);
   });
 
   const appearances = new Map(trace.resources.appearances.map((appearance) => [appearance.id, appearance]));
@@ -493,6 +530,8 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
     [120, 180],
     [240, 300],
     [480, 540],
+    [720, 780],
+    [840, 900],
   ] as const) {
     const hold = canonicalJsonV1(trace.frames[start]?.draws);
     for (let index = start + 1; index < end; index += 1) {

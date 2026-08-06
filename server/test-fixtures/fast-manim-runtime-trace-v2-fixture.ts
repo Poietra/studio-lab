@@ -1,3 +1,4 @@
+import { applyEngineEasingV1 } from "../../src/engine/easing";
 import {
   createFastManimRuntimeTraceConfigV2,
   FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
@@ -10,14 +11,14 @@ import {
   digestFastManimRuntimeTraceAppearanceV2,
   digestFastManimRuntimeTracePathV2,
   digestFastManimRuntimeTraceVisualSemanticsV2,
-  fastManimRuntimeTraceDrawIdentityV2,
-  fastManimRuntimeTraceDrawIsPresentV2,
   type ExpectedFastManimRuntimeTraceCorrelationV2,
   FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
   FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2,
   FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
   FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
+  fastManimRuntimeTraceDrawIdentityV2,
+  fastManimRuntimeTraceDrawIsPresentV2,
 } from "../fast-manim-runtime-trace-v2-result-contract";
 
 export const RUNTIME_TRACE_V2_SCENE_ID =
@@ -134,12 +135,16 @@ function buildFastManimRuntimeTraceV2Fixture() {
     compositing: runtimeConfig.compositing,
     coordinatePrecisionDigits: runtimeConfig.coordinatePrecisionDigits,
     durationSeconds: runtimeConfig.durationSeconds,
-    frameCount: 540 as const,
+    frameCount: 900 as const,
     frameRate: runtimeConfig.frameRate,
-    frames: Array.from({ length: 540 }, (_, frameIndex) => {
+    frames: Array.from({ length: 900 }, (_, frameIndex) => {
       const openingTransition = frameIndex < 60;
       const transformProgress =
-        frameIndex >= 180 && frameIndex < 240 ? (frameIndex - 180) / 60 : frameIndex >= 240 ? 1 : 0;
+        frameIndex >= 180 && frameIndex < 240
+          ? applyEngineEasingV1({ kind: "manim-smooth" }, (frameIndex - 180) / 60)
+          : frameIndex >= 240
+            ? 1
+            : 0;
       const thirdFadeProgress = Math.min(1, Math.max(0, (frameIndex - 300) / 60));
       const trimEnd = openingTransition ? frameIndex / 60 : 1;
       return {
@@ -153,7 +158,6 @@ function buildFastManimRuntimeTraceV2Fixture() {
           const appearanceId = grid
             ? appearances[3]!.id
             : appearances[openingTransition && present ? (title ? 0 : 2) : 1]!.id;
-          const pathShift = transformProgress >= 0.5 ? 1 : 0;
           const gridTrim = grid
             ? Math.min(1, Math.max(0, (frameIndex - 300 - identity.order * 4) / (180 - 23 * 4)))
             : 1;
@@ -172,7 +176,7 @@ function buildFastManimRuntimeTraceV2Fixture() {
             familyPath: [...identity.familyPath],
             opacity,
             paintOrder,
-            pathId: paths[(paintOrder + (title ? pathShift : 0)) % paths.length]!.id,
+            pathId: paths[paintOrder % paths.length]!.id,
             pathTrim: {
               end: canonicalFastManimRuntimeTraceCoordinateV2(!present ? 1 : title ? trimEnd : gridTrim),
               start: 0 as const,
@@ -181,8 +185,9 @@ function buildFastManimRuntimeTraceV2Fixture() {
             rootId: identity.rootId,
             sourceZIndex: 0 as const,
             translation: {
-              x:
-                title || grid || gridTitle
+              x: title
+                ? canonicalFastManimRuntimeTraceCoordinateV2(transformProgress)
+                : grid || gridTitle
                   ? 0
                   : canonicalFastManimRuntimeTraceCoordinateV2(openingTransition ? frameIndex / 60 : 1),
               y: basel

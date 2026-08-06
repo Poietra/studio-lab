@@ -298,7 +298,7 @@ async function verifiedOpeningRuntimeTraceRun() {
     appearance: { kind: "group" as const, opacity: 1 },
     geometry: { kind: "group" as const },
     id,
-    lifetimes: [{ end: 9, start: 0 }],
+    lifetimes: [{ end: 15, start: 0 }],
     parentId,
     provenanceId,
     sceneOrder,
@@ -308,7 +308,7 @@ async function verifiedOpeningRuntimeTraceRun() {
   const leaves = roots.map((root, index) => ({
     ...bundleFixture.scene.entities[index % bundleFixture.scene.entities.length]!,
     id: `${root.entityId}/runtime-draw:0`,
-    lifetimes: [{ end: 9, start: 0 }],
+    lifetimes: [{ end: 15, start: 0 }],
     parentId: root.entityId,
     provenanceId,
     sceneOrder: index + 5,
@@ -318,7 +318,7 @@ async function verifiedOpeningRuntimeTraceRun() {
     scene: {
       ...bundleFixture.scene,
       animationChannels: [],
-      duration: 9,
+      duration: 15,
       entities: [
         group(rootId, null, 0),
         ...roots.map((root, index) => group(root.entityId, rootId, index + 1)),
@@ -409,7 +409,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
-  it("accepts the reviewed nine-second OpeningManim V2 profile and all four source roots", async () => {
+  it("accepts the reviewed fifteen-second OpeningManim V2 profile and all four source roots", async () => {
     const run = await verifiedOpeningRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
     const loaded = await createServerPreviewSnapshotProviderV1({
@@ -420,12 +420,12 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
     expect(loaded).toMatchObject({
       correlation: {
-        context: { ...openingRuntimeTraceIdentity, sourceDuration: 9, workingRevision: "pristine" },
+        context: { ...openingRuntimeTraceIdentity, sourceDuration: 15, workingRevision: "pristine" },
         engineRevisionHash: run.traceDigest,
-        sceneDuration: 9,
+        sceneDuration: 15,
         serverPublicationRevision: null,
       },
-      duration: 9,
+      duration: 15,
       sourceLabel: "verified Runtime Trace",
     });
     expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel", "grid", "grid_title"]);
@@ -453,7 +453,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     await expect(
       load({
         ...run,
-        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 10 } },
+        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 16 } },
       }),
     ).rejects.toThrow("reviewed Scene profile");
     await expect(load({ ...run, roots: run.roots.slice(0, 3) })).rejects.toThrow("malformed evidence");

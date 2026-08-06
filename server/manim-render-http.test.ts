@@ -660,9 +660,11 @@ describe("Runtime Trace preview routing", () => {
     }
   });
 
-  it("validates the sealed nine-second OpeningManim V2 duration, trace version, and four source roots", async () => {
+  it("validates the sealed fifteen-second OpeningManim V2 duration, trace version, and four source roots", {
+    timeout: 15_000,
+  }, async () => {
     const view = await verifiedOpeningView();
-    expect(view.bundle.scene.duration).toBe(9);
+    expect(view.bundle.scene.duration).toBe(15);
     expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
     const request = {
       projectId: view.projectId,
@@ -716,7 +718,9 @@ describe("Runtime Trace preview routing", () => {
     }
   });
 
-  it("fails closed when a verified V2 HTTP view exceeds its profile-specific envelope", async () => {
+  it("fails closed when a verified V2 HTTP view exceeds its profile-specific envelope", {
+    timeout: 15_000,
+  }, async () => {
     const view = await verifiedOpeningView();
     const evidence = Array.from({ length: 64 }, (_, index) => {
       const prefix = `${index}:`;

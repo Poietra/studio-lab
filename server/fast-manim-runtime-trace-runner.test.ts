@@ -116,12 +116,12 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "fedab2da1c26a9a39aa98388ac3321fa51d58f1006813c7af58fb096f66f8bc8",
+      "c8cb6fd6678b5764321f86d11dd914eca4588fb909b37da777b88347dd9366ac",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
-        fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
-        fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
+        fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
+        fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
       },
     });
     const backend = new ArtifactBackend(artifact);
@@ -135,7 +135,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "1811e029cc91072e45fee831403f61952d84c820f0137ec7a02c76132420ce04",
+        traceDigest: "2ba133ad602e932c05c5cc58b72149a9ee08b203953df82c05fbe99f16e7f987",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
@@ -150,23 +150,23 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     expect(JSON.stringify(view)).not.toContain(RUNTIME_TRACE_SOURCE_TEXT.slice(0, 32));
   });
 
-  it("dispatches the exact OpeningManim request to V2 and lowers its real artifact", { timeout: 30_000 }, async () => {
+  it("dispatches the exact OpeningManim request to V2 and lowers its real artifact", { timeout: 60_000 }, async () => {
     const backend = new ArtifactBackend(await officialOpeningArtifact());
     const view = await runner(await projectRoot(), backend).runRuntimeTrace(openingRequest);
 
     if (view.status !== "verified") throw new Error(JSON.stringify(view));
     const bundle = await parseVerifiedSceneIrBundleV1(view.bundle);
     expect(bundle.scene).toMatchObject({
-      duration: 9,
+      duration: 15,
       source: {
         kind: "imported-manim-runtime-trace",
-        runtimeConfigHash: "9a43934058d9d90db28661a310c9a6aa177826b2ba8baf42b42d4691dcf5c1c4",
+        runtimeConfigHash: "0b5d2eae4a3709627a7ccae44ce5a977171452ed73e90ab6bfcfdffda604b977",
         traceVersion: 2,
       },
     });
-    expect(bundle.scene.entities).toHaveLength(106);
-    expect(bundle.scene.animationChannels).toHaveLength(171);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(10_559);
+    expect(bundle.scene.entities).toHaveLength(194);
+    expect(bundle.scene.animationChannels).toHaveLength(269);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(12_551);
     expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
     expect(backend.requests).toHaveLength(1);
     expect(backend.requests[0]).toMatchObject({
@@ -176,7 +176,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       version: 2,
     });
     const responseBytes = Buffer.byteLength(JSON.stringify(view), "utf8");
-    expect(responseBytes).toBe(6_817_262);
+    expect(responseBytes).toBe(5_490_431);
     expect(responseBytes).toBeLessThan(8 * 1024 * 1024 + 64 * 1024);
   });
 
