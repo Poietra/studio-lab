@@ -484,7 +484,23 @@ export const renderSessionViewSchema: z.ZodType<RenderSessionView> = z
         patchedSourceHash: z.string().regex(/^[0-9a-f]{64}$/),
         sourceHash: z.string().regex(/^[0-9a-f]{64}$/),
       })
-      .strict(),
+      .strict()
+      .superRefine((patch, context) => {
+        if (patch.anchorLines[0] !== patch.anchorLine) {
+          context.addIssue({
+            code: "custom",
+            message: "The primary patch anchor must equal the first source evidence anchor.",
+            path: ["anchorLine"],
+          });
+        }
+        if (patch.anchorLines.some((line, index) => index > 0 && line <= patch.anchorLines[index - 1]!)) {
+          context.addIssue({
+            code: "custom",
+            message: "Patch source evidence anchors must be strictly increasing.",
+            path: ["anchorLines"],
+          });
+        }
+      }),
     projectId: manimProjectIdSchema,
     programBatchId: z.string(),
     programTransactionId: z.string(),

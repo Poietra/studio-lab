@@ -959,11 +959,27 @@ class MarkerText(Scene):
     );
     const firstReimport = importManimScene(first.source, "examples/relativity.py", "GroupedEquation", frame);
     const firstEntity = firstReimport?.runtimeSceneState.objectGraph.entities[entityId];
+    if (firstEntity?.geometry?.position.kind !== "known") {
+      throw new Error("First compacted source did not reimport with an exact position");
+    }
     expect(firstEntity?.geometry).toMatchObject({
       position: { kind: "known", value: targetPosition },
       scale: { kind: "known", value: 3 },
     });
 
+    const secondTargetPosition = {
+      x: firstEntity.geometry.position.value.x + 20,
+      y: firstEntity.geometry.position.value.y + 10,
+    };
+    const moveAgain = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 20, y: 10 },
+      positions: { [entityId]: firstEntity.geometry.position.value },
+      scene: firstReimport?.runtimeSceneState ?? imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [entityId],
+      transactionId: "move-reimported-source",
+    });
     const resizeAgain = createDirectManipulationScaleProgram({
       capturedPlayhead: 0,
       interval: { end: 0, start: 0 },
@@ -972,12 +988,18 @@ class MarkerText(Scene):
       targetEntityIds: [entityId],
       transactionId: "resize-reimported-source",
     });
-    if (resizeAgain.kind !== "valid") {
-      throw new Error(`Reimported resize did not validate: ${JSON.stringify(resizeAgain.issues)}`);
+    if (moveAgain.kind !== "valid" || resizeAgain.kind !== "valid") {
+      throw new Error(
+        `Reimported transform did not validate: ${JSON.stringify([moveAgain.issues, resizeAgain.issues])}`,
+      );
     }
-    const second = lowerCanonicalProgramSource(
+    const second = lowerCanonicalProgramBatchSource(
       first.source,
-      request(resizeAgain.program, [{ entityId, sourceVariable: "equation" }]),
+      request(moveAgain.program, [{ entityId, sourceVariable: "equation" }]),
+      [
+        { program: moveAgain.program, sourceAnchor: 0 },
+        { program: resizeAgain.program, sourceAnchor: 0 },
+      ],
       frame,
       null,
     );
@@ -992,12 +1014,30 @@ class MarkerText(Scene):
     expect(groupedSource).toContain("equation.scale(3)");
     expect(groupedSource).not.toContain('poietra:transaction "move-after-source-transforms"');
     expect(groupedSource).not.toContain('poietra:transaction "resize-after-source-transforms"');
+    expect(groupedSource).toContain('poietra:transaction "move-reimported-source"');
     expect(groupedSource).toContain('poietra:transaction "resize-reimported-source"');
     expect(second.source.match(/^\s*decoy\.move_to/gm)).toHaveLength(2);
+    expect(second.anchorLines).toEqual([second.anchorLine]);
+    const secondSourceLines = second.source.split(/\r?\n/);
+    const secondEvidenceLines = second.insertedCode.split(/\r?\n/);
+    expect(secondSourceLines.slice(second.anchorLine, second.anchorLine + secondEvidenceLines.length)).toEqual(
+      secondEvidenceLines,
+    );
+    expect(secondSourceLines[second.anchorLine + secondEvidenceLines.length]).toMatch(/^\s*# poietra:anchor 0$/);
+    expect(second.insertedCode).toContain("# poietra:position ");
+    expect(second.insertedCode).toContain("# poietra:scale ");
+    expect(second.insertedCode).toContain("equation.scale(3)");
+    expect(second.insertedCode).not.toContain("equation.scale(1.5)");
+    expect(second.insertedCode).toContain('poietra:transaction "move-reimported-source"');
+    expect(second.insertedCode).toContain('poietra:transaction "resize-reimported-source"');
     expect(scaleSamples.at(-1)).toMatchObject({
       knowledge: { kind: "known", value: 4.5 },
       sameAnchorOrder: "before-studio-insertion",
       value: 4.5,
+    });
+    expect(secondReimport?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position).toEqual({
+      kind: "known",
+      value: secondTargetPosition,
     });
 
     const mismatchedFirst = first.source.replace(

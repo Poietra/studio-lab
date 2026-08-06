@@ -540,6 +540,97 @@ function collapseRepeatedStaticTransformHistory(
   return lines.join(newline);
 }
 
+type CanonicalInsertionEvidence = Readonly<{
+  anchorLine: number;
+  anchorLines: readonly number[];
+  insertedCode: string;
+}>;
+
+/**
+ * Rebuild render evidence from the final source bytes. Compaction can remove
+ * an appended cursor, retain an older Studio-owned position, and replace a
+ * relative scale call with its canonical product. The evidence returned to a
+ * render session must therefore be selected after compaction instead of from
+ * the lowering buffer that existed before it.
+ */
+function canonicalInsertionEvidence(
+  source: string,
+  currentTransactionIds: ReadonlySet<string>,
+  sceneName: string,
+  sourcePath: string,
+): CanonicalInsertionEvidence {
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const lines = source.split(/\r?\n/);
+  const sceneBlock = findSourceSceneBlock(source, sceneName, sourcePath);
+  if (!sceneBlock || sceneBlock.bodyIndent === null) {
+    throw new ProgramLoweringError(
+      "anchor-missing",
+      `Canonical source evidence for ${sceneName} is unavailable in ${sourcePath}.`,
+    );
+  }
+  const directSceneLines = new Set(findSourceSceneStatements(source, sceneName, sourcePath).map(({ line }) => line));
+  const evidenceBlocks: Array<
+    Readonly<{
+      anchorLine: number;
+      insertedLines: readonly string[];
+      transactionIds: readonly string[];
+    }>
+  > = [];
+  let cursorLine: number | null = null;
+  let transactionIds: string[] = [];
+
+  for (let line = sceneBlock.bodyStart; line < sceneBlock.bodyEnd; line += 1) {
+    if (!directSceneLines.has(line)) continue;
+    if (/^\s*#\s*poietra:cursor\s+[0-9]+(?:\.[0-9]+)?\s*$/.test(lines[line] ?? "")) {
+      cursorLine = line;
+      transactionIds = [];
+      continue;
+    }
+    if (cursorLine === null) continue;
+
+    const transaction = lines[line]?.match(/^\s*#\s*poietra:transaction\s+(.+)\s*$/);
+    if (transaction) {
+      try {
+        const id = JSON.parse(transaction[1]) as unknown;
+        if (typeof id === "string" && currentTransactionIds.has(id)) transactionIds.push(id);
+      } catch {
+        // A malformed user-owned marker is not evidence for this lowering.
+      }
+    }
+    if (!/^\s*#\s*poietra:anchor\s+[0-9]+(?:\.[0-9]+)?\s*$/.test(lines[line] ?? "")) continue;
+    if (transactionIds.length > 0) {
+      evidenceBlocks.push({
+        anchorLine: cursorLine + 1,
+        insertedLines: lines.slice(cursorLine + 1, line),
+        transactionIds,
+      });
+    }
+    cursorLine = null;
+    transactionIds = [];
+  }
+
+  const evidenceTransactionCounts = new Map<string, number>();
+  for (const id of evidenceBlocks.flatMap((block) => block.transactionIds)) {
+    evidenceTransactionCounts.set(id, (evidenceTransactionCounts.get(id) ?? 0) + 1);
+  }
+  const invalidTransactionId = [...currentTransactionIds].find((id) => evidenceTransactionCounts.get(id) !== 1);
+  if (invalidTransactionId || evidenceBlocks.length === 0) {
+    throw new ProgramLoweringError(
+      "anchor-missing",
+      invalidTransactionId
+        ? `Canonical source evidence for transaction ${invalidTransactionId} is not unique in ${sourcePath}.`
+        : `Canonical source evidence for ${sceneName} is unavailable in ${sourcePath}.`,
+    );
+  }
+
+  const anchorLines = evidenceBlocks.map((block) => block.anchorLine);
+  return {
+    anchorLine: anchorLines[0]!,
+    anchorLines,
+    insertedCode: evidenceBlocks.flatMap((block) => block.insertedLines).join(newline),
+  };
+}
+
 function variableToken(transactionId: string, index: number) {
   const normalized = transactionId
     .replace(/[^A-Za-z0-9_]/g, "_")
@@ -1614,22 +1705,36 @@ export function lowerCanonicalProgramSource(
     `${indentation}# poietra:anchor ${formatAmount(advancedAnchor)}`,
   );
   const loweredSource = lines.join(newline);
+  if (options.sourceAnchor === undefined) {
+    const currentTransactionIds = new Set([request.program.transactionId]);
+    const compactedSource = collapseRepeatedStaticTransformHistory(
+      loweredSource,
+      frame,
+      cameraCenter,
+      currentTransactionIds,
+      request.sceneName,
+      request.sourcePath,
+    );
+    const evidence = canonicalInsertionEvidence(
+      compactedSource,
+      currentTransactionIds,
+      request.sceneName,
+      request.sourcePath,
+    );
+    return {
+      anchorLine: evidence.anchorLine,
+      entityAliases,
+      entityBindings,
+      insertedCode: evidence.insertedCode,
+      source: compactedSource,
+    };
+  }
   return {
     anchorLine: anchor.line,
     entityAliases,
     entityBindings,
     insertedCode: insertedLines.join(newline),
-    source:
-      options.sourceAnchor === undefined
-        ? collapseRepeatedStaticTransformHistory(
-            loweredSource,
-            frame,
-            cameraCenter,
-            new Set([request.program.transactionId]),
-            request.sceneName,
-            request.sourcePath,
-          )
-        : loweredSource,
+    source: loweredSource,
   };
 }
 
@@ -2349,17 +2454,17 @@ export function lowerCanonicalProgramBatchSource(
       `${indentation}# poietra:anchor ${formatAmount(group.sourceAnchor + priorDuration + group.duration)}`,
     );
   }
+  const currentTransactionIds = new Set(normalizedEntries.map(({ program }) => program.transactionId));
+  const compactedSource = collapseRepeatedStaticTransformHistory(
+    lines.join(newline),
+    frame,
+    request.cameraCenter ?? { x: 0, y: 0 },
+    currentTransactionIds,
+    request.sceneName,
+    request.sourcePath,
+  );
   return {
-    anchorLine: groups[0].anchorLine,
-    anchorLines: groups.map((group) => group.anchorLine),
-    insertedCode: groups.flatMap((group) => group.insertedLines).join(newline),
-    source: collapseRepeatedStaticTransformHistory(
-      lines.join(newline),
-      frame,
-      request.cameraCenter ?? { x: 0, y: 0 },
-      new Set(normalizedEntries.map(({ program }) => program.transactionId)),
-      request.sceneName,
-      request.sourcePath,
-    ),
+    ...canonicalInsertionEvidence(compactedSource, currentTransactionIds, request.sceneName, request.sourcePath),
+    source: compactedSource,
   };
 }
