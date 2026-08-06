@@ -35,6 +35,10 @@ type AuthorizedEditV1 = Readonly<{
 type SupportedTemporalRebaseProfileV1 = 7 | 8 | 9 | 10 | 12;
 
 const OFFICIAL_BASIC_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+const SQUARE_TO_CIRCLE_V8_PROFILE = {
+  runtimeConfigHash: "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
+  snapshotHash: "fbe5f70ca7ddda9a87fb39491acbf461e8b61d93e7972ca572d6da5aefa23f9a",
+} as const;
 const LINE_JOINTS_V10_PROFILE = {
   leaves: [
     { join: "miter", sceneOrder: 1, sourceName: "t1" },
@@ -169,6 +173,27 @@ function isExactStableSquareToCircleV8(scene: SceneIrV1, runtimeEntityId: string
     pathTrim.keyframes[0]?.easingToNext?.kind === "manim-smooth" &&
     pathTrim.keyframes[1]?.at === 1 &&
     pathTrim.keyframes[1]?.easingToNext === null
+  );
+}
+
+function isExactOfficialSquareToCircleV8(scene: SceneIrV1, runtimeEntityId: string) {
+  const source = scene.source;
+  return (
+    source.kind === "imported-manim-server-snapshot" &&
+    source.sourceHash === OFFICIAL_BASIC_SOURCE_HASH &&
+    source.snapshotHash === SQUARE_TO_CIRCLE_V8_PROFILE.snapshotHash &&
+    source.runtimeConfigHash === SQUARE_TO_CIRCLE_V8_PROFILE.runtimeConfigHash &&
+    scene.requiredCapabilities.length === 5 &&
+    scene.requiredCapabilities[0] === "cubic-path-geometry" &&
+    scene.requiredCapabilities[1] === "opacity-animation" &&
+    scene.requiredCapabilities[2] === "path-morph-animation" &&
+    scene.requiredCapabilities[3] === "path-trim-animation" &&
+    scene.requiredCapabilities[4] === "vector-appearance-animation" &&
+    scene.camera.view.center.x === 0 &&
+    scene.camera.view.center.y === 0 &&
+    scene.camera.view.frameWidth === 14.222222222222221 &&
+    scene.camera.view.frameHeight === 8 &&
+    isExactStableSquareToCircleV8(scene, runtimeEntityId)
   );
 }
 
@@ -315,7 +340,7 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
     context.sceneName === "SquareToCircle" &&
     identity?.size === 1 &&
     square?.sourceName === "square" &&
-    isExactStableSquareToCircleV8(snapshot.snapshot.scene, square.entityId)
+    isExactOfficialSquareToCircleV8(snapshot.snapshot.scene, square.entityId)
   ) {
     const target = snapshot.snapshot.scene.entities.find(({ id }) => id === square.entityId);
     const localCenter = target ? localBoundaryCenter(snapshot.snapshot.scene, target) : null;
@@ -491,8 +516,15 @@ export function projectStudioPreviewInitialEntityPresenceV1(
   entities: readonly ProjectedEntity[],
   authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
+  sampleTime: number,
 ) {
-  if (!authority || !interactionGeometry?.has(authority.runtimeEntityId)) return entities;
+  const geometrylessSquareToCircleInitialTarget = authority?.profile === "square-to-circle-v8" && sampleTime === 0;
+  if (
+    !authority ||
+    (!geometrylessSquareToCircleInitialTarget && !interactionGeometry?.has(authority.runtimeEntityId))
+  ) {
+    return entities;
+  }
   if (authority.profile === "line-joints-v10" || authority.profile === "write-stuff-v12") {
     const target = entities.find(({ id }) => id === authority.studioEntityId);
     if (!target || !studioInitialEditTargetMatches(target, authority)) return entities;
@@ -517,6 +549,11 @@ export function projectStudioPreviewInitialEntityPresenceV1(
           }
         : entity,
     );
+  }
+  if (authority.profile === "square-to-circle-v8") {
+    const target = entities.find(({ id }) => id === authority.studioEntityId);
+    if (!target || !studioInitialEditTargetMatches(target, authority) || target.present) return entities;
+    return entities.map((entity) => (entity.id === target.id ? { ...entity, present: true } : entity));
   }
   if (entities.length !== 1) return entities;
   const [entity] = entities;

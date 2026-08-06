@@ -94,6 +94,8 @@ import {
   FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
+  FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
+  FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FastManimSnapshotContractError,
   type FastManimSnapshotProducerRequestV1,
   type FastManimSnapshotProfileVersionV1,
@@ -1613,6 +1615,7 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
+    let squareToCircleV8Plan: ExpectedFastManimSnapshotCorrelationV1["squareToCircleV8Plan"];
     let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
     let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
     let writeStuffV12Plan: ExpectedFastManimSnapshotCorrelationV1["writeStuffV12Plan"];
@@ -1621,6 +1624,7 @@ export class FastManimSnapshotRunner {
       snapshotVersion === 4 ||
       snapshotVersion === 5 ||
       snapshotVersion === 7 ||
+      snapshotVersion === 8 ||
       snapshotVersion === 9 ||
       snapshotVersion === 10 ||
       snapshotVersion === 12
@@ -1634,6 +1638,13 @@ export class FastManimSnapshotRunner {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
         } else if (snapshotVersion === 7) {
           hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
+        } else if (snapshotVersion === 8) {
+          if (
+            before.hash !== FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 &&
+            before.hash !== FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8
+          ) {
+            squareToCircleV8Plan = deriveSquareToCircleV8PositionPlan(before.source, request.sceneName);
+          }
         } else if (snapshotVersion === 9) {
           warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
         } else if (snapshotVersion === 10) {
@@ -1653,6 +1664,7 @@ export class FastManimSnapshotRunner {
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
       ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
+      ...(squareToCircleV8Plan ? { squareToCircleV8Plan } : {}),
       ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
       ...(writeStuffV12Plan ? { writeStuffV12Plan } : {}),
       projectId: request.projectId,

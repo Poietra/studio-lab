@@ -1,0 +1,13 @@
+{
+  "combinedWireSha256": "6504d47646f0598ed55199e24823d8b8e0d792ef0480395173865b613699bf9c",
+  "fastManimCommit": "68c1c9a649abcc64b36e80f967aac262a7ba92ac",
+  "fastManimTree": "4e647408991999f132b5d48a6705571e8a82906f",
+  "fixtureKind": "actual-combined-producer-output-after-bounded-source-edit",
+  "producerModule": "manim.renderer.source_runtime_identity",
+  "regeneration": "From fast-manim commit 68c1c9a649ab, insert square.move_to((2, 1, 0)) followed by circle.move_to((2, 1, 0)) immediately after the canonical SquareToCircle circle.set_fill call, then call python -m manim.renderer.source_runtime_identity with snapshotVersion 8 and the audited V8 capabilities using PYTHONHASHSEED=0.",
+  "runtimeConfigHash": "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
+  "snapshotDigest": "337fb38f33354b7bada28d170e84ee144ee2bc366fb0e1b1ededc15920351443",
+  "sourcePath": "example_scenes/basic.py",
+  "sourceSha256": "dce763274e2961cf4d1d0bb83a6e5ec623570598fdbd5f71b4c54f02e35f7dbb",
+  "version": 1
+}

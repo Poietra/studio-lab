@@ -1029,6 +1029,7 @@ export function App({
       workspaceProjection?.visibleEntities ?? [],
       presentedInitialEditAuthority,
       initialEditInteractionGeometry,
+      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -1049,6 +1050,7 @@ export function App({
       workspaceProjection?.editableEntities ?? [],
       presentedInitialEditAuthority,
       initialEditInteractionGeometry,
+      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -2791,7 +2793,11 @@ export function App({
     }
     if (initialTransformAuthority?.studioEntityId === entityId) {
       if (!("baseCenter" in initialTransformAuthority) || !edits.position || edits.content || edits.dimensions) {
-        setDraftError("This runtime-backed object currently supports position and uniform scale only.");
+        setDraftError(
+          initialTransformAuthority.profile === "square-to-circle-v8"
+            ? "This SquareToCircle proof currently supports position only."
+            : "This runtime-backed object currently supports position and uniform scale only.",
+        );
         return false;
       }
       if (!draftBaseState) return false;

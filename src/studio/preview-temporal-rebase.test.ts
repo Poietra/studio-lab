@@ -45,6 +45,9 @@ const SOURCE_PATH = "fixtures/real-preview-harness/scene_square_to_circle.py";
 const STUDIO_SCENE_ID = `${SOURCE_PATH}#SquareToCircle`;
 const SOURCE_HASH = "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40";
 const OFFICIAL_BASIC_SOURCE_HASH = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const OFFICIAL_SQUARE_TO_CIRCLE_RUNTIME_CONFIG_HASH =
+  "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2";
+const OFFICIAL_SQUARE_TO_CIRCLE_SNAPSHOT_HASH = "fbe5f70ca7ddda9a87fb39491acbf461e8b61d93e7972ca572d6da5aefa23f9a";
 const SNAPSHOT_HASH = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
 const SOURCE_BINDING_ID = "source-binding:555240577158406fa67c9ef3fd4eced1471249d8e97362c3939e8a8a6f1e9b0f";
 const WORKING_REVISION = "4".repeat(64);
@@ -573,7 +576,12 @@ function officialSquareToCircleSnapshot(
   }
   const scene = {
     ...input.snapshot.snapshot.scene,
-    source: { ...source, sourceHash: OFFICIAL_BASIC_SOURCE_HASH },
+    source: {
+      ...source,
+      runtimeConfigHash: OFFICIAL_SQUARE_TO_CIRCLE_RUNTIME_CONFIG_HASH,
+      snapshotHash: OFFICIAL_SQUARE_TO_CIRCLE_SNAPSHOT_HASH,
+      sourceHash: OFFICIAL_BASIC_SOURCE_HASH,
+    },
   };
   return {
     ...input.snapshot,
@@ -664,6 +672,31 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       studioSceneId: "example_scenes/basic.py#SquareToCircle",
     });
     expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
+    const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
+    if (!authority) throw new Error("The official SquareToCircle snapshot lost its edit authority.");
+    const [projected] = projectProposedState(input.proposedState, 0).canvas.entities;
+    if (!projected) throw new Error("The SquareToCircle source projection lost its Square.");
+    const hiddenSquare = {
+      ...projected,
+      id: authority.studioEntityId,
+      present: false,
+      provisional: false,
+      sourceIdentity: { kind: "known" as const, value: "square" },
+      transactionId: undefined,
+      type: "Square",
+    };
+    const hiddenCircle = {
+      ...hiddenSquare,
+      id: "source:example_scenes/basic.py#SquareToCircle:circle",
+      sourceIdentity: { kind: "known" as const, value: "circle" },
+      type: "Circle",
+    };
+    const hiddenEntities = [hiddenSquare, hiddenCircle];
+    expect(projectStudioPreviewInitialEntityPresenceV1(hiddenEntities, authority, null, 0)).toMatchObject([
+      { id: authority.studioEntityId, present: true },
+      { id: hiddenCircle.id, present: false },
+    ]);
+    expect(projectStudioPreviewInitialEntityPresenceV1(hiddenEntities, authority, null, 3)).toBe(hiddenEntities);
     expect(
       studioPreviewInitialEditRuntimeAuthorityV1({
         ...snapshot,
@@ -677,6 +710,52 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       studioPreviewInitialEditRuntimeAuthorityV1({
         ...snapshot,
         sourceRuntimeIdentity: new Map([["circle", { ...input.mapping, sourceName: "circle" }]]),
+      }),
+    ).toBeNull();
+
+    for (const sourceMutation of [{ runtimeConfigHash: "0".repeat(64) }, { snapshotHash: "0".repeat(64) }]) {
+      const mutatedSource = { ...snapshot.snapshot.scene.source, ...sourceMutation };
+      if (mutatedSource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a snapshot source.");
+      expect(
+        studioPreviewInitialEditRuntimeAuthorityV1({
+          ...snapshot,
+          correlation: {
+            ...snapshot.correlation,
+            engineRevisionHash: mutatedSource.snapshotHash,
+          },
+          snapshot: {
+            ...snapshot.snapshot,
+            scene: { ...snapshot.snapshot.scene, source: mutatedSource },
+          },
+        }),
+      ).toBeNull();
+    }
+
+    expect(
+      studioPreviewInitialEditRuntimeAuthorityV1({
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            camera: {
+              ...snapshot.snapshot.scene.camera,
+              view: { ...snapshot.snapshot.scene.camera.view, center: { x: 0.001, y: 0 } },
+            },
+          },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewInitialEditRuntimeAuthorityV1({
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            requiredCapabilities: snapshot.snapshot.scene.requiredCapabilities.slice(0, -1),
+          },
+        },
       }),
     ).toBeNull();
   });
@@ -1027,10 +1106,10 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
     expect(absentProjection).toMatchObject([{ id: authority.studioEntityId, present: false }]);
 
     const geometry = new Map([[authority.runtimeEntityId, {}]]);
-    const presented = projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, geometry);
+    const presented = projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, geometry, 0);
     expect(presented).toMatchObject([{ id: authority.studioEntityId, present: true }]);
-    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, null)).toBe(absentProjection);
-    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, null, geometry)).toBe(absentProjection);
+    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, null, 0)).toBe(absentProjection);
+    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, null, geometry, 0)).toBe(absentProjection);
 
     const validationScene = projectStudioPreviewInitialValidationSceneV1(absentRuntimeScene, authority);
     expect(validationScene).not.toBe(absentRuntimeScene);
@@ -1193,6 +1272,7 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
       [projectedT2],
       input.authority,
       new Map([[input.authority.runtimeEntityId, {}]]),
+      0,
     );
     expect(projected[0]).toMatchObject({
       geometry: { position: { kind: "known" }, scale: { kind: "known" } },
