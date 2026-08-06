@@ -1,6 +1,6 @@
 # Real Manim project census v2
 
-This corpus measures three pinned MIT-licensed projects with the pinned fast-manim profile V2 producer. It does not replace census v1: v1 has 7 accepted compatibility scenes but only 7 accepted and 49 fallback profile attempts, plus two Scene-specific editability profiles.
+This corpus measures three pinned MIT-licensed projects with a pinned fast-manim producer. The source-runtime identity snapshot probe uses profile V2; generic Runtime Trace is measured independently. It does not replace census v1: v1 has 7 accepted compatibility scenes but only 7 accepted and 49 fallback profile attempts, plus two Scene-specific editability profiles.
 
 The required run produced two distinct kinds of preview evidence:
 
