@@ -5,6 +5,7 @@ import {
   OPENING_MANIM_CAIRO_DENSE_GRID_PARITY_THRESHOLDS_V2,
   OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2,
   OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2,
+  OPENING_MANIM_CAIRO_WARPED_GRID_PARITY_THRESHOLDS_V2,
   readOpeningManimCairoReferenceV2,
 } from "./opening-manim-cairo-reference";
 import { encodeRgbaPngV1 } from "./png-rgba";
@@ -18,7 +19,28 @@ const DENSE_GRID_SAMPLES_V2 = new Set<OpeningManimSampleIdV2>([
   "grid-create-last",
   "grid-play-end",
   "grid-wait-end",
+  "warp-start",
 ]);
+
+const WARPED_GRID_SAMPLES_V2 = new Set<OpeningManimSampleIdV2>([
+  "warp-early",
+  "warp-midpoint",
+  "warp-late",
+  "warp-last",
+  "warp-play-end",
+  "warp-hold-last",
+  "final-title-transform-start",
+  "final-title-transform-midpoint",
+  "final-title-transform-last",
+  "final-title-transform-play-end",
+  "terminal-hold-end",
+]);
+
+export function openingManimCairoParityThresholdsV2(id: OpeningManimSampleIdV2) {
+  if (WARPED_GRID_SAMPLES_V2.has(id)) return OPENING_MANIM_CAIRO_WARPED_GRID_PARITY_THRESHOLDS_V2;
+  if (DENSE_GRID_SAMPLES_V2.has(id)) return OPENING_MANIM_CAIRO_DENSE_GRID_PARITY_THRESHOLDS_V2;
+  return OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2;
+}
 
 export type OpeningManimWebGpuFrameV2 = Readonly<{
   frameIndex: number;
@@ -46,7 +68,9 @@ export async function compareOpeningManimCairoWebGpuFramesV2(
   ]);
   const actualById = new Map(input.frames.map((frame) => [frame.id, frame]));
   if (actualById.size !== OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2.length || actualById.size !== input.frames.length) {
-    throw new Error("OpeningManim parity requires exactly one WebGPU capture for each of the fourteen Cairo samples.");
+    throw new Error(
+      "OpeningManim parity requires exactly one WebGPU capture for each of the twenty-six Cairo samples.",
+    );
   }
 
   const comparisons = [];
@@ -69,9 +93,7 @@ export async function compareOpeningManimCairoWebGpuFramesV2(
       cairo.reference.frame.viewport,
       corpus.metricContract,
     );
-    const thresholds = DENSE_GRID_SAMPLES_V2.has(id)
-      ? OPENING_MANIM_CAIRO_DENSE_GRID_PARITY_THRESHOLDS_V2
-      : OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2;
+    const thresholds = openingManimCairoParityThresholdsV2(id);
     const passed =
       metrics.ssim >= thresholds.minimumSsim &&
       metrics.pixelFractionAboveThreshold <= thresholds.maximumPixelFractionAboveThreshold;

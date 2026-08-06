@@ -1,4 +1,4 @@
-"""Generate bounded independent Cairo evidence for OpeningManim's 0-9s slice.
+"""Generate bounded independent Cairo evidence for OpeningManim's 0-15s slice.
 
 The official Scene is executed unchanged.  In particular, ``Tex`` and
 ``MathTex`` use Manim's normal LaTeX/dvisvgm path; this generator never imports
@@ -31,15 +31,15 @@ import PIL._imaging as pillow_imaging
 from manim import tempconfig
 
 
-FAST_MANIM_COMMIT = "82353666a30abf48390d98eb796e1573a149030e"
-FAST_MANIM_TREE = "2b95349bd0647908189e4db9be4d18a5b368db25"
+FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c"
+FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90"
 SOURCE_PATH = Path("example_scenes/basic.py")
 SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
 FRAME = {"height": 8, "width": 128.0 / 9.0}
 VIEWPORT = {"heightPx": 360, "widthPx": 640}
 FRAME_RATE = 60
-SLICE_FRAME_COUNT = 540
-SLICE_DURATION_SECONDS = 9
+SLICE_FRAME_COUNT = 900
+SLICE_DURATION_SECONDS = 15
 RGBA_BYTES = VIEWPORT["widthPx"] * VIEWPORT["heightPx"] * 4
 SAMPLES = (
     ("initial", 0, 0.0),
@@ -55,8 +55,20 @@ SAMPLES = (
     ("grid-create-midpoint", 390, 6.5),
     ("grid-create-last", 479, 479 / FRAME_RATE),
     ("grid-play-end", 480, 8.0),
+    ("grid-wait-end", 539, 539 / FRAME_RATE),
+    ("warp-start", 540, 9.0),
+    ("warp-early", 570, 9.5),
+    ("warp-midpoint", 630, 10.5),
+    ("warp-late", 690, 11.5),
+    ("warp-last", 719, 719 / FRAME_RATE),
+    ("warp-play-end", 720, 12.0),
+    ("warp-hold-last", 779, 779 / FRAME_RATE),
+    ("final-title-transform-start", 780, 13.0),
+    ("final-title-transform-midpoint", 810, 13.5),
+    ("final-title-transform-last", 839, 839 / FRAME_RATE),
+    ("final-title-transform-play-end", 840, 14.0),
     # A duration-end request retains the final captured presentation frame.
-    ("grid-wait-end", 539, 9.0),
+    ("terminal-hold-end", 899, 15.0),
 )
 
 EXPECTED_TEX_TOOLCHAIN = {
@@ -127,11 +139,24 @@ EXPECTED_TEX_ARTIFACTS = (
             "sha256": "0b81212898da17f3454281eb8d87490e33e0fbe83a402ed262e53cd7925dd2e2",
         },
     },
+    {
+        "role": "grid-transform-title",
+        "svg": {
+            "byteLength": 17_639,
+            "fileName": "41ba434b08dcd2a6.svg",
+            "sha256": "916d669120ce2eebe89de3556c42f39726fc74a00a61679bc29ba366c40bb48a",
+        },
+        "tex": {
+            "byteLength": 285,
+            "fileName": "41ba434b08dcd2a6.tex",
+            "sha256": "41ba434b08dcd2a6c107eb68508594d175ac7f1a00a2dac88baec801b2b18f7b",
+        },
+    },
 )
 
 
 class OpeningSliceComplete(BaseException):
-    """Producer-owned sentinel raised after the bounded 540th frame."""
+    """Producer-owned sentinel raised after the bounded 900th frame."""
 
 
 def sha256(data: bytes) -> str:
@@ -204,7 +229,9 @@ def linked_library(module: Path, soname: str) -> Path:
 def executable_identity(name: str) -> dict[str, str]:
     executable_name = shutil.which(name)
     if executable_name is None:
-        raise FileNotFoundError(f"required reference-render tool is unavailable: {name}")
+        raise FileNotFoundError(
+            f"required reference-render tool is unavailable: {name}"
+        )
     executable = Path(executable_name).resolve(strict=True)
     completed = subprocess.run(
         [name, "--version"],
@@ -225,7 +252,9 @@ def tex_toolchain_identity() -> dict[str, dict[str, str]]:
         "latex": executable_identity("latex"),
     }
     if identity != EXPECTED_TEX_TOOLCHAIN:
-        raise RuntimeError("the resolved TinyTeX toolchain differs from the sealed identity")
+        raise RuntimeError(
+            "the resolved TinyTeX toolchain differs from the sealed identity"
+        )
     return identity
 
 
@@ -298,7 +327,9 @@ def load_scene(source: Path) -> type[manim.Scene]:
         raise TypeError("reference source must define OpeningManim(Scene)")
     # No globals are replaced: Tex and MathTex must stay on normal Manim.
     if module.Tex is not manim.Tex or module.MathTex is not manim.MathTex:
-        raise RuntimeError("official OpeningManim did not retain normal Tex constructors")
+        raise RuntimeError(
+            "official OpeningManim did not retain normal Tex constructors"
+        )
     return scene
 
 
@@ -380,7 +411,9 @@ def render_sample_frames(scene_type: type[manim.Scene]) -> dict[str, bytes]:
     finally:
         scene.tear_down()
     if not completed or round(renderer.time * FRAME_RATE) != SLICE_FRAME_COUNT:
-        raise RuntimeError("official OpeningManim did not complete its exact 0-9s slice")
+        raise RuntimeError(
+            "official OpeningManim did not complete its exact 0-15s slice"
+        )
     expected_ids = {sample_id for sample_id, _, _ in SAMPLES}
     if set(captured) != expected_ids:
         raise RuntimeError(
@@ -389,7 +422,9 @@ def render_sample_frames(scene_type: type[manim.Scene]) -> dict[str, bytes]:
     return captured
 
 
-def collect_tex_artifacts(tex_dir: Path) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
+def collect_tex_artifacts(
+    tex_dir: Path,
+) -> tuple[list[dict[str, Any]], dict[str, bytes]]:
     expected_names = {
         item[kind]["fileName"]
         for item in EXPECTED_TEX_ARTIFACTS
@@ -476,7 +511,9 @@ def generate(output: Path, fast_manim: Path) -> None:
         raise RuntimeError("official OpeningManim source bytes do not match the pin")
     manim_module = Path(manim.__file__).resolve()
     if not manim_module.is_relative_to(fast_manim / "manim"):
-        raise RuntimeError("the imported Manim module does not belong to the pinned checkout")
+        raise RuntimeError(
+            "the imported Manim module does not belong to the pinned checkout"
+        )
 
     random.seed(0)
     np.random.seed(0)
@@ -549,7 +586,9 @@ def generate(output: Path, fast_manim: Path) -> None:
         "version": 2,
     }
     (output / "reference.json").write_text(
-        json.dumps(document, allow_nan=False, ensure_ascii=False, indent=2, sort_keys=True)
+        json.dumps(
+            document, allow_nan=False, ensure_ascii=False, indent=2, sort_keys=True
+        )
         + "\n",
         encoding="utf-8",
     )

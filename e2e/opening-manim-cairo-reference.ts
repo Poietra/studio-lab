@@ -23,6 +23,13 @@ export const OPENING_MANIM_CAIRO_DENSE_GRID_PARITY_THRESHOLDS_V2 = {
     "The dense one-pixel NumberPlane covers much of the viewport, so Cairo and WebGPU edge antialiasing differ on many low-intensity pixels while preserving its geometry, timing, paint, and hold.",
 } as const;
 
+export const OPENING_MANIM_CAIRO_WARPED_GRID_PARITY_THRESHOLDS_V2 = {
+  maximumPixelFractionAboveThreshold: 0.085,
+  minimumSsim: 0.987,
+  reason:
+    "ApplyPointwiseFunction bends the dense one-pixel NumberPlane into many subpixel curved edges, so independent Cairo and WebGPU rasterization differs while the Runtime Trace geometry audit preserves the exact path, timing, paint, and hold.",
+} as const;
+
 export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 = [
   ["initial", 0, 0],
   ["opening-animation-midpoint", 60, 1],
@@ -37,7 +44,19 @@ export const OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2 = [
   ["grid-create-midpoint", 390, 6.5],
   ["grid-create-last", 479, 479 / 60],
   ["grid-play-end", 480, 8],
-  ["grid-wait-end", 539, 9],
+  ["grid-wait-end", 539, 539 / 60],
+  ["warp-start", 540, 9],
+  ["warp-early", 570, 9.5],
+  ["warp-midpoint", 630, 10.5],
+  ["warp-late", 690, 11.5],
+  ["warp-last", 719, 719 / 60],
+  ["warp-play-end", 720, 12],
+  ["warp-hold-last", 779, 779 / 60],
+  ["final-title-transform-start", 780, 13],
+  ["final-title-transform-midpoint", 810, 13.5],
+  ["final-title-transform-last", 839, 839 / 60],
+  ["final-title-transform-play-end", 840, 14],
+  ["terminal-hold-end", 899, 15],
 ] as const;
 
 function frameSchema(
@@ -98,13 +117,25 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
     frameSchema("grid-create-midpoint", 390, 6.5),
     frameSchema("grid-create-last", 479, 479 / 60),
     frameSchema("grid-play-end", 480, 8),
-    frameSchema("grid-wait-end", 539, 9),
+    frameSchema("grid-wait-end", 539, 539 / 60),
+    frameSchema("warp-start", 540, 9),
+    frameSchema("warp-early", 570, 9.5),
+    frameSchema("warp-midpoint", 630, 10.5),
+    frameSchema("warp-late", 690, 11.5),
+    frameSchema("warp-last", 719, 719 / 60),
+    frameSchema("warp-play-end", 720, 12),
+    frameSchema("warp-hold-last", 779, 779 / 60),
+    frameSchema("final-title-transform-start", 780, 13),
+    frameSchema("final-title-transform-midpoint", 810, 13.5),
+    frameSchema("final-title-transform-last", 839, 839 / 60),
+    frameSchema("final-title-transform-play-end", 840, 14),
+    frameSchema("terminal-hold-end", 899, 15),
   ]),
   producer: z.strictObject({
     cairoLibrarySha256: SHA256,
     cairoVersion: z.string().min(1),
-    fastManimCommit: z.literal("82353666a30abf48390d98eb796e1573a149030e"),
-    fastManimTree: z.literal("2b95349bd0647908189e4db9be4d18a5b368db25"),
+    fastManimCommit: z.literal("365345c2cbb673ab0e9fe22d33353fcbcd43b58c"),
+    fastManimTree: z.literal("f6cae74330644d19bd0a5bf12a092c9840a83e90"),
     identitySha256: SHA256,
     manimVersion: z.literal("0.20.1"),
     numpyVersion: z.string().min(1),
@@ -178,6 +209,21 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
           "0b81212898da17f3454281eb8d87490e33e0fbe83a402ed262e53cd7925dd2e2",
         ),
       }),
+      z.strictObject({
+        role: z.literal("grid-transform-title"),
+        svg: artifactFileSchema(
+          "41ba434b08dcd2a6.svg",
+          "tex/grid-transform-title.svg",
+          17_639,
+          "916d669120ce2eebe89de3556c42f39726fc74a00a61679bc29ba366c40bb48a",
+        ),
+        tex: artifactFileSchema(
+          "41ba434b08dcd2a6.tex",
+          "tex/grid-transform-title.tex",
+          285,
+          "41ba434b08dcd2a6c107eb68508594d175ac7f1a00a2dac88baec801b2b18f7b",
+        ),
+      }),
     ]),
     texToolchain: z.strictObject({
       dvisvgm: executableSchema("f71f47113ad9a77b9d2b01dd5d938e3537c60d1ee7f342ec273ed061d5e51b38", "dvisvgm 3.6"),
@@ -226,8 +272,8 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
     className: z.literal("OpeningManim"),
     repository: z.literal("Poietra/fast-manim"),
     slice: z.strictObject({
-      duration: z.literal(9),
-      frameCount: z.literal(540),
+      duration: z.literal(15),
+      frameCount: z.literal(900),
       start: z.literal(0),
     }),
     sourcePath: z.literal("example_scenes/basic.py"),

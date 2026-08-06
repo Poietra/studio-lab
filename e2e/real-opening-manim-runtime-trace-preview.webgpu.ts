@@ -161,11 +161,11 @@ async function compareWithIndependentCairo(frames: readonly OpeningManimWebGpuFr
   });
 }
 
-test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
+test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and retained WebGPU", async ({ page }) => {
   test.setTimeout(300_000);
   const run = await verifiedOpeningRuntimeTrace(page);
   expect(run.bundle.scene).toMatchObject({
-    duration: 9,
+    duration: 15,
     requiredCapabilities: [
       "affine-transform-animation",
       "cubic-path-geometry",
@@ -183,16 +183,18 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
       traceVersion: 2,
     },
   });
-  expect(run.bundle.scene.entities).toHaveLength(106);
-  expect(run.bundle.scene.animationChannels).toHaveLength(171);
+  expect(run.bundle.scene.entities).toHaveLength(194);
+  expect(run.bundle.scene.animationChannels).toHaveLength(269);
   expect(run.bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(
-    10_559,
+    12_551,
   );
   const channelKinds = run.bundle.scene.animationChannels.map(({ kind }) => kind);
-  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(69);
+  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(122);
   expect(channelKinds.filter((kind) => kind === "path-trim")).toHaveLength(39);
-  expect(channelKinds.filter((kind) => kind === "path-morph")).toHaveLength(17);
-  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(46);
+  const pathMorphChannels = run.bundle.scene.animationChannels.filter((channel) => channel.kind === "path-morph");
+  expect(pathMorphChannels).toHaveLength(87);
+  expect(pathMorphChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(509);
+  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(21);
   expect(channelKinds.filter((kind) => kind === "opacity")).toHaveLength(0);
   expect(run.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
   const rootEntityIds = run.roots.map(({ entityId }) => entityId);
@@ -211,12 +213,16 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
   await expect(page.locator("[data-studio-preview-canvas]")).toBeVisible();
 
   const playhead = page.getByRole("slider", { name: "Scene playhead" });
-  await expect(playhead).toHaveAttribute("max", "9");
+  await expect(playhead).toHaveAttribute("max", "15");
   const packetIds = new Set<string>();
   // The editor playhead is a 0.01-step range input, so use its representable
-  // pre-boundary values here. The exact frame-179 and frame-479 samples are
-  // exercised below by readback, which is not quantized by the UI control.
-  for (const sampleTime of [0, 0.5, 1, 2, 2.98, 3, 3.5, 4, 4.98, 5, 5.5, 6.5, 7.98, 8, 9]) {
+  // pre-boundary values here. Exact pre-boundary frames are exercised below
+  // by readback, which is not quantized by the UI control.
+  const playheadSampleTimes = [
+    0, 0.5, 1, 2, 2.98, 3, 3.5, 4, 4.98, 5, 5.5, 6.5, 7.98, 8, 8.98, 9, 9.5, 10.5, 11.5, 11.98, 12, 12.98, 13, 13.5,
+    13.98, 14, 15,
+  ];
+  for (const sampleTime of playheadSampleTimes) {
     await playhead.fill(String(sampleTime));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
@@ -224,7 +230,7 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
     if (!packetId) throw new Error(`OpeningManim sample ${sampleTime} has no retained packet identity.`);
     packetIds.add(packetId);
   }
-  expect(packetIds.size).toBe(15);
+  expect(packetIds.size).toBe(playheadSampleTimes.length);
 
   // Return to a frame where the first two source roots are alive before
   // asserting their Studio selection proxies.
@@ -304,21 +310,7 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
   }
   const frames = new Map(fullRgba.frames.map((frame) => [frame.id, frame]));
   expect(frames.get("initial")?.pixels.nonBlackBounds).toBeNull();
-  for (const id of [
-    "opening-animation-midpoint",
-    "opening-play-end",
-    "opening-hold-last",
-    "transform-start",
-    "transform-midpoint",
-    "transform-play-end",
-    "wait-end",
-    "grid-create-start",
-    "grid-create-early",
-    "grid-create-midpoint",
-    "grid-create-last",
-    "grid-play-end",
-    "grid-wait-end",
-  ] as const) {
+  for (const [id] of OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2.slice(1)) {
     const bounds = frames.get(id)?.pixels.nonBlackBounds;
     expect(bounds, `OpeningManim frame ${id} must contain visible geometry`).not.toBeNull();
     if (!bounds) throw new Error(`OpeningManim frame ${id} has no visible bounds.`);
@@ -326,12 +318,17 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
     expect(bounds[2]).toBeGreaterThan(bounds[0]);
     expect(bounds[3]).toBeGreaterThan(bounds[1]);
   }
+  expectSameFullRgba(frames, "final-title-transform-midpoint", "final-title-transform-midpoint-repeat");
   expectSameFullRgba(frames, "transform-midpoint", "transform-midpoint-repeat");
+  expectSameFullRgba(frames, "warp-midpoint", "warp-midpoint-repeat");
   expectSameFullRgba(frames, "grid-create-midpoint", "grid-create-midpoint-repeat");
   expectSameFullRgba(frames, "transform-play-end", "wait-end");
   expectSameFullRgba(frames, "opening-play-end", "opening-hold-last");
   expectSameFullRgba(frames, "wait-end", "grid-create-start");
   expectSameFullRgba(frames, "grid-play-end", "grid-wait-end");
+  expectSameFullRgba(frames, "grid-wait-end", "warp-start");
+  expectSameFullRgba(frames, "warp-play-end", "warp-hold-last");
+  expectSameFullRgba(frames, "final-title-transform-play-end", "terminal-hold-end");
   expect(frames.get("initial")?.sha256).not.toBe(frames.get("opening-animation-midpoint")?.sha256);
   expect(frames.get("opening-animation-midpoint")?.sha256).not.toBe(frames.get("opening-play-end")?.sha256);
   expect(frames.get("opening-hold-last")?.sha256).not.toBe(frames.get("transform-start")?.sha256);
@@ -341,6 +338,21 @@ test("renders the official OpeningManim 0-9s slice through Runtime Trace V2 and 
   expect(frames.get("grid-create-early")?.sha256).not.toBe(frames.get("grid-create-midpoint")?.sha256);
   expect(frames.get("grid-create-midpoint")?.sha256).not.toBe(frames.get("grid-create-last")?.sha256);
   expect(frames.get("grid-create-last")?.sha256).not.toBe(frames.get("grid-play-end")?.sha256);
+  expect(frames.get("warp-start")?.sha256).not.toBe(frames.get("warp-early")?.sha256);
+  expect(frames.get("warp-early")?.sha256).not.toBe(frames.get("warp-midpoint")?.sha256);
+  expect(frames.get("warp-midpoint")?.sha256).not.toBe(frames.get("warp-late")?.sha256);
+  expect(frames.get("warp-late")?.sha256).not.toBe(frames.get("warp-last")?.sha256);
+  expect(frames.get("warp-last")?.sha256).not.toBe(frames.get("warp-play-end")?.sha256);
+  expect(frames.get("warp-hold-last")?.sha256).not.toBe(frames.get("final-title-transform-start")?.sha256);
+  expect(frames.get("final-title-transform-start")?.sha256).not.toBe(
+    frames.get("final-title-transform-midpoint")?.sha256,
+  );
+  expect(frames.get("final-title-transform-midpoint")?.sha256).not.toBe(
+    frames.get("final-title-transform-last")?.sha256,
+  );
+  expect(frames.get("final-title-transform-last")?.sha256).not.toBe(
+    frames.get("final-title-transform-play-end")?.sha256,
+  );
 
   if (CAIRO_PARITY_REQUIRED) {
     const parityFrames = OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2.map(([id, frameIndex, sampleTime]) => {
