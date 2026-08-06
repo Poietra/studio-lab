@@ -29,6 +29,8 @@ const writeStuffSourceBindings = ["example_text", "example_tex", "group"].map((s
   entityId: `source:${warpSquareSourcePath}#${writeStuffSceneName}:${sourceVariable}`,
   sourceVariable,
 }));
+const updatersSceneName = "UpdatersExample";
+const updatersSquareEntityId = `source:${warpSquareSourcePath}#${updatersSceneName}:square`;
 const sceneSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -277,6 +279,58 @@ describe("Manim render request lowering", () => {
       '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n' +
         "        example_tex.move_to((1.25, -0.5, 0))\n\n" +
         "        self.play(Write(example_text))",
+    );
+  });
+
+  it("routes one five-second UpdatersExample resize through the bounded early lowerer", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: updatersSquareEntityId,
+      from: { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 45 } },
+      id: "updaters-terminal-resize",
+      interval: { end: 5, start: 5 },
+      kind: "ResizeEntity",
+      provenance: { evidence: ["verified UpdatersExample terminal boundary"], origin: "direct-manipulation" },
+      scale: 1,
+      shape: "rectangle",
+      to: { dimensions: { height: 3, width: 3 }, position: { x: 320, y: 45 } },
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 5,
+        evidence: ["verified UpdatersExample terminal boundary"],
+        resolvedSeconds: 5,
+        source: { kind: "playhead", referenceSeconds: 5 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["UpdatersExample terminal edit"], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: "updaters-terminal-v1-resize",
+      version: 1,
+    };
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 14.222222222222221 },
+      originalSource: warpSquareSource,
+      projectId: "default",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "default",
+        sceneName: updatersSceneName,
+        sourceBindings: [{ entityId: updatersSquareEntityId, sourceVariable: "square" }],
+        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
+        sourcePath: warpSquareSourcePath,
+        viewport: { height: 360, width: 640 },
+      },
+    });
+
+    expect(result.lowered.preflight?.kind).toBe("fast-manim-updaters-terminal-v1");
+    expect(result.lowered.source).toContain(
+      "            run_time=5,\n        )\n        square.scale(1.5)\n        self.wait()",
     );
   });
 

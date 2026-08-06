@@ -3,6 +3,7 @@ import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
   lowerLineJointsInitialTransformSourceV10,
+  lowerUpdatersTerminalTransformSourceV1,
   lowerWarpSquareInitialTransformSourceV9,
   lowerWriteStuffInitialTransformSourceV12,
   ProgramLoweringError,
@@ -77,6 +78,14 @@ export function lowerManimRenderRequest({
       null,
     );
     if (writeStuffV12) return { lowered: writeStuffV12, renderRequest: request };
+    const updatersTerminalV1 = lowerUpdatersTerminalTransformSourceV1(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (updatersTerminalV1) return { lowered: updatersTerminalV1, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;
