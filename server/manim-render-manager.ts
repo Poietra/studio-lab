@@ -20,7 +20,9 @@ import {
   renderRequestId,
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
+import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
+import { fastManimRuntimeTraceProducerEnvironmentV1 } from "./fast-manim-runtime-trace-profile";
 import type {
   FastManimSandboxAttestationVerifierV1,
   FastManimSandboxBackendV1,
@@ -196,6 +198,7 @@ export class ManimRenderManager {
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
   private readonly candidateVerifier: ManimRenderCandidateVerifierV1;
+  private readonly runtimeTraceRunner: FastManimSnapshotRunner | null;
   private readonly sessionRetentionMs: number;
   private readonly staticVideoCommand: readonly string[];
   private readonly sessions = new Map<string, RenderSession>();
@@ -220,6 +223,8 @@ export class ManimRenderManager {
       projectName?: string;
       projectRoot: string;
       renderTimeoutMs?: number;
+      runtimeTraceProducerCommand?: readonly string[];
+      runtimeTraceProducerDevOptIn?: boolean;
       sessionRetentionMs?: number;
       snapshotSandboxAttestationVerifier?: FastManimSandboxAttestationVerifierV1;
       snapshotSandboxBackend?: FastManimSandboxBackendV1;
@@ -287,6 +292,18 @@ export class ManimRenderManager {
     // deployment is production, so local-process execution can never become a
     // fail-open consequence of an omitted option.
     const snapshotDeployment = options.snapshotSandboxDeployment ?? "production";
+    if (options.runtimeTraceProducerDevOptIn) {
+      if (snapshotDeployment === "production") {
+        throw new TypeError("The local-process Runtime Trace backend is forbidden in production mode.");
+      }
+      if (
+        !options.runtimeTraceProducerCommand ||
+        options.runtimeTraceProducerCommand.length === 0 ||
+        options.runtimeTraceProducerCommand.some((entry) => entry.length === 0)
+      ) {
+        throw new TypeError("The Runtime Trace development opt-in requires an explicit non-empty command.");
+      }
+    }
     const snapshotBackend =
       options.snapshotSandboxBackend ??
       createConfiguredFastManimSandboxBackendV1({
@@ -309,6 +326,28 @@ export class ManimRenderManager {
       tenantId: this.tenantId,
       timeoutMs: options.snapshotTimeoutMs,
     });
+    const runtimeTraceBackend = options.runtimeTraceProducerDevOptIn
+      ? createConfiguredFastManimSandboxBackendV1({
+          command: options.runtimeTraceProducerCommand,
+          deployment: snapshotDeployment,
+          localProcessDevOptIn: true,
+          logger: this.logger,
+          producerEnv: fastManimRuntimeTraceProducerEnvironmentV1(),
+          projectRoot: this.projectRoot,
+        })
+      : null;
+    this.runtimeTraceRunner = runtimeTraceBackend
+      ? new FastManimSnapshotRunner({
+          backend: runtimeTraceBackend,
+          deployment: snapshotDeployment,
+          frame: this.frame,
+          logger: this.logger,
+          projectId: this.projectId,
+          projectRoot: this.projectRoot,
+          tenantId: this.tenantId,
+          timeoutMs: options.snapshotTimeoutMs,
+        })
+      : null;
     this.candidateVerifier = new ManimRenderCandidateVerifierV1({
       frame: this.frame,
       logger: this.logger,
@@ -344,6 +383,7 @@ export class ManimRenderManager {
       this.sessions.size === 0 &&
       !this.thumbnailCache.isBusy() &&
       !this.snapshotRunner.busy &&
+      !this.runtimeTraceRunner?.busy &&
       this.thumbnailRefreshRequest === null &&
       this.thumbnailSlotRequest === null &&
       this.thumbnailStartRequest === null &&
@@ -1103,6 +1143,13 @@ export class ManimRenderManager {
     return this.snapshotRunner.run(request, signal);
   }
 
+  runRuntimeTrace(request: FastManimRuntimeTraceRunRequestV1, signal?: AbortSignal) {
+    if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
+    if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
+    if (!this.runtimeTraceRunner) throw new HttpError("Runtime Trace preview is not configured.", 503);
+    return this.runtimeTraceRunner.runRuntimeTrace(request, signal);
+  }
+
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
@@ -1143,6 +1190,7 @@ export class ManimRenderManager {
       }),
       thumbnailClose,
       this.snapshotRunner.close(),
+      ...(this.runtimeTraceRunner ? [this.runtimeTraceRunner.close()] : []),
       ...(pendingWorkspace ? [pendingWorkspace] : []),
       ...(this.thumbnailRefreshRequest ? [this.thumbnailRefreshRequest] : []),
       ...(this.thumbnailSlotRequest ? [this.thumbnailSlotRequest] : []),

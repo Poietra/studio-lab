@@ -73,6 +73,10 @@ export function createStudioViteConfig(
         frameWidth: env.POIETRA_MANIM_FRAME_WIDTH ? Number(env.POIETRA_MANIM_FRAME_WIDTH) : undefined,
         projects: parseManimProjects(env.POIETRA_MANIM_PROJECTS),
         projectRoot: env.POIETRA_MANIM_PROJECT_ROOT,
+        runtimeTraceProducerCommand: parseFastManimSnapshotProducerCommand(
+          env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND,
+        ),
+        runtimeTraceProducerDevOptIn: env.POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN === "1",
         snapshotSandboxDeployment: mode === "production" ? "production" : "development",
         snapshotProducerCommand: parseFastManimSnapshotProducerCommand(env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND),
         snapshotProducerDevOptIn: env.POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN === "1",

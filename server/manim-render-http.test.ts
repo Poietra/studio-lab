@@ -13,9 +13,16 @@ import {
   RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
+import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
+import {
+  runtimeTraceFixture,
+  runtimeTraceRequestFixture,
+  trustedRuntimeTraceProducer,
+} from "./test-fixtures/fast-manim-runtime-trace-fixture";
 
 async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: StructuredLogger) {
   const server = createServer((request, response) => {
@@ -558,6 +565,142 @@ describe("async Manim API port", () => {
       await vi.waitFor(() =>
         expect(records.find(({ event }) => event === "request.aborted")?.data).toEqual({ kind: "ExpectedAbort" }),
       );
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+});
+
+describe("Runtime Trace preview routing", () => {
+  const trace = runtimeTraceFixture();
+  const requestBody = {
+    projectId: trace.projectId,
+    requestId: trace.requestId,
+    sceneName: trace.sceneName,
+    sourceHash: trace.sourceHash,
+    sourcePath: trace.sourcePath,
+  } as const;
+
+  async function verifiedView() {
+    const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
+      JSON.stringify(trace),
+      runtimeTraceRequestFixture(),
+      trustedRuntimeTraceProducer(trace),
+    );
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    return {
+      bundle,
+      projectId: trace.projectId,
+      requestId: trace.requestId,
+      roots: trace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
+      runtimeConfigHash: trace.runtimeConfigHash,
+      sceneId: trace.sceneId,
+      sceneName: trace.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-run",
+      sourceHash: trace.sourceHash,
+      sourcePath: trace.sourcePath,
+      status: "verified",
+      traceDigest: source.traceDigest,
+      version: 1,
+    } as const satisfies FastManimRuntimeTraceRunViewV1;
+  }
+
+  it("routes one correlated POST and leaves the endpoint unpublished", async () => {
+    const view = await verifiedView();
+    const runRuntimeTrace = vi.fn(async () => view);
+    const api = {
+      runRuntimeTrace,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-test" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const path = "/api/manim/projects/demo/runtime-traces";
+      const posted = await send(port, path, {
+        body: JSON.stringify(requestBody),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(posted.status).toBe(200);
+      expect(JSON.parse(posted.body.toString("utf8"))).toEqual(view);
+      expect(runRuntimeTrace).toHaveBeenCalledWith(requestBody, expect.any(AbortSignal));
+
+      const get = await send(port, path);
+      expect(get.status).toBe(405);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+  });
+
+  it("rejects path mismatch and an unconfigured API before execution", async () => {
+    const view = await verifiedView();
+    const runRuntimeTrace = vi.fn(async () => view);
+    const configured = await listen({
+      runRuntimeTrace,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-mismatch" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    const unavailable = await listen({
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-unavailable" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const mismatch = await send(
+        (configured.address() as AddressInfo).port,
+        "/api/manim/projects/project-b/runtime-traces",
+        {
+          body: JSON.stringify(requestBody),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(mismatch.status).toBe(409);
+      expect(runRuntimeTrace).not.toHaveBeenCalled();
+
+      const missing = await send(
+        (unavailable.address() as AddressInfo).port,
+        "/api/manim/projects/demo/runtime-traces",
+        {
+          body: JSON.stringify(requestBody),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
+      expect(missing.status).toBe(503);
+    } finally {
+      await Promise.all(
+        [configured, unavailable].map(
+          (server) =>
+            new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
+        ),
+      );
+    }
+  });
+
+  it("rejects malformed verified evidence without returning backend-controlled data", async () => {
+    const view = await verifiedView();
+    const leakedSource = "private source text must not cross the HTTP boundary";
+    const runRuntimeTrace = vi.fn(async () => ({
+      ...view,
+      bundle: { absolutePath: "/private/workspace/basic.py", leakedSource },
+    }));
+    const server = await listen({
+      runRuntimeTrace,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-invalid-output" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
+        body: JSON.stringify(requestBody),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(502);
+      expect(response.body.toString("utf8")).not.toContain(leakedSource);
+      expect(response.body.toString("utf8")).not.toContain("/private/workspace");
     } finally {
       await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }

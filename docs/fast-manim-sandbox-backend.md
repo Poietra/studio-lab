@@ -104,6 +104,22 @@ pnpm dev:web
 Profile V1 remains the default. Set version 2 only with a producer that
 supports the bounded variable frozen-wait snapshot contract.
 
+The exact official `UpdatersExample` Runtime Trace uses a separate local-only
+producer command and opt-in. Point the workspace at the checked-in real preview
+harness, then open Studio with `?previewRenderer=server` and explicitly request
+the Scene preview:
+
+```sh
+POIETRA_MANIM_PROJECT_ROOT="$PWD/fixtures/real-preview-harness" \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_DEV_OPT_IN=1 \
+POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND='["/path/to/fast-manim/.venv/bin/python","-m","manim.renderer.runtime_trace"]' \
+pnpm dev:web
+```
+
+The configured fast-manim checkout must match the commit and tree pinned by
+`fast-manim-runtime-trace-profile.ts`. This path is preview-only: it neither
+publishes a reusable snapshot nor grants source-edit authority.
+
 This is not a production enablement recipe. The child-process adapter filters
 environment and uses a private runtime directory, but it is not an OS isolation
 boundary and cannot contain every fork/setsid escape.
