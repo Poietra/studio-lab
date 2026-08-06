@@ -377,7 +377,7 @@ async function validateVerifiedRuntimeTraceRun(
   const expectedProfile =
     identity.sceneName === "UpdatersExample" && source.traceVersion === 1 && bundle.scene.duration === 6
       ? ({ rootNames: ["square", "decimal"] } as const)
-      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 3
+      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 5
         ? ({ rootNames: ["title", "basel"] } as const)
         : null;
   if (!expectedProfile) {

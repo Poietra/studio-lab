@@ -84,8 +84,8 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
   producer: z.strictObject({
     cairoLibrarySha256: SHA256,
     cairoVersion: z.string().min(1),
-    fastManimCommit: z.literal("1227d2c03f16a6d504e90ffc23ba574ee0a88b37"),
-    fastManimTree: z.literal("63e0e988235fb103aa01288593c5d7dbe7421564"),
+    fastManimCommit: z.literal("b0147ec8b5dd2f11809816043d666d6981652c50"),
+    fastManimTree: z.literal("d27cf706cc62892a5dc1d42b289691113efe0472"),
     identitySha256: SHA256,
     manimVersion: z.literal("0.20.1"),
     numpyVersion: z.string().min(1),

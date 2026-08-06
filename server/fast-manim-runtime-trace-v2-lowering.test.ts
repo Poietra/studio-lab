@@ -24,10 +24,10 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(fixture());
 
     expect(bundle.scene.source).toMatchObject({ kind: "imported-manim-runtime-trace", traceVersion: 2 });
-    expect(bundle.scene.entities).toHaveLength(47);
+    expect(bundle.scene.entities).toHaveLength(49);
     expect(bundle.scene.entities.filter((entity) => entity.geometry.kind === "group")).toHaveLength(3);
-    expect(bundle.scene.animationChannels).toHaveLength(73);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(13_140);
+    expect(bundle.scene.animationChannels).toHaveLength(119);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(23_708);
     expect(bundle.scene.entities.slice(3, 5).map(({ id }) => id)).toEqual([
       expect.stringMatching(/runtime-draw:0\/paint:fill$/),
       expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
@@ -36,6 +36,8 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
       "affine-transform-animation",
       "cubic-path-geometry",
       "logical-group",
+      "opacity-animation",
+      "path-morph-animation",
       "path-trim-animation",
       "vector-appearance-animation",
     ]);
@@ -52,13 +54,13 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     expect(midpoint.packet.draws[30].transform.tx).toBe(0.5);
 
     const hold = await frameAt(bundle, 3);
-    expect(hold.packet.draws).toHaveLength(44);
+    expect(hold.packet.draws).toHaveLength(46);
     expect(hold.packet.draws[1]).toMatchObject({
       kind: "path",
       stroke: { color: { alpha: 0 } },
     });
-    expect(hold.packet.draws[30].opacity).toBe(1);
-    expect(hold.packet.draws[30].transform.tx).toBe(1);
+    expect(hold.packet.draws[32].opacity).toBe(1);
+    expect(hold.packet.draws[32].transform.tx).toBe(1);
 
     expect(await frameAt(bundle, 0.5)).toEqual(midpoint);
   });
@@ -114,7 +116,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     const pathId = `path:${digestFastManimRuntimeTracePathV2(source)}` as const;
     trace.resources.paths.push({ id: pathId, path: source });
     trace.frames.slice(1).forEach((frame) => {
-      frame.draws[15]!.pathId = pathId;
+      frame.draws[17]!.pathId = pathId;
     });
 
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
@@ -123,7 +125,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
 
     expect(split.map(({ id, lifetimes }) => ({ id, lifetimes }))).toEqual([
       { id: drawId, lifetimes: [{ end: 1 / 60, start: 0 }] },
-      { id: `${drawId}/topology:1`, lifetimes: [{ end: 3, start: 1 / 60 }] },
+      { id: `${drawId}/topology:1`, lifetimes: [{ end: 4, start: 1 / 60 }] },
     ]);
     expect(bundle.scene.entities.filter((entity) => entity.id.includes("/topology:"))).toHaveLength(1);
   });
@@ -135,7 +137,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     const pathId = `path:${digestFastManimRuntimeTracePathV2(changed)}` as const;
     trace.resources.paths.push({ id: pathId, path: changed });
     trace.frames.slice(1, 61).forEach((frame) => {
-      frame.draws[15]!.pathId = pathId;
+      frame.draws[17]!.pathId = pathId;
     });
 
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
@@ -146,7 +148,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
 
     expect(bundle.scene.entities.filter((entity) => entity.id.includes("/topology:"))).toHaveLength(0);
     expect(channels).toHaveLength(1);
-    expect(channels[0]?.keyframes.map(({ at }) => at)).toEqual([0, 1 / 60, 1, 61 / 60, 179 / 60]);
+    expect(channels[0]?.keyframes.map(({ at }) => at)).toEqual([0, 1 / 60, 1, 61 / 60, 239 / 60]);
     expect(bundle.scene.requiredCapabilities).toContain("path-morph-animation");
   });
 });

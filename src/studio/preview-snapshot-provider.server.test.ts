@@ -292,7 +292,7 @@ async function verifiedOpeningRuntimeTraceRun() {
     appearance: { kind: "group" as const, opacity: 1 },
     geometry: { kind: "group" as const },
     id,
-    lifetimes: [{ end: 3, start: 0 }],
+    lifetimes: [{ end: 5, start: 0 }],
     parentId,
     provenanceId,
     sceneOrder,
@@ -302,7 +302,7 @@ async function verifiedOpeningRuntimeTraceRun() {
   const leaves = roots.map((root, index) => ({
     ...bundleFixture.scene.entities[index]!,
     id: `${root.entityId}/runtime-draw:0`,
-    lifetimes: [{ end: 3, start: 0 }],
+    lifetimes: [{ end: 5, start: 0 }],
     parentId: root.entityId,
     provenanceId,
     sceneOrder: index + 3,
@@ -312,7 +312,7 @@ async function verifiedOpeningRuntimeTraceRun() {
     scene: {
       ...bundleFixture.scene,
       animationChannels: [],
-      duration: 3,
+      duration: 5,
       entities: [
         group(rootId, null, 0),
         ...roots.map((root, index) => group(root.entityId, rootId, index + 1)),
@@ -403,7 +403,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
-  it("accepts the reviewed three-second OpeningManim V2 profile and its title/basel roots", async () => {
+  it("accepts the reviewed five-second OpeningManim V2 profile and its title/basel roots", async () => {
     const run = await verifiedOpeningRuntimeTraceRun();
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
     const loaded = await createServerPreviewSnapshotProviderV1({
@@ -414,12 +414,12 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
     expect(loaded).toMatchObject({
       correlation: {
-        context: { ...openingRuntimeTraceIdentity, sourceDuration: 3, workingRevision: "pristine" },
+        context: { ...openingRuntimeTraceIdentity, sourceDuration: 5, workingRevision: "pristine" },
         engineRevisionHash: run.traceDigest,
-        sceneDuration: 3,
+        sceneDuration: 5,
         serverPublicationRevision: null,
       },
-      duration: 3,
+      duration: 5,
       sourceLabel: "verified Runtime Trace",
     });
     expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel"]);

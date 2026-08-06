@@ -170,7 +170,6 @@ test("renders the official OpeningManim 0-5s slice through Runtime Trace V2 and 
       "affine-transform-animation",
       "cubic-path-geometry",
       "logical-group",
-      "opacity-animation",
       "path-morph-animation",
       "path-trim-animation",
       "vector-appearance-animation",
@@ -184,12 +183,17 @@ test("renders the official OpeningManim 0-5s slice through Runtime Trace V2 and 
       traceVersion: 2,
     },
   });
-  expect(run.bundle.scene.entities).toHaveLength(47);
-  expect(run.bundle.scene.animationChannels).toHaveLength(73);
+  expect(run.bundle.scene.entities).toHaveLength(69);
+  expect(run.bundle.scene.animationChannels).toHaveLength(113);
+  expect(run.bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(
+    21_081,
+  );
   const channelKinds = run.bundle.scene.animationChannels.map(({ kind }) => kind);
-  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(44);
+  expect(channelKinds.filter((kind) => kind === "vector-appearance")).toHaveLength(46);
   expect(channelKinds.filter((kind) => kind === "path-trim")).toHaveLength(15);
-  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(14);
+  expect(channelKinds.filter((kind) => kind === "path-morph")).toHaveLength(17);
+  expect(channelKinds.filter((kind) => kind === "affine-transform")).toHaveLength(35);
+  expect(channelKinds.filter((kind) => kind === "opacity")).toHaveLength(0);
   expect(run.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel"]);
   const rootEntityIds = run.roots.map(({ entityId }) => entityId);
   expect(rootEntityIds).toEqual([`${run.sceneId}/runtime-root:title`, `${run.sceneId}/runtime-root:basel`]);
@@ -216,6 +220,12 @@ test("renders the official OpeningManim 0-5s slice through Runtime Trace V2 and 
     packetIds.add(packetId);
   }
   expect(packetIds.size).toBe(9);
+
+  // Return to a frame where both source roots are alive before asserting the
+  // Studio selection proxies. The basel root has completed FadeOut at 5s.
+  await playhead.fill("0");
+  await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "0");
 
   for (const [sourceName, runtimeEntityId] of [
     ["title", rootEntityIds[0]],

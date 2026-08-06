@@ -18,7 +18,11 @@ import {
 } from "./fast-manim-runtime-trace-v2-contract";
 import {
   expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2,
   type FastManimRuntimeTraceV2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2,
   parseFastManimRuntimeTraceProducerJsonV2,
   type TrustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
@@ -161,15 +165,20 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.durationSeconds !== FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2 ||
     trace.frames.length !== FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires its complete three-second presentation grid.");
+    failSemantic("Runtime Trace V2 lowering requires its complete five-second presentation grid.");
   }
   const roots = new Set(trace.roots.map((root) => root.id));
   if (trace.roots.length !== 2 || trace.roots[0]?.role !== "title" || trace.roots[1]?.role !== "basel") {
     failSemantic("Runtime Trace V2 lowering requires the exact title and basel source roots.");
   }
   const initial = trace.frames[0]?.draws;
-  if (!initial || initial.length !== 29 || trace.resources.paths.length < 1 || trace.resources.paths.length > 29) {
-    failSemantic("Runtime Trace V2 lowering requires exactly 29 stable draws.");
+  if (
+    !initial ||
+    initial.length !== FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2 ||
+    trace.resources.paths.length < 1 ||
+    trace.resources.paths.length > MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2
+  ) {
+    failSemantic("Runtime Trace V2 lowering requires exactly 31 stable union draw slots.");
   }
   const drawIds = new Set(initial.map((draw) => draw.drawId));
   if (drawIds.size !== initial.length) failSemantic("Runtime Trace V2 draw identities must be unique.");
@@ -189,22 +198,27 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     }
     frame.draws.forEach((draw, drawIndex) => {
       const expected = initial[drawIndex];
-      const localOrder = drawIndex < 15 ? drawIndex : drawIndex - 15;
-      const expectedRoot = drawIndex < 15 ? trace.roots[0]?.id : trace.roots[1]?.id;
+      const title = drawIndex < FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+      const localOrder = title
+        ? FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2[drawIndex]
+        : drawIndex - FAST_MANIM_RUNTIME_TRACE_TITLE_UNION_IDENTITY_ORDERS_V2.length;
+      const familyOrder = title ? drawIndex : localOrder;
+      const expectedRoot = title ? trace.roots[0]?.id : trace.roots[1]?.id;
       if (
         !expected ||
         draw.drawId !== `${expectedRoot}/runtime-draw:${localOrder}` ||
         draw.rootId !== expectedRoot ||
         draw.paintOrder !== drawIndex ||
         draw.sourceZIndex !== 0 ||
-        !sameValue(draw.familyPath, [0, localOrder]) ||
+        !sameValue(draw.familyPath, [0, familyOrder]) ||
         !roots.has(draw.rootId)
       ) {
         failSemantic(`Runtime Trace V2 frame ${frameIndex} changed draw identity at paint order ${drawIndex}.`);
       }
     });
-    if (frameIndex > 120 && !sameValue(frame.draws, trace.frames[120]?.draws)) {
-      failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during the sealed terminal hold.`);
+    const holdStart = frameIndex >= 240 ? 240 : frameIndex >= 120 && frameIndex < 180 ? 120 : null;
+    if (holdStart !== null && frameIndex > holdStart && !sameValue(frame.draws, trace.frames[holdStart]?.draws)) {
+      failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during a sealed Wait hold.`);
     }
   });
 }
@@ -468,7 +482,11 @@ export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastMa
     },
     version: 1,
   });
-  return parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
+  const bundle = await parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
+  if (Buffer.byteLength(canonicalJsonV1(bundle), "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2) {
+    failSemantic("Runtime Trace V2 normalized Scene IR exceeds its measured eight-MiB budget.");
+  }
+  return bundle;
 }
 
 /** Verifies producer bytes and trusted request correlation before lowering OpeningManim. */
