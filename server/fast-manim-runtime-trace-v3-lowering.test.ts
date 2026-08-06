@@ -223,6 +223,14 @@ describe("generic Runtime Trace V3 lowering", () => {
     expect(bundle.scene.animationChannels.some(({ kind }) => kind === "path-morph")).toBe(false);
   });
 
+  it("keeps provenance evidence bounded for a long source path", async () => {
+    const trace = await traceFixture();
+    trace.sourcePath = `${"nested/".repeat(61)}scene.py`;
+
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+    expect(bundle.scene.provenance[0]!.evidence.every((entry) => entry.length <= 500)).toBe(true);
+  });
+
   it("rejects shared-path amplification beyond the normalized segment ceiling", async () => {
     const trace = await traceFixture();
     trace.resources.paths[0]!.path = pathWithSegmentCount(trace.resources.paths[0]!.path, 400);

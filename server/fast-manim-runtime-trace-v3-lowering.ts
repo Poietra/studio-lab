@@ -591,7 +591,7 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
           evidence: [
             "fast-manim generic Runtime Trace V3, preview authority only",
             `post-evaluation 60 fps evidence from ${trace.producer.fastManimCommit}`,
-            `source ${trace.sourcePath}#${trace.sceneName} at ${trace.sourceHash}`,
+            `source-path-sha256 ${createHash("sha256").update(trace.sourcePath).digest("hex")} · Scene ${trace.sceneName} · source ${trace.sourceHash}`,
           ],
           id: provenanceId,
           origin: "fast-manim-runtime-trace",
