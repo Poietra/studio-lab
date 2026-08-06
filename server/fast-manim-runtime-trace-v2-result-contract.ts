@@ -702,10 +702,7 @@ function assertFastManimRuntimeTraceV2Correlation(
   }
 }
 
-export function parseFastManimRuntimeTraceProducerJsonV2(
-  value: string | Uint8Array,
-  expectedValue: ExpectedFastManimRuntimeTraceCorrelationV2,
-) {
+function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array) {
   const byteLength = typeof value === "string" ? Buffer.byteLength(value, "utf8") : value.byteLength;
   if (byteLength > MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2) {
     throw new FastManimRuntimeTraceV2ContractError(
@@ -736,9 +733,24 @@ export function parseFastManimRuntimeTraceProducerJsonV2(
       cause: parsed.error,
     });
   }
-  const expected = expectedFastManimRuntimeTraceCorrelationV2Schema.parse(expectedValue);
-  assertFastManimRuntimeTraceV2Correlation(parsed.data, expected);
   return parsed.data;
+}
+
+/** Parses bounded producer output whose correlation is verified separately by
+ * the base/candidate delta authority. The embedded visual-semantics seal is
+ * still mandatory through `fastManimRuntimeTraceV2Schema`. */
+export function parseFastManimRuntimeTraceSelfSealedJsonV2(value: string | Uint8Array) {
+  return parseFastManimRuntimeTraceSelfSealedValueV2(value);
+}
+
+export function parseFastManimRuntimeTraceProducerJsonV2(
+  value: string | Uint8Array,
+  expectedValue: ExpectedFastManimRuntimeTraceCorrelationV2,
+) {
+  const parsed = parseFastManimRuntimeTraceSelfSealedValueV2(value);
+  const expected = expectedFastManimRuntimeTraceCorrelationV2Schema.parse(expectedValue);
+  assertFastManimRuntimeTraceV2Correlation(parsed, expected);
+  return parsed;
 }
 
 export function digestFastManimRuntimeTraceV2(trace: FastManimRuntimeTraceV2) {

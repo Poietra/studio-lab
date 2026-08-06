@@ -9,7 +9,11 @@ import {
   fastManimRuntimeTraceRunRequestV1Schema,
   fastManimRuntimeTraceRunViewV1Schema,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
-import { recoverUpdatersTerminalOfficialSourceV1 } from "../src/render-pipeline/source-lowering";
+import {
+  deriveOpeningManimTerminalPositionSourceEditPlanV2,
+  recoverOpeningManimOfficialSourceV2,
+  recoverUpdatersTerminalOfficialSourceV1,
+} from "../src/render-pipeline/source-lowering";
 import { verifyFastManimRuntimeTraceTerminalCandidateV1 } from "./fast-manim-runtime-trace-candidate";
 import {
   digestFastManimRuntimeTraceConfigV1,
@@ -39,11 +43,27 @@ import {
   selectFastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceSceneProfile,
 } from "./fast-manim-runtime-trace-profiles";
-import { lowerFastManimRuntimeTraceProducerJsonV2 } from "./fast-manim-runtime-trace-v2-lowering";
+import { verifyFastManimRuntimeTraceOpeningPositionCandidateV2 } from "./fast-manim-runtime-trace-v2-candidate";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V2 } from "./fast-manim-runtime-trace-v2-contract";
 import {
+  lowerFastManimRuntimeTraceProducerJsonV2,
+  lowerVerifiedFastManimRuntimeTraceOpeningPositionCandidateV2,
+} from "./fast-manim-runtime-trace-v2-lowering";
+import {
+  createFastManimRuntimeTraceCandidateProducerRequestV2,
   createFastManimRuntimeTraceProducerRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
   trustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-profile";
+import {
+  digestFastManimRuntimeTraceV2,
+  expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2,
+  parseFastManimRuntimeTraceProducerJsonV2,
+  parseFastManimRuntimeTraceSelfSealedJsonV2,
+} from "./fast-manim-runtime-trace-v2-result-contract";
 import {
   copyFastManimSandboxUint8ArrayV1,
   type FastManimSandboxAttestationVerifierV1,
@@ -855,10 +875,14 @@ export class FastManimSnapshotRunner {
     if (before.hash !== request.sourceHash) return failed("source-correlation-stale");
 
     let recoveredOfficialSource: string | null = null;
+    let candidateProfileVersion: 1 | 2 | null = null;
     if (exactProfile === null) {
-      if (profile.version !== 1) return failed("unsupported-profile");
       try {
-        recoveredOfficialSource = recoverUpdatersTerminalOfficialSourceV1(before.source, request.sceneName);
+        recoveredOfficialSource =
+          profile.version === 1
+            ? recoverUpdatersTerminalOfficialSourceV1(before.source, request.sceneName)
+            : recoverOpeningManimOfficialSourceV2(before.source, request.sceneName);
+        candidateProfileVersion = profile.version;
       } catch {
         return failed("unsupported-profile");
       }
@@ -866,11 +890,14 @@ export class FastManimSnapshotRunner {
 
     let producerRequest;
     try {
-      producerRequest = recoveredOfficialSource
-        ? createFastManimRuntimeTraceCandidateProducerRequestV1(request, before.source, this.frame)
-        : profile.version === 1
-          ? createFastManimRuntimeTraceProducerRequestV1(request, before.source, this.frame)
-          : createFastManimRuntimeTraceProducerRequestV2(request, before.source, this.frame);
+      producerRequest =
+        candidateProfileVersion === 1
+          ? createFastManimRuntimeTraceCandidateProducerRequestV1(request, before.source, this.frame)
+          : candidateProfileVersion === 2
+            ? createFastManimRuntimeTraceCandidateProducerRequestV2(request, before.source, this.frame)
+            : profile.version === 1
+              ? createFastManimRuntimeTraceProducerRequestV1(request, before.source, this.frame)
+              : createFastManimRuntimeTraceProducerRequestV2(request, before.source, this.frame);
     } catch {
       return failed("unsupported-profile");
     }
@@ -888,7 +915,7 @@ export class FastManimSnapshotRunner {
     let bundle;
     let responseRoots: FastManimRuntimeTraceVerifiedRootsV1;
     try {
-      if (recoveredOfficialSource) {
+      if (recoveredOfficialSource && candidateProfileVersion === 1) {
         if (producerRequest.version !== 1) return failed("unsupported-profile");
         const trusted = trustedFastManimRuntimeTraceProducerV1();
         const baseRun = fastManimRuntimeTraceRunRequestV1Schema.parse({
@@ -930,6 +957,57 @@ export class FastManimSnapshotRunner {
           trusted,
         });
         bundle = await lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(verified);
+        responseRoots = verified.roots.map(({ binding, id }) => ({
+          binding,
+          entityId: id,
+        })) as FastManimRuntimeTraceVerifiedRootsV1;
+      } else if (recoveredOfficialSource && candidateProfileVersion === 2) {
+        if (producerRequest.version !== 2) return failed("unsupported-profile");
+        const trusted = trustedFastManimRuntimeTraceProducerV2();
+        const baseRun = fastManimRuntimeTraceRunRequestV1Schema.parse({
+          ...request,
+          sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+        });
+        const baseProducerRequest = createFastManimRuntimeTraceProducerRequestV2(
+          baseRun,
+          recoveredOfficialSource,
+          this.frame,
+        );
+        const baseProduced = await this.produce(
+          new FastManimSandboxRequestBundleV1(baseProducerRequest),
+          readiness.attestationDigest,
+          request,
+          signal,
+          profile.maxResultBytes,
+        );
+        throwIfHalted();
+        if (baseProduced.kind !== "ok") return failed(baseProduced.code);
+        const candidateProduced = await this.produce(
+          new FastManimSandboxRequestBundleV1(producerRequest),
+          readiness.attestationDigest,
+          request,
+          signal,
+          profile.maxResultBytes,
+        );
+        throwIfHalted();
+        if (candidateProduced.kind !== "ok") return failed(candidateProduced.code);
+        const baseTrace = parseFastManimRuntimeTraceProducerJsonV2(
+          baseProduced.resultBytes,
+          expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
+        );
+        const candidateTrace = parseFastManimRuntimeTraceSelfSealedJsonV2(candidateProduced.resultBytes);
+        const verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
+          base: baseTrace,
+          candidate: candidateTrace,
+          candidateRequest: producerRequest,
+          trusted,
+        });
+        const translation = deriveOpeningManimTerminalPositionSourceEditPlanV2(
+          producerRequest.sourceText,
+          producerRequest.sceneName,
+        ).translation;
+        if (!translation) return failed("unsupported-profile");
+        bundle = await lowerVerifiedFastManimRuntimeTraceOpeningPositionCandidateV2(verified, translation);
         responseRoots = verified.roots.map(({ binding, id }) => ({
           binding,
           entityId: id,
@@ -997,25 +1075,30 @@ export class FastManimSnapshotRunner {
     };
   }
 
-  /**
-   * Executes the reviewed UpdatersExample and one bounded edited candidate in
-   * the same trusted producer, then proves that frames 0..299 are unchanged
-   * and only the terminal hold differs. No raw trace is published or cached.
-   */
+  /** Executes one reviewed official/candidate pair in the same trusted
+   * producer and proves its profile-specific temporal delta. No raw trace is
+   * published or cached. */
   async runRuntimeTraceCandidateUnpublished(
     sourceText: string,
     requestValue: Omit<FastManimRuntimeTraceRunRequestV1, "sourceHash">,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
-    if (
-      typeof sourceText !== "string" ||
-      Buffer.byteLength(sourceText, "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1
-    ) {
-      throw new RangeError(
-        `Runtime Trace candidate source accepts at most ${MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1} UTF-8 bytes.`,
-      );
+    const version =
+      requestValue.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1
+        ? 1
+        : requestValue.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2
+          ? 2
+          : null;
+    if (version === null) {
+      throw new TypeError("Runtime Trace candidate preflight is outside the reviewed Scene profiles.");
     }
-    recoverUpdatersTerminalOfficialSourceV1(sourceText, requestValue.sceneName);
+    const sourceByteLimit =
+      version === 1 ? MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V1 : MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V2;
+    if (typeof sourceText !== "string" || Buffer.byteLength(sourceText, "utf8") > sourceByteLimit) {
+      throw new RangeError(`Runtime Trace candidate source accepts at most ${sourceByteLimit} UTF-8 bytes.`);
+    }
+    if (version === 1) recoverUpdatersTerminalOfficialSourceV1(sourceText, requestValue.sceneName);
+    else recoverOpeningManimOfficialSourceV2(sourceText, requestValue.sceneName);
     const candidateSourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
     const request = fastManimRuntimeTraceRunRequestV1Schema.parse({
       ...requestValue,
@@ -1024,12 +1107,12 @@ export class FastManimSnapshotRunner {
     signal?.throwIfAborted();
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
-    if (
-      request.sourcePath !== FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1 ||
-      request.sceneName !== FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1 ||
-      candidateSourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1
-    ) {
-      throw new TypeError("Runtime Trace candidate preflight is available only for edited UpdatersExample source.");
+    const sourcePath =
+      version === 1 ? FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1 : FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2;
+    const sourceHash =
+      version === 1 ? FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 : FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2;
+    if (request.sourcePath !== sourcePath || candidateSourceHash === sourceHash) {
+      throw new TypeError("Runtime Trace candidate preflight is outside the reviewed source profile.");
     }
 
     const key = `runtime-trace-candidate\u0000${sceneKey(request.sourcePath, request.sceneName)}`;
@@ -1040,7 +1123,10 @@ export class FastManimSnapshotRunner {
       throw new HttpError("Too many concurrent Runtime Trace runs.", 429);
     }
     this.activeKeys.add(key);
-    const pending = this.runRuntimeTraceCandidateLocked(sourceText, request, signal);
+    const pending =
+      version === 1
+        ? this.runRuntimeTraceCandidateLockedV1(sourceText, request, signal)
+        : this.runRuntimeTraceCandidateLockedV2(sourceText, request, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
@@ -1051,7 +1137,7 @@ export class FastManimSnapshotRunner {
     }
   }
 
-  private async runRuntimeTraceCandidateLocked(
+  private async runRuntimeTraceCandidateLockedV1(
     sourceText: string,
     request: FastManimRuntimeTraceRunRequestV1,
     signal?: AbortSignal,
@@ -1137,6 +1223,102 @@ export class FastManimSnapshotRunner {
       sourceHash: request.sourceHash,
       status: "verified" as const,
       traceDigest: digestFastManimRuntimeTraceV1(verified),
+    });
+  }
+
+  private async runRuntimeTraceCandidateLockedV2(
+    sourceText: string,
+    request: FastManimRuntimeTraceRunRequestV1,
+    signal?: AbortSignal,
+  ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
+    const throwIfHalted = () => {
+      if (signal?.aborted || this.closing) throw abortError();
+    };
+    let before: FastManimSnapshotSourceReadV1;
+    try {
+      before = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch (error) {
+      throwIfHalted();
+      throw error;
+    }
+    throwIfHalted();
+    const officialSource = recoverOpeningManimOfficialSourceV2(sourceText, request.sceneName);
+    if (before.hash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 || before.source !== officialSource) {
+      throw new HttpError(
+        "The OpeningManim Runtime Trace candidate base source is stale. Reimport and try again.",
+        409,
+      );
+    }
+
+    const baseRun = fastManimRuntimeTraceRunRequestV1Schema.parse({
+      ...request,
+      sourceHash: before.hash,
+    });
+    const baseProducerRequest = createFastManimRuntimeTraceProducerRequestV2(baseRun, officialSource, this.frame);
+    const candidateProducerRequest = createFastManimRuntimeTraceCandidateProducerRequestV2(
+      request,
+      sourceText,
+      this.frame,
+    );
+
+    let readiness: ReturnType<typeof resolveFastManimSandboxReadiness>;
+    try {
+      readiness = await this.sandboxReadiness(request.requestId, this.sandboxStatusDeadline(), signal);
+    } catch {
+      throwIfHalted();
+      throw new HttpError("The OpeningManim Runtime Trace candidate sandbox is unavailable.", 503);
+    }
+    throwIfHalted();
+    if (readiness.kind !== "ready") {
+      throw new HttpError("The OpeningManim Runtime Trace candidate sandbox is unavailable.", 503);
+    }
+
+    const produceTrace = async (producerRequest: typeof baseProducerRequest) => {
+      const result = await this.produce(
+        new FastManimSandboxRequestBundleV1(producerRequest),
+        readiness.attestationDigest,
+        request,
+        signal,
+        MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2,
+      );
+      throwIfHalted();
+      if (result.kind !== "ok") {
+        throw new HttpError("The OpeningManim Runtime Trace candidate was rejected by its sandbox.", 409);
+      }
+      return result.resultBytes;
+    };
+
+    const trusted = trustedFastManimRuntimeTraceProducerV2();
+    const baseBytes = await produceTrace(baseProducerRequest);
+    const baseTrace = parseFastManimRuntimeTraceProducerJsonV2(
+      baseBytes,
+      expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
+    );
+    const candidateBytes = await produceTrace(candidateProducerRequest);
+    const candidateTrace = parseFastManimRuntimeTraceSelfSealedJsonV2(candidateBytes);
+    const verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
+      base: baseTrace,
+      candidate: candidateTrace,
+      candidateRequest: candidateProducerRequest,
+      trusted,
+    });
+
+    let after: FastManimSnapshotSourceReadV1;
+    try {
+      after = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch {
+      throwIfHalted();
+      throw new HttpError("The OpeningManim Runtime Trace candidate base changed during verification.", 409);
+    }
+    throwIfHalted();
+    if (after.hash !== before.hash || after.versionToken !== before.versionToken) {
+      throw new HttpError("The OpeningManim Runtime Trace candidate base changed during verification.", 409);
+    }
+
+    return Object.freeze({
+      sourceHash: request.sourceHash,
+      status: "verified" as const,
+      traceDigest: digestFastManimRuntimeTraceV2(verified),
     });
   }
 

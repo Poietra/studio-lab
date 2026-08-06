@@ -168,3 +168,39 @@ export function createFastManimRuntimeTraceProducerRequestV2(
     version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
   });
 }
+
+/** Builds the wire request only. Candidate authority is established later by
+ * the independent source plan and base/candidate Runtime Trace delta proof. */
+export function createFastManimRuntimeTraceCandidateProducerRequestV2(
+  run: FastManimRuntimeTraceRunRequestV1,
+  sourceText: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const runtimeConfig = createFastManimRuntimeTraceConfigV2(frame);
+  const runtimeConfigHash = digestFastManimRuntimeTraceConfigV2(runtimeConfig);
+  if (
+    run.sourcePath !== FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 ||
+    run.sceneName !== FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 ||
+    run.sourceHash !== sourceHash ||
+    sourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 ||
+    runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2
+  ) {
+    throw new TypeError("Runtime Trace V2 candidate request is outside the reviewed OpeningManim profile.");
+  }
+  return fastManimRuntimeTraceProducerRequestV2Schema.parse({
+    profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
+    projectId: run.projectId,
+    requestId: run.requestId,
+    runtimeConfig,
+    runtimeConfigHash,
+    sceneId,
+    sceneName: run.sceneName,
+    sceneOccurrence: FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2,
+    schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2,
+    sourceHash,
+    sourcePath: run.sourcePath,
+    sourceText,
+    version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
+  });
+}
