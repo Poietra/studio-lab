@@ -326,6 +326,7 @@ function sceneKey(sourcePath: string, sceneName: string) {
 export class FastManimSnapshotRunner {
   private readonly activeJobs = new Set<TrackedFastManimSandboxJob>();
   private readonly activeKeys = new Set<string>();
+  private activeRunWeight = 0;
   private readonly activeLookups = new Set<Promise<unknown>>();
   private readonly activeRuns = new Set<Promise<unknown>>();
   private readonly activeStatuses = new Set<TrackedFastManimSandboxStatus>();
@@ -783,6 +784,20 @@ export class FastManimSnapshotRunner {
     );
   }
 
+  private reserveRun(key: string, weight: number, duplicateMessage: string, capacityMessage: string) {
+    if (this.activeKeys.has(key)) throw new HttpError(duplicateMessage, 409);
+    if (this.activeRunWeight + weight > this.maxConcurrentRuns) {
+      throw new HttpError(capacityMessage, 429);
+    }
+    this.activeKeys.add(key);
+    this.activeRunWeight += weight;
+  }
+
+  private releaseRun(key: string, weight: number) {
+    if (!this.activeKeys.delete(key)) return;
+    this.activeRunWeight -= weight;
+  }
+
   async run(requestValue: FastManimSnapshotRunRequestV1, signal?: AbortSignal): Promise<FastManimSnapshotRunViewV1> {
     return parseServerOwnedFastManimRunView(await this.runRequest(requestValue, true, signal));
   }
@@ -805,20 +820,27 @@ export class FastManimSnapshotRunner {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     const key = `runtime-trace\u0000${sceneKey(request.sourcePath, request.sceneName)}`;
-    if (this.activeKeys.has(key)) {
-      throw new HttpError("A Runtime Trace run is already in progress for this source and Scene.", 409);
-    }
-    if (this.activeKeys.size >= this.maxConcurrentRuns) {
-      throw new HttpError("Too many concurrent Runtime Trace runs.", 429);
-    }
-    this.activeKeys.add(key);
+    // An edited Opening preview executes an official/candidate V2 pair. Each
+    // result may reach 88 MiB before parsing, so the pair owns this runner.
+    const weight =
+      request.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 &&
+      request.sourcePath === FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 &&
+      request.sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2
+        ? this.maxConcurrentRuns
+        : 1;
+    this.reserveRun(
+      key,
+      weight,
+      "A Runtime Trace run is already in progress for this source and Scene.",
+      "Too many concurrent Runtime Trace runs.",
+    );
     const pending = this.runRuntimeTraceLocked(request, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
       return fastManimRuntimeTraceRunViewV1Schema.parse(await pending);
     } finally {
-      this.activeKeys.delete(key);
+      this.releaseRun(key, weight);
       this.activeRuns.delete(pending);
     }
   }
@@ -973,35 +995,44 @@ export class FastManimSnapshotRunner {
           recoveredOfficialSource,
           this.frame,
         );
-        const baseProduced = await this.produce(
-          new FastManimSandboxRequestBundleV1(baseProducerRequest),
-          readiness.attestationDigest,
-          request,
-          signal,
-          profile.maxResultBytes,
-        );
-        throwIfHalted();
-        if (baseProduced.kind !== "ok") return failed(baseProduced.code);
-        const candidateProduced = await this.produce(
-          new FastManimSandboxRequestBundleV1(producerRequest),
-          readiness.attestationDigest,
-          request,
-          signal,
-          profile.maxResultBytes,
-        );
-        throwIfHalted();
-        if (candidateProduced.kind !== "ok") return failed(candidateProduced.code);
-        const baseTrace = parseFastManimRuntimeTraceProducerJsonV2(
-          baseProduced.resultBytes,
-          expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
-        );
-        const candidateTrace = parseFastManimRuntimeTraceSelfSealedJsonV2(candidateProduced.resultBytes);
-        const verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
-          base: baseTrace,
-          candidate: candidateTrace,
-          candidateRequest: producerRequest,
-          trusted,
-        });
+        let verified: ReturnType<typeof verifyFastManimRuntimeTraceOpeningPositionCandidateV2>;
+        {
+          let baseTrace: ReturnType<typeof parseFastManimRuntimeTraceProducerJsonV2>;
+          {
+            const produced = await this.produce(
+              new FastManimSandboxRequestBundleV1(baseProducerRequest),
+              readiness.attestationDigest,
+              request,
+              signal,
+              profile.maxResultBytes,
+            );
+            throwIfHalted();
+            if (produced.kind !== "ok") return failed(produced.code);
+            baseTrace = parseFastManimRuntimeTraceProducerJsonV2(
+              produced.resultBytes,
+              expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
+            );
+          }
+          let candidateTrace: ReturnType<typeof parseFastManimRuntimeTraceSelfSealedJsonV2>;
+          {
+            const produced = await this.produce(
+              new FastManimSandboxRequestBundleV1(producerRequest),
+              readiness.attestationDigest,
+              request,
+              signal,
+              profile.maxResultBytes,
+            );
+            throwIfHalted();
+            if (produced.kind !== "ok") return failed(produced.code);
+            candidateTrace = parseFastManimRuntimeTraceSelfSealedJsonV2(produced.resultBytes);
+          }
+          verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
+            base: baseTrace,
+            candidate: candidateTrace,
+            candidateRequest: producerRequest,
+            trusted,
+          });
+        }
         const translation = deriveOpeningManimTerminalPositionSourceEditPlanV2(
           producerRequest.sourceText,
           producerRequest.sceneName,
@@ -1116,13 +1147,14 @@ export class FastManimSnapshotRunner {
     }
 
     const key = `runtime-trace-candidate\u0000${sceneKey(request.sourcePath, request.sceneName)}`;
-    if (this.activeKeys.has(key)) {
-      throw new HttpError("A Runtime Trace candidate preflight is already in progress for this Scene.", 409);
-    }
-    if (this.activeKeys.size >= this.maxConcurrentRuns) {
-      throw new HttpError("Too many concurrent Runtime Trace runs.", 429);
-    }
-    this.activeKeys.add(key);
+    // Keep V1 admission unchanged; only the large Opening V2 pair is exclusive.
+    const weight = version === 2 ? this.maxConcurrentRuns : 1;
+    this.reserveRun(
+      key,
+      weight,
+      "A Runtime Trace candidate preflight is already in progress for this Scene.",
+      "Too many concurrent Runtime Trace runs.",
+    );
     const pending =
       version === 1
         ? this.runRuntimeTraceCandidateLockedV1(sourceText, request, signal)
@@ -1132,7 +1164,7 @@ export class FastManimSnapshotRunner {
     try {
       return await pending;
     } finally {
-      this.activeKeys.delete(key);
+      this.releaseRun(key, weight);
       this.activeRuns.delete(pending);
     }
   }
@@ -1273,7 +1305,10 @@ export class FastManimSnapshotRunner {
       throw new HttpError("The OpeningManim Runtime Trace candidate sandbox is unavailable.", 503);
     }
 
-    const produceTrace = async (producerRequest: typeof baseProducerRequest) => {
+    const produceTrace = async <Trace>(
+      producerRequest: typeof baseProducerRequest,
+      parse: (bytes: Uint8Array) => Trace,
+    ) => {
       const result = await this.produce(
         new FastManimSandboxRequestBundleV1(producerRequest),
         readiness.attestationDigest,
@@ -1285,23 +1320,29 @@ export class FastManimSnapshotRunner {
       if (result.kind !== "ok") {
         throw new HttpError("The OpeningManim Runtime Trace candidate was rejected by its sandbox.", 409);
       }
-      return result.resultBytes;
+      return parse(result.resultBytes);
     };
 
     const trusted = trustedFastManimRuntimeTraceProducerV2();
-    const baseBytes = await produceTrace(baseProducerRequest);
-    const baseTrace = parseFastManimRuntimeTraceProducerJsonV2(
-      baseBytes,
-      expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
-    );
-    const candidateBytes = await produceTrace(candidateProducerRequest);
-    const candidateTrace = parseFastManimRuntimeTraceSelfSealedJsonV2(candidateBytes);
-    const verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
-      base: baseTrace,
-      candidate: candidateTrace,
-      candidateRequest: candidateProducerRequest,
-      trusted,
-    });
+    let traceDigest: string;
+    {
+      const baseTrace = await produceTrace(baseProducerRequest, (bytes) =>
+        parseFastManimRuntimeTraceProducerJsonV2(
+          bytes,
+          expectedFastManimRuntimeTraceCorrelationFromRequestV2(baseProducerRequest, trusted),
+        ),
+      );
+      const candidateTrace = await produceTrace(candidateProducerRequest, (bytes) =>
+        parseFastManimRuntimeTraceSelfSealedJsonV2(bytes),
+      );
+      const verified = verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
+        base: baseTrace,
+        candidate: candidateTrace,
+        candidateRequest: candidateProducerRequest,
+        trusted,
+      });
+      traceDigest = digestFastManimRuntimeTraceV2(verified);
+    }
 
     let after: FastManimSnapshotSourceReadV1;
     try {
@@ -1318,7 +1359,7 @@ export class FastManimSnapshotRunner {
     return Object.freeze({
       sourceHash: request.sourceHash,
       status: "verified" as const,
-      traceDigest: digestFastManimRuntimeTraceV2(verified),
+      traceDigest,
     });
   }
 
@@ -1384,20 +1425,20 @@ export class FastManimSnapshotRunner {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
     const key = sceneKey(request.sourcePath, request.sceneName);
-    if (this.activeKeys.has(key)) {
-      throw new HttpError("A Scene snapshot run is already in progress for this source and Scene.", 409);
-    }
-    if (this.activeKeys.size >= this.maxConcurrentRuns) {
-      throw new HttpError("Too many concurrent Scene snapshot runs.", 429);
-    }
-    this.activeKeys.add(key);
+    const weight = 1;
+    this.reserveRun(
+      key,
+      weight,
+      "A Scene snapshot run is already in progress for this source and Scene.",
+      "Too many concurrent Scene snapshot runs.",
+    );
     const pending = this.runLocked(request, publishLocally, signal, candidateSource);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
       return await pending;
     } finally {
-      this.activeKeys.delete(key);
+      this.releaseRun(key, weight);
       this.activeRuns.delete(pending);
     }
   }

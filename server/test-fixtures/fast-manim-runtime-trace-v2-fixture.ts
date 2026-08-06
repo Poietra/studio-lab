@@ -19,6 +19,8 @@ import {
   FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
   fastManimRuntimeTraceDrawIdentityV2,
   fastManimRuntimeTraceDrawIsPresentV2,
+  fastManimRuntimeTraceV2Schema,
+  type SelfSealedFastManimRuntimeTraceV2,
 } from "../fast-manim-runtime-trace-v2-result-contract";
 
 export const RUNTIME_TRACE_V2_SCENE_ID =
@@ -241,6 +243,11 @@ export function fastManimRuntimeTraceV2Fixture() {
 export function sealFastManimRuntimeTraceV2Fixture(trace: FastManimRuntimeTraceV2Fixture) {
   trace.producer.semanticsSha256 = digestFastManimRuntimeTraceVisualSemanticsV2(trace);
   return trace;
+}
+
+/** Test-only counterpart of the bounded JSON parser for generated fixtures. */
+export function parseSelfSealedFastManimRuntimeTraceV2Fixture(trace: unknown) {
+  return fastManimRuntimeTraceV2Schema.parse(trace) as SelfSealedFastManimRuntimeTraceV2;
 }
 
 export function expectedRuntimeTraceV2Correlation(

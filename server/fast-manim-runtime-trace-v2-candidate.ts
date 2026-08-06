@@ -5,7 +5,7 @@ import { fastManimRuntimeTraceProducerRequestV2Schema } from "./fast-manim-runti
 import {
   canonicalFastManimRuntimeTraceCoordinateV2,
   type FastManimRuntimeTraceV2,
-  fastManimRuntimeTraceV2Schema,
+  type SelfSealedFastManimRuntimeTraceV2,
   type TrustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
@@ -123,13 +123,13 @@ function fixedDrawSemantics(draw: FastManimRuntimeTraceV2["frames"][number]["dra
  * is one direct `grid_title.shift(...)` immediately before the final wait.
  */
 export function verifyFastManimRuntimeTraceOpeningPositionCandidateV2(input: {
-  base: FastManimRuntimeTraceV2;
-  candidate: FastManimRuntimeTraceV2;
+  base: SelfSealedFastManimRuntimeTraceV2;
+  candidate: SelfSealedFastManimRuntimeTraceV2;
   candidateRequest: FastManimRuntimeTraceProducerRequestV2;
   trusted: TrustedFastManimRuntimeTraceProducerV2;
 }) {
-  const base = fastManimRuntimeTraceV2Schema.parse(input.base);
-  const candidate = fastManimRuntimeTraceV2Schema.parse(input.candidate);
+  const base = input.base;
+  const candidate = input.candidate;
   const request = fastManimRuntimeTraceProducerRequestV2Schema.parse(input.candidateRequest);
 
   if (!same(base.producer, input.trusted.producer) || !same(base.roots, input.trusted.roots)) {

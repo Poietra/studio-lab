@@ -16,14 +16,16 @@ import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-
 import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import {
   fastManimRuntimeTraceV2Fixture,
+  parseSelfSealedFastManimRuntimeTraceV2Fixture,
   RUNTIME_TRACE_V2_GRID_TITLE_ROOT,
 } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
 const finalWaitBoundary = "        self.play(Transform(grid_title, grid_transform_title))\n        self.wait()\n";
+const candidateTranslation = { x: 0.123456789123, y: -0.234567891234 } as const;
 const candidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
   finalWaitBoundary,
   "        self.play(Transform(grid_title, grid_transform_title))\n" +
-    "        grid_title.shift((1.25, -0.5, 0))\n" +
+    `        grid_title.shift((${candidateTranslation.x}, ${candidateTranslation.y}, 0))\n` +
     "        self.wait()\n",
 );
 
@@ -61,8 +63,8 @@ function candidateFixture() {
   for (const frame of trace.frames.slice(FAST_MANIM_RUNTIME_TRACE_OPENING_EDIT_FRAME_V2)) {
     for (const draw of frame.draws) {
       if (draw.rootId !== RUNTIME_TRACE_V2_GRID_TITLE_ROOT) continue;
-      draw.translation.x = canonicalFastManimRuntimeTraceCoordinateV2(draw.translation.x + 1.25);
-      draw.translation.y = canonicalFastManimRuntimeTraceCoordinateV2(draw.translation.y - 0.5);
+      draw.translation.x = canonicalFastManimRuntimeTraceCoordinateV2(draw.translation.x + candidateTranslation.x);
+      draw.translation.y = canonicalFastManimRuntimeTraceCoordinateV2(draw.translation.y + candidateTranslation.y);
     }
   }
   trace.producer.semanticsSha256 = digestFastManimRuntimeTraceVisualSemanticsV2(trace);
@@ -70,10 +72,11 @@ function candidateFixture() {
 }
 
 function verify(trace: FastManimRuntimeTraceV2, request = candidateRequest()) {
-  const base = fastManimRuntimeTraceV2Fixture();
+  const base = parseSelfSealedFastManimRuntimeTraceV2Fixture(fastManimRuntimeTraceV2Fixture());
+  const candidate = parseSelfSealedFastManimRuntimeTraceV2Fixture(trace);
   return verifyFastManimRuntimeTraceOpeningPositionCandidateV2({
     base,
-    candidate: trace,
+    candidate,
     candidateRequest: request,
     trusted: { producer: base.producer, roots: base.roots },
   });

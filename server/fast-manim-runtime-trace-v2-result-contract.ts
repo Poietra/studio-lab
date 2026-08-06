@@ -549,6 +549,17 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
 
 export type FastManimRuntimeTraceV2 = z.infer<typeof fastManimRuntimeTraceV2Schema>;
 
+declare const selfSealedFastManimRuntimeTraceV2Brand: unique symbol;
+
+/**
+ * A Runtime Trace V2 value that crossed the bounded wire parser and whose
+ * complete visual-semantics seal was verified. The brand is intentionally a
+ * compile-time API boundary: runtime trust still comes only from the parser.
+ */
+export type SelfSealedFastManimRuntimeTraceV2 = FastManimRuntimeTraceV2 & {
+  readonly [selfSealedFastManimRuntimeTraceV2Brand]: "self-sealed-runtime-trace-v2";
+};
+
 export const expectedFastManimRuntimeTraceCorrelationV2Schema = z
   .object({
     camera: fastManimRuntimeTraceConfigV2Schema.shape.camera,
@@ -702,7 +713,7 @@ function assertFastManimRuntimeTraceV2Correlation(
   }
 }
 
-function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array) {
+function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array): SelfSealedFastManimRuntimeTraceV2 {
   const byteLength = typeof value === "string" ? Buffer.byteLength(value, "utf8") : value.byteLength;
   if (byteLength > MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2) {
     throw new FastManimRuntimeTraceV2ContractError(
@@ -733,7 +744,7 @@ function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array)
       cause: parsed.error,
     });
   }
-  return parsed.data;
+  return parsed.data as SelfSealedFastManimRuntimeTraceV2;
 }
 
 /** Parses bounded producer output whose correlation is verified separately by
