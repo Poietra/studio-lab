@@ -22,7 +22,7 @@ import {
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
-import { fastManimRuntimeTraceProducerEnvironmentV1 } from "./fast-manim-runtime-trace-profile";
+import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
 import type {
   FastManimSandboxAttestationVerifierV1,
   FastManimSandboxBackendV1,
@@ -333,7 +333,7 @@ export class ManimRenderManager {
           deployment: snapshotDeployment,
           localProcessDevOptIn: true,
           logger: this.logger,
-          producerEnv: fastManimRuntimeTraceProducerEnvironmentV1(),
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
           projectRoot: this.projectRoot,
         })
       : null;

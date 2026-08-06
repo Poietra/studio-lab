@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import { TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY } from "./fast-manim-runtime-trace-producer-identity";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
@@ -27,8 +28,8 @@ import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-back
 const artifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-updaters-v1.json.gz", import.meta.url);
 const openingArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url);
 const genericArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-v3-generic.json", import.meta.url);
-const FAST_MANIM_COMMIT = "350363a6baed0ba48d3da11f1299c1e2e5f56d46";
-const FAST_MANIM_TREE = "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf";
+const FAST_MANIM_COMMIT = TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit;
+const FAST_MANIM_TREE = TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree;
 const PREVIOUS_FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c";
 const PREVIOUS_FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90";
 const request = {
@@ -161,7 +162,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "fd3ff49985346a4ffd0aac77979704bb85ab01ee9bd4ab95de19a787fcf69f33",
+      "f0d88f1a408e980484abb85bbb7ba953c4beed591f689ad1bb2e2bf0ddc427ad",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
@@ -180,7 +181,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "3cbc6603a45a9f7486a85b9101a41418dcf3934f45acd070494a3820aa3b76e5",
+        traceDigest: "669ad684b40b63e0cc9c7816c75f99486c86e9b5b4d131e2497555add63bea64",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);

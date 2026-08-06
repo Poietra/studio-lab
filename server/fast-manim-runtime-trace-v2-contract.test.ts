@@ -5,8 +5,11 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import {
+  fastManimRuntimeTraceProducerEnvironment,
+  TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY,
+} from "./fast-manim-runtime-trace-producer-identity";
+import {
   createFastManimRuntimeTraceProducerRequestV1,
-  fastManimRuntimeTraceProducerEnvironmentV1,
   trustedFastManimRuntimeTraceProducerV1,
 } from "./fast-manim-runtime-trace-profile";
 import {
@@ -25,6 +28,7 @@ import {
   FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
   trustedFastManimRuntimeTraceProducerV2,
 } from "./fast-manim-runtime-trace-v2-profile";
+import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import { FastManimSandboxRequestBundleV1, verifyFastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 
@@ -81,19 +85,17 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     ).toThrowError(/OpeningManim/);
   });
 
-  it("pins both profiles to the shared merged producer command", () => {
+  it("pins every profile to the shared merged producer command", () => {
     const v1 = trustedFastManimRuntimeTraceProducerV1();
     const v2 = trustedFastManimRuntimeTraceProducerV2();
-    const producerIdentity = {
-      fastManimCommit: "350363a6baed0ba48d3da11f1299c1e2e5f56d46",
-      fastManimTree: "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf",
-    };
+    const v3 = trustedFastManimRuntimeTraceProducerV3();
 
-    expect(v1.producer).toMatchObject(producerIdentity);
-    expect(v2.producer).toMatchObject(producerIdentity);
-    expect(fastManimRuntimeTraceProducerEnvironmentV1()).toEqual({
-      POIETRA_FAST_MANIM_COMMIT: producerIdentity.fastManimCommit,
-      POIETRA_FAST_MANIM_TREE: producerIdentity.fastManimTree,
+    expect(v1.producer).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
+    expect(v2.producer).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
+    expect(v3).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
+    expect(fastManimRuntimeTraceProducerEnvironment()).toEqual({
+      POIETRA_FAST_MANIM_COMMIT: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit,
+      POIETRA_FAST_MANIM_TREE: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree,
     });
     expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
   });

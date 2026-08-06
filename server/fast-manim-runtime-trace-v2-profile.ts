@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
+import { TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY } from "./fast-manim-runtime-trace-producer-identity";
 import {
   digestFastManimRuntimeTraceConfigV2,
   FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V2,
@@ -50,8 +51,7 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "350363a6baed0ba48d3da11f1299c1e2e5f56d46",
-    fastManimTree: "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf",
+    ...TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY,
     geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
     manimVersion: "0.20.1",
     semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",

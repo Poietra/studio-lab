@@ -6,7 +6,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "../server/fast-manim-local-process-sandbox-backend";
-import { fastManimRuntimeTraceProducerEnvironmentV1 } from "../server/fast-manim-runtime-trace-profile";
+import { fastManimRuntimeTraceProducerEnvironment } from "../server/fast-manim-runtime-trace-producer-identity";
 import { FastManimSnapshotAdmissionController, FastManimSnapshotRunner } from "../server/fast-manim-snapshot-runner";
 import { importSourceSnapshot } from "../server/manim-workspace";
 import {
@@ -145,7 +145,7 @@ async function observeCodebase(
   const runtimeBackend = new LocalProcessFastManimSandboxBackendV1({
     admissionController: new FastManimSnapshotAdmissionController(),
     command: [python, "-m", manifest.producer.runtimeTraceModule],
-    producerEnv: fastManimRuntimeTraceProducerEnvironmentV1(),
+    producerEnv: fastManimRuntimeTraceProducerEnvironment(),
     projectRoot,
   });
   const runtimeRunner = new FastManimSnapshotRunner({

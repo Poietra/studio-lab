@@ -7,10 +7,8 @@ import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
-import {
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1,
-  fastManimRuntimeTraceProducerEnvironmentV1,
-} from "./fast-manim-runtime-trace-profile";
+import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
+import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "./manim-render-config";
 import { ManimRenderManager } from "./manim-render-manager";
@@ -71,7 +69,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
           command: producerCommand,
           deployment: "test",
           localProcessDevOptIn: true,
-          producerEnv: fastManimRuntimeTraceProducerEnvironmentV1(),
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
           projectRoot: root,
         }),
         deployment: "test",
