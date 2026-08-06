@@ -4,12 +4,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
 import {
   LocalProcessFastManimSandboxBackendV1,
   materializeFastManimSandboxPngV2,
 } from "./fast-manim-local-process-sandbox-backend";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const roots: string[] = [];
@@ -87,5 +89,41 @@ process.stdin.on("end", () => {
     });
     await expect(materializeFastManimSandboxPngV2(runtimeRoot, request)).rejects.toThrow();
     await expect(readFile(outside, "utf8")).resolves.toBe("unchanged");
+  });
+});
+
+describe("local-process Runtime Trace output bounds", () => {
+  async function produce(byteLength: number) {
+    const projectRoot = await temporaryRoot();
+    const producer = runtimeTraceRequestFixture();
+    const request = new FastManimSandboxRequestBundleV1(producer);
+    const child = String.raw`
+const byteLength = Number(process.argv.at(-1));
+process.stdout.write(Buffer.alloc(byteLength, 0x78));
+`;
+    const backend = new LocalProcessFastManimSandboxBackendV1({
+      command: [process.execPath, "-e", child, String(byteLength)],
+      projectRoot,
+    });
+    try {
+      return await backend.start(request, context(producer.requestId)).result;
+    } finally {
+      await backend.close();
+    }
+  }
+
+  it("admits V2-sized stdout before the runner applies its selected profile bound", async () => {
+    const byteLength = MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 1;
+    const result = await produce(byteLength);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("The local producer did not complete.");
+    expect(result.resultBytes).toHaveLength(byteLength);
+  });
+
+  it("fails closed above the largest admitted Runtime Trace result bound", async () => {
+    const result = await produce(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1);
+
+    expect(result).toMatchObject({ code: "producer-output-overflow", kind: "failed" });
   });
 });

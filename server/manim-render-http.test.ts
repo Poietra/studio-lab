@@ -14,8 +14,10 @@ import {
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
 import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
 import { lowerFastManimRuntimeTraceProducerJsonV1 } from "./fast-manim-runtime-trace-lowering";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
@@ -696,6 +698,9 @@ describe("Runtime Trace preview routing", () => {
       const accepted = await post((valid.address() as AddressInfo).port);
       const rejected = await post((staleVersion.address() as AddressInfo).port);
 
+      expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeGreaterThan(
+        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + 64 * 1024,
+      );
       expect(accepted.status).toBe(200);
       expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(view);
       expect(rejected.status).toBe(502);
@@ -706,6 +711,73 @@ describe("Runtime Trace preview routing", () => {
             new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
         ),
       );
+    }
+  });
+
+  it("fails closed when a verified V2 HTTP view exceeds its profile-specific envelope", async () => {
+    const view = await verifiedOpeningView();
+    const evidence = Array.from({ length: 64 }, (_, index) => {
+      const prefix = `${index}:`;
+      return `${prefix}${"x".repeat(500 - prefix.length)}`;
+    });
+    const nextSceneOrder = Math.max(...view.bundle.scene.entities.map(({ sceneOrder }) => sceneOrder)) + 1;
+    const paddingEntities = Array.from({ length: 100 }, (_, index) => ({
+      appearance: { kind: "group" as const, opacity: 1 },
+      geometry: { kind: "group" as const },
+      id: `${view.sceneId}/http-padding:${index}`,
+      lifetimes: [{ end: view.bundle.scene.duration, start: 0 }],
+      parentId: null,
+      provenanceId: view.bundle.scene.provenance[0].id,
+      sceneOrder: nextSceneOrder + index,
+      sourceZIndex: 0,
+      transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
+    }));
+    const entities = [...view.bundle.scene.entities, ...paddingEntities];
+    const provenanceLimit = entities.length + view.bundle.scene.animationChannels.length;
+    const provenance = [
+      ...view.bundle.scene.provenance.map((record) => ({ ...record, evidence })),
+      ...Array.from({ length: provenanceLimit - view.bundle.scene.provenance.length }, (_, index) => ({
+        evidence,
+        id: `${view.sceneId}/http-padding-provenance:${index}`,
+        origin: "fast-manim-runtime-trace" as const,
+      })),
+    ];
+    const oversizedView = {
+      ...view,
+      bundle: {
+        ...view.bundle,
+        scene: {
+          ...view.bundle.scene,
+          entities,
+          provenance,
+        },
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(oversizedView), "utf8")).toBeGreaterThan(
+      MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 + 64 * 1024,
+    );
+    const server = await listen({
+      runRuntimeTrace: async () => oversizedView,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2-overflow" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
+        body: JSON.stringify({
+          projectId: view.projectId,
+          requestId: view.requestId,
+          sceneName: view.sceneName,
+          sourceHash: view.sourceHash,
+          sourcePath: view.sourcePath,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+      expect(response.status).toBe(502);
+      expect(response.body.toString("utf8")).toContain("too large");
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
     }
   });
 
