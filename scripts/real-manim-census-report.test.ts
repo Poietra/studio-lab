@@ -25,6 +25,7 @@ function manifest(): RealManimCensusManifest {
       module: "manim.renderer.source_runtime_identity",
       repository: "https://github.com/Poietra/fast-manim.git",
       revision: "c".repeat(40),
+      runtimeTraceModule: "manim.renderer.runtime_trace",
       tree: "d".repeat(40),
     },
     schema: "poietra.real-manim-census-manifest",
@@ -106,6 +107,20 @@ describe("real Manim census report", () => {
       invalid.sources[0]!.scenes[0]!.features = ["guessed-feature" as "create"];
       await writeFile(path, JSON.stringify(invalid));
       await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const unpinnedRuntimeTrace = structuredClone(manifest());
+      unpinnedRuntimeTrace.sources[2]!.scenes[0]!.runtimeTraceVersions = [1];
+      await writeFile(path, JSON.stringify(unpinnedRuntimeTrace));
+      await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialRuntimeTrace = structuredClone(manifest());
+      const officialRuntimeTraceSource = officialRuntimeTrace.sources[2]!;
+      officialRuntimeTraceSource.id = "fast-manim-basic";
+      officialRuntimeTraceSource.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialRuntimeTraceSource.scenes[0]!.name = "UpdatersExample";
+      officialRuntimeTraceSource.scenes[0]!.runtimeTraceVersions = [1];
+      await writeFile(path, JSON.stringify(officialRuntimeTrace));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialRuntimeTrace);
 
       const unpinnedV8 = structuredClone(manifest());
       unpinnedV8.sources[2]!.scenes[0]!.profiles = [1, 2, 8];
@@ -203,6 +218,13 @@ describe("real Manim census report", () => {
           sha256: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
         },
       ]);
+      expect(
+        pinned.sources.flatMap((source) =>
+          source.scenes
+            .filter((scene) => scene.runtimeTraceVersions?.includes(1))
+            .map((scene) => `${source.id}/${scene.name}/runtime-trace-v1`),
+        ),
+      ).toEqual(["fast-manim-basic/UpdatersExample/runtime-trace-v1"]);
       expect(
         pinned.sources.flatMap((source) =>
           source.scenes

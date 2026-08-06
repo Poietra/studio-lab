@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "../server/fast-manim-local-process-sandbox-backend";
+import { fastManimRuntimeTraceProducerEnvironmentV1 } from "../server/fast-manim-runtime-trace-profile";
 import { FastManimSnapshotAdmissionController, FastManimSnapshotRunner } from "../server/fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "../server/manim-render-config";
 import {
@@ -14,6 +15,7 @@ import {
   loadRealManimCensusManifest,
   type RealManimCensusAttempt,
   realManimCensusCaseId,
+  realManimCensusRuntimeTraceCaseId,
 } from "./real-manim-census-report";
 
 const execute = promisify(execFile);
@@ -21,8 +23,9 @@ const workspaceRoot = resolve(import.meta.dirname, "..");
 const manifestPath = join(workspaceRoot, "fixtures", "real-manim-census-v1", "manifest.json");
 const baselinePath = join(workspaceRoot, "fixtures", "real-manim-census-v1", "baseline.json");
 const fastManimRootValue = process.env.POIETRA_REAL_MANIM_CENSUS_FAST_MANIM_ROOT?.trim();
-const producerCommand = parseFastManimSnapshotProducerCommand(process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND);
-const enabled = Boolean(fastManimRootValue && producerCommand);
+const snapshotCommand = parseFastManimSnapshotProducerCommand(process.env.POIETRA_FAST_MANIM_SNAPSHOT_COMMAND);
+const runtimeTraceCommand = parseFastManimSnapshotProducerCommand(process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND);
+const enabled = Boolean(fastManimRootValue && snapshotCommand && runtimeTraceCommand);
 
 const frame = { height: 8, width: 14.222222222222221 } as const;
 const pngBytes = Buffer.from(
@@ -78,10 +81,19 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     timeout: 900_000,
   }, async () => {
     const fastManimRoot = resolve(fastManimRootValue!);
-    const command = producerCommand!;
+    const snapshotProducerCommand = snapshotCommand!;
+    const runtimeTraceProducerCommand = runtimeTraceCommand!;
     const manifest = await loadRealManimCensusManifest(manifestPath);
-    if (command.at(-2) !== "-m" || command.at(-1) !== manifest.producer.module) {
+    if (snapshotProducerCommand.at(-2) !== "-m" || snapshotProducerCommand.at(-1) !== manifest.producer.module) {
       throw new Error(`The census command must execute the pinned ${manifest.producer.module} module.`);
+    }
+    if (
+      runtimeTraceProducerCommand.at(-2) !== "-m" ||
+      runtimeTraceProducerCommand.at(-1) !== manifest.producer.runtimeTraceModule
+    ) {
+      throw new Error(
+        `The Runtime Trace census command must execute the pinned ${manifest.producer.runtimeTraceModule} module.`,
+      );
     }
     const producerDigest = await verifyPinnedProducer(fastManimRoot, manifest.producer);
     await execute("uv", ["sync", "--frozen", "--project", fastManimRoot], { cwd: workspaceRoot, encoding: "utf8" });
@@ -95,18 +107,30 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     const fixturePng = manifest.assets.find(({ id }) => id === "fixture-png");
     if (fixturePng === undefined) throw new Error("The real-Manim census snapshot PNG is not pinned.");
     const cases = manifest.sources.flatMap((source) =>
-      source.scenes.flatMap((scene) =>
-        scene.profiles.map((profile) => ({
+      source.scenes.flatMap((scene) => [
+        ...scene.profiles.map((profile) => ({
           caseId: realManimCensusCaseId(source.id, scene.name, profile),
           corpus: source.corpus,
           features: scene.features ?? [],
+          kind: "snapshot" as const,
           profile,
           repository: source.repository,
           sceneName: scene.name,
           sourcePath: source.path,
           sourceSha256: source.sha256,
         })),
-      ),
+        ...(scene.runtimeTraceVersions ?? []).map((runtimeTraceVersion) => ({
+          caseId: realManimCensusRuntimeTraceCaseId(source.id, scene.name, runtimeTraceVersion),
+          corpus: source.corpus,
+          features: scene.features ?? [],
+          kind: "runtime-trace" as const,
+          repository: source.repository,
+          runtimeTraceVersion,
+          sceneName: scene.name,
+          sourcePath: source.path,
+          sourceSha256: source.sha256,
+        })),
+      ]),
     );
 
     const attempts = await mapConcurrent(cases, 2, async (entry): Promise<RealManimCensusAttempt> => {
@@ -116,7 +140,8 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       if (sourceDigest !== entry.sourceSha256) throw new Error(`${entry.caseId} source digest drifted.`);
       const backend = new LocalProcessFastManimSandboxBackendV1({
         admissionController: new FastManimSnapshotAdmissionController(),
-        command,
+        command: entry.kind === "snapshot" ? snapshotProducerCommand : runtimeTraceProducerCommand,
+        ...(entry.kind === "runtime-trace" ? { producerEnv: fastManimRuntimeTraceProducerEnvironmentV1() } : {}),
         projectRoot,
       });
       const runner = new FastManimSnapshotRunner({
@@ -128,37 +153,61 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
         pngProvider: {
           readVerified: async () => ({ bytes: new Uint8Array(pngBytes), versionToken: fixturePng.versionToken }),
         },
-        snapshotVersion: entry.profile,
+        ...(entry.kind === "snapshot" ? { snapshotVersion: entry.profile } : {}),
         tenantId: "census",
         timeoutMs: 120_000,
       });
       try {
+        const common = {
+          caseId: entry.caseId,
+          corpus: entry.corpus,
+          features: entry.features,
+          sceneName: entry.sceneName,
+        } as const;
+        if (entry.kind === "runtime-trace") {
+          const result = await runner.runRuntimeTrace({
+            projectId: "census",
+            requestId: entry.caseId.replaceAll(/[^a-zA-Z0-9._:-]/g, "-"),
+            sceneName: entry.sceneName,
+            sourceHash: sourceDigest,
+            sourcePath: entry.sourcePath,
+          });
+          if (result.status === "verified") {
+            return {
+              ...common,
+              outcome: "accepted",
+              reasons: [],
+              runtimeTraceVersion: entry.runtimeTraceVersion,
+              traceHash: result.traceDigest,
+            };
+          }
+          return {
+            ...common,
+            outcome: "rejected",
+            reasons: [`failure:${result.failure.code}`],
+            runtimeTraceVersion: entry.runtimeTraceVersion,
+          };
+        }
         const result = await runner.run({
           projectId: "census",
           requestId: entry.caseId.replaceAll(/[^a-zA-Z0-9._:-]/g, "-"),
           sceneName: entry.sceneName,
           sourcePath: entry.sourcePath,
         });
-        const common = {
-          caseId: entry.caseId,
-          corpus: entry.corpus,
-          features: entry.features,
-          profile: entry.profile,
-          sceneName: entry.sceneName,
-        } as const;
+        const snapshotCommon = { ...common, profile: entry.profile } as const;
         if (result.status === "verified") {
-          return { ...common, outcome: "accepted", reasons: [], snapshotHash: result.snapshot.snapshotHash };
+          return { ...snapshotCommon, outcome: "accepted", reasons: [], snapshotHash: result.snapshot.snapshotHash };
         }
         if (result.status === "unsupported") {
           return {
-            ...common,
+            ...snapshotCommon,
             outcome: "fallback",
             reasons: result.issues.map(({ code }) => `unsupported:${code}`).sort(),
           };
         }
         if (result.status === "failed") {
           return {
-            ...common,
+            ...snapshotCommon,
             outcome: "rejected",
             reasons: [
               `failure:${result.failure.code}`,
@@ -166,7 +215,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
             ].sort(),
           };
         }
-        return { ...common, outcome: "rejected", reasons: ["failure:source-correlation-stale"] };
+        return { ...snapshotCommon, outcome: "rejected", reasons: ["failure:source-correlation-stale"] };
       } finally {
         await runner.close();
       }

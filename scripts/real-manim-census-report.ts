@@ -6,6 +6,7 @@ import {
   fastManimSnapshotIssueCodeV1Schema,
   fastManimSnapshotRunFailureCodeV1Schema,
 } from "../server/fast-manim-snapshot-contract";
+import { fastManimRuntimeTraceRunFailureCodeV1Schema } from "../src/render-pipeline/runtime-trace-preview-contract";
 
 const MANIFEST_SCHEMA = "poietra.real-manim-census-manifest";
 const REPORT_SCHEMA = "poietra.real-manim-census-report";
@@ -15,6 +16,7 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
 const FAST_MANIM_BASIC_SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+const FAST_MANIM_RUNTIME_TRACE_SCENE = "UpdatersExample";
 
 export const REAL_MANIM_CENSUS_FEATURES = [
   "always-redraw",
@@ -48,12 +50,14 @@ const sceneSchema = z
     features: z.array(featureSchema).max(32).optional(),
     name: z.string().min(1).max(128).regex(IDENTIFIER),
     profiles: z.array(profileSchema).min(1).max(8),
+    runtimeTraceVersions: z.array(z.literal(1)).length(1).optional(),
   })
   .strict()
   .superRefine((scene, context) => {
     for (const [field, values, sorted] of [
       ["profiles", scene.profiles, [...scene.profiles].sort((left, right) => left - right)],
       ["features", scene.features ?? [], [...(scene.features ?? [])].sort()],
+      ["runtimeTraceVersions", scene.runtimeTraceVersions ?? [], [...(scene.runtimeTraceVersions ?? [])].sort()],
     ] as const) {
       if (new Set(values).size !== values.length || sorted.some((value, index) => value !== values[index])) {
         context.addIssue({ code: "custom", message: `${field} must be sorted and unique.`, path: [field] });
@@ -88,6 +92,7 @@ const manifestSchema = z
         module: z.string().min(1).max(256),
         repository: z.url(),
         revision: z.string().regex(GIT_ID),
+        runtimeTraceModule: z.string().min(1).max(256),
         tree: z.string().regex(GIT_ID),
       })
       .strict(),
@@ -130,6 +135,24 @@ const manifestSchema = z
         context.addIssue({ code: "custom", message: "Unknown asset ID.", path: ["sources", sourceIndex, "asset"] });
       }
       for (const [sceneIndex, scene] of source.scenes.entries()) {
+        if (
+          scene.runtimeTraceVersions !== undefined &&
+          !(
+            source.asset === undefined &&
+            source.corpus === "compatibility" &&
+            source.id === "fast-manim-basic" &&
+            source.path === "example_scenes/basic.py" &&
+            source.repository === "fast-manim" &&
+            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
+            scene.name === FAST_MANIM_RUNTIME_TRACE_SCENE
+          )
+        ) {
+          context.addIssue({
+            code: "custom",
+            message: "Runtime Trace V1 is reserved for the exact pinned fast-manim UpdatersExample source.",
+            path: ["sources", sourceIndex, "scenes", sceneIndex, "runtimeTraceVersions"],
+          });
+        }
         if (
           scene.profiles.includes(8) &&
           !(
@@ -239,7 +262,11 @@ export type RealManimCensusOutcome = "accepted" | "fallback" | "rejected";
 
 const outcomeSchema = z.enum(["accepted", "fallback", "rejected"]);
 const fallbackReasons = new Set(fastManimSnapshotIssueCodeV1Schema.options.map((code) => `unsupported:${code}`));
-const failureReasons = new Set(fastManimSnapshotRunFailureCodeV1Schema.options.map((code) => `failure:${code}`));
+const failureReasons = new Set(
+  [...fastManimSnapshotRunFailureCodeV1Schema.options, ...fastManimRuntimeTraceRunFailureCodeV1Schema.options].map(
+    (code) => `failure:${code}`,
+  ),
+);
 const contractReasons = new Set(fastManimSnapshotContractErrorCodeV1Schema.options.map((code) => `contract:${code}`));
 const knownReasons = new Set([...fallbackReasons, ...failureReasons, ...contractReasons]);
 const reasonSchema = z.string().refine((reason) => knownReasons.has(reason), "Unknown census reason.");
@@ -248,6 +275,7 @@ const resultEvidenceSchema = z
     outcome: outcomeSchema,
     reasons: z.array(reasonSchema).max(24),
     snapshotHash: z.string().regex(SHA256).optional(),
+    traceHash: z.string().regex(SHA256).optional(),
   })
   .strict()
   .superRefine((evidence, context) => {
@@ -259,7 +287,8 @@ const resultEvidenceSchema = z
       context.addIssue({ code: "custom", message: "Reasons must be sorted and unique.", path: ["reasons"] });
     }
     const accepted = evidence.outcome === "accepted";
-    if (accepted !== (evidence.snapshotHash !== undefined) || accepted !== (evidence.reasons.length === 0)) {
+    const artifactCount = Number(evidence.snapshotHash !== undefined) + Number(evidence.traceHash !== undefined);
+    if (accepted !== (artifactCount === 1) || accepted !== (evidence.reasons.length === 0)) {
       context.addIssue({ code: "custom", message: "Attempt outcome evidence is inconsistent." });
     }
     if (evidence.outcome === "fallback" && evidence.reasons.some((reason) => !fallbackReasons.has(reason))) {
@@ -279,17 +308,29 @@ const attemptSchema = z
     corpus: corpusSchema,
     features: z.array(featureSchema).max(32),
     outcome: outcomeSchema,
-    profile: profileSchema,
+    profile: profileSchema.optional(),
     reasons: z.array(reasonSchema).max(24),
+    runtimeTraceVersion: z.literal(1).optional(),
     sceneName: z.string().min(1).max(128).regex(IDENTIFIER),
     snapshotHash: z.string().regex(SHA256).optional(),
+    traceHash: z.string().regex(SHA256).optional(),
   })
   .strict()
   .superRefine((attempt, context) => {
+    if (Number(attempt.profile !== undefined) + Number(attempt.runtimeTraceVersion !== undefined) !== 1) {
+      context.addIssue({ code: "custom", message: "Attempt must select exactly one producer profile." });
+    }
+    if (
+      (attempt.profile !== undefined && attempt.traceHash !== undefined) ||
+      (attempt.runtimeTraceVersion !== undefined && attempt.snapshotHash !== undefined)
+    ) {
+      context.addIssue({ code: "custom", message: "Attempt artifact evidence does not match its producer." });
+    }
     const parsed = resultEvidenceSchema.safeParse({
       outcome: attempt.outcome,
       reasons: attempt.reasons,
       snapshotHash: attempt.snapshotHash,
+      traceHash: attempt.traceHash,
     });
     for (const issue of parsed.error?.issues ?? []) context.addIssue(issue);
   });
@@ -332,6 +373,10 @@ export function realManimCensusCaseId(sourceId: string, sceneName: string, profi
   return `${realManimCensusSceneId(sourceId, sceneName)}/v${profile}`;
 }
 
+export function realManimCensusRuntimeTraceCaseId(sourceId: string, sceneName: string, version: 1) {
+  return `${realManimCensusSceneId(sourceId, sceneName)}/runtime-trace-v${version}`;
+}
+
 export async function loadRealManimCensusManifest(path: string | URL): Promise<RealManimCensusManifest> {
   const bytes = await readFile(path);
   if (bytes.byteLength > 1024 * 1024) throw new Error("Real Manim census manifest exceeds 1 MiB.");
@@ -358,7 +403,14 @@ export function buildRealManimCensusReport(
   if (producerDigest !== manifest.producer.digest) throw new Error("Producer digest does not match the manifest pin.");
   const expected = new Map<
     string,
-    { corpus: RealManimCensusCorpus; features: string[]; profile: number; sceneId: string; sceneName: string }
+    {
+      corpus: RealManimCensusCorpus;
+      features: string[];
+      profile?: number;
+      runtimeTraceVersion?: 1;
+      sceneId: string;
+      sceneName: string;
+    }
   >();
   for (const source of manifest.sources) {
     for (const scene of source.scenes) {
@@ -368,6 +420,15 @@ export function buildRealManimCensusReport(
           corpus: source.corpus,
           features: [...(scene.features ?? [])],
           profile,
+          sceneId,
+          sceneName: scene.name,
+        });
+      }
+      for (const runtimeTraceVersion of scene.runtimeTraceVersions ?? []) {
+        expected.set(realManimCensusRuntimeTraceCaseId(source.id, scene.name, runtimeTraceVersion), {
+          corpus: source.corpus,
+          features: [...(scene.features ?? [])],
+          runtimeTraceVersion,
           sceneId,
           sceneName: scene.name,
         });
@@ -385,6 +446,7 @@ export function buildRealManimCensusReport(
       pinned === undefined ||
       pinned.corpus !== attempt.corpus ||
       pinned.profile !== attempt.profile ||
+      pinned.runtimeTraceVersion !== attempt.runtimeTraceVersion ||
       pinned.sceneName !== attempt.sceneName ||
       JSON.stringify(pinned.features) !== JSON.stringify(attempt.features)
     ) {
@@ -433,9 +495,9 @@ export function buildRealManimCensusReport(
     producerDigest,
     reasonCounts: Object.fromEntries([...reasonCounts.entries()].sort(([left], [right]) => left.localeCompare(right))),
     results: Object.fromEntries(
-      results.map(({ caseId, outcome, reasons, snapshotHash }) => [
+      results.map(({ caseId, outcome, reasons, snapshotHash, traceHash }) => [
         caseId,
-        { outcome, reasons, ...(snapshotHash ? { snapshotHash } : {}) },
+        { outcome, reasons, ...(snapshotHash ? { snapshotHash } : {}), ...(traceHash ? { traceHash } : {}) },
       ]),
     ),
     scenes: Object.fromEntries(scenes.map(({ outcome, sceneId }) => [sceneId, outcome])),
@@ -493,8 +555,12 @@ export function assertRealManimCensusFloor(reportInput: unknown, baselineInput: 
     if (current?.outcome !== "accepted") {
       throw new Error(`Previously accepted census case is no longer accepted: ${caseId}`);
     }
-    if (report.producerDigest === baseline.producerDigest && current.snapshotHash !== result.snapshotHash) {
-      throw new Error(`Accepted census snapshot changed under the same producer pin: ${caseId}`);
+    if (
+      report.producerDigest === baseline.producerDigest &&
+      (current.snapshotHash !== result.snapshotHash || current.traceHash !== result.traceHash)
+    ) {
+      const artifact = result.traceHash === undefined ? "snapshot" : "Runtime Trace";
+      throw new Error(`Accepted census ${artifact} changed under the same producer pin: ${caseId}`);
     }
   }
   if (report.summary.attempts.rejected > baseline.summary.attempts.rejected) {
