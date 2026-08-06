@@ -8,6 +8,7 @@ import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 const SHA256 = z.string().regex(/^[0-9a-f]{64}$/u);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 const RGBA_BYTE_LENGTH = VIEWPORT.widthPx * VIEWPORT.heightPx * 4;
+export const UPDATERS_OFFICIAL_SOURCE_SHA256_V1 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 
 export const UPDATERS_CAIRO_REFERENCE_SAMPLES_V1 = [
   ["initial", 0, 0],
@@ -60,8 +61,8 @@ export const updatersCairoReferenceV1Schema = z.strictObject({
     cairoLibrarySha256: SHA256,
     cairoVersion: z.string().min(1),
     decimalGlyphResourceSha256: SHA256,
-    fastManimCommit: z.literal("365345c2cbb673ab0e9fe22d33353fcbcd43b58c"),
-    fastManimTree: z.literal("f6cae74330644d19bd0a5bf12a092c9840a83e90"),
+    fastManimCommit: z.literal("4ed7d01176438e612a8e9b6a080bf61ff906226e"),
+    fastManimTree: z.literal("e1d62d7d0d4ceb238ea9afb68cfdedf1510e9a03"),
     glyphProviderSha256: z.literal("b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322"),
     identitySha256: SHA256,
     manimVersion: z.literal("0.20.1"),
@@ -112,7 +113,7 @@ export const updatersCairoReferenceV1Schema = z.strictObject({
     decimalImplementation: z.literal("hermetic-runtime-trace-v1"),
     repository: z.literal("Poietra/fast-manim"),
     sourcePath: z.literal("example_scenes/basic.py"),
-    sourceSha256: z.literal("d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"),
+    sourceSha256: SHA256,
   }),
   schema: z.literal("poietra.updaters-cairo-reference"),
   version: z.literal(1),
@@ -126,7 +127,8 @@ function requireDigest(actual: string, expected: string, label: string) {
   if (actual !== expected) throw new Error(`${label} hashes to ${actual}, expected ${expected}`);
 }
 
-export async function readUpdatersCairoReferenceV1(root: string) {
+export async function readUpdatersCairoReferenceV1(root: string, expectedSourceSha256: string) {
+  const expectedSourceDigest = SHA256.parse(expectedSourceSha256);
   const reference = updatersCairoReferenceV1Schema.parse(
     JSON.parse(await readFile(join(root, "reference.json"), "utf8")),
   );
@@ -137,6 +139,7 @@ export async function readUpdatersCairoReferenceV1(root: string) {
     reference.rendererConfig.identitySha256,
     "the Cairo renderer configuration",
   );
+  requireDigest(reference.scene.sourceSha256, expectedSourceDigest, "the Cairo source");
 
   const frames = new Map<
     (typeof UPDATERS_CAIRO_REFERENCE_SAMPLES_V1)[number][0],

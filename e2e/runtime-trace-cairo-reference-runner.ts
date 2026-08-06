@@ -1,5 +1,5 @@
 import { execFile as execFileCallback } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -36,6 +36,7 @@ export async function withGeneratedRuntimeTraceCairoReferenceV1<T>(
   input: Readonly<{
     generatorPath: string;
     read: (referenceRoot: string) => Promise<T>;
+    sourceText?: string;
     temporaryPrefix: string;
   }>,
 ) {
@@ -43,11 +44,11 @@ export async function withGeneratedRuntimeTraceCairoReferenceV1<T>(
   const temporaryRoot = await mkdtemp(join(tmpdir(), input.temporaryPrefix));
   const referenceRoot = join(temporaryRoot, "reference");
   try {
-    await execFile(
-      producer.python,
-      [resolve(input.generatorPath), "--fast-manim", producer.repository, "--output", referenceRoot],
-      { env: { ...process.env, PYTHONHASHSEED: "0" }, maxBuffer: 2 * 1024 * 1024 },
-    );
+    const sourcePath = input.sourceText === undefined ? null : join(temporaryRoot, "source.py");
+    if (sourcePath) await writeFile(sourcePath, input.sourceText, "utf8");
+    const argv = [resolve(input.generatorPath), "--fast-manim", producer.repository, "--output", referenceRoot];
+    if (sourcePath) argv.push("--source", sourcePath);
+    await execFile(producer.python, argv, { env: { ...process.env, PYTHONHASHSEED: "0" }, maxBuffer: 2 * 1024 * 1024 });
     return await input.read(referenceRoot);
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });

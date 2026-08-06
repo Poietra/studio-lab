@@ -1,8 +1,8 @@
 {
   "corpusDigest": "cf16cfa7c39be8af69195617a5e2466aed48248507136fd6e080c1007f2f2b3d",
-  "manifestDigest": "616e3d21059e92cbd998a816800c4fbb6bb49795c2996acafb586731c2b1f9d5",
+  "manifestDigest": "821aa20d2150b56d5a5f2d94d211df5171ccf27b3bc9dd6a527c9f5557a9b94a",
   "manifestVersion": 1,
-  "producerDigest": "952c5cc71da55f77c03d3b06a94742c3861c283d7bd935c7c51e7e06d1d4e919",
+  "producerDigest": "5b0212b0fea7df2ef09953098cf80afee7091f49a6fb63b9b9187e10e52a35f0",
   "reasonCounts": {
     "failure:producer-exit": 1,
     "unsupported:animation-evidence-incomplete": 13,
@@ -113,7 +113,7 @@
     "fast-manim-basic/OpeningManim/runtime-trace-v2": {
       "outcome": "accepted",
       "reasons": [],
-      "traceHash": "4d362fb629202be83af313bd676c06552c2d2929f2fe4b5f45c3c790cebd21a6"
+      "traceHash": "ea2b981e592fd2933f6de6555481268628893396cae98285b3173962d7d2ac28"
     },
     "fast-manim-basic/OpeningManim/v1": {
       "outcome": "fallback",
@@ -212,7 +212,7 @@
     "fast-manim-basic/UpdatersExample/runtime-trace-v1": {
       "outcome": "accepted",
       "reasons": [],
-      "traceHash": "c28d902d7e2d7da6fb39591115b8d9bb36fc08d8f4b13c09e35b0a4cdd14ae65"
+      "traceHash": "2e6f0ca9a6344ac448f1f3f68bf3e412817549808a5b9a93b7dae8b4e52ba43b"
     },
     "fast-manim-basic/UpdatersExample/v1": {
       "outcome": "fallback",
