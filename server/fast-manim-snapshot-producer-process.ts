@@ -1,10 +1,8 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 
-import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import type { StructuredLogger } from "./logging/structured-logger";
 
-const MAX_PRODUCER_STDOUT_BYTES = MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES;
 const MAX_PRODUCER_STDERR_BYTES = 256 * 1024;
 const PRODUCER_KILL_GRACE_MS = 2_000;
 const PRODUCER_CLOSE_GRACE_MS = 5_000;
@@ -63,6 +61,7 @@ export type SuperviseProducerOptions = Readonly<{
   requestId: string;
   requestJson: string;
   signal?: AbortSignal;
+  stdoutByteLimit: number;
   timings: ProducerProcessTimings;
   timeoutMs: number;
 }>;
@@ -88,6 +87,9 @@ export type SuperviseProducerOptions = Readonly<{
  * leaves a pending timer that could fire after it resolves.
  */
 export async function superviseProducerProcess(options: SuperviseProducerOptions): Promise<ProducerProcessResult> {
+  if (!Number.isSafeInteger(options.stdoutByteLimit) || options.stdoutByteLimit <= 0) {
+    throw new TypeError("Producer stdout byte limit must be a positive safe integer.");
+  }
   const [executable, ...prefix] = options.command;
   // spawn throws synchronously for invalid argv/env (e.g. a NUL byte in a
   // server-controlled command or producerEnv value); the caller reclaims the
@@ -189,7 +191,7 @@ export async function superviseProducerProcess(options: SuperviseProducerOptions
     child.stdout?.on("data", (chunk: Buffer) => {
       if (overflowed) return;
       stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_PRODUCER_STDOUT_BYTES) {
+      if (stdoutBytes > options.stdoutByteLimit) {
         overflowed = true;
         stdoutChunks.length = 0;
         requestStop();

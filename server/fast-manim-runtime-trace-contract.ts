@@ -75,6 +75,34 @@ const correlationShape = {
   sourcePath: manimSourcePathSchema,
 };
 
+const canonicalRuntimeTraceCameraV1 = {
+  background: { alpha: 1, blue: 0, green: 0, red: 0 },
+  center: { x: 0, y: 0 },
+  frameHeight: 8,
+  frameWidth: 128 / 9,
+} as const;
+
+function isCanonicalRuntimeTraceCameraV1(
+  camera: Readonly<{
+    background: Readonly<{ alpha: number; blue: number; green: number; red: number }>;
+    center: Readonly<{ x: number; y: number }>;
+    frameHeight: number;
+    frameWidth: number;
+  }>,
+) {
+  const sameNumber = (actual: number, expected: number) => canonicalF64HexV1(actual) === canonicalF64HexV1(expected);
+  return (
+    sameNumber(camera.background.alpha, canonicalRuntimeTraceCameraV1.background.alpha) &&
+    sameNumber(camera.background.blue, canonicalRuntimeTraceCameraV1.background.blue) &&
+    sameNumber(camera.background.green, canonicalRuntimeTraceCameraV1.background.green) &&
+    sameNumber(camera.background.red, canonicalRuntimeTraceCameraV1.background.red) &&
+    sameNumber(camera.center.x, canonicalRuntimeTraceCameraV1.center.x) &&
+    sameNumber(camera.center.y, canonicalRuntimeTraceCameraV1.center.y) &&
+    sameNumber(camera.frameHeight, canonicalRuntimeTraceCameraV1.frameHeight) &&
+    sameNumber(camera.frameWidth, canonicalRuntimeTraceCameraV1.frameWidth)
+  );
+}
+
 const runtimeTraceCameraV1Schema = z
   .object({
     background: rgbaColorV1Schema,
@@ -82,7 +110,8 @@ const runtimeTraceCameraV1Schema = z
     frameHeight: z.number().finite().positive().max(MAX_COORDINATE),
     frameWidth: z.number().finite().positive().max(MAX_COORDINATE),
   })
-  .strict();
+  .strict()
+  .refine(isCanonicalRuntimeTraceCameraV1, "Runtime Trace V1 requires the exact default Cairo camera.");
 
 /**
  * Quantizes an IEEE-754 f64 using ECMAScript `toFixed(13)`: nearest decimal,
@@ -279,7 +308,7 @@ export const fastManimRuntimeTraceProducerRequestV1Schema = z
     runtimeConfig: fastManimRuntimeTraceConfigV1Schema,
     sceneOccurrence: z
       .object({
-        constructStartLine: z.number().int().positive(),
+        constructStartLine: z.number().int().positive().max(10_000),
         definitionOrdinal: z.number().int().positive().max(10_000),
       })
       .strict(),
@@ -401,7 +430,9 @@ type RuntimeTracePointV1 = z.infer<typeof runtimeTracePointV1Schema>;
 /**
  * Runtime Trace V1 is viewport-neutral. It captures root-local Scene coordinates,
  * never pixel coordinates. The Studio verifier lowers this position into Scene IR;
- * the independent 854x480 Cairo/WebGPU evidence belongs to the integration layer.
+ * the independent 864x486 Cairo/WebGPU evidence belongs to the integration layer.
+ * That exact 16:9 raster preserves the declared 8 by 128/9 camera without
+ * Manim applying a frame-shape aspect correction.
  */
 export function fastManimRuntimeTraceWorldPositionV1(
   motionY: number,
