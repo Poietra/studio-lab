@@ -164,11 +164,16 @@ export async function readSpiralInCairoReferenceV1(root = SPIRAL_IN_CAIRO_REFERE
   return { frames, reference } as const;
 }
 
-export async function readSpiralInCairoReferenceForEntryV1(entryId: string) {
+export function spiralInCairoReferenceSampleForEntryV1(entryId: string) {
   const sample = SPIRAL_IN_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
   if (!sample) throw new Error(`Visual-parity entry ${entryId} has no independent SpiralIn Cairo reference.`);
+  return { entryId: sample[0], sampleId: sample[1], sampleTime: sample[2] } as const;
+}
+
+export async function readSpiralInCairoReferenceForEntryV1(entryId: string) {
+  const sample = spiralInCairoReferenceSampleForEntryV1(entryId);
   const result = await readSpiralInCairoReferenceV1();
-  const frame = result.frames.get(sample[1]);
-  if (!frame) throw new Error(`SpiralIn Cairo reference is missing ${sample[1]}.`);
+  const frame = result.frames.get(sample.sampleId);
+  if (!frame) throw new Error(`SpiralIn Cairo reference is missing ${sample.sampleId}.`);
   return { ...frame, reference: result.reference } as const;
 }

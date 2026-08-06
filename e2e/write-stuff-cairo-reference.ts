@@ -199,15 +199,23 @@ export async function readWriteStuffCairoReferenceV1(root = WRITE_STUFF_CAIRO_RE
   return { frames, reference } as const;
 }
 
-export async function readWriteStuffCairoReferenceForEntryV1(entryId: string) {
+export function writeStuffCairoReferenceSampleForEntryV1(entryId: string) {
   const official = WRITE_STUFF_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
   const edited = WRITE_STUFF_EDITED_CAIRO_REFERENCE_SAMPLES_V1.find(([candidate]) => candidate === entryId);
   const sample = official ?? edited;
   if (!sample) throw new Error(`Visual-parity entry ${entryId} has no independent WriteStuff Cairo reference.`);
-  const result = await readWriteStuffCairoReferenceV1(
-    edited ? WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1 : WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1,
-  );
-  const frame = result.frames.get(sample[1]);
-  if (!frame) throw new Error(`WriteStuff Cairo reference is missing ${sample[1]}.`);
+  return {
+    entryId: sample[0],
+    root: edited ? WRITE_STUFF_EDITED_CAIRO_REFERENCE_ROOT_V1 : WRITE_STUFF_CAIRO_REFERENCE_ROOT_V1,
+    sampleId: sample[1],
+    sampleTime: sample[2],
+  } as const;
+}
+
+export async function readWriteStuffCairoReferenceForEntryV1(entryId: string) {
+  const sample = writeStuffCairoReferenceSampleForEntryV1(entryId);
+  const result = await readWriteStuffCairoReferenceV1(sample.root);
+  const frame = result.frames.get(sample.sampleId);
+  if (!frame) throw new Error(`WriteStuff Cairo reference is missing ${sample.sampleId}.`);
   return { ...frame, reference: result.reference } as const;
 }

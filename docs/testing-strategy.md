@@ -13,6 +13,19 @@ Test count is not a coverage target.
 | WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open, object creation, and export in WebKit at the supported 960×640 viewport. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
+## Large binary fixture assertions
+
+Cairo reference readers in the unit lane still read every PNG, validate its
+encoded SHA-256, decode the complete RGBA frame, and validate the decoded
+SHA-256. Tests that assert equality or progression between 640×360 RGBA frames
+compare those verified SHA-256 values instead of asking Vitest to perform a deep
+structural comparison of `Uint8Array` values. The latter spent about 2.2 seconds
+per scenario during the Issue #489 profile even though fixture I/O, parsing,
+decoding, and integrity checks took only 38–53 milliseconds. Corpus-binding tests
+likewise reuse one fully validated read of a reference set instead of decoding the
+same set once per corpus entry. The native WebGPU/Cairo lane remains responsible
+for pixel metrics and diagnostic diffs.
+
 The browser suite stays deliberately small. It covers the original journey where
 moving two different objects must retain both positions through Apply, plus the
 cross-owner editor foundations: manual geometry creation and export, live Bézier

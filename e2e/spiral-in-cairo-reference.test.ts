@@ -1,13 +1,15 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 import {
+  readSpiralInCairoReferenceForEntryV1,
+  readSpiralInCairoReferenceV1,
   SPIRAL_IN_CAIRO_PARITY_THRESHOLDS_V1,
   SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1,
   SPIRAL_IN_CAIRO_REFERENCE_SAMPLES_V1,
-  readSpiralInCairoReferenceForEntryV1,
-  readSpiralInCairoReferenceV1,
+  spiralInCairoReferenceSampleForEntryV1,
   spiralInCairoReferenceV1Schema,
 } from "./spiral-in-cairo-reference";
 import { nativeVisualParityArtifactV1Schema, visualParityCorpusV1Schema } from "./visual-parity-contract";
@@ -50,6 +52,10 @@ const EXPECTED_FRAMES = {
     sha256: "067aba9deef0fde3a8db2c6c4f559a1e947de08dd4d07b39a35708a776952d91",
   },
 } as const;
+
+function sha256(bytes: Uint8Array) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 describe("SpiralIn Cairo reference v1", () => {
   it("pins the official source, producer, renderer configuration, and seven full RGBA frames", async () => {
@@ -119,28 +125,33 @@ describe("SpiralIn Cairo reference v1", () => {
 
   it("proves the empty endpoints, moving reveal, stable hold, and group fade are distinct", async () => {
     const { frames } = await readSpiralInCairoReferenceV1();
-    const rgba = (id: (typeof SPIRAL_IN_CAIRO_REFERENCE_SAMPLES_V1)[number][1]) => {
+    const rgbaSha256 = (id: (typeof SPIRAL_IN_CAIRO_REFERENCE_SAMPLES_V1)[number][1]) => {
       const frame = frames.get(id);
       if (!frame) throw new Error(`Missing Cairo frame ${id}.`);
-      return frame.rgba;
+      return sha256(frame.rgba);
     };
-    expect(rgba("start")).toEqual(rgba("end"));
-    expect(rgba("spiral-end")).toEqual(rgba("hold"));
-    expect(rgba("early-reveal")).not.toEqual(rgba("start"));
-    expect(rgba("spiral-midpoint")).not.toEqual(rgba("early-reveal"));
-    expect(rgba("spiral-midpoint")).not.toEqual(rgba("spiral-end"));
-    expect(rgba("group-fade-midpoint")).not.toEqual(rgba("hold"));
-    expect(rgba("group-fade-midpoint")).not.toEqual(rgba("end"));
+    expect(rgbaSha256("start")).toBe(rgbaSha256("end"));
+    expect(rgbaSha256("spiral-end")).toBe(rgbaSha256("hold"));
+    expect(rgbaSha256("early-reveal")).not.toBe(rgbaSha256("start"));
+    expect(rgbaSha256("spiral-midpoint")).not.toBe(rgbaSha256("early-reveal"));
+    expect(rgbaSha256("spiral-midpoint")).not.toBe(rgbaSha256("spiral-end"));
+    expect(rgbaSha256("group-fade-midpoint")).not.toBe(rgbaSha256("hold"));
+    expect(rgbaSha256("group-fade-midpoint")).not.toBe(rgbaSha256("end"));
   });
 
   it("binds every Cairo sample to the exact V11 visual-parity corpus entry", async () => {
-    const corpus = visualParityCorpusV1Schema.parse(
-      JSON.parse(await readFile("fixtures/visual-parity-v1/corpus.json", "utf8")),
-    );
+    const [cairoReference, corpusText] = await Promise.all([
+      readSpiralInCairoReferenceV1(),
+      readFile("fixtures/visual-parity-v1/corpus.json", "utf8"),
+    ]);
+    const corpus = visualParityCorpusV1Schema.parse(JSON.parse(corpusText));
     for (const [entryId, sampleId, sampleTime] of SPIRAL_IN_CAIRO_REFERENCE_SAMPLES_V1) {
       const entry = corpus.entries.find(({ id }) => id === entryId);
       if (!entry) throw new Error(`The SpiralIn V11 corpus entry ${entryId} is missing.`);
-      const cairo = await readSpiralInCairoReferenceForEntryV1(entryId);
+      const resolved = spiralInCairoReferenceSampleForEntryV1(entryId);
+      expect(resolved).toEqual({ entryId, sampleId, sampleTime });
+      const cairo = cairoReference.frames.get(resolved.sampleId);
+      if (!cairo) throw new Error(`SpiralIn Cairo reference is missing ${sampleId}.`);
       expect(entry).toMatchObject({
         fixture: {
           id: "eng-v1-real-spiral-in-v11",
@@ -156,6 +167,7 @@ describe("SpiralIn Cairo reference v1", () => {
       expect(cairo.sampleTime).toBe(sampleTime);
     }
     expect(SPIRAL_IN_CAIRO_REFERENCE_ENTRY_IDS_V1).toHaveLength(7);
+    expect(() => spiralInCairoReferenceSampleForEntryV1("unknown-entry")).toThrow(/no independent/u);
   });
 
   it("keeps the timeline envelope strict", () => {
