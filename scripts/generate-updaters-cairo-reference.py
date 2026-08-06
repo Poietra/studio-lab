@@ -29,8 +29,8 @@ from manim.renderer._runtime_trace.decimal_glyphs import (
 )
 
 
-FAST_MANIM_COMMIT = "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3"
-FAST_MANIM_TREE = "41516d8b866a891adb22f47064b9bba5545fae15"
+FAST_MANIM_COMMIT = "350363a6baed0ba48d3da11f1299c1e2e5f56d46"
+FAST_MANIM_TREE = "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf"
 GLYPH_PROVIDER_SHA256 = (
     "b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322"
 )
