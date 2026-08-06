@@ -427,12 +427,13 @@ impl PreparedFrameV1 {
     /// Returns interaction AABBs for prepared draw entities and nested logical
     /// groups in one validated Scene snapshot.
     ///
-    /// A nested group receives the union of every prepared descendant paint
-    /// phase. Top-level groups remain absent so existing Scene-wide logical
-    /// containers do not become accidental hit targets. The packet revision,
-    /// hierarchy, and every prepared entity ID must agree with `scene`; any
-    /// inconsistency fails this advisory metadata closed without affecting the
-    /// already prepared pixel frame.
+    /// A drawable entity receives only its own prepared paint bounds. A nested
+    /// group receives the union of every prepared descendant paint phase.
+    /// Top-level groups remain absent so existing Scene-wide logical containers
+    /// do not become accidental hit targets. The packet revision, hierarchy,
+    /// and every prepared entity ID must agree with `scene`; any inconsistency
+    /// fails this advisory metadata closed without affecting the already
+    /// prepared pixel frame.
     #[must_use]
     pub fn interaction_clip_bounds_by_entity(
         &self,
@@ -483,11 +484,7 @@ impl PreparedFrameV1 {
             parents.push(parent);
         }
 
-        let direct_entities = direct_bounds
-            .iter()
-            .map(Option::is_some)
-            .collect::<Vec<_>>();
-        let mut aggregate_bounds = direct_bounds;
+        let mut aggregate_bounds = direct_bounds.clone();
         let mut leaves = child_counts
             .iter()
             .enumerate()
@@ -515,9 +512,14 @@ impl PreparedFrameV1 {
         for (entity_index, entity) in scene.entities.iter().enumerate() {
             let nested_group =
                 entity.parent_id.is_some() && matches!(entity.geometry, SceneGeometryV1::Group {});
-            if (direct_entities[entity_index] || nested_group)
-                && let Some(bounds) = aggregate_bounds[entity_index]
-            {
+            let bounds = if direct_bounds[entity_index].is_some() {
+                direct_bounds[entity_index]
+            } else if nested_group {
+                aggregate_bounds[entity_index]
+            } else {
+                None
+            };
+            if let Some(bounds) = bounds {
                 output.insert(entity.id.clone(), bounds);
             }
         }
