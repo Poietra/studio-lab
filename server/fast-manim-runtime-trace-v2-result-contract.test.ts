@@ -10,8 +10,13 @@ import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace
 import { createFastManimRuntimeTraceProducerRequestV2 } from "./fast-manim-runtime-trace-v2-profile";
 import {
   digestFastManimRuntimeTraceAppearanceV2,
+  digestFastManimRuntimeTracePathV2,
   digestFastManimRuntimeTraceV2,
   expectedFastManimRuntimeTraceCorrelationFromRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_EXTENSION_SLOTS_V2,
+  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2,
+  FastManimRuntimeTraceV2ContractError,
+  fastManimRuntimeTraceDrawIsPresentV2,
   fastManimRuntimeTraceV2Schema,
   MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2,
   MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V2,
@@ -73,15 +78,15 @@ function expectCompactedPlateausToRemainExact(
 }
 
 describe("fast-manim Runtime Trace V2 result contract", () => {
-  it("accepts and lowers the real OpeningManim producer artifact", { timeout: 30_000 }, async () => {
+  it("accepts and lowers the real OpeningManim producer artifact", { timeout: 60_000 }, async () => {
     expect(createHash("sha256").update(artifactBytes).digest("hex")).toBe(
-      "19b2f9b52ce1df0f06a3521faecb9ff8cd50c68fb813d3ca4c7a36b7d5edd9de",
+      "c0f49e7fc1fba4e40be5b4b164e817cf74837fc1cb81ca2188bc1db57ee45792",
     );
     const untrusted = JSON.parse(artifactJson) as ReturnType<typeof fastManimRuntimeTraceV2Fixture>;
     expect(untrusted.producer).toMatchObject({
-      fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
-      fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
-      semanticsSha256: "0cefd58f3d7aa7996a1166e0c97857c5d0de9cf37611402cacc955417553df33",
+      fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
+      fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
+      semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",
     });
     const request = createFastManimRuntimeTraceProducerRequestV2(
       {
@@ -100,19 +105,30 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     });
     const trace = parseFastManimRuntimeTraceProducerJsonV2(artifactBytes, expected);
 
-    expect(trace.frames).toHaveLength(540);
-    expect(trace.frames.every((frame) => frame.draws.length === 66)).toBe(true);
-    expect(trace.resources.paths).toHaveLength(944);
-    expect(trace.resources.appearances).toHaveLength(337);
+    expect(trace.frames).toHaveLength(900);
+    expect(trace.frames.every((frame) => frame.draws.length === 97)).toBe(true);
+    expect(trace.resources.paths).toHaveLength(6_566);
+    expect(trace.resources.appearances).toHaveLength(349);
 
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
-    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBe(6_815_496);
+    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBe(5_488_665);
     expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBeLessThan(
       MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
     );
-    expect(bundle.scene.entities).toHaveLength(106);
-    expect(bundle.scene.animationChannels).toHaveLength(171);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(10_559);
+    expect(bundle.scene.entities).toHaveLength(194);
+    expect(bundle.scene.animationChannels).toHaveLength(269);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(12_551);
+    const morphChannels = bundle.scene.animationChannels.filter((channel) => channel.kind === "path-morph");
+    expect(morphChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(509);
+    for (const role of ["title", "grid", "grid-title"] as const) {
+      expect(
+        morphChannels.some(
+          (channel) =>
+            channel.entityId.includes(`/runtime-root:${role}/`) &&
+            channel.keyframes.some(({ easingToNext }) => easingToNext?.kind === "manim-smooth"),
+        ),
+      ).toBe(true);
+    }
     expect(bundle.scene.entities.slice(5, 7).map(({ id }) => id)).toEqual([
       expect.stringMatching(/runtime-draw:0\/paint:fill$/),
       expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
@@ -124,7 +140,33 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     ).toBe(true);
     expectCompactedPlateausToRemainExact(bundle);
     const packetDrawCounts = await Promise.all(
-      [0, 0.5, 1, 2, 179 / 60, 3, 3.5, 4, 299 / 60, 5, 5.5, 6.5, 479 / 60, 8, 539 / 60].map(async (sampleTime) => {
+      [
+        0,
+        0.5,
+        1,
+        2,
+        179 / 60,
+        3,
+        3.5,
+        4,
+        299 / 60,
+        5,
+        5.5,
+        6.5,
+        479 / 60,
+        8,
+        539 / 60,
+        9,
+        10.5,
+        719 / 60,
+        12,
+        779 / 60,
+        13,
+        13.5,
+        839 / 60,
+        14,
+        899 / 60,
+      ].map(async (sampleTime) => {
         const frame = await frameAt(bundle, sampleTime);
         return {
           drawCount: frame.packet.draws.length,
@@ -149,10 +191,20 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
       { drawCount: 56, pathCount: 56, sampleTime: 479 / 60 },
       { drawCount: 35, pathCount: 35, sampleTime: 8 },
       { drawCount: 35, pathCount: 35, sampleTime: 539 / 60 },
+      { drawCount: 35, pathCount: 35, sampleTime: 9 },
+      { drawCount: 35, pathCount: 35, sampleTime: 10.5 },
+      { drawCount: 35, pathCount: 35, sampleTime: 719 / 60 },
+      { drawCount: 35, pathCount: 35, sampleTime: 12 },
+      { drawCount: 35, pathCount: 35, sampleTime: 779 / 60 },
+      { drawCount: 66, pathCount: 66, sampleTime: 13 },
+      { drawCount: 66, pathCount: 66, sampleTime: 13.5 },
+      { drawCount: 66, pathCount: 66, sampleTime: 839 / 60 },
+      { drawCount: 66, pathCount: 66, sampleTime: 14 },
+      { drawCount: 66, pathCount: 66, sampleTime: 899 / 60 },
     ]);
   });
 
-  it("accepts a compact sealed fixture and produces a stable trace digest", () => {
+  it("accepts a compact sealed fixture and produces a stable trace digest", { timeout: 15_000 }, () => {
     const trace = fastManimRuntimeTraceV2Fixture();
     const parsed = parseFastManimRuntimeTraceProducerJsonV2(
       canonicalJsonV1(trace),
@@ -160,11 +212,52 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     );
 
     expect(parsed.resources.paths).toHaveLength(24);
-    expect(parsed.frames[0]?.draws).toHaveLength(66);
+    expect(parsed.frames[0]?.draws).toHaveLength(97);
     expect(digestFastManimRuntimeTraceV2(parsed)).toBe(digestFastManimRuntimeTraceV2(trace));
   });
 
-  it("rejects stale trusted correlation and a tampered duplicate final value", () => {
+  it("preserves the original grid-title identities while admitting final Transform extensions", () => {
+    const trace = fastManimRuntimeTraceV2Fixture();
+    const gridTitleOffset = 55;
+    const originalSlots = [0, 4, 8, 12, 16, 20, 23, 27, 31, 35, 39];
+    expect(
+      trace.frames[0]?.draws.slice(gridTitleOffset).map((draw) => ({
+        familyPath: draw.familyPath,
+        identityOrder: Number(draw.drawId.split(":").at(-1)),
+      })),
+    ).toEqual(
+      FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2.map((identityOrder, slot) => ({
+        familyPath: [0, slot],
+        identityOrder,
+      })),
+    );
+    expect(
+      FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2.flatMap((identityOrder, slot) =>
+        identityOrder < 11 ? [slot] : [],
+      ),
+    ).toEqual(originalSlots);
+    expect(FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_EXTENSION_SLOTS_V2).toEqual(
+      FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2.flatMap((identityOrder, slot) =>
+        identityOrder >= 11 ? [slot] : [],
+      ),
+    );
+    expect(
+      [779, 780].map(
+        (frameIndex) => trace.frames[frameIndex]!.draws.slice(gridTitleOffset).filter(({ present }) => present).length,
+      ),
+    ).toEqual([11, 42]);
+    expect(
+      [779, 780].map((frameIndex) =>
+        trace.frames[frameIndex]!.draws.every(
+          (draw, drawIndex) => draw.present === fastManimRuntimeTraceDrawIsPresentV2(frameIndex, drawIndex),
+        ),
+      ),
+    ).toEqual([true, true]);
+    expect(trace.frames[720]!.draws).toEqual(trace.frames[779]!.draws);
+    expect(trace.frames[840]!.draws).toEqual(trace.frames[899]!.draws);
+  });
+
+  it("rejects stale trusted correlation and a tampered duplicate final value", { timeout: 20_000 }, () => {
     const trace = fastManimRuntimeTraceV2Fixture();
     const expected = expectedRuntimeTraceV2Correlation(trace);
     expect(() =>
@@ -183,7 +276,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
   });
 
   it("requires every sealed resource to be used while allowing content-addressed geometry changes", {
-    timeout: 10_000,
+    timeout: 30_000,
   }, () => {
     const unusedAppearance = fastManimRuntimeTraceV2Fixture();
     const appearance = {
@@ -214,7 +307,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     expect(fastManimRuntimeTraceV2Schema.safeParse(unstablePath).success).toBe(true);
   });
 
-  it("allows invisible partial fills but rejects visible partial fills", () => {
+  it("allows invisible partial fills but rejects visible partial fills", { timeout: 20_000 }, () => {
     const invisible = fastManimRuntimeTraceV2Fixture();
     const filledAppearanceId = invisible.resources.appearances[1]!.id;
     invisible.frames[1]!.draws[0]!.appearanceId = filledAppearanceId;
@@ -229,7 +322,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
   });
 
   it("rejects reordered frames, changed terminal holds, stale content IDs, and noncanonical coordinates", {
-    timeout: 10_000,
+    timeout: 60_000,
   }, () => {
     const mutations = [
       (trace: ReturnType<typeof fastManimRuntimeTraceV2Fixture>) => {
@@ -237,6 +330,9 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
       },
       (trace: ReturnType<typeof fastManimRuntimeTraceV2Fixture>) => {
         trace.frames[179]!.draws[15]!.translation.x = 2;
+      },
+      (trace: ReturnType<typeof fastManimRuntimeTraceV2Fixture>) => {
+        trace.frames[899]!.draws[55]!.translation.x = 2;
       },
       (trace: ReturnType<typeof fastManimRuntimeTraceV2Fixture>) => {
         trace.resources.paths[0]!.id = `path:${"f".repeat(64)}`;
@@ -279,6 +375,44 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     );
   });
 
+  it("reports a contract error for a structurally bounded path with more points than an argument spread can hold", {
+    timeout: 30_000,
+  }, () => {
+    const trace = fastManimRuntimeTraceV2Fixture();
+    const expected = clone(expectedRuntimeTraceV2Correlation(trace));
+    const replacedPathId = trace.resources.paths[0]!.id;
+    const segment = {
+      control1: { x: 0, y: 0 },
+      control2: { x: 0, y: 0 },
+      end: { x: 0, y: 0 },
+    };
+    const path = {
+      subpaths: Array.from({ length: 10 }, () => ({
+        closed: false,
+        segments: Array.from({ length: 5_000 }, () => segment),
+        start: { x: 0, y: 0 },
+      })),
+    };
+    const pathId = `path:${digestFastManimRuntimeTracePathV2(path)}`;
+    trace.resources.paths[0] = { id: pathId, path };
+    trace.frames.forEach((frame) => {
+      frame.draws.forEach((draw) => {
+        if (draw.pathId === replacedPathId) draw.pathId = pathId;
+      });
+    });
+    sealFastManimRuntimeTraceV2Fixture(trace);
+
+    let error: unknown;
+    try {
+      parseFastManimRuntimeTraceProducerJsonV2(canonicalJsonV1(trace), expected);
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(FastManimRuntimeTraceV2ContractError);
+    expect(error).not.toBeInstanceOf(RangeError);
+    expect(error).toMatchObject({ code: "correlation-mismatch" });
+  });
+
   it("pins the producer-matched result budgets", () => {
     expect({
       appearances: MAX_FAST_MANIM_RUNTIME_TRACE_APPEARANCE_RESOURCES_V2,
@@ -293,15 +427,15 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
       values: MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2,
     }).toEqual({
       appearances: 384,
-      arrayItems: 1_024,
-      bytes: 25_165_824,
+      arrayItems: 7_000,
+      bytes: 92_274_688,
       depth: 16,
-      entries: 1_000_000,
+      entries: 4_300_000,
       objectFields: 32,
       normalizedBytes: 8_388_608,
-      pathResources: 944,
-      pathSegments: 28_000,
-      values: 1_000_000,
+      pathResources: 6_566,
+      pathSegments: 260_000,
+      values: 4_300_000,
     });
   });
 });

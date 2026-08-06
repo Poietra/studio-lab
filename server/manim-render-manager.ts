@@ -106,6 +106,7 @@ type RenderStartReservation = Readonly<{
 const DEFAULT_MAX_CONCURRENT_RENDERS = 2;
 const DEFAULT_MAX_RETAINED_SESSIONS = 32;
 const DEFAULT_RENDER_TIMEOUT_MS = 2 * 60 * 1_000;
+const DEFAULT_RUNTIME_TRACE_TIMEOUT_MS = 3 * 60 * 1_000;
 const DEFAULT_SESSION_RETENTION_MS = 30 * 60 * 1_000;
 const COMMAND_AVAILABILITY_TTL_MS = 30_000;
 const COMMAND_AVAILABILITY_TIMEOUT_MS = 15_000;
@@ -345,7 +346,10 @@ export class ManimRenderManager {
           projectId: this.projectId,
           projectRoot: this.projectRoot,
           tenantId: this.tenantId,
-          timeoutMs: options.snapshotTimeoutMs,
+          // Full reviewed traces serialize substantially more evidence than a
+          // snapshot. Keep the snapshot runner's 20s default unchanged while
+          // bounding this opt-in producer to the render-sized deadline.
+          timeoutMs: options.snapshotTimeoutMs ?? DEFAULT_RUNTIME_TRACE_TIMEOUT_MS,
         })
       : null;
     this.candidateVerifier = new ManimRenderCandidateVerifierV1({

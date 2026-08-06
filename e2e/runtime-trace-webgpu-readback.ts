@@ -28,7 +28,7 @@ export const UPDATERS_RUNTIME_TRACE_WEBGPU_SAMPLES_V1 = [
   sample("bottom-repeat", 150, 150 / 60),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
-/** Fourteen OpeningManim frames followed by backward seeks into both animated phases. */
+/** Twenty-six OpeningManim frames followed by unordered repeat seeks across all four animated phases. */
 export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2 = [
   sample("initial", 0, 0),
   sample("opening-animation-midpoint", 60, 1),
@@ -43,8 +43,22 @@ export const OPENING_MANIM_RUNTIME_TRACE_WEBGPU_SAMPLES_V2 = [
   sample("grid-create-midpoint", 390, 6.5),
   sample("grid-create-last", 479, 479 / 60),
   sample("grid-play-end", 480, 8),
-  sample("grid-wait-end", 539, 9),
+  sample("grid-wait-end", 539, 539 / 60),
+  sample("warp-start", 540, 9),
+  sample("warp-early", 570, 9.5),
+  sample("warp-midpoint", 630, 10.5),
+  sample("warp-late", 690, 11.5),
+  sample("warp-last", 719, 719 / 60),
+  sample("warp-play-end", 720, 12),
+  sample("warp-hold-last", 779, 779 / 60),
+  sample("final-title-transform-start", 780, 13),
+  sample("final-title-transform-midpoint", 810, 13.5),
+  sample("final-title-transform-last", 839, 839 / 60),
+  sample("final-title-transform-play-end", 840, 14),
+  sample("terminal-hold-end", 899, 15),
+  sample("final-title-transform-midpoint-repeat", 810, 13.5),
   sample("transform-midpoint-repeat", 210, 3.5),
+  sample("warp-midpoint-repeat", 630, 10.5),
   sample("grid-create-midpoint-repeat", 390, 6.5),
 ] as const satisfies readonly RuntimeTraceWebGpuReadbackSampleV1[];
 
@@ -112,9 +126,9 @@ export type RuntimeTraceWebGpuReadbackV1 = Readonly<{
   viewport: typeof RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1;
 }>;
 
-const MAX_READBACK_FRAME_COUNT = 16;
+const MAX_READBACK_FRAME_COUNT = 32;
 const RUNTIME_TRACE_FRAMES_PER_SECOND = 60;
-const MAX_RUNTIME_TRACE_DURATION_SECONDS = 9;
+const MAX_RUNTIME_TRACE_DURATION_SECONDS = 15;
 const MAX_READBACK_RGBA_BYTES =
   MAX_READBACK_FRAME_COUNT *
   RUNTIME_TRACE_WEBGPU_READBACK_VIEWPORT_V1.widthPx *

@@ -10,9 +10,9 @@
   ],
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "07ec3bb1f860e2e466801f8e71735310819d98c7",
-    "tree": "3e94ab796e733cbe057a146c0cce5089c0d5d2bc",
-    "digest": "b9ee918992d05f2fc999bb681a2e04a33bff909d16211de591ad73989b61dc1f",
+    "revision": "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
+    "tree": "f6cae74330644d19bd0a5bf12a092c9840a83e90",
+    "digest": "952c5cc71da55f77c03d3b06a94742c3861c283d7bd935c7c51e7e06d1d4e919",
     "digestAlgorithm": "sha256(repository-nul-revision-nul-tree)",
     "licenses": [{ "spdx": "MIT", "path": "LICENSE" }, { "spdx": "MIT", "path": "LICENSE.community" }],
     "module": "manim.renderer.source_runtime_identity",
@@ -142,8 +142,10 @@
         {
           "name": "OpeningManim",
           "profiles": [1, 2, 3, 4, 5, 6, 7],
+          "runtimeTraceVersions": [2],
           "features": [
             "animation-builder",
+            "apply-pointwise-function",
             "default-manim-easing",
             "fade",
             "hierarchy",

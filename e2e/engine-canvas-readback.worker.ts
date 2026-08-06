@@ -108,7 +108,7 @@ const GPU_MAP_MODE_READ = 1;
 const GPU_TEXTURE_USAGE_COPY_SRC = 1;
 const GPU_TEXTURE_USAGE_RENDER_ATTACHMENT = 16;
 const EMPTY_ASSET_METADATA_JSON = new TextEncoder().encode("[]");
-const MAX_RETAINED_FRAME_SEQUENCE_COUNT = 16;
+const MAX_RETAINED_FRAME_SEQUENCE_COUNT = 32;
 
 function createCanvasEngine(
   bindings: WasmBindingsV1,

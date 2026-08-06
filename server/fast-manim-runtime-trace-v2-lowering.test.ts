@@ -39,14 +39,14 @@ function expectCompactedPlateausToRemainExact(
 }
 
 describe("OpeningManim Runtime Trace V2 lowering", () => {
-  it("maps captured presentation frames to existing retained Scene IR channels", async () => {
+  it("maps captured presentation frames to existing retained Scene IR channels", { timeout: 15_000 }, async () => {
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(fixture());
 
     expect(bundle.scene.source).toMatchObject({ kind: "imported-manim-runtime-trace", traceVersion: 2 });
-    expect(bundle.scene.entities).toHaveLength(86);
+    expect(bundle.scene.entities).toHaveLength(117);
     expect(bundle.scene.entities.filter((entity) => entity.geometry.kind === "group")).toHaveLength(5);
     expect(bundle.scene.animationChannels).toHaveLength(197);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(9_345);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(9_343);
     expect(bundle.scene.entities.slice(5, 7).map(({ id }) => id)).toEqual([
       expect.stringMatching(/runtime-draw:0\/paint:fill$/),
       expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
@@ -86,6 +86,9 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     const gridMidpoint = await frameAt(bundle, 6.5);
     const gridComplete = await frameAt(bundle, 479 / 60);
     const finalHold = await frameAt(bundle, 539 / 60);
+    const gridWarpHold = await frameAt(bundle, 779 / 60);
+    const finalTitleStart = await frameAt(bundle, 780 / 60);
+    const completeScene = await frameAt(bundle, 899 / 60);
     expect([gridStart, gridMidpoint, gridComplete, finalHold].map(({ packet }) => packet.draws.length)).toEqual([
       67, 67, 67, 35,
     ]);
@@ -94,6 +97,9 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
         ({ packet }) => packet.draws.filter((draw) => draw.kind === "path").length,
       ),
     ).toEqual([43, 66, 67, 35]);
+    expect([gridWarpHold, finalTitleStart, completeScene].map(({ packet }) => packet.draws.length)).toEqual([
+      35, 66, 66,
+    ]);
 
     expect(await frameAt(bundle, 0.5)).toEqual(midpoint);
   });
@@ -118,6 +124,31 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     });
   });
 
+  it("compresses only world paths that reproduce a sealed smooth Transform", { timeout: 15_000 }, async () => {
+    const trace = fixture();
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
+    const channel = bundle.scene.animationChannels.find(
+      (candidate) =>
+        candidate.kind === "path-morph" && candidate.entityId.endsWith("/runtime-root:title/runtime-draw:0/paint:fill"),
+    );
+    if (!channel || channel.kind !== "path-morph") throw new Error("Expected a title world-path channel.");
+    const entityId = channel.entityId;
+    expect(channel.keyframes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ at: 3, easingToNext: { kind: "manim-smooth" } }),
+        expect.objectContaining({ at: 4 }),
+      ]),
+    );
+    expect(
+      bundle.scene.animationChannels.some(
+        (candidate) => candidate.kind === "affine-transform" && candidate.entityId === entityId,
+      ),
+    ).toBe(false);
+
+    trace.frames[210]!.draws[0]!.translation.x += 0.001;
+    await expect(lowerVerifiedFastManimRuntimeTraceV2(trace)).rejects.toThrow(/sealed smooth endpoint interpolation/);
+  });
+
   it("rejects a visible partial fill that the stroke-only trim channel cannot represent", async () => {
     const original = fixture();
     const finalAppearanceId = original.resources.appearances[1]!.id;
@@ -137,7 +168,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     await expect(lowerVerifiedFastManimRuntimeTraceV2(trace)).rejects.toThrow(/visible partial fill/);
   });
 
-  it("splits only a draw whose captured cubic topology changes", async () => {
+  it("splits only a draw whose captured cubic topology changes", { timeout: 15_000 }, async () => {
     const trace = fixture();
     const source = structuredClone(trace.resources.paths[0]!.path);
     const prior = source.subpaths[0]!.segments[0]!;
@@ -163,7 +194,7 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     expect(bundle.scene.entities.filter((entity) => entity.id.includes("/topology:"))).toHaveLength(1);
   });
 
-  it("lowers same-topology path changes through one compact path-morph channel", async () => {
+  it("lowers same-topology path changes through one compact path-morph channel", { timeout: 15_000 }, async () => {
     const trace = fixture();
     const changed = structuredClone(trace.resources.paths[0]!.path);
     changed.subpaths[0]!.segments[0]!.control1.x += 0.01;

@@ -1,8 +1,8 @@
 {
-  "corpusDigest": "64593a8332e901bd8700c56c3c2810c6c757aa1fba7ba833283e6c40b186ebdb",
-  "manifestDigest": "d580424beb1d5d2a1223cefe297f41e82ee71004a7d57ad358c8e4c5c2e90c92",
+  "corpusDigest": "cf16cfa7c39be8af69195617a5e2466aed48248507136fd6e080c1007f2f2b3d",
+  "manifestDigest": "616e3d21059e92cbd998a816800c4fbb6bb49795c2996acafb586731c2b1f9d5",
   "manifestVersion": 1,
-  "producerDigest": "b9ee918992d05f2fc999bb681a2e04a33bff909d16211de591ad73989b61dc1f",
+  "producerDigest": "952c5cc71da55f77c03d3b06a94742c3861c283d7bd935c7c51e7e06d1d4e919",
   "reasonCounts": {
     "failure:producer-exit": 1,
     "unsupported:animation-evidence-incomplete": 13,
@@ -110,6 +110,11 @@
       "outcome": "fallback",
       "reasons": ["unsupported:runtime-semantics-unsupported"]
     },
+    "fast-manim-basic/OpeningManim/runtime-trace-v2": {
+      "outcome": "accepted",
+      "reasons": [],
+      "traceHash": "4d362fb629202be83af313bd676c06552c2d2929f2fe4b5f45c3c790cebd21a6"
+    },
     "fast-manim-basic/OpeningManim/v1": {
       "outcome": "fallback",
       "reasons": ["unsupported:runtime-semantics-unsupported"]
@@ -207,7 +212,7 @@
     "fast-manim-basic/UpdatersExample/runtime-trace-v1": {
       "outcome": "accepted",
       "reasons": [],
-      "traceHash": "9510f62c52f5f6f42917a1475455b87aaa9b1ad540f69c175c1e7782e8004ade"
+      "traceHash": "c28d902d7e2d7da6fb39591115b8d9bb36fc08d8f4b13c09e35b0a4cdd14ae65"
     },
     "fast-manim-basic/UpdatersExample/v1": {
       "outcome": "fallback",
@@ -320,7 +325,7 @@
     "calibration-static/RealPreviewScene": "accepted",
     "calibration-unsupported/UnsupportedPreviewScene": "fallback",
     "fast-manim-basic/LineJoints": "accepted",
-    "fast-manim-basic/OpeningManim": "fallback",
+    "fast-manim-basic/OpeningManim": "accepted",
     "fast-manim-basic/SpiralInExample": "accepted",
     "fast-manim-basic/SquareToCircle": "accepted",
     "fast-manim-basic/UpdatersExample": "accepted",
@@ -330,10 +335,10 @@
   "schema": "poietra.real-manim-census-report",
   "summary": {
     "attempts": {
-      "accepted": 18,
+      "accepted": 19,
       "fallback": 50,
       "rejected": 1,
-      "total": 69
+      "total": 70
     },
     "corpora": {
       "calibration": {
@@ -352,22 +357,22 @@
       },
       "compatibility": {
         "attempts": {
-          "accepted": 6,
+          "accepted": 7,
           "fallback": 49,
           "rejected": 0,
-          "total": 55
+          "total": 56
         },
         "scenes": {
-          "accepted": 6,
-          "fallback": 1,
+          "accepted": 7,
+          "fallback": 0,
           "rejected": 0,
           "total": 7
         }
       }
     },
     "scenes": {
-      "accepted": 18,
-      "fallback": 2,
+      "accepted": 19,
+      "fallback": 1,
       "rejected": 1,
       "total": 21
     }

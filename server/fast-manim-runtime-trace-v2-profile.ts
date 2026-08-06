@@ -39,11 +39,11 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
-    fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
+    fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
+    fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
     geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
     manimVersion: "0.20.1",
-    semanticsSha256: "0cefd58f3d7aa7996a1166e0c97857c5d0de9cf37611402cacc955417553df33",
+    semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",
     texFontBundleSha256: FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
     texToolchainSha256: FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
   },
@@ -122,7 +122,7 @@ export function createFastManimRuntimeTraceConfigV2(frame: Readonly<{ height: nu
 }
 
 export const FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2 =
-  "9a43934058d9d90db28661a310c9a6aa177826b2ba8baf42b42d4691dcf5c1c4" as const;
+  "0b5d2eae4a3709627a7ccae44ce5a977171452ed73e90ab6bfcfdffda604b977" as const;
 
 export function createFastManimRuntimeTraceProducerRequestV2(
   run: FastManimRuntimeTraceRunRequestV1,
@@ -139,7 +139,7 @@ export function createFastManimRuntimeTraceProducerRequestV2(
     sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 ||
     runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2
   ) {
-    throw new TypeError("Runtime Trace V2 accepts only the exact reviewed OpeningManim 0–9 second profile.");
+    throw new TypeError("Runtime Trace V2 accepts only the exact reviewed OpeningManim 0–15 second profile.");
   }
   return fastManimRuntimeTraceProducerRequestV2Schema.parse({
     profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,

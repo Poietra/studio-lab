@@ -9,9 +9,18 @@ import {
   materializeFastManimSandboxPngV2,
 } from "./fast-manim-local-process-sandbox-backend";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import {
+  createFastManimRuntimeTraceProducerRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+} from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
-import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import {
+  RUNTIME_TRACE_SOURCE_TEXT,
+  runtimeTraceRequestFixture,
+} from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const roots: string[] = [];
@@ -93,9 +102,27 @@ process.stdin.on("end", () => {
 });
 
 describe("local-process Runtime Trace output bounds", () => {
-  async function produce(byteLength: number) {
+  function runtimeTraceRequestV2() {
+    return createFastManimRuntimeTraceProducerRequestV2(
+      {
+        projectId: "demo",
+        requestId: "req-opening-runtime-trace-v2",
+        sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+        sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+        sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+      },
+      RUNTIME_TRACE_SOURCE_TEXT,
+      { height: 8, width: 128 / 9 },
+    );
+  }
+
+  async function produce(
+    byteLength: number,
+    producer:
+      | ReturnType<typeof runtimeTraceRequestFixture>
+      | ReturnType<typeof runtimeTraceRequestV2> = runtimeTraceRequestFixture(),
+  ) {
     const projectRoot = await temporaryRoot();
-    const producer = runtimeTraceRequestFixture();
     const request = new FastManimSandboxRequestBundleV1(producer);
     const child = String.raw`
 const byteLength = Number(process.argv.at(-1));
@@ -112,7 +139,7 @@ process.stdout.write(Buffer.alloc(byteLength, 0x78));
     }
   }
 
-  it("admits V2-sized stdout before the runner applies its selected profile bound", async () => {
+  it("admits exactly one CLI line feed above the V1 JSON body", async () => {
     const byteLength = MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 1;
     const result = await produce(byteLength);
 
@@ -121,18 +148,21 @@ process.stdout.write(Buffer.alloc(byteLength, 0x78));
     expect(result.resultBytes).toHaveLength(byteLength);
   });
 
-  it("admits one CLI line feed above the largest Runtime Trace JSON body", async () => {
-    const byteLength = MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1;
-    const result = await produce(byteLength);
+  it("fails closed above the V1 body plus its CLI line feed", async () => {
+    const result = await produce(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 2);
+
+    expect(result).toMatchObject({ code: "producer-output-overflow", kind: "failed" });
+  });
+
+  it("admits the same V2-sized stdout only when the sealed request selected V2", async () => {
+    const byteLength = MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 2;
+    const producer = runtimeTraceRequestV2();
+    const request = new FastManimSandboxRequestBundleV1(producer);
+    expect(request.maximumResultBytes).toBe(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1);
+    const result = await produce(byteLength, producer);
 
     expect(result.kind).toBe("ok");
     if (result.kind !== "ok") throw new Error("The local producer did not complete.");
     expect(result.resultBytes).toHaveLength(byteLength);
-  });
-
-  it("fails closed above the largest Runtime Trace body plus its CLI line feed", async () => {
-    const result = await produce(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 2);
-
-    expect(result).toMatchObject({ code: "producer-output-overflow", kind: "failed" });
   });
 });

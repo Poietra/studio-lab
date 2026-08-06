@@ -51,8 +51,9 @@ export const MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES =
 export const MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES =
   MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES + 64 * 1024 + 1;
 /**
- * Largest result carried by the producer-agnostic backend and broker wire.
- * Runtime Trace V2 writes a direct 24 MiB JSON body followed by one CLI LF.
+ * Largest result carried by the production broker wire. Full Runtime Trace V2
+ * remains local-only until #487 replaces the base64 transport with a bounded
+ * binary/streaming handoff.
  */
 export const MAX_FAST_MANIM_SANDBOX_RESULT_BYTES = Math.max(
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,

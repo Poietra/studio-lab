@@ -4,7 +4,16 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
+  createFastManimRuntimeTraceProducerRequestV2,
+  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+} from "./fast-manim-runtime-trace-v2-profile";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import {
   copyFastManimSandboxUint8ArrayV1,
+  fastManimSandboxBackendResultV1Schema,
   FastManimSandboxRequestBundleV1,
   MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
   MAX_FAST_MANIM_SANDBOX_PLAIN_REQUEST_BYTES,
@@ -13,11 +22,18 @@ import {
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
 import {
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
+} from "./fast-manim-snapshot-contract";
+import {
   createFastManimSnapshotProfileSelectionPolicyV1,
   createFastManimSnapshotProfileSelectionRequestV1,
 } from "./fast-manim-snapshot-profile-selection";
 import { MAX_PROJECT_PNG_BYTES_V1 } from "./storage/project-png-storage";
-import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import {
+  RUNTIME_TRACE_SOURCE_TEXT,
+  runtimeTraceRequestFixture,
+} from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import {
   localSandboxReadyStatus,
   productionSandboxReadyStatus,
@@ -91,6 +107,48 @@ describe("fast-manim sandbox request bundle", () => {
     expect(JSON.parse(Buffer.from(rebuilt.copyProducerRequestBytes()).toString("utf8"))).toEqual(producer);
     expect(() => new FastManimSandboxRequestBundleV1(producer, { pngBytes: sandboxPngBytes() })).toThrow(
       /accepted only by producer profile 4/i,
+    );
+  });
+
+  it("seals the exact result byte ceiling derived from each producer request", () => {
+    const snapshot = sandboxProducerRequest();
+    const selection = createFastManimSnapshotProfileSelectionRequestV1({
+      policy: createFastManimSnapshotProfileSelectionPolicyV1(snapshot.runtimeConfig.frame, { pngAvailable: false }),
+      projectId: snapshot.projectId,
+      requestId: snapshot.requestId,
+      sceneId: snapshot.sceneId,
+      sceneName: snapshot.sceneName,
+      sourceHash: snapshot.sourceHash,
+      sourcePath: snapshot.sourcePath,
+      sourceText: snapshot.sourceText,
+    });
+    const runtimeTraceV2 = createFastManimRuntimeTraceProducerRequestV2(
+      {
+        projectId: "demo",
+        requestId: "req-opening-runtime-trace-v2",
+        sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
+        sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
+        sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+      },
+      RUNTIME_TRACE_SOURCE_TEXT,
+      { height: 8, width: 128 / 9 },
+    );
+    const bundles = [
+      new FastManimSandboxRequestBundleV1(snapshot),
+      new FastManimSandboxRequestBundleV1(selection),
+      new FastManimSandboxRequestBundleV1(runtimeTraceRequestFixture()),
+      new FastManimSandboxRequestBundleV1(runtimeTraceV2),
+    ];
+
+    expect(bundles.map(({ maximumResultBytes }) => maximumResultBytes)).toEqual([
+      MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+      MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+      MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 + 1,
+      MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
+    ]);
+    expect(bundles.every(Object.isFrozen)).toBe(true);
+    expect(FastManimSandboxRequestBundleV1.fromBytes(bundles[3]!.copyBytes()).maximumResultBytes).toBe(
+      MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1,
     );
   });
 
@@ -305,6 +363,19 @@ describe("fast-manim sandbox request bundle", () => {
     const detachable = new Uint8Array(detachableBuffer);
     structuredClone(detachableBuffer, { transfer: [detachableBuffer] });
     expect(() => copyFastManimSandboxUint8ArrayV1(detachable, 1)).toThrow();
+  });
+
+  it("keeps the local in-process result ceiling independent from the broker wire ceiling", () => {
+    const resultBytes = new Uint8Array(MAX_FAST_MANIM_SANDBOX_RESULT_BYTES + 1);
+    expect(resultBytes.byteLength).toBeLessThan(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1);
+    expect(
+      fastManimSandboxBackendResultV1Schema.safeParse({
+        attestationDigest: "a".repeat(64),
+        kind: "ok",
+        requestDigest: "b".repeat(64),
+        resultBytes,
+      }).success,
+    ).toBe(true);
   });
 });
 

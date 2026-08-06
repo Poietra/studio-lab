@@ -9,6 +9,7 @@ import {
   type SceneIrV1,
   sceneIrV1Schema,
 } from "../src/engine/contracts";
+import { applyEngineEasingV1 } from "../src/engine/easing";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
   FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
@@ -18,9 +19,9 @@ import {
 } from "./fast-manim-runtime-trace-v2-contract";
 import {
   expectedFastManimRuntimeTraceCorrelationFromRequestV2,
-  fastManimRuntimeTraceDrawIdentityV2,
   FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2,
   type FastManimRuntimeTraceV2,
+  fastManimRuntimeTraceDrawIdentityV2,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
   MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2,
   parseFastManimRuntimeTraceProducerJsonV2,
@@ -95,24 +96,50 @@ function groupEntity(id: string, parentId: string | null, sceneOrder: number, pr
   };
 }
 
-function compactChannelSamples<T>(values: readonly T[], frameIndexes: readonly number[]) {
+type SmoothTransformWindowV2 = Readonly<{ endFrame: number; startFrame: number }>;
+
+function compactChannelSamples<T>(
+  values: readonly T[],
+  frameIndexes: readonly number[],
+  smoothWindow?: SmoothTransformWindowV2,
+) {
   if (values.length !== frameIndexes.length)
     failSemantic("Runtime Trace V2 channel samples lost their frame identity.");
-  const keep = values.map((value, index) => {
-    if (index === 0 || index === values.length - 1) return true;
-    return !sameValue(value, values[index - 1]) || !sameValue(value, values[index + 1]);
+  const filteredValues: T[] = [];
+  const filteredFrameIndexes: number[] = [];
+  values.forEach((value, index) => {
+    const frameIndex = frameIndexes[index];
+    if (
+      frameIndex === undefined ||
+      (smoothWindow && frameIndex > smoothWindow.startFrame && frameIndex < smoothWindow.endFrame)
+    ) {
+      return;
+    }
+    filteredValues.push(value);
+    filteredFrameIndexes.push(frameIndex);
+  });
+  const keep = filteredValues.map((value, index) => {
+    if (index === 0 || index === filteredValues.length - 1) return true;
+    return !sameValue(value, filteredValues[index - 1]) || !sameValue(value, filteredValues[index + 1]);
   });
   return {
-    frameIndexes: frameIndexes.filter((_, index) => keep[index]),
-    values: values.filter((_, index) => keep[index]),
+    frameIndexes: filteredFrameIndexes.filter((_, index) => keep[index]),
+    values: filteredValues.filter((_, index) => keep[index]),
   };
 }
 
-function keyframes<T>(values: readonly T[], frameIndexes: readonly number[]) {
-  const compacted = compactChannelSamples(values, frameIndexes);
+function keyframes<T>(values: readonly T[], frameIndexes: readonly number[], smoothWindow?: SmoothTransformWindowV2) {
+  const compacted = compactChannelSamples(values, frameIndexes, smoothWindow);
   return compacted.values.map((value, index) => ({
     at: compacted.frameIndexes[index]! / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
-    easingToNext: index === compacted.values.length - 1 ? null : ({ kind: "linear" } as const),
+    easingToNext:
+      index === compacted.values.length - 1
+        ? null
+        : smoothWindow &&
+            compacted.frameIndexes[index] === smoothWindow.startFrame &&
+            compacted.frameIndexes[index + 1] === smoothWindow.endFrame
+          ? ({ kind: "manim-smooth" } as const)
+          : ({ kind: "linear" } as const),
     value,
   }));
 }
@@ -124,6 +151,157 @@ function valuesChange<T>(values: readonly T[]) {
 
 function pathTopology(path: CubicPathV2) {
   return path.subpaths.map((subpath) => `${subpath.closed ? 1 : 0}:${subpath.segments.length}`).join("|");
+}
+
+function pathPoints(path: CubicPathV2) {
+  return path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
+  ]);
+}
+
+function mapPathPoints(
+  path: CubicPathV2,
+  map: (point: Readonly<{ x: number; y: number }>) => { x: number; y: number },
+) {
+  return {
+    subpaths: path.subpaths.map((subpath) => {
+      const start = map(subpath.start);
+      return {
+        closed: subpath.closed,
+        segments: subpath.segments.map((segment) => ({
+          control1: map(segment.control1),
+          control2: map(segment.control2),
+          end: map(segment.end),
+        })),
+        start,
+      };
+    }),
+  } satisfies CubicPathV2;
+}
+
+function translatedPath(path: CubicPathV2, translation: Readonly<{ x: number; y: number }>) {
+  return mapPathPoints(path, (point) => ({ x: point.x + translation.x, y: point.y + translation.y }));
+}
+
+function derivedEndpointPath(
+  first: CubicPathV2,
+  second: CubicPathV2,
+  firstProgress: number,
+  secondProgress: number,
+  endpointProgress: 0 | 1,
+) {
+  const firstPoints = pathPoints(first);
+  const secondPoints = pathPoints(second);
+  let pointIndex = 0;
+  return mapPathPoints(first, () => {
+    const left = firstPoints[pointIndex];
+    const right = secondPoints[pointIndex];
+    pointIndex += 1;
+    if (!left || !right || secondProgress === firstProgress) {
+      failSemantic("Runtime Trace V2 cannot derive a smooth world-path endpoint.");
+    }
+    const coordinate = (axis: "x" | "y") => {
+      const delta = (right[axis] - left[axis]) / (secondProgress - firstProgress);
+      return left[axis] + (endpointProgress - firstProgress) * delta;
+    };
+    return { x: coordinate("x"), y: coordinate("y") };
+  });
+}
+
+const SMOOTH_WORLD_COORDINATE_TOLERANCE_V2 = 1e-11;
+
+function smoothTransformWindowForDraw(drawId: string): SmoothTransformWindowV2 | null {
+  if (drawId.includes("/runtime-root:title/runtime-draw:")) return { endFrame: 240, startFrame: 180 };
+  if (drawId.includes("/runtime-root:grid/runtime-draw:")) return { endFrame: 720, startFrame: 540 };
+  if (drawId.includes("/runtime-root:grid-title/runtime-draw:")) return { endFrame: 840, startFrame: 780 };
+  return null;
+}
+
+type SmoothWorldPathPlanV2 = Readonly<{
+  frameIndexes: readonly number[];
+  paths: readonly CubicPathV2[];
+  window: SmoothTransformWindowV2;
+}>;
+
+function smoothWorldPathPlan(
+  draws: readonly RuntimeTraceDrawV2[],
+  paths: readonly CubicPathV2[],
+  frameIndexes: readonly number[],
+): SmoothWorldPathPlanV2 | undefined {
+  const drawId = draws.find((draw) => draw.present)?.drawId;
+  if (!drawId) return undefined;
+  const window = smoothTransformWindowForDraw(drawId);
+  if (!window) return undefined;
+  const phaseIndexes = frameIndexes.flatMap((frameIndex, index) =>
+    frameIndex >= window.startFrame && frameIndex <= window.endFrame ? [index] : [],
+  );
+  if (phaseIndexes.length < 2) return undefined;
+  const firstIndex = phaseIndexes[0]!;
+  const secondIndex = phaseIndexes.at(-1)!;
+  const firstFrame = frameIndexes[firstIndex]!;
+  const secondFrame = frameIndexes[secondIndex]!;
+  const firstProgress = applyEngineEasingV1(
+    { kind: "manim-smooth" },
+    (firstFrame - window.startFrame) / (window.endFrame - window.startFrame),
+  );
+  const secondProgress = applyEngineEasingV1(
+    { kind: "manim-smooth" },
+    (secondFrame - window.startFrame) / (window.endFrame - window.startFrame),
+  );
+  if (secondProgress === firstProgress) return undefined;
+  const worldPaths = paths.map((path, index) => {
+    const draw = draws[index];
+    if (!draw) failSemantic(`Runtime Trace V2 draw ${drawId} lost its world translation.`);
+    return translatedPath(path, draw.translation);
+  });
+  const firstWorld = worldPaths[firstIndex];
+  const secondWorld = worldPaths[secondIndex];
+  if (!firstWorld || !secondWorld || pathTopology(firstWorld) !== pathTopology(secondWorld)) {
+    failSemantic(`Runtime Trace V2 draw ${drawId} lacks compatible smooth Transform samples.`);
+  }
+  const worldStart = derivedEndpointPath(firstWorld, secondWorld, firstProgress, secondProgress, 0);
+  const worldEnd = derivedEndpointPath(firstWorld, secondWorld, firstProgress, secondProgress, 1);
+  const startPoints = pathPoints(worldStart);
+  const endPoints = pathPoints(worldEnd);
+  for (const index of phaseIndexes) {
+    const frameIndex = frameIndexes[index];
+    const path = worldPaths[index];
+    if (frameIndex === undefined || !path || pathTopology(path) !== pathTopology(worldStart)) {
+      failSemantic(`Runtime Trace V2 draw ${drawId} lost a smooth Transform presentation sample.`);
+    }
+    const actualPoints = pathPoints(path);
+    if (actualPoints.length !== startPoints.length || actualPoints.length !== endPoints.length) {
+      failSemantic(`Runtime Trace V2 draw ${drawId} changed point topology inside its smooth Transform.`);
+    }
+    const progress = (frameIndex - window.startFrame) / (window.endFrame - window.startFrame);
+    const eased = applyEngineEasingV1({ kind: "manim-smooth" }, progress);
+    for (let pointIndex = 0; pointIndex < actualPoints.length; pointIndex += 1) {
+      const actual = actualPoints[pointIndex]!;
+      const start = startPoints[pointIndex]!;
+      const end = endPoints[pointIndex]!;
+      for (const axis of ["x", "y"] as const) {
+        const expectedWorld = start[axis] + eased * (end[axis] - start[axis]);
+        if (Math.abs(actual[axis] - expectedWorld) > SMOOTH_WORLD_COORDINATE_TOLERANCE_V2) {
+          failSemantic(`Runtime Trace V2 draw ${drawId} is not its sealed smooth endpoint interpolation.`);
+        }
+      }
+    }
+  }
+  const fixedTranslation = draws[0]?.translation;
+  if (!fixedTranslation) return undefined;
+  const entries = frameIndexes.flatMap((frameIndex, index) => {
+    if (frameIndex >= window.startFrame && frameIndex <= window.endFrame) return [];
+    const path = worldPaths[index];
+    return path ? [{ frameIndex, path }] : [];
+  });
+  entries.push({ frameIndex: window.startFrame, path: worldStart }, { frameIndex: window.endFrame, path: worldEnd });
+  entries.sort((left, right) => left.frameIndex - right.frameIndex);
+  return {
+    frameIndexes: entries.map(({ frameIndex }) => frameIndex),
+    paths: entries.map(({ path }) => translatedPath(path, { x: -fixedTranslation.x, y: -fixedTranslation.y })),
+    window,
+  };
 }
 
 type DrawTopologyRun = Readonly<{
@@ -166,7 +344,7 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.durationSeconds !== FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2 ||
     trace.frames.length !== FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires its complete nine-second presentation grid.");
+    failSemantic("Runtime Trace V2 lowering requires its complete fifteen-second presentation grid.");
   }
   const roots = new Set(trace.roots.map((root) => root.id));
   if (
@@ -185,7 +363,9 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
     trace.resources.paths.length < 1 ||
     trace.resources.paths.length > MAX_FAST_MANIM_RUNTIME_TRACE_PATH_RESOURCES_V2
   ) {
-    failSemantic("Runtime Trace V2 lowering requires exactly 66 stable union draw slots.");
+    failSemantic(
+      `Runtime Trace V2 lowering requires exactly ${FAST_MANIM_RUNTIME_TRACE_DRAWS_PER_FRAME_V2} stable union draw slots.`,
+    );
   }
   const drawIds = new Set(initial.map((draw) => draw.drawId));
   if (drawIds.size !== initial.length) failSemantic("Runtime Trace V2 draw identities must be unique.");
@@ -219,13 +399,17 @@ function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {
       }
     });
     const holdStart =
-      frameIndex >= 480
-        ? 480
-        : frameIndex >= 240 && frameIndex < 300
-          ? 240
-          : frameIndex >= 120 && frameIndex < 180
-            ? 120
-            : null;
+      frameIndex >= 840
+        ? 840
+        : frameIndex >= 720 && frameIndex < 780
+          ? 720
+          : frameIndex >= 480 && frameIndex < 540
+            ? 480
+            : frameIndex >= 240 && frameIndex < 300
+              ? 240
+              : frameIndex >= 120 && frameIndex < 180
+                ? 120
+                : null;
     if (holdStart !== null && frameIndex > holdStart && !sameValue(frame.draws, trace.frames[holdStart]?.draws)) {
       failSemantic(`Runtime Trace V2 frame ${frameIndex} changed during a sealed Wait hold.`);
     }
@@ -297,13 +481,14 @@ function drawChannels(
   entityId: string,
   trim: boolean,
   provenanceId: string,
+  smoothPlan: SmoothWorldPathPlanV2 | undefined,
 ) {
   const firstPresent = draws.find((draw) => draw.present);
   if (!firstPresent) return [];
   const channels: AnimationChannelV2[] = [];
   const base = { entityId, provenanceId } as const;
   const transforms = draws.map((draw) => ({ ...IDENTITY, tx: draw.translation.x, ty: draw.translation.y }));
-  if (valuesChange(transforms)) {
+  if (!smoothPlan && valuesChange(transforms)) {
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-translation`,
@@ -338,11 +523,13 @@ function drawChannels(
       kind: "vector-appearance",
     });
   }
-  if (valuesChange(paths)) {
+  const pathValues = smoothPlan?.paths ?? paths;
+  const pathFrames = smoothPlan?.frameIndexes ?? frameIndexes;
+  if (valuesChange(pathValues)) {
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-path-morph`,
-      keyframes: keyframes(paths, frameIndexes),
+      keyframes: keyframes(pathValues, pathFrames, smoothPlan?.window),
       kind: "path-morph",
     });
   }
@@ -373,6 +560,7 @@ function lowerDrawTimeline(
     }
     const values = traceAppearances(run.draws, appearances);
     const parts = paintParts(run.draws, values);
+    const smoothPlan = smoothWorldPathPlan(run.draws, run.paths, run.frameIndexes);
     parts.forEach((part) => {
       const topologySuffix = runIndex === 0 ? "" : `/topology:${runIndex}`;
       const entityId = `${firstPresent.drawId}${topologySuffix}${part.suffix}`;
@@ -390,7 +578,16 @@ function lowerDrawTimeline(
         transform: { ...IDENTITY, tx: firstPresent.translation.x, ty: firstPresent.translation.y },
       });
       channels.push(
-        ...drawChannels(run.draws, part.appearances, run.paths, run.frameIndexes, entityId, part.trim, provenanceId),
+        ...drawChannels(
+          run.draws,
+          part.appearances,
+          run.paths,
+          run.frameIndexes,
+          entityId,
+          part.trim,
+          provenanceId,
+          smoothPlan,
+        ),
       );
     });
   });

@@ -382,7 +382,7 @@ async function validateVerifiedRuntimeTraceRun(
             { bindingName: "decimal", role: "decimal" },
           ],
         } as const)
-      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 9
+      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 15
         ? ({
             roots: [
               { bindingName: "title", role: "title" },

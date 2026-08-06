@@ -16,7 +16,10 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\\\0]+$/;
 const FAST_MANIM_BASIC_SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
-const FAST_MANIM_RUNTIME_TRACE_SCENE = "UpdatersExample";
+const FAST_MANIM_RUNTIME_TRACE_SCENES = {
+  1: "UpdatersExample",
+  2: "OpeningManim",
+} as const;
 
 export const REAL_MANIM_CENSUS_FEATURES = [
   "always-redraw",
@@ -50,7 +53,11 @@ const sceneSchema = z
     features: z.array(featureSchema).max(32).optional(),
     name: z.string().min(1).max(128).regex(IDENTIFIER),
     profiles: z.array(profileSchema).min(1).max(8),
-    runtimeTraceVersions: z.array(z.literal(1)).length(1).optional(),
+    runtimeTraceVersions: z
+      .array(z.union([z.literal(1), z.literal(2)]))
+      .min(1)
+      .max(2)
+      .optional(),
   })
   .strict()
   .superRefine((scene, context) => {
@@ -135,23 +142,24 @@ const manifestSchema = z
         context.addIssue({ code: "custom", message: "Unknown asset ID.", path: ["sources", sourceIndex, "asset"] });
       }
       for (const [sceneIndex, scene] of source.scenes.entries()) {
-        if (
-          scene.runtimeTraceVersions !== undefined &&
-          !(
-            source.asset === undefined &&
-            source.corpus === "compatibility" &&
-            source.id === "fast-manim-basic" &&
-            source.path === "example_scenes/basic.py" &&
-            source.repository === "fast-manim" &&
-            source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256 &&
-            scene.name === FAST_MANIM_RUNTIME_TRACE_SCENE
-          )
-        ) {
-          context.addIssue({
-            code: "custom",
-            message: "Runtime Trace V1 is reserved for the exact pinned fast-manim UpdatersExample source.",
-            path: ["sources", sourceIndex, "scenes", sceneIndex, "runtimeTraceVersions"],
-          });
+        for (const runtimeTraceVersion of scene.runtimeTraceVersions ?? []) {
+          if (
+            !(
+              scene.name === FAST_MANIM_RUNTIME_TRACE_SCENES[runtimeTraceVersion] &&
+              source.asset === undefined &&
+              source.corpus === "compatibility" &&
+              source.id === "fast-manim-basic" &&
+              source.path === "example_scenes/basic.py" &&
+              source.repository === "fast-manim" &&
+              source.sha256 === FAST_MANIM_BASIC_SOURCE_SHA256
+            )
+          ) {
+            context.addIssue({
+              code: "custom",
+              message: `Runtime Trace V${runtimeTraceVersion} is reserved for the exact pinned fast-manim ${FAST_MANIM_RUNTIME_TRACE_SCENES[runtimeTraceVersion]} source.`,
+              path: ["sources", sourceIndex, "scenes", sceneIndex, "runtimeTraceVersions"],
+            });
+          }
         }
         if (
           scene.profiles.includes(8) &&
@@ -310,7 +318,7 @@ const attemptSchema = z
     outcome: outcomeSchema,
     profile: profileSchema.optional(),
     reasons: z.array(reasonSchema).max(24),
-    runtimeTraceVersion: z.literal(1).optional(),
+    runtimeTraceVersion: z.union([z.literal(1), z.literal(2)]).optional(),
     sceneName: z.string().min(1).max(128).regex(IDENTIFIER),
     snapshotHash: z.string().regex(SHA256).optional(),
     traceHash: z.string().regex(SHA256).optional(),
@@ -373,7 +381,7 @@ export function realManimCensusCaseId(sourceId: string, sceneName: string, profi
   return `${realManimCensusSceneId(sourceId, sceneName)}/v${profile}`;
 }
 
-export function realManimCensusRuntimeTraceCaseId(sourceId: string, sceneName: string, version: 1) {
+export function realManimCensusRuntimeTraceCaseId(sourceId: string, sceneName: string, version: 1 | 2) {
   return `${realManimCensusSceneId(sourceId, sceneName)}/runtime-trace-v${version}`;
 }
 
@@ -407,7 +415,7 @@ export function buildRealManimCensusReport(
       corpus: RealManimCensusCorpus;
       features: string[];
       profile?: number;
-      runtimeTraceVersion?: 1;
+      runtimeTraceVersion?: 1 | 2;
       sceneId: string;
       sceneName: string;
     }

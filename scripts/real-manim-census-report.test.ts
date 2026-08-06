@@ -10,6 +10,7 @@ import {
   type RealManimCensusManifest,
   type RealManimCensusOutcome,
   realManimCensusCaseId,
+  realManimCensusRuntimeTraceCaseId,
 } from "./real-manim-census-report";
 
 const digest = "a".repeat(64);
@@ -121,6 +122,23 @@ describe("real Manim census report", () => {
       officialRuntimeTraceSource.scenes[0]!.runtimeTraceVersions = [1];
       await writeFile(path, JSON.stringify(officialRuntimeTrace));
       await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialRuntimeTrace);
+
+      const unpinnedRuntimeTraceV2 = structuredClone(manifest());
+      unpinnedRuntimeTraceV2.sources[2]!.scenes[0]!.runtimeTraceVersions = [2];
+      await writeFile(path, JSON.stringify(unpinnedRuntimeTraceV2));
+      await expect(loadRealManimCensusManifest(path)).rejects.toThrow("manifest is invalid");
+
+      const officialRuntimeTraceV2 = structuredClone(manifest());
+      const officialRuntimeTraceV2Source = officialRuntimeTraceV2.sources[2]!;
+      officialRuntimeTraceV2Source.id = "fast-manim-basic";
+      officialRuntimeTraceV2Source.sha256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
+      officialRuntimeTraceV2Source.scenes[0]!.name = "OpeningManim";
+      officialRuntimeTraceV2Source.scenes[0]!.runtimeTraceVersions = [2];
+      await writeFile(path, JSON.stringify(officialRuntimeTraceV2));
+      await expect(loadRealManimCensusManifest(path)).resolves.toEqual(officialRuntimeTraceV2);
+      expect(realManimCensusRuntimeTraceCaseId("fast-manim-basic", "OpeningManim", 2)).toBe(
+        "fast-manim-basic/OpeningManim/runtime-trace-v2",
+      );
 
       const unpinnedV8 = structuredClone(manifest());
       unpinnedV8.sources[2]!.scenes[0]!.profiles = [1, 2, 8];

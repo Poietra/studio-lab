@@ -5,8 +5,6 @@ import { tmpdir } from "node:os";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import {
   FAST_MANIM_SANDBOX_REQUIRED_CAPABILITIES_V1,
   FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1,
@@ -24,7 +22,6 @@ import {
   UnavailableFastManimSandboxBackendV1,
   verifyFastManimSandboxRequestBundleV1,
 } from "./fast-manim-sandbox-backend";
-import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
 import {
   abortError,
   defaultKillProcessGroup,
@@ -43,8 +40,6 @@ import { inspectProjectPngBytesV1, PROJECT_PNG_LOGICAL_PATH_V1 } from "./storage
 /** Environment variables the explicitly local-only backend may inherit. */
 const LOCAL_PROCESS_ENV_ALLOWLIST = ["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TZ", "VIRTUAL_ENV"] as const;
 const LOCAL_PROCESS_PRIVATE_DIRECTORY_KEYS = new Set(["HOME", "TEMP", "TMP", "TMPDIR"]);
-const MAX_FAST_MANIM_RUNTIME_TRACE_STDOUT_BYTES =
-  Math.max(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1, MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2) + 1;
 
 /** Writes the verified V2 attachment to the one private logical path visible to fast-manim. */
 export async function materializeFastManimSandboxPngV2(runtimeDir: string, request: FastManimSandboxRequestBundleV1) {
@@ -276,10 +271,7 @@ export class LocalProcessFastManimSandboxBackendV1 implements FastManimSandboxBa
         requestId: context.identity.requestId,
         requestJson: Buffer.from(request.copyProducerRequestBytes()).toString("utf8"),
         signal: context.signal,
-        stdoutByteLimit:
-          request.producerKind === "runtime-trace"
-            ? MAX_FAST_MANIM_RUNTIME_TRACE_STDOUT_BYTES
-            : MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+        stdoutByteLimit: request.maximumResultBytes,
         timings: this.#producerProcessTimings,
         timeoutMs,
       });
