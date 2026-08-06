@@ -855,6 +855,124 @@ describe("StudioCanvas retained preview layer", () => {
     expect(transientResizeMarkup).toContain('data-studio-semantic-paint="painted"');
   });
 
+  it("opens only the OpeningManim grid title move at t=14 without resize handles", () => {
+    const gridTitleId = "source:example_scenes/basic.py#OpeningManim:grid_title";
+    const titleId = "source:example_scenes/basic.py#OpeningManim:title";
+    const gridTitleRuntimeId = "scene:opening/runtime-root:grid-title";
+    const titleRuntimeId = "scene:opening/runtime-root:title";
+    const unknownDimensions = {
+      evidence: ['Tex("This is a grid", font_size=72)'],
+      kind: "unknown" as const,
+      reason: "Tex dimensions depend on runtime layout.",
+    };
+    const gridTitle: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: { ...CIRCLE_ENTITY.geometry, dimensions: unknownDimensions },
+      id: gridTitleId,
+      sourceIdentity: { kind: "known", value: "grid_title" },
+      type: "Tex",
+    };
+    const title: ProjectedEntity = {
+      ...gridTitle,
+      id: titleId,
+      sourceIdentity: { kind: "known", value: "title" },
+    };
+    const interactionGeometry = new Map([
+      [gridTitleRuntimeId, { dimensions: { height: 54, width: 305 }, position: { x: 145, y: 42 } }],
+      [titleRuntimeId, { dimensions: { height: 48, width: 220 }, position: { x: 160, y: 55 } }],
+    ]);
+    const sourceRuntimeIdentity = new Map([
+      [
+        "grid_title",
+        { bindingId: "source-binding:grid-title", entityId: gridTitleRuntimeId, sourceName: "grid_title" },
+      ],
+      ["title", { bindingId: "source-binding:title", entityId: titleRuntimeId, sourceName: "title" }],
+    ]);
+    const terminalAuthority = {
+      baseCenter: { x: 145, y: 42 },
+      duration: 15 as const,
+      profile: "opening-grid-title-terminal-v2" as const,
+      runtimeEntityId: gridTitleRuntimeId,
+      sourceAnchor: 14 as const,
+      studioEntityId: gridTitleId,
+      studioSceneId: "example_scenes/basic.py#OpeningManim",
+    };
+    const boundedAuthority = {
+      editableRuntimeEntityId: gridTitleRuntimeId,
+      kind: "bounded-interactive" as const,
+      reason: "runtime-trace-terminal-edit" as const,
+      sourceAnchor: 14 as const,
+      verifiedRuntimeEntityIds: [titleRuntimeId, gridTitleRuntimeId],
+    };
+    const activeProps: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [gridTitle, title],
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:opening-terminal",
+            revision: "a".repeat(64),
+            sampleTime: 14,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        interactionGeometry,
+        sourceRuntimeIdentity,
+        boundedAuthority,
+        null,
+        terminalAuthority,
+      ),
+      selectedIds: new Set([gridTitleId]),
+    };
+    const activeTree = StudioCanvas(activeProps);
+    expect(findEntityButton(activeTree, gridTitleId).props.onPointerMove).toBe(activeProps.onEntityPointerMove);
+    expect(findEntityButton(activeTree, titleId).props.onPointerMove).toBeUndefined();
+    const activeMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} />);
+    expect(activeMarkup).toContain("Grid title terminal edit at 14.00s");
+    expect(activeMarkup).not.toContain("data-studio-resize-handle");
+
+    const pendingGridTitle: ProjectedEntity = {
+      ...gridTitle,
+      geometry: {
+        ...gridTitle.geometry,
+        position: { kind: "known", value: { x: 169, y: 30 } },
+      },
+      position: { x: 169, y: 30 },
+    };
+    const pendingMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        entities={[pendingGridTitle, title]}
+        preview={previewView(
+          { detail: "Real Manim validation is pending.", phase: "fallback", reason: "snapshot-uncorrelated" },
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          {
+            kind: "selection-only",
+            reason: "runtime-trace-preview-only",
+            verifiedRuntimeEntityIds: [titleRuntimeId, gridTitleRuntimeId],
+          },
+          null,
+          null,
+          {
+            baseFrameRetained: true,
+            position: { x: 169, y: 30 },
+            profile: "opening-grid-title-terminal-v2",
+            sourceAnchor: 14,
+            studioEntityId: gridTitleId,
+          },
+        )}
+      />,
+    );
+    expect(pendingMarkup).toContain("Draft ghost · OpeningManim validation pending");
+    expect(pendingMarkup).toContain('data-studio-entity-height="54.0000"');
+    expect(pendingMarkup).toContain('data-studio-entity-width="305.0000"');
+    expect(pendingMarkup).toContain("left:26.406249999999996%");
+    expect(pendingMarkup).toContain("top:8.333333333333332%");
+    expect(pendingMarkup).not.toContain("data-studio-resize-handle");
+  });
+
   it("keeps an exact position refiner beside one direct-manipulation draft", () => {
     const entity: ProjectedEntity = {
       ...CIRCLE_ENTITY,

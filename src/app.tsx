@@ -850,7 +850,11 @@ export function App({
       studioPreviewRuntimeTraceTerminalProgramSetV1(plannedRuntimeTracePrograms, runtimeTraceTerminalAuthority).kind !==
         "authorized"
     ) {
-      setDraftError("This Runtime Trace permits at most one terminal Square move and one positive uniform resize.");
+      setDraftError(
+        runtimeTraceTerminalAuthority.profile === "updaters-terminal-v1"
+          ? "This Runtime Trace permits at most one terminal Square move and one positive uniform resize."
+          : "This Runtime Trace permits exactly one terminal grid title move.",
+      );
       setIsPlaying(false);
       return false;
     }
@@ -2087,7 +2091,7 @@ export function App({
       interactionMode !== "position"
     ) {
       setSelectedObjectIds([entityId]);
-      setDraftError("This updater-backed Square supports an exact terminal move, not a new motion clip.");
+      setDraftError("This Runtime Trace target supports one exact terminal move, not a new motion clip.");
       return;
     }
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
@@ -2219,6 +2223,14 @@ export function App({
     }
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before resizing another object.");
+      return;
+    }
+    if (
+      previewRenderer?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
+      previewRenderer.runtimeTraceTerminalEditAuthority.studioEntityId === entityId
+    ) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This source-bound grid title supports terminal position only.");
       return;
     }
     if (
@@ -2521,6 +2533,7 @@ export function App({
     const authority = previewRenderer?.runtimeTraceTerminalEditAuthority;
     if (
       !authority ||
+      authority.profile !== "updaters-terminal-v1" ||
       authority.studioEntityId !== entityId ||
       !activeScene ||
       !draftBaseState ||
@@ -2665,6 +2678,13 @@ export function App({
     if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity || Math.abs(entity.scale - targetScale) < 0.001) return false;
+    if (
+      previewRenderer?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
+      previewRenderer.runtimeTraceTerminalEditAuthority.studioEntityId === entityId
+    ) {
+      setDraftError("This source-bound grid title supports terminal position only.");
+      return false;
+    }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {
       return installRuntimeTraceTerminalResizeDraft(
         entityId,
@@ -2702,7 +2722,11 @@ export function App({
       return false;
     if (runtimeTraceTerminalAuthority?.studioEntityId === entityId) {
       if (!edits.position || edits.content || edits.dimensions) {
-        setDraftError("This updater-backed Square supports terminal position and positive uniform resize only.");
+        setDraftError(
+          runtimeTraceTerminalAuthority.profile === "updaters-terminal-v1"
+            ? "This updater-backed Square supports terminal position and positive uniform resize only."
+            : "This source-bound grid title supports terminal position only.",
+        );
         return false;
       }
       if (!draftBaseState) return false;
@@ -3046,8 +3070,13 @@ export function App({
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
           ...(previewRenderer?.initialEditRuntimeAuthority ? { verifiedInitialEditAnchor: 0 as const } : {}),
-          ...(previewRenderer?.runtimeTraceValidationPending?.sourceAnchor === 5
-            ? { verifiedRuntimeTraceTerminalEditAnchor: 5 as const }
+          ...(previewRenderer?.runtimeTraceValidationPending
+            ? {
+                verifiedRuntimeTraceTerminalEdit:
+                  previewRenderer.runtimeTraceValidationPending.profile === "updaters-terminal-v1"
+                    ? { profile: "updaters-terminal-v1" as const, sourceAnchor: 5 as const }
+                    : { profile: "opening-grid-title-terminal-v2" as const, sourceAnchor: 14 as const },
+              }
             : {}),
           viewport: STUDIO_VIEWPORT,
         }
