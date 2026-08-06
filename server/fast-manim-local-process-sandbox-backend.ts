@@ -43,10 +43,8 @@ import { inspectProjectPngBytesV1, PROJECT_PNG_LOGICAL_PATH_V1 } from "./storage
 /** Environment variables the explicitly local-only backend may inherit. */
 const LOCAL_PROCESS_ENV_ALLOWLIST = ["LANG", "LC_ALL", "LC_CTYPE", "PATH", "TZ", "VIRTUAL_ENV"] as const;
 const LOCAL_PROCESS_PRIVATE_DIRECTORY_KEYS = new Set(["HOME", "TEMP", "TMP", "TMPDIR"]);
-const MAX_FAST_MANIM_RUNTIME_TRACE_STDOUT_BYTES = Math.max(
-  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1,
-  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2,
-);
+const MAX_FAST_MANIM_RUNTIME_TRACE_STDOUT_BYTES =
+  Math.max(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1, MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2) + 1;
 
 /** Writes the verified V2 attachment to the one private logical path visible to fast-manim. */
 export async function materializeFastManimSandboxPngV2(runtimeDir: string, request: FastManimSandboxRequestBundleV1) {

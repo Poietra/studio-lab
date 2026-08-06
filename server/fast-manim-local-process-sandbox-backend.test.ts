@@ -121,8 +121,17 @@ process.stdout.write(Buffer.alloc(byteLength, 0x78));
     expect(result.resultBytes).toHaveLength(byteLength);
   });
 
-  it("fails closed above the largest admitted Runtime Trace result bound", async () => {
-    const result = await produce(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1);
+  it("admits one CLI line feed above the largest Runtime Trace JSON body", async () => {
+    const byteLength = MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 1;
+    const result = await produce(byteLength);
+
+    expect(result.kind).toBe("ok");
+    if (result.kind !== "ok") throw new Error("The local producer did not complete.");
+    expect(result.resultBytes).toHaveLength(byteLength);
+  });
+
+  it("fails closed above the largest Runtime Trace body plus its CLI line feed", async () => {
+    const result = await produce(MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 + 2);
 
     expect(result).toMatchObject({ code: "producer-output-overflow", kind: "failed" });
   });

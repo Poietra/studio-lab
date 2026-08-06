@@ -9,7 +9,7 @@ import {
   MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
   MAX_FAST_MANIM_SANDBOX_STATUS_RAW_JSON_BYTES,
 } from "./fast-manim-sandbox-backend";
-import { MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES } from "./fast-manim-snapshot-contract";
+import { MAX_FAST_MANIM_SANDBOX_RESULT_BYTES } from "./fast-manim-snapshot-contract";
 
 const FRAME_METADATA_BYTES = 16 * 1024;
 const FRAME_TERMINATOR = 0x0a;
@@ -21,7 +21,7 @@ export const MAX_FAST_MANIM_SANDBOX_BROKER_STATUS_FRAME_BYTES_V1 = MAX_FAST_MANI
 export const MAX_FAST_MANIM_SANDBOX_BROKER_START_REQUEST_FRAME_BYTES_V1 =
   4 * Math.ceil(MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES / 3) + FRAME_METADATA_BYTES;
 export const MAX_FAST_MANIM_SANDBOX_BROKER_START_RESULT_FRAME_BYTES_V1 =
-  4 * Math.ceil(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES / 3) + FRAME_METADATA_BYTES;
+  4 * Math.ceil(MAX_FAST_MANIM_SANDBOX_RESULT_BYTES / 3) + FRAME_METADATA_BYTES;
 
 const canonicalBase64Within = (maximumDecodedBytes: number) =>
   z
@@ -86,7 +86,7 @@ const wireBackendResultV1Schema = z.discriminatedUnion("kind", [
       attestationDigest: sha256V1Schema,
       kind: z.literal("ok"),
       requestDigest: sha256V1Schema,
-      resultBytesBase64: canonicalBase64Within(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES),
+      resultBytesBase64: canonicalBase64Within(MAX_FAST_MANIM_SANDBOX_RESULT_BYTES),
     })
     .strict(),
   z
@@ -135,13 +135,12 @@ export function decodeFastManimSandboxBrokerRequestBytesV1(value: string) {
 }
 
 export function encodeFastManimSandboxBrokerResultBytesV1(value: Uint8Array) {
-  if (value.byteLength > MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES)
-    throw new RangeError("Result bytes exceed the budget.");
+  if (value.byteLength > MAX_FAST_MANIM_SANDBOX_RESULT_BYTES) throw new RangeError("Result bytes exceed the budget.");
   return Buffer.from(value).toString("base64");
 }
 
 export function decodeFastManimSandboxBrokerResultBytesV1(value: string) {
-  return decodeCanonicalBase64(value, MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES);
+  return decodeCanonicalBase64(value, MAX_FAST_MANIM_SANDBOX_RESULT_BYTES);
 }
 
 type FrameDefinition<T> = readonly [maximumBytes: number, schema: z.ZodType<T>];

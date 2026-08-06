@@ -50,6 +50,14 @@ export const MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES =
 /** Base64-wrapped combined document, bounded metadata envelope, and the CLI LF. */
 export const MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES =
   MAX_FAST_MANIM_PROFILE_SELECTION_DOCUMENT_BASE64_BYTES + 64 * 1024 + 1;
+/**
+ * Largest result carried by the producer-agnostic backend and broker wire.
+ * Runtime Trace V2 writes a direct 24 MiB JSON body followed by one CLI LF.
+ */
+export const MAX_FAST_MANIM_SANDBOX_RESULT_BYTES = Math.max(
+  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+  24 * 1024 * 1024 + 1,
+);
 export const MAX_FAST_MANIM_SNAPSHOT_ARRAY_ITEMS = 10_000;
 export const MAX_FAST_MANIM_SNAPSHOT_STRUCTURE_DEPTH = 64;
 /** V12 contains 27,454 entries; retain bounded parsing with explicit headroom. */

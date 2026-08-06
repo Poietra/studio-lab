@@ -13,7 +13,7 @@ import {
   MAX_FAST_MANIM_SANDBOX_BROKER_STATUS_FRAME_BYTES_V1,
 } from "./fast-manim-sandbox-broker-protocol";
 import {
-  MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
+  MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
   MAX_FAST_MANIM_SNAPSHOT_RESULT_JSON_BYTES,
 } from "./fast-manim-snapshot-contract";
 import { SANDBOX_TEST_SHA_A } from "./test-fixtures/fast-manim-sandbox-backend-fixture";
@@ -86,11 +86,11 @@ describe("fast-manim single-operation broker wire", () => {
     expect([...decodeFastManimSandboxBrokerRequestBytesV1(startRequest.requestBytesBase64)]).toEqual([1, 2, 3]);
   });
 
-  it("rejects result bytes beyond the combined identity document budget", () => {
-    const oversized = new Uint8Array(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES + 1);
+  it("rejects result bytes beyond the largest producer result budget", () => {
+    const oversized = new Uint8Array(MAX_FAST_MANIM_SANDBOX_RESULT_BYTES + 1);
     expect(() => encodeFastManimSandboxBrokerResultBytesV1(oversized)).toThrow(/result bytes exceed the budget/i);
     expect(encodeFastManimSandboxBrokerResultBytesV1(oversized.subarray(0, -1))).toHaveLength(
-      4 * Math.ceil(MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES / 3),
+      4 * Math.ceil(MAX_FAST_MANIM_SANDBOX_RESULT_BYTES / 3),
     );
   });
 

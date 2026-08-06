@@ -53,16 +53,35 @@ async function frameAt(bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimR
   return result.frame;
 }
 
+function expectCompactedPlateausToRemainExact(
+  bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>,
+) {
+  const channel = bundle.scene.animationChannels.find(
+    (candidate) =>
+      candidate.kind === "vector-appearance" &&
+      candidate.entityId.endsWith("/runtime-root:title/runtime-draw:0/paint:fill"),
+  );
+  if (!channel) throw new Error("Expected the title fill appearance channel.");
+  const plateauEdges = channel.keyframes.slice(1).flatMap((current, index) => {
+    const previous = channel.keyframes[index]!;
+    return current.at - previous.at > 1 / 60 + 1e-12 ? [{ current, previous }] : [];
+  });
+  expect(plateauEdges.length).toBeGreaterThanOrEqual(2);
+  for (const { current, previous } of plateauEdges) {
+    expect(current.value).toEqual(previous.value);
+  }
+}
+
 describe("fast-manim Runtime Trace V2 result contract", () => {
-  it("accepts and lowers the real OpeningManim producer artifact", async () => {
+  it("accepts and lowers the real OpeningManim producer artifact", { timeout: 30_000 }, async () => {
     expect(createHash("sha256").update(artifactBytes).digest("hex")).toBe(
-      "9417b5eb56b275f38b7df0306fb9b5994001da8b8dcf501b34720ba89b506454",
+      "19b2f9b52ce1df0f06a3521faecb9ff8cd50c68fb813d3ca4c7a36b7d5edd9de",
     );
     const untrusted = JSON.parse(artifactJson) as ReturnType<typeof fastManimRuntimeTraceV2Fixture>;
     expect(untrusted.producer).toMatchObject({
-      fastManimCommit: "b0147ec8b5dd2f11809816043d666d6981652c50",
-      fastManimTree: "d27cf706cc62892a5dc1d42b289691113efe0472",
-      semanticsSha256: "34e87f28fde60f66931fa162ef142b89e596ce595c5aa5f123f201e73156223a",
+      fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
+      fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
+      semanticsSha256: "0cefd58f3d7aa7996a1166e0c97857c5d0de9cf37611402cacc955417553df33",
     });
     const request = createFastManimRuntimeTraceProducerRequestV2(
       {
@@ -81,20 +100,20 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     });
     const trace = parseFastManimRuntimeTraceProducerJsonV2(artifactBytes, expected);
 
-    expect(trace.frames).toHaveLength(300);
-    expect(trace.frames.every((frame) => frame.draws.length === 31)).toBe(true);
-    expect(trace.resources.paths).toHaveLength(933);
-    expect(trace.resources.appearances).toHaveLength(335);
+    expect(trace.frames).toHaveLength(540);
+    expect(trace.frames.every((frame) => frame.draws.length === 66)).toBe(true);
+    expect(trace.resources.paths).toHaveLength(944);
+    expect(trace.resources.appearances).toHaveLength(337);
 
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
-    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBe(8_199_081);
+    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBe(6_815_496);
     expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBeLessThan(
       MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
     );
-    expect(bundle.scene.entities).toHaveLength(69);
-    expect(bundle.scene.animationChannels).toHaveLength(113);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(21_081);
-    expect(bundle.scene.entities.slice(3, 5).map(({ id }) => id)).toEqual([
+    expect(bundle.scene.entities).toHaveLength(106);
+    expect(bundle.scene.animationChannels).toHaveLength(171);
+    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(10_559);
+    expect(bundle.scene.entities.slice(5, 7).map(({ id }) => id)).toEqual([
       expect.stringMatching(/runtime-draw:0\/paint:fill$/),
       expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
     ]);
@@ -103,22 +122,33 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
         .filter((channel) => channel.kind === "path-trim")
         .every((channel) => channel.parameterization === "uniform-cubic-parameter-v1"),
     ).toBe(true);
+    expectCompactedPlateausToRemainExact(bundle);
     const packetDrawCounts = await Promise.all(
-      [0, 0.5, 1, 2, 179 / 60, 3, 3.5, 4, 5].map(async (sampleTime) => ({
-        drawCount: (await frameAt(bundle, sampleTime)).packet.draws.length,
-        sampleTime,
-      })),
+      [0, 0.5, 1, 2, 179 / 60, 3, 3.5, 4, 299 / 60, 5, 5.5, 6.5, 479 / 60, 8, 539 / 60].map(async (sampleTime) => {
+        const frame = await frameAt(bundle, sampleTime);
+        return {
+          drawCount: frame.packet.draws.length,
+          pathCount: frame.packet.draws.filter((draw) => draw.kind === "path").length,
+          sampleTime,
+        };
+      }),
     );
     expect(packetDrawCounts).toEqual([
-      { drawCount: 44, sampleTime: 0 },
-      { drawCount: 44, sampleTime: 0.5 },
-      { drawCount: 44, sampleTime: 1 },
-      { drawCount: 44, sampleTime: 2 },
-      { drawCount: 44, sampleTime: 179 / 60 },
-      { drawCount: 36, sampleTime: 3 },
-      { drawCount: 35, sampleTime: 3.5 },
-      { drawCount: 21, sampleTime: 4 },
-      { drawCount: 21, sampleTime: 5 },
+      { drawCount: 44, pathCount: 29, sampleTime: 0 },
+      { drawCount: 44, pathCount: 34, sampleTime: 0.5 },
+      { drawCount: 44, pathCount: 39, sampleTime: 1 },
+      { drawCount: 44, pathCount: 44, sampleTime: 2 },
+      { drawCount: 44, pathCount: 44, sampleTime: 179 / 60 },
+      { drawCount: 36, pathCount: 36, sampleTime: 3 },
+      { drawCount: 35, pathCount: 35, sampleTime: 3.5 },
+      { drawCount: 21, pathCount: 21, sampleTime: 4 },
+      { drawCount: 21, pathCount: 21, sampleTime: 299 / 60 },
+      { drawCount: 56, pathCount: 32, sampleTime: 5 },
+      { drawCount: 56, pathCount: 38, sampleTime: 5.5 },
+      { drawCount: 56, pathCount: 49, sampleTime: 6.5 },
+      { drawCount: 56, pathCount: 56, sampleTime: 479 / 60 },
+      { drawCount: 35, pathCount: 35, sampleTime: 8 },
+      { drawCount: 35, pathCount: 35, sampleTime: 539 / 60 },
     ]);
   });
 
@@ -130,7 +160,7 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     );
 
     expect(parsed.resources.paths).toHaveLength(24);
-    expect(parsed.frames[0]?.draws).toHaveLength(31);
+    expect(parsed.frames[0]?.draws).toHaveLength(66);
     expect(digestFastManimRuntimeTraceV2(parsed)).toBe(digestFastManimRuntimeTraceV2(trace));
   });
 
@@ -152,7 +182,9 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     );
   });
 
-  it("requires every sealed resource to be used while allowing content-addressed geometry changes", () => {
+  it("requires every sealed resource to be used while allowing content-addressed geometry changes", {
+    timeout: 10_000,
+  }, () => {
     const unusedAppearance = fastManimRuntimeTraceV2Fixture();
     const appearance = {
       fill: { color: { alpha: 1, blue: 0.25, green: 0.5, red: 0.75 }, rule: "nonzero" as const },
@@ -196,7 +228,9 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     expect(fastManimRuntimeTraceV2Schema.safeParse(visible).success).toBe(false);
   });
 
-  it("rejects reordered frames, changed terminal holds, stale content IDs, and noncanonical coordinates", () => {
+  it("rejects reordered frames, changed terminal holds, stale content IDs, and noncanonical coordinates", {
+    timeout: 10_000,
+  }, () => {
     const mutations = [
       (trace: ReturnType<typeof fastManimRuntimeTraceV2Fixture>) => {
         trace.frames[1]!.frameIndex = 2;
@@ -260,14 +294,14 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     }).toEqual({
       appearances: 384,
       arrayItems: 1_024,
-      bytes: 16_777_216,
+      bytes: 25_165_824,
       depth: 16,
-      entries: 500_000,
+      entries: 1_000_000,
       objectFields: 32,
       normalizedBytes: 8_388_608,
-      pathResources: 933,
+      pathResources: 944,
       pathSegments: 28_000,
-      values: 500_000,
+      values: 1_000_000,
     });
   });
 });

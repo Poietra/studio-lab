@@ -33,7 +33,10 @@ export type FastManimRuntimeTraceProfile =
       duration: typeof FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1;
       maxNormalizedBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1;
       maxResultBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1;
-      rootNames: readonly ["square", "decimal"];
+      roots: readonly [
+        Readonly<{ bindingName: "square"; role: "square" }>,
+        Readonly<{ bindingName: "decimal"; role: "decimal" }>,
+      ];
       runtimeConfigHash: typeof FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1;
       version: 1;
     }>
@@ -41,7 +44,12 @@ export type FastManimRuntimeTraceProfile =
       duration: typeof FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2;
       maxNormalizedBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2;
       maxResultBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2;
-      rootNames: readonly ["title", "basel"];
+      roots: readonly [
+        Readonly<{ bindingName: "title"; role: "title" }>,
+        Readonly<{ bindingName: "basel"; role: "basel" }>,
+        Readonly<{ bindingName: "grid"; role: "grid" }>,
+        Readonly<{ bindingName: "grid_title"; role: "grid-title" }>,
+      ];
       runtimeConfigHash: typeof FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2;
       version: 2;
     }>;
@@ -51,7 +59,10 @@ const runtimeTraceProfiles = Object.freeze([
     duration: FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V1,
     maxNormalizedBytes: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
     maxResultBytes: MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1,
-    rootNames: Object.freeze(["square", "decimal"] as const),
+    roots: Object.freeze([
+      Object.freeze({ bindingName: "square", role: "square" }),
+      Object.freeze({ bindingName: "decimal", role: "decimal" }),
+    ] as const),
     runtimeConfigHash: FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1,
     sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1,
     sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1,
@@ -62,7 +73,12 @@ const runtimeTraceProfiles = Object.freeze([
     duration: FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
     maxNormalizedBytes: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
     maxResultBytes: MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2,
-    rootNames: Object.freeze(["title", "basel"] as const),
+    roots: Object.freeze([
+      Object.freeze({ bindingName: "title", role: "title" }),
+      Object.freeze({ bindingName: "basel", role: "basel" }),
+      Object.freeze({ bindingName: "grid", role: "grid" }),
+      Object.freeze({ bindingName: "grid_title", role: "grid-title" }),
+    ] as const),
     runtimeConfigHash: FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
     sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
     sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,

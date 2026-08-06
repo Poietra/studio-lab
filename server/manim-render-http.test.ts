@@ -660,8 +660,10 @@ describe("Runtime Trace preview routing", () => {
     }
   });
 
-  it("validates the sealed OpeningManim V2 duration, trace version, and source roots", async () => {
+  it("validates the sealed nine-second OpeningManim V2 duration, trace version, and four source roots", async () => {
     const view = await verifiedOpeningView();
+    expect(view.bundle.scene.duration).toBe(9);
+    expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
     const request = {
       projectId: view.projectId,
       requestId: view.requestId,
@@ -698,8 +700,8 @@ describe("Runtime Trace preview routing", () => {
       const accepted = await post((valid.address() as AddressInfo).port);
       const rejected = await post((staleVersion.address() as AddressInfo).port);
 
-      expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeGreaterThan(
-        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + 64 * 1024,
+      expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeLessThan(
+        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
       );
       expect(accepted.status).toBe(200);
       expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(view);

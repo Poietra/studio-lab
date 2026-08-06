@@ -1,4 +1,4 @@
-"""Generate bounded independent Cairo evidence for OpeningManim's 0-5s slice.
+"""Generate bounded independent Cairo evidence for OpeningManim's 0-9s slice.
 
 The official Scene is executed unchanged.  In particular, ``Tex`` and
 ``MathTex`` use Manim's normal LaTeX/dvisvgm path; this generator never imports
@@ -31,15 +31,15 @@ import PIL._imaging as pillow_imaging
 from manim import tempconfig
 
 
-FAST_MANIM_COMMIT = "b0147ec8b5dd2f11809816043d666d6981652c50"
-FAST_MANIM_TREE = "d27cf706cc62892a5dc1d42b289691113efe0472"
+FAST_MANIM_COMMIT = "82353666a30abf48390d98eb796e1573a149030e"
+FAST_MANIM_TREE = "2b95349bd0647908189e4db9be4d18a5b368db25"
 SOURCE_PATH = Path("example_scenes/basic.py")
 SOURCE_SHA256 = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"
 FRAME = {"height": 8, "width": 128.0 / 9.0}
 VIEWPORT = {"heightPx": 360, "widthPx": 640}
 FRAME_RATE = 60
-SLICE_FRAME_COUNT = 300
-SLICE_DURATION_SECONDS = 5
+SLICE_FRAME_COUNT = 540
+SLICE_DURATION_SECONDS = 9
 RGBA_BYTES = VIEWPORT["widthPx"] * VIEWPORT["heightPx"] * 4
 SAMPLES = (
     ("initial", 0, 0.0),
@@ -49,8 +49,14 @@ SAMPLES = (
     ("transform-start", 180, 3.0),
     ("transform-midpoint", 210, 3.5),
     ("transform-play-end", 240, 4.0),
+    ("wait-end", 299, 299 / FRAME_RATE),
+    ("grid-create-start", 300, 5.0),
+    ("grid-create-early", 330, 5.5),
+    ("grid-create-midpoint", 390, 6.5),
+    ("grid-create-last", 479, 479 / FRAME_RATE),
+    ("grid-play-end", 480, 8.0),
     # A duration-end request retains the final captured presentation frame.
-    ("wait-end", 299, 5.0),
+    ("grid-wait-end", 539, 9.0),
 )
 
 EXPECTED_TEX_TOOLCHAIN = {
@@ -108,11 +114,24 @@ EXPECTED_TEX_ARTIFACTS = (
             "sha256": "476ae3b33141b5871c85e4a346270324d88b8afea0f441a8ae59f424162834e9",
         },
     },
+    {
+        "role": "grid-title",
+        "svg": {
+            "byteLength": 8_749,
+            "fileName": "0b81212898da17f3.svg",
+            "sha256": "f51da30b13a215ebd513c8004011a1281c46d34e52fc911da49d212c3c56c00a",
+        },
+        "tex": {
+            "byteLength": 246,
+            "fileName": "0b81212898da17f3.tex",
+            "sha256": "0b81212898da17f3454281eb8d87490e33e0fbe83a402ed262e53cd7925dd2e2",
+        },
+    },
 )
 
 
 class OpeningSliceComplete(BaseException):
-    """Producer-owned sentinel raised after the bounded 300th frame."""
+    """Producer-owned sentinel raised after the bounded 540th frame."""
 
 
 def sha256(data: bytes) -> str:
@@ -361,7 +380,7 @@ def render_sample_frames(scene_type: type[manim.Scene]) -> dict[str, bytes]:
     finally:
         scene.tear_down()
     if not completed or round(renderer.time * FRAME_RATE) != SLICE_FRAME_COUNT:
-        raise RuntimeError("official OpeningManim did not complete its exact 0-5s slice")
+        raise RuntimeError("official OpeningManim did not complete its exact 0-9s slice")
     expected_ids = {sample_id for sample_id, _, _ in SAMPLES}
     if set(captured) != expected_ids:
         raise RuntimeError(

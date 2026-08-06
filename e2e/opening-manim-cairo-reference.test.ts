@@ -17,7 +17,7 @@ describe("OpeningManim Cairo reference v2", () => {
   });
 
   it.runIf(Boolean(process.env.POIETRA_OPENING_MANIM_CAIRO_REFERENCE_ROOT))(
-    "validates the eight independent Cairo frames and their temporal relations",
+    "validates the fourteen independent Cairo frames and their temporal relations",
     async () => {
       const root = process.env.POIETRA_OPENING_MANIM_CAIRO_REFERENCE_ROOT;
       if (!root) throw new Error("POIETRA_OPENING_MANIM_CAIRO_REFERENCE_ROOT is required.");
@@ -42,6 +42,12 @@ describe("OpeningManim Cairo reference v2", () => {
       expect(rgba("transform-start")).not.toEqual(rgba("transform-midpoint"));
       expect(rgba("transform-midpoint")).not.toEqual(rgba("transform-play-end"));
       expect(rgba("transform-play-end")).toEqual(rgba("wait-end"));
+      expect(rgba("wait-end")).toEqual(rgba("grid-create-start"));
+      expect(rgba("grid-create-start")).not.toEqual(rgba("grid-create-early"));
+      expect(rgba("grid-create-early")).not.toEqual(rgba("grid-create-midpoint"));
+      expect(rgba("grid-create-midpoint")).not.toEqual(rgba("grid-create-last"));
+      expect(rgba("grid-create-last")).not.toEqual(rgba("grid-play-end"));
+      expect(rgba("grid-play-end")).toEqual(rgba("grid-wait-end"));
     },
   );
 });

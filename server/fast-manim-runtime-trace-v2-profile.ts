@@ -39,11 +39,11 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "b0147ec8b5dd2f11809816043d666d6981652c50",
-    fastManimTree: "d27cf706cc62892a5dc1d42b289691113efe0472",
+    fastManimCommit: "82353666a30abf48390d98eb796e1573a149030e",
+    fastManimTree: "2b95349bd0647908189e4db9be4d18a5b368db25",
     geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
     manimVersion: "0.20.1",
-    semanticsSha256: "34e87f28fde60f66931fa162ef142b89e596ce595c5aa5f123f201e73156223a",
+    semanticsSha256: "0cefd58f3d7aa7996a1166e0c97857c5d0de9cf37611402cacc955417553df33",
     texFontBundleSha256: FAST_MANIM_RUNTIME_TRACE_TEX_FONT_BUNDLE_HASH_V2,
     texToolchainSha256: FAST_MANIM_RUNTIME_TRACE_TEX_TOOLCHAIN_HASH_V2,
   },
@@ -67,6 +67,26 @@ const trustedProfile = {
       },
       id: `${sceneId}/runtime-root:basel`,
       role: "basel",
+    },
+    {
+      binding: {
+        id: "source-binding:b48952e6a49aef4487533c6fe0ac9e5369d91e1ff667e7278d6ba13fe5f685d6",
+        name: "grid",
+        ordinal: 4,
+        span: { endColumn: 12, endLine: 37, startColumn: 8, startLine: 37 },
+      },
+      id: `${sceneId}/runtime-root:grid`,
+      role: "grid",
+    },
+    {
+      binding: {
+        id: "source-binding:2302907e0a3c6f84f616012d0d3be6227b9f86336fc370aa6744948be96dd541",
+        name: "grid_title",
+        ordinal: 5,
+        span: { endColumn: 18, endLine: 38, startColumn: 8, startLine: 38 },
+      },
+      id: `${sceneId}/runtime-root:grid-title`,
+      role: "grid-title",
     },
   ],
 } as const satisfies TrustedFastManimRuntimeTraceProducerV2;
@@ -102,7 +122,7 @@ export function createFastManimRuntimeTraceConfigV2(frame: Readonly<{ height: nu
 }
 
 export const FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2 =
-  "9844e214f8ffe18883a4faecb6bf33360c5ec3fdb7532ab3a419e71a5071c4ea" as const;
+  "9a43934058d9d90db28661a310c9a6aa177826b2ba8baf42b42d4691dcf5c1c4" as const;
 
 export function createFastManimRuntimeTraceProducerRequestV2(
   run: FastManimRuntimeTraceRunRequestV1,
@@ -119,7 +139,7 @@ export function createFastManimRuntimeTraceProducerRequestV2(
     sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 ||
     runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2
   ) {
-    throw new TypeError("Runtime Trace V2 accepts only the exact reviewed OpeningManim 0–5 second profile.");
+    throw new TypeError("Runtime Trace V2 accepts only the exact reviewed OpeningManim 0–9 second profile.");
   }
   return fastManimRuntimeTraceProducerRequestV2Schema.parse({
     profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
