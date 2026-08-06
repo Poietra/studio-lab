@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
 
 import { MAX_COORDINATE } from "../src/engine/primitives";
-import { analyzePythonSource } from "../src/render-pipeline/python-source-analysis";
-import { findSourceSceneStatements } from "../src/render-pipeline/source-import";
+import {
+  removeDirectSourceStatementsV1,
+  SourceAnalysisError,
+  studioSourceAnalysisProviderV1,
+} from "../src/render-pipeline/source-analysis";
 
 export const FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8 = "example_scenes/basic.py" as const;
 export const FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SCENE_NAME_V8 = "SquareToCircle" as const;
@@ -55,16 +58,23 @@ export function deriveSquareToCircleV8PositionPlan(source: string, sceneName: st
   const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
   if (sourceDigest === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_BASE_SOURCE_SHA256_V8) return EMPTY_PLAN;
 
-  const analysis = analyzePythonSource(source);
-  let statements: ReturnType<typeof findSourceSceneStatements>;
+  let analysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
   try {
-    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8);
+    analysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: sourceDigest,
+      sceneName,
+      sourcePath: FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8,
+      sourceText: source,
+    });
   } catch (cause) {
     throw new SquareToCircleV8CandidateSourceError(
-      "SquareToCircle profile V8 candidate does not identify one unambiguous selected Scene.",
+      `SquareToCircle profile V8 candidate SourceAnalysis rejected the selected Scene${
+        cause instanceof SourceAnalysisError ? ` (${cause.code})` : ""
+      }.`,
       { cause },
     );
   }
+  const statements = analysis.scene.statements;
   const prefix = [
     "circle = Circle()",
     "square = Square()",
@@ -78,7 +88,6 @@ export function deriveSquareToCircleV8PositionPlan(source: string, sceneName: st
     "self.play(FadeOut(square))",
   ] as const;
   if (
-    !analysis.valid ||
     statements.length !== prefix.length + 2 + suffix.length ||
     prefix.some((text, index) => statements[index]?.text !== text) ||
     suffix.some((text, index) => statements[prefix.length + 2 + index]?.text !== text)
@@ -90,12 +99,11 @@ export function deriveSquareToCircleV8PositionPlan(source: string, sceneName: st
   const circleMove = statements[prefix.length + 1]!;
   const squareMatch = squareMove.text.match(MOVE_TO);
   const circleMatch = circleMove.text.match(MOVE_TO);
-  const sourceLines = source.split("\n");
   if (
     squareMatch?.[1] !== "square" ||
     circleMatch?.[1] !== "circle" ||
-    sourceLines[squareMove.line] !== `        ${squareMove.text}` ||
-    sourceLines[circleMove.line] !== `        ${circleMove.text}` ||
+    squareMove.rawText !== `        ${squareMove.text}` ||
+    circleMove.rawText !== `        ${circleMove.text}` ||
     squareMove.line + 1 !== circleMove.line ||
     squareMatch[2] !== circleMatch[2] ||
     squareMatch[3] !== circleMatch[3]
@@ -107,9 +115,18 @@ export function deriveSquareToCircleV8PositionPlan(source: string, sceneName: st
   if (x === null || y === null) reject("move_to coordinates must be finite bounded canonical Studio literals.");
   if (x === 0 && y === 0) reject("the paired position candidate must not be a no-op.");
 
-  const reconstructed = sourceLines
-    .filter((_line, index) => index !== squareMove.line && index !== circleMove.line)
-    .join("\n");
+  let reconstructed: string;
+  try {
+    reconstructed = removeDirectSourceStatementsV1(source, analysis, [
+      { expectedText: squareMove.text, statementId: squareMove.id },
+      { expectedText: circleMove.text, statementId: circleMove.id },
+    ]);
+  } catch (cause) {
+    throw new SquareToCircleV8CandidateSourceError(
+      "SquareToCircle profile V8 candidate edits do not have canonical removable statement spans.",
+      { cause },
+    );
+  }
   if (
     createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
     FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_BASE_SOURCE_SHA256_V8

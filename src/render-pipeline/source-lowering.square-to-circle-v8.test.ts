@@ -116,6 +116,9 @@ describe("SquareToCircle V8 initial position source lowering", () => {
     expect(lowered.insertedCode).toBe("        square.move_to((2, 1, 0))\n        circle.move_to((2, 1, 0))");
     expect(lowered.source.match(/square\.move_to/g)).toHaveLength(1);
     expect(lowered.source.match(/circle\.move_to/g)).toHaveLength(1);
+    expect(lowered.source).toContain(
+      "        circle.set_fill(PINK, opacity=0.5)\n        square.move_to((2, 1, 0))\n        circle.move_to((2, 1, 0))\n\n        self.play(Create(square))",
+    );
     expect(lowered.source.indexOf("circle.set_fill(PINK, opacity=0.5)")).toBeLessThan(
       lowered.source.indexOf("square.move_to((2, 1, 0))"),
     );

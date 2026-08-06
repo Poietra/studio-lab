@@ -8,8 +8,11 @@ import {
   type VerifiedSourceRuntimeIdentityMapV1,
   verifiedSourceRuntimeIdentityMapV1Schema,
 } from "../src/engine/source-runtime-identity";
-import { analyzePythonSource, isPythonStatementStart } from "../src/render-pipeline/python-source-analysis";
-import { findSourceSceneBlock } from "../src/render-pipeline/source-import";
+import {
+  SourceAnalysisError,
+  type StudioSourceAnalysisV1,
+  studioSourceAnalysisProviderV1,
+} from "../src/render-pipeline/source-analysis";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7,
@@ -279,196 +282,48 @@ function sourceTokenKey(binding: Readonly<{ name: string; span: SourceBindingV1[
   return sourceBindingKey({ ...binding, ordinal: undefined });
 }
 
-function topLevelAssignmentOperators(code: string) {
-  let depth = 0;
-  let count = 0;
-  for (let index = 0; index < code.length; index += 1) {
-    const character = code[index];
-    if (character === "(" || character === "[" || character === "{") depth += 1;
-    else if (character === ")" || character === "]" || character === "}") depth = Math.max(0, depth - 1);
-    else if (
-      character === "=" &&
-      depth === 0 &&
-      code[index + 1] !== "=" &&
-      !/[=!<>:+\-*/%@&|^]/.test(code[index - 1] ?? "")
-    ) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function unwrapDirectParenthesizedExpression(source: string) {
-  let expression = source.trim();
-  while (expression.startsWith("(")) {
-    const stack: string[] = [];
-    let closesAt = -1;
-    for (let index = 0; index < expression.length; index += 1) {
-      const character = expression[index]!;
-      if (character === "(" || character === "[" || character === "{") {
-        stack.push(character);
-        continue;
-      }
-      if (character !== ")" && character !== "]" && character !== "}") continue;
-      const expected = character === ")" ? "(" : character === "]" ? "[" : "{";
-      if (stack.pop() !== expected) return null;
-      if (stack.length === 0) {
-        closesAt = index;
-        break;
-      }
-    }
-    if (closesAt !== expression.length - 1) break;
-    expression = expression.slice(1, -1).trim();
-  }
-  return expression;
-}
-
-function directConstructorName(source: string) {
-  const expression = unwrapDirectParenthesizedExpression(source);
-  return expression?.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(/)?.[1];
-}
-
-function bracketContinuedStatementCode(
-  lines: ReturnType<typeof analyzePythonSource>["lines"],
-  startIndex: number,
-  endIndexExclusive: number,
-) {
-  const parts: string[] = [];
-  for (let index = startIndex; index < endIndexExclusive; index += 1) {
-    const line = lines[index];
-    if (
-      !line ||
-      line.continuedFromPrevious ||
-      line.continuesToNext ||
-      /\\\s*$/.test(line.code) ||
-      (index > startIndex && line.bracketDepthBefore === 0)
-    ) {
-      return null;
-    }
-    parts.push(line.code);
-    if (line.bracketDepthAfter === 0) return parts.join("\n");
-  }
-  return null;
-}
-
 /**
- * Builds all byte-exact Python Name-token coordinates once. It also derives a
- * deliberately narrower Studio site set only when every construct binding
- * ordinal can be accounted for by one simple Name assignment. Parenthesized
- * continuations are treated as one logical statement; explicit backslash
- * continuations and every other ambiguous binding form still fail closed.
- * Claims then perform bounded O(1) lookups rather than rescanning source.
+ * Projects the Studio CST authority into the producer's deliberately narrower
+ * identity policy. Parser facts stay profile-independent; only this adapter
+ * knows snapshot-version constructor allowlists and the V12 attribute-write
+ * exception.
  */
 function buildSourceBindingLookup(
-  sourceText: string,
-  analysis: ReturnType<typeof analyzePythonSource>,
-  sourceBlock: NonNullable<ReturnType<typeof findSourceSceneBlock>>,
+  analysis: StudioSourceAnalysisV1,
   snapshotVersion: ExpectedFastManimSnapshotCorrelationV1["snapshotVersion"],
 ) {
-  const sourceLines = sourceText.split(/\r?\n/);
-  const tokens = new Set<string>();
+  const tokens = new Set(analysis.identifierTokens.map(({ name, span }) => sourceTokenKey({ name, span })));
   const studioCandidates = new Set<string>();
   const studioConstructors = new Map<string, string>();
-  const identifierPattern = /(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*/gu;
-  for (const [lineIndex, line] of analysis.lines.entries()) {
-    identifierPattern.lastIndex = 0;
-    for (let match = identifierPattern.exec(line.code); match; match = identifierPattern.exec(line.code)) {
-      const name = match[0];
-      const raw = sourceLines[lineIndex] ?? "";
-      const startColumn = Buffer.byteLength(raw.slice(0, match.index), "utf8");
-      const endColumn = startColumn + Buffer.byteLength(name, "utf8");
-      tokens.add(
-        sourceTokenKey({
-          name,
-          span: { endColumn, endLine: lineIndex + 1, startColumn, startLine: lineIndex + 1 },
-        }),
+  const modernMultilineProfile = snapshotVersion >= 6;
+  const proofComplete =
+    analysis.scene.bindingBlockers.every(({ kind }) => snapshotVersion === 12 && kind === "attribute-assignment") &&
+    analysis.bindings.every((binding) => {
+      if (binding.scopeId !== analysis.scene.construct.scopeId || binding.kind !== "assignment") return true;
+      const statement = analysis.scene.statements.find(({ id }) => id === binding.statementId);
+      return Boolean(
+        statement &&
+          !/\\(?:\r\n|\n)/u.test(statement.rawText) &&
+          (modernMultilineProfile || statement.span.startLine === statement.span.endLine),
       );
-    }
-  }
+    });
 
-  let bindingOrdinal = 0;
-  let proofComplete = sourceBlock.bodyIndent !== null;
-  for (let lineIndex = sourceBlock.bodyStart; lineIndex < sourceBlock.bodyEnd; lineIndex += 1) {
-    const line = analysis.lines[lineIndex];
-    if (!line || !isPythonStatementStart(line)) continue;
-    let code = line.code;
+  for (const binding of analysis.bindings) {
+    const constructor = binding.constructorCall?.path;
     if (
-      snapshotVersion === 6 ||
-      snapshotVersion === 7 ||
-      snapshotVersion === 8 ||
-      snapshotVersion === 9 ||
-      snapshotVersion === 10 ||
-      snapshotVersion === 11 ||
-      snapshotVersion === 12
-    ) {
-      const continuedCode = bracketContinuedStatementCode(analysis.lines, lineIndex, sourceBlock.bodyEnd);
-      if (continuedCode === null) {
-        proofComplete = false;
-        continue;
-      }
-      code = continuedCode;
-    }
-    if (
-      /:=/.test(code) ||
-      /^\s*(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*\s*(?::|(?:\*\*|\/\/|<<|>>|[+\-*/%@&|^])=)/u.test(code) ||
-      /^\s*(?:(?:async\s+)?(?:def|class|for|with)\b|(?:del|global|import|match|nonlocal)\b|from\s+\S+\s+import\b|except\b)/.test(
-        code,
-      )
-    ) {
-      proofComplete = false;
-      continue;
-    }
-    const assignments = topLevelAssignmentOperators(code);
-    if (assignments === 0) continue;
-    // The pinned WriteStuff source assigns the retained VGroup's width after
-    // construction. This mutates an existing binding and cannot introduce a
-    // competing Python Name claim, so keep the simple-binding proof intact.
-    if (
-      snapshotVersion === 12 &&
-      assignments === 1 &&
-      /^\s*(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*(?:\.(?:_|\p{ID_Start})(?:_|\p{ID_Continue})*)+\s*=(?!=)/u.test(code)
+      binding.scopeId !== analysis.scene.construct.scopeId ||
+      binding.kind !== "assignment" ||
+      binding.controlPath.length > 0 ||
+      binding.ordinal === null ||
+      constructor?.length !== 1 ||
+      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding.name) ||
+      !studioSupportsConstructor(constructor[0]!, snapshotVersion)
     ) {
       continue;
     }
-    const direct = code.match(/^\s*((?:_|\p{ID_Start})(?:_|\p{ID_Continue})*)\s*=(?!=)/u);
-    if (
-      assignments !== 1 ||
-      !direct ||
-      (snapshotVersion !== 6 &&
-        snapshotVersion !== 7 &&
-        snapshotVersion !== 8 &&
-        snapshotVersion !== 9 &&
-        snapshotVersion !== 10 &&
-        snapshotVersion !== 11 &&
-        snapshotVersion !== 12 &&
-        (line.bracketDepthAfter !== 0 || line.continuesToNext || line.continuedFromPrevious))
-    ) {
-      proofComplete = false;
-      continue;
-    }
-    bindingOrdinal += 1;
-    const name = direct[1]!;
-    const constructor = directConstructorName(code.slice(direct[0].length));
-    if (
-      line.indentation !== sourceBlock.bodyIndent ||
-      constructor === undefined ||
-      !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ||
-      !studioSupportsConstructor(constructor, snapshotVersion)
-    ) {
-      continue;
-    }
-    const raw = sourceLines[lineIndex] ?? "";
-    const nameIndex = code.indexOf(name);
-    const startColumn = Buffer.byteLength(raw.slice(0, nameIndex), "utf8");
-    const span = {
-      endColumn: startColumn + Buffer.byteLength(name, "utf8"),
-      endLine: lineIndex + 1,
-      startColumn,
-      startLine: lineIndex + 1,
-    };
-    const key = sourceBindingKey({ name, ordinal: bindingOrdinal, span });
+    const key = sourceBindingKey({ name: binding.name, ordinal: binding.ordinal, span: binding.span });
     studioCandidates.add(key);
-    studioConstructors.set(key, constructor);
+    studioConstructors.set(key, constructor[0]!);
   }
   return {
     constructors: proofComplete ? studioConstructors : new Map<string, string>(),
@@ -770,21 +625,21 @@ export function verifyFastManimSourceRuntimeIdentityV1(
       "WriteStuff profile V12 requires 61 complete runtime identity records.",
     );
   }
-  const sourceAnalysis = analyzePythonSource(input.sourceText);
-  requireIdentity(sourceAnalysis.valid, "The correlated source cannot be lexically verified.");
-  let sourceBlock: ReturnType<typeof findSourceSceneBlock>;
+  let sourceAnalysis: StudioSourceAnalysisV1;
   try {
-    sourceBlock = findSourceSceneBlock(input.sourceText, input.expected.sceneName, input.expected.sourcePath);
+    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: input.expected.sourceHash,
+      sceneName: input.expected.sceneName,
+      sourcePath: input.expected.sourcePath,
+      sourceText: input.sourceText,
+    });
   } catch (cause) {
-    identityError("The selected source Scene cannot be identified unambiguously.", cause);
+    identityError(
+      `The selected source Scene failed SourceAnalysis${cause instanceof SourceAnalysisError ? ` (${cause.code})` : ""}.`,
+      cause,
+    );
   }
-  requireIdentity(sourceBlock !== null, "The selected source Scene is missing from its correlated source.");
-  const sourceBindings = buildSourceBindingLookup(
-    input.sourceText,
-    sourceAnalysis,
-    sourceBlock,
-    input.expected.snapshotVersion,
-  );
+  const sourceBindings = buildSourceBindingLookup(sourceAnalysis, input.expected.snapshotVersion);
   let mixedDynamicMathTexEntityId: string | null = null;
   if (input.expected.snapshotVersion === 7 && input.snapshot.kind === "compiled") {
     const compiledSnapshot = input.snapshot;
