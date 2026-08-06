@@ -497,7 +497,7 @@ def producer_identity(
     return {**identity, "identitySha256": canonical_digest(identity)}
 
 
-def generate(output: Path, fast_manim: Path) -> None:
+def generate(output: Path, fast_manim: Path, source_override: Path | None) -> None:
     if output.exists():
         raise FileExistsError(f"refusing to overwrite generator output: {output}")
     if not output.parent.is_dir():
@@ -506,8 +506,13 @@ def generate(output: Path, fast_manim: Path) -> None:
         raise RuntimeError("PYTHONHASHSEED=0 must be set before starting the generator")
     fast_manim = fast_manim.resolve(strict=True)
     require_exact_checkout(fast_manim)
-    source = fast_manim / SOURCE_PATH
-    if sha256_file(source) != SOURCE_SHA256:
+    source = (
+        fast_manim / SOURCE_PATH
+        if source_override is None
+        else source_override.resolve(strict=True)
+    )
+    source_sha256 = sha256_file(source)
+    if source_override is None and source_sha256 != SOURCE_SHA256:
         raise RuntimeError("official OpeningManim source bytes do not match the pin")
     manim_module = Path(manim.__file__).resolve()
     if not manim_module.is_relative_to(fast_manim / "manim"):
@@ -579,7 +584,7 @@ def generate(output: Path, fast_manim: Path) -> None:
                 "start": 0,
             },
             "sourcePath": SOURCE_PATH.as_posix(),
-            "sourceSha256": SOURCE_SHA256,
+            "sourceSha256": source_sha256,
             "texImplementation": "normal-manim-latex-dvisvgm",
         },
         "schema": "poietra.opening-manim-cairo-reference",
@@ -598,8 +603,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fast-manim", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--source", type=Path)
     arguments = parser.parse_args()
-    generate(arguments.output.resolve(), arguments.fast_manim)
+    generate(
+        arguments.output.resolve(),
+        arguments.fast_manim,
+        arguments.source,
+    )
 
 
 if __name__ == "__main__":

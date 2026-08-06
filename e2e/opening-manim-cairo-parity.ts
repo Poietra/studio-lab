@@ -56,12 +56,13 @@ function sha256(bytes: Uint8Array) {
 export async function compareOpeningManimCairoWebGpuFramesV2(
   input: Readonly<{
     cairoReferenceRoot: string;
+    expectedSourceSha256?: string;
     frames: readonly OpeningManimWebGpuFrameV2[];
     outputRoot: string;
   }>,
 ) {
   const [cairo, corpus] = await Promise.all([
-    readOpeningManimCairoReferenceV2(input.cairoReferenceRoot),
+    readOpeningManimCairoReferenceV2(input.cairoReferenceRoot, input.expectedSourceSha256),
     readFile("fixtures/visual-parity-v1/corpus.json", "utf8").then((text) =>
       visualParityCorpusV1Schema.parse(JSON.parse(text)),
     ),

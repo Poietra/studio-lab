@@ -8,6 +8,8 @@ import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 const SHA256 = z.string().regex(/^[0-9a-f]{64}$/u);
 const VIEWPORT = { heightPx: 360, widthPx: 640 } as const;
 const RGBA_BYTE_LENGTH = VIEWPORT.widthPx * VIEWPORT.heightPx * 4;
+export const OPENING_MANIM_OFFICIAL_SOURCE_SHA256_V2 =
+  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 
 export const OPENING_MANIM_CAIRO_PARITY_THRESHOLDS_V2 = {
   maximumPixelFractionAboveThreshold: 0.008,
@@ -277,7 +279,7 @@ export const openingManimCairoReferenceV2Schema = z.strictObject({
       start: z.literal(0),
     }),
     sourcePath: z.literal("example_scenes/basic.py"),
-    sourceSha256: z.literal("d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f"),
+    sourceSha256: SHA256,
     texImplementation: z.literal("normal-manim-latex-dvisvgm"),
   }),
   schema: z.literal("poietra.opening-manim-cairo-reference"),
@@ -292,7 +294,11 @@ function requireDigest(actual: string, expected: string, label: string) {
   if (actual !== expected) throw new Error(`${label} hashes to ${actual}, expected ${expected}`);
 }
 
-export async function readOpeningManimCairoReferenceV2(root: string) {
+export async function readOpeningManimCairoReferenceV2(
+  root: string,
+  expectedSourceSha256 = OPENING_MANIM_OFFICIAL_SOURCE_SHA256_V2,
+) {
+  const expectedSourceDigest = SHA256.parse(expectedSourceSha256);
   const reference = openingManimCairoReferenceV2Schema.parse(
     JSON.parse(await readFile(join(root, "reference.json"), "utf8")),
   );
@@ -303,6 +309,7 @@ export async function readOpeningManimCairoReferenceV2(root: string) {
     reference.rendererConfig.identitySha256,
     "the Cairo renderer configuration",
   );
+  requireDigest(reference.scene.sourceSha256, expectedSourceDigest, "the Cairo source");
 
   for (const artifact of reference.producer.texArtifacts) {
     for (const kind of ["tex", "svg"] as const) {
