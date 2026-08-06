@@ -647,6 +647,30 @@ describe("Manim API client contracts", () => {
     await expect(loadManimRender("invalid-failure")).rejects.toThrow(/does not match the API contract/i);
   });
 
+  it.each([
+    { anchorLine: 4, anchorLines: [5], label: "a primary anchor outside the evidence anchors" },
+    { anchorLine: 5, anchorLines: [5, 4], label: "source evidence anchors outside final source order" },
+  ])("rejects render and commit responses with $label", async ({ anchorLine, anchorLines }) => {
+    const malformedPatch = { ...session().patch, anchorLine, anchorLines };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify(session({ patch: malformedPatch })), { status: 200 })),
+    );
+
+    await expect(loadManimRender("render-id")).rejects.toThrow(/does not match the API contract/i);
+    await expect(
+      runManimRenderAction("render-id", "commit", undefined, {
+        actionId: "00000000-0000-4000-8000-000000000001",
+        programBatchId: "batch-1-abc-def",
+        projectId: "project-a",
+        renderRequestId: "render-request-abc-def",
+        sceneName: "SceneOne",
+        sourceHash: "a".repeat(64),
+        sourcePath: "scene.py",
+      }),
+    ).rejects.toThrow(/does not match the API contract/i);
+  });
+
   it.each(["https://attacker.example/video.mp4", "/api/manim/renders/another-render/video"])(
     "rejects a render video URL outside its exact authenticated session route: %s",
     async (videoUrl) => {

@@ -10,6 +10,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type ProgramRenderRequest, renderProgramBatchId } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationScaleProgram,
+} from "../src/studio/suggestion-program";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest } from "./manim-render-http";
@@ -81,6 +85,82 @@ describe("Manim render manager", () => {
       sourceHash: request().sourceHash,
       state: "current",
     });
+  });
+
+  it("returns final compacted transform evidence for the source it renders and commits", async () => {
+    const priorTransformSource = `from manim import *
+
+class GroupedEquation(Scene):
+    def construct(self):
+        equation = MathTex("x")
+        self.add(equation)
+        self.wait(7)
+        # poietra:cursor 7
+        # poietra:position {"kind":"absolute","value":{"x":320,"y":180},"variable":"equation","version":1}
+        equation.move_to((0, 0, 0))
+        # poietra:scale {"kind":"exact","value":2,"variable":"equation","version":1}
+        equation.scale(2)
+        # poietra:transaction "prior-transform"
+        # poietra:anchor 7
+        self.wait(1)
+`;
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "scene.py"), priorTransformSource, "utf8");
+    const imported = importManimScene(priorTransformSource, "scene.py", "GroupedEquation", {
+      height: 8,
+      width: 14.222,
+    });
+    const entityId = "source:scene.py#GroupedEquation:equation";
+    const entity = imported?.runtimeSceneState.objectGraph.entities[entityId];
+    if (!imported || entity?.geometry?.position.kind !== "known" || entity.geometry.scale.kind !== "known") {
+      throw new Error("Prior transform source did not import with exact geometry");
+    }
+    const move = createDirectManipulationPositionProgram({
+      capturedPlayhead: 7,
+      delta: { x: 24, y: -12 },
+      positions: { [entityId]: entity.geometry.position.value },
+      scene: imported.runtimeSceneState,
+      start: 7,
+      targetEntityIds: [entityId],
+      transactionId: "returned-position",
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 7,
+      interval: { end: 7, start: 7 },
+      scales: { [entityId]: { from: entity.geometry.scale.value, to: 3 } },
+      scene: imported.runtimeSceneState,
+      targetEntityIds: [entityId],
+      transactionId: "returned-scale",
+    });
+    if (move.kind !== "valid" || scale.kind !== "valid") {
+      throw new Error(`Repeated transform fixture did not validate: ${JSON.stringify([move.issues, scale.issues])}`);
+    }
+    const renderRequest: ProgramRenderRequest = {
+      ...request(),
+      program: move.program,
+      programs: [move.program, scale.program],
+      sourceHash: createHash("sha256").update(priorTransformSource).digest("hex"),
+    };
+
+    const exported = await manager.exportSource(renderRequest);
+    const started = await manager.start(renderRequest);
+    const sourceLines = exported.source.split(/\r?\n/);
+    const evidenceLines = started.patch.insertedCode.split(/\r?\n/);
+
+    expect(sourceLines.slice(started.patch.anchorLine, started.patch.anchorLine + evidenceLines.length)).toEqual(
+      evidenceLines,
+    );
+    expect(sourceLines[started.patch.anchorLine + evidenceLines.length]).toMatch(/^\s*# poietra:anchor 7$/);
+    expect(started.patch.anchorLines).toEqual([started.patch.anchorLine]);
+    expect(started.patch.insertedCode).toContain("equation.scale(3)");
+    expect(started.patch.insertedCode).not.toContain("equation.scale(1.5)");
+    expect(started.patch.insertedCode).not.toContain("prior-transform");
+    expect(started.patch.insertedCode).toContain('poietra:transaction "returned-position"');
+    expect(started.patch.insertedCode).toContain('poietra:transaction "returned-scale"');
+
+    await expect(waitForTerminal(manager, started.id)).resolves.toMatchObject({ status: "ready" });
+    await expect(manager.commit(started.id, commitRequest(started))).resolves.toMatchObject({ status: "committed" });
+    await expect(readFile(join(projectRoot, "scene.py"), "utf8")).resolves.toBe(exported.source);
   });
 
   it("converts a zero-animation Scene image to an MP4 before allowing Commit", async () => {
