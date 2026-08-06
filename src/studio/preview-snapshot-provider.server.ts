@@ -349,7 +349,11 @@ async function validateVerifiedRuntimeTraceRun(
   if (!parsed.success) throw providerError("The Runtime Trace endpoint returned malformed evidence.", parsed.error);
   const run = parsed.data;
   if (run.status !== "verified") {
-    throw providerError(`The Runtime Trace endpoint did not verify this Scene (${run.status}).`);
+    throw providerError(
+      `The Runtime Trace endpoint did not verify this Scene (${run.status}).`,
+      undefined,
+      run.failure.code === "unsupported-profile" ? "unsupported" : "failed",
+    );
   }
   assertEqual("project", run.projectId, identity.projectId);
   assertEqual("request", run.requestId, requestId);
