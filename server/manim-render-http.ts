@@ -34,7 +34,7 @@ import {
   fastManimRuntimeTraceSceneIdV1,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
 } from "./fast-manim-runtime-trace-contract";
-import { FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1 } from "./fast-manim-runtime-trace-profile";
+import { selectFastManimRuntimeTraceProfile } from "./fast-manim-runtime-trace-profiles";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -493,7 +493,8 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
 
   let safeView: typeof run = run;
   if (run.status === "verified") {
-    if (run.runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V1) {
+    const profile = selectFastManimRuntimeTraceProfile(request);
+    if (profile === null || run.runtimeConfigHash !== profile.runtimeConfigHash) {
       throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
     }
     let bundle;
@@ -504,9 +505,8 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     }
     const source = bundle.scene.source;
     const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
-    const expectedRootNames = ["square", "decimal"] as const;
     let motionRootId: string | null = null;
-    for (const [index, name] of expectedRootNames.entries()) {
+    for (const [index, name] of profile.rootNames.entries()) {
       const root = run.roots[index];
       const entity = root ? entities.get(root.entityId) : undefined;
       if (
@@ -524,9 +524,10 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     }
     const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
     if (
-      bundle.scene.duration !== 6 ||
+      bundle.scene.duration !== profile.duration ||
       bundle.scene.sceneId !== sceneId ||
       source.kind !== "imported-manim-runtime-trace" ||
+      source.traceVersion !== profile.version ||
       source.sourceHash !== request.sourceHash ||
       source.runtimeConfigHash !== run.runtimeConfigHash ||
       source.traceDigest !== run.traceDigest ||
