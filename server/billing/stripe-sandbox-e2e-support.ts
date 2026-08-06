@@ -170,7 +170,7 @@ export class StripeCliSigningSecretCaptureV1 {
       throw new Error("Stripe CLI exceeded the bounded startup output.");
     }
     this.#buffer += new TextDecoder().decode(chunk, { stream: true });
-    const match = this.#buffer.match(/whsec_[A-Za-z0-9_]{10,}/u);
+    const match = this.#buffer.match(/whsec_[A-Za-z0-9_]{10,}(?=[^A-Za-z0-9_])/u);
     if (!match) return;
     this.#secret = match[0];
     this.#buffer = "";

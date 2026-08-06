@@ -15,7 +15,6 @@ import { POSTGRES_REPOSITORY_OPTIONS_V1 } from "../storage/postgres/postgres-rep
 import { PostgresStripeBillingRepositoryV1 } from "../storage/postgres/postgres-stripe-billing-repository";
 import { createStripeCheckoutPlanCatalogV1 } from "./plan-catalog";
 import { createStripeBillingServiceV1, type StripeBillingServiceV1 } from "./stripe-billing-service";
-import { STRIPE_API_VERSION_V1 } from "./stripe-gateway";
 import { createStripeHttpBillingGatewayV1 } from "./stripe-http-gateway";
 import {
   resolveStripeSandboxE2eConfigurationV1,
@@ -70,6 +69,33 @@ function boundedChildEnvironment(secretKey: string, privateHome: string) {
   return environment;
 }
 
+function boundedBrowserEnvironment(privateHome: string) {
+  const environment: NodeJS.ProcessEnv = {
+    DO_NOT_TRACK: "1",
+    HOME: privateHome,
+    XDG_CACHE_HOME: join(privateHome, "cache"),
+    XDG_CONFIG_HOME: join(privateHome, "config"),
+    XDG_DATA_HOME: join(privateHome, "data"),
+  };
+  for (const name of [
+    "DISPLAY",
+    "FONTCONFIG_FILE",
+    "FONTCONFIG_PATH",
+    "LANG",
+    "LC_ALL",
+    "LD_LIBRARY_PATH",
+    "PATH",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "TZ",
+    "XDG_RUNTIME_DIR",
+  ] as const) {
+    const value = process.env[name];
+    if (value !== undefined) environment[name] = value;
+  }
+  return environment;
+}
+
 async function stopChild(child: ReturnType<typeof spawn>) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill("SIGTERM");
@@ -98,8 +124,7 @@ async function startStripeWebhookForwarder(options: {
       "checkout.session.completed,customer.subscription.deleted",
       "--forward-to",
       options.forwardUrl,
-      "--stripe-version",
-      STRIPE_API_VERSION_V1,
+      "--skip-update",
     ],
     {
       env: boundedChildEnvironment(options.configuration.secretKey, privateHome),
@@ -490,16 +515,18 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
     const stripeRepository = new PostgresStripeBillingRepositoryV1({ pool });
     const entitlementRepository = new PostgresBillingEntitlementRepositoryV1({ pool });
     let browser: Browser | null = null;
+    let browserHome: string | null = null;
     let service: StripeBillingServiceV1 | null = null;
     let receiver: Awaited<ReturnType<typeof startWebhookReceiver>> | null = null;
     let forwarder: Awaited<ReturnType<typeof startStripeWebhookForwarder>> | null = null;
-    let stripeCheckoutSessionId: string | null = null;
-    let stripeCustomerId: string | null = null;
-    let stripeSubscriptionId: string | null = null;
-    let subscriptionCanceled = false;
+    const stripeCheckoutSessionIds = new Set<string>();
+    const stripeCustomerIds = new Set<string>();
+    const stripeSubscriptionIds = new Set<string>();
+    const canceledSubscriptionIds = new Set<string>();
     try {
       try {
-        browser = await chromium.launch({ headless: true });
+        browserHome = await mkdtemp(join(tmpdir(), "poietra-stripe-browser-"));
+        browser = await chromium.launch({ env: boundedBrowserEnvironment(browserHome), headless: true });
       } catch {
         throw new Error(
           "Playwright Chromium is unavailable; run pnpm exec playwright install chromium before the required Stripe lane.",
@@ -522,11 +549,20 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
         await service.acceptWebhook({ rawBody, stripeSignature });
       });
       forwarder = await startStripeWebhookForwarder({ configuration: options, forwardUrl: receiver.url });
+      const stripeGateway = createStripeHttpBillingGatewayV1({ secretKey: options.secretKey });
+      const recordingGateway = Object.freeze({
+        ...stripeGateway,
+        async createCheckoutSession(...args: Parameters<typeof stripeGateway.createCheckoutSession>) {
+          const checkout = await stripeGateway.createCheckoutSession(...args);
+          stripeCheckoutSessionIds.add(checkout.id);
+          return checkout;
+        },
+      });
       service = createStripeBillingServiceV1({
         catalog: createStripeCheckoutPlanCatalogV1({
           pro: { renderJobLimit: 3, stripePriceId: options.priceId },
         }),
-        gateway: createStripeHttpBillingGatewayV1({ secretKey: options.secretKey }),
+        gateway: recordingGateway,
         livemode: false,
         publicOrigin: "https://stripe-e2e.poietra.invalid",
         repository: stripeRepository,
@@ -553,7 +589,8 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
       if (!attemptRow?.stripe_checkout_session_id) {
         throw new Error("Stripe Checkout retry did not retain one canonical Session locator.");
       }
-      stripeCheckoutSessionId = exactStripeId(attemptRow.stripe_checkout_session_id, "cs");
+      const stripeCheckoutSessionId = exactStripeId(attemptRow.stripe_checkout_session_id, "cs");
+      expect(stripeCheckoutSessionIds.has(stripeCheckoutSessionId)).toBe(true);
 
       await completeHostedCheckout(browser, firstCheckout.checkoutUrl, testEmail, () =>
         receiver!.captured.some(({ eventType }) => eventType === "checkout.session.completed"),
@@ -595,8 +632,10 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
       if (!account?.stripeCustomerId || !subscription) {
         throw new Error("Stripe Sandbox reconciliation did not persist canonical object locators.");
       }
-      stripeCustomerId = exactStripeId(account.stripeCustomerId, "cus");
-      stripeSubscriptionId = exactStripeId(subscription.stripeSubscriptionId, "sub");
+      const stripeCustomerId = exactStripeId(account.stripeCustomerId, "cus");
+      const stripeSubscriptionId = exactStripeId(subscription.stripeSubscriptionId, "sub");
+      stripeCustomerIds.add(stripeCustomerId);
+      stripeSubscriptionIds.add(stripeSubscriptionId);
       expect(subscription).toMatchObject({ livemode: false, planKey: "pro", status: "active" });
 
       const canceled = await stripeSandboxRequestV1(
@@ -605,7 +644,7 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
         { method: "DELETE" },
       );
       expect(canceled).toMatchObject({ id: stripeSubscriptionId, livemode: false, status: "canceled" });
-      subscriptionCanceled = true;
+      canceledSubscriptionIds.add(stripeSubscriptionId);
       await eventually(
         async () => {
           const status = await service!.readStatus({ principal });
@@ -627,29 +666,28 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
       forwarder = null;
       await receiver?.close().catch(() => undefined);
       receiver = null;
-      if (stripeCheckoutSessionId) {
+      for (const stripeCheckoutSessionId of stripeCheckoutSessionIds) {
         await stripeSandboxRequestV1(
           options,
           `/v1/checkout/sessions/${encodeURIComponent(stripeCheckoutSessionId)}/expire`,
           { method: "POST" },
         ).catch(() => undefined);
-      }
-      if (stripeCheckoutSessionId && (!stripeCustomerId || !stripeSubscriptionId)) {
         const session = await stripeSandboxRequestV1(
           options,
           `/v1/checkout/sessions/${encodeURIComponent(stripeCheckoutSessionId)}`,
         )
           .then(checkoutCleanupLocators)
           .catch(() => null);
-        stripeCustomerId ??= session?.customerId ?? null;
-        stripeSubscriptionId ??= session?.subscriptionId ?? null;
+        if (session?.customerId) stripeCustomerIds.add(session.customerId);
+        if (session?.subscriptionId) stripeSubscriptionIds.add(session.subscriptionId);
       }
-      if (stripeSubscriptionId && !subscriptionCanceled) {
+      for (const stripeSubscriptionId of stripeSubscriptionIds) {
+        if (canceledSubscriptionIds.has(stripeSubscriptionId)) continue;
         await stripeSandboxRequestV1(options, `/v1/subscriptions/${encodeURIComponent(stripeSubscriptionId)}`, {
           method: "DELETE",
         }).catch(() => undefined);
       }
-      if (stripeCustomerId) {
+      for (const stripeCustomerId of stripeCustomerIds) {
         await stripeSandboxRequestV1(options, `/v1/customers/${encodeURIComponent(stripeCustomerId)}`, {
           method: "DELETE",
         }).catch(() => undefined);
@@ -658,6 +696,7 @@ describe.skipIf(configuration === null)("Stripe Sandbox Checkout to render admis
       await service?.close().catch(() => undefined);
       await entitlementRepository.close().catch(() => undefined);
       await pool.end().catch(() => undefined);
+      if (browserHome) await rm(browserHome, { force: true, recursive: true }).catch(() => undefined);
     }
   }, 240_000);
 });

@@ -99,6 +99,12 @@ describe("Stripe Sandbox E2E support", () => {
     expect(capture.take()).toBe("whsec_split_sandbox_value");
     expect(capture.take()).toBeNull();
 
+    const splitAfterMinimum = new StripeCliSigningSecretCaptureV1();
+    splitAfterMinimum.append(Buffer.from("Ready! signing secret is whsec_abcdefghij"));
+    expect(splitAfterMinimum.take()).toBeNull();
+    splitAfterMinimum.append(Buffer.from("klmnop\n"));
+    expect(splitAfterMinimum.take()).toBe("whsec_abcdefghijklmnop");
+
     const overflow = new StripeCliSigningSecretCaptureV1();
     expect(() => overflow.append(Buffer.alloc(StripeCliSigningSecretCaptureV1.maximumBytes + 1))).toThrow(/bounded/u);
   });
