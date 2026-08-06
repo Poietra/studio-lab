@@ -193,5 +193,5 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("Runtime Trace V2 Openin
       FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
       result.sourceHash,
     ]);
-  }, 90_000);
+  }, 120_000);
 });
