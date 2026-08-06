@@ -59,6 +59,7 @@ export type LoweredProgramBatchSource = Readonly<{
     baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
     kind:
       | "fast-manim-line-joints-v10"
+      | "fast-manim-opening-terminal-v2"
       | "fast-manim-updaters-terminal-v1"
       | "fast-manim-warp-square-v9"
       | "fast-manim-write-stuff-v12";
@@ -118,6 +119,10 @@ const UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1 = "example_scenes/basic.py";
 const UPDATERS_TERMINAL_SCENE_NAME_V1 = "UpdatersExample";
 const UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
 const UPDATERS_TERMINAL_SOURCE_TIME_V1 = 5;
+const OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2 = "example_scenes/basic.py";
+const OPENING_TERMINAL_SCENE_NAME_V2 = "OpeningManim";
+const OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2 = WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
+const OPENING_TERMINAL_SOURCE_TIME_V2 = 14;
 
 type TemporalSourceMarker =
   | Readonly<{
@@ -2336,6 +2341,280 @@ export function lowerWriteStuffInitialTransformSourceV12(
       kind: "fast-manim-write-stuff-v12",
     },
     source: lines.join(newline),
+  };
+}
+
+function openingTerminalV2LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `OpeningManim terminal position V2: ${message}`);
+}
+
+export type OpeningManimTerminalPositionSourceEditPlanV2 = Readonly<{
+  anchorLine: number;
+  binding: Readonly<{ name: "grid_title"; sourceLine: 38 }>;
+  sourceTime: typeof OPENING_TERMINAL_SOURCE_TIME_V2;
+  translation: Readonly<{ x: number; y: number; z: 0 }> | null;
+}>;
+
+function parseCanonicalOpeningTranslationV2(statement: string) {
+  const match = statement.match(/^grid_title\.shift\(\(([^,()]+), ([^,()]+), 0\)\)$/);
+  if (!match) return null;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    (x === 0 && y === 0) ||
+    Math.abs(x) > MAX_COORDINATE ||
+    Math.abs(y) > MAX_COORDINATE ||
+    formatPointCoordinate(x) !== match[1] ||
+    formatPointCoordinate(y) !== match[2]
+  ) {
+    return null;
+  }
+  return { x, y, z: 0 as const };
+}
+
+function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sceneName: string) {
+  if (sceneName !== OPENING_TERMINAL_SCENE_NAME_V2) {
+    openingTerminalV2LoweringError("candidate Scene identity is outside the pinned profile.");
+  }
+  const analysis = analyzePythonSource(candidateSource);
+  let block: ReturnType<typeof findSourceSceneBlock>;
+  try {
+    block = findSourceSceneBlock(
+      candidateSource,
+      OPENING_TERMINAL_SCENE_NAME_V2,
+      OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
+    );
+  } catch {
+    openingTerminalV2LoweringError("SourceAnalysis found an ambiguous Scene occurrence.");
+  }
+  const statements = findSourceSceneStatements(
+    candidateSource,
+    OPENING_TERMINAL_SCENE_NAME_V2,
+    OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
+  );
+  const assignments = statements.filter(({ text }) => text === 'grid_title = Tex("This is a grid", font_size=72)');
+  const transforms = statements.filter(({ text }) => text === "self.play(Transform(grid_title, grid_transform_title))");
+  const assignment = assignments[0];
+  const transform = transforms[0];
+  const transformIndex = transform ? statements.indexOf(transform) : -1;
+  const trailing = transformIndex < 0 ? [] : statements.slice(transformIndex + 1);
+  const wait = trailing.at(-1);
+  const translationStatement = trailing.length === 2 ? trailing[0] : undefined;
+  const directStatementLines = block
+    ? analysis.lines
+        .slice(block.bodyStart, block.bodyEnd)
+        .flatMap((line, offset) => (isPythonStatementStart(line) ? [block.bodyStart + offset] : []))
+    : [];
+  if (
+    !analysis.valid ||
+    !block ||
+    block.classLine !== 17 ||
+    block.bodyIndent !== 8 ||
+    assignments.length !== 1 ||
+    transforms.length !== 1 ||
+    !assignment ||
+    assignment.line !== 37 ||
+    !transform ||
+    transform.line !== 67 ||
+    trailing.length < 1 ||
+    trailing.length > 2 ||
+    wait?.text !== "self.wait()" ||
+    transform.line + 1 !== (translationStatement?.line ?? wait.line) ||
+    (translationStatement !== undefined && translationStatement.line + 1 !== wait.line) ||
+    directStatementLines.length !== statements.length ||
+    directStatementLines.some((line, index) => line !== statements[index]?.line) ||
+    directStatementLines.some((line) => analysis.lines[line]?.indentation !== block.bodyIndent) ||
+    analysis.lines[transform.line]?.code.trim() !== "self.play(Transform(grid_title, grid_transform_title))" ||
+    analysis.lines[wait.line]?.code.trim() !== "self.wait()" ||
+    analysis.lines[(translationStatement?.line ?? wait.line) - 1]?.bracketDepthAfter !== 0
+  ) {
+    openingTerminalV2LoweringError(
+      "SourceAnalysis could not prove the grid_title occurrence and direct final-Transform-to-wait boundary.",
+    );
+  }
+
+  const translation = translationStatement ? parseCanonicalOpeningTranslationV2(translationStatement.text) : null;
+  if (translationStatement && !translation) {
+    openingTerminalV2LoweringError("candidate edit must be one canonical finite bounded grid_title translation.");
+  }
+  const newline = candidateSource.includes("\r\n") ? "\r\n" : "\n";
+  const baseLines = candidateSource.split(/\r?\n/);
+  if (translationStatement) baseLines.splice(translationStatement.line, 1);
+  const officialSource = baseLines.join(newline);
+  const imported = importManimScene(
+    officialSource,
+    OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
+    OPENING_TERMINAL_SCENE_NAME_V2,
+  );
+  const bindingEntries = Object.entries(imported?.sourceVariables ?? {}).filter(([, name]) => name === "grid_title");
+  if (!imported || imported.sourceHash !== OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2 || bindingEntries.length !== 1) {
+    openingTerminalV2LoweringError("candidate bytes do not reduce to the pinned source occurrence and binding.");
+  }
+  return {
+    bindingEntityId: bindingEntries[0]![0],
+    officialSource,
+    plan: {
+      anchorLine: wait.line - Number(translationStatement !== undefined),
+      binding: { name: "grid_title", sourceLine: 38 },
+      sourceTime: OPENING_TERMINAL_SOURCE_TIME_V2,
+      translation,
+    } satisfies OpeningManimTerminalPositionSourceEditPlanV2,
+  } as const;
+}
+
+export function deriveOpeningManimTerminalPositionSourceEditPlanV2(
+  candidateSource: string,
+  sceneName: string,
+): OpeningManimTerminalPositionSourceEditPlanV2 {
+  return inspectOpeningManimTerminalPositionSourceV2(candidateSource, sceneName).plan;
+}
+
+export function recoverOpeningManimOfficialSourceV2(candidateSource: string, sceneName: string) {
+  const inspected = inspectOpeningManimTerminalPositionSourceV2(candidateSource, sceneName);
+  if (!inspected.plan.translation) openingTerminalV2LoweringError("candidate source contains no terminal translation.");
+  return inspected.officialSource;
+}
+
+/**
+ * SourceAnalysis half of the OpeningManim V2 edit slice. The caller must pass
+ * the grid_title center from separately verified and fully correlated Runtime
+ * Trace evidence; that runtime position cannot authorize a rewrite by itself.
+ */
+export function lowerOpeningManimTerminalPositionSourceV2(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+  runtimeSourceCenter: Readonly<{ x: number; y: number }> | null,
+): LoweredProgramBatchSource | null {
+  if (
+    request.sourcePath !== OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2 ||
+    request.sceneName !== OPENING_TERMINAL_SCENE_NAME_V2
+  ) {
+    return null;
+  }
+  if (request.sourceHash !== OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2) {
+    openingTerminalV2LoweringError("the edit must be rebased from the pinned official source generation.");
+  }
+  if (
+    incoming !== null ||
+    request.destination !== null ||
+    frame.height !== 8 ||
+    frame.width !== 128 / 9 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0 ||
+    (request.cameraCenter?.x ?? 0) !== 0 ||
+    (request.cameraCenter?.y ?? 0) !== 0
+  ) {
+    openingTerminalV2LoweringError("the exact terminal Scene and default Runtime Trace camera are required.");
+  }
+  const base = inspectOpeningManimTerminalPositionSourceV2(source, request.sceneName);
+  if (base.plan.translation) openingTerminalV2LoweringError("the pinned base source must not contain a prior edit.");
+  const bindings = request.sourceBindings.filter(
+    ({ entityId, sourceVariable }) => sourceVariable === "grid_title" || entityId === base.bindingEntityId,
+  );
+  if (
+    bindings.length !== 1 ||
+    bindings[0]?.entityId !== base.bindingEntityId ||
+    bindings[0].sourceVariable !== "grid_title"
+  ) {
+    openingTerminalV2LoweringError("one exact SourceAnalysis grid_title binding is required.");
+  }
+  const programs = renderRequestPrograms(request);
+  const entry = entries[0];
+  const program = programs[0];
+  const operation = program?.operations[0];
+  const anchorSource = program?.anchor.source;
+  if (
+    programs.length !== 1 ||
+    entries.length !== 1 ||
+    !entry ||
+    !program ||
+    JSON.stringify(entry.program) !== JSON.stringify(program) ||
+    entry.sourceAnchor !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
+    program.version !== EDIT_OPERATION_VERSION ||
+    program.anchor.capturedPlayhead !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
+    program.anchor.resolvedSeconds !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
+    !anchorSource ||
+    !(
+      (anchorSource.kind === "absolute" && anchorSource.seconds === OPENING_TERMINAL_SOURCE_TIME_V2) ||
+      (anchorSource.kind === "playhead" && anchorSource.referenceSeconds === OPENING_TERMINAL_SOURCE_TIME_V2)
+    ) ||
+    program.intentCount !== 1 ||
+    program.loweringStatus !== "supported" ||
+    program.provenance.origin !== "direct-manipulation" ||
+    program.requestedExecution !== "parallel" ||
+    program.operations.length !== 1 ||
+    !operation ||
+    operation.kind !== "SetProperty" ||
+    operation.key !== "position" ||
+    operation.entityId !== base.bindingEntityId ||
+    operation.dependsOn.length !== 0 ||
+    operation.provenance.origin !== "direct-manipulation" ||
+    operation.interval.start !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
+    operation.interval.end !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
+    program.schedule.mode !== "parallel" ||
+    program.schedule.edges.length !== 0 ||
+    program.schedule.order.length !== 1 ||
+    program.schedule.order[0] !== operation.id ||
+    !isPoint(operation.value) ||
+    !Number.isFinite(operation.value.x) ||
+    !Number.isFinite(operation.value.y)
+  ) {
+    openingTerminalV2LoweringError("one exact grid_title position Program at source time fourteen is required.");
+  }
+  if (
+    !runtimeSourceCenter ||
+    !Number.isFinite(runtimeSourceCenter.x) ||
+    !Number.isFinite(runtimeSourceCenter.y) ||
+    Math.abs(runtimeSourceCenter.x) > MAX_COORDINATE ||
+    Math.abs(runtimeSourceCenter.y) > MAX_COORDINATE
+  ) {
+    openingTerminalV2LoweringError("a finite bounded correlated Runtime Trace grid_title center is required.");
+  }
+  const target = {
+    x: (operation.value.x / request.viewport.width - 0.5) * frame.width,
+    y: (0.5 - operation.value.y / request.viewport.height) * frame.height,
+  };
+  const translation = { x: target.x - runtimeSourceCenter.x, y: target.y - runtimeSourceCenter.y };
+  if (
+    !Number.isFinite(translation.x) ||
+    !Number.isFinite(translation.y) ||
+    (nearlyEqual(translation.x, 0) && nearlyEqual(translation.y, 0)) ||
+    Math.abs(translation.x) > MAX_COORDINATE ||
+    Math.abs(translation.y) > MAX_COORDINATE
+  ) {
+    openingTerminalV2LoweringError("the correlated position must produce one finite nonzero bounded translation.");
+  }
+  const newline = source.includes("\r\n") ? "\r\n" : "\n";
+  const indentation = source.split(/\r?\n/)[base.plan.anchorLine]?.match(/^\s*/)?.[0] ?? "";
+  if (indentation !== "        ") openingTerminalV2LoweringError("the pinned final-wait indentation changed.");
+  const insertedCode = `${indentation}grid_title.shift((${formatPointCoordinate(translation.x)}, ${formatPointCoordinate(translation.y)}, 0))`;
+  const lines = source.split(/\r?\n/);
+  lines.splice(base.plan.anchorLine, 0, insertedCode);
+  const loweredSource = lines.join(newline);
+  const derived = deriveOpeningManimTerminalPositionSourceEditPlanV2(loweredSource, request.sceneName);
+  if (
+    !derived.translation ||
+    !nearlyEqual(derived.translation.x, translation.x) ||
+    !nearlyEqual(derived.translation.y, translation.y)
+  ) {
+    openingTerminalV2LoweringError("the emitted source does not re-derive the correlated translation.");
+  }
+  return {
+    anchorLine: base.plan.anchorLine,
+    anchorLines: [base.plan.anchorLine],
+    insertedCode,
+    preflight: {
+      baseSourceHash: OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2,
+      kind: "fast-manim-opening-terminal-v2",
+    },
+    source: loweredSource,
   };
 }
 

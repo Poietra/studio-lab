@@ -2,11 +2,13 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { lowerFastManimRuntimeTraceProducerJsonV1 } from "../../server/fast-manim-runtime-trace-lowering";
+import { lowerVerifiedFastManimRuntimeTraceV2 } from "../../server/fast-manim-runtime-trace-v2-lowering";
 import {
   runtimeTraceFixture,
   runtimeTraceRequestFixture,
   trustedRuntimeTraceProducer,
 } from "../../server/test-fixtures/fast-manim-runtime-trace-fixture";
+import { fastManimRuntimeTraceV2Fixture } from "../../server/test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
@@ -54,6 +56,8 @@ import {
   studioPreviewHostReadyForSceneUpdateV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
+  studioPreviewRuntimeTraceOpeningSelectionProfileV2,
+  studioPreviewRuntimeTraceOpeningTerminalEditSeedV2,
   studioPreviewRuntimeTraceTerminalAnchorIsExactV1,
   studioPreviewRuntimeTraceTerminalEditSeedV1,
   studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1,
@@ -1231,7 +1235,9 @@ describe("compileStudioPreviewSceneV1", () => {
       height: 8,
       width: 14.222222222222221,
     });
-    if (!seed || !imported) throw new Error("Expected exact UpdatersExample Studio authority.");
+    if (!seed || seed.profile !== "updaters-terminal-v1" || !imported) {
+      throw new Error("Expected exact UpdatersExample Studio authority.");
+    }
     expect(Object.values(imported.sourceVariables)).toEqual(["square"]);
     const authority = { ...seed, baseCenter: { x: 320, y: 67.5 } } as const;
     const square = imported.runtimeSceneState.objectGraph.entities[authority.studioEntityId];
@@ -1594,6 +1600,220 @@ describe("compileStudioPreviewSceneV1", () => {
         authority,
       ),
     ).toBe(false);
+  });
+
+  it("admits only one exact OpeningManim grid_title move at t=14", { timeout: 15_000 }, async () => {
+    const trace = fastManimRuntimeTraceV2Fixture();
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
+    const source = bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace V2 source evidence.");
+    const context = {
+      projectId: trace.projectId,
+      sceneName: trace.sceneName,
+      sourceDuration: bundle.scene.duration,
+      sourceHash: trace.sourceHash,
+      sourcePath: trace.sourcePath,
+      workingRevision: PRISTINE_WORKING_REVISION,
+    } as const;
+    const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+      assetPayloads: [],
+      correlation: {
+        assetsManifestDigest: bundle.assets.manifestDigest,
+        context,
+        engineRevisionHash: source.traceDigest,
+        sceneDuration: bundle.scene.duration,
+        sceneId: bundle.scene.sceneId,
+        serverPublicationRevision: null,
+      },
+      duration: bundle.scene.duration,
+      sceneId: bundle.scene.sceneId,
+      snapshot: bundle,
+      sourceLabel: "verified Runtime Trace V2",
+      sourceRuntimeIdentity: new Map(
+        trace.roots.map((root) => [
+          root.binding.name,
+          { bindingId: root.binding.id, entityId: root.id, sourceName: root.binding.name },
+        ]),
+      ),
+    };
+    const selectionProfile = studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
+    expect(selectionProfile).toEqual({
+      profile: "opening-grid-title-terminal-v2",
+      runtimeEntityId: trace.roots[3]?.id,
+      studioSceneId: "example_scenes/basic.py#OpeningManim",
+    });
+    const seed = studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(snapshot);
+    expect(seed).toEqual({
+      duration: 15,
+      profile: "opening-grid-title-terminal-v2",
+      runtimeEntityId: trace.roots[3]?.id,
+      sourceAnchor: 14,
+      studioEntityId: "source:example_scenes/basic.py#OpeningManim:grid_title",
+      studioSceneId: "example_scenes/basic.py#OpeningManim",
+    });
+    expect(studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot)).toEqual(seed);
+    expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
+      editableRuntimeEntityId: trace.roots[3]?.id,
+      kind: "bounded-interactive",
+      reason: "runtime-trace-terminal-edit",
+      sourceAnchor: 14,
+      verifiedRuntimeEntityIds: trace.roots.map(({ id }) => id),
+    });
+    const gridRuntimeId = trace.roots[2]?.id;
+    if (!seed || !gridRuntimeId) throw new Error("Expected the verified OpeningManim grid root.");
+    expect(
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+        authority: selectionProfile,
+        interactionGeometry: new Map([
+          [gridRuntimeId, { dimensions: { height: 310, width: 620 }, position: { x: 320, y: 180 } }],
+        ]),
+        sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        id: "source:example_scenes/basic.py#OpeningManim:grid",
+        position: { x: 320, y: 180 },
+        sourceIdentity: { kind: "known", value: "grid" },
+        type: "NumberPlane",
+      }),
+    ]);
+    expect(
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+        authority: selectionProfile,
+        interactionGeometry: new Map(),
+        sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
+      }),
+    ).toEqual([]);
+    const candidateSourceHash = HASH_C;
+    const candidateSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...snapshot,
+      correlation: {
+        ...snapshot.correlation,
+        context: { ...snapshot.correlation.context, sourceHash: candidateSourceHash },
+      },
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          source: { ...source, sourceHash: candidateSourceHash },
+        },
+      },
+    };
+    expect(studioPreviewRuntimeTraceOpeningSelectionProfileV2(candidateSnapshot)).toEqual(selectionProfile);
+    expect(studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(candidateSnapshot)).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceOpeningSelectionProfileV2({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map(
+          [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName !== "grid"),
+        ),
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+        ...snapshot,
+        correlation: {
+          ...snapshot.correlation,
+          context: { ...snapshot.correlation.context, workingRevision: "stale-opening-trace" },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map(
+          [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName !== "grid_title"),
+        ),
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map(
+          [...snapshot.sourceRuntimeIdentity!.entries()].map(([sourceName, mapping]) => [
+            sourceName,
+            sourceName === "grid_title" ? { ...mapping, entityId: `${mapping.entityId}:stale` } : mapping,
+          ]),
+        ),
+      }),
+    ).toBeNull();
+
+    const officialSource = await readFile(
+      new URL("../../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+      "utf8",
+    );
+    const imported = importManimScene(officialSource, trace.sourcePath, trace.sceneName, {
+      height: 8,
+      width: 128 / 9,
+    });
+    if (!seed || seed.profile !== "opening-grid-title-terminal-v2" || !imported) {
+      throw new Error("Expected exact OpeningManim Studio authority.");
+    }
+    const baseCenter = { x: 105, y: 52 };
+    const authority = { ...seed, baseCenter } as const;
+    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+      { ...imported.runtimeSceneState, duration: bundle.scene.duration },
+      authority,
+    );
+    const position = createDirectManipulationPositionProgram({
+      capturedPlayhead: 14,
+      delta: { x: 24, y: -12 },
+      positions: { [authority.studioEntityId]: baseCenter },
+      scene: validationScene,
+      start: 14,
+      targetEntityIds: [authority.studioEntityId],
+      transactionId: "runtime-trace-opening-grid-title-position",
+    });
+    expect(position.kind, JSON.stringify(position.issues)).toBe("valid");
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(position.program, authority)).toBe(true);
+    const record = programRecord(position.program, position);
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([record], authority)).toEqual({
+      kind: "authorized",
+      operationKinds: ["position"],
+      remainingOperations: [],
+    });
+    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([record, record], authority)).toEqual({
+      kind: "unauthorized",
+    });
+    expect(
+      studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
+        {
+          ...position.program,
+          anchor: {
+            ...position.program.anchor,
+            capturedPlayhead: 5,
+            resolvedSeconds: 5,
+            source: { kind: "playhead", referenceSeconds: 5 },
+          },
+        },
+        authority,
+      ),
+    ).toBe(false);
+    expect(
+      [13.9999, 14, 14.0001].map((sampleTime) =>
+        studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime, authority.sourceAnchor),
+      ),
+    ).toEqual([false, true, false]);
+    expect(
+      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+        atExactAnchor: true,
+        contextMatches: true,
+        presentedAuthority: authority,
+        programRecords: [record],
+        retainedAuthority: authority,
+        transientEdit: false,
+        workingRevisionPristine: true,
+      }),
+    ).toMatchObject({
+      authority: null,
+      baseFrameRetained: true,
+      pending: {
+        position: { x: 129, y: 40 },
+        profile: "opening-grid-title-terminal-v2",
+        sourceAnchor: 14,
+        studioEntityId: authority.studioEntityId,
+      },
+    });
   });
 
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {

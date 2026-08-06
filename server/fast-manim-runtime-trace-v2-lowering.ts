@@ -221,6 +221,7 @@ function smoothTransformWindowForDraw(drawId: string): SmoothTransformWindowV2 |
 type SmoothWorldPathPlanV2 = Readonly<{
   frameIndexes: readonly number[];
   paths: readonly CubicPathV2[];
+  terminalShift: Readonly<{ x: number; y: number }> | null;
   window: SmoothTransformWindowV2;
 }>;
 
@@ -228,11 +229,13 @@ function smoothWorldPathPlan(
   draws: readonly RuntimeTraceDrawV2[],
   paths: readonly CubicPathV2[],
   frameIndexes: readonly number[],
+  terminalGridTitleShift: Readonly<{ x: number; y: number }> | null,
 ): SmoothWorldPathPlanV2 | undefined {
   const drawId = draws.find((draw) => draw.present)?.drawId;
   if (!drawId) return undefined;
   const window = smoothTransformWindowForDraw(drawId);
   if (!window) return undefined;
+  const terminalShift = drawId.includes("/runtime-root:grid-title/runtime-draw:") ? terminalGridTitleShift : null;
   const phaseIndexes = frameIndexes.flatMap((frameIndex, index) =>
     frameIndex >= window.startFrame && frameIndex <= window.endFrame ? [index] : [],
   );
@@ -253,7 +256,12 @@ function smoothWorldPathPlan(
   const worldPaths = paths.map((path, index) => {
     const draw = draws[index];
     if (!draw) failSemantic(`Runtime Trace V2 draw ${drawId} lost its world translation.`);
-    return translatedPath(path, draw.translation);
+    const frameIndex = frameIndexes[index];
+    const translation =
+      terminalShift && frameIndex !== undefined && frameIndex >= window.endFrame
+        ? { x: draw.translation.x - terminalShift.x, y: draw.translation.y - terminalShift.y }
+        : draw.translation;
+    return translatedPath(path, translation);
   });
   const firstWorld = worldPaths[firstIndex];
   const secondWorld = worldPaths[secondIndex];
@@ -300,6 +308,7 @@ function smoothWorldPathPlan(
   return {
     frameIndexes: entries.map(({ frameIndex }) => frameIndex),
     paths: entries.map(({ path }) => translatedPath(path, { x: -fixedTranslation.x, y: -fixedTranslation.y })),
+    terminalShift,
     window,
   };
 }
@@ -487,8 +496,20 @@ function drawChannels(
   if (!firstPresent) return [];
   const channels: AnimationChannelV2[] = [];
   const base = { entityId, provenanceId } as const;
-  const transforms = draws.map((draw) => ({ ...IDENTITY, tx: draw.translation.x, ty: draw.translation.y }));
-  if (!smoothPlan && valuesChange(transforms)) {
+  const firstTranslation = draws[0]?.translation;
+  const transforms = draws.map((draw, index) => {
+    const frameIndex = frameIndexes[index];
+    if (smoothPlan?.terminalShift && firstTranslation && frameIndex !== undefined) {
+      const shifted = frameIndex >= smoothPlan.window.endFrame;
+      return {
+        ...IDENTITY,
+        tx: firstTranslation.x + (shifted ? smoothPlan.terminalShift.x : 0),
+        ty: firstTranslation.y + (shifted ? smoothPlan.terminalShift.y : 0),
+      };
+    }
+    return { ...IDENTITY, tx: draw.translation.x, ty: draw.translation.y };
+  });
+  if ((!smoothPlan || smoothPlan.terminalShift) && valuesChange(transforms)) {
     channels.push({
       ...base,
       id: `${entityId}/channel:runtime-trace-translation`,
@@ -542,6 +563,7 @@ function lowerDrawTimeline(
   appearances: ReadonlyMap<string, VectorAppearanceV2>,
   provenanceId: string,
   firstSceneOrder: number,
+  terminalGridTitleShift: Readonly<{ x: number; y: number }> | null,
 ) {
   const entities: SceneEntityV1[] = [];
   const channels: AnimationChannelV2[] = [];
@@ -560,7 +582,7 @@ function lowerDrawTimeline(
     }
     const values = traceAppearances(run.draws, appearances);
     const parts = paintParts(run.draws, values);
-    const smoothPlan = smoothWorldPathPlan(run.draws, run.paths, run.frameIndexes);
+    const smoothPlan = smoothWorldPathPlan(run.draws, run.paths, run.frameIndexes, terminalGridTitleShift);
     parts.forEach((part) => {
       const topologySuffix = runIndex === 0 ? "" : `/topology:${runIndex}`;
       const entityId = `${firstPresent.drawId}${topologySuffix}${part.suffix}`;
@@ -617,8 +639,10 @@ async function emptyRuntimeTraceManifest(trace: VerifiedFastManimRuntimeTraceV2)
   return { ...draft, manifestDigest: await digestAssetManifestV1(draft) };
 }
 
-/** Lowers one already verified OpeningManim Runtime Trace V2 into display-only retained Scene IR. */
-export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastManimRuntimeTraceV2) {
+async function lowerVerifiedFastManimRuntimeTraceV2Profile(
+  trace: VerifiedFastManimRuntimeTraceV2,
+  terminalGridTitleShift: Readonly<{ x: number; y: number }> | null,
+) {
   const timelines = collectDrawTimelines(trace);
   const paths = new Map(trace.resources.paths.map((resource) => [resource.id, resource.path]));
   const appearances = new Map(
@@ -633,7 +657,14 @@ export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastMa
   const leaves: SceneEntityV1[] = [];
   const channels: AnimationChannelV2[] = [];
   for (const draws of timelines) {
-    const lowered = lowerDrawTimeline(draws, paths, appearances, provenanceId, groups.length + leaves.length);
+    const lowered = lowerDrawTimeline(
+      draws,
+      paths,
+      appearances,
+      provenanceId,
+      groups.length + leaves.length,
+      terminalGridTitleShift,
+    );
     leaves.push(...lowered.entities);
     channels.push(...lowered.channels);
   }
@@ -692,6 +723,22 @@ export async function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastMa
     failSemantic("Runtime Trace V2 normalized Scene IR exceeds its measured eight-MiB budget.");
   }
   return bundle;
+}
+
+/** Lowers one already verified official OpeningManim Runtime Trace V2 into
+ * display-only retained Scene IR. */
+export function lowerVerifiedFastManimRuntimeTraceV2(trace: VerifiedFastManimRuntimeTraceV2) {
+  return lowerVerifiedFastManimRuntimeTraceV2Profile(trace, null);
+}
+
+/** Lowers the one #496 candidate family. Its direct shift shares frame 840
+ * with the preceding Transform endpoint. Keep the official smooth geometry
+ * plan and represent only that source-proved discontinuity as translation. */
+export function lowerVerifiedFastManimRuntimeTraceOpeningPositionCandidateV2(
+  trace: VerifiedFastManimRuntimeTraceV2,
+  translation: Readonly<{ x: number; y: number }>,
+) {
+  return lowerVerifiedFastManimRuntimeTraceV2Profile(trace, translation);
 }
 
 /** Verifies producer bytes and trusted request correlation before lowering OpeningManim. */

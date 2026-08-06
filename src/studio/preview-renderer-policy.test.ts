@@ -12,6 +12,7 @@ import {
   snapStudioPreviewViewportV1,
   studioPreviewHostBindingCurrentV1,
   studioPreviewSnapshotCorrelatesV1,
+  studioPreviewSnapshotMatchesSourceV1,
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
 import {
@@ -108,6 +109,16 @@ describe("studioPreviewSnapshotCorrelatesV1", () => {
 
   it("uses the verified runtime duration instead of Studio's conservative static-import estimate", () => {
     expect(studioPreviewSnapshotCorrelatesV1(CORRELATION, { ...CONTEXT, sourceDuration: 0.1 })).toBe(true);
+  });
+
+  it("keeps immutable source identity separate from live timing and edit revision", () => {
+    expect(
+      studioPreviewSnapshotMatchesSourceV1(CORRELATION, {
+        ...CONTEXT,
+        sourceDuration: 14,
+        workingRevision: "programs:opening-grid-title-position",
+      }),
+    ).toBe(true);
   });
 
   it("never treats an internally inconsistent Scene IR duration as correlated", () => {

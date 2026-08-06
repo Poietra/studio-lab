@@ -1,9 +1,40 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+
 import { describe, expect, it } from "vitest";
 import {
   OPENING_MANIM_CAIRO_REFERENCE_SAMPLES_V2,
+  OPENING_MANIM_OFFICIAL_SOURCE_SHA256_V2,
   openingManimCairoReferenceV2Schema,
   readOpeningManimCairoReferenceV2,
 } from "./opening-manim-cairo-reference";
+import { withGeneratedRuntimeTraceCairoReferenceV1 } from "./runtime-trace-cairo-reference-runner";
+
+const REAL_GENERATOR_AVAILABLE = Boolean(
+  process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND?.trim() &&
+    process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_REPOSITORY?.trim(),
+);
+
+function sha256(value: Uint8Array | string) {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+async function terminalPositionCandidateSource() {
+  const official = await readFile(
+    new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
+    "utf8",
+  );
+  const boundary = "        self.play(Transform(grid_title, grid_transform_title))\n        self.wait()\n";
+  const replacement =
+    "        self.play(Transform(grid_title, grid_transform_title))\n" +
+    "        grid_title.shift((1.25, -0.5, 0))\n" +
+    "        self.wait()\n";
+  const candidate = official.replace(boundary, replacement);
+  if (candidate === official || candidate.includes(boundary)) {
+    throw new Error("The OpeningManim terminal-position candidate source anchor is not unique.");
+  }
+  return candidate;
+}
 
 describe("OpeningManim Cairo reference v2", () => {
   it("keeps the generated evidence envelope strict", () => {
@@ -21,7 +52,11 @@ describe("OpeningManim Cairo reference v2", () => {
     async () => {
       const root = process.env.POIETRA_OPENING_MANIM_CAIRO_REFERENCE_ROOT;
       if (!root) throw new Error("POIETRA_OPENING_MANIM_CAIRO_REFERENCE_ROOT is required.");
-      const { frames, reference } = await readOpeningManimCairoReferenceV2(root);
+      const { frames, reference } = await readOpeningManimCairoReferenceV2(
+        root,
+        OPENING_MANIM_OFFICIAL_SOURCE_SHA256_V2,
+      );
+      await expect(readOpeningManimCairoReferenceV2(root, "0".repeat(64))).rejects.toThrow(/Cairo source hashes/u);
       expect(
         reference.frames.map(({ id, capturedFrameIndex, requestSampleTime }) => [
           id,
@@ -70,5 +105,39 @@ describe("OpeningManim Cairo reference v2", () => {
       expect(framesAreEqual("final-title-transform-last", "final-title-transform-play-end")).toBe(false);
       expect(framesAreEqual("final-title-transform-play-end", "terminal-hold-end")).toBe(true);
     },
+  );
+
+  it.runIf(REAL_GENERATOR_AVAILABLE)(
+    "renders a terminal-position candidate while retaining the logical source identity",
+    async () => {
+      const sourceText = await terminalPositionCandidateSource();
+      const expectedSourceSha256 = sha256(sourceText);
+      const { frames, reference } = await withGeneratedRuntimeTraceCairoReferenceV1({
+        generatorPath: "scripts/generate-opening-manim-cairo-reference.py",
+        read: async (root) => {
+          await expect(readOpeningManimCairoReferenceV2(root, OPENING_MANIM_OFFICIAL_SOURCE_SHA256_V2)).rejects.toThrow(
+            /Cairo source hashes/u,
+          );
+          return readOpeningManimCairoReferenceV2(root, expectedSourceSha256);
+        },
+        sourceText,
+        temporaryPrefix: "poietra-opening-manim-cairo-candidate-",
+      });
+      expect(reference.scene).toMatchObject({
+        className: "OpeningManim",
+        repository: "Poietra/fast-manim",
+        sourcePath: "example_scenes/basic.py",
+        sourceSha256: expectedSourceSha256,
+      });
+      const beforeBoundary = frames.get("final-title-transform-last")?.rgba;
+      const terminal = frames.get("final-title-transform-play-end")?.rgba;
+      const durationEnd = frames.get("terminal-hold-end")?.rgba;
+      if (!beforeBoundary || !terminal || !durationEnd) {
+        throw new Error("The generated OpeningManim candidate is missing a Cairo boundary frame.");
+      }
+      expect(sha256(terminal)).not.toBe(sha256(beforeBoundary));
+      expect(sha256(durationEnd)).toBe(sha256(terminal));
+    },
+    180_000,
   );
 });

@@ -549,6 +549,17 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
 
 export type FastManimRuntimeTraceV2 = z.infer<typeof fastManimRuntimeTraceV2Schema>;
 
+declare const selfSealedFastManimRuntimeTraceV2Brand: unique symbol;
+
+/**
+ * A Runtime Trace V2 value that crossed the bounded wire parser and whose
+ * complete visual-semantics seal was verified. The brand is intentionally a
+ * compile-time API boundary: runtime trust still comes only from the parser.
+ */
+export type SelfSealedFastManimRuntimeTraceV2 = FastManimRuntimeTraceV2 & {
+  readonly [selfSealedFastManimRuntimeTraceV2Brand]: "self-sealed-runtime-trace-v2";
+};
+
 export const expectedFastManimRuntimeTraceCorrelationV2Schema = z
   .object({
     camera: fastManimRuntimeTraceConfigV2Schema.shape.camera,
@@ -702,10 +713,7 @@ function assertFastManimRuntimeTraceV2Correlation(
   }
 }
 
-export function parseFastManimRuntimeTraceProducerJsonV2(
-  value: string | Uint8Array,
-  expectedValue: ExpectedFastManimRuntimeTraceCorrelationV2,
-) {
+function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array): SelfSealedFastManimRuntimeTraceV2 {
   const byteLength = typeof value === "string" ? Buffer.byteLength(value, "utf8") : value.byteLength;
   if (byteLength > MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2) {
     throw new FastManimRuntimeTraceV2ContractError(
@@ -736,9 +744,24 @@ export function parseFastManimRuntimeTraceProducerJsonV2(
       cause: parsed.error,
     });
   }
+  return parsed.data as SelfSealedFastManimRuntimeTraceV2;
+}
+
+/** Parses bounded producer output whose correlation is verified separately by
+ * the base/candidate delta authority. The embedded visual-semantics seal is
+ * still mandatory through `fastManimRuntimeTraceV2Schema`. */
+export function parseFastManimRuntimeTraceSelfSealedJsonV2(value: string | Uint8Array) {
+  return parseFastManimRuntimeTraceSelfSealedValueV2(value);
+}
+
+export function parseFastManimRuntimeTraceProducerJsonV2(
+  value: string | Uint8Array,
+  expectedValue: ExpectedFastManimRuntimeTraceCorrelationV2,
+) {
+  const parsed = parseFastManimRuntimeTraceSelfSealedValueV2(value);
   const expected = expectedFastManimRuntimeTraceCorrelationV2Schema.parse(expectedValue);
-  assertFastManimRuntimeTraceV2Correlation(parsed.data, expected);
-  return parsed.data;
+  assertFastManimRuntimeTraceV2Correlation(parsed, expected);
+  return parsed;
 }
 
 export function digestFastManimRuntimeTraceV2(trace: FastManimRuntimeTraceV2) {

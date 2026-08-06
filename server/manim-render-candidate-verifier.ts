@@ -192,8 +192,8 @@ export class ManimRenderCandidateVerifierV1 {
     const preflight = lowered.preflight;
     if (!preflight) return;
     signal?.throwIfAborted();
-    if (preflight.kind === "fast-manim-updaters-terminal-v1") {
-      await this.#verifyUpdatersTerminalRuntimeTrace(lowered, request, signal);
+    if (preflight.kind === "fast-manim-updaters-terminal-v1" || preflight.kind === "fast-manim-opening-terminal-v2") {
+      await this.#verifyRuntimeTraceCandidate(lowered, request, signal);
       return;
     }
     const profile = CANDIDATE_PROFILES_V1.get((preflight as Readonly<{ kind: string }>).kind);
@@ -322,23 +322,34 @@ export class ManimRenderCandidateVerifierV1 {
     }
   }
 
-  async #verifyUpdatersTerminalRuntimeTrace(
+  async #verifyRuntimeTraceCandidate(
     lowered: LoweredProgramBatchSource,
     request: ProgramRenderRequest,
     signal?: AbortSignal,
   ) {
     const preflight = lowered.preflight;
+    const opening = preflight?.kind === "fast-manim-opening-terminal-v2";
     const reject = (failure: string): never => {
-      this.#logger.warn("render.updaters_terminal_runtime_trace_candidate_preflight_rejected", {
-        failure,
-        sourcePath: request.sourcePath,
-      });
+      this.#logger.warn(
+        opening
+          ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
+          : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
+        {
+          failure,
+          sourcePath: request.sourcePath,
+        },
+      );
       throw new HttpError(
-        "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        opening
+          ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
+          : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
         409,
       );
     };
-    if (preflight?.kind !== "fast-manim-updaters-terminal-v1" || request.sourceHash !== preflight.baseSourceHash) {
+    if (
+      (preflight?.kind !== "fast-manim-updaters-terminal-v1" && preflight?.kind !== "fast-manim-opening-terminal-v2") ||
+      request.sourceHash !== preflight.baseSourceHash
+    ) {
       reject("runtime-trace-authority-unavailable");
     }
     const runtimeTraceRunner = this.#runtimeTraceRunner ?? reject("runtime-trace-authority-unavailable");

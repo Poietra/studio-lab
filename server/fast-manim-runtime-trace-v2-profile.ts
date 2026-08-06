@@ -27,6 +27,17 @@ export const FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 = "example_scenes/basic.py"
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 = "OpeningManim" as const;
 export const FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
+/**
+ * Source-space center of grid_title after OpeningManim's final Transform.
+ *
+ * This is a server-owned property of the sealed Runtime Trace V2 profile. It
+ * must not be replaced with geometry or coordinates supplied by a browser
+ * request when authorizing source rewrites.
+ */
+export const FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2 = Object.freeze({
+  x: -3.0510343486111,
+  y: 3.132129525,
+});
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2 = Object.freeze({
   constructStartLine: 19,
   definitionOrdinal: 1,
@@ -39,8 +50,8 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3",
-    fastManimTree: "41516d8b866a891adb22f47064b9bba5545fae15",
+    fastManimCommit: "350363a6baed0ba48d3da11f1299c1e2e5f56d46",
+    fastManimTree: "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf",
     geometryResourceSha256: FAST_MANIM_RUNTIME_TRACE_GEOMETRY_RESOURCE_HASH_V2,
     manimVersion: "0.20.1",
     semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",
@@ -148,6 +159,42 @@ export function createFastManimRuntimeTraceProducerRequestV2(
     runtimeConfig,
     runtimeConfigHash,
     sceneId: fastManimRuntimeTraceSceneIdV1(run.sourcePath, run.sceneName),
+    sceneName: run.sceneName,
+    sceneOccurrence: FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2,
+    schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2,
+    sourceHash,
+    sourcePath: run.sourcePath,
+    sourceText,
+    version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
+  });
+}
+
+/** Builds the wire request only. Candidate authority is established later by
+ * the independent source plan and base/candidate Runtime Trace delta proof. */
+export function createFastManimRuntimeTraceCandidateProducerRequestV2(
+  run: FastManimRuntimeTraceRunRequestV1,
+  sourceText: string,
+  frame: Readonly<{ height: number; width: number }>,
+) {
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  const runtimeConfig = createFastManimRuntimeTraceConfigV2(frame);
+  const runtimeConfigHash = digestFastManimRuntimeTraceConfigV2(runtimeConfig);
+  if (
+    run.sourcePath !== FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 ||
+    run.sceneName !== FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 ||
+    run.sourceHash !== sourceHash ||
+    sourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 ||
+    runtimeConfigHash !== FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2
+  ) {
+    throw new TypeError("Runtime Trace V2 candidate request is outside the reviewed OpeningManim profile.");
+  }
+  return fastManimRuntimeTraceProducerRequestV2Schema.parse({
+    profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
+    projectId: run.projectId,
+    requestId: run.requestId,
+    runtimeConfig,
+    runtimeConfigHash,
+    sceneId,
     sceneName: run.sceneName,
     sceneOccurrence: FAST_MANIM_RUNTIME_TRACE_SCENE_OCCURRENCE_V2,
     schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2,

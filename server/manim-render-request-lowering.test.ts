@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
+import { FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
@@ -31,6 +32,8 @@ const writeStuffSourceBindings = ["example_text", "example_tex", "group"].map((s
 }));
 const updatersSceneName = "UpdatersExample";
 const updatersSquareEntityId = `source:${warpSquareSourcePath}#${updatersSceneName}:square`;
+const openingSceneName = "OpeningManim";
+const openingGridTitleEntityId = `source:${warpSquareSourcePath}#${openingSceneName}:grid_title`;
 const sceneSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -332,6 +335,67 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain(
       "            run_time=5,\n        )\n        square.scale(1.5)\n        decimal.update(0)\n        self.wait()",
     );
+  });
+
+  it("routes the exact OpeningManim terminal position through its server-owned V2 center", () => {
+    const targetWorld = {
+      x: FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2.x + 1.25,
+      y: FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2.y - 0.5,
+    };
+    const viewport = { height: 360, width: 640 } as const;
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: openingGridTitleEntityId,
+      id: "opening-terminal-position",
+      interval: { end: 14, start: 14 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: ["verified OpeningManim terminal root"], origin: "direct-manipulation" },
+      value: {
+        x: (targetWorld.x / (128 / 9) + 0.5) * viewport.width,
+        y: (0.5 - targetWorld.y / 8) * viewport.height,
+      },
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 14,
+        evidence: ["verified final Transform play-end"],
+        resolvedSeconds: 14,
+        source: { kind: "playhead", referenceSeconds: 14 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["OpeningManim terminal edit"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: "opening-terminal-v2-position",
+      version: 1,
+    };
+
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 128 / 9 },
+      originalSource: warpSquareSource,
+      projectId: "default",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "default",
+        sceneName: openingSceneName,
+        sourceBindings: [{ entityId: openingGridTitleEntityId, sourceVariable: "grid_title" }],
+        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
+        sourcePath: warpSquareSourcePath,
+        viewport,
+      },
+    });
+
+    expect(result.lowered.preflight).toEqual({
+      baseSourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
+      kind: "fast-manim-opening-terminal-v2",
+    });
+    expect(result.lowered.insertedCode).toBe("        grid_title.shift((1.25, -0.5, 0))");
+    expect(result.lowered.source.match(/grid_title\.shift\(/gu)).toHaveLength(1);
   });
 
   it("evaluates an out-of-order batch in source-anchor order without mutating the input", () => {

@@ -46,7 +46,7 @@ function blockedTail(
 }
 
 function baselineObservations(): RealManimEditabilityCensusObservation[] {
-  return [...blockedTail(openingCaseId, 2), ...provenCase(updatersCaseId)];
+  return [...provenCase(openingCaseId), ...provenCase(updatersCaseId)];
 }
 
 describe("real Manim editability census report", () => {
@@ -96,24 +96,31 @@ describe("real Manim editability census report", () => {
     ).toThrow("earlier dependency is blocked");
   });
 
-  it("allows progress while rejecting any regression below a proven capability floor", async () => {
+  it("rejects any regression below the fully proven capability floor", async () => {
     const { baseline, manifest } = await loadInputs();
-    const improved = buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, [
+    const current = buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, [
       ...provenCase(openingCaseId),
       ...provenCase(updatersCaseId),
     ]);
-    expect(() => assertRealManimEditabilityCensusFloor(improved, baseline)).not.toThrow();
+    expect(() => assertRealManimEditabilityCensusFloor(current, baseline)).not.toThrow();
 
+    const regressedOpening = blockedTail(openingCaseId, 2);
     const regressedUpdaters = blockedTail(updatersCaseId, 2);
-    const regressed = buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, [
-      ...blockedTail(openingCaseId, 2),
+    const openingRegression = buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, [
+      ...regressedOpening,
+      ...provenCase(updatersCaseId),
+    ]);
+    expect(() => assertRealManimEditabilityCensusFloor(openingRegression, baseline)).toThrow(`${openingCaseId}/edit`);
+
+    const updatersRegression = buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, [
+      ...provenCase(openingCaseId),
       ...regressedUpdaters,
     ]);
-    expect(() => assertRealManimEditabilityCensusFloor(regressed, baseline)).toThrow(`${updatersCaseId}/edit`);
+    expect(() => assertRealManimEditabilityCensusFloor(updatersRegression, baseline)).toThrow(`${updatersCaseId}/edit`);
 
-    expect(() =>
-      assertRealManimEditabilityCensusCaseFloor(openingCaseId, provenCase(openingCaseId), baseline),
-    ).not.toThrow();
+    expect(() => assertRealManimEditabilityCensusCaseFloor(openingCaseId, regressedOpening, baseline)).toThrow(
+      `${openingCaseId}/edit`,
+    );
     expect(() => assertRealManimEditabilityCensusCaseFloor(updatersCaseId, regressedUpdaters, baseline)).toThrow(
       `${updatersCaseId}/edit`,
     );

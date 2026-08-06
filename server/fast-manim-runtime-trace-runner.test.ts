@@ -25,8 +25,8 @@ import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-back
 
 const artifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-updaters-v1.json.gz", import.meta.url);
 const openingArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url);
-const FAST_MANIM_COMMIT = "ae04f3610d1aa5ddce259d5ba507da2ec581c7d3";
-const FAST_MANIM_TREE = "41516d8b866a891adb22f47064b9bba5545fae15";
+const FAST_MANIM_COMMIT = "350363a6baed0ba48d3da11f1299c1e2e5f56d46";
+const FAST_MANIM_TREE = "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf";
 const PREVIOUS_FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c";
 const PREVIOUS_FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90";
 const request = {
@@ -128,7 +128,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "35866f2e364746565de4881c42c33917e729ea638aa11373a8e978d54e118fbe",
+      "fd3ff49985346a4ffd0aac77979704bb85ab01ee9bd4ab95de19a787fcf69f33",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
@@ -147,7 +147,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "5731705c23de335ff7a5721a9846da68f857a8030a8c4f59b9eaf6519d35ec59",
+        traceDigest: "3cbc6603a45a9f7486a85b9101a41418dcf3934f45acd070494a3820aa3b76e5",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);

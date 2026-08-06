@@ -86,7 +86,7 @@ function resolveManimCommand() {
 
 const manimCommand = resolveManimCommand();
 if (
-  (snapshotProfile === "runtime-trace" ||
+  (runtimeTraceProfile ||
     snapshotProfile === "4" ||
     snapshotProfile === "7" ||
     snapshotProfile === "9" ||
@@ -98,10 +98,10 @@ if (
     "The real editable Scene E2E requires POIETRA_MANIM_COMMAND, unless the snapshot producer is a JSON Python -m argv array.",
   );
 }
-if ((snapshotProfile === "runtime-trace" || snapshotProfile === "7") && !externalBaseUrl) {
+if ((runtimeTraceProfile || snapshotProfile === "7") && !externalBaseUrl) {
   for (const command of ["latex", "dvisvgm"]) {
     if (spawnSync(command, ["--version"], { stdio: "ignore" }).status !== 0) {
-      throw new Error(`The real mixed V7 E2E requires ${command} on PATH for the full Manim render.`);
+      throw new Error(`The real editable Scene E2E requires ${command} on PATH for the full Manim render.`);
     }
   }
 }
@@ -112,7 +112,7 @@ if (snapshotProfile === "8" && !externalBaseUrl && !officialV8ProjectRoot) {
   throw new Error("The real SquareToCircle V8 E2E requires POIETRA_FAST_MANIM_V8_PROJECT_ROOT.");
 }
 const mutableHarness =
-  snapshotProfile === "runtime-trace" ||
+  runtimeTraceProfile ||
   snapshotProfile === "4" ||
   snapshotProfile === "7" ||
   snapshotProfile === "9" ||
