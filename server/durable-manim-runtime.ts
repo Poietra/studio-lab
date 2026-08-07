@@ -19,13 +19,14 @@ import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./
 import { HttpError } from "./http/json";
 import type { MutableManimProjectApiOperations } from "./manim-api";
 import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
+import type { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
-import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
+import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
   assertProjectPngReceiptV1,
   inspectProjectPngBytesV1,
@@ -37,8 +38,8 @@ import {
 } from "./storage/project-png-storage";
 import type { DurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import type {
-  SourceContentBlobStoreV1,
   SourceBlobReceiptV1,
+  SourceContentBlobStoreV1,
   WorkspaceSourceHeadV1,
   WorkspaceSourceProjectV1,
   WorkspaceSourceRepositoryV1,
@@ -62,6 +63,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 export type DurableManimRuntimeOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
+  candidateVerifier?: Pick<ManimRenderCandidateVerifierV1, "verify">;
   editorDocuments?: EditorDocumentRepositoryV1;
   execution?: DurableManimExecutionReadinessV1;
   frame?: Readonly<{ height: number; width: number }>;
@@ -127,6 +129,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
     | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
+  readonly #candidateVerifier: Pick<ManimRenderCandidateVerifierV1, "verify"> | undefined;
   readonly editorDocuments: EditorDocumentRepositoryV1 | undefined;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
@@ -152,6 +155,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#repository = options.repository;
     this.#artifactReader = options.artifactReader;
     this.#blobs = options.blobs;
+    this.#candidateVerifier = options.candidateVerifier;
     this.editorDocuments = options.editorDocuments;
     this.#execution = options.execution;
     this.#renders = options.renders;
@@ -423,6 +427,13 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       projectId: request.projectId,
       request,
     });
+    if (lowered.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3") {
+      if (!this.#candidateVerifier) {
+        throw new HttpError("Edited Manim source candidate verification is unavailable.", 503);
+      }
+      await this.#candidateVerifier.verify(lowered.lowered, lowered.renderRequest, signal);
+      signal?.throwIfAborted();
+    }
     return {
       fileName: exportFileName(request.sourcePath, ".poietra"),
       projectId: request.projectId,

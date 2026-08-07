@@ -451,6 +451,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let snapshotFactory: FastManimProductionSnapshotRunnerFactoryV1 | undefined;
   let publisher: SnapshotArtifactPublisherV1 | undefined;
   let snapshots: DurableFastManimSnapshotServiceV1 | undefined;
+  let candidateVerifier: ManimRenderCandidateVerifierV1 | undefined;
   try {
     snapshotFactory = new FastManimProductionSnapshotRunnerFactoryV1({
       client: options.snapshot.sandbox,
@@ -528,7 +529,11 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       tenantId: options.tenantId,
       wake: () => renderCancellationRelay?.wake(),
     });
-    const candidateVerifier = new ManimRenderCandidateVerifierV1({ frame, runner: snapshots });
+    candidateVerifier = new ManimRenderCandidateVerifierV1({
+      frame,
+      runner: snapshots,
+      runtimeTraceRunner: snapshots,
+    });
     renders = new DurableManimRenderServiceV1({
       artifactReader,
       blobs,
@@ -561,6 +566,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
   let renderExecution: ReturnType<typeof renderExecutionBoundary> | undefined;
   let runtime: DurableManimRuntimeV1 | undefined;
   try {
+    if (!candidateVerifier) throw new Error("Production candidate verification is unavailable.");
     renderCancellationRelay = await createDurableManimRenderCancellationRelayV1(
       {
         abortActive: (sessionId) => renderWorker.abortActive(sessionId),
@@ -581,6 +587,7 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
     runtime = new DurableManimRuntimeV1({
       artifactReader,
       blobs,
+      candidateVerifier,
       editorDocuments,
       execution: renderExecution,
       frame,

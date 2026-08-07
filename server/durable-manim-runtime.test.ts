@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it, vi } from "vitest";
 
+import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
+import type { CanonicalEditProgram } from "../src/studio/operations";
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
+import type { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
 import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
@@ -49,6 +52,88 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
     receipt: pngReceipt("project-a"),
     tenantId: "tenant-a",
   };
+}
+
+function genericInitialMoveExportFixture(withVerifier: boolean) {
+  const source = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(0.1)
+`;
+  const digest = createHash("sha256").update(source).digest("hex");
+  const sourcePath = "scene.py";
+  const entityId = `source:${sourcePath}#StaticSquare:square`;
+  const operation = {
+    dependsOn: [],
+    entityId,
+    id: "durable-generic-v3-position",
+    interval: { end: 0, start: 0 },
+    key: "position",
+    kind: "SetProperty",
+    provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+    value: { x: 410, y: 135 },
+  } as const;
+  const program: CanonicalEditProgram = {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["source-time zero"],
+      resolvedSeconds: 0,
+      source: { kind: "absolute", seconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["durable generic V3 export"], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "durable-generic-v3-export",
+    version: 1,
+  };
+  const request: ProgramRenderRequest = {
+    cameraCenter: { x: 0, y: 0 },
+    destination: null,
+    program,
+    projectId: "project-a",
+    sceneName: "StaticSquare",
+    sourceBindings: [{ entityId, sourceVariable: "square" }],
+    sourceHash: digest,
+    sourcePath,
+    viewport: { height: 360, width: 640 },
+  };
+  const head = {
+    blob: {
+      byteSize: Buffer.byteLength(source),
+      digest,
+      etag: '"source-generic-v3"',
+      objectKey: `tenants/tenant-a/sources/${digest}`,
+      versionId: "source-generic-v3-version",
+    },
+    generation: 1n,
+    projectId: request.projectId,
+    sourcePath,
+    tenantId: "tenant-a",
+  } as const;
+  const verify = vi.fn<ManimRenderCandidateVerifierV1["verify"]>(async () => undefined);
+  const runtime = new DurableManimRuntimeV1({
+    blobs: partial<SourceContentBlobStoreV1>({
+      close: async () => undefined,
+      readSource: async () => source,
+      ready: async () => true,
+    }),
+    ...(withVerifier ? { candidateVerifier: { verify } } : {}),
+    namespace: "generic-v3-export-test",
+    repository: partial<WorkspaceSourceRepositoryV1>({
+      close: async () => undefined,
+      readSourceHead: async () => head,
+      ready: async () => true,
+    }),
+    tenantId: "tenant-a",
+  });
+  return { digest, entityId, request, runtime, verify };
 }
 
 describe("DurableManimRuntimeV1 production readiness", () => {
@@ -126,6 +211,30 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       renderCapability: { available: false, unavailableReason: "durable-render-unconfigured" },
     });
     await Promise.all([unavailable.close(), failing.close(), unconfigured.close()]);
+  });
+
+  it("verifies a generic initial move before exporting its durable source", async () => {
+    const { digest, entityId, request, runtime, verify } = genericInitialMoveExportFixture(true);
+
+    const exported = await runtime.exportSource(request);
+
+    expect(exported).toMatchObject({ fileName: "scene.poietra.py", projectId: "project-a" });
+    expect(exported.source).toContain("square.move_to(");
+    expect(verify).toHaveBeenCalledOnce();
+    expect(verify.mock.calls[0]?.[0].preflight).toMatchObject({
+      baseSourceHash: digest,
+      entityId,
+      kind: "fast-manim-generic-initial-move-v3",
+    });
+    expect(verify.mock.calls[0]?.[1]).toEqual(request);
+    await runtime.close();
+  });
+
+  it("fails generic durable source export closed when candidate verification is unavailable", async () => {
+    const { request, runtime } = genericInitialMoveExportFixture(false);
+
+    await expect(runtime.exportSource(request)).rejects.toMatchObject({ status: 503 });
+    await runtime.close();
   });
 
   it("uses the same source-to-delivery readiness boundary for the workspace capability", async () => {
