@@ -173,7 +173,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "f0d88f1a408e980484abb85bbb7ba953c4beed591f689ad1bb2e2bf0ddc427ad",
+      "3483ccf6b6194a8b4076bed6cd07b5f40031f975b1a5fbb9aaa3e944cf2c17d7",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
@@ -192,7 +192,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "669ad684b40b63e0cc9c7816c75f99486c86e9b5b4d131e2497555add63bea64",
+        traceDigest: "56ed0754ccda4af300d8549ecb7d4aa87f7a3e6aa26fddc78c7be344585ecc23",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);

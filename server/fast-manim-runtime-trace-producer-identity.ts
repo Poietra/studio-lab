@@ -1,6 +1,6 @@
 export const TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY = Object.freeze({
-  fastManimCommit: "9b3d6d5dc81c6f45a256d2d9f71d53ce0f6d8075",
-  fastManimTree: "a10c9852a8966fc8d38798d50b821feb89772955",
+  fastManimCommit: "edcf6578d7b5515d39f9378d48b2c5e8f9a99fa6",
+  fastManimTree: "806b84287549a874393046e35663f07a7ed576d4",
 } as const);
 
 /** Non-secret identity injected into the isolated Runtime Trace producer. */
