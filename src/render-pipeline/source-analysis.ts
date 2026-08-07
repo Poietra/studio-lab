@@ -318,6 +318,16 @@ function baseConstructorCall(
   return null;
 }
 
+function unwrapParenthesizedExpression(node: PythonNode) {
+  let current = node;
+  while (current.name === "ParenthesizedExpression") {
+    const expression = children(current).find((child) => child.type.is("Expression"));
+    if (!expression) break;
+    current = expression;
+  }
+  return current;
+}
+
 function physicalStatement(
   node: PythonNode,
   source: string,
@@ -687,6 +697,13 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       if (simple && target) {
         if (runtimeScope) runtimeOrdinal += 1;
         const value = parts[firstAssignment + 1];
+        const directValue = value ? unwrapParenthesizedExpression(value) : null;
+        if (runtimeScope && directValue?.name === "VariableName") {
+          // Runtime Trace V3 deliberately rejects both sides of a direct
+          // alias: either source token could otherwise name the same root at
+          // different points in construct execution.
+          addBlocker("direct-alias-binding", ownerStatementId, [target, directValue]);
+        }
         const constructor = value ? baseConstructorCall(value, request.sourceText, index, analysisId) : null;
         addBinding(
           target,

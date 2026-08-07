@@ -625,6 +625,7 @@ export function digestFastManimRuntimeTraceV3(trace: FastManimRuntimeTraceV3) {
   return createHash("sha256")
     .update(
       canonicalJsonV1({
+        correlationSha256: trace.producer.correlationSha256,
         runtimeConfigHash: trace.runtimeConfigHash,
         sceneId: trace.sceneId,
         semanticsSha256: trace.producer.semanticsSha256,

@@ -173,7 +173,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "3483ccf6b6194a8b4076bed6cd07b5f40031f975b1a5fbb9aaa3e944cf2c17d7",
+      "724033c16028f1ca439dcfb931337cb06e44fd253d2a9d9c458f029feb45e57b",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
@@ -192,7 +192,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "56ed0754ccda4af300d8549ecb7d4aa87f7a3e6aa26fddc78c7be344585ecc23",
+        traceDigest: "78bb7776c9d3876f16ba096219af3a688a150f8504ffbe7bead5607fcdaf9b5f",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
@@ -255,6 +255,14 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       sceneOccurrence: { constructStartLine: 4, definitionOrdinal: 1 },
       sceneName: genericRequest.sceneName,
       schema: "poietra.fast-manim-runtime-trace-producer-request",
+      sourceBindings: [
+        {
+          id: expect.stringMatching(/^source-binding:[0-9a-f]{64}$/u),
+          name: "square",
+          ordinal: 1,
+          span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+        },
+      ],
       version: 3,
     });
   });

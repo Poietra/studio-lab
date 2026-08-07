@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 import { gunzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
-import { TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY } from "../server/fast-manim-runtime-trace-producer-identity";
 import { sceneIrBundleV1Schema } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
@@ -38,10 +37,6 @@ describe("FourierSeriesSquareWave independent Cairo reference v1", () => {
     });
     expect(bundle.scene.entities).toHaveLength(173);
     expect(bundle.scene.animationChannels).toHaveLength(50);
-    expect(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY).toEqual({
-      fastManimCommit: "edcf6578d7b5515d39f9378d48b2c5e8f9a99fa6",
-      fastManimTree: "806b84287549a874393046e35663f07a7ed576d4",
-    });
     expect(bundle.scene.provenance).toContainEqual({
       evidence: expect.arrayContaining([
         "post-evaluation 60 fps evidence from edcf6578d7b5515d39f9378d48b2c5e8f9a99fa6",

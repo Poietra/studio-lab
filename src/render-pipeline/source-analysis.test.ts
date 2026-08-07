@@ -143,6 +143,52 @@ describe("Studio CST SourceAnalysis V1", () => {
     expect(circle?.capabilities.uniformResize).toEqual({ reason: "dynamic-control-flow", status: "unknown" });
   });
 
+  it("marks both sides of a direct local alias ineligible for source edits", () => {
+    const source = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        alias = square",
+      "        self.add(alias)",
+      "",
+    ].join("\n");
+    const analysis = analyze(source, "Real", "scene.py");
+
+    expect(analysis.scene.bindingBlockers).toContainEqual({
+      kind: "direct-alias-binding",
+      statementId: analysis.scene.statements[1]!.id,
+    });
+    for (const name of ["square", "alias"]) {
+      expect(analysis.bindings.find((binding) => binding.name === name)?.capabilities.move).toEqual({
+        reason: "unsupported-binding-form",
+        status: "unknown",
+      });
+    }
+  });
+
+  it("treats parentheses around a direct local alias as transparent", () => {
+    const source = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        alias = ((square))",
+      "        self.add(alias)",
+      "",
+    ].join("\n");
+    const analysis = analyze(source, "Real", "scene.py");
+
+    expect(analysis.scene.bindingBlockers).toContainEqual({
+      kind: "direct-alias-binding",
+      statementId: analysis.scene.statements[1]!.id,
+    });
+    for (const name of ["square", "alias"]) {
+      expect(analysis.bindings.find((binding) => binding.name === name)?.capabilities.uniformResize).toEqual({
+        reason: "unsupported-binding-form",
+        status: "unknown",
+      });
+    }
+  });
+
   it("fails closed when an exception handler introduces a construct-scope binding", () => {
     const source = [
       "class Real(Scene):",
