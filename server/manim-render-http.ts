@@ -38,6 +38,11 @@ import {
   selectFastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceSceneProfile,
 } from "./fast-manim-runtime-trace-profiles";
+import {
+  createFastManimRuntimeTraceConfigV3,
+  digestFastManimRuntimeTraceConfigV3,
+} from "./fast-manim-runtime-trace-v3-contract";
+import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 } from "./fast-manim-runtime-trace-v3-result-contract";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -498,11 +503,6 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
     MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
   let safeView: typeof run = run;
   if (run.status === "verified") {
-    const profile = selectFastManimRuntimeTraceProfile(request) ?? selectFastManimRuntimeTraceSceneProfile(request);
-    if (profile === null || run.runtimeConfigHash !== profile.runtimeConfigHash) {
-      throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
-    }
-    maxResponseBytes = profile.maxNormalizedBytes + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
     let bundle;
     try {
       bundle = await parseVerifiedSceneIrBundleV1(run.bundle);
@@ -510,43 +510,67 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
       throw new HttpError("The Runtime Trace operation returned an invalid Scene IR bundle.", 502);
     }
     const source = bundle.scene.source;
-    const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
-    let motionRootId: string | null = null;
-    if (run.roots.length !== profile.roots.length) {
-      throw new HttpError("The Runtime Trace operation returned invalid source roots.", 502);
-    }
-    for (const [index, expectedRoot] of profile.roots.entries()) {
-      const root = run.roots[index];
-      const entity = root ? entities.get(root.entityId) : undefined;
-      if (
-        !root ||
-        root.binding.name !== expectedRoot.bindingName ||
-        root.entityId !== `${sceneId}/runtime-root:${expectedRoot.role}` ||
-        !entity ||
-        entity.geometry.kind !== "group" ||
-        entity.parentId === null ||
-        (motionRootId !== null && entity.parentId !== motionRootId)
-      ) {
-        throw new HttpError("The Runtime Trace operation returned invalid source roots.", 502);
-      }
-      motionRootId = entity.parentId;
-    }
-    const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
     if (
-      bundle.scene.duration !== profile.duration ||
       bundle.scene.sceneId !== sceneId ||
       source.kind !== "imported-manim-runtime-trace" ||
-      source.traceVersion !== profile.version ||
       source.sourceHash !== request.sourceHash ||
       source.runtimeConfigHash !== run.runtimeConfigHash ||
       source.traceDigest !== run.traceDigest ||
       sceneIrSourceRevisionHash(bundle.scene) !== run.traceDigest ||
-      bundle.assets.assets.length !== 0 ||
-      !motionRoot ||
-      motionRoot.geometry.kind !== "group" ||
-      motionRoot.parentId !== null
+      bundle.assets.assets.length !== 0
     ) {
       throw new HttpError("The Runtime Trace operation returned stale Scene IR evidence.", 502);
+    }
+    const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+    if (source.traceVersion === 3) {
+      const expectedRuntimeConfigHash = digestFastManimRuntimeTraceConfigV3(
+        createFastManimRuntimeTraceConfigV3({
+          height: bundle.scene.camera.view.frameHeight,
+          width: bundle.scene.camera.view.frameWidth,
+        }),
+      );
+      if (
+        run.runtimeConfigHash !== expectedRuntimeConfigHash ||
+        run.roots.length !== 0 ||
+        !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
+      ) {
+        throw new HttpError("The Runtime Trace operation returned invalid preview-only evidence.", 502);
+      }
+      maxResponseBytes =
+        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
+    } else {
+      const profile = selectFastManimRuntimeTraceProfile(request) ?? selectFastManimRuntimeTraceSceneProfile(request);
+      if (
+        profile === null ||
+        source.traceVersion !== profile.version ||
+        run.runtimeConfigHash !== profile.runtimeConfigHash ||
+        bundle.scene.duration !== profile.duration ||
+        run.roots.length !== profile.roots.length
+      ) {
+        throw new HttpError("The Runtime Trace operation returned stale runtime configuration.", 502);
+      }
+      let motionRootId: string | null = null;
+      for (const [index, expectedRoot] of profile.roots.entries()) {
+        const root = run.roots[index];
+        const entity = root ? entities.get(root.entityId) : undefined;
+        if (
+          !root ||
+          root.binding.name !== expectedRoot.bindingName ||
+          root.entityId !== `${sceneId}/runtime-root:${expectedRoot.role}` ||
+          !entity ||
+          entity.geometry.kind !== "group" ||
+          entity.parentId === null ||
+          (motionRootId !== null && entity.parentId !== motionRootId)
+        ) {
+          throw new HttpError("The Runtime Trace operation returned invalid source roots.", 502);
+        }
+        motionRootId = entity.parentId;
+      }
+      const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
+      if (!motionRoot || motionRoot.geometry.kind !== "group" || motionRoot.parentId !== null) {
+        throw new HttpError("The Runtime Trace operation returned stale Scene IR evidence.", 502);
+      }
+      maxResponseBytes = profile.maxNormalizedBytes + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
     }
     safeView = { ...run, bundle };
   }
@@ -673,7 +697,7 @@ async function routeManimRequest(
   const runtimeTraceMatch = url.pathname.match(PROJECT_RUNTIME_TRACE_ROUTE);
   if (runtimeTraceMatch) {
     if (request.method !== "POST") throw new HttpError("Method not allowed.", 405);
-    if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 503);
+    if (!manager.runRuntimeTrace) throw new HttpError("Runtime Trace preview is not configured.", 501);
     const projectId = runtimeTraceMatch[1]!;
     const parsed = fastManimRuntimeTraceRunRequestV1Schema.safeParse(
       await readBoundedJsonBody(request, policy, 16 * 1024),

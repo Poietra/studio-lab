@@ -2,11 +2,12 @@
 mod support;
 
 use poietra_render_wgpu::{
-    PrepareFrameErrorV1, PreparedGeometryCacheV1, prepare_frame_v1, prepare_frame_with_cache_v1,
+    PrepareFrameErrorV1, PreparedGeometryCacheV1, UnsupportedDrawReasonV1, prepare_frame_v1,
+    prepare_frame_with_cache_v1,
 };
 use poietra_scene_ir::{
     CubicPathV1, CubicSegmentV1, CubicSubpathV1, FillRuleV1, FillStyleV1, PointV1,
-    RenderCapabilityV1, RenderDrawV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1,
+    RenderCapabilityV1, RenderCompositingV1, RenderDrawV1, RgbaColorV1, StrokeCapV1, StrokeJoinV1,
 };
 
 use support::{generic_stroke_fixture, straight_stroke_packet};
@@ -188,6 +189,148 @@ fn manim_square_to_circle_packet(progress: f64) -> poietra_scene_ir::RenderPacke
         RenderCapabilityV1::CubicPathStroke,
     ];
     packet
+}
+
+#[test]
+fn transparent_degenerate_fill_is_skipped_before_visible_stroke_tessellation() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { fill, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    *fill = Some(FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 0.0,
+            blue: 1.0,
+            green: 0.0,
+            red: 1.0,
+        },
+        rule: FillRuleV1::NonZero,
+    });
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::CubicPathStroke,
+    ];
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let frame = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("a transparent degenerate fill must not hide its visible stroke");
+
+    assert_eq!(frame.draws().len(), 1);
+    assert_eq!(frame.material_plan().materials().len(), 1);
+    assert_eq!(frame.tessellation_calls(), 1);
+    assert_eq!(cache.entry_count(), 1);
+    assert_eq!(cache.frame_stats().misses(), 1);
+}
+
+#[test]
+fn zero_draw_opacity_skips_all_path_paint_phases() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { fill, opacity, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    *fill = Some(FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 0.0,
+            red: 1.0,
+        },
+        rule: FillRuleV1::NonZero,
+    });
+    *opacity = 0.0;
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::CubicPathStroke,
+    ];
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let frame = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("a fully transparent path must not require usable paint geometry");
+
+    assert!(frame.draws().is_empty());
+    assert!(frame.material_plan().materials().is_empty());
+    assert_eq!(frame.tessellation_calls(), 0);
+    assert_eq!(cache.entry_count(), 0);
+    assert_eq!(cache.frame_stats().misses(), 0);
+}
+
+#[test]
+fn exact_point_stroke_is_skipped_only_when_cairo_has_no_cap_coverage() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    let RenderDrawV1::Path { path, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    let subpath = &mut path.subpaths[0];
+    let start = point(subpath.start.x, subpath.start.y);
+    subpath.segments[0].control1 = point(start.x, start.y);
+    subpath.segments[0].control2 = point(start.x, start.y);
+    subpath.segments[0].end = start;
+    subpath.closed = true;
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let frame = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("a closed exact-point subpath has no Cairo stroke coverage");
+    assert!(frame.draws().is_empty());
+    assert_eq!(cache.entry_count(), 0);
+
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke.as_mut().expect("stroke paint must exist").cap = StrokeCapV1::Square;
+    assert!(
+        prepare_frame_v1(&packet)
+            .expect("a closed square-cap point has no Cairo stroke coverage")
+            .draws()
+            .is_empty()
+    );
+
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke.as_mut().expect("stroke paint must exist").cap = StrokeCapV1::Round;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+            ..
+        })
+    ));
+
+    let RenderDrawV1::Path { path, stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    path.subpaths[0].closed = false;
+    stroke.as_mut().expect("stroke paint must exist").cap = StrokeCapV1::Butt;
+    assert!(
+        prepare_frame_v1(&packet)
+            .expect("an open butt-cap point has no Cairo stroke coverage")
+            .draws()
+            .is_empty()
+    );
+
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke.as_mut().expect("stroke paint must exist").cap = StrokeCapV1::Square;
+    assert!(
+        prepare_frame_v1(&packet)
+            .expect("an open square-cap point has no Cairo stroke coverage")
+            .draws()
+            .is_empty()
+    );
+
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke.as_mut().expect("stroke paint must exist").cap = StrokeCapV1::Round;
+    assert!(matches!(
+        prepare_frame_v1(&packet),
+        Err(PrepareFrameErrorV1::Unsupported {
+            reason: UnsupportedDrawReasonV1::DegenerateStroke,
+            ..
+        })
+    ));
 }
 
 fn clip_extents(frame: &poietra_render_wgpu::PreparedFrameV1) -> [f32; 4] {

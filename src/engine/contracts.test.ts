@@ -238,7 +238,7 @@ function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
 }
 
 describe("Poietra Engine v1 contracts", () => {
-  it("admits Runtime Trace V2 whole-frame durations without widening the sealed V1 grid", async () => {
+  it("admits Runtime Trace V2/V3 whole-frame durations without widening the sealed V1 grid", async () => {
     const assets = await manifest();
     const base = scene(assets);
     const source = {
@@ -251,7 +251,8 @@ describe("Poietra Engine v1 contracts", () => {
 
     expect(sceneSourceV1Schema.parse(source)).toEqual(source);
     expect(sceneSourceV1Schema.parse({ ...source, traceVersion: 2 })).toEqual({ ...source, traceVersion: 2 });
-    for (const unsupported of [0, 1.5, 3]) {
+    expect(sceneSourceV1Schema.parse({ ...source, traceVersion: 3 })).toEqual({ ...source, traceVersion: 3 });
+    for (const unsupported of [0, 1.5, 4]) {
       expect(sceneSourceV1Schema.safeParse({ ...source, traceVersion: unsupported }).success).toBe(false);
     }
 
@@ -261,9 +262,62 @@ describe("Poietra Engine v1 contracts", () => {
     expect(sceneEvaluationSampleTimeV1(v2, 1 / 60 + 1e-9)).toBe(1 / 60);
     expect(sceneEvaluationSampleTimeV1(v2, 3)).toBe(179 / 60);
     expect(sceneIrV1Schema.safeParse({ ...v2, duration: 3.01 }).success).toBe(false);
+    const v3 = sceneIrV1Schema.parse({ ...base, duration: 3, source: { ...source, traceVersion: 3 } });
+    expect(sceneEvaluationSampleTimeV1(v3, 3)).toBe(179 / 60);
 
     const v1 = sceneIrV1Schema.parse({ ...base, duration: 6, source });
     expect(sceneEvaluationSampleTimeV1(v1, 6)).toBe(359 / 60);
+  });
+
+  it("admits one Runtime Trace V3 path sample per bounded frame", async () => {
+    const assets = await manifest();
+    const base = scene(assets);
+    const keyframes = Array.from({ length: 900 }, (_, frameIndex) => ({
+      at: frameIndex / 60,
+      easingToNext: frameIndex === 899 ? null : ({ kind: "linear" } as const),
+      value: path,
+    }));
+    const source = {
+      kind: "imported-manim-runtime-trace" as const,
+      runtimeConfigHash: ZERO_HASH,
+      sourceHash: SCENE_HASH,
+      traceDigest: ASSET_HASH,
+      traceVersion: 3 as const,
+    };
+    const morph = {
+      ...base,
+      animationChannels: [
+        {
+          entityId: "curve",
+          id: "curve-runtime-morph",
+          keyframes,
+          kind: "path-morph" as const,
+          provenanceId: "fixture",
+        },
+      ],
+      duration: 15,
+      entities: [{ ...base.entities[1]!, lifetimes: [{ end: 15, start: 0 }], sceneOrder: 0 }],
+      requiredCapabilities: ["cubic-path-geometry", "path-morph-animation"] as const,
+      source,
+    };
+    expect(sceneIrV1Schema.safeParse(morph).success).toBe(true);
+    expect(sceneIrV1Schema.safeParse({ ...morph, source: { ...source, traceVersion: 2 } }).success).toBe(false);
+    expect(
+      sceneIrV1Schema.safeParse({
+        ...morph,
+        animationChannels: [
+          {
+            ...morph.animationChannels[0],
+            keyframes: [
+              ...keyframes.map((keyframe, index) =>
+                index === 899 ? { ...keyframe, easingToNext: { kind: "linear" } as const } : keyframe,
+              ),
+              { at: 15, easingToNext: null, value: path },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 
   it("round-trips imported snapshot profiles V6 through V12 without coercing the negotiated integer union", () => {

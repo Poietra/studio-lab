@@ -205,7 +205,10 @@ function validateRuntimeTraceCaptureInput(
 ) {
   validateRetainedCaptureInput(input);
   const source = input.bundle.scene.source;
-  if (source.kind !== "imported-manim-runtime-trace" || (source.traceVersion !== 1 && source.traceVersion !== 2)) {
+  if (
+    source.kind !== "imported-manim-runtime-trace" ||
+    (source.traceVersion !== 1 && source.traceVersion !== 2 && source.traceVersion !== 3)
+  ) {
     throw new Error("The Runtime Trace readback requires a verified Runtime Trace bundle revision.");
   }
   const frameCount = input.bundle.scene.duration * RUNTIME_TRACE_FRAMES_PER_SECOND;

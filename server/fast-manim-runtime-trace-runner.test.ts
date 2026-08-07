@@ -9,9 +9,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
+import { TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY } from "./fast-manim-runtime-trace-producer-identity";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import type {
   FastManimSandboxBackendV1,
   FastManimSandboxJobContextV1,
@@ -25,8 +27,9 @@ import { localSandboxReadyStatus } from "./test-fixtures/fast-manim-sandbox-back
 
 const artifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-updaters-v1.json.gz", import.meta.url);
 const openingArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url);
-const FAST_MANIM_COMMIT = "350363a6baed0ba48d3da11f1299c1e2e5f56d46";
-const FAST_MANIM_TREE = "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf";
+const genericArtifactPath = new URL("./test-fixtures/fast-manim-runtime-trace-v3-generic.json", import.meta.url);
+const FAST_MANIM_COMMIT = TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit;
+const FAST_MANIM_TREE = TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree;
 const PREVIOUS_FAST_MANIM_COMMIT = "365345c2cbb673ab0e9fe22d33353fcbcd43b58c";
 const PREVIOUS_FAST_MANIM_TREE = "f6cae74330644d19bd0a5bf12a092c9840a83e90";
 const request = {
@@ -43,6 +46,29 @@ const openingRequest = {
   sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
   sourcePath: "example_scenes/basic.py",
 } as const satisfies FastManimRuntimeTraceRunRequestV1;
+const GENERIC_SOURCE = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(1 / 60)
+`;
+const genericRequest = {
+  projectId: "demo",
+  requestId: "req-generic-runtime-trace-hook",
+  sceneName: "StaticSquare",
+  sourceHash: createHash("sha256").update(GENERIC_SOURCE).digest("hex"),
+  sourcePath: "scenes/staticsquare.py",
+} as const satisfies FastManimRuntimeTraceRunRequestV1;
+const GENERIC_UPDATERS_SOURCE = `from manim import *
+
+class UpdatersExample(Scene):
+    def construct(self):
+        self.add(Square())
+        self.wait(1 / 60)
+`;
 
 class ArtifactBackend implements FastManimSandboxBackendV1 {
   requests: unknown[] = [];
@@ -103,6 +129,14 @@ async function officialOpeningArtifact() {
   return Buffer.from(artifact, "utf8");
 }
 
+async function genericArtifact() {
+  const artifact = JSON.parse(await readFile(genericArtifactPath, "utf8"));
+  const trusted = trustedFastManimRuntimeTraceProducerV3();
+  Object.assign(artifact, { projectId: genericRequest.projectId, requestId: genericRequest.requestId });
+  Object.assign(artifact.producer, trusted);
+  return Buffer.from(JSON.stringify(artifact), "utf8");
+}
+
 async function projectRoot() {
   const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-"));
   roots.push(root);
@@ -111,11 +145,22 @@ async function projectRoot() {
   return root;
 }
 
-function runner(root: string, backend: FastManimSandboxBackendV1) {
+async function genericProjectRoot() {
+  const root = await projectRoot();
+  await mkdir(join(root, "scenes"));
+  await writeFile(join(root, genericRequest.sourcePath), GENERIC_SOURCE, "utf8");
+  return root;
+}
+
+function runner(
+  root: string,
+  backend: FastManimSandboxBackendV1,
+  configuredFrame: Readonly<{ height: number; width: number }> = { height: 8, width: 14.222222222222221 },
+) {
   const instance = new FastManimSnapshotRunner({
     backend,
     deployment: "test",
-    frame: { height: 8, width: 14.222222222222221 },
+    frame: configuredFrame,
     projectId: request.projectId,
     projectRoot: root,
     tenantId: "test-tenant",
@@ -128,7 +173,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
   it("verifies and lowers the real producer artifact without publishing raw trace data", async () => {
     const artifact = await officialArtifact();
     expect(createHash("sha256").update(artifact).digest("hex")).toBe(
-      "fd3ff49985346a4ffd0aac77979704bb85ab01ee9bd4ab95de19a787fcf69f33",
+      "f0d88f1a408e980484abb85bbb7ba953c4beed591f689ad1bb2e2bf0ddc427ad",
     );
     expect(JSON.parse(artifact.toString("utf8"))).toMatchObject({
       producer: {
@@ -147,7 +192,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       source: {
         kind: "imported-manim-runtime-trace",
         runtimeConfigHash: "9b69b6296dc706b1deebbc1d9f88b05ef2f97aa9acf1e87eae9a8efd13b33c97",
-        traceDigest: "3cbc6603a45a9f7486a85b9101a41418dcf3934f45acd070494a3820aa3b76e5",
+        traceDigest: "669ad684b40b63e0cc9c7816c75f99486c86e9b5b4d131e2497555add63bea64",
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
@@ -190,6 +235,59 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     const responseBytes = Buffer.byteLength(JSON.stringify(view), "utf8");
     expect(responseBytes).toBe(5_490_431);
     expect(responseBytes).toBeLessThan(8 * 1024 * 1024 + 64 * 1024);
+  });
+
+  it("dispatches a non-profile Scene through generic preview-only V3", async () => {
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(await genericProjectRoot(), backend).runRuntimeTrace(genericRequest);
+
+    if (view.status !== "verified") throw new Error(JSON.stringify(view));
+    const bundle = await parseVerifiedSceneIrBundleV1(view.bundle);
+    expect(bundle.scene.source).toMatchObject({
+      kind: "imported-manim-runtime-trace",
+      sourceHash: genericRequest.sourceHash,
+      traceVersion: 3,
+    });
+    expect(view.roots).toEqual([]);
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({
+      profileVersion: 3,
+      sceneOccurrence: { constructStartLine: 4, definitionOrdinal: 1 },
+      sceneName: genericRequest.sceneName,
+      schema: "poietra.fast-manim-runtime-trace-producer-request",
+      version: 3,
+    });
+  });
+
+  it("falls through a non-recoverable reviewed Scene edit to preview-only V3", async () => {
+    const root = await projectRoot();
+    await writeFile(join(root, request.sourcePath), GENERIC_UPDATERS_SOURCE, "utf8");
+    const editedRequest = {
+      ...request,
+      requestId: "req-generic-updaters-v3",
+      sourceHash: createHash("sha256").update(GENERIC_UPDATERS_SOURCE).digest("hex"),
+    };
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(root, backend).runRuntimeTrace(editedRequest);
+
+    expect(view).toMatchObject({ failure: { code: "result-rejected" }, status: "failed" });
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({
+      profileVersion: 3,
+      sceneName: request.sceneName,
+      version: 3,
+    });
+  });
+
+  it("returns a failed view when the generic V3 camera is not canonical", async () => {
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(await genericProjectRoot(), backend, { height: 8, width: 10 }).runRuntimeTrace(
+      genericRequest,
+    );
+
+    expect(view).toMatchObject({ failure: { code: "runtime-config-changed" }, status: "failed" });
+    expect(backend.requests).toHaveLength(0);
+    expect(backend.statuses).toBe(0);
   });
 
   it("rejects stale source correlation before consulting the sandbox", async () => {

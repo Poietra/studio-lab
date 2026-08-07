@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 
 import { describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "../server/fast-manim-local-process-sandbox-backend";
-import { fastManimRuntimeTraceProducerEnvironmentV1 } from "../server/fast-manim-runtime-trace-profile";
+import { fastManimRuntimeTraceProducerEnvironment } from "../server/fast-manim-runtime-trace-producer-identity";
 import { FastManimSnapshotAdmissionController, FastManimSnapshotRunner } from "../server/fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "../server/manim-render-config";
 import {
@@ -141,7 +141,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       const backend = new LocalProcessFastManimSandboxBackendV1({
         admissionController: new FastManimSnapshotAdmissionController(),
         command: entry.kind === "snapshot" ? snapshotProducerCommand : runtimeTraceProducerCommand,
-        ...(entry.kind === "runtime-trace" ? { producerEnv: fastManimRuntimeTraceProducerEnvironmentV1() } : {}),
+        ...(entry.kind === "runtime-trace" ? { producerEnv: fastManimRuntimeTraceProducerEnvironment() } : {}),
         projectRoot,
       });
       const runner = new FastManimSnapshotRunner({

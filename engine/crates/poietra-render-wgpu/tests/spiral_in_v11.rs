@@ -242,21 +242,33 @@ fn sealed_v11_retains_five_spiral_leaves_through_native_evaluation_and_wgpu_prep
             None
         );
 
-        if expected_time < bundle.scene.duration {
-            assert_eq!(direct.draws().len(), 5);
-            for entity in &bundle.scene.entities[1..] {
+        let visible_entity_ids = retained
+            .draws
+            .iter()
+            .filter_map(|draw| match draw {
+                RenderDrawV1::Path {
+                    entity_id,
+                    fill: Some(fill),
+                    opacity,
+                    ..
+                } if fill.color.alpha != 0.0 && *opacity != 0.0 => Some(entity_id.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(direct.draws().len(), visible_entity_ids.len());
+        for entity in &bundle.scene.entities[1..] {
+            if visible_entity_ids.contains(&entity.id.as_str()) {
                 let [min_x, min_y, max_x, max_y] = direct
                     .clip_bounds_for_entity(&entity.id)
-                    .expect("each active SpiralIn leaf must expose interaction bounds");
+                    .expect("each visible SpiralIn leaf must expose interaction bounds");
                 assert!(min_x.is_finite() && min_y.is_finite());
                 assert!(max_x > min_x && max_y > min_y);
-            }
-        } else {
-            assert!(direct.draws().is_empty());
-            assert!(direct.indices().is_empty());
-            for entity in &bundle.scene.entities[1..] {
+            } else {
                 assert_eq!(direct.clip_bounds_for_entity(&entity.id), None);
             }
+        }
+        if visible_entity_ids.is_empty() {
+            assert!(direct.indices().is_empty());
         }
         assert_eq!(session.retained_index_stats(), installed_index);
     }

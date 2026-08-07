@@ -27,6 +27,14 @@ import {
   MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
+import {
+  createFastManimRuntimeTraceConfigV3,
+  digestFastManimRuntimeTraceConfigV3,
+} from "./fast-manim-runtime-trace-v3-contract";
+import {
+  MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
+} from "./fast-manim-runtime-trace-v3-result-contract";
 
 export type FastManimRuntimeTraceProfile =
   | Readonly<{
@@ -53,6 +61,26 @@ export type FastManimRuntimeTraceProfile =
       runtimeConfigHash: typeof FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2;
       version: 2;
     }>;
+
+export type FastManimGenericRuntimeTraceProfileV3 = Readonly<{
+  maxNormalizedBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3;
+  maxResultBytes: typeof MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3;
+  roots: readonly [];
+  runtimeConfigHash: string;
+  version: 3;
+}>;
+
+export function createFastManimGenericRuntimeTraceProfileV3(
+  frame: Readonly<{ height: number; width: number }>,
+): FastManimGenericRuntimeTraceProfileV3 {
+  return Object.freeze({
+    maxNormalizedBytes: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
+    maxResultBytes: MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3,
+    roots: Object.freeze([] as const),
+    runtimeConfigHash: digestFastManimRuntimeTraceConfigV3(createFastManimRuntimeTraceConfigV3(frame)),
+    version: 3,
+  });
+}
 
 const runtimeTraceProfiles = Object.freeze([
   Object.freeze({
@@ -118,10 +146,10 @@ export function selectFastManimRuntimeTraceSceneProfile(
 
 /** Recomputes the selected profile's sealed config against the runner-owned frame. */
 export function digestSelectedFastManimRuntimeTraceConfig(
-  profile: FastManimRuntimeTraceProfile,
+  profile: FastManimRuntimeTraceProfile | FastManimGenericRuntimeTraceProfileV3,
   frame: Readonly<{ height: number; width: number }>,
 ) {
-  return profile.version === 1
-    ? digestFastManimRuntimeTraceConfigV1(createFastManimRuntimeTraceConfigV1(frame))
-    : digestFastManimRuntimeTraceConfigV2(createFastManimRuntimeTraceConfigV2(frame));
+  if (profile.version === 1) return digestFastManimRuntimeTraceConfigV1(createFastManimRuntimeTraceConfigV1(frame));
+  if (profile.version === 2) return digestFastManimRuntimeTraceConfigV2(createFastManimRuntimeTraceConfigV2(frame));
+  return digestFastManimRuntimeTraceConfigV3(createFastManimRuntimeTraceConfigV3(frame));
 }

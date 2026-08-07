@@ -30,6 +30,8 @@ import {
 const MAX_ENTITIES = 10_000;
 const MAX_CHANNELS = 10_000;
 const MAX_KEYFRAMES = 100_000;
+const MAX_PATH_MORPH_KEYFRAMES = 256;
+const MAX_RUNTIME_TRACE_PATH_MORPH_KEYFRAMES = 900;
 
 const intervalV1Schema = z
   .object({
@@ -219,7 +221,7 @@ const pathTrimChannelV1Schema = z
 const pathMorphChannelV1Schema = z
   .object({
     ...entityChannelBase,
-    keyframes: z.array(keyframeV1Schema(cubicPathV1Schema)).min(2).max(256),
+    keyframes: z.array(keyframeV1Schema(cubicPathV1Schema)).min(2).max(MAX_RUNTIME_TRACE_PATH_MORPH_KEYFRAMES),
     kind: z.literal("path-morph"),
   })
   .strict();
@@ -327,7 +329,7 @@ export const sceneSourceV1Schema = z.discriminatedUnion("kind", [
       runtimeConfigHash: sha256V1Schema,
       sourceHash: sha256V1Schema,
       traceDigest: sha256V1Schema,
-      traceVersion: z.union([z.literal(1), z.literal(2)]),
+      traceVersion: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     })
     .strict(),
 ]);
@@ -614,6 +616,16 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
       });
     }
     if (channel.kind === "path-morph") {
+      if (
+        channel.keyframes.length > MAX_PATH_MORPH_KEYFRAMES &&
+        !(scene.source.kind === "imported-manim-runtime-trace" && scene.source.traceVersion === 3)
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: `Only Runtime Trace V3 may exceed ${MAX_PATH_MORPH_KEYFRAMES} path-morph keyframes.`,
+          path: ["animationChannels", index, "keyframes"],
+        });
+      }
       if (entity.geometry.kind !== "cubic-path") {
         context.addIssue({
           code: "custom",
@@ -827,7 +839,7 @@ export const sceneIrV1Schema = sceneIrV1BaseSchema.superRefine((scene, context) 
         path: ["duration"],
       });
     }
-    if (scene.source.traceVersion === 2 && !runtimeTraceDurationIsOnFrameGridV2(scene.duration)) {
+    if (scene.source.traceVersion !== 1 && !runtimeTraceDurationIsOnFrameGridV2(scene.duration)) {
       context.addIssue({
         code: "custom",
         message:

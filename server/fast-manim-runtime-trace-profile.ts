@@ -16,6 +16,7 @@ import {
   fastManimRuntimeTraceSceneIdV1,
   type TrustedFastManimRuntimeTraceProducerV1,
 } from "./fast-manim-runtime-trace-contract";
+import { TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY } from "./fast-manim-runtime-trace-producer-identity";
 
 export const FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V1 = "example_scenes/basic.py" as const;
 export const FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1 = "UpdatersExample" as const;
@@ -35,8 +36,7 @@ const sceneId = fastManimRuntimeTraceSceneIdV1(
 
 const trustedProfile = {
   producer: {
-    fastManimCommit: "350363a6baed0ba48d3da11f1299c1e2e5f56d46",
-    fastManimTree: "fa5423cb1b0a5a00e25e72fdf19784a2497a81bf",
+    ...TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY,
     glyphProviderSha256: "b95975405e4df8302088ac0b01afb55b42bd1892d8fa8161a1ca556e023e6322",
     manimVersion: "0.20.1",
     semanticsSha256: "abf581019158101abbe1597d265fcafa8da2fc9e40d986492e180a3f4ddc2172",
@@ -77,14 +77,6 @@ const trustedProfileSchema = expectedFastManimRuntimeTraceCorrelationV1Schema.pi
 /** Returns a fresh validated copy so no caller can mutate the trust anchor. */
 export function trustedFastManimRuntimeTraceProducerV1(): TrustedFastManimRuntimeTraceProducerV1 {
   return trustedProfileSchema.parse(trustedProfile);
-}
-
-/** Non-secret producer identity injected into the isolated local CLI environment. */
-export function fastManimRuntimeTraceProducerEnvironmentV1() {
-  return Object.freeze({
-    POIETRA_FAST_MANIM_COMMIT: trustedProfile.producer.fastManimCommit,
-    POIETRA_FAST_MANIM_TREE: trustedProfile.producer.fastManimTree,
-  });
 }
 
 export function createFastManimRuntimeTraceConfigV1(frame: Readonly<{ height: number; width: number }>) {

@@ -441,6 +441,25 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         (1.0_f64 / 60.0).to_bits()
     );
 
+    let mut v3 = v2.clone();
+    let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = &mut v3.source else {
+        unreachable!()
+    };
+    *trace_version = RuntimeTraceVersionV1::V3;
+    validate_scene_ir_v1(&v3).unwrap();
+    assert_eq!(
+        serde_json::to_value(&v3).unwrap()["source"]["traceVersion"],
+        3
+    );
+    assert_eq!(
+        parse_scene_ir_json_v1(&serde_json::to_vec(&v3).unwrap()).unwrap(),
+        v3
+    );
+    assert_eq!(
+        v3.state_sample_time(3.0).to_bits(),
+        (179.0_f64 / 60.0).to_bits()
+    );
+
     let mut off_grid_v2 = v2;
     off_grid_v2.duration = 3.01;
     assert!(

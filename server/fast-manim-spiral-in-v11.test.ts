@@ -116,8 +116,24 @@ describe("fast-manim SpiralIn snapshot profile V11", () => {
       version: 1,
     } as const;
     const provider = createServerPreviewSnapshotProviderV1({
-      fetcher: async () =>
-        new Response(JSON.stringify(publication), { headers: { "content-type": "application/json" } }),
+      fetcher: async (input) => {
+        const value = String(input).endsWith("/runtime-traces")
+          ? {
+              failure: { code: "unsupported-profile", message: "Snapshot fallback required." },
+              projectId: expected.projectId,
+              requestId: expected.requestId,
+              runtimeConfigHash: "0".repeat(64),
+              sceneId: expected.sceneId,
+              sceneName: expected.sceneName,
+              schema: "poietra.fast-manim-runtime-trace-run",
+              sourceHash: expected.sourceHash,
+              sourcePath: expected.sourcePath,
+              status: "failed",
+              version: 1,
+            }
+          : publication;
+        return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" } });
+      },
       requestIdFactory: () => expected.requestId,
     });
     const preview = await provider.loadVerifiedSnapshot({

@@ -179,7 +179,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("Runtime Trace terminal 
     expect(backend.statusCalls).toBeGreaterThan(0);
   });
 
-  it("rejects an unreviewed edited source before consulting the producer", async () => {
+  it("falls through an unreviewed candidate edit to generic V3 preview", async () => {
     const invalidSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
       "        self.wait()\n",
       "        square.rotate(0.25)\n        self.wait()\n",
@@ -195,12 +195,13 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("Runtime Trace terminal 
     });
 
     expect(result).toMatchObject({
-      failure: { code: "unsupported-profile" },
+      failure: { code: "result-rejected" },
       sourceHash,
       status: "failed",
     });
-    expect(backend.statusCalls).toBe(0);
-    expect(backend.requests).toEqual([]);
+    expect(backend.statusCalls).toBeGreaterThan(0);
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({ profileVersion: 3, version: 3 });
   });
 
   it("executes official and candidate bytes without publishing either trace", async () => {

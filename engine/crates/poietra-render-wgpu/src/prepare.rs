@@ -2313,6 +2313,7 @@ impl PreparedFrameAccumulatorV1 {
 #[derive(Clone, Copy)]
 struct PreparedPathDrawInputV1<'a> {
     cache: PreparedGeometryCacheInputV1<'a>,
+    compositing: RenderCompositingV1,
     entity_id: &'a str,
     fill: Option<&'a FillStyleV1>,
     opacity: f64,
@@ -2337,6 +2338,9 @@ fn append_fill_phase_v1(
     let Some(fill) = input.fill else {
         return Ok(());
     };
+    if fill.color.alpha == 0.0 || input.opacity == 0.0 {
+        return Ok(());
+    }
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_fill(input.cache, fill.rule))
@@ -2383,6 +2387,21 @@ fn append_stroke_phase_v1(
     let Some(stroke) = input.stroke else {
         return Ok(());
     };
+    if stroke.color.alpha == 0.0 || input.opacity == 0.0 {
+        return Ok(());
+    }
+    if input.compositing == RenderCompositingV1::ManimCairoSrgb
+        && stroke.cap != StrokeCapV1::Round
+        && input.cache.path.subpaths.iter().all(|subpath| {
+            subpath.segments.iter().all(|segment| {
+                segment.control1 == subpath.start
+                    && segment.control2 == subpath.start
+                    && segment.end == subpath.start
+            })
+        })
+    {
+        return Ok(());
+    }
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_stroke(input.cache, stroke))
@@ -2608,6 +2627,7 @@ fn tessellate_validated_frame_inner_v1(
                 transform,
                 viewport: &packet.viewport,
             },
+            compositing: packet.compositing,
             entity_id,
             fill: fill.as_ref(),
             opacity: *opacity,

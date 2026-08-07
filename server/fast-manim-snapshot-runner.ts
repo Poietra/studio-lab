@@ -9,6 +9,7 @@ import {
   fastManimRuntimeTraceRunRequestV1Schema,
   fastManimRuntimeTraceRunViewV1Schema,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
   deriveOpeningManimTerminalPositionSourceEditPlanV2,
   recoverOpeningManimOfficialSourceV2,
@@ -16,7 +17,6 @@ import {
 } from "../src/render-pipeline/source-lowering";
 import { verifyFastManimRuntimeTraceTerminalCandidateV1 } from "./fast-manim-runtime-trace-candidate";
 import {
-  digestFastManimRuntimeTraceConfigV1,
   digestFastManimRuntimeTraceV1,
   expectedFastManimRuntimeTraceCorrelationFromRequestV1,
   fastManimRuntimeTraceSceneIdV1,
@@ -31,7 +31,6 @@ import {
 } from "./fast-manim-runtime-trace-lowering";
 import {
   createFastManimRuntimeTraceCandidateProducerRequestV1,
-  createFastManimRuntimeTraceConfigV1,
   createFastManimRuntimeTraceProducerRequestV1,
   FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1,
   FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1,
@@ -39,7 +38,10 @@ import {
   trustedFastManimRuntimeTraceProducerV1,
 } from "./fast-manim-runtime-trace-profile";
 import {
+  createFastManimGenericRuntimeTraceProfileV3,
   digestSelectedFastManimRuntimeTraceConfig,
+  type FastManimGenericRuntimeTraceProfileV3,
+  type FastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceSceneProfile,
 } from "./fast-manim-runtime-trace-profiles";
@@ -64,6 +66,9 @@ import {
   parseFastManimRuntimeTraceProducerJsonV2,
   parseFastManimRuntimeTraceSelfSealedJsonV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
+import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
+import { lowerFastManimRuntimeTraceProducerJsonV3 } from "./fast-manim-runtime-trace-v3-lowering";
+import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import {
   copyFastManimSandboxUint8ArrayV1,
   type FastManimSandboxAttestationVerifierV1,
@@ -116,6 +121,7 @@ import {
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedFastManimSnapshotResultV1,
   type VerifiedSourceRuntimeIdentityMapV1,
+  ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
   type FastManimSnapshotPngProviderV1,
@@ -826,9 +832,10 @@ export class FastManimSnapshotRunner {
     // An edited Opening preview executes an official/candidate V2 pair. Each
     // result may reach 88 MiB before parsing, so the pair owns this runner.
     const weight =
-      request.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 &&
-      request.sourcePath === FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 &&
-      request.sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2
+      selectFastManimRuntimeTraceSceneProfile(request) === null ||
+      (request.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 &&
+        request.sourcePath === FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 &&
+        request.sourceHash !== FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2)
         ? this.maxConcurrentRuns
         : 1;
     this.reserveRun(
@@ -856,15 +863,16 @@ export class FastManimSnapshotRunner {
       if (signal?.aborted || this.closing) throw abortError();
     };
     const exactProfile = selectFastManimRuntimeTraceProfile(request);
-    const selectedProfile = exactProfile ?? selectFastManimRuntimeTraceSceneProfile(request);
-    const profile =
-      selectedProfile !== null &&
-      digestSelectedFastManimRuntimeTraceConfig(selectedProfile, this.frame) === selectedProfile.runtimeConfigHash
-        ? selectedProfile
+    const reviewedSceneProfile = selectFastManimRuntimeTraceSceneProfile(request);
+    const selectedReviewedProfile = exactProfile ?? reviewedSceneProfile;
+    const reviewedProfile =
+      selectedReviewedProfile !== null &&
+      digestSelectedFastManimRuntimeTraceConfig(selectedReviewedProfile, this.frame) ===
+        selectedReviewedProfile.runtimeConfigHash
+        ? selectedReviewedProfile
         : null;
-    const runtimeConfigHash =
-      profile?.runtimeConfigHash ??
-      digestFastManimRuntimeTraceConfigV1(createFastManimRuntimeTraceConfigV1(this.frame));
+    let profile: FastManimGenericRuntimeTraceProfileV3 | FastManimRuntimeTraceProfile | null = reviewedProfile;
+    let runtimeConfigHash = profile?.runtimeConfigHash ?? ZERO_SHA256;
     const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
     const base = () =>
       ({
@@ -887,7 +895,15 @@ export class FastManimSnapshotRunner {
       };
     };
 
-    if (profile === null) return failed("unsupported-profile");
+    if (exactProfile !== null && reviewedProfile === null) return failed("runtime-config-changed");
+    if (profile === null) {
+      try {
+        profile = createFastManimGenericRuntimeTraceProfileV3(this.frame);
+        runtimeConfigHash = profile.runtimeConfigHash;
+      } catch {
+        return failed("runtime-config-changed");
+      }
+    }
 
     let before: FastManimSnapshotSourceReadV1;
     try {
@@ -901,15 +917,20 @@ export class FastManimSnapshotRunner {
 
     let recoveredOfficialSource: string | null = null;
     let candidateProfileVersion: 1 | 2 | null = null;
-    if (exactProfile === null) {
+    if (exactProfile === null && reviewedProfile !== null) {
       try {
         recoveredOfficialSource =
-          profile.version === 1
+          reviewedProfile.version === 1
             ? recoverUpdatersTerminalOfficialSourceV1(before.source, request.sceneName)
             : recoverOpeningManimOfficialSourceV2(before.source, request.sceneName);
-        candidateProfileVersion = profile.version;
+        candidateProfileVersion = reviewedProfile.version;
       } catch {
-        return failed("unsupported-profile");
+        try {
+          profile = createFastManimGenericRuntimeTraceProfileV3(this.frame);
+          runtimeConfigHash = profile.runtimeConfigHash;
+        } catch {
+          return failed("runtime-config-changed");
+        }
       }
     }
 
@@ -922,7 +943,25 @@ export class FastManimSnapshotRunner {
             ? createFastManimRuntimeTraceCandidateProducerRequestV2(request, before.source, this.frame)
             : profile.version === 1
               ? createFastManimRuntimeTraceProducerRequestV1(request, before.source, this.frame)
-              : createFastManimRuntimeTraceProducerRequestV2(request, before.source, this.frame);
+              : profile.version === 2
+                ? createFastManimRuntimeTraceProducerRequestV2(request, before.source, this.frame)
+                : (() => {
+                    const analysis = studioSourceAnalysisProviderV1.analyze({
+                      expectedSourceHash: before.hash,
+                      sceneName: request.sceneName,
+                      sourcePath: request.sourcePath,
+                      sourceText: before.source,
+                    });
+                    return createFastManimRuntimeTraceProducerRequestV3(
+                      request,
+                      before.source,
+                      {
+                        constructStartLine: analysis.scene.construct.span.startLine,
+                        definitionOrdinal: analysis.scene.ordinal,
+                      },
+                      this.frame,
+                    );
+                  })();
     } catch {
       return failed("unsupported-profile");
     }
@@ -1056,24 +1095,34 @@ export class FastManimSnapshotRunner {
         );
         throwIfHalted();
         if (produced.kind !== "ok") return failed(produced.code);
-        bundle =
-          producerRequest.version === 1
-            ? await lowerFastManimRuntimeTraceProducerJsonV1(
-                produced.resultBytes,
-                producerRequest,
-                trustedFastManimRuntimeTraceProducerV1(),
-              )
-            : await lowerFastManimRuntimeTraceProducerJsonV2(
-                produced.resultBytes,
-                producerRequest,
-                trustedFastManimRuntimeTraceProducerV2(),
-              );
-        const trusted =
-          profile.version === 1 ? trustedFastManimRuntimeTraceProducerV1() : trustedFastManimRuntimeTraceProducerV2();
-        responseRoots = trusted.roots.map(({ binding, id }) => ({
-          binding,
-          entityId: id,
-        })) as FastManimRuntimeTraceVerifiedRootsV1;
+        if (producerRequest.version === 1) {
+          bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
+            produced.resultBytes,
+            producerRequest,
+            trustedFastManimRuntimeTraceProducerV1(),
+          );
+          responseRoots = trustedFastManimRuntimeTraceProducerV1().roots.map(({ binding, id }) => ({
+            binding,
+            entityId: id,
+          })) as FastManimRuntimeTraceVerifiedRootsV1;
+        } else if (producerRequest.version === 2) {
+          bundle = await lowerFastManimRuntimeTraceProducerJsonV2(
+            produced.resultBytes,
+            producerRequest,
+            trustedFastManimRuntimeTraceProducerV2(),
+          );
+          responseRoots = trustedFastManimRuntimeTraceProducerV2().roots.map(({ binding, id }) => ({
+            binding,
+            entityId: id,
+          })) as FastManimRuntimeTraceVerifiedRootsV1;
+        } else {
+          bundle = await lowerFastManimRuntimeTraceProducerJsonV3(
+            produced.resultBytes,
+            producerRequest,
+            trustedFastManimRuntimeTraceProducerV3(),
+          );
+          responseRoots = [];
+        }
       }
     } catch {
       throwIfHalted();

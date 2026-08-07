@@ -26,9 +26,8 @@ import {
 const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
+const MAX_RUNTIME_TRACE_RESPONSE_BYTES = MAX_RESPONSE_BYTES;
 const ZERO_SHA256 = "0".repeat(64);
-const RUNTIME_TRACE_SOURCE_PATH = "example_scenes/basic.py";
-const RUNTIME_TRACE_SCENE_NAMES = new Set(["OpeningManim", "UpdatersExample"]);
 
 const identitySchema = z
   .object({
@@ -95,13 +94,13 @@ async function expectedSceneId(identity: StudioPreviewSceneIdentityV1) {
   return `scene:${hex}`;
 }
 
-async function readBoundedJson(response: Response) {
+async function readBoundedJson(response: Response, maxBytes = MAX_RESPONSE_BYTES) {
   const mediaType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
   if (mediaType !== "application/json")
     throw providerError("The Scene snapshot endpoint returned a non-JSON response.");
   const lengthHeader = response.headers.get("content-length");
   const declaredLength = lengthHeader === null ? null : Number(lengthHeader);
-  if (declaredLength !== null && Number.isFinite(declaredLength) && declaredLength > MAX_RESPONSE_BYTES) {
+  if (declaredLength !== null && Number.isFinite(declaredLength) && declaredLength > maxBytes) {
     throw providerError("The Scene snapshot endpoint response is too large.");
   }
   const chunks: Uint8Array[] = [];
@@ -112,7 +111,7 @@ async function readBoundedJson(response: Response) {
       const { done, value } = await reader.read();
       if (done) break;
       encodedBytes += value.byteLength;
-      if (encodedBytes > MAX_RESPONSE_BYTES) {
+      if (encodedBytes > maxBytes) {
         await reader.cancel();
         throw providerError("The Scene snapshot endpoint response is too large.");
       }
@@ -401,11 +400,26 @@ async function validateVerifiedRuntimeTraceRun(
             ],
           } as const)
         : null;
+  const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
+  if (source.traceVersion === 3) {
+    if (
+      run.roots.length !== 0 ||
+      !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
+    ) {
+      throw providerError("The generic Runtime Trace contains invalid preview-only roots.");
+    }
+    return {
+      bundle,
+      engineRevisionHash: run.traceDigest,
+      publicationRevision: null,
+      sourceLabel: "verified Runtime Trace (preview-only)",
+      sourceRuntimeIdentity: new Map(),
+    };
+  }
   if (!expectedProfile) {
     throw providerError("The Runtime Trace preview does not match a reviewed Scene profile.");
   }
 
-  const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
   const sourceRuntimeIdentity = new Map<
     string,
     Readonly<{ bindingId: string; entityId: string; sourceName: string }>
@@ -469,22 +483,39 @@ export function createServerPreviewSnapshotProviderV1(
       const requestId = requestIdFactory();
       if (!opaqueIdV1Schema.safeParse(requestId).success)
         throw providerError("The Scene snapshot request ID is invalid.");
-      const runtimeTrace =
-        identity.sourcePath === RUNTIME_TRACE_SOURCE_PATH && RUNTIME_TRACE_SCENE_NAMES.has(identity.sceneName);
-      const endpoint = runtimeTrace ? "runtime-traces" : "scene-snapshots";
-      const response = await fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/${endpoint}`, {
-        body: JSON.stringify({ ...identity, requestId }),
-        headers: { accept: "application/json", "content-type": "application/json" },
-        method: "POST",
-        signal,
-      });
-      signal?.throwIfAborted();
-      if (!response.ok) throw providerError(`The Scene snapshot endpoint failed with HTTP ${response.status}.`);
-      const value = await readBoundedJson(response);
-      signal?.throwIfAborted();
-      const { bundle, engineRevisionHash, publicationRevision, sourceLabel, sourceRuntimeIdentity } = runtimeTrace
-        ? await validateVerifiedRuntimeTraceRun(value, identity, requestId)
-        : await validateVerifiedRun(value, identity, requestId);
+      const post = (endpoint: "runtime-traces" | "scene-snapshots") =>
+        fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/${endpoint}`, {
+          body: JSON.stringify({ ...identity, requestId }),
+          headers: { accept: "application/json", "content-type": "application/json" },
+          method: "POST",
+          signal,
+        });
+      let verified:
+        | Awaited<ReturnType<typeof validateVerifiedRun>>
+        | Awaited<ReturnType<typeof validateVerifiedRuntimeTraceRun>>;
+      try {
+        const response = await post("runtime-traces");
+        signal?.throwIfAborted();
+        if (!response.ok) {
+          throw providerError(
+            `The Runtime Trace endpoint failed with HTTP ${response.status}.`,
+            undefined,
+            response.status === 501 ? "unsupported" : "failed",
+          );
+        }
+        verified = await validateVerifiedRuntimeTraceRun(
+          await readBoundedJson(response, MAX_RUNTIME_TRACE_RESPONSE_BYTES),
+          identity,
+          requestId,
+        );
+      } catch (cause) {
+        if (!(cause instanceof StudioPreviewSnapshotLoadErrorV1) || cause.failureKind !== "unsupported") throw cause;
+        const response = await post("scene-snapshots");
+        signal?.throwIfAborted();
+        if (!response.ok) throw providerError(`The Scene snapshot endpoint failed with HTTP ${response.status}.`);
+        verified = await validateVerifiedRun(await readBoundedJson(response), identity, requestId);
+      }
+      const { bundle, engineRevisionHash, publicationRevision, sourceLabel, sourceRuntimeIdentity } = verified;
       signal?.throwIfAborted();
       const assetPayloads = await loadSnapshotAssetPayloads(fetcher, identity.projectId, bundle.assets.assets, signal);
       signal?.throwIfAborted();
