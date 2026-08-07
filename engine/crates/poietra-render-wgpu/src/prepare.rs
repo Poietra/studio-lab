@@ -33,6 +33,12 @@ const MAX_STROKE_OUTPUT_VERTICES_PER_DRAW_V1: usize = 65_536;
 const MAX_STROKE_ARC_RECURSION_DEPTH_V1: u32 = 15;
 const STROKE_INPUT_ULP_SAFETY_FACTOR_V1: f64 = 16.0;
 const MAX_FLATTEN_DEPTH_V1: u8 = 20;
+const CAIRO_ANALYTIC_STROKE_MAX_WIDTH_PIXELS_V1: f64 = 2.0;
+const CAIRO_ANALYTIC_STROKE_FRINGE_PIXELS_V1: f64 = 1.0;
+const CAIRO_ANALYTIC_STROKE_TOLERANCE_PIXELS_V1: f64 = FLATTEN_TOLERANCE_PIXELS_V1 / 8.0;
+const CAIRO_FILL_TOLERANCE_PIXELS_V1: f64 = FLATTEN_TOLERANCE_PIXELS_V1 / 8.0;
+const DISABLED_STROKE_COVERAGE_V1: [f32; 2] = [0.0, -1.0];
+const ANALYTIC_FILL_COVERAGE_MODE_V1: f32 = -2.0;
 
 /// A valid v1 draw feature not implemented by the bounded WGPU paint slice.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -119,17 +125,22 @@ pub enum PrepareFrameErrorV1 {
     TessellationDepthLimit { draw_id: String, maximum_depth: u8 },
 }
 
-/// Position-only prepared geometry. Material interleaving is deferred to the
-/// upload plan, so material-only changes do not change this value.
+/// Prepared paint geometry. Material interleaving is deferred to the upload
+/// plan, so material-only changes do not change this value.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PreparedGeometryVertexV1 {
     position: [f32; 2],
+    stroke_coverage: [f32; 2],
 }
 
 impl PreparedGeometryVertexV1 {
     #[must_use]
     pub const fn position(&self) -> [f32; 2] {
         self.position
+    }
+
+    pub(crate) const fn stroke_coverage(&self) -> [f32; 2] {
+        self.stroke_coverage
     }
 }
 
@@ -577,12 +588,15 @@ impl PreparedFrameV1 {
                 vertices: vec![
                     PreparedGeometryVertexV1 {
                         position: [-1.0, -1.0],
+                        stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
                     },
                     PreparedGeometryVertexV1 {
                         position: [1.0, -1.0],
+                        stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
                     },
                     PreparedGeometryVertexV1 {
                         position: [0.0, 1.0],
+                        stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
                     },
                 ],
             },
@@ -792,10 +806,14 @@ fn distance_to_chord_segment(point: PointF64, start: PointF64, end: PointF64) ->
     (point.x - closest.x).hypot(point.y - closest.y)
 }
 
-fn world_flatten_tolerance(camera: &RenderCameraV1, viewport: &ViewportV1) -> f64 {
+fn world_flatten_tolerance(
+    camera: &RenderCameraV1,
+    viewport: &ViewportV1,
+    tolerance_pixels: f64,
+) -> f64 {
     let world_units_per_pixel_x = (camera.right - camera.left) / f64::from(viewport.width_px);
     let world_units_per_pixel_y = (camera.top - camera.bottom) / f64::from(viewport.height_px);
-    FLATTEN_TOLERANCE_PIXELS_V1 * world_units_per_pixel_x.min(world_units_per_pixel_y)
+    tolerance_pixels * world_units_per_pixel_x.min(world_units_per_pixel_y)
 }
 
 fn cubic_is_flat(
@@ -850,29 +868,35 @@ fn world_curve(
     })
 }
 
+#[derive(Clone, Copy)]
+struct FlattenSubpathOptionsV1 {
+    maximum_vertices: usize,
+    reported_maximum_vertices: usize,
+    tolerance_pixels: f64,
+}
+
 fn flatten_subpath_world(
     subpath: &CubicSubpathV1,
     transform: &AffineTransformV1,
     camera: &RenderCameraV1,
     viewport: &ViewportV1,
     draw_id: &str,
-    maximum_vertices: usize,
-    reported_maximum_vertices: usize,
+    options: FlattenSubpathOptionsV1,
 ) -> Result<Vec<PointF64>, PrepareFrameErrorV1> {
     let initial_capacity = subpath
         .segments
         .len()
         .saturating_add(1)
-        .min(maximum_vertices);
+        .min(options.maximum_vertices);
     let mut points = Vec::with_capacity(initial_capacity);
     append_point(
         &mut points,
         transform_to_world(&subpath.start, transform, draw_id)?,
-        maximum_vertices,
-        reported_maximum_vertices,
+        options.maximum_vertices,
+        options.reported_maximum_vertices,
         draw_id,
     )?;
-    let tolerance_world = world_flatten_tolerance(camera, viewport);
+    let tolerance_world = world_flatten_tolerance(camera, viewport, options.tolerance_pixels);
     let mut start = &subpath.start;
     for segment in &subpath.segments {
         let mut stack = vec![world_curve(start, segment, transform, draw_id)?];
@@ -881,8 +905,8 @@ fn flatten_subpath_world(
                 append_point(
                     &mut points,
                     curve.end,
-                    maximum_vertices,
-                    reported_maximum_vertices,
+                    options.maximum_vertices,
+                    options.reported_maximum_vertices,
                     draw_id,
                 )?;
                 continue;
@@ -983,7 +1007,14 @@ struct BoundedGeometryV1 {
     indices: Vec<u32>,
     maximum_indices: usize,
     maximum_vertices: usize,
+    stroke_coverage: Option<BoundedStrokeCoverageV1>,
     vertices: Vec<LyonPoint>,
+}
+
+#[derive(Debug)]
+struct BoundedStrokeCoverageV1 {
+    original_half_width: f32,
+    vertices: Vec<[f32; 2]>,
 }
 
 impl BoundedGeometryV1 {
@@ -995,7 +1026,18 @@ impl BoundedGeometryV1 {
             indices: Vec::new(),
             maximum_indices: maximum_vertices.saturating_mul(6),
             maximum_vertices,
+            stroke_coverage: None,
             vertices: Vec::new(),
+        }
+    }
+
+    fn with_stroke_coverage(maximum_vertices: usize, original_half_width: f32) -> Self {
+        Self {
+            stroke_coverage: Some(BoundedStrokeCoverageV1 {
+                original_half_width,
+                vertices: Vec::new(),
+            }),
+            ..Self::new(maximum_vertices)
         }
     }
 }
@@ -1022,6 +1064,9 @@ impl GeometryBuilder for BoundedGeometryV1 {
 
     fn abort_geometry(&mut self) {
         self.vertices.truncate(self.first_vertex);
+        if let Some(coverage) = &mut self.stroke_coverage {
+            coverage.vertices.truncate(self.first_vertex);
+        }
         self.indices.truncate(self.first_index);
         self.index_limit_exceeded = false;
     }
@@ -1058,9 +1103,28 @@ impl StrokeGeometryBuilder for BoundedGeometryV1 {
         if !position.x.is_finite() || !position.y.is_finite() {
             return Err(GeometryBuilderError::InvalidVertex);
         }
+        let stroke_coverage = self.stroke_coverage.as_ref().map(|coverage| {
+            let side = if vertex.side().is_positive() {
+                1.0
+            } else {
+                -1.0
+            };
+            let expanded_half_width = vertex.line_width() * 0.5;
+            [side * expanded_half_width, coverage.original_half_width]
+        });
+        if stroke_coverage.is_some_and(|coverage| !coverage.into_iter().all(f32::is_finite)) {
+            return Err(GeometryBuilderError::InvalidVertex);
+        }
         let index = u32::try_from(self.vertices.len())
             .map_err(|_| GeometryBuilderError::TooManyVertices)?;
         self.vertices.push(position);
+        if let Some(stroke_coverage) = stroke_coverage {
+            self.stroke_coverage
+                .as_mut()
+                .expect("coverage mode was checked")
+                .vertices
+                .push(stroke_coverage);
+        }
         Ok(VertexId(index))
     }
 }
@@ -1492,23 +1556,43 @@ fn validate_stroke_source_limits(
     Ok(())
 }
 
+struct PreparedStrokeOptionsV1 {
+    coverage_half_width: Option<f32>,
+    lyon: StrokeOptions,
+}
+
 fn stroke_options(
     stroke: &StrokeStyleV1,
     pixels_per_world: f64,
+    compositing: RenderCompositingV1,
     context: GeometryContextV1<'_>,
-) -> Result<StrokeOptions, PrepareFrameErrorV1> {
+) -> Result<PreparedStrokeOptionsV1, PrepareFrameErrorV1> {
     let line_width_pixels = stroke.width_world * pixels_per_world;
+    let uses_analytic_coverage = compositing == RenderCompositingV1::ManimCairoSrgb
+        && stroke.cap == StrokeCapV1::Butt
+        && stroke.join == StrokeJoinV1::Miter
+        && line_width_pixels <= CAIRO_ANALYTIC_STROKE_MAX_WIDTH_PIXELS_V1;
     let width_error_scale = if matches!(stroke.join, StrokeJoinV1::Miter) {
         stroke.miter_limit * 0.5
     } else {
         0.5
     };
-    let line_width = stroke_scalar_to_f32(
+    let original_line_width = stroke_scalar_to_f32(
         line_width_pixels,
         width_error_scale,
         context.draw_id,
         "stroke width in pixel-normalized space",
     )?;
+    let tessellated_line_width = if uses_analytic_coverage {
+        stroke_scalar_to_f32(
+            line_width_pixels + CAIRO_ANALYTIC_STROKE_FRINGE_PIXELS_V1 * 2.0,
+            width_error_scale,
+            context.draw_id,
+            "expanded stroke width in pixel-normalized space",
+        )?
+    } else {
+        original_line_width
+    };
     let miter_limit = stroke_scalar_to_f32(
         stroke.miter_limit,
         line_width_pixels * 0.5,
@@ -1516,7 +1600,11 @@ fn stroke_options(
         "stroke miter limit",
     )?;
     let tolerance = stroke_scalar_to_f32(
-        FLATTEN_TOLERANCE_PIXELS_V1,
+        if uses_analytic_coverage {
+            CAIRO_ANALYTIC_STROKE_TOLERANCE_PIXELS_V1
+        } else {
+            FLATTEN_TOLERANCE_PIXELS_V1
+        },
         1.0,
         context.draw_id,
         "stroke tessellation tolerance",
@@ -1531,12 +1619,15 @@ fn stroke_options(
         StrokeJoinV1::Miter => LineJoin::Miter,
         StrokeJoinV1::Round => LineJoin::Round,
     };
-    Ok(StrokeOptions::default()
-        .with_line_width(line_width)
-        .with_line_cap(line_cap)
-        .with_line_join(line_join)
-        .with_miter_limit(miter_limit)
-        .with_tolerance(tolerance))
+    Ok(PreparedStrokeOptionsV1 {
+        coverage_half_width: uses_analytic_coverage.then_some(original_line_width * 0.5),
+        lyon: StrokeOptions::default()
+            .with_line_width(tessellated_line_width)
+            .with_line_cap(line_cap)
+            .with_line_join(line_join)
+            .with_miter_limit(miter_limit)
+            .with_tolerance(tolerance),
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -1789,11 +1880,15 @@ fn stroke_tessellation_error(
 fn tessellate_stroke_path(
     path: &[PreparedStrokeSubpathV1],
     options: &StrokeOptions,
+    coverage_half_width: Option<f32>,
     maximum_output_vertices: usize,
     reported_output_limit: usize,
     draw_id: &str,
 ) -> Result<BoundedGeometryV1, PrepareFrameErrorV1> {
-    let mut output = BoundedGeometryV1::new(maximum_output_vertices);
+    let mut output = coverage_half_width.map_or_else(
+        || BoundedGeometryV1::new(maximum_output_vertices),
+        |half_width| BoundedGeometryV1::with_stroke_coverage(maximum_output_vertices, half_width),
+    );
     let mut tessellator = StrokeTessellator::new();
     let mut builder = tessellator.builder(options, &mut output);
     for subpath in path {
@@ -1818,10 +1913,21 @@ fn append_stroke_output(
     viewport: &ViewportV1,
     draw_id: &str,
 ) -> Result<(), PrepareFrameErrorV1> {
+    let stroke_coverage = output.stroke_coverage.map(|coverage| coverage.vertices);
+    if stroke_coverage
+        .as_ref()
+        .is_some_and(|coverage| coverage.len() != output.vertices.len())
+    {
+        return Err(PrepareFrameErrorV1::StrokeTessellation {
+            draw_id: draw_id.to_owned(),
+            reason: "analytic coverage output does not match stroke vertices".to_owned(),
+        });
+    }
     let prepared_vertices = output
         .vertices
         .into_iter()
-        .map(|point| {
+        .enumerate()
+        .map(|(index, point)| {
             Ok(PreparedGeometryVertexV1 {
                 position: stroke_output_position(
                     point,
@@ -1830,6 +1936,9 @@ fn append_stroke_output(
                     viewport,
                     draw_id,
                 )?,
+                stroke_coverage: stroke_coverage
+                    .as_ref()
+                    .map_or(DISABLED_STROKE_COVERAGE_V1, |coverage| coverage[index]),
             })
         })
         .collect::<Result<Vec<_>, PrepareFrameErrorV1>>()?;
@@ -1854,6 +1963,7 @@ fn prepare_stroke_geometry(
     path: &poietra_scene_ir::CubicPathV1,
     transform: &AffineTransformV1,
     stroke: &StrokeStyleV1,
+    compositing: RenderCompositingV1,
     context: GeometryContextV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
     validate_stroke_source_limits(path, context.draw_id)?;
@@ -1861,13 +1971,20 @@ fn prepare_stroke_geometry(
         stroke_output_limits(vertices.len(), context.draw_id)?;
     let pixels_per_world =
         stroke_pixels_per_world(context.camera, context.viewport, context.draw_id)?;
-    let options = stroke_options(stroke, pixels_per_world, context)?;
-    validate_round_stroke_complexity(&options, context.draw_id)?;
-    let prepared_path =
-        prepare_stroke_path_input(path, transform, stroke, &options, pixels_per_world, context)?;
+    let options = stroke_options(stroke, pixels_per_world, compositing, context)?;
+    validate_round_stroke_complexity(&options.lyon, context.draw_id)?;
+    let prepared_path = prepare_stroke_path_input(
+        path,
+        transform,
+        stroke,
+        &options.lyon,
+        pixels_per_world,
+        context,
+    )?;
     let mut output = tessellate_stroke_path(
         &prepared_path,
-        &options,
+        &options.lyon,
+        options.coverage_half_width,
         maximum_output_vertices,
         reported_output_limit,
         context.draw_id,
@@ -1967,6 +2084,7 @@ fn prepare_fill_contour(
     context: GeometryContextV1<'_>,
     maximum_vertices: usize,
     upload_points: &mut HashMap<(u32, u32), PointF64>,
+    tolerance_pixels: f64,
 ) -> Result<PreparedFillContourV1, PrepareFrameErrorV1> {
     let world_points = flatten_subpath_world(
         subpath,
@@ -1974,8 +2092,11 @@ fn prepare_fill_contour(
         context.camera,
         context.viewport,
         context.draw_id,
-        maximum_vertices,
-        MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+        FlattenSubpathOptionsV1 {
+            maximum_vertices,
+            reported_maximum_vertices: MAX_FILL_FLATTENED_POINTS_PER_DRAW_V1,
+            tolerance_pixels,
+        },
     )?;
     let flattened_vertex_count = world_points.len();
     let mut points = Vec::with_capacity(flattened_vertex_count);
@@ -2031,12 +2152,156 @@ fn prepare_fill_contour(
     })
 }
 
+const fn canonical_mesh_edge(left: u32, right: u32) -> (u32, u32) {
+    if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    }
+}
+
+fn cairo_fill_coverage_vertices(
+    output: BoundedGeometryV1,
+    maximum_output_vertices: usize,
+    reported_output_limit: usize,
+    draw_id: &str,
+) -> Result<(Vec<PreparedGeometryVertexV1>, Vec<u32>), PrepareFrameErrorV1> {
+    let mut vertices = output
+        .vertices
+        .iter()
+        .map(|point| PreparedGeometryVertexV1 {
+            position: [point.x, point.y],
+            stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
+        })
+        .collect::<Vec<_>>();
+    let source_indices = output.indices;
+    let mut edge_occurrences = HashMap::<(u32, u32), u8>::with_capacity(source_indices.len());
+    for triangle in source_indices.chunks_exact(3) {
+        for [left, right] in [
+            [triangle[0], triangle[1]],
+            [triangle[1], triangle[2]],
+            [triangle[2], triangle[0]],
+        ] {
+            edge_occurrences
+                .entry(canonical_mesh_edge(left, right))
+                .and_modify(|count| *count = count.saturating_add(1))
+                .or_insert(1);
+        }
+    }
+
+    let mut indices = Vec::with_capacity(source_indices.len());
+    for triangle in source_indices.chunks_exact(3) {
+        let triangle_edges = [
+            (triangle[0], triangle[1], 2usize),
+            (triangle[1], triangle[2], 0usize),
+            (triangle[2], triangle[0], 1usize),
+        ];
+        let mut boundary_opposites = [0usize; 3];
+        let mut boundary_count = 0usize;
+        for (left, right, opposite) in triangle_edges {
+            if edge_occurrences.get(&canonical_mesh_edge(left, right)) == Some(&1) {
+                boundary_opposites[boundary_count] = opposite;
+                boundary_count += 1;
+            }
+        }
+        if boundary_count == 0 {
+            indices.extend_from_slice(triangle);
+            continue;
+        }
+
+        let Some(required_vertices) = vertices.len().checked_add(3) else {
+            return Err(PrepareFrameErrorV1::IndexRange);
+        };
+        if required_vertices > maximum_output_vertices {
+            return Err(PrepareFrameErrorV1::TessellationVertexLimit {
+                draw_id: draw_id.to_owned(),
+                maximum_vertices: reported_output_limit,
+            });
+        }
+        let duplicate_base =
+            u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+        for (local_index, source_index) in triangle.iter().copied().enumerate() {
+            let source_index =
+                usize::try_from(source_index).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+            let source = vertices
+                .get(source_index)
+                .copied()
+                .ok_or(PrepareFrameErrorV1::IndexRange)?;
+            let first_distance = f32::from(local_index == boundary_opposites[0]);
+            let second_distance = f32::from(local_index == boundary_opposites[1]);
+            let stroke_coverage = match boundary_count {
+                1 => [first_distance, ANALYTIC_FILL_COVERAGE_MODE_V1],
+                2 => [first_distance, -3.0 - second_distance],
+                3 => [first_distance, -5.0 - second_distance],
+                _ => return Err(PrepareFrameErrorV1::IndexRange),
+            };
+            vertices.push(PreparedGeometryVertexV1 {
+                position: source.position,
+                stroke_coverage,
+            });
+        }
+        indices.extend_from_slice(&[
+            duplicate_base,
+            duplicate_base
+                .checked_add(1)
+                .ok_or(PrepareFrameErrorV1::IndexRange)?,
+            duplicate_base
+                .checked_add(2)
+                .ok_or(PrepareFrameErrorV1::IndexRange)?,
+        ]);
+    }
+    Ok((vertices, indices))
+}
+
+fn append_fill_output(
+    output: BoundedGeometryV1,
+    vertices: &mut Vec<PreparedGeometryVertexV1>,
+    indices: &mut Vec<u32>,
+    compositing: RenderCompositingV1,
+    maximum_output_vertices: usize,
+    reported_output_limit: usize,
+    draw_id: &str,
+) -> Result<(), PrepareFrameErrorV1> {
+    let (prepared_vertices, prepared_indices) =
+        if compositing == RenderCompositingV1::ManimCairoSrgb {
+            cairo_fill_coverage_vertices(
+                output,
+                maximum_output_vertices,
+                reported_output_limit,
+                draw_id,
+            )?
+        } else {
+            (
+                output
+                    .vertices
+                    .into_iter()
+                    .map(|point| PreparedGeometryVertexV1 {
+                        position: [point.x, point.y],
+                        stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
+                    })
+                    .collect(),
+                output.indices,
+            )
+        };
+    let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
+    vertices.extend(prepared_vertices);
+    for index in prepared_indices {
+        indices.push(
+            base_vertex
+                .checked_add(index)
+                .ok_or(PrepareFrameErrorV1::IndexRange)?,
+        );
+    }
+    Ok(())
+}
+
 fn prepare_fill_geometry(
     vertices: &mut Vec<PreparedGeometryVertexV1>,
     indices: &mut Vec<u32>,
     path: &poietra_scene_ir::CubicPathV1,
     transform: &AffineTransformV1,
     fill_rule: FillRuleV1,
+    compositing: RenderCompositingV1,
     context: GeometryContextV1<'_>,
 ) -> Result<(), PrepareFrameErrorV1> {
     let draw_id = context.draw_id;
@@ -2047,6 +2312,11 @@ fn prepare_fill_geometry(
     let mut upload_points = HashMap::new();
     let mut has_renderable_contour = false;
     let mut saw_precision_collapse = false;
+    let tolerance_pixels = if compositing == RenderCompositingV1::ManimCairoSrgb {
+        CAIRO_FILL_TOLERANCE_PIXELS_V1
+    } else {
+        FLATTEN_TOLERANCE_PIXELS_V1
+    };
     let lyon_fill_rule = match fill_rule {
         FillRuleV1::EvenOdd => lyon_tessellation::FillRule::EvenOdd,
         FillRuleV1::NonZero => lyon_tessellation::FillRule::NonZero,
@@ -2073,6 +2343,7 @@ fn prepare_fill_geometry(
             context,
             available_for_subpath,
             &mut upload_points,
+            tolerance_pixels,
         )?;
         flattened_vertices = flattened_vertices
             .checked_add(contour.flattened_vertex_count)
@@ -2122,20 +2393,15 @@ fn prepare_fill_geometry(
         GeometryPhaseV1::Fill,
     )?;
 
-    let base_vertex = u32::try_from(vertices.len()).map_err(|_| PrepareFrameErrorV1::IndexRange)?;
-    for point in output.vertices {
-        vertices.push(PreparedGeometryVertexV1 {
-            position: [point.x, point.y],
-        });
-    }
-    for index in output.indices {
-        indices.push(
-            base_vertex
-                .checked_add(index)
-                .ok_or(PrepareFrameErrorV1::IndexRange)?,
-        );
-    }
-    Ok(())
+    append_fill_output(
+        output,
+        vertices,
+        indices,
+        compositing,
+        maximum_output_vertices,
+        reported_output_limit,
+        draw_id,
+    )
 }
 
 struct PreparedFrameAccumulatorV1 {
@@ -2365,6 +2631,7 @@ fn append_fill_phase_v1(
                 input.cache.path,
                 input.cache.transform,
                 fill.rule,
+                input.compositing,
                 input.geometry_context(),
             )
         },
@@ -2426,6 +2693,7 @@ fn append_stroke_phase_v1(
                 input.cache.path,
                 input.cache.transform,
                 stroke,
+                input.compositing,
                 input.geometry_context(),
             )
         },
@@ -2622,6 +2890,7 @@ fn tessellate_validated_frame_inner_v1(
         let input = PreparedPathDrawInputV1 {
             cache: PreparedGeometryCacheInputV1 {
                 camera: &packet.camera,
+                compositing: packet.compositing,
                 draw_id,
                 path,
                 transform,
@@ -2800,6 +3069,87 @@ mod tests {
     }
 
     #[test]
+    fn cairo_thin_butt_miter_strokes_reserve_an_analytic_coverage_fringe() {
+        let camera = RenderCameraV1 {
+            bottom: -4.5,
+            clear_color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 0.0,
+                green: 0.0,
+                red: 0.0,
+            },
+            kind: poietra_scene_ir::RenderCameraKindV1::Orthographic2d,
+            left: -8.0,
+            right: 8.0,
+            top: 4.5,
+        };
+        let viewport = ViewportV1 {
+            height_px: 360,
+            width_px: 640,
+        };
+        let context = GeometryContextV1 {
+            camera: &camera,
+            draw_id: "draw:analytic-aa",
+            viewport: &viewport,
+        };
+        let stroke = StrokeStyleV1 {
+            cap: StrokeCapV1::Butt,
+            color: RgbaColorV1 {
+                alpha: 1.0,
+                blue: 1.0,
+                green: 1.0,
+                red: 1.0,
+            },
+            join: StrokeJoinV1::Miter,
+            miter_limit: 4.0,
+            width_world: 0.02,
+        };
+
+        let cairo = stroke_options(
+            &stroke,
+            stroke_pixels_per_world(&camera, &viewport, context.draw_id).unwrap(),
+            RenderCompositingV1::ManimCairoSrgb,
+            context,
+        )
+        .unwrap();
+        assert!(
+            (cairo
+                .coverage_half_width
+                .expect("Cairo thin stroke must carry the original half width")
+                - 0.4)
+                .abs()
+                <= f32::EPSILON
+        );
+        assert!((cairo.lyon.line_width - 2.8).abs() <= f32::EPSILON);
+        assert!((cairo.lyon.tolerance - 0.03125).abs() <= f32::EPSILON);
+
+        let linear = stroke_options(
+            &stroke,
+            stroke_pixels_per_world(&camera, &viewport, context.draw_id).unwrap(),
+            RenderCompositingV1::LinearLight,
+            context,
+        )
+        .unwrap();
+        assert_eq!(linear.coverage_half_width, None);
+        assert!((linear.lyon.line_width - 0.8).abs() <= f32::EPSILON);
+        assert!((linear.lyon.tolerance - 0.25).abs() <= f32::EPSILON);
+
+        let mut unsupported_cap = stroke.clone();
+        unsupported_cap.cap = StrokeCapV1::Round;
+        assert_eq!(
+            stroke_options(
+                &unsupported_cap,
+                stroke_pixels_per_world(&camera, &viewport, context.draw_id).unwrap(),
+                RenderCompositingV1::ManimCairoSrgb,
+                context,
+            )
+            .unwrap()
+            .coverage_half_width,
+            None,
+        );
+    }
+
+    #[test]
     fn stroke_input_collision_accepts_only_sub_budget_pixel_displacement() {
         let baseline = PointF64 { x: 0.0, y: 0.0 };
         assert!(stroke_input_collision_within_precision_budget(
@@ -2873,8 +3223,11 @@ mod tests {
                 &camera,
                 &viewport,
                 "draw:limit",
-                2,
-                2,
+                FlattenSubpathOptionsV1 {
+                    maximum_vertices: 2,
+                    reported_maximum_vertices: 2,
+                    tolerance_pixels: FLATTEN_TOLERANCE_PIXELS_V1,
+                },
             ),
             Err(PrepareFrameErrorV1::TessellationVertexLimit {
                 maximum_vertices: 2,
@@ -2991,6 +3344,7 @@ mod tests {
             |vertices, indices| {
                 vertices.push(PreparedGeometryVertexV1 {
                     position: [0.0, 0.0],
+                    stroke_coverage: DISABLED_STROKE_COVERAGE_V1,
                 });
                 indices.push(0);
                 Err(PrepareFrameErrorV1::NumericRange {

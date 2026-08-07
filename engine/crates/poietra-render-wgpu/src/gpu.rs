@@ -17,7 +17,7 @@ const RGBA8_BYTES_PER_SAMPLE_V1: u64 = 4;
 /// the Scene IR viewport-pixel limit.
 pub const MAX_MULTISAMPLE_COLOR_TARGET_BYTES_V1: u64 =
     MAX_VIEWPORT_PIXELS_V1 * MANIM_CAIRO_SAMPLE_COUNT_V1 as u64 * RGBA8_BYTES_PER_SAMPLE_V1;
-const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
         offset: 0,
@@ -27,6 +27,11 @@ const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         format: wgpu::VertexFormat::Float32x4,
         offset: 8,
         shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 24,
+        shader_location: 2,
     },
 ];
 

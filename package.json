@@ -47,6 +47,7 @@
     "test:e2e:preview:real:spiral-in": "POIETRA_E2E_REAL_PREVIEW_PROFILE=11 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:write-stuff": "POIETRA_E2E_REAL_PREVIEW_PROFILE=12 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:visual-parity": "playwright test --config playwright.visual-parity.config.ts",
+    "test:e2e:fourier-v3:cairo-parity": "playwright test --config playwright.visual-parity.config.ts --project fourier-v3-cairo-parity-webgpu",
     "test:electron-packaged": "pnpm package:electron && node scripts/electron-packaged-smoke.mjs",
     "test:e2e:webkit-smoke": "playwright test --project=webkit-minimum",
     "lint": "biome lint --error-on-warnings .",

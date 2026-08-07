@@ -3,10 +3,10 @@ use std::mem::size_of;
 
 use poietra_scene_ir::{
     AffineTransformV1, CubicPathV1, CubicSubpathV1, FillRuleV1, RenderCameraKindV1, RenderCameraV1,
-    StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
+    RenderCompositingV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1, ViewportV1,
 };
 
-use crate::prepare::{FLATTEN_TOLERANCE_PIXELS_V1, PreparedGeometryVertexV1};
+use crate::prepare::PreparedGeometryVertexV1;
 
 /// Maximum logical bytes retained by one browser renderer for prepared geometry.
 pub const MAX_PREPARED_GEOMETRY_CACHE_BYTES_V1: usize = 64 * 1024 * 1024;
@@ -42,6 +42,7 @@ pub(crate) enum PreparedGeometryPhaseV1 {
 #[derive(Clone, Copy)]
 pub(crate) struct PreparedGeometryCacheInputV1<'a> {
     pub(crate) camera: &'a RenderCameraV1,
+    pub(crate) compositing: RenderCompositingV1,
     pub(crate) draw_id: &'a str,
     pub(crate) path: &'a CubicPathV1,
     pub(crate) transform: &'a AffineTransformV1,
@@ -73,7 +74,7 @@ impl From<&RenderCameraV1> for PreparedCameraSignatureV1 {
 enum PreparedGeometrySignatureV1 {
     Fill {
         camera: PreparedCameraSignatureV1,
-        flatten_tolerance_bits: u64,
+        compositing: RenderCompositingV1,
         path: CubicPathV1,
         rule: FillRuleV1,
         transform: AffineTransformV1,
@@ -82,7 +83,7 @@ enum PreparedGeometrySignatureV1 {
     Stroke {
         camera: PreparedCameraSignatureV1,
         cap: StrokeCapV1,
-        flatten_tolerance_bits: u64,
+        compositing: RenderCompositingV1,
         join: StrokeJoinV1,
         miter_limit: f64,
         path: CubicPathV1,
@@ -240,13 +241,13 @@ impl PreparedGeometryCacheV1 {
             &entry.signature,
             PreparedGeometrySignatureV1::Fill {
                 camera: cached_camera,
-                flatten_tolerance_bits,
+                compositing,
                 path: cached_path,
                 rule: cached_rule,
                 transform: cached_transform,
                 viewport: cached_viewport,
             } if *cached_camera == PreparedCameraSignatureV1::from(input.camera)
-                && *flatten_tolerance_bits == FLATTEN_TOLERANCE_PIXELS_V1.to_bits()
+                && *compositing == input.compositing
                 && cached_path == input.path
                 && *cached_rule == rule
                 && cached_transform == input.transform
@@ -281,7 +282,7 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometrySignatureV1::Stroke {
                 camera: cached_camera,
                 cap,
-                flatten_tolerance_bits,
+                compositing,
                 join,
                 miter_limit,
                 path: cached_path,
@@ -290,7 +291,7 @@ impl PreparedGeometryCacheV1 {
                 width_world,
             } if *cached_camera == PreparedCameraSignatureV1::from(input.camera)
                 && *cap == stroke.cap
-                && *flatten_tolerance_bits == FLATTEN_TOLERANCE_PIXELS_V1.to_bits()
+                && *compositing == input.compositing
                 && *join == stroke.join
                 && miter_limit.to_bits() == stroke.miter_limit.to_bits()
                 && cached_path == input.path
@@ -319,7 +320,7 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometryPhaseV1::Fill,
             PreparedGeometrySignatureV1::Fill {
                 camera: PreparedCameraSignatureV1::from(input.camera),
-                flatten_tolerance_bits: FLATTEN_TOLERANCE_PIXELS_V1.to_bits(),
+                compositing: input.compositing,
                 path: input.path.clone(),
                 rule,
                 transform: input.transform.clone(),
@@ -341,7 +342,7 @@ impl PreparedGeometryCacheV1 {
             PreparedGeometrySignatureV1::Stroke {
                 camera: PreparedCameraSignatureV1::from(input.camera),
                 cap: stroke.cap,
-                flatten_tolerance_bits: FLATTEN_TOLERANCE_PIXELS_V1.to_bits(),
+                compositing: input.compositing,
                 join: stroke.join,
                 miter_limit: stroke.miter_limit,
                 path: input.path.clone(),

@@ -480,7 +480,7 @@ fn upload_bytes_pin_the_lyon_fill_and_stroke_layout() {
 
     assert_eq!(
         sha256(upload.vertex_bytes()),
-        "ba828fe7f9d318922b4d01335606fb7b854ea25b4e8cb5e97674435f4918803f"
+        "d6bbcb16748a78098d236573afcc20fa3e97543626c46e9b77a5c02f41672245"
     );
     assert_eq!(
         sha256(upload.index_bytes()),

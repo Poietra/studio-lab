@@ -4,9 +4,10 @@ use crate::{PreparedFrameV1, PreparedGeometryVertexV1};
 
 const POSITION_COMPONENTS: usize = 2;
 const MATERIAL_COMPONENTS: usize = 4;
+const STROKE_COVERAGE_COMPONENTS: usize = 2;
 const F32_BYTES: usize = size_of::<f32>();
 pub(crate) const VERTEX_ENCODED_SIZE_V1: usize =
-    (POSITION_COMPONENTS + MATERIAL_COMPONENTS) * F32_BYTES;
+    (POSITION_COMPONENTS + MATERIAL_COMPONENTS + STROKE_COVERAGE_COMPONENTS) * F32_BYTES;
 
 /// Hard ceiling for one transient vertex-plus-index upload plan.
 ///
@@ -172,7 +173,12 @@ fn encode_ordered_vertices(
 }
 
 fn encode_vertex(vertex: PreparedGeometryVertexV1, color: [f32; 4], output: &mut Vec<u8>) {
-    for value in vertex.position().into_iter().chain(color) {
+    for value in vertex
+        .position()
+        .into_iter()
+        .chain(color)
+        .chain(vertex.stroke_coverage())
+    {
         output.extend_from_slice(&value.to_le_bytes());
     }
 }
@@ -191,10 +197,10 @@ mod tests {
         let first = plan
             .vertex_bytes()
             .chunks_exact(F32_BYTES)
-            .take(POSITION_COMPONENTS + MATERIAL_COMPONENTS)
+            .take(POSITION_COMPONENTS + MATERIAL_COMPONENTS + STROKE_COVERAGE_COMPONENTS)
             .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
             .collect::<Vec<_>>();
-        assert_eq!(first, vec![-1.0, -1.0, 0.5, 0.25, 0.0, 0.5]);
+        assert_eq!(first, vec![-1.0, -1.0, 0.5, 0.25, 0.0, 0.5, 0.0, -1.0]);
 
         assert_eq!(
             build_gpu_upload_plan_with_limit(&frame, required_bytes - 1),

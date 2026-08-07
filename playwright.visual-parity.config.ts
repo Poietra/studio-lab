@@ -17,6 +17,15 @@ export default defineConfig({
   outputDir: "test-results/visual-parity/playwright",
   projects: [
     {
+      name: "fourier-v3-cairo-parity-webgpu",
+      testMatch: "fourier-v3-cairo-parity.webgpu.ts",
+      use: {
+        browserName: "chromium",
+        channel: WEBGPU_CHROMIUM_CHANNEL,
+        launchOptions: { args: [...WEBGPU_CHROMIUM_LAUNCH_ARGS] },
+      },
+    },
+    {
       name: "visual-parity-webgpu",
       testMatch: "visual-parity.webgpu.ts",
       use: {

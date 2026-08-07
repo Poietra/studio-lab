@@ -223,6 +223,47 @@ fn transparent_degenerate_fill_is_skipped_before_visible_stroke_tessellation() {
 }
 
 #[test]
+fn retained_geometry_cache_separates_cairo_analytic_strokes_from_linear_geometry() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    packet.compositing = RenderCompositingV1::ManimCairoSrgb;
+    packet.viewport.height_px = 360;
+    packet.viewport.width_px = 640;
+    let RenderDrawV1::Path { stroke, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    stroke
+        .as_mut()
+        .expect("fixture stroke must exist")
+        .width_world = 0.02;
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let cairo =
+        prepare_frame_with_cache_v1(&packet, &mut cache).expect("Cairo thin stroke must prepare");
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 1);
+
+    let repeated = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("unchanged Cairo thin stroke must prepare from cache");
+    assert_eq!(cache.frame_stats().hits(), 1);
+    assert_eq!(cache.frame_stats().misses(), 0);
+    assert_eq!(
+        repeated.geometry_plan().vertices(),
+        cairo.geometry_plan().vertices()
+    );
+
+    packet.compositing = RenderCompositingV1::LinearLight;
+    let linear = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("linear thin stroke must not reuse expanded Cairo geometry");
+    assert_eq!(cache.frame_stats().hits(), 0);
+    assert_eq!(cache.frame_stats().misses(), 1);
+    assert_eq!(cache.stale_rejections(), 1);
+    assert_ne!(
+        linear.geometry_plan().vertices(),
+        cairo.geometry_plan().vertices()
+    );
+}
+
+#[test]
 fn zero_draw_opacity_skips_all_path_paint_phases() {
     let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
     let RenderDrawV1::Path { fill, opacity, .. } = &mut packet.draws[0] else {
