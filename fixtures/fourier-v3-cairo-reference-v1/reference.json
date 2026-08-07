@@ -1,0 +1,162 @@
+{
+  "schema": "poietra.fourier-v3-independent-cairo-reference",
+  "version": 1,
+  "codebase": {
+    "repository": "https://github.com/HarleyCoops/Math-To-Manim.git",
+    "revision": "fcad0674c9791690d47664492fd1a052024b63a0",
+    "tree": "d71dcdbdac8bf52bd8fd2e6540d36136ce9ae698"
+  },
+  "scene": {
+    "className": "FourierSeriesSquareWave",
+    "sourcePath": "legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py",
+    "sourceSha256": "3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72"
+  },
+  "producer": {
+    "cairoLibrarySha256": "3144bd5935aee427d6c191b6b6d0ebf9010fb6320295a7f73edd276bc6993f2d",
+    "cairoVersion": "1.18.0",
+    "fastManimCommit": "edcf6578d7b5515d39f9378d48b2c5e8f9a99fa6",
+    "fastManimTree": "806b84287549a874393046e35663f07a7ed576d4",
+    "identitySha256": "acc0c1fcaeab6fed6cfea1ba9d5b6f0c720adad6f3b8f51031051527a07ea9e6",
+    "manimVersion": "0.20.1",
+    "nodeExecutableSha256": "53fb205ae78805130177e24bcb459a69a1518c8d98f8965f31d85aae7ea840fc",
+    "nodeVersion": "v24.13.0",
+    "nodeZlibVersion": "1.3.1-470d3a2",
+    "numpyVersion": "2.4.1",
+    "pillowImagingModuleSha256": "8a2c7efde4f6b0ef41e6a6197c00a2c19416c5939bf9bb43086f680cb54136a9",
+    "pillowVersion": "12.2.0",
+    "pngEncoder": "poietra-filter-none-node-zlib-level-9-v1",
+    "pycairoModuleSha256": "a378b352cf9af46ba04511a5910543e33917fc01881ec6908c12ebc9a9cba731",
+    "pycairoVersion": "1.29.0",
+    "pythonExecutableSha256": "700660abb666fb5db819af3f03a92bc7d53c15e40b235c17fca6023b5755d784",
+    "pythonImplementation": "CPython",
+    "pythonVersion": "3.13.11",
+    "renderer": "independent-cairo",
+    "repository": "https://github.com/Poietra/fast-manim.git",
+    "texToolchain": {
+      "dvisvgm": {
+        "executableSha256": "f71f47113ad9a77b9d2b01dd5d938e3537c60d1ee7f342ec273ed061d5e51b38",
+        "version": "dvisvgm 3.6"
+      },
+      "latex": {
+        "executableSha256": "1c5ff71156ee990c3a18402cf06d3671ecf748bd84fb3983dbd5d62b600bc40b",
+        "version": "pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026)"
+      }
+    },
+    "uvLockSha256": "3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753"
+  },
+  "frame": {
+    "background": "opaque-black",
+    "camera": { "height": 8, "width": 14.222222222222221 },
+    "colorDomain": "srgb-u8",
+    "frameRate": 60,
+    "totalFrames": 870,
+    "viewport": { "heightPx": 360, "widthPx": 640 }
+  },
+  "rendererConfig": {
+    "antialias": "default",
+    "backgroundColor": "#000000",
+    "backgroundOpacity": 1,
+    "cairoCompositor": false,
+    "cairoCompositorFades": false,
+    "cairoForkWorkers": 0,
+    "cairoStaticLayers": false,
+    "disableCaching": true,
+    "format": "png",
+    "frameHeight": 8,
+    "frameRate": 60,
+    "frameWidth": 14.222222222222221,
+    "identitySha256": "b1b2f6e851e59bbc0938b0bf59afcc72139368f8e3ab027e7bbf9d87e6f47df1",
+    "pixelHeight": 360,
+    "pixelWidth": 640,
+    "renderer": "cairo",
+    "saveLastFrame": false,
+    "savePngs": false,
+    "seed": 0,
+    "transparent": false,
+    "verbosity": "WARNING",
+    "writeToMovie": false
+  },
+  "reproducibility": {
+    "environment": { "PYTHONHASHSEED": "0" },
+    "seeds": { "numpy": 0, "pythonRandom": 0 }
+  },
+  "frames": [
+    {
+      "frameIndex": 0,
+      "sampleTime": 0,
+      "png": {
+        "byteLength": 35771,
+        "path": "frame-000.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "466146b44c4dbf2b683abd48b74960bf35dd1b75ac78ef346c553a020f48b4db",
+        "sha256": "3c95b9f98daf6175a4b8dc733727f2a1e929cdd498ef9f7bff0331bf0b0235cc"
+      }
+    },
+    {
+      "frameIndex": 300,
+      "sampleTime": 5,
+      "png": {
+        "byteLength": 35693,
+        "path": "frame-300.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "5997660db27aed6da0c3d5a0e4512022dbd566dcd6db03bd2f7f04c1825a841d",
+        "sha256": "ef57e8a0b0cfe02623f52e76db4271dfe85be200c4032542d86d1d04f8c2d6f3"
+      }
+    },
+    {
+      "frameIndex": 600,
+      "sampleTime": 10,
+      "png": {
+        "byteLength": 36029,
+        "path": "frame-600.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "86dc8069f6082adbf4419a45dfa5b79d8c3d648a42bda982416d1eeb94694554",
+        "sha256": "8d95d67c28e9cc615786b10a27d247a4f4e7de3d951074798aa7dfd1371307bf"
+      }
+    },
+    {
+      "frameIndex": 630,
+      "sampleTime": 10.5,
+      "png": {
+        "byteLength": 36706,
+        "path": "frame-630.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "a98b7b75c9032fd34d9f8ece92fe4e03ebddf97ad667a93b6383b8fd814a7ad3",
+        "sha256": "4142ac51720e70143e8195b976ea59b06912c7cd39d64ada55d3aeb11466f677"
+      }
+    },
+    {
+      "frameIndex": 660,
+      "sampleTime": 11,
+      "png": {
+        "byteLength": 39762,
+        "path": "frame-660.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "5217d65821f962f9b8be441e6d12ffed42143fcf53cd11eebab1c241fe7a7839",
+        "sha256": "674c9fdd1e67fe4c95dd6ab9f6a1cbcd239d32fd20217688c0865a7089f2a7cc"
+      }
+    },
+    {
+      "frameIndex": 690,
+      "sampleTime": 11.5,
+      "png": {
+        "byteLength": 41741,
+        "path": "frame-690.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "ad0832662acb3f8f6e2a195eee26dcd2c9daf3d3bab6e6856ec6f0cb74411d11",
+        "sha256": "31cdaece5fba510320ae941e49fdb243f1cce865790d34463723a0c979fe3d6a"
+      }
+    },
+    {
+      "frameIndex": 869,
+      "sampleTime": 14.483333333333333,
+      "png": {
+        "byteLength": 41741,
+        "path": "frame-869.png",
+        "rgbaByteLength": 921600,
+        "rgbaSha256": "ad0832662acb3f8f6e2a195eee26dcd2c9daf3d3bab6e6856ec6f0cb74411d11",
+        "sha256": "31cdaece5fba510320ae941e49fdb243f1cce865790d34463723a0c979fe3d6a"
+      }
+    }
+  ]
+}
