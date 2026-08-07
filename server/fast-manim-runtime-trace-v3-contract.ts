@@ -10,27 +10,39 @@ import {
   sha256V1Schema,
   sourceIdentityV1Schema,
 } from "../src/engine/contracts";
-import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
   manimProjectIdSchema,
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../src/render-pipeline/manim-identity-contract";
+import {
+  canonicalRuntimeTraceDomainJsonV3,
+  canonicalRuntimeTraceF64HexV3,
+} from "../src/render-pipeline/runtime-trace-v3-digest";
+import {
+  FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+  FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3,
+  fastManimRuntimeTraceSourceBindingV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
+} from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 import type { StudioSourceAnalysisV1 } from "../src/render-pipeline/source-analysis";
 import { fastManimSourceBindingIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
-import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V3 =
   "poietra.fast-manim-runtime-trace-producer-request" as const;
 export const FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V3 = "poietra.fast-manim-runtime-trace-config" as const;
 export const FAST_MANIM_RUNTIME_TRACE_VERSION_V3 = 3 as const;
 export const FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V3 = 3 as const;
-export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3 = 60 as const;
-export const FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 = 900 as const;
-export const FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3 = 13 as const;
+export {
+  FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+  FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3,
+  fastManimRuntimeTraceSourceBindingV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
+} from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 export const FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V3 = "post-updater-pre-cairo-paint" as const;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3 = 128;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V3 = 2 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V3 =
   MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V3 * 6 + 64 * 1024;
@@ -43,7 +55,7 @@ const canonicalCameraV3 = {
 } as const;
 
 function sameNumber(actual: number, expected: number) {
-  return canonicalF64HexV1(actual) === canonicalF64HexV1(expected);
+  return canonicalRuntimeTraceF64HexV3(actual) === canonicalRuntimeTraceF64HexV3(expected);
 }
 
 const runtimeTraceCameraV3Schema = z
@@ -84,24 +96,8 @@ export const fastManimRuntimeTraceConfigV3Schema = z
 
 export type FastManimRuntimeTraceConfigV3 = z.infer<typeof fastManimRuntimeTraceConfigV3Schema>;
 
-function digestValueV3(value: unknown): unknown {
-  if (typeof value === "number") return canonicalF64HexV1(value);
-  if (value === null || typeof value === "boolean" || typeof value === "string") return value;
-  if (Array.isArray(value)) return value.map(digestValueV3);
-  if (typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .sort(([left], [right]) => left.localeCompare(right))
-        .map(([key, entry]) => [key, digestValueV3(entry)]),
-    );
-  }
-  throw new TypeError("Runtime Trace V3 digest input must be finite plain JSON.");
-}
-
 export function digestFastManimRuntimeTraceDomainV3(domain: string, value: unknown) {
-  return createHash("sha256")
-    .update(canonicalJsonV1({ domain, value: digestValueV3(value) }))
-    .digest("hex");
+  return createHash("sha256").update(canonicalRuntimeTraceDomainJsonV3(domain, value)).digest("hex");
 }
 
 export function digestFastManimRuntimeTraceConfigV3(value: FastManimRuntimeTraceConfigV3) {
@@ -124,40 +120,6 @@ function isUnicodeScalarSequence(value: string) {
   }
   return true;
 }
-
-const runtimeTraceSourceBindingSpanV3Schema = z
-  .object({
-    endColumn: z.number().int().nonnegative().max(2_000_000),
-    endLine: z.number().int().positive().max(10_000),
-    startColumn: z.number().int().nonnegative().max(2_000_000),
-    startLine: z.number().int().positive().max(10_000),
-  })
-  .strict()
-  .refine(
-    ({ endColumn, endLine, startColumn, startLine }) => startLine === endLine && startColumn < endColumn,
-    "Runtime Trace V3 source binding spans must identify one single-line Name token.",
-  );
-
-export const fastManimRuntimeTraceSourceBindingV3Schema = z
-  .object({
-    id: z.string().regex(/^source-binding:[0-9a-f]{64}$/u),
-    name: z
-      .string()
-      .min(1)
-      .max(240)
-      .refine(isUnicodeScalarSequence, "Runtime Trace V3 source binding names must contain Unicode scalars.")
-      .refine(
-        (name) => /^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name),
-        "Runtime Trace V3 source binding names must be Python identifiers.",
-      )
-      .refine(
-        (name) => Buffer.byteLength(name, "utf8") <= 240,
-        "Runtime Trace V3 source binding names accept at most 240 UTF-8 bytes.",
-      ),
-    ordinal: z.number().int().positive().max(10_000),
-    span: runtimeTraceSourceBindingSpanV3Schema,
-  })
-  .strict();
 
 export type FastManimRuntimeTraceSourceBindingV3 = z.infer<typeof fastManimRuntimeTraceSourceBindingV3Schema>;
 

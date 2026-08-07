@@ -3,14 +3,24 @@ import { z } from "zod";
 import { opaqueIdV1Schema, sha256V1Schema, sourceIdentityV1Schema } from "../engine/contracts";
 import { sourceBindingV1Schema } from "../engine/source-runtime-identity";
 import { manimProjectIdSchema, manimSceneNameSchema, manimSourcePathSchema } from "./manim-identity-contract";
+import {
+  fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+  fastManimRuntimeTraceSourceBindingV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
+} from "./runtime-trace-v3-shared-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_RUN_SCHEMA_V1 = "poietra.fast-manim-runtime-trace-run" as const;
+export const FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER = "x-poietra-runtime-trace-response-version" as const;
+export const FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2 = 256 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_RUN_ROOTS_V2 = MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3;
 
 /** Browser-to-server request for the one bounded Runtime Trace preview profile. */
 export const fastManimRuntimeTraceRunRequestV1Schema = z
   .object({
     projectId: manimProjectIdSchema,
     requestId: opaqueIdV1Schema,
+    /** Internal capability projected from the optional HTTP response-version header. */
+    responseVersion: z.literal(2).optional(),
     sceneName: manimSceneNameSchema,
     sourceHash: sha256V1Schema,
     sourcePath: manimSourcePathSchema,
@@ -57,6 +67,24 @@ const runtimeTraceRunRootsV1Schema = z.union([
   z.array(runtimeTraceRunRootV1Schema).length(4),
 ]);
 
+const runtimeTraceRunRootV2Schema = z
+  .object({
+    binding: fastManimRuntimeTraceSourceBindingV3Schema,
+    entityId: sourceIdentityV1Schema,
+    evidence: z
+      .object({
+        endpoints: z
+          .object({
+            initial: fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+            terminal: fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+          })
+          .strict(),
+        updaterStatus: z.enum(["conflict", "none"]),
+      })
+      .strict(),
+  })
+  .strict();
+
 /** Unpublished, request-scoped response consumed directly by Studio preview. */
 export const fastManimRuntimeTraceRunViewV1Schema = z.discriminatedUnion("status", [
   z
@@ -82,6 +110,36 @@ export const fastManimRuntimeTraceRunViewV1Schema = z.discriminatedUnion("status
     .strict(),
 ]);
 
+export const fastManimRuntimeTraceRunViewV2Schema = z
+  .object({
+    ...runtimeTraceRunBaseShape,
+    bundle: z.unknown(),
+    producerEvidence: z
+      .object({
+        correlationSha256: sha256V1Schema,
+        semanticsSha256: sha256V1Schema,
+      })
+      .strict(),
+    roots: z.array(runtimeTraceRunRootV2Schema).max(MAX_FAST_MANIM_RUNTIME_TRACE_RUN_ROOTS_V2),
+    status: z.literal("verified"),
+    traceDigest: sha256V1Schema,
+    version: z.literal(2),
+  })
+  .strict();
+
+/**
+ * Version-aware Runtime Trace response. Existing reviewed V1/V2 producer
+ * profiles and all failure views remain byte-compatible wire V1; verified
+ * generic producer V3 runs use wire V2 to carry bounded server-verified
+ * source/root evidence.
+ */
+export const fastManimRuntimeTraceRunViewSchema = z.union([
+  fastManimRuntimeTraceRunViewV1Schema,
+  fastManimRuntimeTraceRunViewV2Schema,
+]);
+
 export type FastManimRuntimeTraceRunFailureCodeV1 = z.infer<typeof fastManimRuntimeTraceRunFailureCodeV1Schema>;
 export type FastManimRuntimeTraceRunRequestV1 = z.infer<typeof fastManimRuntimeTraceRunRequestV1Schema>;
 export type FastManimRuntimeTraceRunViewV1 = z.infer<typeof fastManimRuntimeTraceRunViewV1Schema>;
+export type FastManimRuntimeTraceRunViewV2 = z.infer<typeof fastManimRuntimeTraceRunViewV2Schema>;
+export type FastManimRuntimeTraceRunView = z.infer<typeof fastManimRuntimeTraceRunViewSchema>;

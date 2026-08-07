@@ -621,18 +621,26 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
   return bundle;
 }
 
+export function digestFastManimRuntimeTraceIdentityV3(
+  identity: Readonly<{
+    correlationSha256: string;
+    runtimeConfigHash: string;
+    sceneId: string;
+    semanticsSha256: string;
+    sourceHash: string;
+  }>,
+) {
+  return createHash("sha256").update(canonicalJsonV1(identity)).digest("hex");
+}
+
 export function digestFastManimRuntimeTraceV3(trace: FastManimRuntimeTraceV3) {
-  return createHash("sha256")
-    .update(
-      canonicalJsonV1({
-        correlationSha256: trace.producer.correlationSha256,
-        runtimeConfigHash: trace.runtimeConfigHash,
-        sceneId: trace.sceneId,
-        semanticsSha256: trace.producer.semanticsSha256,
-        sourceHash: trace.sourceHash,
-      }),
-    )
-    .digest("hex");
+  return digestFastManimRuntimeTraceIdentityV3({
+    correlationSha256: trace.producer.correlationSha256,
+    runtimeConfigHash: trace.runtimeConfigHash,
+    sceneId: trace.sceneId,
+    semanticsSha256: trace.producer.semanticsSha256,
+    sourceHash: trace.sourceHash,
+  });
 }
 
 export async function lowerFastManimRuntimeTraceProducerJsonV3(

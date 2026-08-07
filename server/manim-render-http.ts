@@ -25,10 +25,14 @@ import {
   renderSourceActionRequestSchema,
 } from "../src/render-pipeline/contracts";
 import {
+  FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER,
+  FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2,
   type FastManimRuntimeTraceRunRequestV1,
+  type FastManimRuntimeTraceRunViewV2,
   fastManimRuntimeTraceRunRequestV1Schema,
-  fastManimRuntimeTraceRunViewV1Schema,
+  fastManimRuntimeTraceRunViewSchema,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 import { AmbiguousSourceSceneError } from "../src/render-pipeline/source-import";
 import {
   fastManimRuntimeTraceSceneIdV1,
@@ -41,9 +45,16 @@ import {
 import {
   createFastManimRuntimeTraceConfigV3,
   digestFastManimRuntimeTraceConfigV3,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+  fastManimRuntimeTraceSourceBindingV3Schema,
 } from "./fast-manim-runtime-trace-v3-contract";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 } from "./fast-manim-runtime-trace-v3-result-contract";
+import { digestFastManimRuntimeTraceIdentityV3 } from "./fast-manim-runtime-trace-v3-lowering";
+import {
+  digestFastManimRuntimeTraceSourceBindingsV3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
+} from "./fast-manim-runtime-trace-v3-result-contract";
 import { fastManimSnapshotQueryV1Schema, fastManimSnapshotRunRequestV1Schema } from "./fast-manim-snapshot-contract";
+import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { HttpError, readJsonBody, sendJson } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { BrowserManimProjectImportApiV1, ManimApi, MutableManimProjectApi } from "./manim-api";
@@ -78,7 +89,7 @@ export function isManimBrowserProjectImportRequest(method: string | undefined, p
 }
 const DEFAULT_MEDIA_STREAM_IDLE_TIMEOUT_MS = 30_000;
 const MAX_MEDIA_STREAM_IDLE_TIMEOUT_MS = 120_000;
-const RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES = 64 * 1024;
+const RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V1 = 64 * 1024;
 
 export type { ManimApi } from "./manim-api";
 export type ManimRequestContext = Readonly<{
@@ -483,8 +494,84 @@ function sendJsonAndWaitForFinish(response: ServerResponse, status: number, body
   });
 }
 
+function runtimeTraceV3EndpointMatchesLifetime(
+  endpoint: FastManimRuntimeTraceRunViewV2["roots"][number]["evidence"]["endpoints"]["initial"],
+  lifetimeBoundary: number,
+  boundary: "start" | "end",
+) {
+  const boundaryFrameIndex = endpoint.frameIndex + (boundary === "end" ? 1 : 0);
+  return (
+    endpoint.sampleTime === canonicalFastManimRuntimeTraceSampleTimeV3(endpoint.frameIndex) &&
+    lifetimeBoundary === boundaryFrameIndex / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3
+  );
+}
+
+function verifyRuntimeTraceV3AuthorityEnvelope(
+  run: FastManimRuntimeTraceRunViewV2,
+  request: FastManimRuntimeTraceRunRequestV1,
+  entities: ReadonlyMap<string, Awaited<ReturnType<typeof parseVerifiedSceneIrBundleV1>>["scene"]["entities"][number]>,
+) {
+  const bindingIds = new Set<string>();
+  const bindingNames = new Set<string>();
+  const rootIds = new Set<string>();
+  let priorBindingOrdinal = 0;
+  for (const root of run.roots) {
+    const entity = entities.get(root.entityId);
+    const binding = fastManimRuntimeTraceSourceBindingV3Schema.safeParse(root.binding);
+    const initialLifetime = entity?.lifetimes[0];
+    const terminalLifetime = entity?.lifetimes.at(-1);
+    const { initial, terminal } = root.evidence.endpoints;
+    if (
+      !binding.success ||
+      binding.data.id !== fastManimSourceBindingIdentifierV1(request.sourceHash, run.sceneId, binding.data) ||
+      bindingIds.has(binding.data.id) ||
+      bindingNames.has(binding.data.name) ||
+      binding.data.ordinal <= priorBindingOrdinal ||
+      rootIds.has(root.entityId) ||
+      !entity ||
+      entity.parentId !== null ||
+      entity.geometry.kind !== "group" ||
+      !initialLifetime ||
+      !terminalLifetime ||
+      !runtimeTraceV3EndpointMatchesLifetime(initial, initialLifetime.start, "start") ||
+      !runtimeTraceV3EndpointMatchesLifetime(terminal, terminalLifetime.end, "end")
+    ) {
+      throw new HttpError("The Runtime Trace operation returned invalid source authority evidence.", 502);
+    }
+    bindingIds.add(binding.data.id);
+    bindingNames.add(binding.data.name);
+    priorBindingOrdinal = binding.data.ordinal;
+    rootIds.add(root.entityId);
+  }
+
+  const sourceBindings = run.roots.map(({ binding, entityId, evidence }) => ({
+    binding,
+    endpoints: evidence.endpoints,
+    rootId: entityId,
+    updaterStatus: evidence.updaterStatus,
+  }));
+  const correlationSha256 = digestFastManimRuntimeTraceSourceBindingsV3(
+    request.sourceHash,
+    run.sceneId,
+    sourceBindings,
+  );
+  if (
+    run.producerEvidence.correlationSha256 !== correlationSha256 ||
+    run.traceDigest !==
+      digestFastManimRuntimeTraceIdentityV3({
+        correlationSha256,
+        runtimeConfigHash: run.runtimeConfigHash,
+        sceneId: run.sceneId,
+        semanticsSha256: run.producerEvidence.semanticsSha256,
+        sourceHash: run.sourceHash,
+      })
+  ) {
+    throw new HttpError("The Runtime Trace operation returned stale source authority evidence.", 502);
+  }
+}
+
 async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRuntimeTraceRunRequestV1) {
-  const parsed = fastManimRuntimeTraceRunViewV1Schema.safeParse(value);
+  const parsed = fastManimRuntimeTraceRunViewSchema.safeParse(value);
   if (!parsed.success) throw new HttpError("The Runtime Trace operation returned an invalid response.", 502);
   const run = parsed.data;
   const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
@@ -500,7 +587,7 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
   }
 
   let maxResponseBytes =
-    MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
+    MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V1;
   let safeView: typeof run = run;
   if (run.status === "verified") {
     let bundle;
@@ -531,16 +618,29 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
       );
       if (
         run.runtimeConfigHash !== expectedRuntimeConfigHash ||
-        run.roots.length !== 0 ||
         !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
       ) {
         throw new HttpError("The Runtime Trace operation returned invalid preview-only evidence.", 502);
       }
-      maxResponseBytes =
-        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
+      if (run.version === 2) {
+        if (request.responseVersion !== 2) {
+          throw new HttpError("The Runtime Trace operation returned an unrequested response version.", 502);
+        }
+        verifyRuntimeTraceV3AuthorityEnvelope(run, request, entities);
+        maxResponseBytes =
+          MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 +
+          FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2;
+      } else {
+        if (run.roots.length !== 0) {
+          throw new HttpError("The Runtime Trace operation returned invalid preview-only evidence.", 502);
+        }
+        maxResponseBytes =
+          MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V1;
+      }
     } else {
       const profile = selectFastManimRuntimeTraceProfile(request) ?? selectFastManimRuntimeTraceSceneProfile(request);
       if (
+        run.version !== 1 ||
         profile === null ||
         source.traceVersion !== profile.version ||
         run.runtimeConfigHash !== profile.runtimeConfigHash ||
@@ -570,7 +670,7 @@ async function verifiedRuntimeTraceHttpView(value: unknown, request: FastManimRu
       if (!motionRoot || motionRoot.geometry.kind !== "group" || motionRoot.parentId !== null) {
         throw new HttpError("The Runtime Trace operation returned stale Scene IR evidence.", 502);
       }
-      maxResponseBytes = profile.maxNormalizedBytes + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES;
+      maxResponseBytes = profile.maxNormalizedBytes + RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V1;
     }
     safeView = { ...run, bundle };
   }
@@ -706,7 +806,22 @@ async function routeManimRequest(
     if (parsed.data.projectId !== projectId) {
       throw new HttpError("The request project does not match the project endpoint.", 409);
     }
-    const trace = await verifiedRuntimeTraceHttpView(await manager.runRuntimeTrace(parsed.data, signal), parsed.data);
+    const responseVersionHeader = request.headers[FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER];
+    if (
+      Array.isArray(responseVersionHeader) ||
+      (responseVersionHeader !== undefined && responseVersionHeader !== "2")
+    ) {
+      throw new HttpError("The Runtime Trace response version header is invalid.", 400);
+    }
+    const { responseVersion: _bodyResponseVersion, ...bodyRequest } = parsed.data;
+    const runtimeTraceRequest = {
+      ...bodyRequest,
+      ...(responseVersionHeader === "2" ? { responseVersion: 2 as const } : {}),
+    };
+    const trace = await verifiedRuntimeTraceHttpView(
+      await manager.runRuntimeTrace(runtimeTraceRequest, signal),
+      runtimeTraceRequest,
+    );
     if (!(await sendJsonAndWaitForFinish(response, 200, trace))) {
       const error = new Error("The Runtime Trace request was disconnected before its response was sent.");
       error.name = "AbortError";

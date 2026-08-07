@@ -1,4 +1,9 @@
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
+import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
+import {
+  canonicalFastManimRuntimeTraceSampleTimeV3,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+} from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { evaluateWorkingState } from "./evaluator";
 import type { Point, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
@@ -93,6 +98,26 @@ export type StudioPreviewInitialEditRuntimeAuthorityV1 =
       studioEntityId: string;
       studioSceneId: string;
     }>;
+
+/**
+ * Source-bound generic V3 evidence that may become edit authority once a
+ * source lowerer can prove the corresponding static Studio geometry. It is
+ * deliberately not part of `StudioPreviewInitialEditRuntimeAuthorityV1`, so
+ * merely receiving this candidate cannot enable an interactive gesture.
+ */
+export type StudioPreviewGenericInitialEditAuthorityCandidateV1 = Readonly<{
+  baseCenter: Point;
+  /** Runtime endpoint dimensions in Scene units; never an assumed scale=1. */
+  baseDimensions: Readonly<{ height: number; width: number }>;
+  bindingId: string;
+  duration: number;
+  lifetime: Readonly<{ end: number; start: 0 }>;
+  profile: "generic-runtime-trace-v3";
+  runtimeEntityId: string;
+  sourceName: string;
+  studioEntityId: string;
+  studioSceneId: string;
+}>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -316,6 +341,114 @@ function isExactStableWriteStuffV12(
           entity.geometry.kind === "cubic-path",
       )
   );
+}
+
+function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifiedPreviewSnapshotV1) {
+  const { correlation, snapshot: bundle } = snapshot;
+  const source = bundle.scene.source;
+  return (
+    source.kind === "imported-manim-runtime-trace" &&
+    source.traceVersion === 3 &&
+    sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
+    source.sourceHash === correlation.context.sourceHash &&
+    bundle.assets.manifestDigest === correlation.assetsManifestDigest &&
+    bundle.scene.sceneId === correlation.sceneId &&
+    snapshot.sceneId === correlation.sceneId &&
+    bundle.scene.duration === correlation.sceneDuration &&
+    snapshot.duration === correlation.sceneDuration &&
+    correlation.sceneDuration === correlation.context.sourceDuration &&
+    correlation.context.workingRevision === PRISTINE_WORKING_REVISION
+  );
+}
+
+/**
+ * Projects one pristine generic V3 mapping into a future-authoring candidate.
+ * The function rechecks every fact it consumes, but does not grant GUI or
+ * source-rewrite authority; that promotion belongs to the generic lowerer.
+ */
+export function studioPreviewGenericInitialEditAuthorityCandidateV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+): StudioPreviewGenericInitialEditAuthorityCandidateV1 | null {
+  if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return null;
+  const identity = snapshot.sourceRuntimeIdentity;
+  if (!identity || identity.size !== 1) return null;
+  const [sourceName, mapping] = identity.entries().next().value ?? [];
+  const evidence = mapping?.runtimeTraceEvidence;
+  if (
+    typeof sourceName !== "string" ||
+    !mapping ||
+    mapping.sourceName !== sourceName ||
+    !evidence ||
+    evidence.updaterStatus !== "none"
+  ) {
+    return null;
+  }
+  const root = snapshot.snapshot.scene.entities.find(({ id }) => id === mapping.entityId);
+  const lifetime = root?.lifetimes[0];
+  if (
+    !root ||
+    root.parentId !== null ||
+    root.geometry.kind !== "group" ||
+    root.lifetimes.length !== 1 ||
+    !lifetime ||
+    lifetime.start !== 0 ||
+    !Number.isFinite(lifetime.end) ||
+    lifetime.end <= 0
+  ) {
+    return null;
+  }
+  const { initial, terminal } = evidence.endpoints;
+  const terminalEndFrameValue = lifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+  const terminalFrame = Math.round(terminalEndFrameValue) - 1;
+  const finiteEndpoint = (endpoint: typeof initial) =>
+    [
+      endpoint.center.x,
+      endpoint.center.y,
+      endpoint.dimensions.height,
+      endpoint.dimensions.width,
+      endpoint.sampleTime,
+    ].every(Number.isFinite) &&
+    endpoint.dimensions.height > 0 &&
+    endpoint.dimensions.width > 0;
+  if (
+    !finiteEndpoint(initial) ||
+    !finiteEndpoint(terminal) ||
+    initial.frameIndex !== 0 ||
+    initial.sampleTime !== 0 ||
+    terminalFrame < 0 ||
+    Math.abs(terminalEndFrameValue - (terminalFrame + 1)) > Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) ||
+    terminal.frameIndex !== terminalFrame ||
+    canonicalRuntimeTraceF64HexV3(terminal.sampleTime) !==
+      canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame))
+  ) {
+    return null;
+  }
+  const camera = snapshot.snapshot.scene.camera.view;
+  if (
+    !Number.isFinite(camera.frameHeight) ||
+    !Number.isFinite(camera.frameWidth) ||
+    camera.frameHeight <= 0 ||
+    camera.frameWidth <= 0
+  ) {
+    return null;
+  }
+  const context = snapshot.correlation.context;
+  return {
+    baseCenter: scenePointToStudioPoint(
+      initial.center,
+      { height: camera.frameHeight, width: camera.frameWidth },
+      camera.center,
+    ),
+    baseDimensions: { ...initial.dimensions },
+    bindingId: mapping.bindingId,
+    duration: snapshot.duration,
+    lifetime: { end: lifetime.end, start: 0 },
+    profile: "generic-runtime-trace-v3",
+    runtimeEntityId: mapping.entityId,
+    sourceName,
+    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:${sourceName}`,
+    studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+  };
 }
 
 /**

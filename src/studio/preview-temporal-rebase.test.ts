@@ -1,6 +1,9 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
+import { lowerVerifiedFastManimRuntimeTraceV3 } from "../../server/fast-manim-runtime-trace-v3-lowering";
+import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-trace-v3-result-contract";
+import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import { canonicalEngineBenchmarkJsonV1 } from "../engine/benchmark";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
@@ -26,6 +29,7 @@ import {
   compileStudioPreviewTemporalRebaseV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
+  studioPreviewGenericInitialEditAuthorityCandidateV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
@@ -644,6 +648,144 @@ async function sampledSemantics(scene: SceneIrV1, sampleTime: number) {
   if (result.kind !== "ready") throw new Error(result.message);
   return canonicalEngineBenchmarkJsonV1({ camera: result.frame.packet.camera, draws: result.frame.packet.draws });
 }
+
+async function genericRuntimeTraceV3Snapshot() {
+  const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
+  const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+  const source = bundle.scene.source;
+  const mapping = trace.sourceBindings[0];
+  if (source.kind !== "imported-manim-runtime-trace" || !mapping) {
+    throw new Error("The generic Runtime Trace fixture lost its source-bound root.");
+  }
+  const snapshot: StudioVerifiedPreviewSnapshotV1 = {
+    assetPayloads: [],
+    correlation: {
+      assetsManifestDigest: bundle.assets.manifestDigest,
+      context: {
+        projectId: trace.projectId,
+        sceneName: trace.sceneName,
+        sourceDuration: bundle.scene.duration,
+        sourceHash: trace.sourceHash,
+        sourcePath: trace.sourcePath,
+        workingRevision: PRISTINE_WORKING_REVISION,
+      },
+      engineRevisionHash: source.traceDigest,
+      sceneDuration: bundle.scene.duration,
+      sceneId: bundle.scene.sceneId,
+      serverPublicationRevision: null,
+    },
+    duration: bundle.scene.duration,
+    sceneId: bundle.scene.sceneId,
+    snapshot: bundle,
+    sourceLabel: "verified Runtime Trace (preview-only)",
+    sourceRuntimeIdentity: new Map([
+      [
+        mapping.binding.name,
+        {
+          bindingId: mapping.binding.id,
+          entityId: mapping.rootId,
+          runtimeTraceEvidence: {
+            endpoints: mapping.endpoints,
+            updaterStatus: mapping.updaterStatus,
+          },
+          sourceName: mapping.binding.name,
+        },
+      ],
+    ]),
+  };
+  return { mapping, snapshot };
+}
+
+describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
+  it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
+    const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
+    const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+
+    expect(candidate).toEqual({
+      baseCenter: { x: 320, y: 180 },
+      baseDimensions: mapping.endpoints.initial.dimensions,
+      bindingId: mapping.binding.id,
+      duration: 1 / 60,
+      lifetime: { end: 1 / 60, start: 0 },
+      profile: "generic-runtime-trace-v3",
+      runtimeEntityId: mapping.rootId,
+      sourceName: "square",
+      studioEntityId: `source:${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}:square`,
+      studioSceneId: `${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}`,
+    });
+    expect(candidate).not.toHaveProperty("relativeScale");
+  });
+
+  it("rejects updater, degenerate, ambiguous, stale, non-pristine, and non-root evidence", async () => {
+    const { snapshot } = await genericRuntimeTraceV3Snapshot();
+    const mapping = snapshot.sourceRuntimeIdentity?.get("square");
+    if (!mapping?.runtimeTraceEvidence) throw new Error("Generic V3 test mapping lost endpoint evidence.");
+    const replaceMapping = (replacement: StudioPreviewSourceRuntimeMappingV1): StudioVerifiedPreviewSnapshotV1 => ({
+      ...snapshot,
+      sourceRuntimeIdentity: new Map([[replacement.sourceName, replacement]]),
+    });
+    const evidence = mapping.runtimeTraceEvidence;
+    const withEvidence = (
+      runtimeTraceEvidence: NonNullable<StudioPreviewSourceRuntimeMappingV1["runtimeTraceEvidence"]>,
+    ) => replaceMapping({ ...mapping, runtimeTraceEvidence });
+
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1(withEvidence({ ...evidence, updaterStatus: "conflict" })),
+    ).toBeNull();
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1(
+        withEvidence({
+          ...evidence,
+          endpoints: {
+            ...evidence.endpoints,
+            initial: {
+              ...evidence.endpoints.initial,
+              dimensions: { ...evidence.endpoints.initial.dimensions, width: 0 },
+            },
+          },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1({
+        ...snapshot,
+        sourceRuntimeIdentity: new Map([
+          ...snapshot.sourceRuntimeIdentity!,
+          ["alias", { ...mapping, bindingId: "binding:alias", sourceName: "alias" }],
+        ]),
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1({
+        ...snapshot,
+        correlation: { ...snapshot.correlation, engineRevisionHash: "f".repeat(64) },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1({
+        ...snapshot,
+        correlation: {
+          ...snapshot.correlation,
+          context: { ...snapshot.correlation.context, workingRevision: WORKING_REVISION },
+        },
+      }),
+    ).toBeNull();
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1({
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            entities: snapshot.snapshot.scene.entities.map((entity) =>
+              entity.id === mapping.entityId ? { ...entity, parentId: "runtime:invented-parent" } : entity,
+            ),
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
   it("exposes a preview-only zero anchor only for the exact correlated V8 identity", async () => {

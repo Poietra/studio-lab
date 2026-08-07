@@ -5,9 +5,11 @@ import {
   FAST_MANIM_RUNTIME_TRACE_RUN_SCHEMA_V1,
   type FastManimRuntimeTraceRunFailureCodeV1,
   type FastManimRuntimeTraceRunRequestV1,
+  type FastManimRuntimeTraceRunView,
   type FastManimRuntimeTraceRunViewV1,
+  type FastManimRuntimeTraceRunViewV2,
   fastManimRuntimeTraceRunRequestV1Schema,
-  fastManimRuntimeTraceRunViewV1Schema,
+  fastManimRuntimeTraceRunViewSchema,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
@@ -70,8 +72,9 @@ import {
   createFastManimRuntimeTraceProducerRequestV3,
   fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
 } from "./fast-manim-runtime-trace-v3-contract";
-import { lowerFastManimRuntimeTraceProducerJsonV3 } from "./fast-manim-runtime-trace-v3-lowering";
+import { lowerVerifiedFastManimRuntimeTraceV3 } from "./fast-manim-runtime-trace-v3-lowering";
 import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
+import { parseFastManimRuntimeTraceProducerJsonV3 } from "./fast-manim-runtime-trace-v3-result-contract";
 import {
   copyFastManimSandboxUint8ArrayV1,
   type FastManimSandboxAttestationVerifierV1,
@@ -209,6 +212,8 @@ type FastManimRuntimeTraceVerifiedRootsV1 = Extract<
   FastManimRuntimeTraceRunViewV1,
   Readonly<{ status: "verified" }>
 >["roots"];
+type FastManimRuntimeTraceVerifiedRootsV2 = FastManimRuntimeTraceRunViewV2["roots"];
+type FastManimRuntimeTraceProducerEvidenceV2 = FastManimRuntimeTraceRunViewV2["producerEvidence"];
 
 class FastManimSandboxOperationDeadlineError extends Error {
   constructor() {
@@ -826,7 +831,7 @@ export class FastManimSnapshotRunner {
   async runRuntimeTrace(
     requestValue: FastManimRuntimeTraceRunRequestV1,
     signal?: AbortSignal,
-  ): Promise<FastManimRuntimeTraceRunViewV1> {
+  ): Promise<FastManimRuntimeTraceRunView> {
     const request = fastManimRuntimeTraceRunRequestV1Schema.parse(requestValue);
     signal?.throwIfAborted();
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
@@ -851,7 +856,7 @@ export class FastManimSnapshotRunner {
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
-      return fastManimRuntimeTraceRunViewV1Schema.parse(await pending);
+      return fastManimRuntimeTraceRunViewSchema.parse(await pending);
     } finally {
       this.releaseRun(key, weight);
       this.activeRuns.delete(pending);
@@ -861,7 +866,7 @@ export class FastManimSnapshotRunner {
   private async runRuntimeTraceLocked(
     request: FastManimRuntimeTraceRunRequestV1,
     signal?: AbortSignal,
-  ): Promise<FastManimRuntimeTraceRunViewV1> {
+  ): Promise<FastManimRuntimeTraceRunView> {
     const throwIfHalted = () => {
       if (signal?.aborted || this.closing) throw abortError();
     };
@@ -984,7 +989,11 @@ export class FastManimSnapshotRunner {
     if (readiness.kind !== "ready") return failed(readiness.code);
 
     let bundle;
-    let responseRoots: FastManimRuntimeTraceVerifiedRootsV1;
+    let responseRoots: FastManimRuntimeTraceVerifiedRootsV1 = [];
+    let responseV2: Readonly<{
+      producerEvidence: FastManimRuntimeTraceProducerEvidenceV2;
+      roots: FastManimRuntimeTraceVerifiedRootsV2;
+    }> | null = null;
     try {
       if (recoveredOfficialSource && candidateProfileVersion === 1) {
         if (producerRequest.version !== 1) return failed("unsupported-profile");
@@ -1123,12 +1132,23 @@ export class FastManimSnapshotRunner {
             entityId: id,
           })) as FastManimRuntimeTraceVerifiedRootsV1;
         } else {
-          bundle = await lowerFastManimRuntimeTraceProducerJsonV3(
+          const trace = parseFastManimRuntimeTraceProducerJsonV3(
             produced.resultBytes,
             producerRequest,
             trustedFastManimRuntimeTraceProducerV3(),
           );
-          responseRoots = [];
+          bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+          responseV2 = {
+            producerEvidence: {
+              correlationSha256: trace.producer.correlationSha256,
+              semanticsSha256: trace.producer.semanticsSha256,
+            },
+            roots: trace.sourceBindings.map(({ binding, endpoints, rootId, updaterStatus }) => ({
+              binding,
+              entityId: rootId,
+              evidence: { endpoints, updaterStatus },
+            })),
+          };
         }
       }
     } catch {
@@ -1156,6 +1176,17 @@ export class FastManimSnapshotRunner {
       return failed("result-rejected");
     }
     this.logger.info("runtime_trace.verified", { requestId: request.requestId });
+    if (responseV2 !== null && request.responseVersion === 2) {
+      return {
+        ...base(),
+        bundle,
+        producerEvidence: responseV2.producerEvidence,
+        roots: responseV2.roots,
+        status: "verified",
+        traceDigest: source.traceDigest,
+        version: 2,
+      };
+    }
     return {
       ...base(),
       bundle,

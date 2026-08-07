@@ -792,6 +792,52 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       ),
     ).toEqual([]);
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
+
+    const genericV3Identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      [
+        "square",
+        {
+          bindingId: "binding:generic-square",
+          entityId: motionRootId,
+          runtimeTraceEvidence: {
+            endpoints: {
+              initial: {
+                center: { x: 0, y: 0 },
+                dimensions: { height: 2, width: 2 },
+                frameIndex: 0,
+                sampleTime: 0,
+              },
+              terminal: {
+                center: { x: 0, y: 0 },
+                dimensions: { height: 2, width: 2 },
+                frameIndex: 0,
+                sampleTime: 0,
+              },
+            },
+            updaterStatus: "none",
+          },
+          sourceName: "square",
+        },
+      ],
+    ]);
+    const genericV3 = {
+      ...runtimeTrace,
+      snapshot: {
+        ...runtimeTrace.snapshot,
+        scene: {
+          ...runtimeTrace.snapshot.scene,
+          source: { ...runtimeTrace.snapshot.scene.source, traceVersion: 3 },
+        },
+      },
+      sourceRuntimeIdentity: genericV3Identity,
+    } as StudioVerifiedPreviewSnapshotV1;
+    const genericAuthority = studioPreviewInteractionAuthorityV1(genericV3);
+    expect(genericAuthority).toEqual({
+      kind: "selection-only",
+      reason: "runtime-trace-preview-only",
+      verifiedRuntimeEntityIds: [motionRootId],
+    });
+    expect(studioPreviewInteractionEntityIdsV1(genericV3Identity, genericAuthority, entities)).toEqual([motionRootId]);
   });
 
   it("keeps aggregate MathTex morph identity display-only even if mappings are supplied", async () => {

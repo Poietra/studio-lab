@@ -13,7 +13,10 @@ import {
   RENDER_SESSION_CONTRACT_VERSION_WITH_FAILURE_CODE,
   type RenderSessionView,
 } from "../src/render-pipeline/contracts";
-import type { FastManimRuntimeTraceRunViewV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
+import type {
+  FastManimRuntimeTraceRunViewV1,
+  FastManimRuntimeTraceRunViewV2,
+} from "../src/render-pipeline/runtime-trace-preview-contract";
 import {
   canonicalFastManimRuntimeTraceCoordinateV1,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
@@ -24,8 +27,14 @@ import {
 } from "./fast-manim-runtime-trace-lowering";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
-import { lowerVerifiedFastManimRuntimeTraceV3 } from "./fast-manim-runtime-trace-v3-lowering";
-import { fastManimRuntimeTraceV3Schema } from "./fast-manim-runtime-trace-v3-result-contract";
+import {
+  digestFastManimRuntimeTraceIdentityV3,
+  lowerVerifiedFastManimRuntimeTraceV3,
+} from "./fast-manim-runtime-trace-v3-lowering";
+import {
+  digestFastManimRuntimeTraceSourceBindingsV3,
+  fastManimRuntimeTraceV3Schema,
+} from "./fast-manim-runtime-trace-v3-result-contract";
 import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-identity";
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
@@ -39,6 +48,10 @@ import {
 } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import genericRuntimeTraceFixture from "./test-fixtures/fast-manim-runtime-trace-v3-generic.json";
+
+type FastManimRuntimeTraceRunViewV2WithBundle = Omit<FastManimRuntimeTraceRunViewV2, "bundle"> & {
+  bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV3>>;
+};
 
 async function listen(api: ManimApi, policy?: ManimRequestPolicy, logger?: StructuredLogger) {
   const server = createServer((request, response) => {
@@ -644,16 +657,24 @@ describe("Runtime Trace preview routing", () => {
     } as const satisfies FastManimRuntimeTraceRunViewV1;
   }
 
-  async function verifiedGenericView() {
+  async function verifiedGenericView(): Promise<FastManimRuntimeTraceRunViewV2WithBundle> {
     const genericTrace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
     const bundle = await lowerVerifiedFastManimRuntimeTraceV3(genericTrace);
     const source = bundle.scene.source;
     if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
     return {
       bundle,
+      producerEvidence: {
+        correlationSha256: genericTrace.producer.correlationSha256,
+        semanticsSha256: genericTrace.producer.semanticsSha256,
+      },
       projectId: genericTrace.projectId,
       requestId: genericTrace.requestId,
-      roots: [],
+      roots: genericTrace.sourceBindings.map(({ binding, endpoints, rootId, updaterStatus }) => ({
+        binding,
+        entityId: rootId,
+        evidence: { endpoints, updaterStatus },
+      })),
       runtimeConfigHash: genericTrace.runtimeConfigHash,
       sceneId: genericTrace.sceneId,
       sceneName: genericTrace.sceneName,
@@ -662,8 +683,68 @@ describe("Runtime Trace preview routing", () => {
       sourcePath: genericTrace.sourcePath,
       status: "verified",
       traceDigest: source.traceDigest,
-      version: 1,
-    } as const satisfies FastManimRuntimeTraceRunViewV1;
+      version: 2,
+    } as const satisfies FastManimRuntimeTraceRunViewV2;
+  }
+
+  function resealGenericAuthorityView(view: FastManimRuntimeTraceRunViewV2WithBundle) {
+    const correlationSha256 = digestFastManimRuntimeTraceSourceBindingsV3(
+      view.sourceHash,
+      view.sceneId,
+      view.roots.map(({ binding, entityId, evidence }) => ({
+        binding,
+        endpoints: evidence.endpoints,
+        rootId: entityId,
+        updaterStatus: evidence.updaterStatus,
+      })),
+    );
+    const traceDigest = digestFastManimRuntimeTraceIdentityV3({
+      correlationSha256,
+      runtimeConfigHash: view.runtimeConfigHash,
+      sceneId: view.sceneId,
+      semanticsSha256: view.producerEvidence.semanticsSha256,
+      sourceHash: view.sourceHash,
+    });
+    const source = view.bundle.scene.source;
+    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+    view.producerEvidence.correlationSha256 = correlationSha256;
+    view.traceDigest = traceDigest;
+    source.traceDigest = traceDigest;
+    return view;
+  }
+
+  async function postGenericBackendValue(
+    value: unknown,
+    correlatedView: FastManimRuntimeTraceRunViewV2,
+    responseVersion: "2" | null = "2",
+  ) {
+    const server = await listen({
+      runRuntimeTrace: async () => value,
+      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v3-authority" },
+      tenantId: "tenant-runtime-trace",
+    } as unknown as ManimApi);
+    try {
+      return await send(
+        (server.address() as AddressInfo).port,
+        `/api/manim/projects/${correlatedView.projectId}/runtime-traces`,
+        {
+          body: JSON.stringify({
+            projectId: correlatedView.projectId,
+            requestId: correlatedView.requestId,
+            sceneName: correlatedView.sceneName,
+            sourceHash: correlatedView.sourceHash,
+            sourcePath: correlatedView.sourcePath,
+          }),
+          headers: {
+            "content-type": "application/json",
+            ...(responseVersion === null ? {} : { "x-poietra-runtime-trace-response-version": responseVersion }),
+          },
+          method: "POST",
+        },
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
   }
 
   async function verifiedEditedView() {
@@ -736,35 +817,131 @@ describe("Runtime Trace preview routing", () => {
     }
   });
 
-  it("admits correlated generic V3 preview evidence without source roots", async () => {
+  it("admits a correlated generic V3 authority envelope", async () => {
     const view = await verifiedGenericView();
-    const genericRequest = {
-      projectId: view.projectId,
-      requestId: view.requestId,
-      sceneName: view.sceneName,
-      sourceHash: view.sourceHash,
-      sourcePath: view.sourcePath,
-    };
-    const server = await listen({
-      runRuntimeTrace: async () => view,
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v3" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    try {
-      const response = await send(
-        (server.address() as AddressInfo).port,
-        `/api/manim/projects/${view.projectId}/runtime-traces`,
-        {
-          body: JSON.stringify(genericRequest),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        },
-      );
-      expect(response.status).toBe(200);
-      expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    const response = await postGenericBackendValue(view, view);
+
+    expect(view.version).toBe(2);
+    expect(view.roots).toHaveLength(1);
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
+  });
+
+  it("keeps the rootless generic V3 wire V1 response available during rolling deployment", async () => {
+    const authorityView = await verifiedGenericView();
+    const { producerEvidence: _producerEvidence, ...withoutProducerEvidence } = authorityView;
+    const legacyView = { ...withoutProducerEvidence, roots: [], version: 1 } as const;
+    const response = await postGenericBackendValue(legacyView, authorityView);
+
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body.toString("utf8"))).toEqual(legacyView);
+  });
+
+  it("rejects wire V2 when an older client did not advertise it", async () => {
+    const view = await verifiedGenericView();
+    const response = await postGenericBackendValue(view, view, null);
+
+    expect(response.status).toBe(502);
+  });
+
+  it("rejects V3 authority version and closed-shape tampering", async () => {
+    const view = await verifiedGenericView();
+    const downgraded = structuredClone(view) as Record<string, unknown>;
+    downgraded.version = 1;
+    const widened = structuredClone(view) as FastManimRuntimeTraceRunViewV2;
+    Object.assign(widened.roots[0]!.evidence, { editAuthority: true });
+
+    for (const tampered of [downgraded, widened]) {
+      const response = await postGenericBackendValue(tampered, view);
+      expect(response.status).toBe(502);
     }
+  });
+
+  it("rejects duplicate V3 binding identities, names, roots, and non-ordinal ordering", async () => {
+    const original = await verifiedGenericView();
+    const addRootEntity = (view: FastManimRuntimeTraceRunViewV2WithBundle) => {
+      const sourceRoot = view.bundle.scene.entities.find(({ id }) => id === view.roots[0]!.entityId)!;
+      const entityId = `${view.sceneId}/runtime-v3-root:1`;
+      view.bundle.scene.entities.push({
+        ...structuredClone(sourceRoot),
+        id: entityId,
+        sceneOrder: Math.max(...view.bundle.scene.entities.map(({ sceneOrder }) => sceneOrder)) + 1,
+      });
+      return entityId;
+    };
+    const distinctBinding = (view: FastManimRuntimeTraceRunViewV2WithBundle, name: string, ordinal: number) => {
+      const binding = {
+        ...structuredClone(view.roots[0]!.binding),
+        name,
+        ordinal,
+        span: { endColumn: 20 + ordinal, endLine: 5, startColumn: 10 + ordinal, startLine: 5 },
+      };
+      binding.id = fastManimSourceBindingIdentifierV1(view.sourceHash, view.sceneId, binding);
+      return binding;
+    };
+
+    const duplicateBinding = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    duplicateBinding.roots.push({
+      ...structuredClone(duplicateBinding.roots[0]!),
+      entityId: addRootEntity(duplicateBinding),
+    });
+    resealGenericAuthorityView(duplicateBinding);
+
+    const duplicateName = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    duplicateName.roots.push({
+      ...structuredClone(duplicateName.roots[0]!),
+      binding: distinctBinding(duplicateName, duplicateName.roots[0]!.binding.name, 2),
+      entityId: addRootEntity(duplicateName),
+    });
+    resealGenericAuthorityView(duplicateName);
+
+    const duplicateRoot = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    duplicateRoot.roots.push({
+      ...structuredClone(duplicateRoot.roots[0]!),
+      binding: distinctBinding(duplicateRoot, "circle", 2),
+    });
+    resealGenericAuthorityView(duplicateRoot);
+
+    const nonOrdinal = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    nonOrdinal.roots.push({
+      ...structuredClone(nonOrdinal.roots[0]!),
+      binding: distinctBinding(nonOrdinal, "circle", 2),
+      entityId: addRootEntity(nonOrdinal),
+    });
+    nonOrdinal.roots.reverse();
+    resealGenericAuthorityView(nonOrdinal);
+
+    for (const tampered of [duplicateBinding, duplicateName, duplicateRoot, nonOrdinal]) {
+      const response = await postGenericBackendValue(tampered, original);
+      expect(response.status).toBe(502);
+    }
+  });
+
+  it("rejects a nested root substitution and endpoint lifetime drift after digest resealing", async () => {
+    const original = await verifiedGenericView();
+    const nestedRoot = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    nestedRoot.roots[0]!.entityId = nestedRoot.bundle.scene.entities.find(({ parentId }) => parentId !== null)!.id;
+    resealGenericAuthorityView(nestedRoot);
+
+    const staleEndpoint = structuredClone(original) as FastManimRuntimeTraceRunViewV2WithBundle;
+    staleEndpoint.roots[0]!.evidence.endpoints.terminal.frameIndex = 1;
+    staleEndpoint.roots[0]!.evidence.endpoints.terminal.sampleTime = Number((1 / 60).toFixed(13));
+    resealGenericAuthorityView(staleEndpoint);
+
+    for (const tampered of [nestedRoot, staleEndpoint]) {
+      const response = await postGenericBackendValue(tampered, original);
+      expect(response.status).toBe(502);
+    }
+  });
+
+  it("preserves updater conflicts as verified identity evidence", async () => {
+    const view = structuredClone(await verifiedGenericView()) as FastManimRuntimeTraceRunViewV2WithBundle;
+    view.roots[0]!.evidence.updaterStatus = "conflict";
+    resealGenericAuthorityView(view);
+
+    const response = await postGenericBackendValue(view, view);
+    expect(response.status).toBe(200);
+    expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
   });
 
   it("accepts an edited verified view but rejects an official bundle relabeled as that edit", async () => {

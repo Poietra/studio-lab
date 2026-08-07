@@ -941,10 +941,20 @@ export function studioPreviewInteractionAuthorityV1(
 ): StudioPreviewInteractionAuthorityV1 {
   const source = snapshot?.snapshot.scene.source;
   if (source?.kind === "imported-manim-runtime-trace") {
-    const terminalEdit = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
+    // Generic V3 source evidence is intentionally selection-only until its
+    // source lowerer can promote the pure initial candidate. Never let a
+    // future reviewed-profile seed accidentally widen this boundary.
+    if (source.traceVersion === 3) {
+      return {
+        kind: "selection-only",
+        reason: "runtime-trace-preview-only",
+        verifiedRuntimeEntityIds,
+      };
+    }
+    const terminalEdit = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
     if (terminalEdit) {
       return {
         editableRuntimeEntityId: terminalEdit.runtimeEntityId,
@@ -1096,6 +1106,11 @@ export function studioPreviewInteractionEntityIdsV1(
     (authority.kind === "selection-only" && authority.reason === "runtime-trace-preview-only") ||
     authority.kind === "bounded-interactive";
   const verifiedRuntimeEntityIds = new Set(runtimeTraceSelection ? authority.verifiedRuntimeEntityIds : []);
+  const genericRuntimeTraceRootIds = new Set(
+    [...identity.values()]
+      .filter(({ runtimeTraceEvidence }) => runtimeTraceEvidence !== undefined)
+      .map(({ entityId }) => entityId),
+  );
   const drawableEntityIds =
     entities === null
       ? authority.kind === "selection-only" || authority.kind === "bounded-interactive"
@@ -1105,7 +1120,7 @@ export function studioPreviewInteractionEntityIdsV1(
           entities
             .filter(({ geometry, id, parentId }) =>
               runtimeTraceSelection
-                ? geometry.kind === "group" && parentId !== null
+                ? geometry.kind === "group" && (parentId !== null || genericRuntimeTraceRootIds.has(id))
                 : geometry.kind !== "group" ||
                   (authority.kind === "selection-only" && parentId !== null) ||
                   editableNestedGroups.has(id),
