@@ -56,8 +56,11 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
+  compileStudioPreviewGenericInitialMoveV1,
   compileStudioPreviewTemporalRebaseV1,
+  type StudioPreviewGenericInitialEditAuthorityCandidateV1,
   type StudioPreviewInitialEditRuntimeAuthorityV1,
+  studioPreviewGenericInitialEditAuthorityCandidateV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
@@ -74,6 +77,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthorityV1;
+  /** Verified generic V3 evidence that may request one server-authorized t=0 move. */
+  genericInitialEditCandidate: StudioPreviewGenericInitialEditAuthorityCandidateV1 | null;
   /** Exact runtime authority for one bounded initial imported-Scene edit. */
   initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
   /** Exact authority for one reviewed Runtime Trace terminal edit profile. */
@@ -100,6 +105,13 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 
 export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
+  | Readonly<{
+      editableRuntimeEntityId: string;
+      kind: "bounded-interactive";
+      reason: "runtime-trace-initial-move";
+      sourceAnchor: 0;
+      verifiedRuntimeEntityIds: readonly string[];
+    }>
   | Readonly<{
       editableRuntimeEntityId: string;
       kind: "bounded-interactive";
@@ -944,10 +956,24 @@ export function studioPreviewInteractionAuthorityV1(
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
-    // Generic V3 source evidence is intentionally selection-only until its
-    // source lowerer can promote the pure initial candidate. Never let a
-    // future reviewed-profile seed accidentally widen this boundary.
+    // Generic V3 stays selection-only unless the exact one-root initial-move
+    // candidate exists. The browser may then submit one bounded request; the
+    // fresh-source server lowerer remains the mutation authority.
     if (source.traceVersion === 3) {
+      const candidate = snapshot ? studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot) : null;
+      if (
+        candidate &&
+        verifiedRuntimeEntityIds.length === 1 &&
+        verifiedRuntimeEntityIds[0] === candidate.runtimeEntityId
+      ) {
+        return {
+          editableRuntimeEntityId: candidate.runtimeEntityId,
+          kind: "bounded-interactive",
+          reason: "runtime-trace-initial-move",
+          sourceAnchor: 0,
+          verifiedRuntimeEntityIds,
+        };
+      }
       return {
         kind: "selection-only",
         reason: "runtime-trace-preview-only",
@@ -1144,6 +1170,19 @@ export function studioPreviewInteractionEntityIdsV1(
   return entityIds;
 }
 
+export function studioPreviewPresentedSyntheticInitialEditAnchorV1(
+  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
+  state: PreviewRendererHostStateV1,
+  authority: StudioPreviewInteractionAuthorityV1,
+) {
+  const admitsInitialEdit =
+    authority.kind === "interactive" ||
+    (authority.kind === "bounded-interactive" && authority.reason === "runtime-trace-initial-move");
+  return snapshot && state.phase === "presented" && admitsInitialEdit
+    ? studioPreviewSyntheticInitialEditAnchorV1(snapshot)
+    : null;
+}
+
 /** Unexpected producer failures use the same explicit full-snapshot recovery as an oversized delta. */
 export async function createStudioPreviewDeltaOrReplacementV1(
   base: SceneIrBundleV1,
@@ -1268,6 +1307,44 @@ export async function compileStudioPreviewSceneV1(
     };
   }
   const importedSource = input.snapshot.snapshot.scene.source;
+  if (importedSource.kind === "imported-manim-runtime-trace" && importedSource.traceVersion === 3) {
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    const rebased = compileStudioPreviewGenericInitialMoveV1({
+      frame: input.frame,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: engineRevisionHash,
+    });
+    if (rebased.kind === "unsupported") {
+      return {
+        error: `Generic Runtime Trace initial move is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        kind: "unsupported",
+      };
+    }
+    const bundle = { assets: input.snapshot.snapshot.assets, scene: rebased.scene };
+    return {
+      kind: "compiled",
+      scene: {
+        bundle,
+        engineRevisionHash,
+        frame: { ...input.frame },
+        interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+          input.snapshot.sourceRuntimeIdentity,
+          studioPreviewInteractionAuthorityV1(input.snapshot),
+          rebased.scene.entities,
+        ),
+        snapshot: input.snapshot,
+        workingRevision: input.workingRevision,
+        workspaceKey: input.workspaceKey,
+      },
+    };
+  }
   const importedProfile =
     importedSource.kind === "imported-manim-server-snapshot" ? Number(importedSource.snapshotVersion) : null;
   if (input.snapshot.snapshot.scene.animationChannels.length > 0 || importedProfile === 10) {
@@ -1489,6 +1566,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot) ??
     studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
   const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
+  const genericInitialEditCandidate = snapshot ? studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot) : null;
 
   useEffect(() => {
     const proposedState =
@@ -1844,7 +1922,9 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const runtimeTraceValidationPending = runtimeTraceTerminalUiState.pending;
   const runtimeTraceTerminalEditAuthority = runtimeTraceTerminalUiState.authority;
   const interactionAuthority: StudioPreviewInteractionAuthorityV1 =
-    snapshotInteractionAuthority.kind !== "bounded-interactive" || runtimeTraceTerminalEditAuthority
+    snapshotInteractionAuthority.kind !== "bounded-interactive" ||
+    snapshotInteractionAuthority.reason === "runtime-trace-initial-move" ||
+    runtimeTraceTerminalEditAuthority
       ? snapshotInteractionAuthority
       : {
           kind: "selection-only",
@@ -1863,6 +1943,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     attachCanvas,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
+    genericInitialEditCandidate,
     initialEditRuntimeAuthority: snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null,
     interactionGeometry: presentedOrRetainedInteractionGeometry,
     interactionAuthority,
@@ -1875,10 +1956,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
     state,
-    syntheticInitialEditAnchor:
-      snapshot && state.phase === "presented" && interactionAuthority.kind === "interactive"
-        ? studioPreviewSyntheticInitialEditAnchorV1(snapshot)
-        : null,
+    syntheticInitialEditAnchor: studioPreviewPresentedSyntheticInitialEditAnchorV1(
+      snapshot,
+      state,
+      interactionAuthority,
+    ),
     verifiedSourceDuration,
   };
 }

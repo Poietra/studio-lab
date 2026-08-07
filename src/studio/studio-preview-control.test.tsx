@@ -13,6 +13,7 @@ function renderer(state: StudioPreviewRendererViewV1["state"]): StudioPreviewRen
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
+    genericInitialEditCandidate: null,
     initialEditRuntimeAuthority: null,
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,

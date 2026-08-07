@@ -26,10 +26,12 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import {
+  compileStudioPreviewGenericInitialMoveV1,
   compileStudioPreviewTemporalRebaseV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
   studioPreviewGenericInitialEditAuthorityCandidateV1,
+  studioPreviewGenericInitialMoveProgramSetV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
@@ -39,6 +41,7 @@ import {
   compileStudioPreviewSceneV1,
   studioPreviewInteractionAuthorityV1,
   studioPreviewInteractionEntityIdsV1,
+  studioPreviewPresentedSyntheticInitialEditAnchorV1,
 } from "./use-preview-renderer";
 
 const FRAME = { height: 8, width: 14.222222222222221 } as const;
@@ -696,6 +699,58 @@ async function genericRuntimeTraceV3Snapshot() {
   return { mapping, snapshot };
 }
 
+async function genericRuntimeTraceV3MoveInput() {
+  const { snapshot } = await genericRuntimeTraceV3Snapshot();
+  const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+  if (!candidate) throw new Error("The generic V3 fixture lost its initial-move candidate.");
+  const entity: RuntimeEntity = {
+    ...importedSquareEntity(),
+    id: candidate.studioEntityId,
+    lifetime: [candidate.lifetime],
+  };
+  const runtimeSceneState: RuntimeSceneState = {
+    ...baseRuntimeScene(candidate.studioSceneId),
+    duration: candidate.duration,
+    objectGraph: { entities: { [entity.id]: entity }, lineage: [] },
+    propertyChannels: {},
+  };
+  const base: WorkingState = {
+    ...workingState(runtimeSceneState),
+    editorContext: {
+      ...workingState(runtimeSceneState).editorContext,
+      activeSceneId: candidate.studioSceneId,
+      selection: [candidate.studioEntityId],
+    },
+    sourceSnapshot: {
+      configId: snapshot.correlation.context.projectId,
+      hash: `sha256:${snapshot.correlation.context.sourceHash}`,
+      sourceId: snapshot.correlation.context.sourcePath,
+      version: STUDIO_STATE_VERSION,
+    },
+  };
+  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, candidate);
+  const validation = createDirectManipulationPositionProgram({
+    capturedPlayhead: 0,
+    delta: { x: 64, y: -36 },
+    positions: { [candidate.studioEntityId]: candidate.baseCenter },
+    scene: validationScene,
+    start: 0,
+    targetEntityIds: [candidate.studioEntityId],
+    transactionId: "generic-v3-initial-move",
+  });
+  if (validation.kind !== "valid") {
+    throw new Error(`The generic V3 move fixture is invalid: ${JSON.stringify(validation.issues)}`);
+  }
+  const record = programRecord(validation.program, validation);
+  return {
+    candidate,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
+    record,
+    snapshot,
+    validationScene,
+  };
+}
+
 describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
@@ -714,6 +769,44 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       studioSceneId: `${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}`,
     });
     expect(candidate).not.toHaveProperty("relativeScale");
+    expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
+    expect(interactionAuthority).toEqual({
+      editableRuntimeEntityId: mapping.rootId,
+      kind: "bounded-interactive",
+      reason: "runtime-trace-initial-move",
+      sourceAnchor: 0,
+      verifiedRuntimeEntityIds: [mapping.rootId],
+    });
+    expect(
+      studioPreviewInteractionEntityIdsV1(
+        snapshot.sourceRuntimeIdentity,
+        interactionAuthority,
+        snapshot.snapshot.scene.entities,
+      ),
+    ).toEqual([mapping.rootId]);
+    expect(
+      studioPreviewPresentedSyntheticInitialEditAnchorV1(
+        snapshot,
+        {
+          frame: {
+            packetId: "generic-v3-initial",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        interactionAuthority,
+      ),
+    ).toBe(0);
+    expect(
+      studioPreviewPresentedSyntheticInitialEditAnchorV1(
+        snapshot,
+        { detail: null, phase: "fallback", reason: "frame-pending" },
+        interactionAuthority,
+      ),
+    ).toBeNull();
   });
 
   it("rejects updater, degenerate, ambiguous, stale, non-pristine, and non-root evidence", async () => {
@@ -784,6 +877,138 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
         },
       }),
     ).toBeNull();
+    const extraRoot = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId !== null);
+    if (!extraRoot) throw new Error("Generic V3 fixture needs one drawable child.");
+    expect(
+      studioPreviewGenericInitialEditAuthorityCandidateV1({
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            entities: snapshot.snapshot.scene.entities.map((entity) =>
+              entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
+            ),
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+});
+
+describe("generic Runtime Trace V3 initial move", () => {
+  it("projects only producer-backed position and lifetime evidence into Studio validation", async () => {
+    const { candidate, validationScene } = await genericRuntimeTraceV3MoveInput();
+    const target = validationScene.objectGraph.entities[candidate.studioEntityId];
+    expect(target).toMatchObject({
+      geometry: {
+        dimensions: { kind: "known", value: { height: 2, width: 2 } },
+        position: { kind: "known", value: candidate.baseCenter },
+        scale: { kind: "known", value: 1 },
+      },
+      lifetime: [candidate.lifetime],
+    });
+    const projected = projectStudioPreviewInitialEntityPresenceV1(
+      [
+        {
+          ...target!,
+          geometry: target!.geometry!,
+          opacity: 1,
+          position: { x: 0, y: 0 },
+          present: false,
+          scale: 1,
+        },
+      ],
+      candidate,
+      new Map([[candidate.runtimeEntityId, {}]]),
+      0,
+    );
+    expect(projected[0]).toMatchObject({
+      geometry: { position: { kind: "known", value: candidate.baseCenter } },
+      position: candidate.baseCenter,
+      present: true,
+    });
+    expect(studioPreviewInitialEditTargetIsPresentV1(validationScene, candidate.studioEntityId, 0, candidate)).toBe(
+      true,
+    );
+  });
+
+  it("authorizes one direct t=0 position Program and rejects every wider Program set", async () => {
+    const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
+    expect(studioPreviewGenericInitialMoveProgramSetV1([], candidate)).toEqual({ kind: "none" });
+    expect(studioPreviewGenericInitialMoveProgramSetV1([record], candidate)).toEqual({
+      kind: "authorized",
+      position: { x: 384, y: 144 },
+    });
+    expect(studioPreviewGenericInitialMoveProgramSetV1([record, record], candidate)).toEqual({
+      kind: "unauthorized",
+    });
+
+    const resize = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [candidate.studioEntityId]: { from: 1, to: 1.5 } },
+      scene: validationScene,
+      targetEntityIds: [candidate.studioEntityId],
+      transactionId: "generic-v3-resize-rejected",
+    });
+    if (resize.kind !== "valid") throw new Error("Generic resize rejection fixture did not validate.");
+    expect(studioPreviewGenericInitialMoveProgramSetV1([programRecord(resize.program, resize)], candidate)).toEqual({
+      kind: "unauthorized",
+    });
+    expect(
+      studioPreviewGenericInitialMoveProgramSetV1(
+        [
+          {
+            ...record,
+            program: {
+              ...record.program,
+              provenance: { ...record.program.provenance, origin: "remote-model" },
+            },
+          },
+        ],
+        candidate,
+      ),
+    ).toEqual({ kind: "unauthorized" });
+  });
+
+  it("translates the verified root group without flattening its children", async () => {
+    const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3MoveInput();
+    const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
+    const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
+    if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+    const result = compileStudioPreviewGenericInitialMoveV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      sourceRevisionHash: "7".repeat(64),
+    });
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+    const movedRoot = result.scene.entities.find(({ id }) => id === root.id);
+    const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
+    expect(movedRoot?.transform.tx).toBeCloseTo(root.transform.tx + 64 / 45, 12);
+    expect(movedRoot?.transform.ty).toBeCloseTo(root.transform.ty + 0.8, 12);
+    expect(retainedChild).toEqual(child);
+    expect(result.scene.source).toEqual({
+      editProgramVersion: 1,
+      kind: "studio-edit-program",
+      revisionHash: "7".repeat(64),
+    });
+
+    const compiled = await compileStudioPreviewSceneV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      workingRevision: "generic-v3-initial-move-revision",
+      workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
+    });
+    expect(compiled.kind).toBe("compiled");
+    if (compiled.kind !== "compiled") throw new Error(compiled.error);
+    expect(compiled.scene.interactionEntityIds).toEqual([candidate.runtimeEntityId]);
+    expect(compiled.scene.bundle.scene.entities.find(({ id }) => id === root.id)?.transform).toEqual(
+      movedRoot?.transform,
+    );
   });
 });
 

@@ -21,7 +21,12 @@ import {
   fastManimSnapshotRunRequestV1Schema,
   type VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
-import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
+import type {
+  FastManimRuntimeTraceCandidateRunRequestV1,
+  FastManimRuntimeTraceCandidateRunViewV1,
+  FastManimSnapshotRunner,
+  FastManimUnpublishedSnapshotRunViewV1,
+} from "./fast-manim-snapshot-runner";
 import {
   DurableFastManimSnapshotSourceProviderV1,
   type FastManimSnapshotSourceProviderV1,
@@ -284,6 +289,28 @@ export class DurableFastManimSnapshotServiceV1 {
     return this.#track(operation);
   }
 
+  runRuntimeTraceCandidateUnpublished(
+    sourceText: string,
+    requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
+    signal?: AbortSignal,
+  ) {
+    const { genericInitialMove, ...requestFields } = requestValue;
+    const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestFields);
+    const request: FastManimRuntimeTraceCandidateRunRequestV1 = {
+      ...(genericInitialMove === undefined ? {} : { genericInitialMove }),
+      projectId: parsed.projectId,
+      requestId: parsed.requestId,
+      sceneName: parsed.sceneName,
+      sourcePath: parsed.sourcePath,
+    };
+    this.#assertOpen();
+    const entry = this.#acquireProject(request.projectId);
+    const operation = this.#runRuntimeTraceCandidateUnpublished(sourceText, request, entry, signal).finally(() =>
+      this.#releaseProjectReference(request.projectId, entry),
+    );
+    return this.#track(operation);
+  }
+
   async #runCandidateUnpublished(
     sourceText: string,
     request: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
@@ -304,6 +331,22 @@ export class DurableFastManimSnapshotServiceV1 {
     ) {
       throw new Error("The verified durable candidate snapshot does not match the active runtime configuration.");
     }
+    return view;
+  }
+
+  async #runRuntimeTraceCandidateUnpublished(
+    sourceText: string,
+    request: FastManimRuntimeTraceCandidateRunRequestV1,
+    entry: ProjectRunnerEntry,
+    signal?: AbortSignal,
+  ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
+    signal?.throwIfAborted();
+    const handle = await this.#runner(request.projectId, entry);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    const view = await handle.runner.runRuntimeTraceCandidateUnpublished(sourceText, request, signal);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
     return view;
   }
 

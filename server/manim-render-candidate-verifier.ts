@@ -1,13 +1,19 @@
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import { type ProgramRenderRequest, renderRequestId } from "../src/render-pipeline/contracts";
-import type { LoweredProgramBatchSource } from "../src/render-pipeline/source-lowering";
+import type {
+  GenericRuntimeTraceInitialMovePreflightV3,
+  LoweredProgramBatchSource,
+} from "../src/render-pipeline/source-lowering";
 import {
   digestFastManimSnapshotRuntimeConfigV1,
   type FastManimSnapshotProfileVersionV1,
   type FastManimSnapshotRunRequestV1,
 } from "./fast-manim-snapshot-contract";
 import { fastManimSnapshotRuntimeConfigForProfileV1 } from "./fast-manim-snapshot-profile-selection";
-import type { FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
+import type {
+  FastManimRuntimeTraceCandidateRunRequestV1,
+  FastManimUnpublishedSnapshotRunViewV1,
+} from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { sourceHash } from "./manim-source-store";
@@ -24,12 +30,7 @@ export interface ManimRenderCandidateSnapshotRunnerV1 {
 export interface ManimRenderCandidateRuntimeTraceRunnerV1 {
   runRuntimeTraceCandidateUnpublished(
     sourceText: string,
-    request: Readonly<{
-      projectId: string;
-      requestId: string;
-      sceneName: string;
-      sourcePath: string;
-    }>,
+    request: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ): Promise<Readonly<{ sourceHash: string; status: "verified"; traceDigest: string }>>;
 }
@@ -222,7 +223,11 @@ export class ManimRenderCandidateVerifierV1 {
     const preflight = lowered.preflight;
     if (!preflight) return;
     signal?.throwIfAborted();
-    if (preflight.kind === "fast-manim-updaters-terminal-v1" || preflight.kind === "fast-manim-opening-terminal-v2") {
+    if (
+      preflight.kind === "fast-manim-updaters-terminal-v1" ||
+      preflight.kind === "fast-manim-opening-terminal-v2" ||
+      preflight.kind === "fast-manim-generic-initial-move-v3"
+    ) {
       await this.#verifyRuntimeTraceCandidate(lowered, request, signal);
       return;
     }
@@ -359,41 +364,72 @@ export class ManimRenderCandidateVerifierV1 {
   ) {
     const preflight = lowered.preflight;
     const opening = preflight?.kind === "fast-manim-opening-terminal-v2";
+    const generic = preflight?.kind === "fast-manim-generic-initial-move-v3";
     const reject = (failure: string): never => {
       this.#logger.warn(
-        opening
-          ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
-          : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
+        generic
+          ? "render.generic_initial_move_runtime_trace_candidate_preflight_rejected"
+          : opening
+            ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
+            : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
         {
           failure,
           sourcePath: request.sourcePath,
         },
       );
       throw new HttpError(
-        opening
-          ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
-          : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        generic
+          ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
+          : opening
+            ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
+            : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
         409,
       );
     };
+    const candidatePreflight = preflight ?? reject("runtime-trace-authority-unavailable");
+    const genericPreflight: GenericRuntimeTraceInitialMovePreflightV3 | null =
+      candidatePreflight.kind === "fast-manim-generic-initial-move-v3"
+        ? (candidatePreflight as GenericRuntimeTraceInitialMovePreflightV3)
+        : null;
     if (
-      (preflight?.kind !== "fast-manim-updaters-terminal-v1" && preflight?.kind !== "fast-manim-opening-terminal-v2") ||
-      request.sourceHash !== preflight.baseSourceHash
+      (candidatePreflight.kind !== "fast-manim-updaters-terminal-v1" &&
+        candidatePreflight.kind !== "fast-manim-opening-terminal-v2" &&
+        candidatePreflight.kind !== "fast-manim-generic-initial-move-v3") ||
+      request.sourceHash !== candidatePreflight.baseSourceHash
+    ) {
+      reject("runtime-trace-authority-unavailable");
+    }
+    if (
+      genericPreflight !== null &&
+      (request.sourceBindings.length !== 1 ||
+        request.sourceBindings[0]?.entityId !== genericPreflight.entityId ||
+        request.sourceBindings[0]?.sourceVariable !== genericPreflight.baseBinding.name ||
+        !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
+        !Number.isFinite(genericPreflight.expectedWorldCenter.y))
     ) {
       reject("runtime-trace-authority-unavailable");
     }
     const runtimeTraceRunner = this.#runtimeTraceRunner ?? reject("runtime-trace-authority-unavailable");
     const candidateHash = sourceHash(lowered.source);
-    let result: Awaited<ReturnType<ManimRenderCandidateRuntimeTraceRunnerV1["runRuntimeTraceCandidateUnpublished"]>>;
-    try {
-      result = await runtimeTraceRunner.runRuntimeTraceCandidateUnpublished(
-        lowered.source,
-        {
+    const runtimeTraceRequest: FastManimRuntimeTraceCandidateRunRequestV1 = genericPreflight
+      ? {
+          genericInitialMove: genericPreflight,
           projectId: request.projectId,
           requestId: renderRequestId(request),
           sceneName: request.sceneName,
           sourcePath: request.sourcePath,
-        },
+        }
+      : {
+          projectId: request.projectId,
+          requestId: renderRequestId(request),
+          sceneName: request.sceneName,
+          sourcePath: request.sourcePath,
+        };
+    let result: Awaited<ReturnType<ManimRenderCandidateRuntimeTraceRunnerV1["runRuntimeTraceCandidateUnpublished"]>>;
+    try {
+      result = await runtimeTraceRunner.runRuntimeTraceCandidateUnpublished(
+        lowered.source,
+        runtimeTraceRequest,
         signal,
       );
     } catch {

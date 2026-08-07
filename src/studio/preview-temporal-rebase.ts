@@ -5,7 +5,7 @@ import {
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { evaluateWorkingState } from "./evaluator";
-import type { Point, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
+import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -118,6 +118,15 @@ export type StudioPreviewGenericInitialEditAuthorityCandidateV1 = Readonly<{
   studioEntityId: string;
   studioSceneId: string;
 }>;
+
+export type StudioPreviewInitialEditProjectionAuthorityV1 =
+  | StudioPreviewGenericInitialEditAuthorityCandidateV1
+  | StudioPreviewInitialEditRuntimeAuthorityV1;
+
+export type StudioPreviewGenericInitialMoveProgramSetV1 =
+  | Readonly<{ kind: "none" }>
+  | Readonly<{ kind: "authorized"; position: Point }>
+  | Readonly<{ kind: "unauthorized" }>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -383,10 +392,13 @@ export function studioPreviewGenericInitialEditAuthorityCandidateV1(
   ) {
     return null;
   }
-  const root = snapshot.snapshot.scene.entities.find(({ id }) => id === mapping.entityId);
+  const topLevelRoots = snapshot.snapshot.scene.entities.filter(({ parentId }) => parentId === null);
+  const root = topLevelRoots[0];
   const lifetime = root?.lifetimes[0];
   if (
+    topLevelRoots.length !== 1 ||
     !root ||
+    root.id !== mapping.entityId ||
     root.parentId !== null ||
     root.geometry.kind !== "group" ||
     root.lifetimes.length !== 1 ||
@@ -449,6 +461,59 @@ export function studioPreviewGenericInitialEditAuthorityCandidateV1(
     studioEntityId: `source:${context.sourcePath}#${context.sceneName}:${sourceName}`,
     studioSceneId: `${context.sourcePath}#${context.sceneName}`,
   };
+}
+
+function genericInitialMoveProgramPositionV1(
+  record: ProgramRecord,
+  candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
+): Point | null {
+  const program = record.program;
+  const operation = program.operations[0];
+  if (
+    record.validation.status !== "valid" ||
+    program.operations.length !== 1 ||
+    !operation ||
+    program.intentCount !== 1 ||
+    program.loweringStatus !== "supported" ||
+    program.provenance.origin !== "direct-manipulation" ||
+    program.requestedExecution !== "parallel" ||
+    program.schedule.mode !== "parallel" ||
+    program.schedule.edges.length !== 0 ||
+    program.schedule.order.length !== 1 ||
+    program.schedule.order[0] !== operation.id ||
+    program.anchor.capturedPlayhead !== 0 ||
+    program.anchor.resolvedSeconds !== 0 ||
+    !(
+      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
+      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0)
+    ) ||
+    operation.kind !== "SetProperty" ||
+    operation.key !== "position" ||
+    operation.entityId !== candidate.studioEntityId ||
+    operation.dependsOn.length !== 0 ||
+    operation.interval.start !== 0 ||
+    operation.interval.end !== 0 ||
+    operation.provenance.origin !== "direct-manipulation" ||
+    !isFinitePoint(operation.value)
+  ) {
+    return null;
+  }
+  return { x: operation.value.x, y: operation.value.y };
+}
+
+/**
+ * Browser-side capability gate for the one request #523 may send to the
+ * server. It does not verify Python source authority; the fresh-source V3
+ * lowerer owns that decision and must reject independently.
+ */
+export function studioPreviewGenericInitialMoveProgramSetV1(
+  records: readonly ProgramRecord[],
+  candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
+): StudioPreviewGenericInitialMoveProgramSetV1 {
+  if (records.length === 0) return { kind: "none" };
+  if (records.length !== 1) return { kind: "unauthorized" };
+  const position = genericInitialMoveProgramPositionV1(records[0]!, candidate);
+  return position ? { kind: "authorized", position } : { kind: "unauthorized" };
 }
 
 /**
@@ -626,8 +691,17 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
 
 function studioInitialEditTargetMatches(
   entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
-  authority: StudioPreviewInitialEditRuntimeAuthorityV1,
+  authority: StudioPreviewInitialEditProjectionAuthorityV1,
 ) {
+  if (authority.profile === "generic-runtime-trace-v3") {
+    return (
+      entity?.id === authority.studioEntityId &&
+      !entity.provisional &&
+      entity.transactionId === undefined &&
+      entity.sourceIdentity.kind === "known" &&
+      entity.sourceIdentity.value === authority.sourceName
+    );
+  }
   const expected =
     authority.profile === "line-joints-v10"
       ? { name: "t2", type: "Triangle" }
@@ -647,7 +721,7 @@ function studioInitialEditTargetMatches(
 /** Projects only the exact runtime-backed edit target into Studio's interaction UI. */
 export function projectStudioPreviewInitialEntityPresenceV1(
   entities: readonly ProjectedEntity[],
-  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
   sampleTime: number,
 ) {
@@ -657,6 +731,23 @@ export function projectStudioPreviewInitialEntityPresenceV1(
     (!geometrylessSquareToCircleInitialTarget && !interactionGeometry?.has(authority.runtimeEntityId))
   ) {
     return entities;
+  }
+  if (authority.profile === "generic-runtime-trace-v3") {
+    const target = entities.find(({ id }) => id === authority.studioEntityId);
+    if (!target || !studioInitialEditTargetMatches(target, authority)) return entities;
+    return entities.map((entity) =>
+      entity.id === target.id
+        ? {
+            ...entity,
+            geometry: {
+              ...entity.geometry,
+              position: { kind: "known" as const, value: authority.baseCenter },
+            },
+            position: authority.baseCenter,
+            present: true,
+          }
+        : entity,
+    );
   }
   if (authority.profile === "line-joints-v10" || authority.profile === "write-stuff-v12") {
     const target = entities.find(({ id }) => id === authority.studioEntityId);
@@ -700,10 +791,51 @@ export function projectStudioPreviewInitialEntityPresenceV1(
  */
 export function projectStudioPreviewInitialValidationSceneV1(
   scene: RuntimeSceneState,
-  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
 ) {
   if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
   const entities = Object.values(scene.objectGraph.entities);
+  if (authority.profile === "generic-runtime-trace-v3") {
+    const target = scene.objectGraph.entities[authority.studioEntityId];
+    if (!studioInitialEditTargetMatches(target, authority) || !target.geometry) return scene;
+    const projectedTarget: RuntimeSceneState["objectGraph"]["entities"][string] = {
+      ...target,
+      geometry: {
+        ...target.geometry,
+        position: { kind: "known", value: authority.baseCenter },
+      },
+      lifetime: [authority.lifetime],
+    };
+    const propertyChannels = Object.fromEntries(
+      Object.entries(scene.propertyChannels).map(([channelId, channel]) =>
+        channel.entityId === target.id && channel.key === "position"
+          ? [
+              channelId,
+              {
+                ...channel,
+                samples: channel.samples.map((sample) =>
+                  sample.operationId
+                    ? sample
+                    : {
+                        ...sample,
+                        knowledge: { kind: "known" as const, value: authority.baseCenter },
+                        value: authority.baseCenter,
+                      },
+                ),
+              },
+            ]
+          : [channelId, channel],
+      ),
+    );
+    return {
+      ...scene,
+      objectGraph: {
+        ...scene.objectGraph,
+        entities: { ...scene.objectGraph.entities, [target.id]: projectedTarget },
+      },
+      propertyChannels,
+    };
+  }
   if (authority.profile === "line-joints-v10" || authority.profile === "write-stuff-v12") {
     const target = scene.objectGraph.entities[authority.studioEntityId];
     if (!studioInitialEditTargetMatches(target, authority) || !target.geometry) return scene;
@@ -765,7 +897,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
   scene: RuntimeSceneState,
   entityId: string,
   sourceTime: number,
-  authority: StudioPreviewInitialEditRuntimeAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
 ) {
   const projected = sourceTime === 0 ? projectStudioPreviewInitialValidationSceneV1(scene, authority) : scene;
   return (
@@ -782,6 +914,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
   if (studioPreviewInitialEditRuntimeAuthorityV1(snapshot)) return 0;
+  if (studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot)) return 0;
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
@@ -1229,6 +1362,107 @@ function planInitialTransformEdit(
     );
   }
   return { edit, kind: "supported", profile };
+}
+
+/**
+ * Reprojects one authorized t=0 move onto the verified generic V3 hierarchy.
+ * The runtime root remains the geometry authority; Studio only adds a
+ * top-level translation and never reconstructs or flattens its descendants.
+ */
+export function compileStudioPreviewGenericInitialMoveV1(
+  input: Readonly<{
+    frame: Readonly<{ height: number; width: number }>;
+    proposedState: ProposedState;
+    snapshot: StudioVerifiedPreviewSnapshotV1;
+    sourceRevisionHash: string;
+  }>,
+): StudioPreviewTemporalRebaseResultV1 {
+  const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(input.snapshot);
+  if (!candidate) {
+    return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-move evidence is unavailable.");
+  }
+  const scene = input.snapshot.snapshot.scene;
+  const context = input.snapshot.correlation.context;
+  const base = input.proposedState.base;
+  if (
+    input.frame.width !== scene.camera.view.frameWidth ||
+    input.frame.height !== scene.camera.view.frameHeight ||
+    base.runtimeSceneState.sceneId !== candidate.studioSceneId ||
+    base.runtimeSceneState.duration !== candidate.duration ||
+    base.editorContext.activeSceneId !== candidate.studioSceneId ||
+    base.sourceSnapshot.sourceId !== context.sourcePath ||
+    base.sourceSnapshot.hash !== `sha256:${context.sourceHash}` ||
+    input.proposedState.evaluatedScene.sceneId !== candidate.studioSceneId ||
+    input.proposedState.evaluatedScene.duration !== candidate.duration
+  ) {
+    return unsupported(
+      "source-correlation-invalid",
+      "Studio state is not correlated with the generic Runtime Trace initial-move evidence.",
+    );
+  }
+  const programSet = studioPreviewGenericInitialMoveProgramSetV1(input.proposedState.programs, candidate);
+  if (programSet.kind !== "authorized") {
+    return unsupported("target-edit-unsupported", "Generic Runtime Trace permits exactly one initial position edit.");
+  }
+  const targetIndex = scene.entities.findIndex(({ id }) => id === candidate.runtimeEntityId);
+  const target = scene.entities[targetIndex];
+  if (!target || target.parentId !== null || target.geometry.kind !== "group") {
+    return unsupported("identity-unverified", "The generic Runtime Trace edit target is not its verified root group.");
+  }
+  const targetCenter = studioPointToScenePoint(programSet.position, input.frame, scene.camera.view.center);
+  const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
+  const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+  if (
+    ![
+      target.transform.m11,
+      target.transform.m12,
+      target.transform.m21,
+      target.transform.m22,
+      target.transform.tx,
+      target.transform.ty,
+      translation.x,
+      translation.y,
+    ].every(Number.isFinite)
+  ) {
+    return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
+  }
+  const provenanceId = `studio-generic-v3-initial-move:${input.sourceRevisionHash}`;
+  if (scene.provenance.some(({ id }) => id === provenanceId)) {
+    return unsupported("conflicting-edit-unsupported", "The generic initial-move provenance identity already exists.");
+  }
+  const editedEntity: SceneEntityV1 = {
+    ...target,
+    provenanceId,
+    transform: {
+      ...target.transform,
+      tx: target.transform.tx + translation.x,
+      ty: target.transform.ty + translation.y,
+    },
+  };
+  const rebased: SceneIrV1 = {
+    ...scene,
+    entities: scene.entities.map((entity, index) => (index === targetIndex ? editedEntity : entity)),
+    provenance: [
+      ...scene.provenance,
+      {
+        evidence: [
+          "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root",
+          `source binding ${candidate.bindingId}`,
+          `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
+        ],
+        id: provenanceId,
+        origin: "studio-edit-program",
+      },
+    ],
+    source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: input.sourceRevisionHash },
+  };
+  const parsed = sceneIrV1Schema.safeParse(rebased);
+  return parsed.success
+    ? { kind: "rebased", scene: parsed.data }
+    : unsupported(
+        "conflicting-edit-unsupported",
+        `The generic initial move is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
+      );
 }
 
 /**

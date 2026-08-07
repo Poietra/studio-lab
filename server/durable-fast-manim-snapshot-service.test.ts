@@ -19,7 +19,12 @@ import {
   type FastManimSnapshotRunViewV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
-import type { FastManimSnapshotRunner, FastManimUnpublishedSnapshotRunViewV1 } from "./fast-manim-snapshot-runner";
+import type {
+  FastManimRuntimeTraceCandidateRunRequestV1,
+  FastManimRuntimeTraceCandidateRunViewV1,
+  FastManimSnapshotRunner,
+  FastManimUnpublishedSnapshotRunViewV1,
+} from "./fast-manim-snapshot-runner";
 import { DurableFastManimSnapshotSourceProviderV1 } from "./fast-manim-snapshot-source-provider";
 import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 import { HttpError } from "./http/json";
@@ -51,6 +56,26 @@ const request = {
   sceneName: SCENE_NAME,
   sourcePath: SOURCE_PATH,
 } as const;
+const runtimeTraceCandidateRequest = {
+  genericInitialMove: {
+    baseBinding: {
+      id: `source-binding:${"1".repeat(64)}`,
+      name: "square",
+      ordinal: 1,
+      span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+    },
+    baseSourceHash: "2".repeat(64),
+    entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+    expectedWorldCenter: { x: 1.25, y: -0.5 },
+    kind: "fast-manim-generic-initial-move-v3",
+  },
+  ...request,
+} as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
+const runtimeTraceCandidateView = {
+  sourceHash: "3".repeat(64),
+  status: "verified",
+  traceDigest: "4".repeat(64),
+} as const satisfies FastManimRuntimeTraceCandidateRunViewV1;
 const TRANSFORMED_PNG_SOURCE = `from manim import ImageMobject, RESAMPLING_ALGORITHMS, Scene
 
 class ExampleScene(Scene):
@@ -377,9 +402,13 @@ function harness(
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
   const runnerRunCandidate = vi.fn<FastManimSnapshotRunner["runCandidateUnpublished"]>(async () => runView);
+  const runnerRunRuntimeTraceCandidate = vi.fn<FastManimSnapshotRunner["runRuntimeTraceCandidateUnpublished"]>(
+    async () => runtimeTraceCandidateView,
+  );
   const runner = {
     close: runnerClose,
     runCandidateUnpublished: runnerRunCandidate,
+    runRuntimeTraceCandidateUnpublished: runnerRunRuntimeTraceCandidate,
     runUnpublished: runnerRun,
   } as unknown as FastManimSnapshotRunner;
   const create = vi.fn<DurableFastManimSnapshotRunnerFactoryV1["create"]>(async () => ({
@@ -438,6 +467,7 @@ function harness(
     runnerClose,
     runnerRun,
     runnerRunCandidate,
+    runnerRunRuntimeTraceCandidate,
     service,
     softDeleteProject,
     sourceRepository,
@@ -492,6 +522,27 @@ describe("DurableFastManimSnapshotServiceV1", () => {
 
     expect(fixture.factory.create).toHaveBeenCalledOnce();
     expect(fixture.runnerRunCandidate).toHaveBeenCalledWith(candidateSource, request, undefined);
+    expect(fixture.runnerRun).not.toHaveBeenCalled();
+    expect(fixture.readSourceHead).not.toHaveBeenCalled();
+    expect(fixture.readSource).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("delegates a generic Runtime Trace pair to the project runner without publication", async () => {
+    const fixture = harness();
+    const candidateSource = "from manim import Scene, Square\n";
+
+    await expect(
+      fixture.service.runRuntimeTraceCandidateUnpublished(candidateSource, runtimeTraceCandidateRequest),
+    ).resolves.toBe(runtimeTraceCandidateView);
+
+    expect(fixture.factory.create).toHaveBeenCalledOnce();
+    expect(fixture.runnerRunRuntimeTraceCandidate).toHaveBeenCalledWith(
+      candidateSource,
+      runtimeTraceCandidateRequest,
+      undefined,
+    );
+    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
     expect(fixture.runnerRun).not.toHaveBeenCalled();
     expect(fixture.readSourceHead).not.toHaveBeenCalled();
     expect(fixture.readSource).not.toHaveBeenCalled();
