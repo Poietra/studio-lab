@@ -119,7 +119,7 @@ describe("Studio CST SourceAnalysis V1", () => {
       kind: "function-definition-binding",
       statementId: analysis.scene.statements[2]!.id,
     });
-    expect(outer?.capabilities.move).toEqual({ reason: "unsupported-binding-form", status: "unknown" });
+    expect(outer?.capabilities.move).toEqual({ status: "source-eligible" });
   });
 
   it("marks same-scope rebinding and control-flow assignments unknown instead of guessing capabilities", () => {
@@ -177,6 +177,37 @@ describe("Studio CST SourceAnalysis V1", () => {
       statementId: loopAnalysis.scene.statements[0]!.id,
     });
     expect(loopAnalysis.bindings.find(({ name }) => name === "square")?.capabilities.move).toEqual({
+      status: "source-eligible",
+    });
+
+    const unrelatedRhs = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        left, right = consume(square)",
+      "        self.wait(1)",
+      "",
+    ].join("\n");
+    expect(
+      analyze(unrelatedRhs, "Real", "scene.py").bindings.find(({ name }) => name === "square")?.capabilities.move,
+    ).toEqual({ status: "source-eligible" });
+
+    const matchAlias = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        target = Circle()",
+      "        alias = Square()",
+      "        match value:",
+      "            case pattern as alias:",
+      "                pass",
+      "        self.wait(1)",
+      "",
+    ].join("\n");
+    const matchAnalysis = analyze(matchAlias, "Real", "scene.py");
+    expect(matchAnalysis.bindings.find(({ name }) => name === "target")?.capabilities.move).toEqual({
+      status: "source-eligible",
+    });
+    expect(matchAnalysis.bindings.find(({ name }) => name === "alias")?.capabilities.move).toEqual({
       reason: "unsupported-binding-form",
       status: "unknown",
     });

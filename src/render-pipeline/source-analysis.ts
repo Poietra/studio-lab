@@ -526,6 +526,9 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
   const scopes: SourceScopeFactV1[] = [];
   const mutableBindings: MutableBinding[] = [];
   const blockers: Array<Readonly<{ kind: string; statementId: string | null }>> = [];
+  const blockerKeys = new Set<string>();
+  const blockedBindingNames = new Set<string>();
+  let blocksEveryBinding = false;
   const moduleScope = addScope("module", null, null, root);
   const classScope = addScope("class", request.sceneName, moduleScope.id, selected.node);
   const constructScope = addScope("function", "construct", classScope.id, construct);
@@ -578,10 +581,38 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
     addBinding(parameter, constructScope, "parameter", [], null, null);
   }
 
-  function addBlocker(kind: string, statementId: string | null) {
-    if (!blockers.some((blocker) => blocker.kind === kind && blocker.statementId === statementId)) {
+  function addBlocker(kind: string, statementId: string | null, affectedNodes?: readonly PythonNode[]) {
+    const blockerKey = `${kind}\u0000${statementId ?? ""}`;
+    if (!blockerKeys.has(blockerKey)) {
+      blockerKeys.add(blockerKey);
       blockers.push({ kind, statementId });
     }
+    if (!affectedNodes) {
+      blocksEveryBinding = true;
+      return;
+    }
+    for (const node of affectedNodes) {
+      if (node.name === "VariableName") blockedBindingNames.add(request.sourceText.slice(node.from, node.to));
+      descendants(node, (descendant) => {
+        if (descendant.name === "VariableName") {
+          blockedBindingNames.add(request.sourceText.slice(descendant.from, descendant.to));
+        }
+      });
+    }
+  }
+
+  function targetsFollowingAs(node: PythonNode) {
+    const parts = children(node);
+    return parts.flatMap((part, index) => (part.name === "as" && parts[index + 1] ? [parts[index + 1]!] : []));
+  }
+
+  function namedDescendants(node: PythonNode, name: string) {
+    const matches: PythonNode[] = [];
+    if (node.name === name) matches.push(node);
+    descendants(node, (descendant) => {
+      if (descendant.name === name) matches.push(descendant);
+    });
+    return matches;
   }
 
   function inspectNode(
@@ -595,7 +626,7 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
     if (functionDefinition && functionDefinition !== construct) {
       const name = definitionName(functionDefinition);
       if (name) addBinding(name, scope, "function", controlPath, ownerStatementId, null);
-      if (runtimeScope) addBlocker("function-definition-binding", ownerStatementId);
+      if (runtimeScope) addBlocker("function-definition-binding", ownerStatementId, name ? [name] : undefined);
       const nestedName = name ? request.sourceText.slice(name.from, name.to) : null;
       const nestedScope = addScope("function", nestedName, scope.id, functionDefinition);
       for (const parameter of parameterNames(functionDefinition)) {
@@ -611,7 +642,7 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
     if (classDefinition && classDefinition !== selected.node) {
       const name = definitionName(classDefinition);
       if (name) addBinding(name, scope, "class", controlPath, ownerStatementId, null);
-      if (runtimeScope) addBlocker("class-definition-binding", ownerStatementId);
+      if (runtimeScope) addBlocker("class-definition-binding", ownerStatementId, name ? [name] : undefined);
       const nestedName = name ? request.sourceText.slice(name.from, name.to) : null;
       addScope("class", nestedName, scope.id, classDefinition);
       return;
@@ -640,8 +671,9 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       const target = parts[0];
       const typeDefinition = parts.some((part) => part.name === "TypeDef");
       const simple =
-        assignmentIndexes.length === 1 && firstAssignment > 0 && target?.name === "VariableName" && !typeDefinition;
+        assignmentIndexes.length === 1 && firstAssignment === 1 && target?.name === "VariableName" && !typeDefinition;
       if (!simple) {
+        const lastAssignment = assignmentIndexes.at(-1) ?? 0;
         addBlocker(
           typeDefinition
             ? "annotated-assignment"
@@ -649,6 +681,7 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
               ? "attribute-assignment"
               : "unsupported-assignment-target",
           ownerStatementId,
+          parts.slice(0, lastAssignment),
         );
       }
       if (simple && target) {
@@ -667,21 +700,26 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       }
     } else if (node.name === "UpdateStatement") {
       const target = node.firstChild;
-      addBlocker("update-assignment", ownerStatementId);
+      addBlocker("update-assignment", ownerStatementId, target ? [target] : undefined);
       if (target?.name === "VariableName") {
         if (runtimeScope) runtimeOrdinal += 1;
         addBinding(target, scope, "update", controlPath, ownerStatementId, runtimeScope ? runtimeOrdinal : null);
       }
     } else if (node.name === "DeleteStatement") {
-      addBlocker("delete-binding", ownerStatementId);
+      addBlocker("delete-binding", ownerStatementId, [node]);
     } else if (node.name === "ImportStatement") {
-      addBlocker("import-binding", ownerStatementId);
+      addBlocker("import-binding", ownerStatementId, [node]);
     } else if (node.name === "ScopeStatement") {
-      addBlocker("scope-declaration-binding", ownerStatementId);
+      addBlocker("scope-declaration-binding", ownerStatementId, [node]);
     } else if (node.name === "TypeDefinition") {
-      addBlocker("type-alias-binding", ownerStatementId);
+      const alias = children(node).find((child) => child.name === "VariableName");
+      addBlocker("type-alias-binding", ownerStatementId, alias ? [alias] : undefined);
     } else if (node.name === "MatchStatement") {
-      addBlocker("pattern-binding", ownerStatementId);
+      const patternTargets = [
+        ...namedDescendants(node, "CapturePattern"),
+        ...namedDescendants(node, "AsPattern").flatMap(targetsFollowingAs),
+      ];
+      addBlocker("pattern-binding", ownerStatementId, patternTargets);
     }
 
     const nextControlPath = CONTROL_FLOW_NODES.has(node.name) ? [...controlPath, node.name] : controlPath;
@@ -690,16 +728,20 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       (node.name === "ForStatement" || node.name === "WithStatement" || node.name === "TryStatement")
     ) {
       // Their binders include destructuring, context aliases, and exception
-      // targets in grammar-specific positions. V1 does not inventory those
-      // forms, so the whole statement is conservatively non-authoritative.
-      addBlocker(`${node.name}-target-binding`, ownerStatementId);
+      // targets in grammar-specific positions. V1 records the affected names
+      // as blockers without poisoning unrelated construct-scope bindings.
+      const affectedNodes = node.name === "ForStatement" ? children(node).slice(1, 2) : targetsFollowingAs(node);
+      addBlocker(`${node.name}-target-binding`, ownerStatementId, affectedNodes);
     }
     if (runtimeScope) {
-      let hasNamedExpression = false;
-      descendants(node, (descendant) => {
-        if (descendant.name === "NamedExpression") hasNamedExpression = true;
-      });
-      if (hasNamedExpression) addBlocker("named-expression-binding", ownerStatementId);
+      const namedExpressions = namedDescendants(node, "NamedExpression");
+      if (namedExpressions.length > 0) {
+        addBlocker(
+          "named-expression-binding",
+          ownerStatementId,
+          namedExpressions.flatMap((expression) => (expression.firstChild ? [expression.firstChild] : [])),
+        );
+      }
     }
 
     for (const child of children(node)) {
@@ -751,16 +793,16 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       }
       ancestor = scopeById.get(ancestor)?.parentId ?? null;
     }
-    const reason: Extract<SourceOperationCapabilityV1, { status: "unknown" }>["reason"] | null =
-      blockers.length > 0
-        ? "unsupported-binding-form"
-        : ambiguous
-          ? "ambiguous-binding"
-          : binding.scopeId !== constructScope.id || binding.controlPath.length > 0
-            ? "dynamic-control-flow"
-            : !binding.constructorCall
-              ? "runtime-only"
-              : null;
+    const bindingHasBlocker = blocksEveryBinding || blockedBindingNames.has(binding.name);
+    const reason: Extract<SourceOperationCapabilityV1, { status: "unknown" }>["reason"] | null = bindingHasBlocker
+      ? "unsupported-binding-form"
+      : ambiguous
+        ? "ambiguous-binding"
+        : binding.scopeId !== constructScope.id || binding.controlPath.length > 0
+          ? "dynamic-control-flow"
+          : !binding.constructorCall
+            ? "runtime-only"
+            : null;
     const capability: SourceOperationCapabilityV1 = reason
       ? { reason, status: "unknown" }
       : { status: "source-eligible" };

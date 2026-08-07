@@ -1,8 +1,4 @@
-import { createHash } from "node:crypto";
-
 import {
-  FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
-  FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1,
   type SourceBindingV1,
   STUDIO_VERIFIED_SOURCE_RUNTIME_IDENTITY_MAP_SCHEMA_V1,
   type VerifiedSourceRuntimeIdentityMapV1,
@@ -13,6 +9,7 @@ import {
   type StudioSourceAnalysisV1,
   studioSourceAnalysisProviderV1,
 } from "../src/render-pipeline/source-analysis";
+import { fastManimSourceBindingIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_MATHTEX_PROVENANCE_EVIDENCE_V7,
@@ -21,6 +18,8 @@ import {
   type VerifiedFastManimSnapshotResultV1,
 } from "./fast-manim-snapshot-contract";
 import type { ParsedFastManimProducerDocumentV1 } from "./fast-manim-source-runtime-document";
+
+export { fastManimSourceBindingIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 
 const MAX_ENTITIES = 10_000;
 const MAX_BINDING_CLAIMS = 10_000;
@@ -119,26 +118,6 @@ function safeInteger(value: unknown, minimum: number, maximum: number, label: st
     `${label} is outside the bounded integer range.`,
   );
   return value;
-}
-
-export function fastManimSourceBindingIdentifierV1(
-  sourceHash: string,
-  sceneId: string,
-  binding: Readonly<{ name: string; ordinal: number; span: SourceBindingV1["span"] }>,
-) {
-  const payload = [
-    FAST_MANIM_SOURCE_RUNTIME_IDENTITY_SCHEMA_V1,
-    String(FAST_MANIM_SOURCE_RUNTIME_IDENTITY_VERSION_V1),
-    sourceHash,
-    sceneId,
-    binding.name,
-    String(binding.ordinal),
-    String(binding.span.startLine),
-    String(binding.span.startColumn),
-    String(binding.span.endLine),
-    String(binding.span.endColumn),
-  ].join("\u0000");
-  return `source-binding:${createHash("sha256").update(payload, "utf8").digest("hex")}`;
 }
 
 type SourceBindingLookup = Readonly<{
