@@ -28,6 +28,7 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../src/render-pipeline/manim-identity-contract";
+import { sourceRuntimeSceneIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V1 = "poietra.fast-manim-runtime-trace" as const;
@@ -298,7 +299,7 @@ export function digestFastManimRuntimeTraceConfigV1(value: FastManimRuntimeTrace
 }
 
 export function fastManimRuntimeTraceSceneIdV1(sourcePath: string, sceneName: string) {
-  return `scene:${createHash("sha256").update(`${sourcePath}\0${sceneName}`).digest("hex")}`;
+  return sourceRuntimeSceneIdentifierV1(sourcePath, sceneName);
 }
 
 export const fastManimRuntimeTraceProducerRequestV1Schema = z
