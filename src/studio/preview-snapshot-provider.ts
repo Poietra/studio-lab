@@ -50,7 +50,27 @@ export type StudioPreviewSnapshotCorrelationV1 = Readonly<{
 export type StudioPreviewSourceRuntimeMappingV1 = Readonly<{
   bindingId: string;
   entityId: string;
+  /**
+   * Browser-safe evidence minted only from a server-verified generic Runtime
+   * Trace V3 mapping. Snapshot profiles and rolling wire V1 responses omit it.
+   */
+  runtimeTraceEvidence?: StudioPreviewRuntimeTraceSourceBindingEvidenceV1;
   sourceName: string;
+}>;
+
+export type StudioPreviewRuntimeTraceEndpointEvidenceV1 = Readonly<{
+  center: Readonly<{ x: number; y: number }>;
+  dimensions: Readonly<{ height: number; width: number }>;
+  frameIndex: number;
+  sampleTime: number;
+}>;
+
+export type StudioPreviewRuntimeTraceSourceBindingEvidenceV1 = Readonly<{
+  endpoints: Readonly<{
+    initial: StudioPreviewRuntimeTraceEndpointEvidenceV1;
+    terminal: StudioPreviewRuntimeTraceEndpointEvidenceV1;
+  }>;
+  updaterStatus: "conflict" | "none";
 }>;
 
 export type StudioPreviewSourceRuntimeIdentityV1 = ReadonlyMap<string, StudioPreviewSourceRuntimeMappingV1>;

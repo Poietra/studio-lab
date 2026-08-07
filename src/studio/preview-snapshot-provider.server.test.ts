@@ -362,6 +362,36 @@ async function verifiedOpeningRuntimeTraceRun() {
   } as const;
 }
 
+async function verifiedGenericRuntimeTraceRunV2() {
+  const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
+  const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+  const source = bundle.scene.source;
+  if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
+  return {
+    bundle,
+    projectId: trace.projectId,
+    producerEvidence: {
+      correlationSha256: trace.producer.correlationSha256,
+      semanticsSha256: trace.producer.semanticsSha256,
+    },
+    requestId: trace.requestId,
+    roots: trace.sourceBindings.map((mapping) => ({
+      binding: mapping.binding,
+      entityId: mapping.rootId,
+      evidence: { endpoints: mapping.endpoints, updaterStatus: mapping.updaterStatus },
+    })),
+    runtimeConfigHash: trace.runtimeConfigHash,
+    sceneId: trace.sceneId,
+    sceneName: trace.sceneName,
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: trace.sourceHash,
+    sourcePath: trace.sourcePath,
+    status: "verified",
+    traceDigest: source.traceDigest,
+    version: 2,
+  } as const;
+}
+
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { headers: { "content-type": "application/json" }, status });
 }
@@ -430,7 +460,7 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     );
   });
 
-  it("accepts a generic V3 trace as preview-only without inventing edit authority", async () => {
+  it("retains rolling V1 generic V3 traces as preview-only without inventing identity", async () => {
     const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
     const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
     const source = bundle.scene.source;
@@ -467,6 +497,86 @@ describe("createServerPreviewSnapshotProviderV1", () => {
     expect(loaded.sourceLabel).toBe("verified Runtime Trace (preview-only)");
     expect(loaded.sourceRuntimeIdentity).toEqual(new Map());
     expect(loaded.snapshot.scene.source).toMatchObject({ traceVersion: 3 });
+  });
+
+  it("revalidates a source-bound generic V3 wire V2 response into browser-safe identity evidence", async () => {
+    const run = await verifiedGenericRuntimeTraceRunV2();
+    const genericIdentity = {
+      projectId: run.projectId,
+      sceneName: run.sceneName,
+      sourceHash: run.sourceHash,
+      sourcePath: run.sourcePath,
+    };
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
+    const loaded = await createServerPreviewSnapshotProviderV1({
+      fetcher,
+      requestIdFactory: () => run.requestId,
+    }).loadVerifiedSnapshot({ identity: genericIdentity });
+
+    const [root] = run.roots;
+    expect(root).toBeDefined();
+    expect(loaded.sourceRuntimeIdentity).toEqual(
+      new Map([
+        [
+          "square",
+          {
+            bindingId: root!.binding.id,
+            entityId: root!.entityId,
+            runtimeTraceEvidence: root!.evidence,
+            sourceName: "square",
+          },
+        ],
+      ]),
+    );
+    expect(loaded.sourceLabel).toBe("verified Runtime Trace (preview-only)");
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
+      "x-poietra-runtime-trace-response-version": "2",
+    });
+  });
+
+  it("rejects generic V3 V2 downgrade, substitution, duplicate, lifetime, and digest tampering", async () => {
+    const run = await verifiedGenericRuntimeTraceRunV2();
+    const [root] = run.roots;
+    if (!root) throw new Error("Generic Runtime Trace V3 fixture lost its mapped root.");
+    const drawable = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
+    if (!drawable) throw new Error("Generic Runtime Trace V3 fixture lost its drawable.");
+    const duplicateRoot = { ...root, binding: { ...root.binding, name: "square_alias" } };
+    const cases: readonly unknown[] = [
+      { ...run, version: 1 },
+      { ...run, unexpected: true },
+      { ...run, roots: [{ ...root, entityId: drawable.id }] },
+      { ...run, roots: [root, duplicateRoot] },
+      {
+        ...run,
+        bundle: {
+          ...run.bundle,
+          scene: {
+            ...run.bundle.scene,
+            entities: run.bundle.scene.entities.map((entity) =>
+              entity.id === root.entityId ? { ...entity, lifetimes: [{ end: 2 / 60, start: 1 / 60 }] } : entity,
+            ),
+          },
+        },
+      },
+      { ...run, producerEvidence: { ...run.producerEvidence, correlationSha256: "f".repeat(64) } },
+      { ...run, producerEvidence: { ...run.producerEvidence, semanticsSha256: "f".repeat(64) } },
+      { ...run, traceDigest: "f".repeat(64) },
+    ];
+    const identity = {
+      projectId: run.projectId,
+      sceneName: run.sceneName,
+      sourceHash: run.sourceHash,
+      sourcePath: run.sourcePath,
+    };
+    for (const candidate of cases) {
+      const provider = createServerPreviewSnapshotProviderV1({
+        fetcher: vi.fn(async () => jsonResponse(candidate)),
+        requestIdFactory: () => run.requestId,
+      });
+      await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toBeInstanceOf(
+        StudioPreviewSnapshotLoadErrorV1,
+      );
+    }
   });
 
   it("falls back to the snapshot endpoint only after a structured unsupported Runtime Trace result", async () => {

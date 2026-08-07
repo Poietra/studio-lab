@@ -7,7 +7,7 @@ import {
   sha256V1Schema,
   sourceIdentityV1Schema,
 } from "../engine/contracts";
-import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
+import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { verifiedSourceRuntimeIdentityMapV1Schema } from "../engine/source-runtime-identity";
 import {
@@ -15,7 +15,20 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
-import { fastManimRuntimeTraceRunViewV1Schema } from "../render-pipeline/runtime-trace-preview-contract";
+import {
+  FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER,
+  FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2,
+  fastManimRuntimeTraceRunViewSchema,
+} from "../render-pipeline/runtime-trace-preview-contract";
+import {
+  canonicalRuntimeTraceDomainJsonV3,
+  canonicalRuntimeTraceF64HexV3,
+} from "../render-pipeline/runtime-trace-v3-digest";
+import {
+  canonicalFastManimRuntimeTraceSampleTimeV3,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+} from "../render-pipeline/runtime-trace-v3-shared-contract";
+import { fastManimSourceBindingIdentityPayloadV1 } from "../render-pipeline/source-runtime-identity-preimage";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSceneIdentityV1,
@@ -26,7 +39,7 @@ import {
 const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
-const MAX_RUNTIME_TRACE_RESPONSE_BYTES = MAX_RESPONSE_BYTES;
+const MAX_RUNTIME_TRACE_RESPONSE_BYTES = 8 * 1024 * 1024 + FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2;
 const ZERO_SHA256 = "0".repeat(64);
 
 const identitySchema = z
@@ -168,6 +181,32 @@ async function readBoundedPng(response: Response, expectedLength: number) {
 async function sha256Hex(bytes: ArrayBuffer) {
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Text(value: string) {
+  return sha256Hex(new TextEncoder().encode(value).buffer);
+}
+
+async function digestRuntimeTraceDomainInBrowserV3(domain: string, value: unknown) {
+  return sha256Text(canonicalRuntimeTraceDomainJsonV3(domain, value));
+}
+
+async function expectedRuntimeTraceBindingIdV3(
+  sourceHash: string,
+  sceneId: string,
+  binding: Readonly<{
+    name: string;
+    ordinal: number;
+    span: Readonly<{
+      endColumn: number;
+      endLine: number;
+      startColumn: number;
+      startLine: number;
+    }>;
+  }>,
+) {
+  const payload = fastManimSourceBindingIdentityPayloadV1(sourceHash, sceneId, binding);
+  return `source-binding:${await sha256Text(payload)}`;
 }
 
 async function loadSnapshotAssetPayloads(
@@ -344,7 +383,7 @@ async function validateVerifiedRuntimeTraceRun(
   identity: StudioPreviewSceneIdentityV1,
   requestId: string,
 ) {
-  const parsed = fastManimRuntimeTraceRunViewV1Schema.safeParse(value);
+  const parsed = fastManimRuntimeTraceRunViewSchema.safeParse(value);
   if (!parsed.success) throw providerError("The Runtime Trace endpoint returned malformed evidence.", parsed.error);
   const run = parsed.data;
   if (run.status !== "verified") {
@@ -402,19 +441,115 @@ async function validateVerifiedRuntimeTraceRun(
         : null;
   const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
   if (source.traceVersion === 3) {
-    if (
-      run.roots.length !== 0 ||
-      !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
-    ) {
-      throw providerError("The generic Runtime Trace contains invalid preview-only roots.");
+    if (run.version === 1) {
+      if (
+        run.roots.length !== 0 ||
+        !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
+      ) {
+        throw providerError("The generic Runtime Trace contains invalid preview-only roots.");
+      }
+      return {
+        bundle,
+        engineRevisionHash: run.traceDigest,
+        publicationRevision: null,
+        sourceLabel: "verified Runtime Trace (preview-only)",
+        sourceRuntimeIdentity: new Map(),
+      };
+    }
+
+    const correlatedBindings = run.roots.map((root) => ({
+      binding: root.binding,
+      endpoints: root.evidence.endpoints,
+      rootId: root.entityId,
+      updaterStatus: root.evidence.updaterStatus,
+    }));
+    const expectedCorrelationDigest = await digestRuntimeTraceDomainInBrowserV3(
+      "poietra.fast-manim-runtime-trace-source-bindings.v1",
+      {
+        sceneId: run.sceneId,
+        sourceBindings: correlatedBindings,
+        sourceHash: run.sourceHash,
+      },
+    );
+    assertEqual("source binding digest", run.producerEvidence.correlationSha256, expectedCorrelationDigest);
+    const expectedTraceDigest = await sha256Text(
+      canonicalJsonV1({
+        correlationSha256: run.producerEvidence.correlationSha256,
+        runtimeConfigHash: run.runtimeConfigHash,
+        sceneId: run.sceneId,
+        semanticsSha256: run.producerEvidence.semanticsSha256,
+        sourceHash: run.sourceHash,
+      }),
+    );
+    assertEqual("trace identity digest", run.traceDigest, expectedTraceDigest);
+
+    const sourceRuntimeIdentity = new Map<
+      string,
+      Readonly<{
+        bindingId: string;
+        entityId: string;
+        runtimeTraceEvidence: (typeof run.roots)[number]["evidence"];
+        sourceName: string;
+      }>
+    >();
+    const bindingIds = new Set<string>();
+    const runtimeEntityIds = new Set<string>();
+    for (const root of run.roots) {
+      const entity = entities.get(root.entityId);
+      const expectedBindingId = await expectedRuntimeTraceBindingIdV3(run.sourceHash, run.sceneId, root.binding);
+      if (root.binding.id !== expectedBindingId) {
+        throw providerError("The generic Runtime Trace source binding identity is stale.");
+      }
+      if (
+        sourceRuntimeIdentity.has(root.binding.name) ||
+        bindingIds.has(root.binding.id) ||
+        runtimeEntityIds.has(root.entityId)
+      ) {
+        throw providerError("The generic Runtime Trace source roots are not one-to-one.");
+      }
+      if (!entity || entity.parentId !== null || entity.geometry.kind !== "group" || entity.lifetimes.length === 0) {
+        throw providerError("The generic Runtime Trace source root is not one exact top-level runtime root.");
+      }
+      const initialLifetime = entity.lifetimes[0]!;
+      const terminalLifetime = entity.lifetimes.at(-1)!;
+      const initialFrameValue = initialLifetime.start * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+      const terminalEndFrameValue = terminalLifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+      const initialFrame = Math.round(initialFrameValue);
+      const terminalFrame = Math.round(terminalEndFrameValue) - 1;
+      const endpoints = root.evidence.endpoints;
+      const exactBoundary =
+        Math.abs(initialFrameValue - initialFrame) <= Number.EPSILON * 64 * Math.max(1, initialFrame) &&
+        Math.abs(terminalEndFrameValue - (terminalFrame + 1)) <= Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) &&
+        initialFrame >= 0 &&
+        terminalFrame >= initialFrame &&
+        endpoints.initial.frameIndex === initialFrame &&
+        endpoints.terminal.frameIndex === terminalFrame &&
+        canonicalRuntimeTraceF64HexV3(endpoints.initial.sampleTime) ===
+          canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(initialFrame)) &&
+        canonicalRuntimeTraceF64HexV3(endpoints.terminal.sampleTime) ===
+          canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame));
+      if (!exactBoundary) {
+        throw providerError("The generic Runtime Trace source endpoint is stale for its root lifetime.");
+      }
+      sourceRuntimeIdentity.set(root.binding.name, {
+        bindingId: root.binding.id,
+        entityId: root.entityId,
+        runtimeTraceEvidence: root.evidence,
+        sourceName: root.binding.name,
+      });
+      bindingIds.add(root.binding.id);
+      runtimeEntityIds.add(root.entityId);
     }
     return {
       bundle,
       engineRevisionHash: run.traceDigest,
       publicationRevision: null,
       sourceLabel: "verified Runtime Trace (preview-only)",
-      sourceRuntimeIdentity: new Map(),
+      sourceRuntimeIdentity,
     };
+  }
+  if (run.version !== 1) {
+    throw providerError("Reviewed Runtime Trace profiles must use the rolling-compatible wire V1 response.");
   }
   if (!expectedProfile) {
     throw providerError("The Runtime Trace preview does not match a reviewed Scene profile.");
@@ -486,7 +621,11 @@ export function createServerPreviewSnapshotProviderV1(
       const post = (endpoint: "runtime-traces" | "scene-snapshots") =>
         fetcher(`/api/manim/projects/${encodeURIComponent(identity.projectId)}/${endpoint}`, {
           body: JSON.stringify({ ...identity, requestId }),
-          headers: { accept: "application/json", "content-type": "application/json" },
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            ...(endpoint === "runtime-traces" ? { [FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER]: "2" } : {}),
+          },
           method: "POST",
           signal,
         });
