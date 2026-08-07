@@ -26,7 +26,7 @@ import {
 const SNAPSHOT_RUN_SCHEMA = "poietra.fast-manim-snapshot-run";
 const SNAPSHOT_RESULT_SCHEMA = "poietra.fast-manim-snapshot-result";
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024 + 64 * 1024;
-const MAX_RUNTIME_TRACE_RESPONSE_BYTES = 88 * 1024 * 1024 + 64 * 1024;
+const MAX_RUNTIME_TRACE_RESPONSE_BYTES = MAX_RESPONSE_BYTES;
 const ZERO_SHA256 = "0".repeat(64);
 
 const identitySchema = z

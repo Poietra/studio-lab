@@ -39,7 +39,7 @@ export const MAX_FAST_MANIM_RUNTIME_TRACE_FAMILY_PATH_DEPTH_V3 = 64;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_SUBMOBJECTS_PER_PARENT_V3 = 10_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_LIFETIME_RUNS_V3 = 64;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 = 88 * 1024 * 1024;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 = 88 * 1024 * 1024;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3 = 8 * 1024 * 1024;
 /** Exact post-lowering ceilings mirrored by the producer and Scene IR consumer. */
 export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3 = 10_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3 = 10_000;
@@ -139,7 +139,26 @@ const appearanceV3Schema = z
   .strict()
   .refine(({ fill, stroke }) => fill !== null || stroke !== null, "Runtime Trace V3 appearances require paint.");
 
-const pathResourceV3Schema = z.object({ id: pathIdV3Schema, path: cubicPathV1Schema }).strict();
+const pathV3Schema = cubicPathV1Schema.refine(
+  (path) =>
+    path.subpaths.every(
+      (subpath) =>
+        canonicalNumberV3(subpath.start.x) &&
+        canonicalNumberV3(subpath.start.y) &&
+        subpath.segments.every(
+          (segment) =>
+            canonicalNumberV3(segment.control1.x) &&
+            canonicalNumberV3(segment.control1.y) &&
+            canonicalNumberV3(segment.control2.x) &&
+            canonicalNumberV3(segment.control2.y) &&
+            canonicalNumberV3(segment.end.x) &&
+            canonicalNumberV3(segment.end.y),
+        ),
+    ),
+  "Runtime Trace V3 path coordinates must use the canonical 13-digit precision.",
+);
+
+const pathResourceV3Schema = z.object({ id: pathIdV3Schema, path: pathV3Schema }).strict();
 
 const transformV3Schema = z
   .object({

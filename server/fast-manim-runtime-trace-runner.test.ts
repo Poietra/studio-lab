@@ -62,6 +62,13 @@ const genericRequest = {
   sourceHash: createHash("sha256").update(GENERIC_SOURCE).digest("hex"),
   sourcePath: "scenes/staticsquare.py",
 } as const satisfies FastManimRuntimeTraceRunRequestV1;
+const GENERIC_UPDATERS_SOURCE = `from manim import *
+
+class UpdatersExample(Scene):
+    def construct(self):
+        self.add(Square())
+        self.wait(1 / 60)
+`;
 
 class ArtifactBackend implements FastManimSandboxBackendV1 {
   requests: unknown[] = [];
@@ -145,11 +152,15 @@ async function genericProjectRoot() {
   return root;
 }
 
-function runner(root: string, backend: FastManimSandboxBackendV1) {
+function runner(
+  root: string,
+  backend: FastManimSandboxBackendV1,
+  configuredFrame: Readonly<{ height: number; width: number }> = { height: 8, width: 14.222222222222221 },
+) {
   const instance = new FastManimSnapshotRunner({
     backend,
     deployment: "test",
-    frame: { height: 8, width: 14.222222222222221 },
+    frame: configuredFrame,
     projectId: request.projectId,
     projectRoot: root,
     tenantId: "test-tenant",
@@ -246,6 +257,37 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       schema: "poietra.fast-manim-runtime-trace-producer-request",
       version: 3,
     });
+  });
+
+  it("falls through a non-recoverable reviewed Scene edit to preview-only V3", async () => {
+    const root = await projectRoot();
+    await writeFile(join(root, request.sourcePath), GENERIC_UPDATERS_SOURCE, "utf8");
+    const editedRequest = {
+      ...request,
+      requestId: "req-generic-updaters-v3",
+      sourceHash: createHash("sha256").update(GENERIC_UPDATERS_SOURCE).digest("hex"),
+    };
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(root, backend).runRuntimeTrace(editedRequest);
+
+    expect(view).toMatchObject({ failure: { code: "result-rejected" }, status: "failed" });
+    expect(backend.requests).toHaveLength(1);
+    expect(backend.requests[0]).toMatchObject({
+      profileVersion: 3,
+      sceneName: request.sceneName,
+      version: 3,
+    });
+  });
+
+  it("returns a failed view when the generic V3 camera is not canonical", async () => {
+    const backend = new ArtifactBackend(await genericArtifact());
+    const view = await runner(await genericProjectRoot(), backend, { height: 8, width: 10 }).runRuntimeTrace(
+      genericRequest,
+    );
+
+    expect(view).toMatchObject({ failure: { code: "runtime-config-changed" }, status: "failed" });
+    expect(backend.requests).toHaveLength(0);
+    expect(backend.statuses).toBe(0);
   });
 
   it("rejects stale source correlation before consulting the sandbox", async () => {

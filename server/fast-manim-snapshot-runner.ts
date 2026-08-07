@@ -40,6 +40,8 @@ import {
 import {
   createFastManimGenericRuntimeTraceProfileV3,
   digestSelectedFastManimRuntimeTraceConfig,
+  type FastManimGenericRuntimeTraceProfileV3,
+  type FastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceProfile,
   selectFastManimRuntimeTraceSceneProfile,
 } from "./fast-manim-runtime-trace-profiles";
@@ -119,6 +121,7 @@ import {
   type VerifiedCompiledFastManimSnapshotResultV1,
   type VerifiedFastManimSnapshotResultV1,
   type VerifiedSourceRuntimeIdentityMapV1,
+  ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
   type FastManimSnapshotPngProviderV1,
@@ -868,8 +871,8 @@ export class FastManimSnapshotRunner {
         selectedReviewedProfile.runtimeConfigHash
         ? selectedReviewedProfile
         : null;
-    const profile = reviewedProfile ?? createFastManimGenericRuntimeTraceProfileV3(this.frame);
-    const runtimeConfigHash = profile.runtimeConfigHash;
+    let profile: FastManimGenericRuntimeTraceProfileV3 | FastManimRuntimeTraceProfile | null = reviewedProfile;
+    let runtimeConfigHash = profile?.runtimeConfigHash ?? ZERO_SHA256;
     const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
     const base = () =>
       ({
@@ -892,7 +895,15 @@ export class FastManimSnapshotRunner {
       };
     };
 
-    if (selectedReviewedProfile !== null && reviewedProfile === null) return failed("runtime-config-changed");
+    if (exactProfile !== null && reviewedProfile === null) return failed("runtime-config-changed");
+    if (profile === null) {
+      try {
+        profile = createFastManimGenericRuntimeTraceProfileV3(this.frame);
+        runtimeConfigHash = profile.runtimeConfigHash;
+      } catch {
+        return failed("runtime-config-changed");
+      }
+    }
 
     let before: FastManimSnapshotSourceReadV1;
     try {
@@ -914,7 +925,12 @@ export class FastManimSnapshotRunner {
             : recoverOpeningManimOfficialSourceV2(before.source, request.sceneName);
         candidateProfileVersion = reviewedProfile.version;
       } catch {
-        return failed("unsupported-profile");
+        try {
+          profile = createFastManimGenericRuntimeTraceProfileV3(this.frame);
+          runtimeConfigHash = profile.runtimeConfigHash;
+        } catch {
+          return failed("runtime-config-changed");
+        }
       }
     }
 

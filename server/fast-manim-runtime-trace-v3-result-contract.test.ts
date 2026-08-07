@@ -7,6 +7,7 @@ import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runti
 import {
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3,
+  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_KEYFRAMES_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_PATH_SEGMENTS_V3,
   MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V3,
@@ -60,6 +61,7 @@ describe("generic Runtime Trace V3 producer result", () => {
     expect(trace.frames).toHaveLength(1);
     expect(trace.roots).toHaveLength(1);
     expect(MAX_FAST_MANIM_RUNTIME_TRACE_PATH_SEGMENTS_V3).toBe(100_000);
+    expect(MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3).toBe(8 * 1024 * 1024);
     expect({
       channels: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
       entities: MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_ENTITIES_V3,
@@ -85,5 +87,14 @@ describe("generic Runtime Trace V3 producer result", () => {
     ).toThrow("not trusted");
     fixture.draws[0].lifetimes[0].endFrame = 2;
     expect(() => parseFastManimRuntimeTraceProducerJsonV3(JSON.stringify(fixture), request(), trusted)).toThrow();
+  });
+
+  it("rejects non-canonical path coordinates", async () => {
+    const fixture = JSON.parse(await readFile(fixturePath, "utf8"));
+    fixture.resources.paths[0].path.subpaths[0].start.x += 1e-14;
+
+    expect(() => parseFastManimRuntimeTraceProducerJsonV3(JSON.stringify(fixture), request(), trusted)).toThrow(
+      "path coordinates must use the canonical 13-digit precision",
+    );
   });
 });
