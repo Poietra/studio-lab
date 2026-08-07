@@ -715,6 +715,9 @@ export class ManimRenderManager {
     try {
       this.assertRequestProject(request);
       const prepared = await this.lowerRequest(request, signal);
+      if (prepared.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3") {
+        await this.candidateVerifier.verify(prepared.lowered, prepared.renderRequest, signal);
+      }
       const stem =
         basename(request.sourcePath, ".py")
           .replace(/[^A-Za-z0-9._-]+/g, "-")

@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { type ProgramRenderRequest, renderProgramBatchId } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
+import type { CanonicalEditProgram } from "../src/studio/operations";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationScaleProgram,
@@ -161,6 +162,62 @@ class GroupedEquation(Scene):
     await expect(waitForTerminal(manager, started.id)).resolves.toMatchObject({ status: "ready" });
     await expect(manager.commit(started.id, commitRequest(started))).resolves.toMatchObject({ status: "committed" });
     await expect(readFile(join(projectRoot, "scene.py"), "utf8")).resolves.toBe(exported.source);
+  });
+
+  it("fails generic initial-move source export closed without Runtime Trace authority", async () => {
+    const { manager, projectRoot } = await fixture();
+    const staticSquareSource = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(1 / 60)
+`;
+    await writeFile(join(projectRoot, "scene.py"), staticSquareSource, "utf8");
+    const entityId = "source:scene.py#StaticSquare:square";
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId,
+          id: "generic-v3-export-position",
+          interval: { end: 0, start: 0 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+          value: { x: 410, y: 135 },
+        },
+      ],
+      provenance: { evidence: ["generic V3 export"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["generic-v3-export-position"] },
+      transactionId: "generic-v3-export",
+      version: 1,
+    };
+
+    await expect(
+      manager.exportSource({
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program,
+        projectId: "default",
+        sceneName: "StaticSquare",
+        sourceBindings: [{ entityId, sourceVariable: "square" }],
+        sourceHash: createHash("sha256").update(staticSquareSource).digest("hex"),
+        sourcePath: "scene.py",
+        viewport: { height: 360, width: 640 },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
   });
 
   it("converts a zero-animation Scene image to an MP4 before allowing Commit", async () => {

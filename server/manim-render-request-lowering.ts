@@ -2,8 +2,10 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
+  lowerGenericRuntimeTraceInitialPositionSourceV3,
   lowerLineJointsInitialTransformSourceV10,
   lowerOpeningManimTerminalPositionSourceV2,
+  lowerSquareToCircleInitialPositionSourceV8,
   lowerUpdatersTerminalTransformSourceV1,
   lowerWarpSquareInitialTransformSourceV9,
   lowerWriteStuffInitialTransformSourceV12,
@@ -61,6 +63,14 @@ export function lowerManimRenderRequest({
     throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
   }
   try {
+    const squareToCircleV8 = lowerSquareToCircleInitialPositionSourceV8(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (squareToCircleV8) return { lowered: squareToCircleV8, renderRequest: request };
     const warpSquareV9 = lowerWarpSquareInitialTransformSourceV9(
       originalSource,
       request,
@@ -108,6 +118,14 @@ export function lowerManimRenderRequest({
       );
       if (openingTerminalV2) return { lowered: openingTerminalV2, renderRequest: request };
     }
+    const genericInitialMoveV3 = lowerGenericRuntimeTraceInitialPositionSourceV3(
+      originalSource,
+      request,
+      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
+      frame,
+      null,
+    );
+    if (genericInitialMoveV3) return { lowered: genericInitialMoveV3, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

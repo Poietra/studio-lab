@@ -22,10 +22,16 @@ import {
 } from "./python-reference-analysis";
 import { analyzePythonSource, isPythonStatementStart } from "./python-source-analysis";
 import {
+  fastManimRuntimeTraceSourceBindingV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
+} from "./runtime-trace-v3-shared-contract";
+import {
   composeSourceRuntimeOperationCapabilityV1,
   insertAtSourceBoundaryV1,
   removeDirectSourceStatementsV1,
   SourceAnalysisError,
+  type SourceBindingFactV1,
+  type StudioSourceAnalysisV1,
   studioSourceAnalysisProviderV1,
 } from "./source-analysis";
 import {
@@ -36,6 +42,7 @@ import {
   importManimScene,
   isSimpleShiftAnimationStatement,
 } from "./source-import";
+import { fastManimSourceBindingIdentifierV1, sourceRuntimeSceneIdentifierV1 } from "./source-runtime-identity-digest";
 
 export type MotionAnchor = Readonly<{
   line: number;
@@ -60,20 +67,42 @@ export type LoweredProgramBatchEntry = Readonly<{
   sourceAnchor: number;
 }>;
 
+export type GenericRuntimeTraceSourceBindingEvidenceV3 = Readonly<{
+  id: string;
+  name: string;
+  ordinal: number;
+  span: Readonly<{
+    endColumn: number;
+    endLine: number;
+    startColumn: number;
+    startLine: number;
+  }>;
+}>;
+
+export type GenericRuntimeTraceInitialMovePreflightV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSourceHash: string;
+  entityId: string;
+  expectedWorldCenter: Readonly<{ x: number; y: number }>;
+  kind: "fast-manim-generic-initial-move-v3";
+}>;
+
+type PinnedCandidatePreflight = Readonly<{
+  baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
+  kind:
+    | "fast-manim-line-joints-v10"
+    | "fast-manim-opening-terminal-v2"
+    | "fast-manim-square-to-circle-v8"
+    | "fast-manim-updaters-terminal-v1"
+    | "fast-manim-warp-square-v9"
+    | "fast-manim-write-stuff-v12";
+}>;
+
 export type LoweredProgramBatchSource = Readonly<{
   anchorLine: number;
   anchorLines: readonly number[];
   insertedCode: string;
-  preflight?: Readonly<{
-    baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
-    kind:
-      | "fast-manim-line-joints-v10"
-      | "fast-manim-opening-terminal-v2"
-      | "fast-manim-square-to-circle-v8"
-      | "fast-manim-updaters-terminal-v1"
-      | "fast-manim-warp-square-v9"
-      | "fast-manim-write-stuff-v12";
-  }>;
+  preflight?: GenericRuntimeTraceInitialMovePreflightV3 | PinnedCandidatePreflight;
   source: string;
 }>;
 
@@ -213,6 +242,18 @@ function formatAmount(value: number) {
 function formatPointCoordinate(value: number) {
   const normalized = Math.abs(value) < 0.0000000000005 ? 0 : value;
   return Number(normalized.toFixed(12)).toString();
+}
+
+function worldPointFromViewport(
+  point: Readonly<{ x: number; y: number }>,
+  frame: Readonly<{ height: number; width: number }>,
+  viewport: Readonly<{ height: number; width: number }>,
+  cameraCenter: Readonly<{ x: number; y: number }> = { x: 0, y: 0 },
+) {
+  return {
+    x: Number(formatPointCoordinate(cameraCenter.x + (point.x / viewport.width - 0.5) * frame.width)),
+    y: Number(formatPointCoordinate(cameraCenter.y + (0.5 - point.y / viewport.height) * frame.height)),
+  } as const;
 }
 
 function formatShiftAmount(value: number) {
@@ -1943,6 +1984,346 @@ function finiteCreatedLifetimeEntries(
       return [{ program, sourceAnchor: sourceEnd }];
     });
   });
+}
+
+type ProjectedGenericRuntimeTraceSourceBindingV3 = Readonly<{
+  binding: SourceBindingFactV1;
+  evidence: GenericRuntimeTraceSourceBindingEvidenceV3;
+}>;
+
+export type GenericRuntimeTraceInitialMoveSourceEditPlanV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSource: string;
+  baseSourceHash: string;
+  candidateBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  expectedWorldCenter: Readonly<{ x: number; y: number }>;
+}>;
+
+function genericRuntimeTraceInitialMoveV3LoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `Generic Runtime Trace V3 initial move: ${message}`);
+}
+
+function analyzeGenericRuntimeTraceInitialMoveSourceV3(source: string, sceneName: string, sourcePath: string) {
+  const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
+  try {
+    return studioSourceAnalysisProviderV1.analyze({
+      expectedSourceHash: sourceHash,
+      sceneName,
+      sourcePath,
+      sourceText: source,
+    });
+  } catch (error) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
+    );
+  }
+}
+
+/**
+ * Mirrors the Runtime Trace V3 producer projection without importing a server
+ * module into the shared lowering layer. Only one unambiguous construct-local
+ * assignment can authorize the bounded generic edit.
+ */
+function projectedGenericRuntimeTraceSourceBindingsV3(
+  analysis: StudioSourceAnalysisV1,
+): readonly ProjectedGenericRuntimeTraceSourceBindingV3[] {
+  const sceneId = sourceRuntimeSceneIdentifierV1(analysis.sourcePath, analysis.scene.name);
+  const candidates = analysis.bindings
+    .filter(
+      (binding) =>
+        binding.kind === "assignment" &&
+        binding.scopeId === analysis.scene.construct.scopeId &&
+        binding.controlPath.length === 0 &&
+        binding.ordinal !== null &&
+        !binding.ambiguous &&
+        binding.capabilities.move.status === "source-eligible" &&
+        binding.capabilities.uniformResize.status === "source-eligible",
+    )
+    .sort((left, right) => left.ordinal! - right.ordinal!);
+  const projected: ProjectedGenericRuntimeTraceSourceBindingV3[] = [];
+  for (const binding of candidates) {
+    if (binding.name.normalize("NFKC") !== binding.name) continue;
+    const candidate = {
+      id: "",
+      name: binding.name,
+      ordinal: binding.ordinal!,
+      span: {
+        endColumn: binding.span.endColumn,
+        endLine: binding.span.endLine,
+        startColumn: binding.span.startColumn,
+        startLine: binding.span.startLine,
+      },
+    };
+    candidate.id = fastManimSourceBindingIdentifierV1(analysis.sourceHash, sceneId, candidate);
+    const parsed = fastManimRuntimeTraceSourceBindingV3Schema.safeParse(candidate);
+    if (!parsed.success) continue;
+    projected.push({ binding, evidence: parsed.data });
+    if (projected.length === MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3) break;
+  }
+  return projected;
+}
+
+function escapeRegularExpression(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function parseCanonicalGenericInitialMoveV3(statement: string, bindingName: string) {
+  const match = statement.match(
+    new RegExp(`^${escapeRegularExpression(bindingName)}\\.move_to\\(\\(([^,]+), ([^,]+), 0\\)\\)$`, "u"),
+  );
+  if (!match) return null;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  if (
+    !Number.isFinite(x) ||
+    !Number.isFinite(y) ||
+    Math.abs(x) > MAX_COORDINATE ||
+    Math.abs(y) > MAX_COORDINATE ||
+    formatPointCoordinate(x) !== match[1] ||
+    formatPointCoordinate(y) !== match[2]
+  ) {
+    return null;
+  }
+  return { x, y } as const;
+}
+
+/**
+ * Re-derives the generic V3 source edit from candidate bytes alone. The
+ * candidate must contain exactly one canonical move immediately after its one
+ * projected assignment; removing that statement must recover equally exact
+ * base binding evidence.
+ */
+export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+  candidateSource: string,
+  sceneName: string,
+  sourcePath: string,
+): GenericRuntimeTraceInitialMoveSourceEditPlanV3 {
+  const candidateAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(candidateSource, sceneName, sourcePath);
+  const candidateBindings = projectedGenericRuntimeTraceSourceBindingsV3(candidateAnalysis);
+  if (candidateBindings.length !== 1) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "candidate SourceAnalysis must project exactly one unambiguous top-level V3 binding.",
+    );
+  }
+  const candidateBinding = candidateBindings[0]!;
+  const assignmentIndex = candidateAnalysis.scene.statements.findIndex(
+    ({ id }) => id === candidateBinding.binding.statementId,
+  );
+  const assignment = candidateAnalysis.scene.statements[assignmentIndex];
+  const move = candidateAnalysis.scene.statements[assignmentIndex + 1];
+  if (
+    assignmentIndex < 0 ||
+    !assignment ||
+    !move ||
+    move.line !== assignment.span.endLine + 1 ||
+    move.indentation !== assignment.indentation
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "candidate move must be the direct statement immediately after the projected assignment.",
+    );
+  }
+  const expectedWorldCenter = parseCanonicalGenericInitialMoveV3(move.text, candidateBinding.evidence.name);
+  if (!expectedWorldCenter) {
+    genericRuntimeTraceInitialMoveV3LoweringError("candidate move is not one canonical finite bounded move_to call.");
+  }
+
+  let baseSource: string;
+  try {
+    baseSource = removeDirectSourceStatementsV1(candidateSource, candidateAnalysis, [
+      { expectedText: move.text, statementId: move.id },
+    ]);
+  } catch {
+    genericRuntimeTraceInitialMoveV3LoweringError("candidate move does not have one canonical removable source span.");
+  }
+  const baseAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(baseSource, sceneName, sourcePath);
+  const baseBindings = projectedGenericRuntimeTraceSourceBindingsV3(baseAnalysis);
+  const baseBinding = baseBindings[0];
+  if (
+    baseBindings.length !== 1 ||
+    !baseBinding ||
+    baseBinding.evidence.name !== candidateBinding.evidence.name ||
+    baseBinding.evidence.ordinal !== candidateBinding.evidence.ordinal ||
+    JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span)
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "removing the candidate move must recover the same one exact base binding occurrence.",
+    );
+  }
+  return {
+    baseBinding: baseBinding.evidence,
+    baseSource,
+    baseSourceHash: baseAnalysis.sourceHash,
+    candidateBinding: candidateBinding.evidence,
+    expectedWorldCenter,
+  };
+}
+
+function exactGenericInitialMoveOperationV3(
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+) {
+  const programs = renderRequestPrograms(request);
+  if (!entries.some(({ sourceAnchor }) => sourceAnchor === 0)) return null;
+  const program = programs[0];
+  const entry = entries[0];
+  const operation = program?.operations[0];
+  if (
+    programs.length !== 1 ||
+    entries.length !== 1 ||
+    !program ||
+    !entry ||
+    JSON.stringify(program) !== JSON.stringify(entry.program) ||
+    entry.sourceAnchor !== 0 ||
+    program.version !== EDIT_OPERATION_VERSION ||
+    program.anchor.capturedPlayhead !== 0 ||
+    program.anchor.resolvedSeconds !== 0 ||
+    !(
+      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
+      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0)
+    ) ||
+    program.intentCount !== 1 ||
+    program.loweringStatus !== "supported" ||
+    program.provenance.origin !== "direct-manipulation" ||
+    program.requestedExecution !== "parallel" ||
+    program.operations.length !== 1 ||
+    !operation ||
+    operation.kind !== "SetProperty" ||
+    operation.key !== "position" ||
+    operation.dependsOn.length !== 0 ||
+    operation.interval.start !== 0 ||
+    operation.interval.end !== 0 ||
+    operation.provenance.origin !== "direct-manipulation" ||
+    !isPoint(operation.value) ||
+    !Number.isFinite(operation.value.x) ||
+    !Number.isFinite(operation.value.y) ||
+    program.schedule.mode !== "parallel" ||
+    program.schedule.edges.length !== 0 ||
+    program.schedule.order.length !== 1 ||
+    program.schedule.order[0] !== operation.id
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "only one exact direct-manipulation SetProperty(position) Program at source time zero is accepted.",
+    );
+  }
+  return { entityId: operation.entityId, value: { x: operation.value.x, y: operation.value.y } } as const;
+}
+
+/**
+ * Promotes only the generic Runtime Trace V3 StaticSquare-shaped initial move.
+ * Browser evidence is correlation only: current source bytes and canonical
+ * SourceAnalysis independently choose the one rewritable binding occurrence.
+ */
+export function lowerGenericRuntimeTraceInitialPositionSourceV3(
+  source: string,
+  request: ProgramRenderRequest,
+  entries: readonly LoweredProgramBatchEntry[],
+  frame: Readonly<{ height: number; width: number }>,
+  incoming: IncomingSceneSetup | null,
+): LoweredProgramBatchSource | null {
+  // Explicit source anchors remain owned by the established general lowerer.
+  if (
+    findSceneMotionAnchors(source, request.sceneName, request.sourcePath).some(
+      ({ seconds }) => Math.abs(seconds) < EPSILON,
+    )
+  ) {
+    return null;
+  }
+  const operation = exactGenericInitialMoveOperationV3(request, entries);
+  if (!operation) return null;
+  if (incoming !== null || request.destination !== null) {
+    genericRuntimeTraceInitialMoveV3LoweringError("Scene transitions are outside this bounded profile.");
+  }
+  if (
+    !Number.isFinite(frame.height) ||
+    !Number.isFinite(frame.width) ||
+    frame.height <= 0 ||
+    frame.width <= 0 ||
+    !Number.isFinite(request.viewport.height) ||
+    !Number.isFinite(request.viewport.width) ||
+    request.viewport.height <= 0 ||
+    request.viewport.width <= 0
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError("the Studio frame and viewport must be finite and positive.");
+  }
+  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
+  if (!Number.isFinite(cameraCenter.x) || !Number.isFinite(cameraCenter.y)) {
+    genericRuntimeTraceInitialMoveV3LoweringError("the Studio camera center must be finite.");
+  }
+
+  const analysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(source, request.sceneName, request.sourcePath);
+  if (analysis.sourceHash !== request.sourceHash) {
+    genericRuntimeTraceInitialMoveV3LoweringError("the edit must be rebased from the current source generation.");
+  }
+  const projectedBindings = projectedGenericRuntimeTraceSourceBindingsV3(analysis);
+  const projected = projectedBindings[0];
+  const requestBinding = request.sourceBindings[0];
+  if (
+    projectedBindings.length !== 1 ||
+    !projected ||
+    request.sourceBindings.length !== 1 ||
+    !requestBinding ||
+    requestBinding.sourceVariable !== projected.evidence.name ||
+    requestBinding.entityId !== operation.entityId
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "one exact request binding must match the one projected top-level V3 source occurrence.",
+    );
+  }
+  const assignment = analysis.scene.statements.find(({ id }) => id === projected.binding.statementId);
+  const insertionBoundary = assignment?.insertionAfter;
+  if (!assignment || !insertionBoundary || insertionBoundary.indentation !== assignment.indentation) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "SourceAnalysis could not prove the direct insertion boundary after the projected assignment.",
+    );
+  }
+
+  const expectedWorldCenter = worldPointFromViewport(operation.value, frame, request.viewport, cameraCenter);
+  if (
+    !Number.isFinite(expectedWorldCenter.x) ||
+    !Number.isFinite(expectedWorldCenter.y) ||
+    Math.abs(expectedWorldCenter.x) > MAX_COORDINATE ||
+    Math.abs(expectedWorldCenter.y) > MAX_COORDINATE
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
+    );
+  }
+  const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.move_to((${formatPointCoordinate(expectedWorldCenter.x)}, ${formatPointCoordinate(expectedWorldCenter.y)}, 0))`;
+  let loweredSource: string;
+  try {
+    loweredSource = insertAtSourceBoundaryV1(source, analysis, insertionBoundary, [insertedCode]);
+  } catch {
+    genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis rejected the canonical assignment insertion.");
+  }
+  const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+    loweredSource,
+    request.sceneName,
+    request.sourcePath,
+  );
+  if (
+    derived.baseSource !== source ||
+    derived.baseSourceHash !== request.sourceHash ||
+    JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
+    derived.expectedWorldCenter.x !== expectedWorldCenter.x ||
+    derived.expectedWorldCenter.y !== expectedWorldCenter.y
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "the emitted source does not re-derive the exact base binding and requested world center.",
+    );
+  }
+  return {
+    anchorLine: insertionBoundary.line,
+    anchorLines: [insertionBoundary.line],
+    insertedCode,
+    preflight: {
+      baseBinding: derived.baseBinding,
+      baseSourceHash: derived.baseSourceHash,
+      entityId: operation.entityId,
+      expectedWorldCenter: derived.expectedWorldCenter,
+      kind: "fast-manim-generic-initial-move-v3",
+    },
+    source: loweredSource,
+  };
 }
 
 function warpSquareV9LoweringError(message: string): never {

@@ -34,6 +34,18 @@ const updatersSceneName = "UpdatersExample";
 const updatersSquareEntityId = `source:${warpSquareSourcePath}#${updatersSceneName}:square`;
 const openingSceneName = "OpeningManim";
 const openingGridTitleEntityId = `source:${warpSquareSourcePath}#${openingSceneName}:grid_title`;
+const staticSquareSourcePath = "scenes/static_square.py";
+const staticSquareSceneName = "StaticSquare";
+const staticSquareEntityId = `source:${staticSquareSourcePath}#${staticSquareSceneName}:square`;
+const staticSquareSource = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(1 / 60)
+`;
 const sceneSource = `from manim import *
 
 class GroupedEquation(Scene):
@@ -135,6 +147,63 @@ function lower(renderRequest: ProgramRenderRequest, originalSource = sceneSource
 }
 
 describe("Manim render request lowering", () => {
+  it("routes one generic StaticSquare source-time-zero move through fresh V3 source evidence", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId: staticSquareEntityId,
+      id: "generic-v3-initial-position",
+      interval: { end: 0, start: 0 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: ["generic Runtime Trace V3 root"], origin: "direct-manipulation" },
+      value: { x: 410, y: 135 },
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["generic Runtime Trace V3 initial edit"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: "generic-v3-initial-move",
+      version: 1,
+    };
+
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 128 / 9 },
+      originalSource: staticSquareSource,
+      projectId: "generic-preview",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "generic-preview",
+        sceneName: staticSquareSceneName,
+        sourceBindings: [{ entityId: staticSquareEntityId, sourceVariable: "square" }],
+        sourceHash: createHash("sha256").update(staticSquareSource, "utf8").digest("hex"),
+        sourcePath: staticSquareSourcePath,
+        viewport: { height: 360, width: 640 },
+      },
+    });
+
+    expect(result.lowered.insertedCode).toBe("        square.move_to((2, 1, 0))");
+    expect(result.lowered.preflight).toMatchObject({
+      baseBinding: { name: "square", ordinal: 1 },
+      entityId: staticSquareEntityId,
+      expectedWorldCenter: { x: 2, y: 1 },
+      kind: "fast-manim-generic-initial-move-v3",
+    });
+    expect(result.lowered.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.move_to((2, 1, 0))",
+    );
+  });
+
   it("routes one source-time-zero WarpSquare V9 transform through the bounded early lowerer", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
