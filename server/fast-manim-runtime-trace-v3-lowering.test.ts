@@ -10,6 +10,7 @@ import {
   fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
 } from "./fast-manim-runtime-trace-v3-contract";
 import {
+  digestFastManimRuntimeTraceIdentityV3,
   digestFastManimRuntimeTraceV3,
   lowerFastManimRuntimeTraceProducerJsonV3,
   lowerVerifiedFastManimRuntimeTraceV3,
@@ -115,6 +116,16 @@ describe("generic Runtime Trace V3 lowering", () => {
   it("includes producer-verified source correlation in the retained trace identity", async () => {
     const trace = await traceFixture();
     const original = digestFastManimRuntimeTraceV3(trace);
+
+    expect(
+      digestFastManimRuntimeTraceIdentityV3({
+        correlationSha256: trace.producer.correlationSha256,
+        runtimeConfigHash: trace.runtimeConfigHash,
+        sceneId: trace.sceneId,
+        semanticsSha256: trace.producer.semanticsSha256,
+        sourceHash: trace.sourceHash,
+      }),
+    ).toBe(original);
 
     trace.producer.correlationSha256 = "f".repeat(64);
 

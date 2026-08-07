@@ -14,6 +14,7 @@ import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-tr
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
+import { digestFastManimRuntimeTraceSourceBindingsV3 } from "./fast-manim-runtime-trace-v3-result-contract";
 import type {
   FastManimSandboxBackendV1,
   FastManimSandboxJobContextV1,
@@ -58,6 +59,7 @@ class StaticSquare(Scene):
 const genericRequest = {
   projectId: "demo",
   requestId: "req-generic-runtime-trace-hook",
+  responseVersion: 2,
   sceneName: "StaticSquare",
   sourceHash: createHash("sha256").update(GENERIC_SOURCE).digest("hex"),
   sourcePath: "scenes/staticsquare.py",
@@ -129,11 +131,19 @@ async function officialOpeningArtifact() {
   return Buffer.from(artifact, "utf8");
 }
 
-async function genericArtifact() {
+async function genericArtifact(updaterStatus?: "conflict" | "none") {
   const artifact = JSON.parse(await readFile(genericArtifactPath, "utf8"));
   const trusted = trustedFastManimRuntimeTraceProducerV3();
   Object.assign(artifact, { projectId: genericRequest.projectId, requestId: genericRequest.requestId });
   Object.assign(artifact.producer, trusted);
+  if (updaterStatus !== undefined) {
+    artifact.sourceBindings[0].updaterStatus = updaterStatus;
+    artifact.producer.correlationSha256 = digestFastManimRuntimeTraceSourceBindingsV3(
+      artifact.sourceHash,
+      artifact.sceneId,
+      artifact.sourceBindings,
+    );
+  }
   return Buffer.from(JSON.stringify(artifact), "utf8");
 }
 
@@ -196,6 +206,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       },
     });
     expect(bundle.scene.entities).toHaveLength(570);
+    expect(view.version).toBe(1);
     expect(view.roots.map(({ binding }) => binding.name)).toEqual(["square", "decimal"]);
     expect(backend.requests).toHaveLength(1);
     expect(backend.requests[0]).toMatchObject({
@@ -224,6 +235,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
     expect(bundle.scene.entities).toHaveLength(194);
     expect(bundle.scene.animationChannels).toHaveLength(269);
     expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(12_551);
+    expect(view.version).toBe(1);
     expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
     expect(backend.requests).toHaveLength(1);
     expect(backend.requests[0]).toMatchObject({
@@ -248,7 +260,37 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       sourceHash: genericRequest.sourceHash,
       traceVersion: 3,
     });
-    expect(view.roots).toEqual([]);
+    expect(view).toMatchObject({
+      producerEvidence: {
+        correlationSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        semanticsSha256: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      },
+      roots: [
+        {
+          binding: { name: "square", ordinal: 1 },
+          entityId: expect.stringMatching(/\/runtime-v3-root:0$/u),
+          evidence: {
+            endpoints: {
+              initial: {
+                center: { x: 0, y: 0 },
+                dimensions: { height: 2, width: 2 },
+                frameIndex: 0,
+                sampleTime: 0,
+              },
+              terminal: {
+                center: { x: 0, y: 0 },
+                dimensions: { height: 2, width: 2 },
+                frameIndex: 0,
+                sampleTime: 0,
+              },
+            },
+            updaterStatus: "none",
+          },
+        },
+      ],
+      version: 2,
+    });
+    expect(bundle.scene.entities.some(({ id }) => id === view.roots[0]?.entityId)).toBe(true);
     expect(backend.requests).toHaveLength(1);
     expect(backend.requests[0]).toMatchObject({
       profileVersion: 3,
@@ -265,6 +307,25 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("fast-manim Runtime Trac
       ],
       version: 3,
     });
+  });
+
+  it("preserves verified generic V3 updater conflicts as non-edit authority evidence", async () => {
+    const backend = new ArtifactBackend(await genericArtifact("conflict"));
+    const view = await runner(await genericProjectRoot(), backend).runRuntimeTrace(genericRequest);
+
+    if (view.status !== "verified" || view.version !== 2) throw new Error(JSON.stringify(view));
+    expect(view.roots).toHaveLength(1);
+    expect(view.roots[0]?.evidence.updaterStatus).toBe("conflict");
+  });
+
+  it("defaults generic V3 to rootless wire V1 for an older client", async () => {
+    const backend = new ArtifactBackend(await genericArtifact());
+    const { responseVersion: _responseVersion, ...legacyRequest } = genericRequest;
+    const view = await runner(await genericProjectRoot(), backend).runRuntimeTrace(legacyRequest);
+
+    if (view.status !== "verified") throw new Error(JSON.stringify(view));
+    expect(view.version).toBe(1);
+    expect(view.roots).toEqual([]);
   });
 
   it("falls through a non-recoverable reviewed Scene edit to preview-only V3", async () => {

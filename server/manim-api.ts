@@ -14,7 +14,7 @@ import type {
 } from "../src/render-pipeline/contracts";
 import type {
   FastManimRuntimeTraceRunRequestV1,
-  FastManimRuntimeTraceRunViewV1,
+  FastManimRuntimeTraceRunView,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import type {
   FastManimSnapshotQueryV1,
@@ -98,7 +98,7 @@ export interface ManimApiOperations {
   runRuntimeTrace?(
     request: FastManimRuntimeTraceRunRequestV1,
     signal?: AbortSignal,
-  ): ManimApiResult<FastManimRuntimeTraceRunViewV1>;
+  ): ManimApiResult<FastManimRuntimeTraceRunView>;
   sceneSnapshotAsset?(projectId: string, digest: string, signal?: AbortSignal): ManimApiResult<ManimSnapshotPngAssetV1>;
   sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1): ManimApiResult<FastManimSnapshotRunViewV1>;
   start(request: ProgramRenderRequest, signal?: AbortSignal): ManimApiResult<RenderSessionView>;

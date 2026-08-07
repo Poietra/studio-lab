@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,6 +17,15 @@ import { ManimSourceStore } from "./manim-source-store";
 import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 
 const producerCommand = parseFastManimSnapshotProducerCommand(process.env.POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND);
+const GENERIC_STATIC_SQUARE_SOURCE = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square().set_fill(BLUE, opacity=0.6)
+        square.set_stroke(WHITE, width=2)
+        self.add(square)
+        self.wait(1 / 60)
+`;
 
 describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
   "real fast-manim Runtime Trace runner",
@@ -48,6 +58,53 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         expect(bundle.scene.duration).toBe(6);
         expect(bundle.scene.entities).toHaveLength(570);
         expect(bundle.scene.animationChannels).toHaveLength(1);
+      } finally {
+        await manager.close();
+        await rm(root, { force: true, recursive: true });
+      }
+    });
+
+    it("emits negotiated V2 source authority for one real generic Scene", { timeout: 30_000 }, async () => {
+      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-authority-real-"));
+      await mkdir(join(root, "scenes"));
+      await writeFile(join(root, "scenes/static_square.py"), GENERIC_STATIC_SQUARE_SOURCE, "utf8");
+      const manager = new ManimRenderManager({
+        command: ["manim"],
+        frame: { height: 8, width: 14.222222222222221 },
+        projectId: "demo",
+        projectRoot: root,
+        runtimeTraceProducerCommand: producerCommand,
+        runtimeTraceProducerDevOptIn: true,
+        snapshotSandboxDeployment: "test",
+        tenantId: "test-tenant",
+      });
+      try {
+        const view = await manager.runRuntimeTrace({
+          projectId: "demo",
+          requestId: "runtime-trace-v3-authority-real-1",
+          responseVersion: 2,
+          sceneName: "StaticSquare",
+          sourceHash: createHash("sha256").update(GENERIC_STATIC_SQUARE_SOURCE).digest("hex"),
+          sourcePath: "scenes/static_square.py",
+        });
+        expect(view.status).toBe("verified");
+        if (view.status !== "verified") throw new Error(view.failure.message);
+        expect(view.version).toBe(2);
+        if (view.version !== 2) throw new Error("Expected negotiated Runtime Trace wire V2.");
+        expect(view.roots).toMatchObject([
+          {
+            binding: { name: "square", ordinal: 1 },
+            evidence: {
+              endpoints: {
+                initial: { center: { x: 0, y: 0 }, dimensions: { height: 2, width: 2 }, frameIndex: 0 },
+                terminal: { center: { x: 0, y: 0 }, dimensions: { height: 2, width: 2 }, frameIndex: 0 },
+              },
+              updaterStatus: "none",
+            },
+          },
+        ]);
+        const bundle = await parseVerifiedSceneIrBundleV1(view.bundle);
+        expect(bundle.scene.entities.some(({ id }) => id === view.roots[0]?.entityId)).toBe(true);
       } finally {
         await manager.close();
         await rm(root, { force: true, recursive: true });

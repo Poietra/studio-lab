@@ -4,7 +4,6 @@ import {
   countCubicPathSegments,
   cubicPathV1Schema,
   fillStyleV1Schema,
-  MAX_COORDINATE,
   MAX_TOTAL_PATH_SEGMENTS,
   normalizedNumberV1Schema,
   sha256V1Schema,
@@ -12,6 +11,11 @@ import {
   strokeStyleV1Schema,
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import {
+  canonicalFastManimRuntimeTraceSampleTimeV3,
+  fastManimRuntimeTraceCoordinateV3Schema as coordinateV3Schema,
+  fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+} from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 import {
   digestFastManimRuntimeTraceDomainV3,
   FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3,
@@ -30,7 +34,7 @@ import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V3 = "poietra.fast-manim-runtime-trace" as const;
 export const FAST_MANIM_RUNTIME_TRACE_AUTHORITY_V3 = "preview-only" as const;
-export const MAX_FAST_MANIM_RUNTIME_TRACE_ROOTS_V3 = 128;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_ROOTS_V3 = MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_DRAWS_V3 = 256;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_STATES_PER_FRAME_V3 = MAX_FAST_MANIM_RUNTIME_TRACE_DRAWS_V3;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_STATES_V3 =
@@ -54,15 +58,6 @@ export const MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V3 = 5_000_000;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_ARRAY_ITEMS_V3 = MAX_FAST_MANIM_RUNTIME_TRACE_STATES_V3;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_OBJECT_FIELDS_V3 = 32;
 
-const coordinateV3Schema = z
-  .number()
-  .finite()
-  .min(-MAX_COORDINATE)
-  .max(MAX_COORDINATE)
-  .refine(
-    (value) => value === Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3)),
-    "Runtime Trace V3 coordinates must use the canonical 13-digit precision.",
-  );
 const canonicalNumberV3 = (value: number) =>
   value === Number(value.toFixed(FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3));
 const normalizedV3Schema = normalizedNumberV1Schema.refine(
@@ -206,25 +201,15 @@ const frameV3Schema = z
   })
   .strict();
 
-const sourceBindingEndpointV3Schema = z
-  .object({
-    center: z.object({ x: coordinateV3Schema, y: coordinateV3Schema }).strict(),
-    dimensions: z
-      .object({ height: coordinateV3Schema.nonnegative(), width: coordinateV3Schema.nonnegative() })
-      .strict(),
-    frameIndex: z
-      .number()
-      .int()
-      .nonnegative()
-      .max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 - 1),
-    sampleTime: coordinateV3Schema,
-  })
-  .strict();
-
 const sourceBindingMappingV3Schema = z
   .object({
     binding: fastManimRuntimeTraceSourceBindingV3Schema,
-    endpoints: z.object({ initial: sourceBindingEndpointV3Schema, terminal: sourceBindingEndpointV3Schema }).strict(),
+    endpoints: z
+      .object({
+        initial: fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+        terminal: fastManimRuntimeTraceSourceBindingEndpointV3Schema,
+      })
+      .strict(),
     rootId: sourceIdentityV1Schema,
     updaterStatus: z.enum(["conflict", "none"]),
   })
@@ -260,7 +245,9 @@ export const fastManimRuntimeTraceV3Schema = z
     runtimeConfigHash: sha256V1Schema,
     sampleSchedule: z
       .object({
-        durationSeconds: coordinateV3Schema.positive().max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 / 60),
+        durationSeconds: coordinateV3Schema
+          .positive()
+          .max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3),
         frameCount: z.number().int().positive().max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3),
         frameRate: z.literal(FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3),
         samplePhase: z.literal(FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V3),
@@ -484,7 +471,7 @@ function verifySourceBindingsV3(
     for (const endpointName of ["initial", "terminal"] as const) {
       const endpoint = mapping.endpoints[endpointName];
       const expectedFrame = expectedFrames[endpointName];
-      const expectedSampleTime = Number((expectedFrame / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3).toFixed(13));
+      const expectedSampleTime = canonicalFastManimRuntimeTraceSampleTimeV3(expectedFrame);
       if (
         endpoint.frameIndex !== expectedFrame ||
         canonicalF64HexV1(endpoint.sampleTime) !== canonicalF64HexV1(expectedSampleTime)
@@ -546,7 +533,7 @@ function verifySemanticsV3(
   if (
     trace.frames.length !== frameCount ||
     canonicalF64HexV1(trace.sampleSchedule.durationSeconds) !==
-      canonicalF64HexV1(Number((frameCount / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3).toFixed(13)))
+      canonicalF64HexV1(canonicalFastManimRuntimeTraceSampleTimeV3(frameCount))
   ) {
     throw new TypeError("Runtime Trace V3 sample schedule is inconsistent.");
   }
@@ -596,8 +583,7 @@ function verifySemanticsV3(
   trace.frames.forEach((frame, frameIndex) => {
     if (
       frame.frameIndex !== frameIndex ||
-      canonicalF64HexV1(frame.sampleTime) !==
-        canonicalF64HexV1(Number((frameIndex / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3).toFixed(13)))
+        canonicalF64HexV1(frame.sampleTime) !== canonicalF64HexV1(canonicalFastManimRuntimeTraceSampleTimeV3(frameIndex))
     ) {
       throw new TypeError("Runtime Trace V3 frame sampling is not canonical.");
     }
