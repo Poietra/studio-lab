@@ -346,7 +346,10 @@ export function StudioCanvas({
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
   const boundedRuntimeEditAuthority =
-    preview?.initialEditRuntimeAuthority ?? preview?.runtimeTraceTerminalEditAuthority ?? null;
+    preview?.genericInitialEditCandidate ??
+    preview?.initialEditRuntimeAuthority ??
+    preview?.runtimeTraceTerminalEditAuthority ??
+    null;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -546,6 +549,7 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             const runtimePositionOnly =
+              preview?.genericInitialEditCandidate?.studioEntityId === entity.id ||
               (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
                 preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
               (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
@@ -695,9 +699,11 @@ export function StudioCanvas({
                       : selectionOnlyPreview
                         ? "selection only"
                         : preview.interactionAuthority.kind === "bounded-interactive"
-                          ? preview.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2"
-                            ? "Grid title terminal edit at 14.00s"
-                            : "Square terminal edit at 5.00s"
+                          ? preview.interactionAuthority.reason === "runtime-trace-initial-move"
+                            ? "Runtime Trace initial position move"
+                            : preview.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2"
+                              ? "Grid title terminal edit at 14.00s"
+                              : "Square terminal edit at 5.00s"
                           : "editing preview only"
                   }`
                 : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}

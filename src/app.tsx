@@ -78,6 +78,7 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
+  studioPreviewGenericInitialMoveProgramSetV1,
   studioPreviewInitialEditTargetIsPresentV1,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -776,7 +777,9 @@ export function App({
       dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
+  const genericInitialEditCandidate = previewRenderer?.genericInitialEditCandidate ?? null;
   const boundedRuntimeEditTargetId =
+    genericInitialEditCandidate?.studioEntityId ??
     previewRenderer?.initialEditRuntimeAuthority?.studioEntityId ??
     previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId ??
     null;
@@ -845,29 +848,43 @@ export function App({
     return true;
   }
 
+  function restrictedPreviewProgramSetError(records: readonly ProgramRecord[]) {
+    const runtimeTraceTerminalAuthority = previewRenderer?.runtimeTraceTerminalEditAuthority;
+    if (
+      runtimeTraceTerminalAuthority &&
+      studioPreviewRuntimeTraceTerminalProgramSetV1(records, runtimeTraceTerminalAuthority).kind !== "authorized"
+    ) {
+      return runtimeTraceTerminalAuthority.profile === "updaters-terminal-v1"
+        ? "This Runtime Trace permits at most one terminal Square move and one positive uniform resize."
+        : "This Runtime Trace permits exactly one terminal grid title move.";
+    }
+    const genericCandidate = previewRenderer?.genericInitialEditCandidate;
+    if (
+      genericCandidate &&
+      studioPreviewGenericInitialMoveProgramSetV1(records, genericCandidate).kind !== "authorized"
+    ) {
+      return "This generic Runtime Trace permits exactly one initial position move.";
+    }
+    return null;
+  }
+
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
     // This is the common authoring boundary for pointer, Inspector, timeline,
     // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
     // presentation evidence and can never authorize a Program.
     if (rejectSelectionOnlyPreviewMutation()) return false;
-    const runtimeTraceTerminalAuthority = previewRenderer?.runtimeTraceTerminalEditAuthority;
-    const plannedRuntimeTracePrograms = runtimeTraceTerminalAuthority
-      ? (() => {
-          const planned = stageEditorDraftTransition(editorState, input);
-          return [...planned.appliedPrograms, ...(planned.draftProgram ? [planned.draftProgram] : [])];
-        })()
+    const plannedRestrictedPrograms =
+      previewRenderer?.runtimeTraceTerminalEditAuthority || previewRenderer?.genericInitialEditCandidate
+        ? (() => {
+            const planned = stageEditorDraftTransition(editorState, input);
+            return [...planned.appliedPrograms, ...(planned.draftProgram ? [planned.draftProgram] : [])];
+          })()
+        : null;
+    const restrictionError = plannedRestrictedPrograms
+      ? restrictedPreviewProgramSetError(plannedRestrictedPrograms)
       : null;
-    if (
-      runtimeTraceTerminalAuthority &&
-      plannedRuntimeTracePrograms &&
-      studioPreviewRuntimeTraceTerminalProgramSetV1(plannedRuntimeTracePrograms, runtimeTraceTerminalAuthority).kind !==
-        "authorized"
-    ) {
-      setDraftError(
-        runtimeTraceTerminalAuthority.profile === "updaters-terminal-v1"
-          ? "This Runtime Trace permits at most one terminal Square move and one positive uniform resize."
-          : "This Runtime Trace permits exactly one terminal grid title move.",
-      );
+    if (restrictionError) {
+      setDraftError(restrictionError);
       setIsPlaying(false);
       return false;
     }
@@ -900,16 +917,28 @@ export function App({
   }
 
   function redoProgram() {
-    const lifecycleBlocker = readDurationBlocker();
     const entry = redoPrograms.at(-1);
-    if (!editorDocumentAuthority.enabled || entry?.kind !== "mutation") {
-      return redoEditorProgram(lifecycleBlocker);
-    }
-    if (lifecycleBlocker || !editorDocumentAuthority.canAuthor()) {
-      setDraftError(lifecycleBlocker ?? editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+    if (draftProgram || !entry) return false;
+    if (rejectSelectionOnlyPreviewMutation()) return false;
+    const lifecycleBlocker = readDurationBlocker();
+    if (lifecycleBlocker) return redoEditorProgram(lifecycleBlocker);
+    const planned = redoEditorProgramTransition(editorState);
+    const restrictionError = restrictedPreviewProgramSetError([
+      ...planned.appliedPrograms,
+      ...(planned.draftProgram ? [planned.draftProgram] : []),
+    ]);
+    if (restrictionError) {
+      setDraftError(restrictionError);
+      setIsPlaying(false);
       return false;
     }
-    const planned = redoEditorProgramTransition(editorState);
+    if (!editorDocumentAuthority.enabled || entry.kind !== "mutation") {
+      return redoEditorProgram();
+    }
+    if (!editorDocumentAuthority.canAuthor()) {
+      setDraftError(editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
+      return false;
+    }
     void commitEditorProgramMutation(collaborationMutationForRedoV1(entry.mutation), planned);
     return true;
   }
@@ -1025,14 +1054,15 @@ export function App({
       : {};
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
+  const initialEditProjectionAuthority = previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate;
   const retainedInitialEditDragAuthority =
     (dragPreview !== null || scalePreview !== null) &&
     (currentTime === 0 || previewRenderer?.initialEditRuntimeAuthority?.profile === "write-stuff-v12")
-      ? previewRenderer?.initialEditRuntimeAuthority
+      ? initialEditProjectionAuthority
       : null;
   const presentedInitialEditAuthority =
     previewRenderer?.state.phase === "presented" && previewRenderer.syntheticInitialEditAnchor === 0
-      ? previewRenderer.initialEditRuntimeAuthority
+      ? initialEditProjectionAuthority
       : (retainedInitialEditDragAuthority ?? null);
   const initialEditInteractionGeometry =
     previewRenderer?.interactionGeometry ??
@@ -1546,12 +1576,19 @@ export function App({
   }
 
   async function applyDraft() {
-    if (!draftProgram || !renderCandidate || draftApplyPending) return;
+    if (!draftProgram || draftApplyPending) return;
     // A draft may predate preview activation; keep the final source-export
     // boundary fail-closed as well as blocking new drafts in `stageDraft`.
     if (previewSelectionOnly && previewRenderer?.runtimeTraceValidationPending === null) {
       if (rejectSelectionOnlyPreviewMutation()) return;
     }
+    const restrictionError = restrictedPreviewProgramSetError(previewProgramRecords);
+    if (restrictionError) {
+      setDraftError(restrictionError);
+      setIsPlaying(false);
+      return;
+    }
+    if (!renderCandidate) return;
     const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setDraftError(initialLifecycleBlocker);
@@ -1990,11 +2027,16 @@ export function App({
   function directGestureContext() {
     const previousDraft =
       !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
-    const sourcePrograms = previousDraft
-      ? [...appliedCanonicalPrograms, previousDraft.program]
-      : appliedCanonicalPrograms;
+    const replacesGenericInitialMove =
+      previousDraft !== null &&
+      genericInitialEditCandidate !== null &&
+      studioPreviewGenericInitialMoveProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
+    const sourcePrograms =
+      previousDraft && !replacesGenericInitialMove
+        ? [...appliedCanonicalPrograms, previousDraft.program]
+        : appliedCanonicalPrograms;
     return {
-      preserveDraft: previousDraft,
+      preserveDraft: replacesGenericInitialMove ? null : previousDraft,
       proposedState: previousDraft ? (workspaceProjection?.proposedState ?? null) : draftBaseState,
       sourcePrograms,
     } as const;
@@ -2041,7 +2083,7 @@ export function App({
       : undefined;
     const runtimePresenceAuthority =
       sourceAnchor === null && syntheticSourceAnchor === 0
-        ? (previewRenderer?.initialEditRuntimeAuthority ?? null)
+        ? (previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate)
         : null;
     const anchor =
       terminalTargetIsExact && syntheticSourceAnchor !== null && syntheticSourceAnchor !== undefined
@@ -2103,6 +2145,11 @@ export function App({
     }
     if (editingAppliedProgram) {
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
+      return;
+    }
+    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This generic Runtime Trace target supports one initial position move only.");
       return;
     }
     if (
@@ -2260,6 +2307,11 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
+    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This generic Runtime Trace target supports position only.");
+      return;
+    }
     if (
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId &&
       interactionMode !== "position"
@@ -2275,6 +2327,7 @@ export function App({
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
     const runtimeUniformResizeOnly =
+      genericInitialEditCandidate?.studioEntityId === entity.id ||
       previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
@@ -2431,10 +2484,16 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
+    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+      setSelectedObjectIds([entityId]);
+      setDraftError("This generic Runtime Trace target supports position only.");
+      return;
+    }
     if (!resizeHandleUsesDelta(handle, delta)) return;
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
     const runtimeUniformResizeOnly =
+      genericInitialEditCandidate?.studioEntityId === entity.id ||
       previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
@@ -2687,7 +2746,7 @@ export function App({
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
       projectStudioPreviewInitialValidationSceneV1(
         sourceScene,
-        anchor.sourceTime === 0 ? (previewRenderer?.initialEditRuntimeAuthority ?? null) : null,
+        anchor.sourceTime === 0 ? initialEditProjectionAuthority : null,
       ),
       anchor.sourceTime === previewRenderer?.runtimeTraceTerminalEditAuthority?.sourceAnchor
         ? previewRenderer.runtimeTraceTerminalEditAuthority
@@ -2727,6 +2786,10 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return false;
     }
+    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+      setDraftError("This generic Runtime Trace target supports position only.");
+      return false;
+    }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {
       return installRuntimeTraceTerminalResizeDraft(
         entityId,
@@ -2752,7 +2815,7 @@ export function App({
       setDraftError("Only the runtime-proven source edit target can be changed in this preview.");
       return false;
     }
-    const initialTransformAuthority = previewRenderer?.initialEditRuntimeAuthority;
+    const initialTransformAuthority = initialEditProjectionAuthority;
     const runtimeTraceTerminalAuthority = previewRenderer?.runtimeTraceTerminalEditAuthority;
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     if (
@@ -2809,7 +2872,9 @@ export function App({
         setDraftError(
           initialTransformAuthority.profile === "square-to-circle-v8"
             ? "This SquareToCircle proof currently supports position only."
-            : "This runtime-backed object currently supports position and uniform scale only.",
+            : initialTransformAuthority.profile === "generic-runtime-trace-v3"
+              ? "This generic Runtime Trace target supports position only."
+              : "This runtime-backed object currently supports position and uniform scale only.",
         );
         return false;
       }
@@ -2941,7 +3006,7 @@ export function App({
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
       projectStudioPreviewInitialValidationSceneV1(
         sourceScene,
-        anchor.sourceTime === 0 ? (previewRenderer?.initialEditRuntimeAuthority ?? null) : null,
+        anchor.sourceTime === 0 ? initialEditProjectionAuthority : null,
       ),
       anchor.sourceTime === previewRenderer?.runtimeTraceTerminalEditAuthority?.sourceAnchor
         ? previewRenderer.runtimeTraceTerminalEditAuthority
@@ -3088,10 +3153,16 @@ export function App({
     ? previewAppliedPrograms.map((record) => record.program)
     : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
+  const genericInitialMoveProgramSet = genericInitialEditCandidate
+    ? studioPreviewGenericInitialMoveProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
+    : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
   const renderCandidate: RenderProgramCandidate | null =
-    activeScene && activeProjectId && renderProgram
+    activeScene &&
+    activeProjectId &&
+    renderProgram &&
+    (!genericInitialEditCandidate || genericInitialMoveProgramSet?.kind === "authorized")
       ? {
           anchors: activeScene.anchors,
           ...(previewRenderer?.cameraCenter &&
@@ -3115,7 +3186,9 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
-          ...(previewRenderer?.initialEditRuntimeAuthority ? { verifiedInitialEditAnchor: 0 as const } : {}),
+          ...(previewRenderer?.initialEditRuntimeAuthority || genericInitialMoveProgramSet?.kind === "authorized"
+            ? { verifiedInitialEditAnchor: 0 as const }
+            : {}),
           ...(previewRenderer?.runtimeTraceValidationPending
             ? {
                 verifiedRuntimeTraceTerminalEdit:

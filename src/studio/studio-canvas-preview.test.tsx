@@ -146,11 +146,13 @@ function previewView(
   runtimeTraceValidationPending: StudioPreviewRendererViewV1["runtimeTraceValidationPending"] = null,
   runtimeTraceBaseFrameRetained = runtimeTraceValidationPending?.baseFrameRetained === true,
   runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererViewV1["runtimeTraceOpaqueSelectionEntities"] = [],
+  genericInitialEditCandidate: StudioPreviewRendererViewV1["genericInitialEditCandidate"] = null,
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
+    genericInitialEditCandidate,
     initialEditRuntimeAuthority,
     interactionGeometry,
     interactionAuthority,
@@ -737,6 +739,74 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     expect(inactiveMarkup).not.toContain(`data-studio-entity="${squareId}"`);
+  });
+
+  it("opens only the exact generic V3 root for an initial position move", () => {
+    const squareId = "source:scenes/staticsquare.py#StaticSquare:square";
+    const otherId = "source:scenes/staticsquare.py#StaticSquare:other";
+    const runtimeId = "scene:static/runtime-v3-root:0";
+    const square: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: squareId,
+      sourceIdentity: { kind: "known", value: "square" },
+      type: "Square",
+    };
+    const other: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: otherId,
+      position: { x: 440, y: 180 },
+      sourceIdentity: { kind: "known", value: "other" },
+    };
+    const candidate = {
+      baseCenter: { x: 320, y: 180 },
+      baseDimensions: { height: 2, width: 2 },
+      bindingId: `source-binding:${"a".repeat(64)}`,
+      duration: 0.1,
+      lifetime: { end: 0.1, start: 0 as const },
+      profile: "generic-runtime-trace-v3" as const,
+      runtimeEntityId: runtimeId,
+      sourceName: "square",
+      studioEntityId: squareId,
+      studioSceneId: "scenes/staticsquare.py#StaticSquare",
+    };
+    const boundedAuthority = {
+      editableRuntimeEntityId: runtimeId,
+      kind: "bounded-interactive" as const,
+      reason: "runtime-trace-initial-move" as const,
+      sourceAnchor: 0 as const,
+      verifiedRuntimeEntityIds: [runtimeId],
+    };
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [square, other],
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:generic-v3-initial",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([[runtimeId, { dimensions: { height: 90, width: 90 }, position: { x: 320, y: 180 } }]]),
+        new Map([["square", { bindingId: candidate.bindingId, entityId: runtimeId, sourceName: "square" }]]),
+        boundedAuthority,
+        null,
+        null,
+        null,
+        false,
+        [],
+        candidate,
+      ),
+      selectedIds: new Set([squareId]),
+    };
+    const tree = StudioCanvas(props);
+    expect(findEntityButton(tree, squareId).props.onPointerMove).toBe(props.onEntityPointerMove);
+    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
+    expect(markup).toContain("Runtime Trace initial position move");
+    expect(markup).not.toContain(`data-studio-entity="${otherId}"`);
+    expect(markup).not.toContain("data-studio-resize-handle");
   });
 
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {
