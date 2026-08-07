@@ -4,11 +4,17 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
-import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
+import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
+  createFastManimRuntimeTraceProducerRequestV3,
+  fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
+} from "./fast-manim-runtime-trace-v3-contract";
+import {
+  digestFastManimRuntimeTraceV3,
   lowerFastManimRuntimeTraceProducerJsonV3,
   lowerVerifiedFastManimRuntimeTraceV3,
 } from "./fast-manim-runtime-trace-v3-lowering";
+import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import {
   fastManimRuntimeTraceV3Schema,
   MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_CHANNELS_V3,
@@ -28,13 +34,27 @@ class StaticSquare(Scene):
 `;
 const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
 const fixturePath = new URL("./test-fixtures/fast-manim-runtime-trace-v3-generic.json", import.meta.url);
-const trusted = {
-  fastManimCommit: "0".repeat(40),
-  fastManimTree: "1".repeat(40),
-  manimVersion: "0.20.1",
-} as const;
+const trusted = trustedFastManimRuntimeTraceProducerV3();
 
 function request() {
+  const generic = createFastManimRuntimeTraceProducerRequestV3(
+    {
+      projectId: "generic-preview",
+      requestId: "request-staticsquare-v3",
+      sceneName: "StaticSquare",
+      sourceHash,
+      sourcePath: "scenes/staticsquare.py",
+    },
+    sourceText,
+    { constructStartLine: 4, definitionOrdinal: 1 },
+    { height: 8, width: 128 / 9 },
+  );
+  const analysis = studioSourceAnalysisProviderV1.analyze({
+    expectedSourceHash: sourceHash,
+    sceneName: "StaticSquare",
+    sourcePath: "scenes/staticsquare.py",
+    sourceText,
+  });
   return createFastManimRuntimeTraceProducerRequestV3(
     {
       projectId: "generic-preview",
@@ -46,6 +66,7 @@ function request() {
     sourceText,
     { constructStartLine: 4, definitionOrdinal: 1 },
     { height: 8, width: 128 / 9 },
+    fastManimRuntimeTraceSourceBindingsFromAnalysisV3(analysis, generic.sceneId),
   );
 }
 
@@ -91,6 +112,15 @@ function installSingleFrameDraws(
 }
 
 describe("generic Runtime Trace V3 lowering", () => {
+  it("includes producer-verified source correlation in the retained trace identity", async () => {
+    const trace = await traceFixture();
+    const original = digestFastManimRuntimeTraceV3(trace);
+
+    trace.producer.correlationSha256 = "f".repeat(64);
+
+    expect(digestFastManimRuntimeTraceV3(trace)).not.toBe(original);
+  });
+
   it("compiles producer evidence into a preview-only retained path", async () => {
     const run = request();
     const bundle = await lowerFastManimRuntimeTraceProducerJsonV3(await readFile(fixturePath), run, trusted);

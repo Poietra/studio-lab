@@ -21,7 +21,10 @@ import {
   FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V3,
   FAST_MANIM_RUNTIME_TRACE_VERSION_V3,
   type FastManimRuntimeTraceProducerRequestV3,
+  type FastManimRuntimeTraceSourceBindingV3,
   fastManimRuntimeTraceProducerRequestV3Schema,
+  fastManimRuntimeTraceSourceBindingV3Schema,
+  MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
 } from "./fast-manim-runtime-trace-v3-contract";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
@@ -203,6 +206,30 @@ const frameV3Schema = z
   })
   .strict();
 
+const sourceBindingEndpointV3Schema = z
+  .object({
+    center: z.object({ x: coordinateV3Schema, y: coordinateV3Schema }).strict(),
+    dimensions: z
+      .object({ height: coordinateV3Schema.nonnegative(), width: coordinateV3Schema.nonnegative() })
+      .strict(),
+    frameIndex: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 - 1),
+    sampleTime: coordinateV3Schema,
+  })
+  .strict();
+
+const sourceBindingMappingV3Schema = z
+  .object({
+    binding: fastManimRuntimeTraceSourceBindingV3Schema,
+    endpoints: z.object({ initial: sourceBindingEndpointV3Schema, terminal: sourceBindingEndpointV3Schema }).strict(),
+    rootId: sourceIdentityV1Schema,
+    updaterStatus: z.enum(["conflict", "none"]),
+  })
+  .strict();
+
 export const fastManimRuntimeTraceV3Schema = z
   .object({
     authority: z.literal(FAST_MANIM_RUNTIME_TRACE_AUTHORITY_V3),
@@ -213,6 +240,7 @@ export const fastManimRuntimeTraceV3Schema = z
     frames: z.array(frameV3Schema).min(1).max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3),
     producer: z
       .object({
+        correlationSha256: sha256V1Schema,
         fastManimCommit: gitObjectIdV3Schema,
         fastManimTree: gitObjectIdV3Schema,
         manimVersion: z.string().min(1).max(64),
@@ -243,6 +271,7 @@ export const fastManimRuntimeTraceV3Schema = z
     sceneOccurrence: fastManimRuntimeTraceProducerRequestV3Schema.shape.sceneOccurrence,
     schema: z.literal(FAST_MANIM_RUNTIME_TRACE_SCHEMA_V3),
     sourceHash: fastManimRuntimeTraceProducerRequestV3Schema.shape.sourceHash,
+    sourceBindings: z.array(sourceBindingMappingV3Schema).max(MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3),
     sourcePath: fastManimRuntimeTraceProducerRequestV3Schema.shape.sourcePath,
     version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V3),
   })
@@ -279,6 +308,18 @@ function visualSemanticsDigestV3(trace: FastManimRuntimeTraceV3) {
   });
 }
 
+export function digestFastManimRuntimeTraceSourceBindingsV3(
+  sourceHash: string,
+  sceneId: string,
+  sourceBindings: FastManimRuntimeTraceV3["sourceBindings"],
+) {
+  return digestFastManimRuntimeTraceDomainV3("poietra.fast-manim-runtime-trace-source-bindings.v1", {
+    sceneId,
+    sourceBindings,
+    sourceHash,
+  });
+}
+
 function sameValue(left: unknown, right: unknown) {
   return canonicalJsonV1(left) === canonicalJsonV1(right);
 }
@@ -291,6 +332,104 @@ function frameRuns(frames: readonly number[]) {
     else runs.push({ endFrame: frame + 1, startFrame: frame });
   }
   return runs;
+}
+
+type PlanarBoundsV3 = {
+  maximumX: number;
+  maximumY: number;
+  minimumX: number;
+  minimumY: number;
+};
+
+function emptyPlanarBoundsV3(): PlanarBoundsV3 {
+  return {
+    maximumX: Number.NEGATIVE_INFINITY,
+    maximumY: Number.NEGATIVE_INFINITY,
+    minimumX: Number.POSITIVE_INFINITY,
+    minimumY: Number.POSITIVE_INFINITY,
+  };
+}
+
+function extendPlanarBoundsV3(bounds: PlanarBoundsV3, x: number, y: number) {
+  bounds.maximumX = Math.max(bounds.maximumX, x);
+  bounds.maximumY = Math.max(bounds.maximumY, y);
+  bounds.minimumX = Math.min(bounds.minimumX, x);
+  bounds.minimumY = Math.min(bounds.minimumY, y);
+}
+
+function sourceBindingEndpointGeometryV3(
+  trace: FastManimRuntimeTraceV3,
+  rootId: string,
+  frameIndex: number,
+  drawById: ReadonlyMap<string, FastManimRuntimeTraceV3["draws"][number]>,
+  pathById: ReadonlyMap<string, FastManimRuntimeTraceV3["resources"]["paths"][number]>,
+) {
+  const pointBounds = emptyPlanarBoundsV3();
+  const anchorBounds = emptyPlanarBoundsV3();
+  let hasDirectRootDraw = false;
+  let stateCount = 0;
+  for (const state of trace.frames[frameIndex]!.states) {
+    const draw = drawById.get(state.drawId);
+    if (draw?.rootId !== rootId) continue;
+    stateCount += 1;
+    hasDirectRootDraw ||= draw.familyPath.length === 0;
+    if (
+      state.transform.a !== 1 ||
+      state.transform.b !== 0 ||
+      state.transform.c !== 0 ||
+      state.transform.d !== 1 ||
+      state.pathTrim.start !== 0 ||
+      state.pathTrim.end !== 1
+    ) {
+      throw new TypeError(
+        "Runtime Trace V3 source binding endpoint geometry requires full paths with translation-only transforms.",
+      );
+    }
+    const path = pathById.get(state.pathId);
+    if (!path) throw new TypeError("Runtime Trace V3 source binding endpoint path is missing.");
+    const includePoint = (point: Readonly<{ x: number; y: number }>, bounds: PlanarBoundsV3) =>
+      extendPlanarBoundsV3(bounds, point.x + state.transform.tx, point.y + state.transform.ty);
+    for (const subpath of path.path.subpaths) {
+      includePoint(subpath.start, pointBounds);
+      includePoint(subpath.start, anchorBounds);
+      for (const segment of subpath.segments) {
+        includePoint(segment.control1, pointBounds);
+        includePoint(segment.control2, pointBounds);
+        includePoint(segment.end, pointBounds);
+        includePoint(segment.end, anchorBounds);
+      }
+    }
+  }
+  if (
+    stateCount === 0 ||
+    !Object.values(pointBounds).every(Number.isFinite) ||
+    !Object.values(anchorBounds).every(Number.isFinite)
+  ) {
+    throw new TypeError("Runtime Trace V3 source binding endpoint has no derivable root geometry.");
+  }
+  return {
+    anchorCenter: {
+      x: (anchorBounds.minimumX + anchorBounds.maximumX) / 2,
+      y: (anchorBounds.minimumY + anchorBounds.maximumY) / 2,
+    },
+    dimensions: {
+      height: pointBounds.maximumY - pointBounds.minimumY,
+      width: pointBounds.maximumX - pointBounds.minimumX,
+    },
+    hasDirectRootDraw,
+    pointCenter: {
+      x: (pointBounds.minimumX + pointBounds.maximumX) / 2,
+      y: (pointBounds.minimumY + pointBounds.maximumY) / 2,
+    },
+  };
+}
+
+function sourceBindingGeometryNumberMatchesV3(actual: number, expected: number) {
+  // The producer canonicalizes the local point, translation, and measured
+  // endpoint independently. Permit only that decimal and f64 addition noise.
+  const decimalRoundoff = 5 * 10 ** -FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3;
+  const binaryRoundoff = Number.EPSILON * 8 * Math.max(1, Math.abs(actual), Math.abs(expected));
+  return Math.abs(actual - expected) <= Math.max(decimalRoundoff, binaryRoundoff);
 }
 
 function verifyCorrelationV3(trace: FastManimRuntimeTraceV3, request: FastManimRuntimeTraceProducerRequestV3) {
@@ -311,7 +450,91 @@ function verifyCorrelationV3(trace: FastManimRuntimeTraceV3, request: FastManimR
   }
 }
 
-function verifySemanticsV3(trace: FastManimRuntimeTraceV3, trusted: TrustedFastManimRuntimeTraceProducerV3) {
+function verifySourceBindingsV3(
+  trace: FastManimRuntimeTraceV3,
+  request: FastManimRuntimeTraceProducerRequestV3,
+  rootById: ReadonlyMap<string, FastManimRuntimeTraceV3["roots"][number]>,
+  drawById: ReadonlyMap<string, FastManimRuntimeTraceV3["draws"][number]>,
+  pathById: ReadonlyMap<string, FastManimRuntimeTraceV3["resources"]["paths"][number]>,
+) {
+  const requestedById = new Map<
+    string,
+    Readonly<{ binding: FastManimRuntimeTraceSourceBindingV3; requestIndex: number }>
+  >(request.sourceBindings.map((binding, requestIndex) => [binding.id, { binding, requestIndex }]));
+  const mappedBindingIds = new Set<string>();
+  const mappedRootIds = new Set<string>();
+  let priorRequestIndex = -1;
+  for (const mapping of trace.sourceBindings) {
+    const requested = requestedById.get(mapping.binding.id);
+    const root = rootById.get(mapping.rootId);
+    if (
+      !requested ||
+      !root ||
+      !sameValue(mapping.binding, requested.binding) ||
+      requested.requestIndex <= priorRequestIndex ||
+      mappedBindingIds.has(mapping.binding.id) ||
+      mappedRootIds.has(mapping.rootId)
+    ) {
+      throw new TypeError("Runtime Trace V3 source binding mappings are stale or ambiguous.");
+    }
+    const expectedFrames = {
+      initial: root.lifetimes[0]!.startFrame,
+      terminal: root.lifetimes.at(-1)!.endFrame - 1,
+    } as const;
+    for (const endpointName of ["initial", "terminal"] as const) {
+      const endpoint = mapping.endpoints[endpointName];
+      const expectedFrame = expectedFrames[endpointName];
+      const expectedSampleTime = Number((expectedFrame / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3).toFixed(13));
+      if (
+        endpoint.frameIndex !== expectedFrame ||
+        canonicalF64HexV1(endpoint.sampleTime) !== canonicalF64HexV1(expectedSampleTime)
+      ) {
+        throw new TypeError("Runtime Trace V3 source binding endpoint is not on its root lifetime boundary.");
+      }
+      const expectedGeometry = sourceBindingEndpointGeometryV3(
+        trace,
+        mapping.rootId,
+        expectedFrame,
+        drawById,
+        pathById,
+      );
+      // A direct root draw proves that the root itself is a VMobject, whose
+      // standard center uses cubic anchors. A container-only root can be
+      // either VGroup (anchor center) or Group (all-point center); V3 carries
+      // no root-kind bit, so admit exactly those two producer-defined centers.
+      const centerCandidates = expectedGeometry.hasDirectRootDraw
+        ? [expectedGeometry.anchorCenter]
+        : [expectedGeometry.anchorCenter, expectedGeometry.pointCenter];
+      const centerMatches = centerCandidates.some(
+        (candidate) =>
+          sourceBindingGeometryNumberMatchesV3(endpoint.center.x, candidate.x) &&
+          sourceBindingGeometryNumberMatchesV3(endpoint.center.y, candidate.y),
+      );
+      if (
+        !centerMatches ||
+        !sourceBindingGeometryNumberMatchesV3(endpoint.dimensions.height, expectedGeometry.dimensions.height) ||
+        !sourceBindingGeometryNumberMatchesV3(endpoint.dimensions.width, expectedGeometry.dimensions.width)
+      ) {
+        throw new TypeError("Runtime Trace V3 source binding endpoint does not match its endpoint-frame geometry.");
+      }
+    }
+    priorRequestIndex = requested.requestIndex;
+    mappedBindingIds.add(mapping.binding.id);
+    mappedRootIds.add(mapping.rootId);
+  }
+  if (
+    trace.producer.correlationSha256 !==
+    digestFastManimRuntimeTraceSourceBindingsV3(trace.sourceHash, trace.sceneId, trace.sourceBindings)
+  ) {
+    throw new TypeError("Runtime Trace V3 producer correlation digest does not match source bindings.");
+  }
+}
+
+function verifySemanticsV3(
+  trace: FastManimRuntimeTraceV3,
+  request: FastManimRuntimeTraceProducerRequestV3,
+  trusted: TrustedFastManimRuntimeTraceProducerV3,
+) {
   if (
     trace.producer.fastManimCommit !== trusted.fastManimCommit ||
     trace.producer.fastManimTree !== trusted.fastManimTree ||
@@ -412,6 +635,7 @@ function verifySemanticsV3(trace: FastManimRuntimeTraceV3, trusted: TrustedFastM
       throw new TypeError("Runtime Trace V3 root lifetimes do not match its frame states.");
     }
   }
+  verifySourceBindingsV3(trace, request, rootById, drawById, paths);
   if (
     referencedAppearances.size !== appearances.size ||
     referencedPaths.size !== paths.size ||
@@ -491,6 +715,6 @@ export function parseFastManimRuntimeTraceProducerJsonV3(
   assertBoundedStructureV3(document);
   const trace = fastManimRuntimeTraceV3Schema.parse(document);
   verifyCorrelationV3(trace, request);
-  verifySemanticsV3(trace, trusted);
+  verifySemanticsV3(trace, request, trusted);
   return trace;
 }

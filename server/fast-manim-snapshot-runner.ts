@@ -66,7 +66,10 @@ import {
   parseFastManimRuntimeTraceProducerJsonV2,
   parseFastManimRuntimeTraceSelfSealedJsonV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
-import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
+import {
+  createFastManimRuntimeTraceProducerRequestV3,
+  fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
+} from "./fast-manim-runtime-trace-v3-contract";
 import { lowerFastManimRuntimeTraceProducerJsonV3 } from "./fast-manim-runtime-trace-v3-lowering";
 import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import {
@@ -960,6 +963,10 @@ export class FastManimSnapshotRunner {
                         definitionOrdinal: analysis.scene.ordinal,
                       },
                       this.frame,
+                      fastManimRuntimeTraceSourceBindingsFromAnalysisV3(
+                        analysis,
+                        fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName),
+                      ),
                     );
                   })();
     } catch {
