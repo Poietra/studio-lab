@@ -2337,6 +2337,9 @@ fn append_fill_phase_v1(
     let Some(fill) = input.fill else {
         return Ok(());
     };
+    if fill.color.alpha == 0.0 || input.opacity == 0.0 {
+        return Ok(());
+    }
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_fill(input.cache, fill.rule))
@@ -2383,6 +2386,9 @@ fn append_stroke_phase_v1(
     let Some(stroke) = input.stroke else {
         return Ok(());
     };
+    if stroke.color.alpha == 0.0 || input.opacity == 0.0 {
+        return Ok(());
+    }
     if let Some(cached) = cache
         .as_deref_mut()
         .and_then(|cache| cache.lookup_stroke(input.cache, stroke))

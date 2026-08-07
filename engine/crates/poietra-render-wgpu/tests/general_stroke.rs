@@ -190,6 +190,69 @@ fn manim_square_to_circle_packet(progress: f64) -> poietra_scene_ir::RenderPacke
     packet
 }
 
+#[test]
+fn transparent_degenerate_fill_is_skipped_before_visible_stroke_tessellation() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { fill, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    *fill = Some(FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 0.0,
+            blue: 1.0,
+            green: 0.0,
+            red: 1.0,
+        },
+        rule: FillRuleV1::NonZero,
+    });
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::CubicPathStroke,
+    ];
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let frame = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("a transparent degenerate fill must not hide its visible stroke");
+
+    assert_eq!(frame.draws().len(), 1);
+    assert_eq!(frame.material_plan().materials().len(), 1);
+    assert_eq!(frame.tessellation_calls(), 1);
+    assert_eq!(cache.entry_count(), 1);
+    assert_eq!(cache.frame_stats().misses(), 1);
+}
+
+#[test]
+fn zero_draw_opacity_skips_all_path_paint_phases() {
+    let mut packet = straight_stroke_packet(StrokeCapV1::Butt);
+    let RenderDrawV1::Path { fill, opacity, .. } = &mut packet.draws[0] else {
+        unreachable!()
+    };
+    *fill = Some(FillStyleV1 {
+        color: RgbaColorV1 {
+            alpha: 1.0,
+            blue: 1.0,
+            green: 0.0,
+            red: 1.0,
+        },
+        rule: FillRuleV1::NonZero,
+    });
+    *opacity = 0.0;
+    packet.required_capabilities = vec![
+        RenderCapabilityV1::CubicPathFill,
+        RenderCapabilityV1::CubicPathStroke,
+    ];
+
+    let mut cache = PreparedGeometryCacheV1::default();
+    let frame = prepare_frame_with_cache_v1(&packet, &mut cache)
+        .expect("a fully transparent path must not require usable paint geometry");
+
+    assert!(frame.draws().is_empty());
+    assert!(frame.material_plan().materials().is_empty());
+    assert_eq!(frame.tessellation_calls(), 0);
+    assert_eq!(cache.entry_count(), 0);
+    assert_eq!(cache.frame_stats().misses(), 0);
+}
+
 fn clip_extents(frame: &poietra_render_wgpu::PreparedFrameV1) -> [f32; 4] {
     frame.geometry_plan().vertices().iter().fold(
         [
