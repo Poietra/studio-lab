@@ -469,8 +469,15 @@ async function proveRetainedFrameSequence(request: RetainedFrameSequenceProofReq
   for (const frame of request.frames) {
     hooks.arm();
     const responseJson = await engine.render(new Uint8Array(frame.requestJson));
-    const renderSubmissionCount = hooks.finishCapture();
     const response = decodeJson(responseJson);
+    let renderSubmissionCount: number;
+    try {
+      renderSubmissionCount = hooks.finishCapture();
+    } catch (error) {
+      throw new Error(
+        `${error instanceof Error ? error.message : String(error)} Engine response: ${JSON.stringify(response)}`,
+      );
+    }
     const { fullRgba, pixels } = await hooks.readPixels({}, true);
     if (!fullRgba) throw new Error(`The retained readback frame ${frame.id} has no full RGBA payload.`);
     renderSubmissionCounts.push(renderSubmissionCount);
