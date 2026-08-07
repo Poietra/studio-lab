@@ -16,6 +16,8 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../src/render-pipeline/manim-identity-contract";
+import type { StudioSourceAnalysisV1 } from "../src/render-pipeline/source-analysis";
+import { fastManimSourceBindingIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
@@ -28,6 +30,7 @@ export const FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3 = 60 as const;
 export const FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 = 900 as const;
 export const FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V3 = 13 as const;
 export const FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V3 = "post-updater-pre-cairo-paint" as const;
+export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3 = 128;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V3 = 2 * 1024 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V3 =
   MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BYTES_V3 * 6 + 64 * 1024;
@@ -122,6 +125,93 @@ function isUnicodeScalarSequence(value: string) {
   return true;
 }
 
+const runtimeTraceSourceBindingSpanV3Schema = z
+  .object({
+    endColumn: z.number().int().nonnegative().max(2_000_000),
+    endLine: z.number().int().positive().max(10_000),
+    startColumn: z.number().int().nonnegative().max(2_000_000),
+    startLine: z.number().int().positive().max(10_000),
+  })
+  .strict()
+  .refine(
+    ({ endColumn, endLine, startColumn, startLine }) => startLine === endLine && startColumn < endColumn,
+    "Runtime Trace V3 source binding spans must identify one single-line Name token.",
+  );
+
+export const fastManimRuntimeTraceSourceBindingV3Schema = z
+  .object({
+    id: z.string().regex(/^source-binding:[0-9a-f]{64}$/u),
+    name: z
+      .string()
+      .min(1)
+      .max(240)
+      .refine(isUnicodeScalarSequence, "Runtime Trace V3 source binding names must contain Unicode scalars.")
+      .refine(
+        (name) => /^[_\p{ID_Start}][_\p{ID_Continue}]*$/u.test(name),
+        "Runtime Trace V3 source binding names must be Python identifiers.",
+      )
+      .refine(
+        (name) => Buffer.byteLength(name, "utf8") <= 240,
+        "Runtime Trace V3 source binding names accept at most 240 UTF-8 bytes.",
+      ),
+    ordinal: z.number().int().positive().max(10_000),
+    span: runtimeTraceSourceBindingSpanV3Schema,
+  })
+  .strict();
+
+export type FastManimRuntimeTraceSourceBindingV3 = z.infer<typeof fastManimRuntimeTraceSourceBindingV3Schema>;
+
+/**
+ * Project versioned SourceAnalysis evidence onto the closed producer request.
+ * Runtime correlation remains preview-only: this helper does not grant an
+ * edit capability and deliberately excludes ambiguous or dynamic bindings.
+ */
+export function fastManimRuntimeTraceSourceBindingsFromAnalysisV3(analysis: StudioSourceAnalysisV1, sceneId: string) {
+  if (sceneId !== fastManimRuntimeTraceSceneIdV1(analysis.sourcePath, analysis.scene.name)) {
+    throw new TypeError("Runtime Trace V3 source binding analysis is for another Scene.");
+  }
+  const candidates = analysis.bindings
+    .filter(
+      (binding) =>
+        binding.kind === "assignment" &&
+        binding.scopeId === analysis.scene.construct.scopeId &&
+        binding.controlPath.length === 0 &&
+        binding.ordinal !== null &&
+        !binding.ambiguous &&
+        binding.capabilities.move.status === "source-eligible" &&
+        binding.capabilities.uniformResize.status === "source-eligible",
+    )
+    .sort((left, right) => left.ordinal! - right.ordinal!);
+  const projected: FastManimRuntimeTraceSourceBindingV3[] = [];
+  for (const binding of candidates) {
+    // Python normalizes identifiers to NFKC while parsing. Sending a spelling
+    // that changes under that normalization would make the source token and
+    // runtime local disagree, so omit only that candidate from correlation.
+    if (binding.name.normalize("NFKC") !== binding.name) continue;
+    const candidate = {
+      id: "",
+      name: binding.name,
+      ordinal: binding.ordinal!,
+      span: {
+        endColumn: binding.span.endColumn,
+        endLine: binding.span.endLine,
+        startColumn: binding.span.startColumn,
+        startLine: binding.span.startLine,
+      },
+    };
+    candidate.id = fastManimSourceBindingIdentifierV1(analysis.sourceHash, sceneId, candidate);
+    const parsed = fastManimRuntimeTraceSourceBindingV3Schema.safeParse(candidate);
+    if (!parsed.success) continue;
+    projected.push(parsed.data);
+    if (projected.length === MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3) break;
+  }
+  return projected;
+}
+
+const runtimeTraceSourceBindingsV3Schema = z
+  .array(fastManimRuntimeTraceSourceBindingV3Schema)
+  .max(MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3);
+
 export const fastManimRuntimeTraceProducerRequestV3Schema = z
   .object({
     profileVersion: z.literal(FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V3),
@@ -139,6 +229,7 @@ export const fastManimRuntimeTraceProducerRequestV3Schema = z
       .strict(),
     schema: z.literal(FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V3),
     sourceHash: sha256V1Schema,
+    sourceBindings: runtimeTraceSourceBindingsV3Schema,
     sourcePath: manimSourcePathSchema,
     sourceText: z.string().refine(isUnicodeScalarSequence, "Runtime Trace V3 sourceText must contain Unicode scalars."),
     version: z.literal(FAST_MANIM_RUNTIME_TRACE_VERSION_V3),
@@ -165,6 +256,26 @@ export const fastManimRuntimeTraceProducerRequestV3Schema = z
         path: ["runtimeConfigHash"],
       });
     }
+    const bindingIds = new Set<string>();
+    const bindingNames = new Set<string>();
+    request.sourceBindings.forEach((binding, index) => {
+      if (binding.id !== fastManimSourceBindingIdentifierV1(request.sourceHash, request.sceneId, binding)) {
+        context.addIssue({
+          code: "custom",
+          message: "Runtime Trace V3 source binding identity is stale.",
+          path: ["sourceBindings", index, "id"],
+        });
+      }
+      if (bindingIds.has(binding.id) || bindingNames.has(binding.name)) {
+        context.addIssue({
+          code: "custom",
+          message: "Runtime Trace V3 source bindings must be unique by identity and name.",
+          path: ["sourceBindings", index],
+        });
+      }
+      bindingIds.add(binding.id);
+      bindingNames.add(binding.name);
+    });
   });
 
 export type FastManimRuntimeTraceProducerRequestV3 = z.infer<typeof fastManimRuntimeTraceProducerRequestV3Schema>;
@@ -200,6 +311,7 @@ export function createFastManimRuntimeTraceProducerRequestV3(
   sourceText: string,
   sceneOccurrence: Readonly<{ constructStartLine: number; definitionOrdinal: number }>,
   frame: Readonly<{ height: number; width: number }>,
+  sourceBindings: readonly FastManimRuntimeTraceSourceBindingV3[] = [],
 ) {
   const runtimeConfig = createFastManimRuntimeTraceConfigV3(frame);
   return fastManimRuntimeTraceProducerRequestV3Schema.parse({
@@ -213,6 +325,7 @@ export function createFastManimRuntimeTraceProducerRequestV3(
     sceneOccurrence,
     schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V3,
     sourceHash: run.sourceHash,
+    sourceBindings,
     sourcePath: run.sourcePath,
     sourceText,
     version: FAST_MANIM_RUNTIME_TRACE_VERSION_V3,
