@@ -6,6 +6,11 @@ import { join } from "node:path";
 
 import { defineConfig } from "@playwright/test";
 import { encodeRgbaPngV1 } from "./e2e/png-rgba";
+import {
+  REAL_PREVIEW_HARNESS_PREFIX_V1,
+  realPreviewRunStateFromEnvironmentV1,
+  reclaimRealPreviewRunStateV1,
+} from "./e2e/real-preview-run-state";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
 const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
@@ -126,11 +131,25 @@ const mutableHarness =
   snapshotProfile === "10" ||
   snapshotProfile === "12";
 const harnessRoot = mutableHarness
-  ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
+  ? mkdtempSync(join(tmpdir(), `${REAL_PREVIEW_HARNESS_PREFIX_V1}${snapshotProfile}-`))
   : join(process.cwd(), "fixtures", "real-preview-harness");
 if (mutableHarness) {
   cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
 }
+// Publish this run's opaque namespace so the teardown reporter reclaims exactly
+// what the run owns. A setup failure after this point never reaches the
+// reporter, so the same bounded reclamation runs best-effort at process exit.
+process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = dataRoot;
+if (mutableHarness) process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = harnessRoot;
+process.once("exit", () => {
+  const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
+  if (!namespace) return;
+  try {
+    reclaimRealPreviewRunStateV1({ ...namespace, now: Date.now(), outcome: "failed" });
+  } catch {
+    // Best-effort only: an exit-time failure must not mask the original error.
+  }
+});
 if (snapshotProfile === "8" && !externalBaseUrl) {
   if (!officialV8ProjectRoot) throw new Error("The official SquareToCircle V8 source root is unavailable.");
   const relativeSourcePath = join("example_scenes", "basic.py");
@@ -264,7 +283,7 @@ export default defineConfig({
       },
     },
   ],
-  reporter: "line",
+  reporter: [["line"], ["./e2e/real-preview-run-reporter.ts"]],
   testDir: "./e2e",
   use: {
     baseURL: externalBaseUrl ?? `http://127.0.0.1:${port}`,
