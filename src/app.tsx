@@ -1,5 +1,14 @@
 import { LazyMotion } from "motion/react";
-import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { AccountSessionBadge } from "./accounts/account-session-badge";
 import type { AccountSessionActionsV1 } from "./accounts/account-session-bootstrap";
@@ -94,17 +103,11 @@ import {
   sameShapeGeometry,
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
+import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import type { StudioTool } from "./studio/studio-toolbar";
-import {
-  type EntityDragPreview,
-  type EntityGeometryPreview,
-  type EntityScalePreview,
-  entityLabel,
-  STUDIO_VIEWPORT,
-  StudioViewport,
-} from "./studio/studio-viewport";
+import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -387,9 +390,13 @@ export function App({
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
-  const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
-  const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
-  const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
+  const gesturePreviewStore = useMemo(createStudioGesturePreviewStore, []);
+  const readGesturePreviewKind = useCallback(() => gesturePreviewStore.getSnapshot().kind, [gesturePreviewStore]);
+  const gesturePreviewKind = useSyncExternalStore(
+    gesturePreviewStore.subscribe,
+    readGesturePreviewKind,
+    readGesturePreviewKind,
+  );
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
@@ -499,11 +506,9 @@ export function App({
       });
     }
     setLifetimeEditMessage(null);
-    setDragPreview(null);
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
     setInspectorReturnFocus(null);
-  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
+  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId, gesturePreviewStore]);
 
   const editorDocumentIdentity = useMemo(
     () =>
@@ -773,8 +778,7 @@ export function App({
     retainedSourceDuration: editorRevision.retainedSourceDuration,
     runtimeTraceTerminalProgramRecords: previewProgramRecords,
     sampleTime: currentTime,
-    transientEdit:
-      dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
+    transientEdit: gesturePreviewKind !== "idle" || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const genericInitialEditCandidate = previewRenderer?.genericInitialEditCandidate ?? null;
@@ -1056,7 +1060,7 @@ export function App({
   const boundary = workspaceProjection?.boundary ?? null;
   const initialEditProjectionAuthority = previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate;
   const retainedInitialEditDragAuthority =
-    (dragPreview !== null || scalePreview !== null) &&
+    (gesturePreviewKind === "drag" || gesturePreviewKind === "scale") &&
     (currentTime === 0 || previewRenderer?.initialEditRuntimeAuthority?.profile === "write-stuff-v12")
       ? initialEditProjectionAuthority
       : null;
@@ -2216,13 +2220,13 @@ export function App({
       targetEntityIds,
     };
     setIsPlaying(false);
-    setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
+    gesturePreviewStore.setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
   }
 
   function moveEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     const drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    setDragPreview({
+    gesturePreviewStore.setDragPreview({
       delta: canvasPointerDelta(drag, { x: event.clientX, y: event.clientY }),
       entityIds: drag.targetEntityIds,
     });
@@ -2232,7 +2236,7 @@ export function App({
     const drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
-    setDragPreview(null);
+    gesturePreviewStore.clear();
     if (!activeScene || !draftBaseState || !draftSourceScene) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
@@ -2273,7 +2277,7 @@ export function App({
   function cancelEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     if (canvasDrag.current?.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
-    setDragPreview(null);
+    gesturePreviewStore.clear();
   }
 
   function beginEntityResize(
@@ -2384,7 +2388,7 @@ export function App({
         scale: entity.scale,
         shape,
       };
-      setGeometryPreview({
+      gesturePreviewStore.setGeometryPreview({
         dimensions: entity.geometry.dimensions.value,
         entityId,
         position: entity.position,
@@ -2396,7 +2400,7 @@ export function App({
         fromScale: entity.scale,
         mode: "scale",
       };
-      setScalePreview({ entityId, scale: entity.scale });
+      gesturePreviewStore.setScalePreview({ entityId, scale: entity.scale });
     }
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2407,9 +2411,9 @@ export function App({
     if (!resize || resize.pointerId !== event.pointerId) return;
     if (resize.mode === "shape") {
       const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
-      setGeometryPreview({ ...geometry, entityId: resize.entityId });
+      gesturePreviewStore.setGeometryPreview({ ...geometry, entityId: resize.entityId });
     } else {
-      setScalePreview({
+      gesturePreviewStore.setScalePreview({
         entityId: resize.entityId,
         scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
       });
@@ -2421,8 +2425,7 @@ export function App({
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     canvasResize.current = null;
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
     if (resize.mode === "shape") {
       const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
       if (sameShapeGeometry(target, resize.from)) return;
@@ -2463,8 +2466,7 @@ export function App({
     event.stopPropagation();
     if (canvasResize.current?.pointerId !== event.pointerId) return;
     canvasResize.current = null;
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
   }
 
   function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
@@ -3224,9 +3226,7 @@ export function App({
       suspendEditor();
       canvasDrag.current = null;
       canvasResize.current = null;
-      setDragPreview(null);
-      setGeometryPreview(null);
-      setScalePreview(null);
+      gesturePreviewStore.clear();
       setInspectorReturnFocus(null);
       leaveWorkspace();
     });
@@ -3581,13 +3581,12 @@ export function App({
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
               draftTransactionId={draftProgram?.program.transactionId ?? null}
-              dragPreview={dragPreview}
               duration={activeDuration}
               editableMotionIds={editableMotionIds}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={visibleEntities}
               frame={workspace?.frame ?? { height: 8, width: 14.222 }}
-              geometryPreview={geometryPreview}
+              gesturePreviewStore={gesturePreviewStore}
               incomingSceneName={nextScene?.name ?? null}
               insertTool={insertTool}
               insertValue={insertValue}
@@ -3639,7 +3638,6 @@ export function App({
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
               projection={projection}
               readOnly={boundary !== null || studioAuthoringLocked}
-              scalePreview={scalePreview}
               selectedIds={selectedSet}
             />
 
