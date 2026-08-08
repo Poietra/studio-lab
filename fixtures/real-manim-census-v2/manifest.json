@@ -16,9 +16,9 @@
   },
   "producer": {
     "repository": "https://github.com/Poietra/fast-manim.git",
-    "revision": "68c1c9a649abcc64b36e80f967aac262a7ba92ac",
-    "tree": "4e647408991999f132b5d48a6705571e8a82906f",
-    "digest": "8af0df2e33117f3b0ea3aebb2a5855559d406fbc8a68724956f452f4867c101d",
+    "revision": "d24026e11fbf30fa820593e1f0c59dd02ea82c25",
+    "tree": "93a1467e7d6ba23e9fac5baf827523ae893b6267",
+    "digest": "3127902f233906cfd70b75097ac8ae507b7f827e220697808c257a1b6399a747",
     "runtimeTraceModule": "manim.renderer.runtime_trace",
     "snapshotModule": "manim.renderer.source_runtime_identity",
     "manimVersion": "0.20.1",

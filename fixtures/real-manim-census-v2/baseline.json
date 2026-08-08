@@ -1,9 +1,9 @@
 {
   "schema": "poietra.real-manim-project-census-report",
   "version": 2,
-  "manifestDigest": "faf0cfdd734b4b7dfa5f81cd02debdb81716c92687118fae6f4e54e873a8921d",
+  "manifestDigest": "45c457d471e0c9885fae628274f77816451da6960cc0c900485c2dc90f754c8e",
   "executionConfigDigest": "5b0e8e2af387fe611a2894ecef5afb245877b28f27dd28d64907c631782f7651",
-  "producerDigest": "8af0df2e33117f3b0ea3aebb2a5855559d406fbc8a68724956f452f4867c101d",
+  "producerDigest": "3127902f233906cfd70b75097ac8ae507b7f827e220697808c257a1b6399a747",
   "producerSnapshotProfile": 2,
   "featureCounts": {
     "always-redraw": 1,

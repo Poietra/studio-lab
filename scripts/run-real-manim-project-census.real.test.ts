@@ -95,6 +95,7 @@ async function observeCodebase(
   projectRoot: string,
   python: string,
   texBin: string,
+  runtimeTraceProducerEnv: ReturnType<typeof fastManimRuntimeTraceProducerEnvironment>,
 ): Promise<RealManimProjectCensusObservation> {
   const frame = manifest.execution.frame;
   const source = await readFile(join(projectRoot, selected.source.path), "utf8");
@@ -145,7 +146,7 @@ async function observeCodebase(
   const runtimeBackend = new LocalProcessFastManimSandboxBackendV1({
     admissionController: new FastManimSnapshotAdmissionController(),
     command: [python, "-m", manifest.producer.runtimeTraceModule],
-    producerEnv: fastManimRuntimeTraceProducerEnvironment(),
+    producerEnv: runtimeTraceProducerEnv,
     projectRoot,
   });
   const runtimeRunner = new FastManimSnapshotRunner({
@@ -275,6 +276,10 @@ describe.skipIf(!required)("pinned real Manim project census v2", () => {
     }
     const producerRoot = roots.producer!;
     await verifyCheckout(producerRoot, manifest.producer, manifest.producer.files);
+    const runtimeTraceProducerEnv = fastManimRuntimeTraceProducerEnvironment({
+      fastManimCommit: manifest.producer.revision,
+      fastManimTree: manifest.producer.tree,
+    });
     const python = join(producerRoot, ".venv", "bin", "python");
     const texBin = await texBinFromEnvironment();
     const { stdout: runtimeVersions } = await execute(
@@ -293,7 +298,7 @@ describe.skipIf(!required)("pinned real Manim project census v2", () => {
     for (const selected of manifest.codebases) {
       const root = roots[selected.id]!;
       await verifyCheckout(root, selected, [selected.license, ...selected.toolchain, selected.source]);
-      observations.push(await observeCodebase(manifest, selected, root, python, texBin));
+      observations.push(await observeCodebase(manifest, selected, root, python, texBin, runtimeTraceProducerEnv));
     }
     const report = buildRealManimProjectCensusReport(manifest, observations);
     if (update) {

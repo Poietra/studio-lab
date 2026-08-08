@@ -96,7 +96,9 @@ const manifestSchema = z
           )
           .min(1)
           .max(8),
+        manimVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
         module: z.string().min(1).max(256),
+        pythonVersion: z.string().regex(/^\d+\.\d+\.\d+$/),
         repository: z.url(),
         revision: z.string().regex(GIT_ID),
         runtimeTraceModule: z.string().min(1).max(256),

@@ -3,10 +3,23 @@ export const TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY = Object.freeze(
   fastManimTree: "93a1467e7d6ba23e9fac5baf827523ae893b6267",
 } as const);
 
+export type FastManimRuntimeTraceProducerIdentity = Readonly<{
+  fastManimCommit: string;
+  fastManimTree: string;
+}>;
+
 /** Non-secret identity injected into the isolated Runtime Trace producer. */
-export function fastManimRuntimeTraceProducerEnvironment() {
+export function fastManimRuntimeTraceProducerEnvironment(
+  identity: FastManimRuntimeTraceProducerIdentity = TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY,
+) {
+  if (
+    identity.fastManimCommit !== TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit ||
+    identity.fastManimTree !== TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree
+  ) {
+    throw new Error("The Runtime Trace producer identity does not match the Studio trust anchor.");
+  }
   return Object.freeze({
-    POIETRA_FAST_MANIM_COMMIT: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit,
-    POIETRA_FAST_MANIM_TREE: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree,
+    POIETRA_FAST_MANIM_COMMIT: identity.fastManimCommit,
+    POIETRA_FAST_MANIM_TREE: identity.fastManimTree,
   });
 }

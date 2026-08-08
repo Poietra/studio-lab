@@ -84,6 +84,9 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     const snapshotProducerCommand = snapshotCommand!;
     const runtimeTraceProducerCommand = runtimeTraceCommand!;
     const manifest = await loadRealManimCensusManifest(manifestPath);
+    if (snapshotProducerCommand[0] !== runtimeTraceProducerCommand[0]) {
+      throw new Error("The snapshot and Runtime Trace census commands must use the same pinned Python executable.");
+    }
     if (snapshotProducerCommand.at(-2) !== "-m" || snapshotProducerCommand.at(-1) !== manifest.producer.module) {
       throw new Error(`The census command must execute the pinned ${manifest.producer.module} module.`);
     }
@@ -96,7 +99,28 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       );
     }
     const producerDigest = await verifyPinnedProducer(fastManimRoot, manifest.producer);
-    await execute("uv", ["sync", "--frozen", "--project", fastManimRoot], { cwd: workspaceRoot, encoding: "utf8" });
+    const runtimeTraceProducerEnv = fastManimRuntimeTraceProducerEnvironment({
+      fastManimCommit: manifest.producer.revision,
+      fastManimTree: manifest.producer.tree,
+    });
+    await execute("uv", ["sync", "--frozen", "--python", manifest.producer.pythonVersion, "--project", fastManimRoot], {
+      cwd: workspaceRoot,
+      encoding: "utf8",
+    });
+    const { stdout: toolchainJson } = await execute(
+      snapshotProducerCommand[0]!,
+      [
+        "-c",
+        "import json, manim, platform; print(json.dumps({'manim': manim.__version__, 'python': platform.python_version()}))",
+      ],
+      { cwd: fastManimRoot, encoding: "utf8" },
+    );
+    const toolchain = JSON.parse(toolchainJson) as { manim?: unknown; python?: unknown };
+    if (toolchain.python !== manifest.producer.pythonVersion || toolchain.manim !== manifest.producer.manimVersion) {
+      throw new Error(
+        `Expected Python ${manifest.producer.pythonVersion} and Manim ${manifest.producer.manimVersion}, received Python ${String(toolchain.python)} and Manim ${String(toolchain.manim)}.`,
+      );
+    }
     const assetBytes = new Map([["fixture-png", pngBytes]]);
     for (const asset of manifest.assets) {
       const bytes = assetBytes.get(asset.id);
@@ -141,7 +165,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       const backend = new LocalProcessFastManimSandboxBackendV1({
         admissionController: new FastManimSnapshotAdmissionController(),
         command: entry.kind === "snapshot" ? snapshotProducerCommand : runtimeTraceProducerCommand,
-        ...(entry.kind === "runtime-trace" ? { producerEnv: fastManimRuntimeTraceProducerEnvironment() } : {}),
+        ...(entry.kind === "runtime-trace" ? { producerEnv: runtimeTraceProducerEnv } : {}),
         projectRoot,
       });
       const runner = new FastManimSnapshotRunner({

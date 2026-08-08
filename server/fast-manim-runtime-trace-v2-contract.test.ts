@@ -97,6 +97,18 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
       POIETRA_FAST_MANIM_COMMIT: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit,
       POIETRA_FAST_MANIM_TREE: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree,
     });
+    expect(() =>
+      fastManimRuntimeTraceProducerEnvironment({
+        fastManimCommit: "0".repeat(40),
+        fastManimTree: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree,
+      }),
+    ).toThrowError(/Studio trust anchor/);
+    expect(() =>
+      fastManimRuntimeTraceProducerEnvironment({
+        fastManimCommit: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit,
+        fastManimTree: "0".repeat(40),
+      }),
+    ).toThrowError(/Studio trust anchor/);
     expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
   });
 
