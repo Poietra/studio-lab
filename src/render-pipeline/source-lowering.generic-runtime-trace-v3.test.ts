@@ -187,6 +187,22 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     );
   });
 
+  it("withholds the V3 candidate when a nested definition rebinds the projected name, keeping preview available", () => {
+    const rebound = source.replace(
+      "        square.set_stroke(WHITE, width=2)",
+      "        def helper(value=(square := Square())):\n            pass\n        square.set_stroke(WHITE, width=2)",
+    );
+    const imported = importManimScene(rebound, sourcePath, sceneName, frame);
+
+    // Preview stays available: only the source-edit candidate is withheld, so
+    // the producer never receives a binding its own inventory would reject.
+    expect(imported?.runtimeSceneState.duration).toBe(0.1);
+    expect(() => lower(rebound, request(rebound))).toThrow(/one projected top-level V3 source occurrence/i);
+    expect(() => deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(rebound, sceneName, sourcePath)).toThrow(
+      /exactly one unambiguous top-level V3 binding/i,
+    );
+  });
+
   it("leaves an explicit source-time-zero anchor to the established general lowerer", () => {
     const anchored = source.replace(
       "        square.set_stroke(WHITE, width=2)",
