@@ -14,6 +14,7 @@ import {
   PostgresSnapshotPublicationRepositoryV1,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM,
 } from "./postgres-snapshot-publication-repository";
+import { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
@@ -197,7 +198,9 @@ function fakePool(handle: (text: string, values: readonly unknown[]) => Promise<
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" || text.startsWith("SELECT set_config(")) {
       return { rowCount: null, rows: [] };
     }
-    if (text.includes("pg_advisory_xact_lock(hashtextextended")) return { rowCount: 1, rows: [{}] };
+    if (text.trim().startsWith("SELECT pg_advisory_xact_lock(hashtextextended")) {
+      return { rowCount: 1, rows: [{}] };
+    }
     return handle(text, values);
   });
   const release = vi.fn();
@@ -665,10 +668,10 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
         return { rowCount: 1, rows: [artifactRow()] };
       }
       if (text.includes("poietra_schema_migrations")) {
-        expect(text).toContain("version IN (3, 5, 6, 10, 20, 25)");
+        expect(text).toContain("version IN (3, 5, 6, 10, 20, 25, 27)");
         expect(values).toEqual([]);
         return {
-          rowCount: 6,
+          rowCount: 7,
           rows: [
             { checksum: SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM, version: 3 },
             { checksum: PROJECT_PNG_MIGRATION_V5_CHECKSUM, version: 5 },
@@ -676,6 +679,7 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
             { checksum: SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM, version: 10 },
             { checksum: IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM, version: 20 },
             { checksum: SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM, version: 25 },
+            { checksum: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM, version: 27 },
           ],
         };
       }
@@ -942,5 +946,32 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
     ]);
     await expect(repository.pendingArtifactDeletions(TENANT, 0)).rejects.toThrow("between 1 and 256");
     await expect(repository.acknowledgeArtifactDeletion(TENANT, DELETION_ID)).resolves.toBeUndefined();
+  });
+
+  it("compacts old tenant publication tombstones idempotently behind active-work and GC fences", async () => {
+    const cutoff = new Date("2026-07-01T00:00:00.000Z");
+    let compacted = "4";
+    const fixture = fakePool((text, values) => {
+      if (!text.includes("WITH candidates AS MATERIALIZED")) throw new Error(`Unexpected query: ${text}`);
+      expect(values).toEqual([TENANT, cutoff, 17]);
+      expect(text).toContain("head.publication_id IS NULL");
+      expect(text).toContain("head.updated_at < $2");
+      expect(text).toContain("FOR UPDATE OF head SKIP LOCKED");
+      expect(text).toContain("FROM public.workspace_project_references reference");
+      expect(text).toContain("reference.reference_kind <> 'snapshot-publication'");
+      expect(text).toContain("FROM public.snapshot_publications publication");
+      expect(text).toContain("publication.generation = head.generation");
+      expect(text).toContain("FROM public.snapshot_artifact_deletions deletion");
+      expect(text).toContain("deletion.deleted_at IS NULL");
+      return { rowCount: 1, rows: [{ compacted }] };
+    });
+    const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toBe(4);
+    compacted = "0";
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toBe(0);
+    await expect(repository.compactPublicationTombstones("", cutoff, 17)).rejects.toThrow("Tenant ID");
+    await expect(repository.compactPublicationTombstones(TENANT, new Date(Number.NaN), 17)).rejects.toThrow("cutoff");
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 257)).rejects.toThrow("between 1 and 256");
   });
 });

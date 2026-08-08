@@ -4,6 +4,8 @@ import type { ImmutableSnapshotArtifactReceiptV1 } from "./immutable-snapshot-ar
 import {
   DurableSnapshotArtifactGcWorkerV1,
   runSnapshotArtifactGcV1,
+  SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1,
+  SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
   SnapshotArtifactGcSweepErrorV1,
 } from "./snapshot-artifact-gc";
 import type {
@@ -90,6 +92,7 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones: vi.fn(async () => 2),
       async acknowledgeArtifactDeletion(_tenantId: string, deletionId: string) {
         acknowledged.push(deletionId);
       },
@@ -113,7 +116,14 @@ describe("durable snapshot artifact GC", () => {
         repository,
         tenantId: TENANT,
       }),
-    ).resolves.toEqual({ deleted: 1, examined: 2, nextCursor: "next-page", queued: 1 });
+    ).resolves.toEqual({
+      compactedPublicationTombstones: 2,
+      deleted: 1,
+      examined: 2,
+      nextCursor: "next-page",
+      queued: 1,
+      tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+    });
     expect(queued).toEqual([orphan.artifact.resultDigest]);
     expect(deleted).toEqual([[TENANT, orphan.artifact.versionId]]);
     expect(acknowledged).toEqual([orphan.deletionId]);
@@ -134,6 +144,7 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones: vi.fn(async () => 0),
       acknowledgeArtifactDeletion: vi.fn(async () => undefined),
       async isArtifactPublished() {
         return false;
@@ -148,7 +159,14 @@ describe("durable snapshot artifact GC", () => {
 
     await expect(
       runSnapshotArtifactGcV1({ artifacts, cutoff: new Date(), maximum: 1, repository, tenantId: TENANT }),
-    ).resolves.toEqual({ deleted: 1, examined: 1, nextCursor: null, queued: 1 });
+    ).resolves.toEqual({
+      compactedPublicationTombstones: 0,
+      deleted: 1,
+      examined: 1,
+      nextCursor: null,
+      queued: 1,
+      tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+    });
     expect(deleted).toHaveBeenCalledWith(TENANT, candidate, undefined);
   });
 
@@ -170,6 +188,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => true),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones: vi.fn(async () => 0),
       async isArtifactPublished(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
         return snapshotArtifactIdentityV1(receipt).resultDigest === published.resultDigest;
       },
@@ -210,6 +229,7 @@ describe("durable snapshot artifact GC", () => {
     const second = deletion("b", "00000000-0000-4000-8000-000000000002");
     const attempted: string[] = [];
     const acknowledged: string[] = [];
+    const compactPublicationTombstones = vi.fn(async () => 0);
     const artifacts = {
       async deleteVersion(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
         const locator = snapshotArtifactLocatorV1(receipt);
@@ -222,6 +242,7 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones,
       async acknowledgeArtifactDeletion(_tenantId: string, deletionId: string) {
         acknowledged.push(deletionId);
       },
@@ -248,6 +269,7 @@ describe("durable snapshot artifact GC", () => {
     });
     expect(attempted).toEqual([first.artifact.versionId, second.artifact.versionId]);
     expect(acknowledged).toEqual([second.deletionId]);
+    expect(compactPublicationTombstones).not.toHaveBeenCalled();
   });
 
   it("checks both storage dependencies before destructive maintenance", async () => {
@@ -257,6 +279,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => false),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones: vi.fn(async () => 0),
       ready: vi.fn(async () => true),
     } as unknown as SnapshotPublicationRepositoryV1;
     const worker = new DurableSnapshotArtifactGcWorkerV1({
@@ -290,6 +313,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => true),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
+      compactPublicationTombstones: vi.fn(async () => 0),
       async pendingArtifactDeletions() {
         return [first];
       },
@@ -323,5 +347,48 @@ describe("durable snapshot artifact GC", () => {
     expect(() => new DurableSnapshotArtifactGcWorkerV1({ ...validOptions, sweepTimeoutMs: 999 })).toThrow(
       /sweepTimeoutMs/,
     );
+  });
+
+  it("uses a server-owned retention window and bounded compaction batch without exposing artifact identity", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T00:00:00.000Z"));
+    const compact = vi.fn(async () => 3);
+    const artifacts = {
+      async listVersions() {
+        return { nextCursor: null, versions: [] };
+      },
+    } as unknown as SnapshotArtifactStoreV1;
+    const repository = {
+      compactPublicationTombstones: compact,
+      async pendingArtifactDeletions() {
+        return [];
+      },
+    } as unknown as SnapshotPublicationRepositoryV1;
+
+    try {
+      const result = await runSnapshotArtifactGcV1({
+        artifacts,
+        cutoff: new Date(),
+        maximum: 1,
+        repository,
+        tenantId: TENANT,
+      });
+      expect(result).toEqual({
+        compactedPublicationTombstones: 3,
+        deleted: 0,
+        examined: 0,
+        nextCursor: null,
+        queued: 0,
+        tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+      });
+      expect(compact).toHaveBeenCalledWith(
+        TENANT,
+        new Date(Date.now() - SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1),
+        SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1,
+        undefined,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

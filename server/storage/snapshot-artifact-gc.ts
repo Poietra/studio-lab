@@ -1,12 +1,21 @@
 import { type DurableGcResultV1, DurableGcWorkerCoreV1, runDurableGcSweepV1 } from "./durable-gc-core";
 import type { SnapshotArtifactStoreV1, SnapshotPublicationRepositoryV1 } from "./snapshot-publication-repository";
 
-export type SnapshotArtifactGcResultV1 = DurableGcResultV1<string>;
+export const SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1 = 30 * 24 * 60 * 60_000;
+export const SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1 = 64;
+
+type SnapshotArtifactGcSweepProgressV1 = DurableGcResultV1<string>;
+
+export type SnapshotArtifactGcResultV1 = SnapshotArtifactGcSweepProgressV1 &
+  Readonly<{
+    compactedPublicationTombstones: number;
+    tombstoneRetentionMs: number;
+  }>;
 
 export class SnapshotArtifactGcSweepErrorV1 extends AggregateError {
-  readonly result: SnapshotArtifactGcResultV1;
+  readonly result: SnapshotArtifactGcSweepProgressV1;
 
-  constructor(errors: readonly unknown[], result: SnapshotArtifactGcResultV1) {
+  constructor(errors: readonly unknown[], result: SnapshotArtifactGcSweepProgressV1) {
     super(errors, `Snapshot artifact GC could not delete ${errors.length} queued object version(s).`);
     this.name = "SnapshotArtifactGcSweepErrorV1";
     this.result = result;
@@ -24,7 +33,7 @@ export async function runSnapshotArtifactGcV1(
     tenantId: string;
   }>,
 ) {
-  return runDurableGcSweepV1({
+  const result = await runDurableGcSweepV1({
     ...options,
     list: (cutoff, maximum, cursor, signal) =>
       options.artifacts.listVersions(options.tenantId, cutoff, maximum, cursor, signal),
@@ -36,6 +45,18 @@ export async function runSnapshotArtifactGcV1(
       options.repository.acknowledgeArtifactDeletion(tenantId, deletionId, signal),
     createError: (errors, result) => new SnapshotArtifactGcSweepErrorV1(errors, result),
   });
+  options.signal?.throwIfAborted();
+  const compactedPublicationTombstones = await options.repository.compactPublicationTombstones(
+    options.tenantId,
+    new Date(Date.now() - SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1),
+    SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1,
+    options.signal,
+  );
+  return {
+    ...result,
+    compactedPublicationTombstones,
+    tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+  };
 }
 
 export type DurableSnapshotArtifactGcWorkerOptionsV1 = Readonly<{

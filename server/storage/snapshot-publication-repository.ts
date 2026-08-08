@@ -175,6 +175,7 @@ export type SnapshotArtifactDeletionV1 = Readonly<{
 
 export interface SnapshotPublicationRepositoryV1 {
   acknowledgeArtifactDeletion(tenantId: string, deletionId: string, signal?: AbortSignal): Promise<void>;
+  compactPublicationTombstones(tenantId: string, cutoff: Date, maximum: number, signal?: AbortSignal): Promise<number>;
   clearHeadIfGeneration(
     identity: SnapshotPublicationIdentityV1,
     generation: bigint,

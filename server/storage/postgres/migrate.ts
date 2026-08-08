@@ -38,6 +38,7 @@ import editorSessionSnapshotSqlV23 from "./migrations/0023_editor_session_snapsh
 import accountInvitationQuotaSqlV24 from "./migrations/0024_account_invitation_quotas.sql?raw";
 import snapshotRuntimeConfigHeadSqlV25 from "./migrations/0025_snapshot_runtime_config_heads.sql?raw";
 import collaborationAuthorizationSqlV26 from "./migrations/0026_collaboration_authorization_ids.sql?raw";
+import snapshotPublicationTombstoneRetentionSqlV27 from "./migrations/0027_snapshot_publication_tombstone_retention.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -50,6 +51,7 @@ import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 import { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+import { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 import { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
@@ -72,6 +74,7 @@ export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 export { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+export { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 export { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 export { STRIPE_BILLING_MIGRATION_V16_CHECKSUM } from "./stripe-billing-schema";
@@ -125,6 +128,8 @@ export const EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_SOURCE = editorSessionSnapsho
 export const ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE = accountInvitationQuotaSqlV24;
 export const SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE = snapshotRuntimeConfigHeadSqlV25;
 export const COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE = collaborationAuthorizationSqlV26;
+export const SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE =
+  snapshotPublicationTombstoneRetentionSqlV27;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -394,6 +399,18 @@ const collaborationAuthorizationMigrationV26: DurableStorageMigration<26> = Obje
   version: 26,
 });
 
+const snapshotPublicationTombstoneRetentionMigrationV27: DurableStorageMigration<27> = Object.freeze({
+  checksum: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM,
+  checksumMismatch: "The snapshot-publication tombstone-retention migration checksum is invalid.",
+  installedMismatch: "The installed snapshot-publication tombstone-retention schema does not match migration v27.",
+  missingPrerequisite:
+    "Snapshot-publication tombstone-retention migration v27 requires durable storage migrations v1 through v26.",
+  prerequisiteMismatch:
+    "Snapshot-publication tombstone-retention migration v27 requires exact durable storage migrations v1 through v26.",
+  source: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE,
+  version: 27,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -421,6 +438,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   accountInvitationQuotaMigrationV24,
   snapshotRuntimeConfigHeadMigrationV25,
   collaborationAuthorizationMigrationV26,
+  snapshotPublicationTombstoneRetentionMigrationV27,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -677,6 +695,14 @@ export function applySnapshotRuntimeConfigHeadMigrationV25(pool: Pool, source: s
 
 export function applyCollaborationAuthorizationMigrationV26(pool: Pool, source: string) {
   return applyMigration(pool, { ...collaborationAuthorizationMigrationV26, source }, bundledMigrationsBefore(26));
+}
+
+export function applySnapshotPublicationTombstoneRetentionMigrationV27(pool: Pool, source: string) {
+  return applyMigration(
+    pool,
+    { ...snapshotPublicationTombstoneRetentionMigrationV27, source },
+    bundledMigrationsBefore(27),
+  );
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */
