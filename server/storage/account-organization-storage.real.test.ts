@@ -158,6 +158,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       });
       await expect(sessions.resolveAccountSession(activeHash)).resolves.toEqual({
         activeOrganizationId: "organization-active",
+        organizationSwitch: null,
         organizations: [
           { displayName: "Active organization", id: "organization-active", role: "owner" },
           { displayName: "Secondary organization", id: "organization-secondary", role: "member" },
@@ -165,31 +166,55 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
         user: { displayName: "Active owner", id: users.activeOwner },
         version: 1,
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toMatchObject({
+      const secondaryMutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
+      const activeMutationId = "5a5dcb34-541d-4805-9d70-fbf6db8e325b";
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
+      ).resolves.toMatchObject({
         account: { activeOrganizationId: "organization-secondary", version: 2 },
         kind: "updated",
+        mutation: { mutationId: secondaryMutationId, organizationId: "organization-secondary", version: 2 },
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toMatchObject({
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
+      ).resolves.toMatchObject({
         account: { activeOrganizationId: "organization-secondary", version: 2 },
         kind: "updated",
+        mutation: { mutationId: secondaryMutationId, organizationId: "organization-secondary", version: 2 },
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 1)).resolves.toEqual({
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-active", 1, activeMutationId),
+      ).resolves.toEqual({
         kind: "conflict",
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 2)).resolves.toMatchObject({
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-active", 2, activeMutationId),
+      ).resolves.toMatchObject({
         account: { activeOrganizationId: "organization-active", version: 3 },
         kind: "updated",
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-secondary", 1)).resolves.toEqual({
+      await expect(
+        sessions.switchActiveOrganization(
+          activeHash,
+          "organization-secondary",
+          1,
+          "ca65dba7-d7a1-4457-840d-f0d9dfd195bb",
+        ),
+      ).resolves.toEqual({
         kind: "conflict",
       });
       await expect(sessions.resolveAccountSession(activeHash)).resolves.toMatchObject({
         activeOrganizationId: "organization-active",
         version: 3,
       });
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-user-suspended", 3)).resolves.toEqual({
-        kind: "organization-unavailable",
-      });
+      await expect(
+        sessions.switchActiveOrganization(
+          activeHash,
+          "organization-user-suspended",
+          3,
+          "ea147365-da4c-4d32-93f0-d19afe213127",
+        ),
+      ).resolves.toEqual({ kind: "organization-unavailable" });
       await expect(sessions.resolveActiveSession(activeHash)).resolves.toMatchObject({
         sessionOrganizationId: "organization-active",
       });
@@ -198,9 +223,9 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       await expect(sessions.resolveActiveSession(cascadeHash)).resolves.toBeNull();
       await expect(sessions.revokeAccountSession(activeHash)).resolves.toBeUndefined();
       await expect(sessions.resolveActiveSession(activeHash)).resolves.toBeNull();
-      await expect(sessions.switchActiveOrganization(activeHash, "organization-active", 3)).resolves.toEqual({
-        kind: "invalid-session",
-      });
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-active", 3, activeMutationId),
+      ).resolves.toEqual({ kind: "invalid-session" });
       await expect(sessions.revokeAccountSession(activeHash)).resolves.toBeUndefined();
 
       const stateHash = Buffer.alloc(32, 6);

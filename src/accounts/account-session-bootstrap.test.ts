@@ -10,6 +10,7 @@ import type { AccountSessionViewV1 } from "./account-session-contract";
 function session(role: AccountSessionViewV1["activeOrganization"]["role"]): AccountSessionViewV1 {
   return {
     activeOrganization: { displayName: "Poietra", id: "organization-a", role },
+    organizationSwitch: null,
     organizations: [{ displayName: "Poietra", id: "organization-a", role }],
     user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
     version: 1,

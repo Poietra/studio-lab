@@ -10,6 +10,7 @@ describe("AccountSessionBadge", () => {
         actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
         session={{
           activeOrganization: { displayName: "Studio Team", id: "organization-b", role: "member" },
+          organizationSwitch: null,
           organizations: [
             { displayName: "Poietra", id: "organization-a", role: "owner" },
             { displayName: "Studio Team", id: "organization-b", role: "member" },
@@ -35,6 +36,7 @@ describe("AccountSessionBadge", () => {
         actions={{ actionError: null, logout: vi.fn(), switchOrganization: vi.fn() }}
         session={{
           activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" },
+          organizationSwitch: null,
           organizations: [{ displayName: "Poietra", id: "organization-a", role: "owner" }],
           user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
           version: 1,
@@ -56,6 +58,7 @@ describe("AccountSessionBadge", () => {
         disabled
         session={{
           activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" },
+          organizationSwitch: null,
           organizations: [{ displayName: "Poietra", id: "organization-a", role: "owner" }],
           user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
           version: 1,

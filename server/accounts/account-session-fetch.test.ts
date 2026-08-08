@@ -10,6 +10,7 @@ const tokenBytes = Buffer.alloc(32, 11);
 const token = tokenBytes.toString("base64url");
 const account = {
   activeOrganizationId: "organization-b",
+  organizationSwitch: null,
   organizations: [
     { displayName: "Organization A", id: "organization-a", role: "billing" as const },
     { displayName: "Organization B", id: "organization-b", role: "owner" as const },
@@ -46,6 +47,7 @@ describe("account session Fetch handler", () => {
     await expect(response.json()).resolves.toEqual({
       activeOrganization: { displayName: "Organization B", id: "organization-b", role: "owner" },
       organizations: account.organizations,
+      organizationSwitch: null,
       user: account.user,
       version: account.version,
     });

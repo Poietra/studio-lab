@@ -8,11 +8,14 @@ import {
   ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
+  ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
+  ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
   ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
   ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
   applyAccountInvitationMigrationV22,
   applyAccountInvitationQuotaMigrationV24,
   applyAccountOrganizationMigrationV11,
+  applyAccountOrganizationSwitchMutationMigrationV28,
   applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
   applyBundledDurableStorageMigrationsThrough,
@@ -118,12 +121,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 27 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 28 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 27 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 28 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -153,7 +156,10 @@ describe("durable storage migrations", () => {
     expect(
       db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE),
     ).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(54);
+    expect(
+      db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE),
+    ).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(56);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -213,12 +219,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 27,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 28)).resolves.toEqual({
+      applied: true,
+      version: 28,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 28)).rejects.toThrow(
-      /migration v28 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 29)).rejects.toThrow(
+      /migration v29 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -745,6 +755,26 @@ describe("durable storage migrations", () => {
         SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE,
       ),
     ).rejects.toThrow(/requires durable storage migrations v1 through v26/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds replay-safe account organization switch mutations in v28", async () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE)).toBe(
+      ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
+    );
+    expect(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE).toContain(
+      "PRIMARY KEY (session_token_hash, mutation_id)",
+    );
+    expect(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE).toContain(
+      "UNIQUE (session_token_hash, resulting_version)",
+    );
+    const db = database();
+    await expect(
+      applyAccountOrganizationSwitchMutationMigrationV28(
+        db.pool,
+        ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
+      ),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v27/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 

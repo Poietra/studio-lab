@@ -153,7 +153,7 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
       const transition = beginMutationTransition();
       if (!transition) return;
       const { controller, generation } = transition;
-      void switchAccountOrganizationV1(organizationId, expectedVersion, controller.signal)
+      void switchAccountOrganizationV1(organizationId, expectedVersion, crypto.randomUUID(), controller.signal)
         .then((session) => {
           const shouldRefresh = finishMutation(controller, generation);
           if (shouldRefresh === null) return;

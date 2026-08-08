@@ -1,6 +1,9 @@
 import type { Pool, PoolConfig, QueryResultRow } from "pg";
 
-import { accountDisplayNameSchemaV1 } from "../../../src/accounts/account-session-contract";
+import {
+  accountDisplayNameSchemaV1,
+  accountOrganizationSwitchMutationIdSchemaV1,
+} from "../../../src/accounts/account-session-contract";
 import { accountUserIdSchemaV1, organizationIdSchemaV1, organizationRoleSchemaV1 } from "../../accounts/account-domain";
 import type {
   AccountSessionControlRepositoryV1,
@@ -9,6 +12,7 @@ import type {
   ResolvedAccountSessionV1,
   SwitchActiveOrganizationResultV1,
 } from "../../accounts/account-session-repository";
+import { ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM } from "./account-organization-switch-mutation-schema";
 import { ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM } from "./account-session-schema";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
 
@@ -26,9 +30,15 @@ type AccountSessionAccountRow = QueryResultRow & {
   user_display_name: string;
   user_id: string;
   session_version: string;
+  switch_mutation_id?: string | null;
+  switch_organization_id?: string | null;
+  switch_version?: string | null;
 };
 
 type AccountSessionSwitchRow = AccountSessionAccountRow & {
+  confirmed_mutation_id: string | null;
+  confirmed_organization_id: string | null;
+  confirmed_version: string | null;
   mutation_status: string;
 };
 
@@ -94,6 +104,24 @@ function exactSessionVersion(value: unknown) {
   return version;
 }
 
+function organizationSwitchFromRow(row: AccountSessionAccountRow) {
+  const values = [row.switch_mutation_id, row.switch_organization_id, row.switch_version];
+  if (values.every((value) => value === null || value === undefined)) return null;
+  if (values.some((value) => value === null || value === undefined)) {
+    throw new TypeError("PostgreSQL returned an incomplete account organization switch.");
+  }
+  const mutationId = accountOrganizationSwitchMutationIdSchemaV1.safeParse(row.switch_mutation_id);
+  const organizationId = organizationIdSchemaV1.safeParse(row.switch_organization_id);
+  if (!mutationId.success || !organizationId.success) {
+    throw new TypeError("PostgreSQL returned an invalid account organization switch.");
+  }
+  return {
+    mutationId: mutationId.data,
+    organizationId: organizationId.data,
+    version: exactSessionVersion(row.switch_version),
+  };
+}
+
 function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAccountSessionAccountV1 | null {
   const first = rows[0];
   if (!first) return null;
@@ -107,13 +135,17 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
     id: userId.data,
   };
   const version = exactSessionVersion(first.session_version);
+  const organizationSwitch = organizationSwitchFromRow(first);
   const organizations: ResolvedAccountSessionAccountV1["organizations"] = [];
   for (const row of rows) {
     if (
       row.user_id !== user.id ||
       row.user_display_name !== user.displayName ||
       row.active_organization_id !== activeOrganizationId.data ||
-      row.session_version !== first.session_version
+      row.session_version !== first.session_version ||
+      row.switch_mutation_id !== first.switch_mutation_id ||
+      row.switch_organization_id !== first.switch_organization_id ||
+      row.switch_version !== first.switch_version
     ) {
       throw new TypeError("PostgreSQL returned inconsistent account session rows.");
     }
@@ -147,12 +179,21 @@ function accountFromRows(rows: readonly AccountSessionAccountRow[]): ResolvedAcc
       throw new TypeError("PostgreSQL returned non-canonical organization memberships.");
     }
   }
-  return { activeOrganizationId: activeOrganizationId.data, organizations, user, version };
+  return { activeOrganizationId: activeOrganizationId.data, organizations, organizationSwitch, user, version };
 }
 
 function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchActiveOrganizationResultV1 {
   const first = rows[0];
-  if (!first || rows.some((row) => row.mutation_status !== first.mutation_status)) {
+  if (
+    !first ||
+    rows.some(
+      (row) =>
+        row.mutation_status !== first.mutation_status ||
+        row.confirmed_mutation_id !== first.confirmed_mutation_id ||
+        row.confirmed_organization_id !== first.confirmed_organization_id ||
+        row.confirmed_version !== first.confirmed_version,
+    )
+  ) {
     throw new TypeError("PostgreSQL returned an invalid account organization switch.");
   }
   if (first.mutation_status === "invalid-session") {
@@ -172,7 +213,20 @@ function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchA
   }
   const account = accountFromRows(rows);
   if (!account) throw new TypeError("PostgreSQL omitted the updated account session.");
-  return { account, kind: "updated" };
+  const mutationId = accountOrganizationSwitchMutationIdSchemaV1.safeParse(first.confirmed_mutation_id);
+  const organizationId = organizationIdSchemaV1.safeParse(first.confirmed_organization_id);
+  if (!mutationId.success || !organizationId.success) {
+    throw new TypeError("PostgreSQL returned an invalid confirmed account organization switch.");
+  }
+  return {
+    account,
+    kind: "updated",
+    mutation: {
+      mutationId: mutationId.data,
+      organizationId: organizationId.data,
+      version: exactSessionVersion(first.confirmed_version),
+    },
+  };
 }
 
 export class PostgresAccountSessionRepositoryV1
@@ -187,15 +241,17 @@ export class PostgresAccountSessionRepositoryV1
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version = 12",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (12, 28) ORDER BY version",
         [],
         signal,
       );
       throwIfAborted(signal);
       return (
-        result.rowCount === 1 &&
+        result.rowCount === 2 &&
         result.rows[0]?.version === 12 &&
-        result.rows[0]?.checksum === ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM
+        result.rows[0]?.checksum === ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM &&
+        result.rows[1]?.version === 28 &&
+        result.rows[1]?.checksum === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -258,10 +314,20 @@ export class PostgresAccountSessionRepositoryV1
               selected.user_display_name,
               selected.active_organization_id,
               selected.session_version,
+              latest.mutation_id::text AS switch_mutation_id,
+              latest.organization_id AS switch_organization_id,
+              latest.resulting_version::text AS switch_version,
               organization.organization_id,
               organization.organization_display_name,
               organization.organization_role
          FROM selected_session selected
+         LEFT JOIN LATERAL (
+           SELECT mutation.mutation_id, mutation.organization_id, mutation.resulting_version
+             FROM public.account_organization_switch_mutations mutation
+            WHERE mutation.session_token_hash = $1
+            ORDER BY mutation.resulting_version DESC
+            LIMIT 1
+         ) latest ON true
          LEFT JOIN active_organizations organization ON true
         ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
       [sessionTokenHash],
@@ -276,10 +342,12 @@ export class PostgresAccountSessionRepositoryV1
     sessionTokenHashValue: Uint8Array,
     organizationIdValue: string,
     expectedVersionValue: number,
+    mutationIdValue: string,
     signal?: AbortSignal,
   ) {
     const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
     const organizationId = organizationIdSchemaV1.parse(organizationIdValue);
+    const mutationId = accountOrganizationSwitchMutationIdSchemaV1.parse(mutationIdValue);
     if (!Number.isSafeInteger(expectedVersionValue) || expectedVersionValue < 1) {
       throw new TypeError("The expected account session version is invalid.");
     }
@@ -298,6 +366,14 @@ export class PostgresAccountSessionRepositoryV1
             AND account.status = 'active'
           LIMIT 1
           FOR UPDATE OF session
+       ), existing_mutation AS MATERIALIZED (
+         SELECT mutation.mutation_id,
+                mutation.organization_id,
+                mutation.expected_version,
+                mutation.resulting_version
+           FROM public.account_organization_switch_mutations mutation
+          WHERE mutation.session_token_hash = $1
+            AND mutation.mutation_id = $4::uuid
        ), target_access AS MATERIALIZED (
          SELECT selected.user_id,
                 membership.tenant_id AS organization_id
@@ -312,13 +388,23 @@ export class PostgresAccountSessionRepositoryV1
          UPDATE public.account_sessions session
             SET active_tenant_id = target.organization_id
            FROM target_access target
-          WHERE session.session_token_hash = $1
+         WHERE session.session_token_hash = $1
             AND session.user_id = target.user_id
             AND session.version = $3::bigint
-            AND session.active_tenant_id IS DISTINCT FROM target.organization_id
+            AND NOT EXISTS (SELECT 1 FROM existing_mutation)
           RETURNING session.active_tenant_id AS active_organization_id,
                     session.user_id,
                     session.version AS session_version
+       ), inserted_mutation AS (
+         INSERT INTO public.account_organization_switch_mutations
+           (session_token_hash, mutation_id, organization_id, expected_version, resulting_version)
+         SELECT $1, $4::uuid, updated.active_organization_id, $3::bigint, updated.session_version
+           FROM updated_session updated
+         RETURNING mutation_id, organization_id, expected_version, resulting_version
+       ), confirmed_mutation AS MATERIALIZED (
+         SELECT mutation_id, organization_id, expected_version, resulting_version FROM existing_mutation
+         UNION ALL
+         SELECT mutation_id, organization_id, expected_version, resulting_version FROM inserted_mutation
        ), active_organizations AS MATERIALIZED (
          SELECT membership.tenant_id AS organization_id,
                 organization.display_name AS organization_display_name,
@@ -333,8 +419,10 @@ export class PostgresAccountSessionRepositoryV1
        )
        SELECT CASE
                 WHEN selected.user_id IS NULL THEN 'invalid-session'
+                WHEN existing.mutation_id IS NOT NULL
+                 AND (existing.organization_id <> $2 OR existing.expected_version <> $3::bigint) THEN 'conflict'
+                WHEN existing.mutation_id IS NOT NULL THEN 'updated'
                 WHEN target.user_id IS NULL THEN 'organization-unavailable'
-                WHEN selected.active_organization_id = target.organization_id THEN 'updated'
                 WHEN selected.session_version <> $3::bigint THEN 'conflict'
                 WHEN updated.user_id IS NULL THEN 'conflict'
                 ELSE 'updated'
@@ -345,16 +433,30 @@ export class PostgresAccountSessionRepositoryV1
               organization.organization_role,
               selected.user_display_name,
               selected.user_id,
-              COALESCE(updated.session_version, selected.session_version)::text AS session_version
+              COALESCE(updated.session_version, selected.session_version)::text AS session_version,
+              latest.mutation_id::text AS switch_mutation_id,
+              latest.organization_id AS switch_organization_id,
+              latest.resulting_version::text AS switch_version,
+              confirmed.mutation_id::text AS confirmed_mutation_id,
+              confirmed.organization_id AS confirmed_organization_id,
+              confirmed.resulting_version::text AS confirmed_version
          FROM (VALUES (1)) AS request_anchor(value)
          LEFT JOIN selected_session selected ON true
+         LEFT JOIN existing_mutation existing ON true
          LEFT JOIN target_access target ON target.user_id = selected.user_id
          LEFT JOIN updated_session updated ON updated.user_id = selected.user_id
+         LEFT JOIN confirmed_mutation confirmed ON true
+         LEFT JOIN LATERAL (
+           SELECT mutation.mutation_id, mutation.organization_id, mutation.resulting_version
+             FROM public.account_organization_switch_mutations mutation
+            WHERE mutation.session_token_hash = $1
+            ORDER BY mutation.resulting_version DESC
+            LIMIT 1
+         ) latest ON true
          LEFT JOIN active_organizations organization
-           ON target.user_id IS NOT NULL
-          AND (selected.active_organization_id = target.organization_id OR updated.user_id IS NOT NULL)
+           ON confirmed.mutation_id IS NOT NULL
         ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
-      [sessionTokenHash, organizationId, expectedVersionValue],
+      [sessionTokenHash, organizationId, expectedVersionValue, mutationId],
       signal,
     );
     throwIfAborted(signal);

@@ -9,6 +9,7 @@ import {
 
 const session = {
   activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" },
+  organizationSwitch: null,
   organizations: [
     { displayName: "Poietra", id: "organization-a", role: "owner" },
     { displayName: "Studio Team", id: "organization-b", role: "member" },
@@ -16,6 +17,7 @@ const session = {
   user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
   version: 3,
 };
+const mutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -59,13 +61,14 @@ describe("account session client", () => {
     const switched = {
       ...session,
       activeOrganization: { displayName: "Studio Team", id: "organization-b", role: "member" },
+      organizationSwitch: { mutationId, organizationId: "organization-b", version: 4 },
     };
     const fetch = vi.fn(async () => new Response(JSON.stringify(switched), { status: 200 }));
     vi.stubGlobal("fetch", fetch);
 
-    await expect(switchAccountOrganizationV1("organization-b", session.version)).resolves.toEqual(switched);
+    await expect(switchAccountOrganizationV1("organization-b", session.version, mutationId)).resolves.toEqual(switched);
     expect(fetch).toHaveBeenCalledWith("/api/account/session", {
-      body: JSON.stringify({ organizationId: "organization-b", expectedVersion: 3 }),
+      body: JSON.stringify({ mutationId, organizationId: "organization-b", expectedVersion: 3 }),
       cache: "no-store",
       credentials: "same-origin",
       headers: { accept: "application/json", "content-type": "application/json" },
@@ -73,15 +76,25 @@ describe("account session client", () => {
       signal: undefined,
     });
 
+    const superseded = { ...session, organizationSwitch: switched.organizationSwitch, version: 5 };
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(superseded), { status: 200 }));
+    await expect(switchAccountOrganizationV1("organization-b", session.version, mutationId)).resolves.toEqual(
+      superseded,
+    );
+
     vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(session), { status: 200 }));
-    await expect(switchAccountOrganizationV1("organization-b", session.version)).rejects.toThrow("did not confirm");
+    await expect(switchAccountOrganizationV1("organization-b", session.version, mutationId)).rejects.toThrow(
+      "did not confirm",
+    );
   });
 
   it("rejects an invalid expected version before issuing a switch request", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
 
-    await expect(switchAccountOrganizationV1("organization-b", 0)).rejects.toThrow("account organization is invalid");
+    await expect(switchAccountOrganizationV1("organization-b", 0, mutationId)).rejects.toThrow(
+      "account organization is invalid",
+    );
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -91,7 +104,7 @@ describe("account session client", () => {
       vi.fn(async () => new Response(null, { status: 409 })),
     );
 
-    await expect(switchAccountOrganizationV1("organization-b", session.version)).rejects.toMatchObject({
+    await expect(switchAccountOrganizationV1("organization-b", session.version, mutationId)).rejects.toMatchObject({
       name: "AccountSessionRequestError",
       status: 409,
     });
