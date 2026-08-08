@@ -189,6 +189,100 @@ describe("Studio CST SourceAnalysis V1", () => {
     }
   });
 
+  it("blocks a construct binding rebound by a walrus in a nested definition's enclosing-scope expressions", () => {
+    const nestedDefault = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        def helper(value=(square := Circle())):",
+      "            pass",
+      "        self.add(square)",
+      "",
+    ].join("\n");
+    const analysis = analyze(nestedDefault, "Real", "scene.py");
+    const nestedScopes = analysis.scopes.filter(({ name }) => name === "helper");
+
+    expect(analysis.scene.bindingBlockers).toContainEqual({
+      kind: "named-expression-binding",
+      statementId: analysis.scene.statements[1]!.id,
+    });
+    expect(
+      analysis.bindings.find(({ kind, name }) => kind === "assignment" && name === "square")?.capabilities.move,
+    ).toEqual({ reason: "unsupported-binding-form", status: "unknown" });
+    expect(nestedScopes).toHaveLength(1);
+    expect(analysis.bindings.filter(({ name }) => name === "value")).toMatchObject([
+      { kind: "parameter", scopeId: nestedScopes[0]!.id },
+    ]);
+
+    const rebindingSites = [
+      ["        @deco(square := Circle())", "        def helper():", "            pass"],
+      ["        def helper(*, value: (square := Circle()) = 1):", "            pass"],
+      ["        def helper() -> (square := Circle()):", "            pass"],
+      ["        @deco(square := Circle())", "        class Nested:", "            pass"],
+      ["        class Nested(Base(square := Circle())):", "            pass"],
+      ["        class Nested(metaclass=(square := Circle())):", "            pass"],
+    ];
+    for (const site of rebindingSites) {
+      const source = [
+        "class Real(Scene):",
+        "    def construct(self):",
+        "        square = Square()",
+        ...site,
+        "        self.add(square)",
+        "",
+      ].join("\n");
+      const rebound = analyze(source, "Real", "scene.py");
+      expect(rebound.scene.bindingBlockers).toContainEqual({
+        kind: "named-expression-binding",
+        statementId: rebound.scene.statements[1]!.id,
+      });
+      expect(
+        rebound.bindings.find(({ kind, name }) => kind === "assignment" && name === "square")?.capabilities
+          .uniformResize,
+      ).toEqual({ reason: "unsupported-binding-form", status: "unknown" });
+    }
+  });
+
+  it("detects an argument-position walrus that the pinned grammar does not wrap in a NamedExpression", () => {
+    const source = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        self.play(FadeIn(square := Circle()))",
+      "",
+    ].join("\n");
+    const analysis = analyze(source, "Real", "scene.py");
+
+    expect(analysis.scene.bindingBlockers).toContainEqual({
+      kind: "named-expression-binding",
+      statementId: analysis.scene.statements[1]!.id,
+    });
+    expect(
+      analysis.bindings.find(({ kind, name }) => kind === "assignment" && name === "square")?.capabilities.move,
+    ).toEqual({ reason: "unsupported-binding-form", status: "unknown" });
+  });
+
+  it("keeps a walrus inside a nested definition body out of the construct scope", () => {
+    const source = [
+      "class Real(Scene):",
+      "    def construct(self):",
+      "        square = Square()",
+      "        def helper():",
+      "            (square := Circle())",
+      "            return square",
+      "        self.add(square)",
+      "",
+    ].join("\n");
+    const analysis = analyze(source, "Real", "scene.py");
+    const construct = analysis.bindings.find(
+      ({ kind, name, scopeId }) =>
+        kind === "assignment" && name === "square" && scopeId === analysis.scene.construct.scopeId,
+    );
+
+    expect(analysis.scene.bindingBlockers.map(({ kind }) => kind)).not.toContain("named-expression-binding");
+    expect(construct?.capabilities.move).toEqual({ status: "source-eligible" });
+  });
+
   it("fails closed when an exception handler introduces a construct-scope binding", () => {
     const source = [
       "class Real(Scene):",

@@ -450,6 +450,22 @@ function parameterNames(node: PythonNode) {
   return names;
 }
 
+/**
+ * Decorators, parameter defaults and annotations, return annotations, and class
+ * bases and keywords are evaluated in the scope that *contains* the definition,
+ * not inside the scope the definition introduces. A walrus in one of them
+ * therefore rebinds an enclosing-scope name and must be inspected before the
+ * nested body is handed to its own scope.
+ */
+function enclosingEvaluatedDefinitionNodes(statement: PythonNode, definition: PythonNode) {
+  const decorators =
+    statement.name === "DecoratedStatement" ? children(statement).filter((child) => child.name === "Decorator") : [];
+  const signature = children(definition).filter(
+    (child) => child.name === "ArgList" || child.name === "ParamList" || child.name === "TypeDef",
+  );
+  return [...decorators, ...signature];
+}
+
 type MutableBinding = Omit<SourceBindingFactV1, "ambiguous" | "capabilities" | "shadowedBindingId"> & {
   constructorCall: SourceBindingFactV1["constructorCall"];
 };
@@ -625,6 +641,34 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
     return matches;
   }
 
+  function walrusTargets(node: PythonNode) {
+    const targets: PythonNode[] = [];
+    const collect = (candidate: PythonNode) => {
+      if (candidate.name === "NamedExpression") {
+        if (candidate.firstChild) targets.push(candidate.firstChild);
+        return;
+      }
+      // The pinned grammar flattens an argument-position `name := value` into
+      // sibling tokens instead of a NamedExpression, so decorator, base, and
+      // call arguments are matched on the `:=` operator itself.
+      if (candidate.name !== "ArgList") return;
+      const parts = children(candidate);
+      for (const [position, part] of parts.entries()) {
+        const target = parts[position - 1];
+        if (
+          part.name === "AssignOp" &&
+          request.sourceText.slice(part.from, part.to) === ":=" &&
+          target?.name === "VariableName"
+        ) {
+          targets.push(target);
+        }
+      }
+    };
+    collect(node);
+    descendants(node, collect);
+    return targets;
+  }
+
   function inspectNode(
     node: PythonNode,
     scope: SourceScopeFactV1,
@@ -637,6 +681,9 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       const name = definitionName(functionDefinition);
       if (name) addBinding(name, scope, "function", controlPath, ownerStatementId, null);
       if (runtimeScope) addBlocker("function-definition-binding", ownerStatementId, name ? [name] : undefined);
+      for (const evaluated of enclosingEvaluatedDefinitionNodes(node, functionDefinition)) {
+        inspectNode(evaluated, scope, controlPath, ownerStatementId, runtimeScope);
+      }
       const nestedName = name ? request.sourceText.slice(name.from, name.to) : null;
       const nestedScope = addScope("function", nestedName, scope.id, functionDefinition);
       for (const parameter of parameterNames(functionDefinition)) {
@@ -653,6 +700,9 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       const name = definitionName(classDefinition);
       if (name) addBinding(name, scope, "class", controlPath, ownerStatementId, null);
       if (runtimeScope) addBlocker("class-definition-binding", ownerStatementId, name ? [name] : undefined);
+      for (const evaluated of enclosingEvaluatedDefinitionNodes(node, classDefinition)) {
+        inspectNode(evaluated, scope, controlPath, ownerStatementId, runtimeScope);
+      }
       const nestedName = name ? request.sourceText.slice(name.from, name.to) : null;
       addScope("class", nestedName, scope.id, classDefinition);
       return;
@@ -751,14 +801,8 @@ function analyze(request: StudioSourceAnalysisRequestV1): StudioSourceAnalysisV1
       addBlocker(`${node.name}-target-binding`, ownerStatementId, affectedNodes);
     }
     if (runtimeScope) {
-      const namedExpressions = namedDescendants(node, "NamedExpression");
-      if (namedExpressions.length > 0) {
-        addBlocker(
-          "named-expression-binding",
-          ownerStatementId,
-          namedExpressions.flatMap((expression) => (expression.firstChild ? [expression.firstChild] : [])),
-        );
-      }
+      const rebindings = walrusTargets(node);
+      if (rebindings.length > 0) addBlocker("named-expression-binding", ownerStatementId, rebindings);
     }
 
     for (const child of children(node)) {
