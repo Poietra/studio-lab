@@ -118,6 +118,161 @@ describe("bounded production runtime cell resolver", () => {
     expect(close).toHaveBeenCalledOnce();
   });
 
+  it("rejects an in-flight provision when the assignment source removes the tenant", async () => {
+    let resolveCount = 0;
+    let markProvisionStarted!: () => void;
+    let finishProvision!: () => void;
+    const provisionStarted = new Promise<void>((resolve) => {
+      markProvisionStarted = resolve;
+    });
+    const provisionMayFinish = new Promise<void>((resolve) => {
+      finishProvision = resolve;
+    });
+    const close = vi.fn(async () => undefined);
+    const resolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: {
+        ready: async () => true,
+        resolve: async () => (resolveCount++ === 0 ? assignment("tenant-a") : null),
+      },
+      provisioner: {
+        provision: async ({ tenantId }) => {
+          markProvisionStarted();
+          await provisionMayFinish;
+          return runtime(tenantId, close);
+        },
+      },
+    });
+    const verified = await principal("tenant-a");
+
+    const inFlight = expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({
+      status: 503,
+    });
+    await provisionStarted;
+    await expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({ status: 503 });
+    finishProvision();
+    await inFlight;
+    await resolver.close();
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("does not retain an assignment response invalidated before it was validated", async () => {
+    let finishFirstResolve!: (value: ProductionRuntimeCellAssignmentV1) => void;
+    const firstResolve = new Promise<ProductionRuntimeCellAssignmentV1>((resolve) => {
+      finishFirstResolve = resolve;
+    });
+    let resolveCount = 0;
+    const close = vi.fn(async () => undefined);
+    const resolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: {
+        ready: async () => true,
+        resolve: async () => {
+          resolveCount += 1;
+          if (resolveCount === 1) return firstResolve;
+          if (resolveCount === 2) return null;
+          return assignment("tenant-a", 1, "cell-a-v1");
+        },
+      },
+      provisioner: { provision: async ({ tenantId }) => runtime(tenantId, close) },
+    });
+    const verified = await principal("tenant-a");
+
+    const staleRead = expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({
+      status: 503,
+    });
+    await expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({ status: 503 });
+    finishFirstResolve(assignment("tenant-a", 2, "cell-a-v2"));
+    await staleRead;
+
+    const freshLease = await resolver.acquire(verified, new AbortController().signal);
+    freshLease.release();
+    await resolver.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a provisioned cell removed before the acquiring continuation leases it", async () => {
+    const verified = await principal("tenant-a");
+    let resolveCount = 0;
+    let removalRequest: Promise<void> | null = null;
+    const close = vi.fn(async () => undefined);
+    let resolver!: BoundedProductionManimRuntimeCellResolverV1;
+    resolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: {
+        ready: async () => true,
+        resolve: async () => (resolveCount++ === 0 ? assignment("tenant-a") : null),
+      },
+      provisioner: {
+        provision: async ({ tenantId }) => {
+          queueMicrotask(() => {
+            removalRequest = resolver
+              .acquire(verified, new AbortController().signal)
+              .then(() => Promise.reject(new Error("Removal acquire unexpectedly succeeded.")))
+              .catch((error: unknown) => {
+                expect(error).toMatchObject({ status: 503 });
+              });
+          });
+          return runtime(tenantId, close);
+        },
+      },
+    });
+
+    const outcome = expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({
+      status: 503,
+    });
+    await vi.waitFor(() => expect(removalRequest).not.toBeNull());
+    await removalRequest;
+    await outcome;
+    await resolver.close();
+
+    expect(close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects a provisioned generation superseded before the acquiring continuation leases it", async () => {
+    const verified = await principal("tenant-a");
+    let resolveCount = 0;
+    let markRotationStarted!: () => void;
+    const rotationStarted = new Promise<void>((resolve) => {
+      markRotationStarted = resolve;
+    });
+    let rotationRequest: ReturnType<BoundedProductionManimRuntimeCellResolverV1["acquire"]> | null = null;
+    const oldClose = vi.fn(async () => undefined);
+    const newClose = vi.fn(async () => undefined);
+    let resolver!: BoundedProductionManimRuntimeCellResolverV1;
+    resolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: {
+        ready: async () => true,
+        resolve: async () => {
+          resolveCount += 1;
+          return assignment("tenant-a", resolveCount, `cell-a-v${resolveCount}`);
+        },
+      },
+      maxCells: 2,
+      provisioner: {
+        provision: async ({ generation, tenantId }) => {
+          if (generation === 1) {
+            queueMicrotask(() => {
+              rotationRequest = resolver.acquire(verified, new AbortController().signal);
+              markRotationStarted();
+            });
+          }
+          return runtime(tenantId, generation === 1 ? oldClose : newClose);
+        },
+      },
+    });
+
+    const firstOutcome = expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({
+      status: 503,
+    });
+    await rotationStarted;
+    const freshLease = await rotationRequest!;
+    await firstOutcome;
+    freshLease.release();
+    await resolver.close();
+
+    expect(oldClose).toHaveBeenCalledOnce();
+    expect(newClose).toHaveBeenCalledOnce();
+  });
+
   it("fails closed for missing, disabled, stale, conflicting, or forged assignments", async () => {
     let current: unknown = assignment("tenant-a", 2, "shared-cell");
     const activeClose = vi.fn(async () => undefined);

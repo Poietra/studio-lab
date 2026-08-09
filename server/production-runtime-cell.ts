@@ -129,6 +129,16 @@ type CellEntry = {
   runtime: ProductionManimRuntimeAdapterV1;
 };
 
+type AssignmentInvalidationState = {
+  epoch: symbol;
+  readers: number;
+};
+
+type AssignmentInvalidationSnapshot = Readonly<{
+  epoch: symbol;
+  state: AssignmentInvalidationState;
+}>;
+
 function unavailableCell(): HttpError {
   return new HttpError("Tenant runtime cell is temporarily unavailable.", 503);
 }
@@ -245,6 +255,7 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
   readonly #closeController = new AbortController();
   readonly #closeErrors: unknown[] = [];
   readonly #current = new Map<string, CellEntry>();
+  readonly #invalidationStates = new Map<string, AssignmentInvalidationState>();
   readonly #live = new Set<CellEntry>();
   readonly #maxAssignments: number;
   readonly #maxCells: number;
@@ -295,26 +306,40 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
     signal.throwIfAborted();
     if (!isVerifiedManimPrincipal(principal)) throw new HttpError("Authentication is required.", 401);
     if (this.#lifecycle !== "accepting" || this.#failed) throw unavailableCell();
+    const invalidation = this.#beginAssignmentRead(principal.tenantId);
+    try {
+      return await this.#acquireObserved(principal.tenantId, signal, invalidation);
+    } finally {
+      this.#endAssignmentRead(principal.tenantId, invalidation.state);
+    }
+  }
 
+  async #acquireObserved(
+    tenantId: string,
+    signal: AbortSignal,
+    invalidation: AssignmentInvalidationSnapshot,
+  ): Promise<ProductionManimRuntimeCellLeaseV1> {
     let rawAssignment: unknown;
     try {
-      rawAssignment = await this.#assignments.resolve(principal.tenantId, signal);
+      rawAssignment = await this.#assignments.resolve(tenantId, signal);
     } catch {
       if (signal.aborted) throw signal.reason;
       throw unavailableCell();
     }
     signal.throwIfAborted();
     if (rawAssignment === null) {
-      const existing = this.#current.get(principal.tenantId);
+      this.#invalidateAssignment(invalidation.state);
+      const existing = this.#current.get(tenantId);
       if (existing) {
-        this.#current.delete(principal.tenantId);
+        this.#current.delete(tenantId);
         this.#retire(existing);
       }
       throw unavailableCell();
     }
     const parsed = productionRuntimeCellAssignmentSchemaV1.safeParse(rawAssignment);
-    if (!parsed.success || parsed.data.tenantId !== principal.tenantId) throw unavailableCell();
+    if (!parsed.success || parsed.data.tenantId !== tenantId) throw unavailableCell();
     const assignment = parsed.data;
+    if (!this.#assignmentReadIsCurrent(assignment.tenantId, invalidation)) throw unavailableCell();
     this.#recordAssignment(assignment);
     if (assignment.state !== "active") {
       const existing = this.#current.get(assignment.tenantId);
@@ -328,14 +353,22 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
     let entry = this.#current.get(assignment.tenantId);
     if (!entry || !sameAssignment(entry.assignment, assignment)) {
       try {
-        entry = await this.#provisionSerialized(assignment);
+        entry = await this.#provisionSerialized(assignment, invalidation);
       } catch {
         if (signal.aborted) throw signal.reason;
         throw unavailableCell();
       }
     }
     signal.throwIfAborted();
-    if (this.#lifecycle !== "accepting" || this.#failed || !sameAssignment(entry.assignment, assignment)) {
+    if (
+      this.#lifecycle !== "accepting" ||
+      this.#failed ||
+      !this.#assignmentReadIsCurrent(assignment.tenantId, invalidation) ||
+      entry.retired ||
+      this.#current.get(assignment.tenantId) !== entry ||
+      !sameAssignment(this.#observed.get(assignment.tenantId) ?? assignment, assignment) ||
+      !sameAssignment(entry.assignment, assignment)
+    ) {
       throw unavailableCell();
     }
     entry.leases += 1;
@@ -373,10 +406,41 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
     if (!previous || assignment.generation > previous.generation) this.#observed.set(assignment.tenantId, assignment);
   }
 
-  #provisionSerialized(assignment: ProductionRuntimeCellAssignmentV1) {
+  #beginAssignmentRead(tenantId: string): AssignmentInvalidationSnapshot {
+    let state = this.#invalidationStates.get(tenantId);
+    if (!state) {
+      if (this.#invalidationStates.size >= this.#maxAssignments) throw unavailableCell();
+      state = { epoch: Symbol(), readers: 0 };
+      this.#invalidationStates.set(tenantId, state);
+    }
+    state.readers += 1;
+    return { epoch: state.epoch, state };
+  }
+
+  #endAssignmentRead(tenantId: string, state: AssignmentInvalidationState) {
+    state.readers -= 1;
+    if (
+      state.readers === 0 &&
+      !this.#observed.has(tenantId) &&
+      !this.#current.has(tenantId) &&
+      this.#invalidationStates.get(tenantId) === state
+    ) {
+      this.#invalidationStates.delete(tenantId);
+    }
+  }
+
+  #invalidateAssignment(state: AssignmentInvalidationState) {
+    state.epoch = Symbol();
+  }
+
+  #assignmentReadIsCurrent(tenantId: string, snapshot: AssignmentInvalidationSnapshot) {
+    return this.#invalidationStates.get(tenantId) === snapshot.state && snapshot.state.epoch === snapshot.epoch;
+  }
+
+  #provisionSerialized(assignment: ProductionRuntimeCellAssignmentV1, invalidation: AssignmentInvalidationSnapshot) {
     const provision = this.#provisionQueue.then(
-      () => this.#provision(assignment),
-      () => this.#provision(assignment),
+      () => this.#provision(assignment, invalidation),
+      () => this.#provision(assignment, invalidation),
     );
     this.#provisionQueue = provision.then(
       () => undefined,
@@ -385,10 +449,20 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
     return provision;
   }
 
-  async #provision(assignment: ProductionRuntimeCellAssignmentV1): Promise<CellEntry> {
+  async #provision(
+    assignment: ProductionRuntimeCellAssignmentV1,
+    invalidation: AssignmentInvalidationSnapshot,
+  ): Promise<CellEntry> {
     if (this.#lifecycle !== "accepting" || this.#failed) throw unavailableCell();
     const latest = this.#observed.get(assignment.tenantId);
-    if (!latest || !sameAssignment(latest, assignment) || assignment.state !== "active") throw unavailableCell();
+    if (
+      !latest ||
+      !sameAssignment(latest, assignment) ||
+      assignment.state !== "active" ||
+      !this.#assignmentReadIsCurrent(assignment.tenantId, invalidation)
+    ) {
+      throw unavailableCell();
+    }
     const cached = this.#current.get(assignment.tenantId);
     if (cached && sameAssignment(cached.assignment, assignment)) return cached;
     await this.#makeRoom();
@@ -400,6 +474,7 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
       if (
         this.#lifecycle !== "accepting" ||
         this.#failed ||
+        !this.#assignmentReadIsCurrent(assignment.tenantId, invalidation) ||
         !sameAssignment(this.#observed.get(assignment.tenantId) ?? assignment, assignment)
       ) {
         throw unavailableCell();
