@@ -17,6 +17,7 @@ import {
   StudioPresenceOverlay,
   type StudioPresenceParticipantV1,
 } from "./studio-presence-overlay";
+import { markStudioRenderBoundary } from "./studio-render-profiler";
 import type { StudioTool } from "./studio-toolbar";
 import {
   clientPointToViewport,
@@ -333,6 +334,7 @@ export function StudioCanvas({
   scalePreview,
   selectedIds,
 }: StudioCanvasProps) {
+  markStudioRenderBoundary("canvas");
   // Only a fully correlated, presented WebGPU frame may replace the duplicate
   // DOM fill/stroke paint: `preview.state` is resolved synchronously against
   // the current playhead, viewport, snapshot correlation, and host, so hiding
