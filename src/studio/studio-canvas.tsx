@@ -549,7 +549,6 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             const runtimePositionOnly =
-              preview?.genericInitialEditCandidate?.studioEntityId === entity.id ||
               (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
                 preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
               (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
@@ -699,8 +698,8 @@ export function StudioCanvas({
                       : selectionOnlyPreview
                         ? "selection only"
                         : preview.interactionAuthority.kind === "bounded-interactive"
-                          ? preview.interactionAuthority.reason === "runtime-trace-initial-move"
-                            ? "Runtime Trace initial position move"
+                          ? preview.interactionAuthority.reason === "runtime-trace-initial-edit"
+                            ? "Runtime Trace initial move / uniform resize"
                             : preview.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2"
                               ? "Grid title terminal edit at 14.00s"
                               : "Square terminal edit at 5.00s"

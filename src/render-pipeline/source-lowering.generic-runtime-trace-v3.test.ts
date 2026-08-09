@@ -7,7 +7,8 @@ import type { ProgramRenderRequest } from "./contracts";
 import { importManimScene } from "./source-import";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  lowerGenericRuntimeTraceInitialPositionSourceV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  lowerGenericRuntimeTraceInitialEditSourceV3,
 } from "./source-lowering";
 
 const sourcePath = "scene_runtime_trace_v3.py";
@@ -48,6 +49,28 @@ function initialMoveProgram(value = { x: 410, y: 135 }): CanonicalEditProgram {
   };
 }
 
+function initialResizeProgram(relativeFactor = 1.5, from = 1): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    easing: "smooth",
+    entityId,
+    from,
+    id: "generic-v3-initial-scale",
+    interval: { end: 0, start: 0 },
+    key: "scale",
+    kind: "AnimateProperty",
+    provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+    relativeFactor,
+    to: from * relativeFactor,
+  };
+  return {
+    ...initialMoveProgram(),
+    operations: [operation],
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "generic-v3-initial-resize",
+  };
+}
+
 function request(sourceText = source, program = initialMoveProgram()): ProgramRenderRequest {
   return {
     cameraCenter: { x: 0, y: 0 },
@@ -63,7 +86,7 @@ function request(sourceText = source, program = initialMoveProgram()): ProgramRe
 }
 
 function lower(sourceText = source, renderRequest = request(sourceText)) {
-  return lowerGenericRuntimeTraceInitialPositionSourceV3(
+  return lowerGenericRuntimeTraceInitialEditSourceV3(
     sourceText,
     renderRequest,
     [{ program: renderRequest.program, sourceAnchor: 0 }],
@@ -210,5 +233,102 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     );
 
     expect(lower(anchored, request(anchored))).toBeNull();
+  });
+
+  it("inserts one canonical uniform resize after the exact assignment and emits re-derivable evidence", () => {
+    const lowered = lower(source, request(source, initialResizeProgram()));
+
+    expect(lowered).not.toBeNull();
+    expect(lowered?.insertedCode).toBe("        square.scale(1.5)");
+    expect(lowered?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.scale(1.5)\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: {
+        id: expect.stringMatching(/^source-binding:[0-9a-f]{64}$/u),
+        name: "square",
+        ordinal: 1,
+        span: { endColumn: 14, endLine: 6, startColumn: 8, startLine: 6 },
+      },
+      baseSourceHash: request().sourceHash,
+      entityId,
+      expectedScaleFactor: 1.5,
+      kind: "fast-manim-generic-initial-resize-v3",
+    });
+
+    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(lowered!.source, sceneName, sourcePath);
+    expect(derived.baseSource).toBe(source);
+    expect(derived.baseBinding).toEqual(
+      lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
+    );
+    expect(derived.candidateBinding.id).not.toBe(derived.baseBinding.id);
+    expect(derived.expectedScaleFactor).toBe(1.5);
+  });
+
+  it("lowers the relative factor for shrink edits and non-unit execution scales", () => {
+    // A rebased edit keeps its multiplicative intent: from=2, to=3 must lower
+    // the relative factor 1.5, never the absolute channel value 3.
+    const rebased = lower(source, request(source, initialResizeProgram(1.5, 2)));
+    expect(rebased?.insertedCode).toBe("        square.scale(1.5)");
+    expect(rebased?.preflight).toMatchObject({ expectedScaleFactor: 1.5 });
+
+    const shrunk = lower(source, request(source, initialResizeProgram(0.5)));
+    expect(shrunk?.insertedCode).toBe("        square.scale(0.5)");
+    expect(shrunk?.preflight).toMatchObject({ expectedScaleFactor: 0.5 });
+  });
+
+  it("rejects an identity, non-positive, or non-relative uniform resize factor", () => {
+    expect(() => lower(source, request(source, initialResizeProgram(1)))).toThrow(
+      /positive non-identity bounded scale factor/i,
+    );
+    expect(() => lower(source, request(source, initialResizeProgram(-2)))).toThrow(
+      /only one exact direct-manipulation/i,
+    );
+    const inconsistent: CanonicalEditProgram = (() => {
+      const program = initialResizeProgram(1.5);
+      const operation = { ...program.operations[0]!, relativeFactor: 2 } as CanonicalEditOperation;
+      return { ...program, operations: [operation] };
+    })();
+    expect(() => lower(source, request(source, inconsistent))).toThrow(/only one exact direct-manipulation/i);
+  });
+
+  it("rejects non-canonical or non-adjacent candidate resize statements during independent derivation", () => {
+    const lowered = lower(source, request(source, initialResizeProgram()));
+    expect(lowered).not.toBeNull();
+    const nonCanonical = lowered!.source.replace("square.scale(1.5)", "square.scale(1.50)");
+    const identity = lowered!.source.replace("square.scale(1.5)", "square.scale(1)");
+    const nonAdjacent = lowered!.source.replace(
+      "        square.scale(1.5)\n        square.set_stroke",
+      "        self.add(square)\n        square.scale(1.5)\n        square.set_stroke",
+    );
+
+    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonCanonical, sceneName, sourcePath)).toThrow(
+      /canonical positive non-identity bounded scale/i,
+    );
+    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(identity, sceneName, sourcePath)).toThrow(
+      /canonical positive non-identity bounded scale/i,
+    );
+    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonAdjacent, sceneName, sourcePath)).toThrow(
+      /candidate resize/i,
+    );
+  });
+
+  it("re-derives sequential edits with the newest statement directly after the assignment", () => {
+    // A resize on an already-moved base keeps the earlier canonical move as
+    // plain base program text; only the newest inserted statement is removed.
+    const moved = lower()!.source;
+    const resized = lower(moved, request(moved, initialResizeProgram()));
+    expect(resized).not.toBeNull();
+    expect(resized?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.scale(1.5)\n" +
+        "        square.move_to((2, 1, 0))\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(resized!.source, sceneName, sourcePath);
+    expect(derived.baseSource).toBe(moved);
+    expect(derived.expectedScaleFactor).toBe(1.5);
   });
 });

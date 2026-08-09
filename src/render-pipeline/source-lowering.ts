@@ -87,6 +87,18 @@ export type GenericRuntimeTraceInitialMovePreflightV3 = Readonly<{
   kind: "fast-manim-generic-initial-move-v3";
 }>;
 
+export type GenericRuntimeTraceInitialResizePreflightV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSourceHash: string;
+  entityId: string;
+  expectedScaleFactor: number;
+  kind: "fast-manim-generic-initial-resize-v3";
+}>;
+
+export type GenericRuntimeTraceInitialEditPreflightV3 =
+  | GenericRuntimeTraceInitialMovePreflightV3
+  | GenericRuntimeTraceInitialResizePreflightV3;
+
 type PinnedCandidatePreflight = Readonly<{
   baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
   kind:
@@ -102,7 +114,7 @@ export type LoweredProgramBatchSource = Readonly<{
   anchorLine: number;
   anchorLines: readonly number[];
   insertedCode: string;
-  preflight?: GenericRuntimeTraceInitialMovePreflightV3 | PinnedCandidatePreflight;
+  preflight?: GenericRuntimeTraceInitialEditPreflightV3 | PinnedCandidatePreflight;
   source: string;
 }>;
 
@@ -1999,8 +2011,16 @@ export type GenericRuntimeTraceInitialMoveSourceEditPlanV3 = Readonly<{
   expectedWorldCenter: Readonly<{ x: number; y: number }>;
 }>;
 
+export type GenericRuntimeTraceInitialResizeSourceEditPlanV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSource: string;
+  baseSourceHash: string;
+  candidateBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  expectedScaleFactor: number;
+}>;
+
 function genericRuntimeTraceInitialMoveV3LoweringError(message: string): never {
-  throw new ProgramLoweringError("operation-unsupported", `Generic Runtime Trace V3 initial move: ${message}`);
+  throw new ProgramLoweringError("operation-unsupported", `Generic Runtime Trace V3 initial edit: ${message}`);
 }
 
 function analyzeGenericRuntimeTraceInitialMoveSourceV3(source: string, sceneName: string, sourcePath: string) {
@@ -2087,17 +2107,38 @@ function parseCanonicalGenericInitialMoveV3(statement: string, bindingName: stri
   return { x, y } as const;
 }
 
+function parseCanonicalGenericInitialResizeV3(statement: string, bindingName: string) {
+  const match = statement.match(new RegExp(`^${escapeRegularExpression(bindingName)}\\.scale\\(([^()]+)\\)$`, "u"));
+  if (!match) return null;
+  const factor = Number(match[1]);
+  if (
+    !Number.isFinite(factor) ||
+    factor <= 0 ||
+    factor === 1 ||
+    factor > MAX_COORDINATE ||
+    formatPositiveAmount(factor) !== match[1]
+  ) {
+    return null;
+  }
+  return factor;
+}
+
 /**
- * Re-derives the generic V3 source edit from candidate bytes alone. The
- * candidate must contain exactly one canonical move immediately after its one
- * projected assignment; removing that statement must recover equally exact
- * base binding evidence.
+ * Re-derives one generic V3 source edit from candidate bytes alone. The
+ * candidate must contain exactly one canonical edit statement immediately
+ * after its one projected assignment; removing that statement must recover
+ * equally exact base binding evidence.
  */
-export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
-): GenericRuntimeTraceInitialMoveSourceEditPlanV3 {
+  edit: Readonly<{
+    label: "move" | "resize";
+    malformed: string;
+    parse: (statement: string, bindingName: string) => Value | null;
+  }>,
+) {
   const candidateAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(candidateSource, sceneName, sourcePath);
   const candidateBindings = projectedGenericRuntimeTraceSourceBindingsV3(candidateAnalysis);
   if (candidateBindings.length !== 1) {
@@ -2110,30 +2151,32 @@ export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
     ({ id }) => id === candidateBinding.binding.statementId,
   );
   const assignment = candidateAnalysis.scene.statements[assignmentIndex];
-  const move = candidateAnalysis.scene.statements[assignmentIndex + 1];
+  const statement = candidateAnalysis.scene.statements[assignmentIndex + 1];
   if (
     assignmentIndex < 0 ||
     !assignment ||
-    !move ||
-    move.line !== assignment.span.endLine + 1 ||
-    move.indentation !== assignment.indentation
+    !statement ||
+    statement.line !== assignment.span.endLine + 1 ||
+    statement.indentation !== assignment.indentation
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "candidate move must be the direct statement immediately after the projected assignment.",
+      `candidate ${edit.label} must be the direct statement immediately after the projected assignment.`,
     );
   }
-  const expectedWorldCenter = parseCanonicalGenericInitialMoveV3(move.text, candidateBinding.evidence.name);
-  if (!expectedWorldCenter) {
-    genericRuntimeTraceInitialMoveV3LoweringError("candidate move is not one canonical finite bounded move_to call.");
+  const value = edit.parse(statement.text, candidateBinding.evidence.name);
+  if (value === null) {
+    genericRuntimeTraceInitialMoveV3LoweringError(`candidate ${edit.label} is not ${edit.malformed}.`);
   }
 
   let baseSource: string;
   try {
     baseSource = removeDirectSourceStatementsV1(candidateSource, candidateAnalysis, [
-      { expectedText: move.text, statementId: move.id },
+      { expectedText: statement.text, statementId: statement.id },
     ]);
   } catch {
-    genericRuntimeTraceInitialMoveV3LoweringError("candidate move does not have one canonical removable source span.");
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      `candidate ${edit.label} does not have one canonical removable source span.`,
+    );
   }
   const baseAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(baseSource, sceneName, sourcePath);
   const baseBindings = projectedGenericRuntimeTraceSourceBindingsV3(baseAnalysis);
@@ -2146,7 +2189,7 @@ export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
     JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span)
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "removing the candidate move must recover the same one exact base binding occurrence.",
+      `removing the candidate ${edit.label} must recover the same one exact base binding occurrence.`,
     );
   }
   return {
@@ -2154,16 +2197,62 @@ export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
     baseSource,
     baseSourceHash: baseAnalysis.sourceHash,
     candidateBinding: candidateBinding.evidence,
-    expectedWorldCenter,
+    value,
   };
 }
 
-function exactGenericInitialMoveOperationV3(
+export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+  candidateSource: string,
+  sceneName: string,
+  sourcePath: string,
+): GenericRuntimeTraceInitialMoveSourceEditPlanV3 {
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
+    label: "move",
+    malformed: "one canonical finite bounded move_to call",
+    parse: parseCanonicalGenericInitialMoveV3,
+  });
+  return {
+    baseBinding: derived.baseBinding,
+    baseSource: derived.baseSource,
+    baseSourceHash: derived.baseSourceHash,
+    candidateBinding: derived.candidateBinding,
+    expectedWorldCenter: derived.value,
+  };
+}
+
+export function deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+  candidateSource: string,
+  sceneName: string,
+  sourcePath: string,
+): GenericRuntimeTraceInitialResizeSourceEditPlanV3 {
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
+    label: "resize",
+    malformed: "one canonical positive non-identity bounded scale call",
+    parse: parseCanonicalGenericInitialResizeV3,
+  });
+  return {
+    baseBinding: derived.baseBinding,
+    baseSource: derived.baseSource,
+    baseSourceHash: derived.baseSourceHash,
+    candidateBinding: derived.candidateBinding,
+    expectedScaleFactor: derived.value,
+  };
+}
+
+type GenericRuntimeTraceInitialEditOperationV3 =
+  | Readonly<{ entityId: string; kind: "move"; value: Readonly<{ x: number; y: number }> }>
+  | Readonly<{ entityId: string; factor: number; kind: "resize" }>;
+
+function genericRuntimeTraceInitialEditOperationV3(
   request: ProgramRenderRequest,
   entries: readonly LoweredProgramBatchEntry[],
-) {
+): GenericRuntimeTraceInitialEditOperationV3 | null {
   const programs = renderRequestPrograms(request);
   if (!entries.some(({ sourceAnchor }) => sourceAnchor === 0)) return null;
+  const fail: () => never = () =>
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "only one exact direct-manipulation position move or uniform resize Program at source time zero is accepted.",
+    );
   const program = programs[0];
   const entry = entries[0];
   const operation = program?.operations[0];
@@ -2187,33 +2276,50 @@ function exactGenericInitialMoveOperationV3(
     program.requestedExecution !== "parallel" ||
     program.operations.length !== 1 ||
     !operation ||
-    operation.kind !== "SetProperty" ||
-    operation.key !== "position" ||
     operation.dependsOn.length !== 0 ||
     operation.interval.start !== 0 ||
     operation.interval.end !== 0 ||
     operation.provenance.origin !== "direct-manipulation" ||
-    !isPoint(operation.value) ||
-    !Number.isFinite(operation.value.x) ||
-    !Number.isFinite(operation.value.y) ||
     program.schedule.mode !== "parallel" ||
     program.schedule.edges.length !== 0 ||
     program.schedule.order.length !== 1 ||
     program.schedule.order[0] !== operation.id
   ) {
-    genericRuntimeTraceInitialMoveV3LoweringError(
-      "only one exact direct-manipulation SetProperty(position) Program at source time zero is accepted.",
-    );
+    fail();
   }
-  return { entityId: operation.entityId, value: { x: operation.value.x, y: operation.value.y } } as const;
+  if (operation.kind === "SetProperty" && operation.key === "position") {
+    if (!isPoint(operation.value) || !Number.isFinite(operation.value.x) || !Number.isFinite(operation.value.y)) {
+      fail();
+    }
+    const value = operation.value as Readonly<{ x: number; y: number }>;
+    return { entityId: operation.entityId, kind: "move", value: { x: value.x, y: value.y } };
+  }
+  if (
+    operation.kind === "AnimateProperty" &&
+    operation.key === "scale" &&
+    operation.control === undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    typeof operation.relativeFactor === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    Number.isFinite(operation.relativeFactor) &&
+    operation.from > 0 &&
+    operation.to > 0 &&
+    operation.relativeFactor > 0 &&
+    Math.abs(operation.to / operation.from - operation.relativeFactor) < 0.000001
+  ) {
+    return { entityId: operation.entityId, factor: operation.relativeFactor, kind: "resize" };
+  }
+  fail();
 }
 
 /**
- * Promotes only the generic Runtime Trace V3 StaticSquare-shaped initial move.
+ * Promotes the generic Runtime Trace V3 initial move and uniform resize.
  * Browser evidence is correlation only: current source bytes and canonical
  * SourceAnalysis independently choose the one rewritable binding occurrence.
  */
-export function lowerGenericRuntimeTraceInitialPositionSourceV3(
+export function lowerGenericRuntimeTraceInitialEditSourceV3(
   source: string,
   request: ProgramRenderRequest,
   entries: readonly LoweredProgramBatchEntry[],
@@ -2228,7 +2334,7 @@ export function lowerGenericRuntimeTraceInitialPositionSourceV3(
   ) {
     return null;
   }
-  const operation = exactGenericInitialMoveOperationV3(request, entries);
+  const operation = genericRuntimeTraceInitialEditOperationV3(request, entries);
   if (!operation) return null;
   if (incoming !== null || request.destination !== null) {
     genericRuntimeTraceInitialMoveV3LoweringError("Scene transitions are outside this bounded profile.");
@@ -2277,25 +2383,76 @@ export function lowerGenericRuntimeTraceInitialPositionSourceV3(
     );
   }
 
-  const expectedWorldCenter = worldPointFromViewport(operation.value, frame, request.viewport, cameraCenter);
+  const emitLoweredSource = (insertedCode: string) => {
+    try {
+      return insertAtSourceBoundaryV1(source, analysis, insertionBoundary, [insertedCode]);
+    } catch {
+      genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis rejected the canonical assignment insertion.");
+    }
+  };
+
+  if (operation.kind === "move") {
+    const expectedWorldCenter = worldPointFromViewport(operation.value, frame, request.viewport, cameraCenter);
+    if (
+      !Number.isFinite(expectedWorldCenter.x) ||
+      !Number.isFinite(expectedWorldCenter.y) ||
+      Math.abs(expectedWorldCenter.x) > MAX_COORDINATE ||
+      Math.abs(expectedWorldCenter.y) > MAX_COORDINATE
+    ) {
+      genericRuntimeTraceInitialMoveV3LoweringError(
+        `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
+      );
+    }
+    const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.move_to((${formatPointCoordinate(expectedWorldCenter.x)}, ${formatPointCoordinate(expectedWorldCenter.y)}, 0))`;
+    const loweredSource = emitLoweredSource(insertedCode);
+    const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+      loweredSource,
+      request.sceneName,
+      request.sourcePath,
+    );
+    if (
+      derived.baseSource !== source ||
+      derived.baseSourceHash !== request.sourceHash ||
+      JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
+      derived.expectedWorldCenter.x !== expectedWorldCenter.x ||
+      derived.expectedWorldCenter.y !== expectedWorldCenter.y
+    ) {
+      genericRuntimeTraceInitialMoveV3LoweringError(
+        "the emitted source does not re-derive the exact base binding and requested world center.",
+      );
+    }
+    return {
+      anchorLine: insertionBoundary.line,
+      anchorLines: [insertionBoundary.line],
+      insertedCode,
+      preflight: {
+        baseBinding: derived.baseBinding,
+        baseSourceHash: derived.baseSourceHash,
+        entityId: operation.entityId,
+        expectedWorldCenter: derived.expectedWorldCenter,
+        kind: "fast-manim-generic-initial-move-v3",
+      },
+      source: loweredSource,
+    };
+  }
+
+  // A uniform resize is a dimensionless multiplicative intent; it needs no
+  // viewport-to-world conversion, only the canonical positive bounded factor.
+  const formattedFactor = formatPositiveAmount(operation.factor);
+  const expectedScaleFactor = Number(formattedFactor);
   if (
-    !Number.isFinite(expectedWorldCenter.x) ||
-    !Number.isFinite(expectedWorldCenter.y) ||
-    Math.abs(expectedWorldCenter.x) > MAX_COORDINATE ||
-    Math.abs(expectedWorldCenter.y) > MAX_COORDINATE
+    !Number.isFinite(expectedScaleFactor) ||
+    expectedScaleFactor <= 0 ||
+    expectedScaleFactor === 1 ||
+    expectedScaleFactor > MAX_COORDINATE
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
+      "uniform resize must lower to one positive non-identity bounded scale factor.",
     );
   }
-  const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.move_to((${formatPointCoordinate(expectedWorldCenter.x)}, ${formatPointCoordinate(expectedWorldCenter.y)}, 0))`;
-  let loweredSource: string;
-  try {
-    loweredSource = insertAtSourceBoundaryV1(source, analysis, insertionBoundary, [insertedCode]);
-  } catch {
-    genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis rejected the canonical assignment insertion.");
-  }
-  const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+  const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.scale(${formattedFactor})`;
+  const loweredSource = emitLoweredSource(insertedCode);
+  const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
     loweredSource,
     request.sceneName,
     request.sourcePath,
@@ -2304,11 +2461,10 @@ export function lowerGenericRuntimeTraceInitialPositionSourceV3(
     derived.baseSource !== source ||
     derived.baseSourceHash !== request.sourceHash ||
     JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
-    derived.expectedWorldCenter.x !== expectedWorldCenter.x ||
-    derived.expectedWorldCenter.y !== expectedWorldCenter.y
+    derived.expectedScaleFactor !== expectedScaleFactor
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "the emitted source does not re-derive the exact base binding and requested world center.",
+      "the emitted source does not re-derive the exact base binding and requested scale factor.",
     );
   }
   return {
@@ -2319,8 +2475,8 @@ export function lowerGenericRuntimeTraceInitialPositionSourceV3(
       baseBinding: derived.baseBinding,
       baseSourceHash: derived.baseSourceHash,
       entityId: operation.entityId,
-      expectedWorldCenter: derived.expectedWorldCenter,
-      kind: "fast-manim-generic-initial-move-v3",
+      expectedScaleFactor: derived.expectedScaleFactor,
+      kind: "fast-manim-generic-initial-resize-v3",
     },
     source: loweredSource,
   };

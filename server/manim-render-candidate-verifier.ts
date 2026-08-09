@@ -1,7 +1,7 @@
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import { type ProgramRenderRequest, renderRequestId } from "../src/render-pipeline/contracts";
 import type {
-  GenericRuntimeTraceInitialMovePreflightV3,
+  GenericRuntimeTraceInitialEditPreflightV3,
   LoweredProgramBatchSource,
 } from "../src/render-pipeline/source-lowering";
 import {
@@ -226,7 +226,8 @@ export class ManimRenderCandidateVerifierV1 {
     if (
       preflight.kind === "fast-manim-updaters-terminal-v1" ||
       preflight.kind === "fast-manim-opening-terminal-v2" ||
-      preflight.kind === "fast-manim-generic-initial-move-v3"
+      preflight.kind === "fast-manim-generic-initial-move-v3" ||
+      preflight.kind === "fast-manim-generic-initial-resize-v3"
     ) {
       await this.#verifyRuntimeTraceCandidate(lowered, request, signal);
       return;
@@ -364,37 +365,44 @@ export class ManimRenderCandidateVerifierV1 {
   ) {
     const preflight = lowered.preflight;
     const opening = preflight?.kind === "fast-manim-opening-terminal-v2";
-    const generic = preflight?.kind === "fast-manim-generic-initial-move-v3";
+    const genericMove = preflight?.kind === "fast-manim-generic-initial-move-v3";
+    const genericResize = preflight?.kind === "fast-manim-generic-initial-resize-v3";
     const reject = (failure: string): never => {
       this.#logger.warn(
-        generic
-          ? "render.generic_initial_move_runtime_trace_candidate_preflight_rejected"
-          : opening
-            ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
-            : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
+        genericResize
+          ? "render.generic_initial_resize_runtime_trace_candidate_preflight_rejected"
+          : genericMove
+            ? "render.generic_initial_move_runtime_trace_candidate_preflight_rejected"
+            : opening
+              ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
+              : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
         {
           failure,
           sourcePath: request.sourcePath,
         },
       );
       throw new HttpError(
-        generic
-          ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
-          : opening
-            ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
-            : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        genericResize
+          ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace resize. Reimport and try again."
+          : genericMove
+            ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
+            : opening
+              ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
+              : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
         409,
       );
     };
     const candidatePreflight = preflight ?? reject("runtime-trace-authority-unavailable");
-    const genericPreflight: GenericRuntimeTraceInitialMovePreflightV3 | null =
-      candidatePreflight.kind === "fast-manim-generic-initial-move-v3"
-        ? (candidatePreflight as GenericRuntimeTraceInitialMovePreflightV3)
+    const genericPreflight: GenericRuntimeTraceInitialEditPreflightV3 | null =
+      candidatePreflight.kind === "fast-manim-generic-initial-move-v3" ||
+      candidatePreflight.kind === "fast-manim-generic-initial-resize-v3"
+        ? (candidatePreflight as GenericRuntimeTraceInitialEditPreflightV3)
         : null;
     if (
       (candidatePreflight.kind !== "fast-manim-updaters-terminal-v1" &&
         candidatePreflight.kind !== "fast-manim-opening-terminal-v2" &&
-        candidatePreflight.kind !== "fast-manim-generic-initial-move-v3") ||
+        candidatePreflight.kind !== "fast-manim-generic-initial-move-v3" &&
+        candidatePreflight.kind !== "fast-manim-generic-initial-resize-v3") ||
       request.sourceHash !== candidatePreflight.baseSourceHash
     ) {
       reject("runtime-trace-authority-unavailable");
@@ -404,8 +412,12 @@ export class ManimRenderCandidateVerifierV1 {
       (request.sourceBindings.length !== 1 ||
         request.sourceBindings[0]?.entityId !== genericPreflight.entityId ||
         request.sourceBindings[0]?.sourceVariable !== genericPreflight.baseBinding.name ||
-        !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
-        !Number.isFinite(genericPreflight.expectedWorldCenter.y))
+        (genericPreflight.kind === "fast-manim-generic-initial-move-v3"
+          ? !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
+            !Number.isFinite(genericPreflight.expectedWorldCenter.y)
+          : !Number.isFinite(genericPreflight.expectedScaleFactor) ||
+            genericPreflight.expectedScaleFactor <= 0 ||
+            genericPreflight.expectedScaleFactor === 1))
     ) {
       reject("runtime-trace-authority-unavailable");
     }
@@ -413,7 +425,9 @@ export class ManimRenderCandidateVerifierV1 {
     const candidateHash = sourceHash(lowered.source);
     const runtimeTraceRequest: FastManimRuntimeTraceCandidateRunRequestV1 = genericPreflight
       ? {
-          genericInitialMove: genericPreflight,
+          ...(genericPreflight.kind === "fast-manim-generic-initial-move-v3"
+            ? { genericInitialMove: genericPreflight }
+            : { genericInitialResize: genericPreflight }),
           projectId: request.projectId,
           requestId: renderRequestId(request),
           sceneName: request.sceneName,

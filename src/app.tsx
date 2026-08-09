@@ -78,7 +78,7 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  studioPreviewGenericInitialMoveProgramSetV1,
+  studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditTargetIsPresentV1,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -861,9 +861,9 @@ export function App({
     const genericCandidate = previewRenderer?.genericInitialEditCandidate;
     if (
       genericCandidate &&
-      studioPreviewGenericInitialMoveProgramSetV1(records, genericCandidate).kind !== "authorized"
+      studioPreviewGenericInitialEditProgramSetV1(records, genericCandidate).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move.";
+      return "This generic Runtime Trace permits exactly one initial position move or uniform resize.";
     }
     return null;
   }
@@ -2027,17 +2027,18 @@ export function App({
   function directGestureContext() {
     const previousDraft =
       !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
-    const replacesGenericInitialMove =
+    const replacesGenericInitialEdit =
       previousDraft !== null &&
       genericInitialEditCandidate !== null &&
-      studioPreviewGenericInitialMoveProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
+      studioPreviewGenericInitialEditProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
     const sourcePrograms =
-      previousDraft && !replacesGenericInitialMove
+      previousDraft && !replacesGenericInitialEdit
         ? [...appliedCanonicalPrograms, previousDraft.program]
         : appliedCanonicalPrograms;
     return {
-      preserveDraft: replacesGenericInitialMove ? null : previousDraft,
+      preserveDraft: replacesGenericInitialEdit ? null : previousDraft,
       proposedState: previousDraft ? (workspaceProjection?.proposedState ?? null) : draftBaseState,
+      replacesDraft: replacesGenericInitialEdit,
       sourcePrograms,
     } as const;
   }
@@ -2149,7 +2150,7 @@ export function App({
     }
     if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports one initial position move only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (
@@ -2307,9 +2308,9 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports position only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (
@@ -2484,9 +2485,9 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports position only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2733,11 +2734,25 @@ export function App({
           })
         : { sourceTime: capturedSourceAnchor };
     if (!anchor) return false;
+    // A replaced draft leaves the staged program set, so the multiplicative
+    // `from` must come from the draft-free baseline: sampling the projection
+    // that still contains the replaced scale would fold that scale into the
+    // relative factor and commit a smaller resize than the gesture showed.
+    const replacementBaselineScene = gestureContext.replacesDraft
+      ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, gestureContext.sourcePrograms)
+      : null;
+    const scaleBasisScene = replacementBaselineScene ?? sourceScene;
     const sampledScale = samplePropertyValue(
-      sourceScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
+      scaleBasisScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
       anchor.sourceTime,
     );
-    const executionScale = typeof sampledScale === "number" ? sampledScale : fromScale;
+    const baselineEntityScale = replacementBaselineScene?.objectGraph.entities[entityId]?.geometry?.scale;
+    const executionScale =
+      typeof sampledScale === "number"
+        ? sampledScale
+        : baselineEntityScale?.kind === "known"
+          ? baselineEntityScale.value
+          : fromScale;
     const end = animated ? anchor.sourceTime + motionDuration : anchor.sourceTime;
     if (animated && (motionDuration < 0.1 || end > sourceScene.duration + 0.001)) {
       setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
@@ -2784,10 +2799,6 @@ export function App({
       previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
     ) {
       setDraftError("This SquareToCircle proof currently supports position only.");
-      return false;
-    }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
-      setDraftError("This generic Runtime Trace target supports position only.");
       return false;
     }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {
@@ -2873,7 +2884,7 @@ export function App({
           initialTransformAuthority.profile === "square-to-circle-v8"
             ? "This SquareToCircle proof currently supports position only."
             : initialTransformAuthority.profile === "generic-runtime-trace-v3"
-              ? "This generic Runtime Trace target supports position only."
+              ? "This generic Runtime Trace target supports position and uniform scale only."
               : "This runtime-backed object currently supports position and uniform scale only.",
         );
         return false;
@@ -3153,8 +3164,8 @@ export function App({
     ? previewAppliedPrograms.map((record) => record.program)
     : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
-  const genericInitialMoveProgramSet = genericInitialEditCandidate
-    ? studioPreviewGenericInitialMoveProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
+  const genericInitialEditProgramSet = genericInitialEditCandidate
+    ? studioPreviewGenericInitialEditProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
     : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
@@ -3162,7 +3173,7 @@ export function App({
     activeScene &&
     activeProjectId &&
     renderProgram &&
-    (!genericInitialEditCandidate || genericInitialMoveProgramSet?.kind === "authorized")
+    (!genericInitialEditCandidate || genericInitialEditProgramSet?.kind === "authorized")
       ? {
           anchors: activeScene.anchors,
           ...(previewRenderer?.cameraCenter &&
@@ -3186,7 +3197,7 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
-          ...(previewRenderer?.initialEditRuntimeAuthority || genericInitialMoveProgramSet?.kind === "authorized"
+          ...(previewRenderer?.initialEditRuntimeAuthority || genericInitialEditProgramSet?.kind === "authorized"
             ? { verifiedInitialEditAnchor: 0 as const }
             : {}),
           ...(previewRenderer?.runtimeTraceValidationPending

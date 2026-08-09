@@ -56,7 +56,7 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewGenericInitialMoveV1,
+  compileStudioPreviewGenericInitialEditV1,
   compileStudioPreviewTemporalRebaseV1,
   type StudioPreviewGenericInitialEditAuthorityCandidateV1,
   type StudioPreviewInitialEditRuntimeAuthorityV1,
@@ -108,7 +108,7 @@ export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{
       editableRuntimeEntityId: string;
       kind: "bounded-interactive";
-      reason: "runtime-trace-initial-move";
+      reason: "runtime-trace-initial-edit";
       sourceAnchor: 0;
       verifiedRuntimeEntityIds: readonly string[];
     }>
@@ -956,7 +956,7 @@ export function studioPreviewInteractionAuthorityV1(
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
-    // Generic V3 stays selection-only unless the exact one-root initial-move
+    // Generic V3 stays selection-only unless the exact one-root initial-edit
     // candidate exists. The browser may then submit one bounded request; the
     // fresh-source server lowerer remains the mutation authority.
     if (source.traceVersion === 3) {
@@ -969,7 +969,7 @@ export function studioPreviewInteractionAuthorityV1(
         return {
           editableRuntimeEntityId: candidate.runtimeEntityId,
           kind: "bounded-interactive",
-          reason: "runtime-trace-initial-move",
+          reason: "runtime-trace-initial-edit",
           sourceAnchor: 0,
           verifiedRuntimeEntityIds,
         };
@@ -1177,7 +1177,7 @@ export function studioPreviewPresentedSyntheticInitialEditAnchorV1(
 ) {
   const admitsInitialEdit =
     authority.kind === "interactive" ||
-    (authority.kind === "bounded-interactive" && authority.reason === "runtime-trace-initial-move");
+    (authority.kind === "bounded-interactive" && authority.reason === "runtime-trace-initial-edit");
   return snapshot && state.phase === "presented" && admitsInitialEdit
     ? studioPreviewSyntheticInitialEditAnchorV1(snapshot)
     : null;
@@ -1315,7 +1315,7 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = compileStudioPreviewGenericInitialMoveV1({
+    const rebased = compileStudioPreviewGenericInitialEditV1({
       frame: input.frame,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -1323,7 +1323,7 @@ export async function compileStudioPreviewSceneV1(
     });
     if (rebased.kind === "unsupported") {
       return {
-        error: `Generic Runtime Trace initial move is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        error: `Generic Runtime Trace initial edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
         kind: "unsupported",
       };
     }
@@ -1923,7 +1923,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const runtimeTraceTerminalEditAuthority = runtimeTraceTerminalUiState.authority;
   const interactionAuthority: StudioPreviewInteractionAuthorityV1 =
     snapshotInteractionAuthority.kind !== "bounded-interactive" ||
-    snapshotInteractionAuthority.reason === "runtime-trace-initial-move" ||
+    snapshotInteractionAuthority.reason === "runtime-trace-initial-edit" ||
     runtimeTraceTerminalEditAuthority
       ? snapshotInteractionAuthority
       : {
