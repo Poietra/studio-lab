@@ -100,6 +100,10 @@ export POIETRA_REAL_MANIM_PROJECT_CENSUS_REQUIRED=1
 pnpm exec vitest run scripts/run-real-manim-project-census.real.test.ts
 ```
 
+The v2 lane gives each snapshot, Runtime Trace, and source-execution probe up
+to 300 seconds, with a 15-minute deadline for the complete Vitest case. This
+keeps a slow first render from being recorded as a producer regression.
+
 To rewrite the v2 baseline after an intentional repin, also set `POIETRA_REAL_MANIM_PROJECT_CENSUS_UPDATE=1`. Review every changed artifact digest. A new manifest digest alone is not evidence that the real producer ran successfully.
 
 V2 target selection remains specific to an observed generic Runtime Trace

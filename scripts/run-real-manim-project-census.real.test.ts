@@ -23,6 +23,7 @@ import {
 const execute = promisify(execFile);
 const required = process.env.POIETRA_REAL_MANIM_PROJECT_CENSUS_REQUIRED === "1";
 const update = process.env.POIETRA_REAL_MANIM_PROJECT_CENSUS_UPDATE === "1";
+const probeTimeoutMs = 300_000;
 const manifestPath = new URL("../fixtures/real-manim-census-v2/manifest.json", import.meta.url);
 const baselinePath = new URL("../fixtures/real-manim-census-v2/baseline.json", import.meta.url);
 const pngBytes = Buffer.from(
@@ -120,7 +121,7 @@ async function observeCodebase(
     projectRoot,
     snapshotVersion: manifest.producer.snapshotProfile,
     tenantId: "census-v2",
-    timeoutMs: 120_000,
+    timeoutMs: probeTimeoutMs,
   });
   let snapshotProbe: RealManimProjectCensusObservation["snapshotProbe"];
   try {
@@ -161,7 +162,7 @@ async function observeCodebase(
     projectId: "census-v2",
     projectRoot,
     tenantId: "census-v2",
-    timeoutMs: 120_000,
+    timeoutMs: probeTimeoutMs,
   });
   let runtimeTrace: RealManimProjectCensusObservation["runtimeTrace"];
   try {
@@ -251,7 +252,7 @@ async function executeSceneSmoke(
           XDG_CACHE_HOME: join(mediaRoot, "cache"),
         },
         maxBuffer: 4 * 1024 * 1024,
-        timeout: 120_000,
+        timeout: probeTimeoutMs,
       },
     );
     const pngs = (await readdir(mediaRoot, { recursive: true })).filter((path) => path.endsWith(".png"));
@@ -271,7 +272,7 @@ async function executeSceneSmoke(
 }
 
 describe.skipIf(!required)("pinned real Manim project census v2", () => {
-  it("reproduces the measured external-project target selection", { timeout: 300_000 }, async () => {
+  it("reproduces the measured external-project target selection", { timeout: 900_000 }, async () => {
     const manifest = await loadRealManimProjectCensusManifest(manifestPath);
     const roots = rootsFromEnvironment();
     const expectedRoots = ["producer", ...manifest.codebases.map(({ id }) => id)].sort();
