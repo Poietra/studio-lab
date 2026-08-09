@@ -34,6 +34,10 @@ export type SandboxConformanceObservationV1 = Readonly<{
   producerSentinel: string | null;
   /** The distinct marker this producer read from its own request bytes. */
   requestMarker: string;
+  /** SHA-256 computed by the producer from the source body it actually read. */
+  sourceDigest: string;
+  /** Environment-defined cleanup target corresponding to this execution. */
+  cleanupTarget: string;
 }>;
 
 export type SandboxConformanceTenantV1 = Readonly<{
@@ -41,6 +45,14 @@ export type SandboxConformanceTenantV1 = Readonly<{
   request: FastManimSandboxRequestBundleV1;
   /** The exact value this tenant's request echoes back, distinct per tenant. */
   requestMarker: string;
+  /** SHA-256 of this tenant's distinct source body. */
+  sourceDigest: string;
+}>;
+
+export type SandboxConformanceBackendV1 = Readonly<{
+  backend: FastManimSandboxBackendV1;
+  /** Resolves only after the phase's producer has started executing. */
+  waitUntilStarted(): Promise<string>;
 }>;
 
 export type SandboxConformanceEnvironmentV1 = Readonly<{
@@ -48,25 +60,33 @@ export type SandboxConformanceEnvironmentV1 = Readonly<{
   platform: Readonly<{ guaranteed: readonly string[]; label: string; verified: readonly string[] }>;
   /** The host env var name the harness sets before a run; it must not leak. */
   hostSentinelName: string;
+  /** Exact allowlisted sentinel value the probing producer must receive. */
+  producerSentinelValue: string;
   /**
-   * Build a backend for one phase. `observedWorkdirs` collects each
-   * request-scoped workdir the backend allocates so the harness can assert it
-   * is reclaimed. `faultDisableCleanup` skips that removal to prove the residue
-   * assertion has teeth; it is only ever passed for the success phase.
+   * Build a backend for one phase. `observedCleanupTargets` collects each
+   * request-scoped resource the backend reclaims. `waitUntilStarted` is a
+   * producer-start latch used to ensure the abort path reaches real execution.
+   * `faultDisableCleanup` skips removal to prove the residue assertion has
+   * teeth; it is only ever passed for the success phase.
    */
   createBackend(
     options: Readonly<{
       faultDisableCleanup?: boolean;
-      observedWorkdirs: string[];
+      observedCleanupTargets: string[];
       phase: SandboxConformancePhaseV1;
     }>,
-  ): FastManimSandboxBackendV1;
+  ): SandboxConformanceBackendV1;
   /** A request + context for one tenant seed, echoing a distinct marker. */
   tenant(seed: number): SandboxConformanceTenantV1;
   /** How this environment's probing producer reports what it observed. */
   parseObservation(resultBytes: Uint8Array): SandboxConformanceObservationV1;
-  /** Whether a previously-observed request workdir still exists on disk. */
-  workdirExists(path: string): boolean;
+  /** Whether a previously-observed cleanup target still exists. */
+  cleanupTargetExists(target: string): boolean;
+  /** Platform-specific evaluation of request-private execution semantics. */
+  assessRequestPrivacy(
+    observationA: SandboxConformanceObservationV1,
+    observationB: SandboxConformanceObservationV1,
+  ): Readonly<{ detail: string; passed: boolean }>;
 }>;
 
 export type SandboxConformanceCheckV1 = Readonly<{ detail: string; name: string; passed: boolean }>;
@@ -81,8 +101,8 @@ function check(name: string, passed: boolean, detail: string): SandboxConformanc
   return { detail, name, passed };
 }
 
-function residueCount(environment: SandboxConformanceEnvironmentV1, workdirs: readonly string[]) {
-  return workdirs.filter((path) => environment.workdirExists(path)).length;
+function residueCount(environment: SandboxConformanceEnvironmentV1, targets: readonly string[]) {
+  return targets.filter((target) => environment.cleanupTargetExists(target)).length;
 }
 
 /**
@@ -101,114 +121,118 @@ export async function runFastManimSandboxIsolationConformanceV1(
   try {
     // Two concurrent tenants exercise workdir privacy, delivery isolation, and
     // env non-leak together.
-    const successWorkdirs: string[] = [];
+    const successTargets: string[] = [];
     const a = environment.tenant(1);
     const b = environment.tenant(2);
-    const backendA = environment.createBackend({ observedWorkdirs: successWorkdirs, phase: "success" });
-    const backendB = environment.createBackend({ observedWorkdirs: successWorkdirs, phase: "success" });
+    const successPhase = environment.createBackend({ observedCleanupTargets: successTargets, phase: "success" });
     let observationA: SandboxConformanceObservationV1;
     let observationB: SandboxConformanceObservationV1;
     try {
       const [resultA, resultB] = await Promise.all([
-        backendA.start(a.request, a.context).result,
-        backendB.start(b.request, b.context).result,
+        successPhase.backend.start(a.request, a.context).result,
+        successPhase.backend.start(b.request, b.context).result,
       ]);
       if (resultA.kind !== "ok" || resultB.kind !== "ok") {
         throw new Error(`A conformance probe did not complete: ${resultA.kind}/${resultB.kind}.`);
       }
       observationA = environment.parseObservation(resultA.resultBytes);
       observationB = environment.parseObservation(resultB.resultBytes);
+      const privacy = environment.assessRequestPrivacy(observationA, observationB);
+      checks.push(check("request-private-workdir", privacy.passed, privacy.detail));
+
+      checks.push(
+        check(
+          "cross-tenant-delivery-isolation",
+          observationA.requestMarker === a.requestMarker &&
+            observationB.requestMarker === b.requestMarker &&
+            observationA.requestMarker !== observationB.requestMarker &&
+            observationA.sourceDigest === a.sourceDigest &&
+            observationB.sourceDigest === b.sourceDigest &&
+            observationA.sourceDigest !== observationB.sourceDigest &&
+            a.request.requestDigest !== b.request.requestDigest,
+          `A marker/source ${observationA.requestMarker}/${observationA.sourceDigest} (want ${a.requestMarker}/${a.sourceDigest}), B marker/source ${observationB.requestMarker}/${observationB.sourceDigest} (want ${b.requestMarker}/${b.sourceDigest})`,
+        ),
+      );
+
+      checks.push(
+        check(
+          "host-env-non-leak",
+          observationA.hostSentinel === null &&
+            observationB.hostSentinel === null &&
+            observationA.producerSentinel === environment.producerSentinelValue &&
+            observationB.producerSentinel === environment.producerSentinelValue,
+          `host sentinels A/B=${observationA.hostSentinel ?? "blocked"}/${observationB.hostSentinel ?? "blocked"}; producer sentinels A/B=${observationA.producerSentinel ?? "dropped"}/${observationB.producerSentinel ?? "dropped"}`,
+        ),
+      );
+
+      const successResidue = residueCount(environment, successTargets);
+      const observedSuccessTargets = new Set(successTargets);
+      checks.push(
+        check(
+          "workdir-reclaimed-on-success",
+          successTargets.length >= 2 &&
+            observedSuccessTargets.has(observationA.cleanupTarget) &&
+            observedSuccessTargets.has(observationB.cleanupTarget) &&
+            successResidue === 0,
+          `${successTargets.length} targets, correlated=${observedSuccessTargets.has(observationA.cleanupTarget) && observedSuccessTargets.has(observationB.cleanupTarget)}, residue ${successResidue}`,
+        ),
+      );
     } finally {
-      await backendA.close();
-      await backendB.close();
+      await successPhase.backend.close();
     }
-
-    checks.push(
-      check(
-        "request-private-workdir",
-        observationA.workdir !== observationB.workdir &&
-          observationA.workdirEntries.length === 0 &&
-          observationB.workdirEntries.length === 0 &&
-          observationA.privateHome === observationA.workdir &&
-          observationA.privateTmpdir === observationA.workdir,
-        `A=${observationA.workdir} (${observationA.workdirEntries.join(",") || "empty"}), B=${observationB.workdir}`,
-      ),
-    );
-
-    checks.push(
-      check(
-        "cross-tenant-delivery-isolation",
-        observationA.requestMarker === a.requestMarker &&
-          observationB.requestMarker === b.requestMarker &&
-          observationA.requestMarker !== observationB.requestMarker &&
-          a.request.requestDigest !== b.request.requestDigest,
-        `A saw ${observationA.requestMarker} (want ${a.requestMarker}), B saw ${observationB.requestMarker} (want ${b.requestMarker})`,
-      ),
-    );
-
-    checks.push(
-      check(
-        "host-env-non-leak",
-        observationA.hostSentinel === null &&
-          observationB.hostSentinel === null &&
-          observationA.producerSentinel !== null &&
-          observationB.producerSentinel !== null,
-        `host sentinel ${observationA.hostSentinel === null ? "blocked" : `leaked as ${observationA.hostSentinel}`}; producer env ${observationA.producerSentinel === null ? "dropped" : "delivered"}`,
-      ),
-    );
-
-    checks.push(
-      check(
-        "workdir-reclaimed-on-success",
-        successWorkdirs.length >= 2 && residueCount(environment, successWorkdirs) === 0,
-        `${successWorkdirs.length} workdirs, residue ${residueCount(environment, successWorkdirs)}`,
-      ),
-    );
 
     // Failure and abort each get their own backend so the harness never depends
     // on ordering within a shared one.
-    const failureWorkdirs: string[] = [];
-    const failureBackend = environment.createBackend({ observedWorkdirs: failureWorkdirs, phase: "failure" });
+    const failureTargets: string[] = [];
+    const failurePhase = environment.createBackend({ observedCleanupTargets: failureTargets, phase: "failure" });
     let failureKind: string;
     try {
       const failing = environment.tenant(3);
-      failureKind = (await failureBackend.start(failing.request, failing.context).result).kind;
+      const handle = failurePhase.backend.start(failing.request, failing.context);
+      const startedTarget = await failurePhase.waitUntilStarted();
+      failureKind = (await handle.result).kind;
+      const failureResidue = residueCount(environment, failureTargets);
+      checks.push(
+        check(
+          "workdir-reclaimed-on-failure",
+          failureKind === "failed" &&
+            failureTargets.length >= 1 &&
+            failureTargets.includes(startedTarget) &&
+            failureResidue === 0,
+          `result=${failureKind}, started-target-correlated=${failureTargets.includes(startedTarget)}, residue ${failureResidue}/${failureTargets.length}`,
+        ),
+      );
     } finally {
-      await failureBackend.close();
+      await failurePhase.backend.close();
     }
-    checks.push(
-      check(
-        "workdir-reclaimed-on-failure",
-        failureKind === "failed" && failureWorkdirs.length >= 1 && residueCount(environment, failureWorkdirs) === 0,
-        `result=${failureKind}, residue ${residueCount(environment, failureWorkdirs)}/${failureWorkdirs.length}`,
-      ),
-    );
 
-    const abortWorkdirs: string[] = [];
-    const abortBackend = environment.createBackend({ observedWorkdirs: abortWorkdirs, phase: "abort" });
-    let abortReclaimed = false;
+    const abortTargets: string[] = [];
+    const abortPhase = environment.createBackend({ observedCleanupTargets: abortTargets, phase: "abort" });
+    let abortSettled = false;
     try {
       const hanging = environment.tenant(4);
-      const handle = abortBackend.start(hanging.request, hanging.context);
+      const handle = abortPhase.backend.start(hanging.request, hanging.context);
+      const startedTarget = await abortPhase.waitUntilStarted();
       handle.abort();
       await handle.result.then(
         (result) => {
-          abortReclaimed = result.kind === "failed";
+          abortSettled = result.kind === "failed";
         },
         () => {
-          abortReclaimed = true;
+          abortSettled = true;
         },
       );
+      const abortResidue = residueCount(environment, abortTargets);
+      checks.push(
+        check(
+          "workdir-reclaimed-on-abort",
+          abortSettled && abortTargets.length >= 1 && abortTargets.includes(startedTarget) && abortResidue === 0,
+          `settled=${abortSettled}, started-target-correlated=${abortTargets.includes(startedTarget)}, residue ${abortResidue}/${abortTargets.length}`,
+        ),
+      );
     } finally {
-      await abortBackend.close();
+      await abortPhase.backend.close();
     }
-    checks.push(
-      check(
-        "workdir-reclaimed-on-abort",
-        abortReclaimed && residueCount(environment, abortWorkdirs) === 0,
-        `aborted=${abortReclaimed}, residue ${residueCount(environment, abortWorkdirs)}/${abortWorkdirs.length}`,
-      ),
-    );
 
     return { checks, passed: checks.every((entry) => entry.passed), platform: environment.platform };
   } finally {
@@ -226,18 +250,22 @@ export async function runFastManimSandboxIsolationConformanceV1(
 export async function detectSandboxResidueFaultV1(
   environment: SandboxConformanceEnvironmentV1,
 ): Promise<Readonly<{ observedResidue: boolean; workdirs: readonly string[] }>> {
-  const observedWorkdirs: string[] = [];
-  const backend = environment.createBackend({ faultDisableCleanup: true, observedWorkdirs, phase: "success" });
+  const observedTargets: string[] = [];
+  const phase = environment.createBackend({
+    faultDisableCleanup: true,
+    observedCleanupTargets: observedTargets,
+    phase: "success",
+  });
   try {
     const tenant = environment.tenant(9);
-    const result = await backend.start(tenant.request, tenant.context).result;
+    const result = await phase.backend.start(tenant.request, tenant.context).result;
     if (result.kind !== "ok") throw new Error(`The fault-injection probe did not complete: ${result.kind}.`);
   } finally {
-    await backend.close().catch(() => undefined);
+    await phase.backend.close().catch(() => undefined);
   }
-  const residue = observedWorkdirs.filter((path) => environment.workdirExists(path));
+  const residue = observedTargets.filter((target) => environment.cleanupTargetExists(target));
   return {
-    observedResidue: observedWorkdirs.length > 0 && residue.length === observedWorkdirs.length,
+    observedResidue: observedTargets.length > 0 && residue.length === observedTargets.length,
     workdirs: residue,
   };
 }
