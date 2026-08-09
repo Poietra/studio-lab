@@ -12,6 +12,7 @@
     "test": "vitest run",
     "test:unit": "vitest run src/accounts src/ai src/billing src/collaboration src/engine src/studio e2e/benchmark-support.test.ts e2e/fourier-v3-cairo-reference.test.ts e2e/real-preview-run-state.test.ts e2e/spiral-in-cairo-reference.test.ts e2e/square-to-circle-cairo-reference.test.ts e2e/write-stuff-cairo-reference.test.ts e2e/visual-parity.test.ts --exclude src/studio/workspace-projection.test.ts",
     "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/derive-mathtex-artifact.test.ts scripts/real-manim-editability-census-report.test.ts scripts/rollout-billing-entitlement.test.ts",
+    "conformance:sandbox:isolation": "vitest run server/fast-manim-sandbox-isolation-conformance.test.ts",
     "test:billing:stripe:required": "POIETRA_STRIPE_E2E_REQUIRED=1 vitest run server/billing/stripe-sandbox.real.test.ts",
     "test:storage:e2e": "node scripts/run-workspace-source-storage-e2e.mjs",
     "test:storage:r2:required": "POIETRA_R2_CONFORMANCE_REQUIRED=1 vitest run server/storage/s3/r2-private-immutable-storage.real.test.ts",
