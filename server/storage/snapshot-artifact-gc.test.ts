@@ -13,11 +13,19 @@ import type {
   SnapshotArtifactReceiptV1,
   SnapshotArtifactStoreV1,
   SnapshotPublicationRepositoryV1,
+  SnapshotPublicationTombstoneCompactionResultV1,
   VersionedSnapshotArtifactReceiptV1,
 } from "./snapshot-publication-repository";
 import { snapshotArtifactIdentityV1, snapshotArtifactLocatorV1 } from "./snapshot-publication-repository";
 
 const TENANT = "tenant-a";
+
+function compaction(
+  compacted: number,
+  deferredForPendingArtifactDeletions = false,
+): SnapshotPublicationTombstoneCompactionResultV1 {
+  return { compacted, deferredForPendingArtifactDeletions };
+}
 
 function artifact(digestCharacter: string): VersionedSnapshotArtifactReceiptV1 {
   const resultDigest = digestCharacter.repeat(64);
@@ -92,7 +100,7 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
-      compactPublicationTombstones: vi.fn(async () => 2),
+      compactPublicationTombstones: vi.fn(async () => compaction(2)),
       async acknowledgeArtifactDeletion(_tenantId: string, deletionId: string) {
         acknowledged.push(deletionId);
       },
@@ -118,6 +126,7 @@ describe("durable snapshot artifact GC", () => {
       }),
     ).resolves.toEqual({
       compactedPublicationTombstones: 2,
+      deferredPublicationTombstoneCompactions: 0,
       deleted: 1,
       examined: 2,
       nextCursor: "next-page",
@@ -144,7 +153,7 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
-      compactPublicationTombstones: vi.fn(async () => 0),
+      compactPublicationTombstones: vi.fn(async () => compaction(0)),
       acknowledgeArtifactDeletion: vi.fn(async () => undefined),
       async isArtifactPublished() {
         return false;
@@ -161,6 +170,7 @@ describe("durable snapshot artifact GC", () => {
       runSnapshotArtifactGcV1({ artifacts, cutoff: new Date(), maximum: 1, repository, tenantId: TENANT }),
     ).resolves.toEqual({
       compactedPublicationTombstones: 0,
+      deferredPublicationTombstoneCompactions: 0,
       deleted: 1,
       examined: 1,
       nextCursor: null,
@@ -188,7 +198,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => true),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
-      compactPublicationTombstones: vi.fn(async () => 0),
+      compactPublicationTombstones: vi.fn(async () => compaction(0, true)),
       async isArtifactPublished(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
         return snapshotArtifactIdentityV1(receipt).resultDigest === published.resultDigest;
       },
@@ -201,12 +211,16 @@ describe("durable snapshot artifact GC", () => {
       },
       ready: vi.fn(async () => true),
     } as unknown as SnapshotPublicationRepositoryV1;
+    const onTombstoneCompactionMetrics = vi.fn(() => {
+      throw new Error("metrics sink unavailable");
+    });
     const worker = new DurableSnapshotArtifactGcWorkerV1({
       artifacts,
       batchSize: 1,
       graceMs: 60_000,
       intervalMs: 1_000,
       onFailure: vi.fn(),
+      onTombstoneCompactionMetrics,
       repository,
       sweepTimeoutMs: 5_000,
       tenantId: TENANT,
@@ -218,6 +232,12 @@ describe("durable snapshot artifact GC", () => {
       await vi.advanceTimersByTimeAsync(1_000);
       expect(cursors).toEqual([null, "published-page-end"]);
       expect(queued).toEqual([orphan.artifact.resultDigest]);
+      expect(onTombstoneCompactionMetrics).toHaveBeenCalledTimes(2);
+      expect(onTombstoneCompactionMetrics).toHaveBeenNthCalledWith(1, {
+        compactedPublicationTombstones: 0,
+        deferredPublicationTombstoneCompactions: 1,
+        tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+      });
     } finally {
       await worker.close();
       vi.useRealTimers();
@@ -229,7 +249,7 @@ describe("durable snapshot artifact GC", () => {
     const second = deletion("b", "00000000-0000-4000-8000-000000000002");
     const attempted: string[] = [];
     const acknowledged: string[] = [];
-    const compactPublicationTombstones = vi.fn(async () => 0);
+    const compactPublicationTombstones = vi.fn(async () => compaction(0));
     const artifacts = {
       async deleteVersion(_tenantId: string, receipt: SnapshotArtifactReceiptV1) {
         const locator = snapshotArtifactLocatorV1(receipt);
@@ -262,10 +282,13 @@ describe("durable snapshot artifact GC", () => {
     expect(error).toBeInstanceOf(SnapshotArtifactGcSweepErrorV1);
     expect((error as SnapshotArtifactGcSweepErrorV1).errors).toHaveLength(1);
     expect((error as SnapshotArtifactGcSweepErrorV1).result).toEqual({
+      compactedPublicationTombstones: 0,
+      deferredPublicationTombstoneCompactions: 1,
       deleted: 1,
       examined: 0,
       nextCursor: null,
       queued: 0,
+      tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
     });
     expect(attempted).toEqual([first.artifact.versionId, second.artifact.versionId]);
     expect(acknowledged).toEqual([second.deletionId]);
@@ -279,7 +302,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => false),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
-      compactPublicationTombstones: vi.fn(async () => 0),
+      compactPublicationTombstones: vi.fn(async () => compaction(0)),
       ready: vi.fn(async () => true),
     } as unknown as SnapshotPublicationRepositoryV1;
     const worker = new DurableSnapshotArtifactGcWorkerV1({
@@ -288,6 +311,7 @@ describe("durable snapshot artifact GC", () => {
       graceMs: 60_000,
       intervalMs: 1_000,
       onFailure: vi.fn(),
+      onTombstoneCompactionMetrics: vi.fn(),
       repository,
       sweepTimeoutMs: 5_000,
       tenantId: TENANT,
@@ -313,7 +337,7 @@ describe("durable snapshot artifact GC", () => {
       ready: vi.fn(async () => true),
     } as unknown as SnapshotArtifactStoreV1;
     const repository = {
-      compactPublicationTombstones: vi.fn(async () => 0),
+      compactPublicationTombstones: vi.fn(async () => compaction(0)),
       async pendingArtifactDeletions() {
         return [first];
       },
@@ -337,6 +361,7 @@ describe("durable snapshot artifact GC", () => {
       graceMs: 60_000,
       intervalMs: 1_000,
       onFailure: vi.fn(),
+      onTombstoneCompactionMetrics: vi.fn(),
       repository,
       sweepTimeoutMs: 1_000,
       tenantId: TENANT,
@@ -349,10 +374,9 @@ describe("durable snapshot artifact GC", () => {
     );
   });
 
-  it("uses a server-owned retention window and bounded compaction batch without exposing artifact identity", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-08-09T00:00:00.000Z"));
-    const compact = vi.fn(async () => 3);
+  it("uses an injected clock for the exact retention cutoff and a bounded compaction batch", async () => {
+    const now = Date.parse("2026-08-09T00:00:00.000Z");
+    const compact = vi.fn(async () => compaction(3));
     const artifacts = {
       async listVersions() {
         return { nextCursor: null, versions: [] };
@@ -365,30 +389,54 @@ describe("durable snapshot artifact GC", () => {
       },
     } as unknown as SnapshotPublicationRepositoryV1;
 
-    try {
-      const result = await runSnapshotArtifactGcV1({
-        artifacts,
-        cutoff: new Date(),
-        maximum: 1,
-        repository,
-        tenantId: TENANT,
-      });
-      expect(result).toEqual({
-        compactedPublicationTombstones: 3,
-        deleted: 0,
-        examined: 0,
-        nextCursor: null,
-        queued: 0,
-        tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
-      });
-      expect(compact).toHaveBeenCalledWith(
-        TENANT,
-        new Date(Date.now() - SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1),
-        SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1,
-        undefined,
-      );
-    } finally {
-      vi.useRealTimers();
-    }
+    const result = await runSnapshotArtifactGcV1({
+      artifacts,
+      clock: () => now,
+      cutoff: new Date("2000-01-01T00:00:00.000Z"),
+      maximum: 1,
+      repository,
+      tenantId: TENANT,
+    });
+    expect(result).toEqual({
+      compactedPublicationTombstones: 3,
+      deferredPublicationTombstoneCompactions: 0,
+      deleted: 0,
+      examined: 0,
+      nextCursor: null,
+      queued: 0,
+      tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+    });
+    expect(compact).toHaveBeenCalledWith(
+      TENANT,
+      new Date(now - SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1),
+      SNAPSHOT_PUBLICATION_TOMBSTONE_COMPACTION_BATCH_V1,
+      undefined,
+    );
+  });
+
+  it("reports a pending-GC compaction deferral without exposing artifact identity", async () => {
+    const artifacts = {
+      async listVersions() {
+        return { nextCursor: null, versions: [] };
+      },
+    } as unknown as SnapshotArtifactStoreV1;
+    const repository = {
+      compactPublicationTombstones: vi.fn(async () => compaction(0, true)),
+      async pendingArtifactDeletions() {
+        return [];
+      },
+    } as unknown as SnapshotPublicationRepositoryV1;
+
+    await expect(
+      runSnapshotArtifactGcV1({ artifacts, cutoff: new Date(), maximum: 1, repository, tenantId: TENANT }),
+    ).resolves.toEqual({
+      compactedPublicationTombstones: 0,
+      deferredPublicationTombstoneCompactions: 1,
+      deleted: 0,
+      examined: 0,
+      nextCursor: null,
+      queued: 0,
+      tombstoneRetentionMs: SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MS_V1,
+    });
   });
 });

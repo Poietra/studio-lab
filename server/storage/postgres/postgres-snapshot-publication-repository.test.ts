@@ -951,9 +951,11 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
   it("compacts old tenant publication tombstones idempotently behind active-work and GC fences", async () => {
     const cutoff = new Date("2026-07-01T00:00:00.000Z");
     let compacted = "4";
+    let deferred = false;
     const fixture = fakePool((text, values) => {
-      if (!text.includes("WITH candidates AS MATERIALIZED")) throw new Error(`Unexpected query: ${text}`);
+      if (!text.includes("WITH gc_gate AS MATERIALIZED")) throw new Error(`Unexpected query: ${text}`);
       expect(values).toEqual([TENANT, cutoff, 17]);
+      expect(text).toContain("WITH gc_gate AS MATERIALIZED");
       expect(text).toContain("head.publication_id IS NULL");
       expect(text).toContain("head.updated_at < $2");
       expect(text).toContain("FOR UPDATE OF head SKIP LOCKED");
@@ -962,14 +964,28 @@ describe("PostgresSnapshotPublicationRepositoryV1", () => {
       expect(text).toContain("FROM public.snapshot_publications publication");
       expect(text).toContain("publication.generation = head.generation");
       expect(text).toContain("FROM public.snapshot_artifact_deletions deletion");
+      expect(text).toContain("deletion.tenant_id = $1");
       expect(text).toContain("deletion.deleted_at IS NULL");
-      return { rowCount: 1, rows: [{ compacted }] };
+      expect(text).toContain("AND (SELECT available FROM gc_gate)");
+      expect(text).toContain("NOT (SELECT available FROM gc_gate) AS deferred");
+      return { rowCount: 1, rows: [{ compacted, deferred }] };
     });
     const repository = new PostgresSnapshotPublicationRepositoryV1({ pool: fixture.pool });
 
-    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toBe(4);
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toEqual({
+      compacted: 4,
+      deferredForPendingArtifactDeletions: false,
+    });
     compacted = "0";
-    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toBe(0);
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toEqual({
+      compacted: 0,
+      deferredForPendingArtifactDeletions: false,
+    });
+    deferred = true;
+    await expect(repository.compactPublicationTombstones(TENANT, cutoff, 17)).resolves.toEqual({
+      compacted: 0,
+      deferredForPendingArtifactDeletions: true,
+    });
     await expect(repository.compactPublicationTombstones("", cutoff, 17)).rejects.toThrow("Tenant ID");
     await expect(repository.compactPublicationTombstones(TENANT, new Date(Number.NaN), 17)).rejects.toThrow("cutoff");
     await expect(repository.compactPublicationTombstones(TENANT, cutoff, 257)).rejects.toThrow("between 1 and 256");

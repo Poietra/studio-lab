@@ -1145,8 +1145,15 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
     const cutoff = validDate(cutoffValue, "Snapshot publication tombstone cutoff");
     const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
     return this.#connection.transaction(async (client) => {
-      const result = await client.query<{ compacted: string }>(
-        `WITH candidates AS MATERIALIZED (
+      const result = await client.query<{ compacted: string; deferred: boolean }>(
+        `WITH gc_gate AS MATERIALIZED (
+           SELECT NOT EXISTS (
+             SELECT 1
+               FROM public.snapshot_artifact_deletions deletion
+              WHERE deletion.tenant_id = $1
+                AND deletion.deleted_at IS NULL
+           ) AS available
+         ), candidates AS MATERIALIZED (
            SELECT head.tenant_id, head.project_id, head.source_path, head.scene_name,
                   head.runtime_digest, head.runtime_config_hash, head.generation, head.updated_at
              FROM public.snapshot_scene_heads head
@@ -1171,12 +1178,7 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
                    AND publication.runtime_config_hash = head.runtime_config_hash
                    AND publication.generation = head.generation
               )
-              AND NOT EXISTS (
-                SELECT 1
-                  FROM public.snapshot_artifact_deletions deletion
-                 WHERE deletion.tenant_id = head.tenant_id
-                   AND deletion.deleted_at IS NULL
-              )
+              AND (SELECT available FROM gc_gate)
             ORDER BY head.updated_at, head.project_id, head.source_path, head.scene_name,
                      head.runtime_digest, head.runtime_config_hash
             FOR UPDATE OF head SKIP LOCKED
@@ -1195,7 +1197,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
               AND head.publication_id IS NULL
             RETURNING 1
          )
-         SELECT count(*)::text AS compacted FROM compacted`,
+         SELECT count(*)::text AS compacted,
+                NOT (SELECT available FROM gc_gate) AS deferred
+           FROM compacted`,
         [tenant, cutoff, maximum],
       );
       const compacted = result.rows[0]?.compacted;
@@ -1206,7 +1210,11 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       if (!Number.isSafeInteger(count) || count > maximum) {
         throw new TypeError("PostgreSQL returned an invalid snapshot publication tombstone compaction count.");
       }
-      return count;
+      const deferred = result.rows[0]?.deferred;
+      if (typeof deferred !== "boolean") {
+        throw new TypeError("PostgreSQL returned an invalid snapshot publication tombstone compaction state.");
+      }
+      return { compacted: count, deferredForPendingArtifactDeletions: deferred };
     }, signal);
   }
 
