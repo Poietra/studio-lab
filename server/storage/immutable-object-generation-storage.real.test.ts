@@ -72,7 +72,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL immutable object-generation schema", 
         [TENANT, PROJECT, legacyPngDigest],
       );
 
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 28 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 29 });
       const legacyPng = await pool.query<{
         digest: string;
         object_generation: string | null;

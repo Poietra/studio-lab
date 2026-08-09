@@ -297,6 +297,27 @@ stale, cross-tenant, conflicting, or over-capacity assignments return the same
 bounded tenant-unavailable response. Idle cells are evicted least-recently used;
 an active cell is never torn down to admit another request.
 
+Apply bundled durable-storage migration v29 before deploying a process that
+constructs the PostgreSQL-backed dynamic resolver. Keep the previous pinned
+runtime serving while the migration is applied, verify the recorded v29
+checksum, and only then enable the dynamic resolver. Its assignment repository
+readiness probe fails closed when the schema or checksum is absent, so rolling
+out the new code before the migration makes the dynamic lane unavailable rather
+than falling back to a client-selected tenant. The pinned `runtime` composition
+remains the rollback path and does not depend on an assignment row.
+
+Create, rotate, and disable assignment mutations are server-owned control-plane
+operations. Do not expose their repository methods through runtime request
+headers, URLs, project payloads, browser state, or an Organization member API.
+Each mutation carries a server-generated idempotency key; an exact retry returns
+the durable result, while reuse with a different operation, cell ID, or expected
+generation is rejected. Generation is the cache-invalidation token. Because the
+resolver reads PostgreSQL on every acquire, rotation sends new leases to the new
+generation and retires the previous adapter only after its outstanding leases
+are released. Disable denies new leases and drains the prior adapter the same
+way. No process-local assignment cache is authoritative, and a restarted process
+reconstructs routing solely from the durable rows.
+
 Existing single-cell deployments pass `runtime` as before. The server wraps it
 with `createPinnedProductionManimRuntimeCellResolverV1`, preserving the former
 foreign-tenant 403 and readiness behavior. To migrate, first create a durable
@@ -305,6 +326,12 @@ resolver with a capacity of at least two, verify two Organization principals
 through one origin, and only then add further assignments. Rollback stops new
 assignments, drains dynamic leases, and redeploys the pinned `runtime`; it must
 not rewrite tenant IDs or redirect requests with a client-visible cell route.
+
+Provisioning managed staging PostgreSQL or Hyperdrive, defining their
+least-privilege deployment roles, rotating their secrets, and proving the live
+staging cutover remain the explicit non-goals tracked by #431. This composition
+covers the local durable repository and transaction contract only; it does not
+claim that the #431 infrastructure exists.
 
 The development-only `studio-local` and `local-*` identities are rejected by
 both production authentication and every provisioned runtime. Existing-folder

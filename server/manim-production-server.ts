@@ -47,8 +47,10 @@ export type {
 export {
   createDurablePostgresS3ProductionRuntimeCellProvisionerV1,
   createDurablePostgresS3ProductionRuntimeV1,
+  createPostgresProductionManimRuntimeCellResolverV1,
   type DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1,
   type DurablePostgresS3ProductionRuntimeOptionsV1,
+  type PostgresProductionManimRuntimeCellResolverOptionsV1,
 } from "./durable-manim-production-composition";
 export {
   createDurableManimRuntimeV1,
@@ -71,11 +73,23 @@ export {
   productionRuntimeCellIdSchemaV1,
 } from "./production-runtime-cell";
 export {
+  type CreateRuntimeCellAssignmentInputV1,
+  createRuntimeCellAssignmentInputSchemaV1,
+  type DisableRuntimeCellAssignmentInputV1,
+  disableRuntimeCellAssignmentInputSchemaV1,
+  type RotateRuntimeCellAssignmentInputV1,
+  type RuntimeCellAssignmentMutationResultV1,
+  type RuntimeCellAssignmentRepositoryV1,
+  rotateRuntimeCellAssignmentInputSchemaV1,
+  runtimeCellAssignmentMutationIdSchemaV1,
+} from "./runtime-cell-assignment-repository";
+export {
   applyBundledWorkspaceSourceMigrationV1,
   WORKSPACE_SOURCE_MIGRATION_V1_SOURCE,
 } from "./storage/postgres/migrate";
 export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 export { PostgresOrganizationMembershipRepositoryV1 } from "./storage/postgres/postgres-organization-membership-repository";
+export { PostgresRuntimeCellAssignmentRepositoryV1 } from "./storage/postgres/postgres-runtime-cell-assignment-repository";
 export { PostgresWorkspaceSourceRepositoryV1 } from "./storage/postgres/postgres-workspace-source-repository";
 export { S3ContentBlobStoreV1 } from "./storage/s3/s3-content-blob-store";
 export {

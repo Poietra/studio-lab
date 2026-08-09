@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   createDurablePostgresS3ProductionRuntimeV1,
+  createPostgresProductionManimRuntimeCellResolverV1,
   createProductionStorageOwnershipBoundaryV1,
 } from "./durable-manim-production-composition";
 import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
@@ -25,6 +26,57 @@ function runtimeAdapter(close: () => Promise<void>): ProductionManimRuntimeAdapt
 }
 
 describe("production storage ownership boundary", () => {
+  it("rejects an unverified assignment database before constructing a dynamic resolver", async () => {
+    const close = vi.fn(async () => undefined);
+
+    await expect(
+      createPostgresProductionManimRuntimeCellResolverV1({
+        assignmentDatabase: { poolConfig: { connectionString: "postgresql://database.example/poietra" } },
+        provisioner: { close, provision: vi.fn(async () => runtimeAdapter(async () => undefined)) },
+      }),
+    ).rejects.toThrow(/runtime-cell assignment.*verified TLS/i);
+
+    expect(close).not.toHaveBeenCalled();
+  });
+
+  it("owns the dynamic provisioner and closes it after construction failure or resolver shutdown", async () => {
+    const poolConfig = { host: "database.example", ssl: { rejectUnauthorized: true } };
+    const rejectedRepositoryClose = vi.fn(async () => undefined);
+    await expect(
+      createPostgresProductionManimRuntimeCellResolverV1({
+        assignmentDatabase: { poolConfig, statementTimeoutMs: 0 },
+        provisioner: {
+          close: rejectedRepositoryClose,
+          provision: vi.fn(async () => runtimeAdapter(async () => undefined)),
+        },
+      }),
+    ).rejects.toThrow(/statementTimeoutMs/i);
+    expect(rejectedRepositoryClose).toHaveBeenCalledOnce();
+
+    const rejectedClose = vi.fn(async () => undefined);
+    await expect(
+      createPostgresProductionManimRuntimeCellResolverV1({
+        assignmentDatabase: { poolConfig },
+        maxCells: 0,
+        provisioner: {
+          close: rejectedClose,
+          provision: vi.fn(async () => runtimeAdapter(async () => undefined)),
+        },
+      }),
+    ).rejects.toThrow(/maxCells/i);
+    expect(rejectedClose).toHaveBeenCalledOnce();
+
+    const ownedClose = vi.fn(async () => undefined);
+    const resolver = await createPostgresProductionManimRuntimeCellResolverV1({
+      assignmentDatabase: { poolConfig },
+      provisioner: { close: ownedClose, provision: vi.fn(async () => runtimeAdapter(async () => undefined)) },
+    });
+
+    await Promise.all([resolver.close(), resolver.close()]);
+
+    expect(ownedClose).toHaveBeenCalledOnce();
+  });
+
   it("rejects a versioned write lane without legacy storage before migration", async () => {
     const poolConfig = { host: "database.example", ssl: { rejectUnauthorized: true } };
     await expect(
