@@ -352,8 +352,19 @@ export class PostgresAccountSessionRepositoryV1
       throw new TypeError("The expected account session version is invalid.");
     }
     throwIfAborted(signal);
-    const result = await this.#connection.query<AccountSessionSwitchRow>(
-      `WITH selected_session AS MATERIALIZED (
+    const result = await this.#connection.transaction(async (client) => {
+      // Lock in a separate statement so a retry that waited behind the first
+      // mutation gets a fresh READ COMMITTED snapshot of its durable result.
+      await client.query(
+        `SELECT 1
+           FROM public.account_sessions session
+          WHERE session.session_token_hash = $1
+          FOR UPDATE OF session`,
+        [sessionTokenHash],
+      );
+      throwIfAborted(signal);
+      return client.query<AccountSessionSwitchRow>(
+        `WITH selected_session AS MATERIALIZED (
          SELECT session.user_id,
                 account.display_name AS user_display_name,
                 session.active_tenant_id AS active_organization_id,
@@ -361,12 +372,11 @@ export class PostgresAccountSessionRepositoryV1
            FROM public.account_sessions session
            JOIN public.users account ON account.user_id = session.user_id
           WHERE session.session_token_hash = $1
-            AND session.revoked_at IS NULL
-            AND session.expires_at > clock_timestamp()
-            AND account.status = 'active'
-          LIMIT 1
-          FOR UPDATE OF session
-       ), existing_mutation AS MATERIALIZED (
+             AND session.revoked_at IS NULL
+             AND session.expires_at > clock_timestamp()
+             AND account.status = 'active'
+           LIMIT 1
+        ), existing_mutation AS MATERIALIZED (
          SELECT mutation.mutation_id,
                 mutation.organization_id,
                 mutation.expected_version,
@@ -456,9 +466,9 @@ export class PostgresAccountSessionRepositoryV1
          LEFT JOIN active_organizations organization
            ON confirmed.mutation_id IS NOT NULL
         ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
-      [sessionTokenHash, organizationId, expectedVersionValue, mutationId],
-      signal,
-    );
+        [sessionTokenHash, organizationId, expectedVersionValue, mutationId],
+      );
+    }, signal);
     throwIfAborted(signal);
     return switchResultFromRows(result.rows);
   }

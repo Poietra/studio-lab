@@ -9,7 +9,15 @@ type QueryResult = Readonly<{ rowCount: number | null; rows: readonly unknown[] 
 const mutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
 
 function fakePool(handle: (text: string, values: readonly unknown[]) => QueryResult | Promise<QueryResult>) {
-  const query = vi.fn((text: string, values: readonly unknown[] = []) => handle(text, values));
+  const query = vi.fn((text: string, values: readonly unknown[] = []) => {
+    if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" || text.startsWith("SELECT set_config(")) {
+      return { rowCount: null, rows: [] };
+    }
+    if (text.startsWith("SELECT 1") && text.includes("FOR UPDATE OF session")) {
+      return { rowCount: 1, rows: [{ locked: 1 }] };
+    }
+    return handle(text, values);
+  });
   const client = { query, release: vi.fn() } as unknown as PoolClient;
   const pool = {
     connect: vi.fn(async () => client),
@@ -160,7 +168,6 @@ describe("PostgresAccountSessionRepositoryV1", () => {
   it("switches the active organization and returns one bounded account snapshot", async () => {
     const hash = Buffer.alloc(32, 12);
     const fixture = fakePool((text, values) => {
-      expect(text).toContain("FOR UPDATE OF session");
       expect(text).toContain("membership.tenant_id = $2");
       expect(text).toContain("membership.status = 'active'");
       expect(text).toContain("organization.status = 'active'");
@@ -228,6 +235,13 @@ describe("PostgresAccountSessionRepositoryV1", () => {
       kind: "updated",
       mutation: { mutationId, organizationId: "organization-b", version: 8 },
     });
+    const statements = fixture.query.mock.calls.map(([text]) => text);
+    const lockIndex = statements.findIndex(
+      (text) => text.startsWith("SELECT 1") && text.includes("FOR UPDATE OF session"),
+    );
+    const mutationIndex = statements.findIndex((text) => text.includes("WITH selected_session AS MATERIALIZED"));
+    expect(lockIndex).toBeGreaterThan(-1);
+    expect(mutationIndex).toBeGreaterThan(lockIndex);
   });
 
   it("distinguishes invalid sessions from unavailable organization memberships", async () => {

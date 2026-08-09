@@ -53,14 +53,31 @@ function uuid(sequence: number) {
   return `00000000-0000-4000-8000-${sequence.toString(16).padStart(12, "0")}`;
 }
 
+async function waitForPostgresLockWaiters(pool: Pool, applicationName: string, expected: number) {
+  const deadline = Date.now() + 4_000;
+  while (Date.now() < deadline) {
+    const result = await pool.query<{ waiting: string }>(
+      `SELECT count(*)::text AS waiting
+         FROM pg_catalog.pg_stat_activity
+        WHERE application_name = $1
+          AND wait_event_type = 'Lock'`,
+      [applicationName],
+    );
+    if (Number(result.rows[0]?.waiting) >= expected) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`Timed out waiting for ${expected} account switch lock waiter(s).`);
+}
+
 describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership", () => {
   it("resolves only active membership boundaries and preserves the last active owner", async () => {
     const pool = new Pool({ connectionString: DATABASE_URL, max: 2 });
+    const switchApplicationName = `poietra-account-switch-retry-${process.pid}`;
     const repository = new PostgresOrganizationMembershipRepositoryV1({
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     const sessions = new PostgresAccountSessionRepositoryV1({
-      poolConfig: { connectionString: DATABASE_URL, max: 2 },
+      poolConfig: { application_name: switchApplicationName, connectionString: DATABASE_URL, max: 2 },
     });
     const oidc = new PostgresOidcLoginRepositoryV1({
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
@@ -138,6 +155,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       const expiredHash = Buffer.alloc(32, 2);
       const revokedHash = Buffer.alloc(32, 3);
       const cascadeHash = Buffer.alloc(32, 4);
+      const isolatedHash = Buffer.alloc(32, 5);
       await pool.query(
         `INSERT INTO public.account_sessions
            (session_token_hash, user_id, active_tenant_id, created_at, expires_at, revoked_at)
@@ -149,6 +167,12 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
                 ($4, $6, 'organization-user-suspended', clock_timestamp(),
                  clock_timestamp() + interval '1 hour', NULL)`,
         [activeHash, expiredHash, revokedHash, cascadeHash, users.activeOwner, users.suspendedUser],
+      );
+      await pool.query(
+        `INSERT INTO public.account_sessions
+           (session_token_hash, user_id, active_tenant_id, created_at, expires_at, revoked_at)
+         VALUES ($1, $2, 'organization-secondary', clock_timestamp(), clock_timestamp() + interval '1 hour', NULL)`,
+        [isolatedHash, users.supportingOwner],
       );
       await expect(sessions.ready()).resolves.toBe(true);
       await expect(sessions.resolveActiveSession(activeHash)).resolves.toEqual({
@@ -168,19 +192,86 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       });
       const secondaryMutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
       const activeMutationId = "5a5dcb34-541d-4805-9d70-fbf6db8e325b";
-      await expect(
-        sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
-      ).resolves.toMatchObject({
-        account: { activeOrganizationId: "organization-secondary", version: 2 },
-        kind: "updated",
-        mutation: { mutationId: secondaryMutationId, organizationId: "organization-secondary", version: 2 },
+      const [firstSwitch, concurrentRetry] = await (async () => {
+        const gate = await pool.connect();
+        let transactionOpen = false;
+        const requests: Promise<Awaited<ReturnType<typeof sessions.switchActiveOrganization>>>[] = [];
+        try {
+          await gate.query("BEGIN");
+          transactionOpen = true;
+          await gate.query("SELECT 1 FROM public.account_sessions WHERE session_token_hash = $1 FOR UPDATE", [
+            activeHash,
+          ]);
+          requests.push(
+            sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
+            sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
+          );
+          const requestResults = Promise.all(requests);
+          void requestResults.catch(() => undefined);
+          await waitForPostgresLockWaiters(pool, switchApplicationName, 2);
+          await gate.query("COMMIT");
+          transactionOpen = false;
+          return await requestResults;
+        } catch (error) {
+          if (transactionOpen) {
+            await gate.query("ROLLBACK").catch(() => undefined);
+            transactionOpen = false;
+          }
+          await Promise.allSettled(requests);
+          throw error;
+        } finally {
+          if (transactionOpen) await gate.query("ROLLBACK").catch(() => undefined);
+          gate.release();
+        }
+      })();
+      for (const result of [firstSwitch, concurrentRetry]) {
+        expect(result).toMatchObject({
+          account: { activeOrganizationId: "organization-secondary", version: 2 },
+          kind: "updated",
+          mutation: { mutationId: secondaryMutationId, organizationId: "organization-secondary", version: 2 },
+        });
+      }
+      await expect(sessions.resolveAccountSession(activeHash)).resolves.toMatchObject({
+        activeOrganizationId: "organization-secondary",
+        organizationSwitch: {
+          mutationId: secondaryMutationId,
+          organizationId: "organization-secondary",
+          version: 2,
+        },
+        version: 2,
       });
+      const persistedSwitch = await pool.query<{ mutation_count: string; session_version: string }>(
+        `SELECT session.version::text AS session_version,
+                (SELECT count(*)::text
+                   FROM public.account_organization_switch_mutations mutation
+                  WHERE mutation.session_token_hash = session.session_token_hash
+                    AND mutation.mutation_id = $2::uuid) AS mutation_count
+           FROM public.account_sessions session
+          WHERE session.session_token_hash = $1`,
+        [activeHash, secondaryMutationId],
+      );
+      expect(persistedSwitch.rows).toEqual([{ mutation_count: "1", session_version: "2" }]);
       await expect(
-        sessions.switchActiveOrganization(activeHash, "organization-secondary", 1, secondaryMutationId),
+        sessions.switchActiveOrganization(activeHash, "organization-active", 1, secondaryMutationId),
+      ).resolves.toEqual({ kind: "conflict" });
+      await expect(
+        sessions.switchActiveOrganization(activeHash, "organization-secondary", 2, secondaryMutationId),
+      ).resolves.toEqual({ kind: "conflict" });
+      await expect(
+        sessions.switchActiveOrganization(isolatedHash, "organization-user-suspended", 1, secondaryMutationId),
       ).resolves.toMatchObject({
-        account: { activeOrganizationId: "organization-secondary", version: 2 },
+        account: { activeOrganizationId: "organization-user-suspended", version: 2 },
         kind: "updated",
-        mutation: { mutationId: secondaryMutationId, organizationId: "organization-secondary", version: 2 },
+        mutation: { mutationId: secondaryMutationId, organizationId: "organization-user-suspended", version: 2 },
+      });
+      await expect(sessions.resolveAccountSession(isolatedHash)).resolves.toMatchObject({
+        activeOrganizationId: "organization-user-suspended",
+        organizationSwitch: {
+          mutationId: secondaryMutationId,
+          organizationId: "organization-user-suspended",
+          version: 2,
+        },
+        version: 2,
       });
       await expect(
         sessions.switchActiveOrganization(activeHash, "organization-active", 1, activeMutationId),

@@ -97,7 +97,7 @@ export function createAccountSessionFetchRequestGuardV1(publicOriginValue: strin
 
 function accountView(
   account: ResolvedAccountSessionAccountV1,
-  organizationSwitch: ResolvedAccountSessionAccountV1["organizationSwitch"] = account.organizationSwitch,
+  organizationSwitch: ResolvedAccountSessionAccountV1["organizationSwitch"],
 ) {
   const activeOrganization = account.organizations.find(
     (organization) => organization.id === account.activeOrganizationId,
@@ -141,7 +141,7 @@ export function createAccountSessionFetchHandlerV1(
       if (!account.organizations.some((organization) => organization.id === account.activeOrganizationId)) {
         return errorResponse(403, "Account access is not available.");
       }
-      const view = accountView(account);
+      const view = accountView(account, account.organizationSwitch);
       return view ? jsonResponse(200, view) : errorResponse(503, "Account access is temporarily unavailable.");
     },
   } satisfies AccountSessionFetchHandlerV1);
