@@ -11,43 +11,109 @@ bounded evidence only — never the raw multi-megabyte trace.
 - Source: `legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py`
   from https://github.com/HarleyCoops/Math-To-Manim.git at
   `fcad0674c9791690d47664492fd1a052024b63a0`
-  (SHA-256 `3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72`,
+  (tree `d71dcdbdac8bf52bd8fd2e6540d36136ce9ae698`, SHA-256
+  `3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72`,
   the same pin as `fixtures/fourier-v3-cairo-reference-v1`).
-- Producer: the trusted fast-manim identity in
-  `server/fast-manim-runtime-trace-producer-identity.ts`.
+- Producer: https://github.com/Poietra/fast-manim.git at commit
+  `d24026e11fbf30fa820593e1f0c59dd02ea82c25`, tree
+  `93a1467e7d6ba23e9fac5baf827523ae893b6267` — the literal trusted identity
+  in `server/fast-manim-runtime-trace-producer-identity.ts`.
+- Python environment: CPython `3.13.11`, resolved with fast-manim's committed
+  `uv.lock` (SHA-256
+  `3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753`)
+  using uv `0.9.26` and `uv sync --frozen`. This also builds the native
+  source-binding ledger; an unconstrained `pip install -e` is not equivalent
+  evidence.
 - TeX toolchain: the Scene renders `Tex` labels, so `latex` and `dvisvgm`
-  must be on `PATH` (the recorded run used TeX Live 2026 with dvisvgm 3.6,
-  matching the dvisvgm version pinned by the Cairo reference). The trace
-  digest is tied to this toolchain identity, exactly like the Cairo
-  reference PNGs.
+  must be on `PATH`. The recorded run used pdfTeX
+  `3.141592653-2.6-1.40.29` from TeX Live 2026 and dvisvgm `3.6`, matching
+  the Cairo reference.
 
 ## Reproduce
 
-Prerequisites (once per machine; the second command needs no sudo):
+Run from the Studio repository root. `latex`, `dvisvgm`, `git`, and `uv`
+must already be on `PATH`; a clean Ubuntu host also needs the Cairo/Pango C
+build prerequisites used by fast-manim (`build-essential`, `pkg-config`,
+`libcairo2-dev`, and `libpango1.0-dev`). The following commands create only a
+temporary evidence checkout and use no unresolved revision placeholders:
 
 ```bash
-git -C /path/to/fast-manim worktree add /path/to/fast-manim-pinned <trusted fastManimCommit> \
-  && python3 -m venv /path/to/fast-manim-pinned/.venv \
-  && /path/to/fast-manim-pinned/.venv/bin/pip install -e /path/to/fast-manim-pinned
-git clone --filter=blob:none https://github.com/HarleyCoops/Math-To-Manim.git /path/to/math-to-manim \
-  && git -C /path/to/math-to-manim checkout fcad0674c9791690d47664492fd1a052024b63a0
+POIETRA_FOURIER_EVIDENCE_ROOT="$(mktemp -d /tmp/poietra-fourier-evidence.XXXXXX)"
+
+git clone --filter=blob:none https://github.com/Poietra/fast-manim.git \
+  "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim"
+git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" checkout --detach \
+  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+test "$(git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" rev-parse HEAD)" = \
+  d24026e11fbf30fa820593e1f0c59dd02ea82c25
+test "$(git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" rev-parse 'HEAD^{tree}')" = \
+  93a1467e7d6ba23e9fac5baf827523ae893b6267
+test "$(sha256sum "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim/uv.lock" | cut -d ' ' -f 1)" = \
+  3244a21383800a8a1049438f24c54121c483b1a4ab24ae8523d8c852b7431753
+uv python install 3.13.11
+uv sync --frozen --project "$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim" --python 3.13.11
+
+"$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim/.venv/bin/python" - <<'PY'
+import importlib.machinery
+import _manim_native_snapshot
+
+assert _manim_native_snapshot.__file__.endswith(tuple(importlib.machinery.EXTENSION_SUFFIXES))
+PY
+
+git clone --filter=blob:none --no-checkout \
+  https://github.com/HarleyCoops/Math-To-Manim.git \
+  "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim"
+git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim" sparse-checkout init --no-cone
+git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim" sparse-checkout set \
+  /legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py
+git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim" checkout --detach \
+  fcad0674c9791690d47664492fd1a052024b63a0
+test "$(git -C "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim" rev-parse 'HEAD^{tree}')" = \
+  d71dcdbdac8bf52bd8fd2e6540d36136ce9ae698
+test "$(sha256sum "$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim/legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py" | cut -d ' ' -f 1)" = \
+  3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72
 ```
 
-An editable install shadows `PYTHONPATH`, so the pinned worktree must own
-its venv; do not point a development venv at the worktree.
-
-Reproduce and compare against this baseline with one command:
+Confirm the exact TeX executables, then reproduce and compare against the
+committed baseline:
 
 ```bash
-PATH="$HOME/.TinyTeX/bin/x86_64-linux:$PATH" \
-POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND='["/path/to/fast-manim-pinned/.venv/bin/python","-m","manim.renderer.runtime_trace"]' \
-POIETRA_FOURIER_SOURCE_ROOT=/path/to/math-to-manim \
-pnpm vitest run server/fast-manim-runtime-trace-fourier.real.test.ts
+test "$(latex --version | head -n 1)" = \
+  "pdfTeX 3.141592653-2.6-1.40.29 (TeX Live 2026)"
+test "$(dvisvgm --version)" = "dvisvgm 3.6"
+
+POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND="[\"$POIETRA_FOURIER_EVIDENCE_ROOT/fast-manim/.venv/bin/python\",\"-m\",\"manim.renderer.runtime_trace\"]" \
+POIETRA_FOURIER_SOURCE_ROOT="$POIETRA_FOURIER_EVIDENCE_ROOT/Math-To-Manim" \
+pnpm exec vitest run server/fast-manim-runtime-trace-fourier.real.test.ts
+```
+
+Remove the generated checkout as soon as the comparison is complete. The
+prefix and non-symlink checks keep this cleanup scoped to the directory made
+by the `mktemp` command above:
+
+```bash
+POIETRA_FOURIER_EVIDENCE_CANONICAL="$(realpath -e -- "$POIETRA_FOURIER_EVIDENCE_ROOT")" &&
+case "$POIETRA_FOURIER_EVIDENCE_CANONICAL" in
+  /tmp/poietra-fourier-evidence.??????)
+    test "$POIETRA_FOURIER_EVIDENCE_CANONICAL" = "$POIETRA_FOURIER_EVIDENCE_ROOT" &&
+      test "$(dirname -- "$POIETRA_FOURIER_EVIDENCE_CANONICAL")" = /tmp &&
+      test ! -L "$POIETRA_FOURIER_EVIDENCE_CANONICAL" &&
+      find "$POIETRA_FOURIER_EVIDENCE_CANONICAL" -depth -delete &&
+      unset POIETRA_FOURIER_EVIDENCE_CANONICAL POIETRA_FOURIER_EVIDENCE_ROOT
+    ;;
+  *) echo "Refusing to remove an unexpected evidence root." >&2; false ;;
+esac
 ```
 
 Add `POIETRA_FOURIER_RUNTIME_TRACE_UPDATE=1` to regenerate `baseline.json`
-after an intentional producer or source repin. The run takes about 2.5
-minutes and back-to-back runs reproduce the identical trace digest.
+after an intentional producer or source repin. A failed or non-V2 producer
+can never replace the baseline. On 2026-08-09, two consecutive frozen runs
+produced byte-identical `baseline.json` files with SHA-256
+`883479f629f313ea9d742462a6d24410e7971704ef14548de0ceedc9cb033850`,
+visual semantics digest
+`c817fdb502a46e6ec2cf47602684e7acc64a9e31ec42599e35ee97752d8f5ef5`,
+and trace digest
+`99c2455bcd2658378ba10171b257a977c731811a60f64f092b110cbe1dca78fe`.
 
 ## What the recorded evidence established (2026-08-09)
 

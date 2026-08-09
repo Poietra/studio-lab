@@ -6,7 +6,7 @@
   },
   "producerEvidence": {
     "correlationSha256": "d5f1737fa4604c084c934a033a5245d2620026139a18767a9619535aec080904",
-    "semanticsSha256": "8a3115900fda667282094e5095cc01e5e5da31178a1eaabe3c13a2d9d12f0319"
+    "semanticsSha256": "c817fdb502a46e6ec2cf47602684e7acc64a9e31ec42599e35ee97752d8f5ef5"
   },
   "roots": [
     {
@@ -234,6 +234,6 @@
   "sceneDuration": 14.5,
   "sceneId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b",
   "schema": "poietra.fourier-v3-runtime-trace-evidence",
-  "traceDigest": "0e13c3e12f1f6eab42760be5318382fd5cc83e7dc49f3a5c230623d0dfbd71c0",
+  "traceDigest": "99c2455bcd2658378ba10171b257a977c731811a60f64f092b110cbe1dca78fe",
   "version": 1
 }
