@@ -6,6 +6,8 @@ import {
   ACCOUNT_INVITATION_MIGRATION_V22_SOURCE,
   ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_CHECKSUM,
   ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
+  ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_CHECKSUM,
+  ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
   ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
@@ -14,6 +16,7 @@ import {
   ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
   applyAccountInvitationMigrationV22,
   applyAccountInvitationQuotaMigrationV24,
+  applyAccountOrganizationBootstrapMigrationV30,
   applyAccountOrganizationMigrationV11,
   applyAccountOrganizationSwitchMutationMigrationV28,
   applyAccountSessionMigrationV12,
@@ -124,12 +127,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 29 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 30 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 29 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 30 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -163,7 +166,10 @@ describe("durable storage migrations", () => {
       db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE),
     ).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(58);
+    expect(db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE)).toHaveLength(
+      1,
+    );
+    expect(db.release).toHaveBeenCalledTimes(60);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -231,12 +237,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 29,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 30)).resolves.toEqual({
+      applied: true,
+      version: 30,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 30)).rejects.toThrow(
-      /migration v30 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 31)).rejects.toThrow(
+      /migration v31 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -829,6 +839,33 @@ describe("durable storage migrations", () => {
     await expect(
       applyRuntimeCellAssignmentMigrationV29(db.pool, RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v28/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds an immutable replay-safe account Organization bootstrap ledger in v30", async () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE)).toBe(
+      ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_CHECKSUM,
+    );
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain(
+      "CREATE TABLE public.account_organization_bootstrap_mutations",
+    );
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain(
+      "resulting_session_version = expected_session_version + 1",
+    );
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain("UNIQUE (organization_id)");
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain(
+      "BEFORE UPDATE OR DELETE ON public.account_organization_bootstrap_mutations",
+    );
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain("membership.role = 'owner'");
+    expect(ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE).toContain(
+      "session.version = NEW.resulting_session_version",
+    );
+
+    const db = database();
+    await expect(
+      applyAccountOrganizationBootstrapMigrationV30(db.pool, ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v29/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 

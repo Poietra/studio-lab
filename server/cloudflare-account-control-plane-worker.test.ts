@@ -20,13 +20,16 @@ function environment() {
   const start = limiter();
   const callback = limiter();
   const invitation = limiter();
+  const organization = limiter();
   return {
     callback,
     invitation,
+    organization,
     start,
     value: {
       HYPERDRIVE: { connectionString: "postgresql://user:password@database.example:5432/poietra" },
       INVITATION_MUTATION_RATE_LIMITER: invitation.binding,
+      ORGANIZATION_MUTATION_RATE_LIMITER: organization.binding,
       OIDC_CALLBACK_RATE_LIMITER: callback.binding,
       OIDC_START_RATE_LIMITER: start.binding,
       POIETRA_OIDC_CLIENT_AUTHENTICATION: "client_secret_post",
@@ -107,6 +110,24 @@ function invitationRevokeRequest() {
   });
 }
 
+function organizationRequest() {
+  return new Request(`${origin}/api/account/organizations`, {
+    body: JSON.stringify({
+      displayName: "Research Team",
+      expectedVersion: 1,
+      mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+      organizationId: "research-team",
+    }),
+    headers: {
+      "content-type": "application/json",
+      cookie: `__Host-poietra_session=${opaqueToken}`,
+      origin,
+      "sec-fetch-site": "same-origin",
+    },
+    method: "POST",
+  });
+}
+
 function invitationRateLimitKey(operation: "create" | "revoke") {
   const tokenHash = createHash("sha256").update(Buffer.from(opaqueToken, "base64url")).digest();
   const fingerprint = createHash("sha256")
@@ -114,6 +135,15 @@ function invitationRateLimitKey(operation: "create" | "revoke") {
     .update(tokenHash)
     .digest("base64url");
   return `account-invitation:${operation}:${fingerprint}`;
+}
+
+function organizationRateLimitKey() {
+  const tokenHash = createHash("sha256").update(Buffer.from(opaqueToken, "base64url")).digest();
+  const fingerprint = createHash("sha256")
+    .update("poietra:account-organization-mutation:v1\u0000", "utf8")
+    .update(tokenHash)
+    .digest("base64url");
+  return `account-organization:create:${fingerprint}`;
 }
 
 function harness() {
@@ -127,7 +157,7 @@ function harness() {
 }
 
 describe("Cloudflare OIDC account control-plane Worker", () => {
-  it("routes invitation creation and revocation through the production Worker template", async () => {
+  it("routes account mutations through the production Worker template", async () => {
     const configuration = JSON.parse(
       await readFile(new URL("../wrangler.account-control-plane.example.jsonc", import.meta.url), "utf8"),
     ) as {
@@ -143,12 +173,18 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
       expect.arrayContaining([
         "https://studio.example.com/api/account/invitations",
         "https://studio.example.com/api/account/invitations/*",
+        "https://studio.example.com/api/account/organizations",
       ]),
     );
     expect(configuration.ratelimits?.find(({ name }) => name === "INVITATION_MUTATION_RATE_LIMITER")).toEqual({
       name: "INVITATION_MUTATION_RATE_LIMITER",
       namespace_id: "31203",
       simple: { limit: 20, period: 60 },
+    });
+    expect(configuration.ratelimits?.find(({ name }) => name === "ORGANIZATION_MUTATION_RATE_LIMITER")).toEqual({
+      name: "ORGANIZATION_MUTATION_RATE_LIMITER",
+      namespace_id: "31204",
+      simple: { limit: 5, period: 60 },
     });
   });
 
@@ -181,6 +217,7 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     await expect(worker.fetch(logoutRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(invitationRequest(), env.value)).resolves.toMatchObject({ status: 204 });
     await expect(worker.fetch(invitationRevokeRequest(), env.value)).resolves.toMatchObject({ status: 204 });
+    await expect(worker.fetch(organizationRequest(), env.value)).resolves.toMatchObject({ status: 204 });
 
     expect(env.start.limit).toHaveBeenCalledWith({ key: "oidc:start:203.0.113.4" });
     expect(env.callback.limit).toHaveBeenCalledWith({ key: "oidc:callback:2001:db8::4" });
@@ -188,13 +225,19 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
     expect(env.invitation.limit).toHaveBeenNthCalledWith(2, { key: invitationRateLimitKey("revoke") });
     expect(JSON.stringify(env.invitation.limit.mock.calls)).not.toContain(opaqueToken);
     expect(JSON.stringify(env.invitation.limit.mock.calls)).not.toContain("member@example.com");
+    expect(env.organization.limit).toHaveBeenCalledWith({ key: organizationRateLimitKey() });
+    expect(JSON.stringify(env.organization.limit.mock.calls)).not.toContain(opaqueToken);
+    expect(JSON.stringify(env.organization.limit.mock.calls)).not.toContain("Research Team");
     expect(createControlPlane).toHaveBeenCalledOnce();
     expect(createControlPlane.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ invitationRepository: expect.any(Function) }),
+      expect.objectContaining({
+        invitationRepository: expect.any(Function),
+        organizationRepository: expect.any(Function),
+      }),
     );
     expect(forwarded).toHaveBeenNthCalledWith(1, start, env.value);
     expect(forwarded).toHaveBeenNthCalledWith(2, callback, env.value);
-    expect(forwarded).toHaveBeenCalledTimes(7);
+    expect(forwarded).toHaveBeenCalledTimes(8);
   });
 
   it("keeps existing account and OIDC session paths independent from the invitation limiter", async () => {
@@ -242,15 +285,45 @@ describe("Cloudflare OIDC account control-plane Worker", () => {
         headers: { "content-type": "application/json", origin: "https://attacker.example" },
         method: "POST",
       }),
+      new Request(`${origin}/api/account/organizations`, {
+        body: JSON.stringify({
+          displayName: "Research Team",
+          expectedVersion: 1,
+          mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+          organizationId: "research-team",
+        }),
+        headers: { "content-type": "application/json", origin: "https://attacker.example" },
+        method: "POST",
+      }),
     ];
 
     const responses = await Promise.all(requests.map((request) => worker.fetch(request, env.value)));
 
-    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 400, 403]);
+    expect(responses.map(({ status }) => status)).toEqual([400, 405, 403, 400, 403, 403]);
     expect(createControlPlane).not.toHaveBeenCalled();
     expect(env.start.limit).not.toHaveBeenCalled();
     expect(env.callback.limit).not.toHaveBeenCalled();
     expect(env.invitation.limit).not.toHaveBeenCalled();
+    expect(env.organization.limit).not.toHaveBeenCalled();
+  });
+
+  it("rate-limits Organization creation independently and fails closed without a session", async () => {
+    const env = environment();
+    env.organization.limit.mockResolvedValueOnce({ success: false }).mockResolvedValueOnce({ success: true });
+    const { forwarded, worker } = harness();
+
+    const limited = await worker.fetch(organizationRequest(), env.value);
+    const recovered = await worker.fetch(organizationRequest(), env.value);
+    const missingSession = organizationRequest();
+    missingSession.headers.delete("cookie");
+    const rejected = await worker.fetch(missingSession, env.value);
+
+    expect([limited.status, recovered.status, rejected.status]).toEqual([429, 204, 403]);
+    expect(limited.headers.get("retry-after")).toBe("60");
+    await expect(limited.json()).resolves.toEqual({ error: "Account organization action is not available." });
+    await expect(rejected.json()).resolves.toEqual({ error: "Account organization action is not available." });
+    expect(forwarded).toHaveBeenCalledOnce();
+    expect(env.organization.limit).toHaveBeenCalledTimes(2);
   });
 
   it("fails invitation mutations closed before control-plane storage opens", async () => {

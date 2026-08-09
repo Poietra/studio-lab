@@ -1,0 +1,3 @@
+// Generated from server/storage/postgres/migrations/0030_account_organization_bootstrap.sql.
+export const ACCOUNT_ORGANIZATION_BOOTSTRAP_MIGRATION_V30_CHECKSUM =
+  "aee11cc72a6cb2c148cc862281ee77320e279287076faafded846767f396b052";

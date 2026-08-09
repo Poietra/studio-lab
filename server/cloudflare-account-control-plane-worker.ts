@@ -3,15 +3,18 @@ import { createHash } from "node:crypto";
 import {
   ACCOUNT_INVITATIONS_ROUTE_V1,
   ACCOUNT_LOGOUT_ROUTE_V1,
+  ACCOUNT_ORGANIZATIONS_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
   createOidcAccountControlPlaneV1,
   OIDC_LOGIN_START_ROUTE_V1,
   type OidcAccountControlPlaneOptionsV1,
   PostgresAccountInvitationRepositoryV1,
+  PostgresAccountOrganizationRepositoryV1,
   PostgresAccountSessionRepositoryV1,
   PostgresOidcLoginRepositoryV1,
 } from "./account-control-plane";
 import { createAccountInvitationFetchRequestGuardV1 } from "./accounts/account-invitation-fetch";
+import { createAccountOrganizationFetchRequestGuardV1 } from "./accounts/account-organization-fetch";
 import { accountSessionTokenHashV1 } from "./accounts/account-session-authenticator";
 import {
   createAccountSessionActionFetchRequestGuardV1,
@@ -31,6 +34,7 @@ export interface CloudflareHyperdriveBindingV1 {
 export type CloudflareAccountControlPlaneEnvironmentV1 = Readonly<{
   HYPERDRIVE: CloudflareHyperdriveBindingV1;
   INVITATION_MUTATION_RATE_LIMITER: CloudflareRateLimitBindingV1;
+  ORGANIZATION_MUTATION_RATE_LIMITER: CloudflareRateLimitBindingV1;
   OIDC_CALLBACK_RATE_LIMITER: CloudflareRateLimitBindingV1;
   OIDC_START_RATE_LIMITER: CloudflareRateLimitBindingV1;
   POIETRA_OIDC_CLIENT_AUTHENTICATION?: "client_secret_basic" | "client_secret_post";
@@ -55,6 +59,7 @@ export type CloudflareAccountControlPlaneWorkerOptionsV1 = Readonly<{
 const MAX_POSTGRES_CONNECTION_STRING_BYTES_V1 = 8 * 1_024;
 const CONNECTING_IP_PATTERN_V1 = /^[0-9A-Fa-f:.]{2,64}$/u;
 const INVITATION_LIMIT_KEY_DOMAIN_V1 = "poietra:account-invitation-mutation:v1\u0000";
+const ORGANIZATION_LIMIT_KEY_DOMAIN_V1 = "poietra:account-organization-mutation:v1\u0000";
 
 function safeHeaders() {
   return new Headers({
@@ -85,6 +90,17 @@ function invitationMutationResponse(status: 403 | 429 | 503) {
   headers.set("vary", "Cookie");
   if (status === 429) headers.set("retry-after", "60");
   return new Response(JSON.stringify({ error: "Account invitation action is not available." }), { headers, status });
+}
+
+function organizationMutationResponse(status: 403 | 429 | 503) {
+  const headers = safeHeaders();
+  headers.set("cache-control", "private, no-store");
+  headers.set("vary", "Cookie");
+  if (status === 429) headers.set("retry-after", "60");
+  return new Response(JSON.stringify({ error: "Account organization action is not available." }), {
+    headers,
+    status,
+  });
 }
 
 function boundedString(value: unknown, name: string, maximum: number) {
@@ -198,6 +214,16 @@ function invitationMutationRateLimitKey(request: Request) {
   return `account-invitation:${operation}:${fingerprint}`;
 }
 
+function organizationMutationRateLimitKey(request: Request) {
+  const sessionTokenHash = accountSessionTokenHashV1(request.headers.get("cookie"));
+  if (sessionTokenHash === null) return null;
+  const fingerprint = createHash("sha256")
+    .update(ORGANIZATION_LIMIT_KEY_DOMAIN_V1, "utf8")
+    .update(sessionTokenHash)
+    .digest("base64url");
+  return `account-organization:create:${fingerprint}`;
+}
+
 /** Cloudflare Worker edge for the OIDC account control plane. */
 export function createCloudflareAccountControlPlaneWorkerV1(
   options: CloudflareAccountControlPlaneWorkerOptionsV1 = {},
@@ -215,6 +241,13 @@ export function createCloudflareAccountControlPlaneWorkerV1(
           },
         }),
       oidc,
+      organizationRepository: (requestEnvironment) =>
+        new PostgresAccountOrganizationRepositoryV1({
+          poolConfig: {
+            connectionString: postgresConnectionString(requestEnvironment),
+            max: 1,
+          },
+        }),
       repository: (requestEnvironment) =>
         new PostgresOidcLoginRepositoryV1({
           poolConfig: {
@@ -238,7 +271,13 @@ export function createCloudflareAccountControlPlaneWorkerV1(
       const pathname = new URL(request.url).pathname;
       const isInvitation =
         pathname === ACCOUNT_INVITATIONS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`);
-      if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1 || isInvitation) {
+      const isOrganization = pathname === ACCOUNT_ORGANIZATIONS_ROUTE_V1;
+      if (
+        pathname === ACCOUNT_SESSION_ROUTE_V1 ||
+        pathname === ACCOUNT_LOGOUT_ROUTE_V1 ||
+        isInvitation ||
+        isOrganization
+      ) {
         try {
           const publicOrigin = boundedString(environment.POIETRA_PUBLIC_ORIGIN, "Public origin", 2_048);
           const rejected =
@@ -246,7 +285,9 @@ export function createCloudflareAccountControlPlaneWorkerV1(
               ? pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET"
                 ? createAccountSessionFetchRequestGuardV1(publicOrigin).reject(request)
                 : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request)
-              : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
+              : isInvitation
+                ? createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request)
+                : createAccountOrganizationFetchRequestGuardV1(publicOrigin).reject(request);
           if (rejected) return rejected;
           if (isInvitation) {
             const key = invitationMutationRateLimitKey(request);
@@ -257,9 +298,20 @@ export function createCloudflareAccountControlPlaneWorkerV1(
             );
             if (!(await isAllowed(limiter, key))) return invitationMutationResponse(429);
           }
+          if (isOrganization) {
+            const key = organizationMutationRateLimitKey(request);
+            if (key === null) return organizationMutationResponse(403);
+            const limiter = rateLimitBinding(
+              environment.ORGANIZATION_MUTATION_RATE_LIMITER,
+              "Organization mutation rate limiter",
+            );
+            if (!(await isAllowed(limiter, key))) return organizationMutationResponse(429);
+          }
           return await controlPlaneFor(deferredOidcOptions(environment, publicOrigin)).fetch(request, environment);
         } catch {
-          return isInvitation ? invitationMutationResponse(503) : accountUnavailableResponse();
+          if (isInvitation) return invitationMutationResponse(503);
+          if (isOrganization) return organizationMutationResponse(503);
+          return accountUnavailableResponse();
         }
       }
       try {

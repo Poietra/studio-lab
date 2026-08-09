@@ -80,6 +80,18 @@ returns 303 and binds only the token digest to the one-time login attempt while
 the browser receives the existing HttpOnly binding cookie. Raw invitation
 tokens must not be placed in URLs, browser storage, logs, or telemetry.
 
+Migration v30 adds the immutable Organization-bootstrap mutation ledger.
+An authenticated browser may create one Organization through same-origin
+`POST /api/account/organizations` with a client-generated mutation UUID, a
+requested Organization ID and display name, and the expected account-session
+version. PostgreSQL serializes the requested ID, creates the workspace tenant,
+Organization, first active owner membership, active-session selection, and
+audit mutation in one transaction. An exact retry returns the recorded result
+without creating or switching again; reuse of the mutation UUID with another
+payload, a stale session version, a reserved local ID, the 256-membership cap,
+or an occupied ID fails closed. The immutable ledger is checked against the
+owner projection and resulting session version at commit.
+
 OIDC discovery is lazy and caches only a successful configuration. The edge
 login routes can therefore return 503 during an IdP outage without entering a
 tenant cell or making existing PostgreSQL-backed sessions unavailable. Issuer,
@@ -96,10 +108,10 @@ revalidates the active membership and organization in PostgreSQL, and returns
 the same account view. Logout revokes only the presented opaque session and
 expires its fixed HttpOnly cookie; missing, unknown, and already-revoked
 sessions remain idempotent. These account-session routes stay available during
-an IdP outage. General self-signup remains a later #309 slice; an invitation is
+an IdP outage. Member-list and role lifecycle remain later #424 slices; an invitation is
 not a self-signup credential and cannot choose its tenant or role. Cloudflare
 Worker/BFF deployment must rate-limit `/auth/oidc/start`,
-`/auth/oidc/callback`, and invitation create/revoke mutations at the edge; an
+`/auth/oidc/callback`, Organization creation, and invitation create/revoke mutations at the edge; an
 in-process per-isolate limiter is not a meaningful abuse boundary. The
 Cloudflare counters are PoP-local and eventually consistent, so the serialized
 PostgreSQL pending and issuance-window quota remains the durable authority. A
@@ -126,11 +138,13 @@ production configuration.
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
 memberships, invitations, or one-time login state. Apply bundled migrations
-through v24 before deploying this Worker. The invitation repository requires
+through v30 before deploying this Worker. The Organization repository requires
+the exact v30 bootstrap migration. The invitation repository requires
 the exact v24 quota migration, while the OIDC repository requires the exact v22
 invitation migration. The Worker routes must remain limited to the same-origin
 `/auth/oidc/*` path and the exact `/api/account/session`,
-`/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with
+`/api/account/logout`, `/api/account/organizations`, and
+`/api/account/invitations[/<id>]` paths, with
 `workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
 Invocation logs and traces remain disabled because callback URLs contain OIDC
@@ -140,7 +154,7 @@ not attach raw Worker Tail, Logpush, request-body logging, or request-URL loggin
 to this Worker; zone Logpush must omit full request URIs for these routes. Use a
 sentinel callback and invitation to verify that code, state, nonce, cookies,
 invitation tokens, and secrets do not appear in production logs. The Worker
-limits OIDC start, OIDC callback, invitation creation, and invitation revocation
+limits OIDC start, OIDC callback, Organization creation, invitation creation, and invitation revocation
 independently before it opens PostgreSQL storage; missing bindings, invalid
 configuration, rate-limit errors, and missing Cloudflare client IPs fail closed
 with a generic 503.

@@ -26,6 +26,10 @@
     {
       "pattern": "https://studio.example.com/api/account/invitations/*",
       "zone_name": "example.com"
+    },
+    {
+      "pattern": "https://studio.example.com/api/account/organizations",
+      "zone_name": "example.com"
     }
   ],
   "observability": {
@@ -59,6 +63,14 @@
       "namespace_id": "31203",
       "simple": {
         "limit": 20,
+        "period": 60
+      }
+    },
+    {
+      "name": "ORGANIZATION_MUTATION_RATE_LIMITER",
+      "namespace_id": "31204",
+      "simple": {
+        "limit": 5,
         "period": 60
       }
     },

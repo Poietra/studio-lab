@@ -62,6 +62,13 @@ async function retry(label, operation, attempts = 150) {
 
 const STORAGE_SUITES = [
   {
+    database: "poietra_account_organization_bootstrap",
+    file: "server/storage/account-organization-bootstrap-storage.real.test.ts",
+    id: "account-organization-bootstrap",
+    objectStorage: false,
+    title: "creates one owner atomically, replays exactly, and rejects cross-session ID claims",
+  },
+  {
     database: "poietra_account_organization",
     file: "server/storage/account-organization-storage.real.test.ts",
     id: "account-organization",
