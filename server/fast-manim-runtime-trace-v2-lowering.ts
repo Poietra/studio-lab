@@ -1,5 +1,3 @@
-import { createHash } from "node:crypto";
-
 import {
   assetManifestV1Schema,
   digestAssetManifestV1,
@@ -11,6 +9,7 @@ import {
 } from "../src/engine/contracts";
 import { applyEngineEasingV1 } from "../src/engine/easing";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import {
   FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
   FAST_MANIM_RUNTIME_TRACE_FRAME_COUNT_V2,
@@ -345,7 +344,7 @@ function drawTopologyRuns(draws: readonly RuntimeTraceDrawV2[], paths: ReadonlyM
 }
 
 function traceDigest(trace: VerifiedFastManimRuntimeTraceV2) {
-  return createHash("sha256").update(canonicalJsonV1(trace), "utf8").digest("hex");
+  return digestCanonicalJsonV1(trace);
 }
 
 function assertStableDrawIdentity(trace: VerifiedFastManimRuntimeTraceV2) {

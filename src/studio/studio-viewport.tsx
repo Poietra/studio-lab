@@ -1,13 +1,45 @@
+import { Profiler, useSyncExternalStore } from "react";
+
 import { cn } from "../lib/cn";
 import type { ProposedStateProjection } from "./model";
 import { StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import type { StudioGesturePreviewStore } from "./studio-gesture-preview-store";
+import { recordStudioCommitProfile } from "./studio-render-profiler";
 import { StudioTimeline, type StudioTimelineProps } from "./studio-timeline";
 import { type StudioTool, StudioToolbar } from "./studio-toolbar";
 
+type StudioGestureCanvasBaseProps = Omit<StudioCanvasProps, "dragPreview" | "geometryPreview" | "scalePreview">;
+
+function StudioGestureCanvas({
+  gesturePreviewStore,
+  ...canvasProps
+}: Readonly<StudioGestureCanvasBaseProps & { gesturePreviewStore: StudioGesturePreviewStore }>) {
+  const { dragPreview, geometryPreview, scalePreview } = useSyncExternalStore(
+    gesturePreviewStore.subscribe,
+    gesturePreviewStore.getSnapshot,
+    gesturePreviewStore.getSnapshot,
+  );
+
+  return (
+    <Profiler id="canvas" onRender={recordStudioCommitProfile}>
+      <StudioCanvas
+        {...canvasProps}
+        dragPreview={dragPreview}
+        geometryPreview={geometryPreview}
+        scalePreview={scalePreview}
+      />
+    </Profiler>
+  );
+}
+
 export type StudioViewportProps = Readonly<
-  Omit<StudioCanvasProps, "cameraScale" | "readOnly" | "sampleId"> &
+  Omit<
+    StudioCanvasProps,
+    "cameraScale" | "dragPreview" | "geometryPreview" | "readOnly" | "sampleId" | "scalePreview"
+  > &
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
+      gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
       onInsertAtCenter: () => void;
       onInsertToolChange: (tool: StudioTool) => void;
@@ -25,13 +57,12 @@ export function StudioViewport({
   className,
   currentTime,
   draftTransactionId,
-  dragPreview,
   duration,
   editableMotionIds,
   editingAppliedTransactionId,
   entities,
   frame,
-  geometryPreview,
+  gesturePreviewStore,
   incomingSceneName,
   insertTool,
   insertValue,
@@ -70,28 +101,28 @@ export function StudioViewport({
   presenceParticipants,
   projection,
   readOnly = false,
-  scalePreview,
   selectedIds,
 }: StudioViewportProps) {
   return (
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
-      <StudioToolbar
-        insertValue={insertValue}
-        onInsertAtCenter={onInsertAtCenter}
-        onInsertValueChange={onInsertValueChange}
-        onToolChange={onInsertToolChange}
-        tool={insertTool}
-      />
-      <StudioCanvas
+      <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
+        <StudioToolbar
+          insertValue={insertValue}
+          onInsertAtCenter={onInsertAtCenter}
+          onInsertValueChange={onInsertValueChange}
+          onToolChange={onInsertToolChange}
+          tool={insertTool}
+        />
+      </Profiler>
+      <StudioGestureCanvas
         appliedTransactionIds={appliedTransactionIds}
         boundaryActive={boundaryActive}
         cameraScale={projection.camera.scale}
         draftTransactionId={draftTransactionId}
-        dragPreview={dragPreview}
         editableMotionIds={editableMotionIds}
         entities={entities}
         frame={frame}
-        geometryPreview={geometryPreview}
+        gesturePreviewStore={gesturePreviewStore}
         incomingSceneName={incomingSceneName}
         insertTool={insertTool}
         interactionMode={interactionMode}
@@ -114,35 +145,36 @@ export function StudioViewport({
         presenceParticipants={presenceParticipants}
         readOnly={readOnly}
         sampleId={projection.canvas.sampleId}
-        scalePreview={scalePreview}
         selectedIds={selectedIds}
       />
-      <StudioTimeline
-        anchors={anchors}
-        appliedMotionClips={appliedMotionClips}
-        appliedTransactionIds={appliedTransactionIds}
-        currentTime={currentTime}
-        duration={duration}
-        editingAppliedTransactionId={editingAppliedTransactionId}
-        events={projection.timeline.events}
-        interactionMode={interactionMode}
-        isPlaying={isPlaying}
-        lifetimeControls={lifetimeControls}
-        lifetimeEditMessage={lifetimeEditMessage}
-        lifetimeTrimDisabled={lifetimeTrimDisabled}
-        motionDuration={motionDuration}
-        objectTracks={projection.timeline.objectTracks}
-        onAppliedMotionClipChange={onAppliedMotionClipChange}
-        onAppliedMotionClipSelect={onAppliedMotionClipSelect}
-        onInteractionModeChange={onInteractionModeChange}
-        onLifetimeChange={onLifetimeChange}
-        onMotionDurationChange={onMotionDurationChange}
-        onSelectEntity={onSelectEntity}
-        onTimeChange={onTimeChange}
-        onTogglePlayback={onTogglePlayback}
-        readOnly={readOnly}
-        selectedIds={selectedIds}
-      />
+      <Profiler id="timeline" onRender={recordStudioCommitProfile}>
+        <StudioTimeline
+          anchors={anchors}
+          appliedMotionClips={appliedMotionClips}
+          appliedTransactionIds={appliedTransactionIds}
+          currentTime={currentTime}
+          duration={duration}
+          editingAppliedTransactionId={editingAppliedTransactionId}
+          events={projection.timeline.events}
+          interactionMode={interactionMode}
+          isPlaying={isPlaying}
+          lifetimeControls={lifetimeControls}
+          lifetimeEditMessage={lifetimeEditMessage}
+          lifetimeTrimDisabled={lifetimeTrimDisabled}
+          motionDuration={motionDuration}
+          objectTracks={projection.timeline.objectTracks}
+          onAppliedMotionClipChange={onAppliedMotionClipChange}
+          onAppliedMotionClipSelect={onAppliedMotionClipSelect}
+          onInteractionModeChange={onInteractionModeChange}
+          onLifetimeChange={onLifetimeChange}
+          onMotionDurationChange={onMotionDurationChange}
+          onSelectEntity={onSelectEntity}
+          onTimeChange={onTimeChange}
+          onTogglePlayback={onTogglePlayback}
+          readOnly={readOnly}
+          selectedIds={selectedIds}
+        />
+      </Profiler>
     </section>
   );
 }

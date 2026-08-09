@@ -8,6 +8,7 @@ import {
 } from "./lifetime-editing";
 import type { Interval, TimelineEvent, TimelineObjectTrack } from "./model";
 import { type AppliedMotionClip, type AppliedMotionClipChange, TimelineMotionClip } from "./motion-timeline-clip";
+import { markStudioRenderBoundary } from "./studio-render-profiler";
 import {
   formatTimelineTime,
   type StudioTimelineAnchor,
@@ -334,6 +335,7 @@ export function StudioTimeline({
   readOnly,
   selectedIds,
 }: StudioTimelineProps) {
+  markStudioRenderBoundary("timeline");
   const intervalEvents = events.flatMap((event) => (event.interval ? [{ event, interval: event.interval }] : []));
   const [selectedLifetime, setSelectedLifetime] = useState<SelectedLifetime | null>(null);
   const selectedLifetimeTrack =

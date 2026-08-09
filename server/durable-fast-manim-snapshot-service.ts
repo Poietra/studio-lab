@@ -294,10 +294,11 @@ export class DurableFastManimSnapshotServiceV1 {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ) {
-    const { genericInitialMove, ...requestFields } = requestValue;
+    const { genericInitialMove, genericInitialResize, ...requestFields } = requestValue;
     const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestFields);
     const request: FastManimRuntimeTraceCandidateRunRequestV1 = {
       ...(genericInitialMove === undefined ? {} : { genericInitialMove }),
+      ...(genericInitialResize === undefined ? {} : { genericInitialResize }),
       projectId: parsed.projectId,
       requestId: parsed.requestId,
       sceneName: parsed.sceneName,

@@ -319,6 +319,31 @@ state in PostgreSQL plus private object storage. Filesystem-backed catalogs and
 process-local publication stores remain confined to Vite/Electron development
 paths.
 
+## Snapshot publication tombstone retention
+
+Apply bundled durable-storage migration v27 before starting code that enables
+snapshot publication tombstone compaction. Migration v27 adds the required
+partial index and is compatible with the previous code, while the new
+repository readiness check requires its exact checksum and fails closed when it
+is absent. Schedule and observe the index creation on a large
+`snapshot_scene_heads` table, verify migration v27, and only then start the new
+code.
+
+Each successful snapshot artifact GC sweep attempts at most 64 tombstones per
+tenant. For a configured sweep interval of `intervalMs`, the upper-bound
+throughput for one worker instance is `64 * 86,400,000 / intervalMs` tombstones
+per day. For example, an interval of 60,000 ms can compact at most 64 per minute,
+3,840 per hour, or
+92,160 per day. This is a capacity ceiling rather than a guaranteed rate: a
+partial object-deletion sweep failure skips compaction, and any pending object
+deletion closes the tenant-wide SQL gate, so compaction throughput is zero
+until the deletion queue is healthy. Connect the required
+`onTombstoneCompactionMetrics` callback to the deployment's metrics sink and
+monitor `compactedPublicationTombstones`,
+`deferredPublicationTombstoneCompactions`, and `tombstoneRetentionMs`; these
+counters intentionally expose no artifact or publication identity. Deletion
+sweep failures continue to be reported through `onFailure`.
+
 ## Billing-entitlement rollout
 
 Migration v14 adds metered entitlements, and migration v15 makes every new

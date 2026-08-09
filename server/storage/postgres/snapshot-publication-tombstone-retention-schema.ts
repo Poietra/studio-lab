@@ -1,0 +1,3 @@
+// Generated from server/storage/postgres/migrations/0027_snapshot_publication_tombstone_retention.sql.
+export const SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM =
+  "8f5e47f9cf68a1a248f61414530d8b2048f3190405b69129627d0e3810f989a4";

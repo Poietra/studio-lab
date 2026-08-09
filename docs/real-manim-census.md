@@ -57,9 +57,8 @@ That command compares the active run with the historical compatibility floor
 without writing evidence. A producer-pin difference alone is allowed, but all
 previously accepted cases must remain accepted, fallback must not become
 rejection, and aggregate acceptance floors and rejection ceilings must hold.
-The currently
-missing native provider causes that comparison to fail because previously
-accepted cases are lost.
+The currently missing native provider causes that comparison to fail because
+previously accepted cases are lost.
 
 Only after a successful comparison and intentional review of the producer
 repin, write the new evidence. Update mode enforces the same historical floor
@@ -79,8 +78,8 @@ path, and producer modules before executing a producer. It derives the Runtime
 Trace environment from the manifest and rejects it unless that identity also
 matches Studio's trust anchor.
 
-The v1 lane uses bounded concurrency of two and a 120-second deadline for each
-producer case; the complete Vitest case has a 15-minute deadline. This avoids
+The v1 lane runs one producer case at a time with a 300-second deadline for
+each case; the complete Vitest case has a 15-minute deadline. This avoids
 turning host process pressure into misleading compatibility evidence as the
 pinned Runtime Trace producer grows.
 
@@ -102,3 +101,12 @@ pnpm exec vitest run scripts/run-real-manim-project-census.real.test.ts
 ```
 
 To rewrite the v2 baseline after an intentional repin, also set `POIETRA_REAL_MANIM_PROJECT_CENSUS_UPDATE=1`. Review every changed artifact digest. A new manifest digest alone is not evidence that the real producer ran successfully.
+
+V2 target selection remains specific to an observed generic Runtime Trace
+fallback. If the producer now accepts every generic preview, the report records
+`selectedCodebaseId: null` with `generic-runtime-trace-gap-not-observed` rather
+than relabelling the improvement as a gap. If a fallback exists but none is a
+safe eligible target, it records
+`safe-generic-runtime-trace-target-not-observed`. Rejected previews,
+unrecognized Scenes, failed source execution, unsafe snapshot results, and
+incompatible dependencies remain ineligible.
