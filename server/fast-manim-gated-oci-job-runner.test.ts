@@ -23,7 +23,12 @@ import {
   reconcileFastManimGatedOciDockerOrphansV1,
   runFastManimGatedOciJobV1,
 } from "./fast-manim-gated-oci-job-runner";
-import { FastManimSandboxBackendControlError, FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import {
+  FastManimSandboxBackendControlError,
+  FastManimSandboxRequestBundleV1,
+  MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+  MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
+} from "./fast-manim-sandbox-backend";
 import {
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
@@ -644,6 +649,29 @@ describe("gated OCI fixed profile", () => {
     expect({ stderr: result.stderr, status: result.status }).toEqual({
       stderr: expect.stringContaining("Ran 5 tests"),
       status: 0,
+    });
+  });
+
+  it("mirrors the sealed request byte budgets in the OCI entrypoint", () => {
+    const entrypointPath = fileURLToPath(
+      new URL("../sandbox/fast-manim-gated-oci/gated-entrypoint.py", import.meta.url),
+    );
+    const probe = String.raw`
+import importlib.util
+import json
+import sys
+
+spec = importlib.util.spec_from_file_location("poietra_gate", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+print(json.dumps({"legacy": module.MAX_LEGACY_REQUEST_BYTES, "request": module.MAX_REQUEST_BYTES}))
+`;
+    const result = spawnSync(pythonInterpreter, ["-c", probe, entrypointPath], { encoding: "utf8" });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual({
+      legacy: MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
+      request: MAX_FAST_MANIM_SANDBOX_REQUEST_BYTES,
     });
   });
 

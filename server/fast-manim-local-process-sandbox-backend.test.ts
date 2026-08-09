@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -17,6 +18,7 @@ import {
 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import { FastManimSnapshotAdmissionController } from "./fast-manim-snapshot-publication";
 import {
   RUNTIME_TRACE_SOURCE_TEXT,
   runtimeTraceRequestFixture,
@@ -29,6 +31,19 @@ async function temporaryRoot() {
   const root = await mkdtemp(join(tmpdir(), "poietra-png-sandbox-test-"));
   roots.push(root);
   return root;
+}
+
+async function waitForFile(path: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(path);
+      return;
+    } catch {
+      await delay(10);
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}.`);
 }
 
 afterEach(async () => {
@@ -98,6 +113,127 @@ process.stdin.on("end", () => {
     });
     await expect(materializeFastManimSandboxPngV2(runtimeRoot, request)).rejects.toThrow();
     await expect(readFile(outside, "utf8")).resolves.toBe("unchanged");
+  });
+});
+
+describe("local-process producer admission release", () => {
+  async function runOnce(
+    controller: FastManimSnapshotAdmissionController,
+    child: string,
+    signal?: AbortSignal,
+    deadlineEpochMs = Date.now() + 10_000,
+  ) {
+    const projectRoot = await temporaryRoot();
+    const producer = runtimeTraceRequestFixture();
+    const request = new FastManimSandboxRequestBundleV1(producer);
+    const backend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [process.execPath, "-e", child],
+      projectRoot,
+    });
+    try {
+      return await backend.start(request, {
+        ...context(producer.requestId),
+        deadlineEpochMs,
+        ...(signal ? { signal } : {}),
+      }).result;
+    } finally {
+      await backend.close();
+    }
+  }
+
+  it("returns the shared slot on success, producer failure, abort, and an expired deadline", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    expect(controller.activeCount).toBe(0);
+
+    const ok = await runOnce(controller, 'process.stdout.write("{}")');
+    expect(ok.kind).toBe("ok");
+    expect(controller.activeCount).toBe(0);
+
+    const failed = await runOnce(controller, "process.exit(3)");
+    expect(failed).toMatchObject({ code: "producer-exit", kind: "failed" });
+    expect(controller.activeCount).toBe(0);
+
+    const abortRoot = await temporaryRoot();
+    const readyPath = join(abortRoot, "producer-ready");
+    const abortProducer = runtimeTraceRequestFixture();
+    const abortRequest = new FastManimSandboxRequestBundleV1(abortProducer);
+    const abortBackend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [
+        process.execPath,
+        "-e",
+        'require("node:fs").writeFileSync(process.argv.at(-1), "ready"); setInterval(() => {}, 60_000)',
+        readyPath,
+      ],
+      projectRoot: abortRoot,
+    });
+    const aborter = new AbortController();
+    try {
+      const aborting = abortBackend.start(abortRequest, {
+        ...context(abortProducer.requestId),
+        signal: aborter.signal,
+      }).result;
+      expect(controller.activeCount).toBe(1);
+      await waitForFile(readyPath);
+      aborter.abort();
+      await expect(aborting).rejects.toMatchObject({ name: "AbortError" });
+      expect(controller.activeCount).toBe(0);
+    } finally {
+      await abortBackend.close();
+    }
+
+    // The deadline check returns before the slot is taken at all.
+    const expired = await runOnce(controller, 'process.stdout.write("{}")', undefined, Date.now() - 1);
+    expect(expired).toMatchObject({ code: "producer-timeout", kind: "failed" });
+    expect(controller.activeCount).toBe(0);
+
+    // The cap is intact: a fresh run is still admitted after every path above.
+    const finalRelease = controller.tryAcquire();
+    expect(finalRelease).not.toBeNull();
+    expect(controller.activeCount).toBe(1);
+    finalRelease?.();
+    expect(controller.activeCount).toBe(0);
+  });
+
+  it("refuses admission at the shared cap without leaking the held slot", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    const release = controller.tryAcquire();
+    expect(release).not.toBeNull();
+
+    await expect(runOnce(controller, 'process.stdout.write("{}")')).rejects.toMatchObject({ code: "capacity" });
+    expect(controller.activeCount).toBe(1);
+
+    release?.();
+    expect(controller.activeCount).toBe(0);
+    release?.();
+    expect(controller.activeCount).toBe(0);
+
+    await expect(runOnce(controller, 'process.stdout.write("{}")')).resolves.toMatchObject({ kind: "ok" });
+    expect(controller.activeCount).toBe(0);
+  });
+
+  it("returns the shared slot before reporting cleanup failure", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    const projectRoot = await temporaryRoot();
+    const producer = runtimeTraceRequestFixture();
+    const backend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [process.execPath, "-e", 'process.stdout.write("{}")'],
+      projectRoot,
+      runtimeDirectoryRemover: async (runtimeDir) => {
+        roots.push(runtimeDir);
+        throw new Error("synthetic cleanup failure");
+      },
+    });
+    try {
+      await expect(
+        backend.start(new FastManimSandboxRequestBundleV1(producer), context(producer.requestId)).result,
+      ).rejects.toMatchObject({ code: "cleanup" });
+      expect(controller.activeCount).toBe(0);
+    } finally {
+      await backend.close().catch(() => undefined);
+    }
   });
 });
 
