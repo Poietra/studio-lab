@@ -95,7 +95,10 @@ export function createAccountSessionFetchRequestGuardV1(publicOriginValue: strin
   });
 }
 
-function accountView(account: ResolvedAccountSessionAccountV1) {
+function accountView(
+  account: ResolvedAccountSessionAccountV1,
+  organizationSwitch: ResolvedAccountSessionAccountV1["organizationSwitch"],
+) {
   const activeOrganization = account.organizations.find(
     (organization) => organization.id === account.activeOrganizationId,
   );
@@ -103,6 +106,7 @@ function accountView(account: ResolvedAccountSessionAccountV1) {
   const parsed = accountSessionViewSchemaV1.safeParse({
     activeOrganization,
     organizations: account.organizations,
+    organizationSwitch,
     user: account.user,
     version: account.version,
   });
@@ -137,7 +141,7 @@ export function createAccountSessionFetchHandlerV1(
       if (!account.organizations.some((organization) => organization.id === account.activeOrganizationId)) {
         return errorResponse(403, "Account access is not available.");
       }
-      const view = accountView(account);
+      const view = accountView(account, account.organizationSwitch);
       return view ? jsonResponse(200, view) : errorResponse(503, "Account access is temporarily unavailable.");
     },
   } satisfies AccountSessionFetchHandlerV1);
@@ -299,6 +303,7 @@ export function createAccountSessionActionFetchHandlerV1(
           sessionTokenHash,
           selected.request.organizationId,
           selected.request.expectedVersion,
+          selected.request.mutationId,
           request.signal,
         );
         request.signal.throwIfAborted();
@@ -309,7 +314,7 @@ export function createAccountSessionActionFetchHandlerV1(
         if (result.kind === "conflict") {
           return errorResponse(409, "The account session changed. Refresh and try again.");
         }
-        const view = accountView(result.account);
+        const view = accountView(result.account, result.mutation);
         return view ? jsonResponse(200, view) : errorResponse(503, "Account access is temporarily unavailable.");
       } catch {
         request.signal.throwIfAborted();

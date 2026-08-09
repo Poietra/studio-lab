@@ -42,9 +42,10 @@ export async function loadAccountSessionV1(signal?: AbortSignal) {
 export async function switchAccountOrganizationV1(
   organizationId: string,
   expectedVersion: number,
+  mutationId: string,
   signal?: AbortSignal,
 ) {
-  const request = accountOrganizationSwitchRequestSchemaV1.safeParse({ expectedVersion, organizationId });
+  const request = accountOrganizationSwitchRequestSchemaV1.safeParse({ expectedVersion, mutationId, organizationId });
   if (!request.success) throw new TypeError("The account organization is invalid.");
   const session = await readAccountSessionResponseV1(
     await fetch("/api/account/session", {
@@ -56,8 +57,11 @@ export async function switchAccountOrganizationV1(
       signal,
     }),
   );
-  if (session.activeOrganization.id !== request.data.organizationId) {
-    throw new Error("The account service did not confirm the selected organization.");
+  if (
+    session.organizationSwitch?.mutationId !== request.data.mutationId ||
+    session.organizationSwitch.organizationId !== request.data.organizationId
+  ) {
+    throw new Error("The account service did not confirm the organization switch mutation.");
   }
   return session;
 }

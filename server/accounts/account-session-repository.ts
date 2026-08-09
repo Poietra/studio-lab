@@ -16,6 +16,7 @@ export interface AccountSessionRepositoryV1 {
 export type ResolvedAccountSessionAccountV1 = Readonly<{
   /** The session-owned selector; the fetch boundary must find it in organizations or deny access. */
   activeOrganizationId: string;
+  organizationSwitch: AccountSessionViewV1["organizationSwitch"];
   organizations: AccountSessionViewV1["organizations"];
   user: AccountSessionViewV1["user"];
   version: number;
@@ -34,7 +35,11 @@ export type SwitchActiveOrganizationResultV1 =
   | Readonly<{ kind: "conflict" }>
   | Readonly<{ kind: "invalid-session" }>
   | Readonly<{ kind: "organization-unavailable" }>
-  | Readonly<{ account: ResolvedAccountSessionAccountV1; kind: "updated" }>;
+  | Readonly<{
+      account: ResolvedAccountSessionAccountV1;
+      kind: "updated";
+      mutation: NonNullable<AccountSessionViewV1["organizationSwitch"]>;
+    }>;
 
 /** Request-scoped browser account mutations; raw session tokens never cross this boundary. */
 export interface AccountSessionControlRepositoryV1 extends AccountSessionViewRepositoryV1 {
@@ -43,6 +48,7 @@ export interface AccountSessionControlRepositoryV1 extends AccountSessionViewRep
     sessionTokenHash: Uint8Array,
     organizationId: string,
     expectedVersion: number,
+    mutationId: string,
     signal?: AbortSignal,
   ): Promise<SwitchActiveOrganizationResultV1>;
 }

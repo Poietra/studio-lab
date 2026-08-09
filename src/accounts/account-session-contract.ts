@@ -8,8 +8,11 @@ export const accountOrganizationIdSchemaV1 = z
 
 export const accountOrganizationRoleSchemaV1 = z.enum(["owner", "admin", "member", "billing"]);
 
+export const accountOrganizationSwitchMutationIdSchemaV1 = z.uuid();
+
 export const accountOrganizationSwitchRequestSchemaV1 = z
   .object({
+    mutationId: accountOrganizationSwitchMutationIdSchemaV1,
     organizationId: accountOrganizationIdSchemaV1,
     expectedVersion: z.number().int().safe().positive(),
   })
@@ -49,6 +52,14 @@ export const accountSessionViewSchemaV1 = z
       )
       .min(1)
       .max(256),
+    organizationSwitch: z
+      .object({
+        mutationId: accountOrganizationSwitchMutationIdSchemaV1,
+        organizationId: accountOrganizationIdSchemaV1,
+        version: z.number().int().safe().positive(),
+      })
+      .strict()
+      .nullable(),
     user: z
       .object({
         displayName: accountDisplayNameSchemaV1,
