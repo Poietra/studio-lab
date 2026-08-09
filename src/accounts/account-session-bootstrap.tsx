@@ -64,6 +64,39 @@ function accountRequestStatus(error: unknown) {
   return error instanceof AccountSessionRequestError ? error.status : null;
 }
 
+type AccountOrganizationSwitchIdentityV1 = Readonly<{
+  mutationId: string;
+  organizationId: string;
+}>;
+
+type AccountOrganizationSwitchRecoveryV1 =
+  | Readonly<{ kind: "confirmed"; session: AccountSessionViewV1 }>
+  | Readonly<{ kind: "not-confirmed"; session: AccountSessionViewV1 }>
+  | Readonly<{ kind: "signed-out" }>
+  | Readonly<{ kind: "stale" }>
+  | Readonly<{ kind: "unavailable"; status: number | null }>;
+
+/** Resolve an ambiguous PATCH outcome against one newer authoritative GET. */
+export async function recoverAccountOrganizationSwitchV1(
+  identity: AccountOrganizationSwitchIdentityV1,
+  signal: AbortSignal,
+  isCurrent: () => boolean,
+  load: (signal?: AbortSignal) => Promise<AccountSessionViewV1> = loadAccountSessionV1,
+): Promise<AccountOrganizationSwitchRecoveryV1> {
+  try {
+    const session = await load(signal);
+    if (!isCurrent()) return { kind: "stale" };
+    return session.organizationSwitch?.mutationId === identity.mutationId &&
+      session.organizationSwitch.organizationId === identity.organizationId
+      ? { kind: "confirmed", session }
+      : { kind: "not-confirmed", session };
+  } catch (error) {
+    if (!isCurrent()) return { kind: "stale" };
+    if (error instanceof AccountSessionRequestError && error.status === 401) return { kind: "signed-out" };
+    return { kind: "unavailable", status: accountRequestStatus(error) };
+  }
+}
+
 export function AccountSessionBootstrap({ children, enabled }: AccountSessionBootstrapProps) {
   const [state, setState] = useState<AccountBootstrapState>(() =>
     enabled ? { phase: "loading" } : { actionError: null, phase: "ready", session: null },
@@ -146,14 +179,50 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
     invalidationChannel.current?.postMessage(null);
   }, []);
 
+  const recoverOrganizationSwitch = useCallback(
+    (identity: AccountOrganizationSwitchIdentityV1) => {
+      const transition = beginReadTransition();
+      if (!transition) return;
+      const { controller, generation } = transition;
+      void recoverAccountOrganizationSwitchV1(identity, controller.signal, () =>
+        isCurrentRead(controller, generation),
+      ).then((result) => {
+        if (result.kind === "stale" || !isCurrentRead(controller, generation)) return;
+        if (result.kind === "confirmed") {
+          broadcastInvalidation();
+          setManimOrganizationScopeV1(result.session.activeOrganization.id);
+          setState({ actionError: null, phase: "ready", session: result.session });
+          return;
+        }
+        if (result.kind === "not-confirmed") {
+          setManimOrganizationScopeV1(result.session.activeOrganization.id);
+          setState({
+            actionError: "The organization could not be changed. Your account was refreshed.",
+            phase: "ready",
+            session: result.session,
+          });
+          return;
+        }
+        if (result.kind === "signed-out") {
+          setState({ actionError: null, phase: "signed-out" });
+          broadcastInvalidation();
+          return;
+        }
+        setState({ phase: "error", status: result.status });
+      });
+    },
+    [beginReadTransition, broadcastInvalidation, isCurrentRead],
+  );
+
   const switchOrganization = useCallback(
     (organizationId: string) => {
       if (state.phase !== "ready" || !state.session) return;
       const expectedVersion = state.session.version;
+      const mutationId = crypto.randomUUID();
       const transition = beginMutationTransition();
       if (!transition) return;
       const { controller, generation } = transition;
-      void switchAccountOrganizationV1(organizationId, expectedVersion, controller.signal)
+      void switchAccountOrganizationV1(organizationId, expectedVersion, mutationId, controller.signal)
         .then((session) => {
           const shouldRefresh = finishMutation(controller, generation);
           if (shouldRefresh === null) return;
@@ -172,10 +241,10 @@ export function AccountSessionBootstrap({ children, enabled }: AccountSessionBoo
             broadcastInvalidation();
             return;
           }
-          loadAuthoritativeSession("The organization could not be changed. Your account was refreshed.");
+          recoverOrganizationSwitch({ mutationId, organizationId });
         });
     },
-    [beginMutationTransition, broadcastInvalidation, finishMutation, loadAuthoritativeSession, state],
+    [beginMutationTransition, broadcastInvalidation, finishMutation, recoverOrganizationSwitch, state],
   );
 
   const logout = useCallback(() => {

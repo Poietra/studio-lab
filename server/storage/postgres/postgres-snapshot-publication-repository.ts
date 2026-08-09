@@ -30,6 +30,7 @@ import {
   PROJECT_PNG_MIGRATION_V5_CHECKSUM,
 } from "./postgres-project-png-repository";
 import { PostgresRepositoryConnectionV1 } from "./postgres-repository-connection";
+import { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
 
@@ -193,6 +194,11 @@ function boundedPositiveInteger(value: number, name: string, maximum: number) {
   if (!Number.isSafeInteger(value) || value <= 0 || value > maximum) {
     throw new RangeError(`${name} must be an integer between 1 and ${maximum}.`);
   }
+  return value;
+}
+
+function validDate(value: Date, name: string) {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) throw new TypeError(`${name} is invalid.`);
   return value;
 }
 
@@ -683,12 +689,12 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (3, 5, 6, 10, 20, 25) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (3, 5, 6, 10, 20, 25, 27) ORDER BY version",
         [],
         signal,
       );
       return (
-        result.rows.length === 6 &&
+        result.rows.length === 7 &&
         result.rows[0]?.version === 3 &&
         result.rows[0]?.checksum === SNAPSHOT_PUBLICATION_MIGRATION_V3_CHECKSUM &&
         result.rows[1]?.version === 5 &&
@@ -700,7 +706,9 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
         result.rows[4]?.version === 20 &&
         result.rows[4]?.checksum === IMMUTABLE_OBJECT_GENERATION_MIGRATION_V20_CHECKSUM &&
         result.rows[5]?.version === 25 &&
-        result.rows[5]?.checksum === SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM
+        result.rows[5]?.checksum === SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM &&
+        result.rows[6]?.version === 27 &&
+        result.rows[6]?.checksum === SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM
       );
     } catch {
       throwIfAborted(signal);
@@ -1125,6 +1133,89 @@ export class PostgresSnapshotPublicationRepositoryV1 implements SnapshotPublicat
       [tenant, deletionId],
       signal,
     );
+  }
+
+  async compactPublicationTombstones(
+    tenantValue: string,
+    cutoffValue: Date,
+    maximumValue: number,
+    signal?: AbortSignal,
+  ) {
+    const tenant = tenantId(tenantValue);
+    const cutoff = validDate(cutoffValue, "Snapshot publication tombstone cutoff");
+    const maximum = boundedPositiveInteger(maximumValue, "maximum", 256);
+    return this.#connection.transaction(async (client) => {
+      const result = await client.query<{ compacted: string; deferred: boolean }>(
+        `WITH gc_gate AS MATERIALIZED (
+           SELECT NOT EXISTS (
+             SELECT 1
+               FROM public.snapshot_artifact_deletions deletion
+              WHERE deletion.tenant_id = $1
+                AND deletion.deleted_at IS NULL
+           ) AS available
+         ), candidates AS MATERIALIZED (
+           SELECT head.tenant_id, head.project_id, head.source_path, head.scene_name,
+                  head.runtime_digest, head.runtime_config_hash, head.generation, head.updated_at
+             FROM public.snapshot_scene_heads head
+            WHERE head.tenant_id = $1
+              AND head.publication_id IS NULL
+              AND head.updated_at < $2
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM public.workspace_project_references reference
+                 WHERE reference.tenant_id = head.tenant_id
+                   AND reference.project_id = head.project_id
+                   AND reference.reference_kind <> 'snapshot-publication'
+              )
+              AND NOT EXISTS (
+                SELECT 1
+                  FROM public.snapshot_publications publication
+                 WHERE publication.tenant_id = head.tenant_id
+                   AND publication.project_id = head.project_id
+                   AND publication.source_path = head.source_path
+                   AND publication.scene_name = head.scene_name
+                   AND publication.runtime_digest = head.runtime_digest
+                   AND publication.runtime_config_hash = head.runtime_config_hash
+                   AND publication.generation = head.generation
+              )
+              AND (SELECT available FROM gc_gate)
+            ORDER BY head.updated_at, head.project_id, head.source_path, head.scene_name,
+                     head.runtime_digest, head.runtime_config_hash
+            FOR UPDATE OF head SKIP LOCKED
+            LIMIT $3
+         ), compacted AS (
+           DELETE FROM public.snapshot_scene_heads head
+            USING candidates
+            WHERE head.tenant_id = candidates.tenant_id
+              AND head.project_id = candidates.project_id
+              AND head.source_path = candidates.source_path
+              AND head.scene_name = candidates.scene_name
+              AND head.runtime_digest = candidates.runtime_digest
+              AND head.runtime_config_hash = candidates.runtime_config_hash
+              AND head.generation = candidates.generation
+              AND head.updated_at = candidates.updated_at
+              AND head.publication_id IS NULL
+            RETURNING 1
+         )
+         SELECT count(*)::text AS compacted,
+                NOT (SELECT available FROM gc_gate) AS deferred
+           FROM compacted`,
+        [tenant, cutoff, maximum],
+      );
+      const compacted = result.rows[0]?.compacted;
+      if (typeof compacted !== "string" || !/^(0|[1-9][0-9]*)$/.test(compacted)) {
+        throw new TypeError("PostgreSQL returned an invalid snapshot publication tombstone compaction count.");
+      }
+      const count = Number(compacted);
+      if (!Number.isSafeInteger(count) || count > maximum) {
+        throw new TypeError("PostgreSQL returned an invalid snapshot publication tombstone compaction count.");
+      }
+      const deferred = result.rows[0]?.deferred;
+      if (typeof deferred !== "boolean") {
+        throw new TypeError("PostgreSQL returned an invalid snapshot publication tombstone compaction state.");
+      }
+      return { compacted: count, deferredForPendingArtifactDeletions: deferred };
+    }, signal);
   }
 
   async close() {

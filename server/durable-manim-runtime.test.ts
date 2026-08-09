@@ -54,7 +54,7 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
   };
 }
 
-function genericInitialMoveExportFixture(withVerifier: boolean) {
+function genericInitialMoveExportFixture(withVerifier: boolean, edit: "move" | "resize" = "move") {
   const source = `from manim import *
 
 class StaticSquare(Scene):
@@ -67,16 +67,31 @@ class StaticSquare(Scene):
   const digest = createHash("sha256").update(source).digest("hex");
   const sourcePath = "scene.py";
   const entityId = `source:${sourcePath}#StaticSquare:square`;
-  const operation = {
-    dependsOn: [],
-    entityId,
-    id: "durable-generic-v3-position",
-    interval: { end: 0, start: 0 },
-    key: "position",
-    kind: "SetProperty",
-    provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
-    value: { x: 410, y: 135 },
-  } as const;
+  const operation =
+    edit === "move"
+      ? ({
+          dependsOn: [],
+          entityId,
+          id: "durable-generic-v3-position",
+          interval: { end: 0, start: 0 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+          value: { x: 410, y: 135 },
+        } as const)
+      : ({
+          dependsOn: [],
+          easing: "smooth",
+          entityId,
+          from: 1,
+          id: "durable-generic-v3-scale",
+          interval: { end: 0, start: 0 },
+          key: "scale",
+          kind: "AnimateProperty",
+          provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+          relativeFactor: 1.5,
+          to: 1.5,
+        } as const);
   const program: CanonicalEditProgram = {
     anchor: {
       capturedPlayhead: 0,
@@ -232,6 +247,31 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
   it("fails generic durable source export closed when candidate verification is unavailable", async () => {
     const { request, runtime } = genericInitialMoveExportFixture(false);
+
+    await expect(runtime.exportSource(request)).rejects.toMatchObject({ status: 503 });
+    await runtime.close();
+  });
+
+  it("verifies a generic initial resize before exporting its durable source", async () => {
+    const { digest, entityId, request, runtime, verify } = genericInitialMoveExportFixture(true, "resize");
+
+    const exported = await runtime.exportSource(request);
+
+    expect(exported).toMatchObject({ fileName: "scene.poietra.py", projectId: "project-a" });
+    expect(exported.source).toContain("square.scale(1.5)");
+    expect(verify).toHaveBeenCalledOnce();
+    expect(verify.mock.calls[0]?.[0].preflight).toMatchObject({
+      baseSourceHash: digest,
+      entityId,
+      expectedScaleFactor: 1.5,
+      kind: "fast-manim-generic-initial-resize-v3",
+    });
+    expect(verify.mock.calls[0]?.[1]).toEqual(request);
+    await runtime.close();
+  });
+
+  it("fails generic resize durable source export closed when candidate verification is unavailable", async () => {
+    const { request, runtime } = genericInitialMoveExportFixture(false, "resize");
 
     await expect(runtime.exportSource(request)).rejects.toMatchObject({ status: 503 });
     await runtime.close();

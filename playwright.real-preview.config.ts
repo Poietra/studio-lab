@@ -1,11 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { defineConfig } from "@playwright/test";
 import { encodeRgbaPngV1 } from "./e2e/png-rgba";
+import {
+  publishRealPreviewRunStateEnvironmentV1,
+  REAL_PREVIEW_HARNESS_PREFIX_V1,
+  realPreviewRunStateFromEnvironmentV1,
+  reclaimRealPreviewRunStateV1,
+} from "./e2e/real-preview-run-state";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
 const snapshotProfile = process.env.POIETRA_E2E_REAL_PREVIEW_PROFILE?.trim() || "2";
@@ -126,10 +132,54 @@ const mutableHarness =
   snapshotProfile === "10" ||
   snapshotProfile === "12";
 const harnessRoot = mutableHarness
-  ? mkdtempSync(join(tmpdir(), `poietra-real-preview-harness-v${snapshotProfile}-`))
+  ? mkdtempSync(join(tmpdir(), `${REAL_PREVIEW_HARNESS_PREFIX_V1}${snapshotProfile}-`))
   : join(process.cwd(), "fixtures", "real-preview-harness");
+let setupHarnessCleanupArmed = mutableHarness;
 if (mutableHarness) {
-  cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+  process.once("exit", () => {
+    if (!setupHarnessCleanupArmed) return;
+    try {
+      rmSync(harnessRoot, { force: true, recursive: true });
+    } catch {
+      // Best-effort only: an exit-time failure must not mask the original error.
+    }
+  });
+  try {
+    cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+  } catch (cause) {
+    try {
+      rmSync(harnessRoot, { force: true, recursive: true });
+      setupHarnessCleanupArmed = false;
+    } catch {
+      // Keep the exit hook armed for one last best-effort attempt.
+    }
+    throw cause;
+  }
+}
+// Playwright evaluates this config file in every worker process too, so each
+// worker builds a harness copy of its own that backs nothing — the server only
+// ever sees the runner's copy through the webServer env below. A worker must
+// therefore not publish a namespace or retain its pristine copy as failure
+// evidence; it only removes its own copy on exit. The runner process publishes
+// this run's opaque namespace for the teardown reporter and keeps a best-effort
+// exit reclamation for setup failures the reporter never sees.
+if (process.env.TEST_WORKER_INDEX !== undefined) {
+  publishRealPreviewRunStateEnvironmentV1(process.env, null);
+} else {
+  publishRealPreviewRunStateEnvironmentV1(process.env, {
+    dataRoot,
+    harnessRoot: mutableHarness ? harnessRoot : null,
+  });
+  const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
+  if (!namespace) throw new Error("The real-preview runner did not publish its generated namespace.");
+  process.once("exit", () => {
+    try {
+      reclaimRealPreviewRunStateV1({ ...namespace, now: Date.now(), outcome: "failed" });
+    } catch {
+      // Best-effort only: an exit-time failure must not mask the original error.
+    }
+  });
+  setupHarnessCleanupArmed = false;
 }
 if (snapshotProfile === "8" && !externalBaseUrl) {
   if (!officialV8ProjectRoot) throw new Error("The official SquareToCircle V8 source root is unavailable.");
@@ -264,7 +314,7 @@ export default defineConfig({
       },
     },
   ],
-  reporter: "line",
+  reporter: [["line"], ["./e2e/real-preview-run-reporter.ts"]],
   testDir: "./e2e",
   use: {
     baseURL: externalBaseUrl ?? `http://127.0.0.1:${port}`,

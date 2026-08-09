@@ -741,7 +741,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(inactiveMarkup).not.toContain(`data-studio-entity="${squareId}"`);
   });
 
-  it("opens only the exact generic V3 root for an initial position move", () => {
+  it("opens only the exact generic V3 root for an initial move or uniform resize", () => {
     const squareId = "source:scenes/staticsquare.py#StaticSquare:square";
     const otherId = "source:scenes/staticsquare.py#StaticSquare:other";
     const runtimeId = "scene:static/runtime-v3-root:0";
@@ -772,7 +772,7 @@ describe("StudioCanvas retained preview layer", () => {
     const boundedAuthority = {
       editableRuntimeEntityId: runtimeId,
       kind: "bounded-interactive" as const,
-      reason: "runtime-trace-initial-move" as const,
+      reason: "runtime-trace-initial-edit" as const,
       sourceAnchor: 0 as const,
       verifiedRuntimeEntityIds: [runtimeId],
     };
@@ -804,9 +804,12 @@ describe("StudioCanvas retained preview layer", () => {
     const tree = StudioCanvas(props);
     expect(findEntityButton(tree, squareId).props.onPointerMove).toBe(props.onEntityPointerMove);
     const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
-    expect(markup).toContain("Runtime Trace initial position move");
+    expect(markup).toContain("Runtime Trace initial move / uniform resize");
     expect(markup).not.toContain(`data-studio-entity="${otherId}"`);
-    expect(markup).not.toContain("data-studio-resize-handle");
+    // The verified candidate root exposes exactly its uniform SE resize handle.
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);
+    expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
   });
 
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {

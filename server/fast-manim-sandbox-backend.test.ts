@@ -26,6 +26,7 @@ import {
 import {
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
   MAX_FAST_MANIM_SANDBOX_RESULT_BYTES,
+  MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
 } from "./fast-manim-snapshot-contract";
 import {
   createFastManimSnapshotProfileSelectionPolicyV1,
@@ -242,17 +243,51 @@ describe("fast-manim sandbox request bundle", () => {
     );
   });
 
-  it("keeps the legacy request byte ceiling after the V2 transport budget grows", () => {
-    const sourceText = "\0".repeat(400_000);
-    const producer = {
-      ...sandboxProducerRequest(),
-      sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
-      sourceText,
-    };
-    expect(Buffer.byteLength(canonicalJsonV1(producer), "utf8")).toBeGreaterThan(
-      MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES,
-    );
-    expect(() => new FastManimSandboxRequestBundleV1(producer)).toThrow(/byte budget/i);
+  it("seals every source the producer-request schema accepts, including worst-case JSON escaping", () => {
+    // A C0 control byte without a short escape costs six encoded bytes. That is
+    // the exact worst case the legacy request budget reserves; quotes,
+    // backslashes, and newlines cost two, and multibyte UTF-8 stays raw.
+    const worstCase = String.fromCharCode(1).repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES);
+    expect(Buffer.byteLength(worstCase, "utf8")).toBe(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES);
+    expect(JSON.stringify(worstCase).length).toBe(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES * 6 + 2);
+
+    for (const sourceText of [
+      worstCase,
+      '"'.repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES),
+      "\\".repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES),
+      "\n".repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES),
+      "\u{1f600}".repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES / 4),
+    ]) {
+      const producer = {
+        ...sandboxProducerRequest(),
+        sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+        sourceText,
+      };
+      expect(Buffer.byteLength(sourceText, "utf8")).toBe(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES);
+
+      const bundle = new FastManimSandboxRequestBundleV1(producer);
+      expect(bundle.byteLength).toBe(Buffer.byteLength(canonicalJsonV1(producer), "utf8"));
+      expect(bundle.byteLength).toBeLessThanOrEqual(MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES);
+      expect(verifyFastManimSandboxRequestBundleV1(bundle)).toBe(true);
+      expect(Buffer.from(bundle.copyProducerRequestBytes()).toString("utf8")).toBe(canonicalJsonV1(producer));
+    }
+  });
+
+  it("rejects one byte beyond the documented source bound deterministically", () => {
+    const message = new RegExp(`at most ${MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES} UTF-8 bytes`);
+    for (const sourceText of [
+      "a".repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 1),
+      String.fromCharCode(1).repeat(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 1),
+    ]) {
+      const producer = {
+        ...sandboxProducerRequest(),
+        sourceHash: createHash("sha256").update(sourceText, "utf8").digest("hex"),
+        sourceText,
+      };
+      expect(Buffer.byteLength(sourceText, "utf8")).toBe(MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 1);
+      expect(() => new FastManimSandboxRequestBundleV1(producer)).toThrow(message);
+      expect(() => new FastManimSandboxRequestBundleV1(producer)).toThrow(message);
+    }
   });
 
   it("fails closed for missing, cross-profile, mismatched, oversized, and APNG attachments", () => {

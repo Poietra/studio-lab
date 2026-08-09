@@ -340,6 +340,9 @@ class MemoryPublicationRepository implements SnapshotPublicationRepositoryV1 {
   }
 
   async acknowledgeArtifactDeletion() {}
+  async compactPublicationTombstones() {
+    return { compacted: 0, deferredForPendingArtifactDeletions: false };
+  }
   async close() {}
   async isArtifactPublished() {
     return false;

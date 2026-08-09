@@ -8,17 +8,20 @@ import {
   ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_CHECKSUM,
   ACCOUNT_ORGANIZATION_MIGRATION_V11_SOURCE,
+  ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
+  ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
   ACCOUNT_SESSION_MIGRATION_V12_CHECKSUM,
   ACCOUNT_SESSION_MIGRATION_V12_SOURCE,
   applyAccountInvitationMigrationV22,
   applyAccountInvitationQuotaMigrationV24,
   applyAccountOrganizationMigrationV11,
+  applyAccountOrganizationSwitchMutationMigrationV28,
   applyAccountSessionMigrationV12,
   applyBundledDurableStorageMigrations,
   applyBundledDurableStorageMigrationsThrough,
-  applyCollaborationAuthorizationMigrationV26,
   type applyBundledDurableStorageMigrationsV2,
   type applyBundledWorkspaceSourceMigrationV1,
+  applyCollaborationAuthorizationMigrationV26,
   applyEditorDocumentMigrationV17,
   applyEditorMutationMigrationV18,
   applyEditorSessionSnapshotMigrationV23,
@@ -34,6 +37,7 @@ import {
   applyRenderSessionRetentionMigrationV6,
   applyRenderSessionSceneNameMigrationV19,
   applySnapshotPublicationMigrationV3,
+  applySnapshotPublicationTombstoneRetentionMigrationV27,
   applySnapshotRuntimeConfigHeadMigrationV25,
   applySnapshotRuntimeDigestMigrationV10,
   applyWorkspaceSourceMigrationV1,
@@ -66,6 +70,8 @@ import {
   RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
   RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
+  SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM,
+  SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE,
   SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM,
   SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE,
   SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_SOURCE,
@@ -115,12 +121,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 26 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 28 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 26 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 28 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -147,7 +153,13 @@ describe("durable storage migrations", () => {
     expect(db.queries.filter(({ text }) => text === ACCOUNT_INVITATION_QUOTA_MIGRATION_V24_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE)).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(52);
+    expect(
+      db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE),
+    ).toHaveLength(1);
+    expect(
+      db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE),
+    ).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(56);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -203,12 +215,20 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 26,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 27)).resolves.toEqual({
+      applied: true,
+      version: 27,
+    });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 28)).resolves.toEqual({
+      applied: true,
+      version: 28,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 27)).rejects.toThrow(
-      /migration v27 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 29)).rejects.toThrow(
+      /migration v29 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -713,6 +733,48 @@ describe("durable storage migrations", () => {
     await expect(
       applyCollaborationAuthorizationMigrationV26(db.pool, COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE),
     ).rejects.toThrow(/requires durable storage migrations v1 through v25/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds a bounded snapshot publication tombstone retention queue in v27", async () => {
+    expect(durableStorageMigrationChecksum(SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE)).toBe(
+      SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM,
+    );
+    expect(SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE).toContain(
+      "snapshot_scene_heads_tombstone_retention_v27",
+    );
+    expect(SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE).toContain(
+      "tenant_id, updated_at, project_id",
+    );
+    expect(SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE).toContain("publication_id IS NULL");
+
+    const db = database();
+    await expect(
+      applySnapshotPublicationTombstoneRetentionMigrationV27(
+        db.pool,
+        SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE,
+      ),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v26/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds replay-safe account organization switch mutations in v28", async () => {
+    expect(durableStorageMigrationChecksum(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE)).toBe(
+      ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM,
+    );
+    expect(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE).toContain(
+      "PRIMARY KEY (session_token_hash, mutation_id)",
+    );
+    expect(ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE).toContain(
+      "UNIQUE (session_token_hash, resulting_version)",
+    );
+    const db = database();
+    await expect(
+      applyAccountOrganizationSwitchMutationMigrationV28(
+        db.pool,
+        ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
+      ),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v27/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 

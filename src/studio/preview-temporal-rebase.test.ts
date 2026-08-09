@@ -26,12 +26,13 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewGenericInitialMoveV1,
+  compileStudioPreviewGenericInitialEditV1,
   compileStudioPreviewTemporalRebaseV1,
+  conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
   studioPreviewGenericInitialEditAuthorityCandidateV1,
-  studioPreviewGenericInitialMoveProgramSetV1,
+  studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
@@ -743,11 +744,34 @@ async function genericRuntimeTraceV3MoveInput() {
   }
   const record = programRecord(validation.program, validation);
   return {
+    base,
     candidate,
     proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
     record,
     snapshot,
     validationScene,
+  };
+}
+
+async function genericRuntimeTraceV3ResizeInput(scaleFactor: number) {
+  const { base, candidate, snapshot, validationScene } = await genericRuntimeTraceV3MoveInput();
+  const validation = createDirectManipulationScaleProgram({
+    capturedPlayhead: 0,
+    interval: { end: 0, start: 0 },
+    scales: { [candidate.studioEntityId]: { from: 1, to: scaleFactor } },
+    scene: validationScene,
+    targetEntityIds: [candidate.studioEntityId],
+    transactionId: "generic-v3-initial-resize",
+  });
+  if (validation.kind !== "valid") {
+    throw new Error(`The generic V3 resize fixture is invalid: ${JSON.stringify(validation.issues)}`);
+  }
+  const record = programRecord(validation.program, validation);
+  return {
+    candidate,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
+    record,
+    snapshot,
   };
 }
 
@@ -774,7 +798,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
     expect(interactionAuthority).toEqual({
       editableRuntimeEntityId: mapping.rootId,
       kind: "bounded-interactive",
-      reason: "runtime-trace-initial-move",
+      reason: "runtime-trace-initial-edit",
       sourceAnchor: 0,
       verifiedRuntimeEntityIds: [mapping.rootId],
     });
@@ -933,14 +957,14 @@ describe("generic Runtime Trace V3 initial move", () => {
     );
   });
 
-  it("authorizes one direct t=0 position Program and rejects every wider Program set", async () => {
+  it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
     const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
-    expect(studioPreviewGenericInitialMoveProgramSetV1([], candidate)).toEqual({ kind: "none" });
-    expect(studioPreviewGenericInitialMoveProgramSetV1([record], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([], candidate)).toEqual({ kind: "none" });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], candidate)).toEqual({
+      edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
-      position: { x: 384, y: 144 },
     });
-    expect(studioPreviewGenericInitialMoveProgramSetV1([record, record], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], candidate)).toEqual({
       kind: "unauthorized",
     });
 
@@ -950,14 +974,48 @@ describe("generic Runtime Trace V3 initial move", () => {
       scales: { [candidate.studioEntityId]: { from: 1, to: 1.5 } },
       scene: validationScene,
       targetEntityIds: [candidate.studioEntityId],
-      transactionId: "generic-v3-resize-rejected",
+      transactionId: "generic-v3-resize",
     });
-    if (resize.kind !== "valid") throw new Error("Generic resize rejection fixture did not validate.");
-    expect(studioPreviewGenericInitialMoveProgramSetV1([programRecord(resize.program, resize)], candidate)).toEqual({
+    if (resize.kind !== "valid") throw new Error("Generic resize fixture did not validate.");
+    const resizeRecord = programRecord(resize.program, resize);
+    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], candidate)).toEqual({
+      edit: { kind: "resize", scaleFactor: 1.5 },
+      kind: "authorized",
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], candidate)).toEqual({
       kind: "unauthorized",
     });
+
+    const rebasedResize = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [candidate.studioEntityId]: { from: 2, to: 3 } },
+      scene: validationScene,
+      targetEntityIds: [candidate.studioEntityId],
+      transactionId: "generic-v3-resize-rebased",
+    });
+    if (rebasedResize.kind !== "valid") throw new Error("Generic rebased resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialMoveProgramSetV1(
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], candidate),
+    ).toEqual({
+      edit: { kind: "resize", scaleFactor: 1.5 },
+      kind: "authorized",
+    });
+
+    const identityResize = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [candidate.studioEntityId]: { from: 1, to: 1 } },
+      scene: validationScene,
+      targetEntityIds: [candidate.studioEntityId],
+      transactionId: "generic-v3-resize-identity",
+    });
+    if (identityResize.kind !== "valid") throw new Error("Generic identity resize fixture did not validate.");
+    expect(
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], candidate),
+    ).toEqual({ kind: "unauthorized" });
+    expect(
+      studioPreviewGenericInitialEditProgramSetV1(
         [
           {
             ...record,
@@ -977,7 +1035,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
-    const result = compileStudioPreviewGenericInitialMoveV1({
+    const result = compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1009,6 +1067,66 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(compiled.scene.bundle.scene.entities.find(({ id }) => id === root.id)?.transform).toEqual(
       movedRoot?.transform,
     );
+  });
+
+  it("scales the verified root group about its initial center without flattening its children", async () => {
+    const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3ResizeInput(1.5);
+    expect(candidate.baseCenter).toEqual({ x: 320, y: 180 });
+    const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
+    const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
+    if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+    const result = compileStudioPreviewGenericInitialEditV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      sourceRevisionHash: "8".repeat(64),
+    });
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+    const scaledRoot = result.scene.entities.find(({ id }) => id === root.id);
+    const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
+    // The fixture's initial center is the Scene origin, so the conjugated
+    // scale multiplies the whole transform without moving the placement.
+    expect(scaledRoot?.transform.m11).toBeCloseTo(root.transform.m11 * 1.5, 12);
+    expect(scaledRoot?.transform.m12).toBeCloseTo(root.transform.m12 * 1.5, 12);
+    expect(scaledRoot?.transform.m21).toBeCloseTo(root.transform.m21 * 1.5, 12);
+    expect(scaledRoot?.transform.m22).toBeCloseTo(root.transform.m22 * 1.5, 12);
+    expect(scaledRoot?.transform.tx).toBeCloseTo(root.transform.tx * 1.5, 12);
+    expect(scaledRoot?.transform.ty).toBeCloseTo(root.transform.ty * 1.5, 12);
+    expect(retainedChild).toEqual(child);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-resize:${"8".repeat(64)}`);
+
+    const compiled = await compileStudioPreviewSceneV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      workingRevision: "generic-v3-initial-resize-revision",
+      workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
+    });
+    expect(compiled.kind).toBe("compiled");
+    if (compiled.kind !== "compiled") throw new Error(compiled.error);
+    expect(compiled.scene.bundle.scene.entities.find(({ id }) => id === root.id)?.transform).toEqual(
+      scaledRoot?.transform,
+    );
+  });
+});
+
+describe("conjugateUniformScaleAboutCenterV1", () => {
+  it("keeps the center's image invariant while scaling the linear part", () => {
+    const transform = { m11: 2, m12: 0.5, m21: -0.25, m22: 1.5, tx: 3, ty: -2 };
+
+    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 1, y: -0.5 }, 1.5)).toEqual({
+      m11: 3,
+      m12: 0.75,
+      m21: -0.375,
+      m22: 2.25,
+      tx: 4,
+      ty: -2.75,
+    });
+    // Scaling about the placement itself leaves the translation fixed.
+    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 3, y: -2 }, 2)).toMatchObject({ tx: 3, ty: -2 });
+    // Shrinking pulls an offset placement toward the center.
+    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 0, y: 0 }, 0.5)).toMatchObject({ tx: 1.5, ty: -1 });
   });
 });
 

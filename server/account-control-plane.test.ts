@@ -21,15 +21,21 @@ function sessionRepository() {
   const close = vi.fn(async () => undefined);
   const account = {
     activeOrganizationId: "organization-a",
+    organizationSwitch: null,
     organizations: [{ displayName: "Organization A", id: "organization-a", role: "billing" as const }],
     user: { displayName: "Ada Lovelace", id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3" },
+    version: 4,
+  };
+  const mutation = {
+    mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+    organizationId: "organization-a",
     version: 4,
   };
   const value: AccountSessionControlRepositoryV1 = {
     close,
     revokeAccountSession: vi.fn(async () => undefined),
     resolveAccountSession: vi.fn(async () => account),
-    switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const })),
+    switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const, mutation })),
   };
   return { close, value };
 }
@@ -108,7 +114,11 @@ describe("OIDC account control-plane composition", () => {
     await expect(
       controlPlane.fetch(
         new Request("https://studio.example/api/account/session", {
-          body: JSON.stringify({ expectedVersion: 4, organizationId: "organization-a" }),
+          body: JSON.stringify({
+            expectedVersion: 4,
+            mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+            organizationId: "organization-a",
+          }),
           headers: {
             "content-type": "application/json",
             cookie: `__Host-poietra_session=${token}`,

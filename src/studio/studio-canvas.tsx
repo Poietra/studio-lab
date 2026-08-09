@@ -17,6 +17,7 @@ import {
   StudioPresenceOverlay,
   type StudioPresenceParticipantV1,
 } from "./studio-presence-overlay";
+import { markStudioRenderBoundary } from "./studio-render-profiler";
 import type { StudioTool } from "./studio-toolbar";
 import {
   clientPointToViewport,
@@ -333,6 +334,7 @@ export function StudioCanvas({
   scalePreview,
   selectedIds,
 }: StudioCanvasProps) {
+  markStudioRenderBoundary("canvas");
   // Only a fully correlated, presented WebGPU frame may replace the duplicate
   // DOM fill/stroke paint: `preview.state` is resolved synchronously against
   // the current playhead, viewport, snapshot correlation, and host, so hiding
@@ -549,7 +551,6 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
             const runtimePositionOnly =
-              preview?.genericInitialEditCandidate?.studioEntityId === entity.id ||
               (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
                 preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
               (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
@@ -699,8 +700,8 @@ export function StudioCanvas({
                       : selectionOnlyPreview
                         ? "selection only"
                         : preview.interactionAuthority.kind === "bounded-interactive"
-                          ? preview.interactionAuthority.reason === "runtime-trace-initial-move"
-                            ? "Runtime Trace initial position move"
+                          ? preview.interactionAuthority.reason === "runtime-trace-initial-edit"
+                            ? "Runtime Trace initial move / uniform resize"
                             : preview.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2"
                               ? "Grid title terminal edit at 14.00s"
                               : "Square terminal edit at 5.00s"
