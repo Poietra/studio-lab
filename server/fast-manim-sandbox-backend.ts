@@ -45,7 +45,16 @@ export const FAST_MANIM_SANDBOX_STATUS_SCHEMA_V1 = "poietra.fast-manim-sandbox-s
 export const FAST_MANIM_SANDBOX_STATUS_VERSION_V1 = 1 as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V2 = "poietra.fast-manim-sandbox-request" as const;
 export const FAST_MANIM_SANDBOX_REQUEST_SCHEMA_V3 = "poietra.fast-manim-sandbox-request" as const;
-export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES + 64 * 1024;
+/**
+ * Canonical JSON expands one source byte into at most six: a C0 control byte
+ * without a short escape becomes a six-byte u00xx escape, while quotes and
+ * backslashes cost two and multibyte UTF-8 is emitted raw. The sealed request
+ * budget therefore reserves the same worst case the Runtime Trace request
+ * ceilings already reserve. Without it a source the public producer-request
+ * schema accepts at MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES could not be encoded
+ * into its own sandbox request.
+ */
+export const MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES = MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES * 6 + 64 * 1024;
 const MAX_FAST_MANIM_SANDBOX_RUNTIME_TRACE_REQUEST_BYTES = Math.max(
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V1,
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,

@@ -22,7 +22,11 @@ from pathlib import Path
 MAGIC = b"POIETR1\x00"
 VERSION = 1
 HEADER_BYTES = 48
-MAX_LEGACY_REQUEST_BYTES = 2 * 1024 * 1024 + 64 * 1024
+# Mirrors MAX_FAST_MANIM_SANDBOX_LEGACY_REQUEST_BYTES: canonical JSON expands
+# one source byte into at most six, so a 2 MiB source still encodes into its own
+# bounded request.
+MAX_SOURCE_BYTES = 2 * 1024 * 1024
+MAX_LEGACY_REQUEST_BYTES = MAX_SOURCE_BYTES * 6 + 64 * 1024
 MAX_PNG_BYTES = 512 * 1024
 MAX_PNG_BASE64_BYTES = 4 * ((MAX_PNG_BYTES + 2) // 3)
 MAX_REQUEST_BYTES = MAX_LEGACY_REQUEST_BYTES + MAX_PNG_BASE64_BYTES + 64 * 1024
