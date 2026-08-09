@@ -253,22 +253,25 @@ export function buildRealManimProjectCensusReport(
       sourceExecution: result.execution.status,
     };
   });
-  const eligible = candidates
-    .filter(
-      ({ producerCompatible, runtimeTraceOutcome, sceneRecognized, snapshotOutcome, sourceExecution }) =>
-        runtimeTraceOutcome === "fallback" &&
-        snapshotOutcome === "fallback" &&
-        producerCompatible &&
-        sceneRecognized &&
-        sourceExecution === "passed",
-    )
-    .sort(
-      (left, right) =>
-        right.demoValue - left.demoValue ||
-        left.implementationCost - right.implementationCost ||
-        right.featureOccurrenceTotal - left.featureOccurrenceTotal ||
-        left.codebaseId.localeCompare(right.codebaseId),
-    );
+  const safeCandidates = candidates.filter(
+    ({ producerCompatible, runtimeTraceOutcome, sceneRecognized, snapshotOutcome, sourceExecution }) =>
+      (runtimeTraceOutcome === "accepted" || runtimeTraceOutcome === "fallback") &&
+      snapshotOutcome === "fallback" &&
+      producerCompatible &&
+      sceneRecognized &&
+      sourceExecution === "passed",
+  );
+  const fallbackCandidates = safeCandidates.filter(({ runtimeTraceOutcome }) => runtimeTraceOutcome === "fallback");
+  // Preserve the original gap-target ranking while one exists. An accepted
+  // generic preview is the deterministic fallback when producer improvements
+  // close every measured preview gap.
+  const eligible = (fallbackCandidates.length > 0 ? fallbackCandidates : safeCandidates).sort(
+    (left, right) =>
+      right.demoValue - left.demoValue ||
+      left.implementationCost - right.implementationCost ||
+      right.featureOccurrenceTotal - left.featureOccurrenceTotal ||
+      left.codebaseId.localeCompare(right.codebaseId),
+  );
   if (eligible.length === 0) throw new Error("No safe generic Runtime Trace target candidate was measured.");
   const stageSummary = Object.fromEntries(
     stages.map((stage) => {
@@ -299,7 +302,9 @@ export function buildRealManimProjectCensusReport(
       selectedCodebaseId: eligible[0]!.codebaseId,
       reasons: [
         "bounded-source-execution-passed",
-        "generic-runtime-trace-gap-observed",
+        eligible[0]!.runtimeTraceOutcome === "accepted"
+          ? "generic-runtime-trace-preview-accepted"
+          : "generic-runtime-trace-gap-observed",
         "safe-snapshot-fallback",
         "source-scene-recognized",
         "producer-compatible-dependencies",

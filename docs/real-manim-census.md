@@ -57,3 +57,5 @@ pnpm exec vitest run scripts/run-real-manim-project-census.real.test.ts
 ```
 
 To rewrite the v2 baseline after an intentional repin, also set `POIETRA_REAL_MANIM_PROJECT_CENSUS_UPDATE=1`. Review every changed artifact digest. A new manifest digest alone is not evidence that the real producer ran successfully.
+
+The v2 target remains eligible when its generic Runtime Trace preview advances from a safe fallback to accepted evidence. Rejected previews, unrecognized Scenes, failed source execution, unsafe snapshot results, and incompatible dependencies remain ineligible. The report records whether selection used an observed gap or an accepted preview so that a producer capability improvement cannot stop baseline regeneration or be mislabeled as a gap.

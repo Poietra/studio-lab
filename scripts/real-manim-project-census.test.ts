@@ -61,7 +61,10 @@ describe("real Manim project census", () => {
         reasons: [],
       },
     };
-    expect(() => buildRealManimProjectCensusReport(manifest, changed)).toThrow("No safe generic Runtime Trace target");
+    const acceptedReport = buildRealManimProjectCensusReport(manifest, changed);
+    expect(acceptedReport.targetSelection.selectedCodebaseId).toBe("math-to-manim");
+    expect(acceptedReport.targetSelection.reasons).toContain("generic-runtime-trace-preview-accepted");
+    expect(acceptedReport.targetSelection.reasons).not.toContain("generic-runtime-trace-gap-observed");
   });
 
   it("fails closed on manifest identity drift and incomplete observations", async () => {
