@@ -182,6 +182,8 @@ describe("PostgresAccountSessionRepositoryV1", () => {
       expect(text).toContain("existing.organization_id <> $2");
       expect(text).toContain("existing.expected_version <> $3::bigint");
       expect(text).toContain("NOT EXISTS (SELECT 1 FROM existing_mutation)");
+      expect(text).toContain("confirmed.organization_id = $2");
+      expect(text).toContain("confirmed.expected_version = $3::bigint");
       expect(values).toHaveLength(4);
       expect(Buffer.compare(values[0] as Buffer, hash)).toBe(0);
       expect(values[1]).toBe("organization-b");

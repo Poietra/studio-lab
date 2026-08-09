@@ -465,6 +465,8 @@ export class PostgresAccountSessionRepositoryV1
          ) latest ON true
          LEFT JOIN active_organizations organization
            ON confirmed.mutation_id IS NOT NULL
+          AND confirmed.organization_id = $2
+          AND confirmed.expected_version = $3::bigint
         ORDER BY organization.organization_id COLLATE "C" NULLS LAST`,
         [sessionTokenHash, organizationId, expectedVersionValue, mutationId],
       );
