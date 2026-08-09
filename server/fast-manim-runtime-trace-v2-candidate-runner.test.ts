@@ -319,5 +319,8 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("Runtime Trace V2 Openin
       FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
       result.sourceHash,
     ]);
-  }, 120_000);
+    // This correctness path parses and verifies four ~90 MiB traces. Wall time
+    // varies substantially by host; reproducible performance/RSS budgets
+    // belong in #499's dedicated measurement harness, not this timeout.
+  }, 240_000);
 });

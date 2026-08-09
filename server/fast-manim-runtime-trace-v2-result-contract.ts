@@ -14,6 +14,7 @@ import {
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { sourceBindingV1Schema } from "../src/engine/source-runtime-identity";
+import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import {
   digestFastManimRuntimeTraceConfigV2,
   FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V2,
@@ -533,9 +534,12 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
     [720, 780],
     [840, 900],
   ] as const) {
-    const hold = canonicalJsonV1(trace.frames[start]?.draws);
+    // Digesting each hold streams the same canonical bytes the comparison used
+    // to materialize. Equality relies on the repository's SHA-256 collision
+    // resistance assumption, and avoids ~300 frame-sized temporary strings.
+    const hold = digestCanonicalJsonV1(trace.frames[start]?.draws);
     for (let index = start + 1; index < end; index += 1) {
-      if (canonicalJsonV1(trace.frames[index]?.draws) !== hold) {
+      if (digestCanonicalJsonV1(trace.frames[index]?.draws) !== hold) {
         context.addIssue({
           code: "custom",
           message: "Runtime Trace V2 requires each exact one-second Wait hold.",
@@ -737,8 +741,13 @@ function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array)
       cause,
     });
   }
+  // On the production Uint8Array path, drop local references once the next
+  // stage owns the data. This makes the decoded text and pre-schema graph
+  // eligible for collection earlier without assuming when V8 runs GC.
+  json = "";
   assertBoundedRuntimeTraceV2ResultJson(document);
   const parsed = fastManimRuntimeTraceV2Schema.safeParse(document);
+  document = undefined;
   if (!parsed.success) {
     throw new FastManimRuntimeTraceV2ContractError("result-invalid", "Runtime Trace V2 violates its closed contract.", {
       cause: parsed.error,
@@ -765,7 +774,7 @@ export function parseFastManimRuntimeTraceProducerJsonV2(
 }
 
 export function digestFastManimRuntimeTraceV2(trace: FastManimRuntimeTraceV2) {
-  return createHash("sha256").update(canonicalJsonV1(trace)).digest("hex");
+  return digestCanonicalJsonV1(trace);
 }
 
 export function expectedFastManimRuntimeTraceCorrelationV2(
