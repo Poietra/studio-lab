@@ -2,7 +2,7 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
-  lowerGenericRuntimeTraceInitialPositionSourceV3,
+  lowerGenericRuntimeTraceInitialEditSourceV3,
   lowerLineJointsInitialTransformSourceV10,
   lowerOpeningManimTerminalPositionSourceV2,
   lowerSquareToCircleInitialPositionSourceV8,
@@ -118,14 +118,14 @@ export function lowerManimRenderRequest({
       );
       if (openingTerminalV2) return { lowered: openingTerminalV2, renderRequest: request };
     }
-    const genericInitialMoveV3 = lowerGenericRuntimeTraceInitialPositionSourceV3(
+    const genericInitialEditV3 = lowerGenericRuntimeTraceInitialEditSourceV3(
       originalSource,
       request,
       orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
       frame,
       null,
     );
-    if (genericInitialMoveV3) return { lowered: genericInitialMoveV3, renderRequest: request };
+    if (genericInitialEditV3) return { lowered: genericInitialEditV3, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

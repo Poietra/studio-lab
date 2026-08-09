@@ -204,6 +204,66 @@ describe("Manim render request lowering", () => {
     );
   });
 
+  it("routes one generic StaticSquare source-time-zero uniform resize through fresh V3 source evidence", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      easing: "smooth",
+      entityId: staticSquareEntityId,
+      from: 1,
+      id: "generic-v3-initial-scale",
+      interval: { end: 0, start: 0 },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: { evidence: ["generic Runtime Trace V3 root"], origin: "direct-manipulation" },
+      relativeFactor: 1.5,
+      to: 1.5,
+    };
+    const editProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["generic Runtime Trace V3 initial edit"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: "generic-v3-initial-resize",
+      version: 1,
+    };
+
+    const result = lowerManimRenderRequest({
+      frame: { height: 8, width: 128 / 9 },
+      originalSource: staticSquareSource,
+      projectId: "generic-preview",
+      request: {
+        cameraCenter: { x: 0, y: 0 },
+        destination: null,
+        program: editProgram,
+        projectId: "generic-preview",
+        sceneName: staticSquareSceneName,
+        sourceBindings: [{ entityId: staticSquareEntityId, sourceVariable: "square" }],
+        sourceHash: createHash("sha256").update(staticSquareSource, "utf8").digest("hex"),
+        sourcePath: staticSquareSourcePath,
+        viewport: { height: 360, width: 640 },
+      },
+    });
+
+    expect(result.lowered.insertedCode).toBe("        square.scale(1.5)");
+    expect(result.lowered.preflight).toMatchObject({
+      baseBinding: { name: "square", ordinal: 1 },
+      entityId: staticSquareEntityId,
+      expectedScaleFactor: 1.5,
+      kind: "fast-manim-generic-initial-resize-v3",
+    });
+    expect(result.lowered.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.scale(1.5)",
+    );
+  });
+
   it("routes one source-time-zero WarpSquare V9 transform through the bounded early lowerer", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
