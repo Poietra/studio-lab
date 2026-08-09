@@ -59,7 +59,10 @@ import {
 import { PrivateVersionedS3BucketTransportV1 } from "./storage/s3/s3-private-versioned-bucket-transport";
 import { S3ProjectPngStoreV1 } from "./storage/s3/s3-project-png-store";
 import { S3SnapshotArtifactStoreV1 } from "./storage/s3/s3-snapshot-artifact-store";
-import { createDurableSnapshotArtifactGcWorkerV1 } from "./storage/snapshot-artifact-gc";
+import {
+  createDurableSnapshotArtifactGcWorkerV1,
+  type SnapshotPublicationTombstoneCompactionMetricsV1,
+} from "./storage/snapshot-artifact-gc";
 import { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import { createDurableSourceBlobGcWorkerV1 } from "./storage/source-blob-gc";
 import { VerifiedArtifactPublisherV1 } from "./storage/verified-artifact-publisher";
@@ -129,6 +132,7 @@ export type DurablePostgresS3ProductionRuntimeOptionsV1 = Readonly<{
       graceMs: number;
       intervalMs: number;
       onFailure: (error: unknown) => void;
+      onTombstoneCompactionMetrics: (metrics: SnapshotPublicationTombstoneCompactionMetricsV1) => void;
       sweepTimeoutMs: number;
     }>;
     sandbox: FastManimProductionSnapshotRunnerFactoryOptionsV1["client"];
