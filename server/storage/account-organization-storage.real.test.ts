@@ -83,7 +83,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
       poolConfig: { connectionString: DATABASE_URL, max: 2 },
     });
     try {
-      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 24 });
+      expect(await applyBundledDurableStorageMigrations(pool)).toEqual({ applied: true, version: 27 });
       const setup = await pool.connect();
       try {
         await setup.query("BEGIN");
@@ -500,7 +500,7 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL account and organization membership",
     const oidcHandler = createOidcLoginFetchHandlerV1(oidcService, publicOrigin);
 
     try {
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 24 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toMatchObject({ version: 27 });
       await pool.query(
         `INSERT INTO public.workspace_tenants (tenant_id)
          VALUES ($1), ($2)
