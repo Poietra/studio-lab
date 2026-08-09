@@ -560,6 +560,92 @@ async function prepareStorage(environment: StorageEnvironment) {
   }
 }
 
+async function seedTombstoneCompactionFixture(
+  pool: Pool,
+  input: Readonly<{
+    foreignTenantId: string;
+    publicationIdentity: SnapshotPublicationIdentityV1;
+    publicationGeneration: string;
+    suffix: string;
+    tenantId: string;
+  }>,
+) {
+  const cutoff = new Date("2050-01-01T00:00:00.000Z");
+  const old = new Date("2000-01-01T00:00:00.000Z");
+  const eligibleProjectIds = [`compact-eligible-a-${input.suffix}`, `compact-eligible-b-${input.suffix}`] as const;
+  const activeProjectId = `compact-active-${input.suffix}`;
+  const cutoffProjectId = `compact-cutoff-${input.suffix}`;
+  const foreignProjectId = `compact-foreign-${input.suffix}`;
+  const fixtures = [
+    [input.tenantId, eligibleProjectIds[0], "EligibleA", old],
+    [input.tenantId, eligibleProjectIds[1], "EligibleB", old],
+    [input.tenantId, activeProjectId, "ActiveScene", old],
+    [input.tenantId, cutoffProjectId, "CutoffScene", cutoff],
+    [input.foreignTenantId, foreignProjectId, "ForeignScene", old],
+  ] as const;
+  for (const [tenantId, projectId, sceneName, updatedAt] of fixtures) {
+    await pool.query(
+      `WITH project AS (
+         INSERT INTO public.workspace_projects (tenant_id, project_id, display_name)
+         VALUES ($1, $2, 'Compaction fixture')
+         RETURNING tenant_id, project_id
+       )
+       INSERT INTO public.snapshot_scene_heads
+         (tenant_id, project_id, source_path, scene_name, runtime_digest,
+          runtime_config_hash, generation, publication_id, updated_at)
+       SELECT tenant_id, project_id, 'compaction.py', $3, $4, $5, 1, NULL, $6
+         FROM project`,
+      [tenantId, projectId, sceneName, RUNTIME_DIGEST, RUNTIME_CONFIG_HASH, updatedAt],
+    );
+  }
+  await pool.query(
+    `INSERT INTO public.workspace_project_references
+       (tenant_id, project_id, reference_kind, reference_id)
+     VALUES ($1, $2, 'render-session', $3)`,
+    [input.tenantId, activeProjectId, `compact-active-${input.suffix}`],
+  );
+  const fenced = await pool.query<{ generation: string }>(
+    `UPDATE public.snapshot_scene_heads
+        SET updated_at = $7
+      WHERE tenant_id = $1 AND project_id = $2 AND source_path = $3 AND scene_name = $4
+        AND runtime_digest = $5 AND runtime_config_hash = $6 AND publication_id IS NULL
+        AND EXISTS (
+          SELECT 1
+            FROM public.snapshot_publications publication
+           WHERE publication.tenant_id = snapshot_scene_heads.tenant_id
+             AND publication.project_id = snapshot_scene_heads.project_id
+             AND publication.source_path = snapshot_scene_heads.source_path
+             AND publication.scene_name = snapshot_scene_heads.scene_name
+             AND publication.runtime_digest = snapshot_scene_heads.runtime_digest
+             AND publication.runtime_config_hash = snapshot_scene_heads.runtime_config_hash
+             AND publication.generation = snapshot_scene_heads.generation
+        )
+      RETURNING generation::text AS generation`,
+    [
+      input.publicationIdentity.tenantId,
+      input.publicationIdentity.projectId,
+      input.publicationIdentity.sourcePath,
+      input.publicationIdentity.sceneName,
+      input.publicationIdentity.runtimeDigest,
+      input.publicationIdentity.runtimeConfigHash,
+      old,
+    ],
+  );
+  expect(fenced.rows).toEqual([{ generation: input.publicationGeneration }]);
+  return { activeProjectId, cutoff, cutoffProjectId, eligibleProjectIds, foreignProjectId };
+}
+
+async function remainingCompactionFixtureProjects(pool: Pool, tenantId: string, projectIds: readonly string[]) {
+  const result = await pool.query<{ project_id: string }>(
+    `SELECT DISTINCT project_id
+       FROM public.snapshot_scene_heads
+      WHERE tenant_id = $1 AND project_id = ANY($2::text[])
+      ORDER BY project_id`,
+    [tenantId, projectIds],
+  );
+  return result.rows.map(({ project_id }) => project_id);
+}
+
 describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + MinIO snapshot publication", () => {
   it("publishes across processes, isolates tenants, rejects stale source CAS, and deletes an upload orphan", async () => {
     const environment = storageEnvironment();
@@ -703,6 +789,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         requestId: `replacement-${requestId}`,
         snapshotHash: createHash("sha256").update(`replacement-snapshot-${suffix}`).digest("hex"),
       });
+      expect(BigInt(replacement.generation)).toBeGreaterThan(BigInt(publication.generation));
       const conditionalReader = snapshotStorage();
       try {
         await expect(
@@ -836,9 +923,60 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         expect(queued).toMatchObject({ artifact: orphan, tenantId: tenantA });
         if (!queued) throw new Error("The upload orphan was not queued for deletion.");
         expect(await orphanStorage.publications.pendingArtifactDeletions(tenantA, 10)).toEqual([queued]);
+        const compaction = await seedTombstoneCompactionFixture(orphanInspection, {
+          foreignTenantId: tenantB,
+          publicationGeneration: replacement.generation,
+          publicationIdentity: identity,
+          suffix,
+          tenantId: tenantA,
+        });
+        const tenantFixtureProjects = [
+          ...compaction.eligibleProjectIds,
+          compaction.activeProjectId,
+          compaction.cutoffProjectId,
+        ];
+        await expect(
+          orphanStorage.publications.compactPublicationTombstones(tenantA, compaction.cutoff, 1),
+        ).resolves.toEqual({ compacted: 0, deferredForPendingArtifactDeletions: true });
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantA, tenantFixtureProjects),
+        ).resolves.toHaveLength(4);
         await orphanStorage.artifacts.deleteVersion(tenantA, orphan);
         await orphanStorage.publications.acknowledgeArtifactDeletion(tenantA, queued.deletionId);
         expect(await orphanStorage.publications.pendingArtifactDeletions(tenantA, 10)).toEqual([]);
+        await expect(
+          orphanStorage.publications.compactPublicationTombstones(tenantA, compaction.cutoff, 1),
+        ).resolves.toEqual({ compacted: 1, deferredForPendingArtifactDeletions: false });
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantA, tenantFixtureProjects),
+        ).resolves.toHaveLength(3);
+        await expect(
+          orphanStorage.publications.compactPublicationTombstones(tenantA, compaction.cutoff, 1),
+        ).resolves.toEqual({ compacted: 1, deferredForPendingArtifactDeletions: false });
+        await expect(
+          orphanStorage.publications.compactPublicationTombstones(tenantA, compaction.cutoff, 1),
+        ).resolves.toEqual({ compacted: 0, deferredForPendingArtifactDeletions: false });
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantA, tenantFixtureProjects),
+        ).resolves.toEqual([compaction.activeProjectId, compaction.cutoffProjectId].sort());
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantB, [compaction.foreignProjectId]),
+        ).resolves.toEqual([compaction.foreignProjectId]);
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantA, [identity.projectId]),
+        ).resolves.toEqual([identity.projectId]);
+        await orphanInspection.query(
+          `DELETE FROM public.workspace_project_references
+            WHERE tenant_id = $1 AND project_id = $2
+              AND reference_kind = 'render-session' AND reference_id = $3`,
+          [tenantA, compaction.activeProjectId, `compact-active-${suffix}`],
+        );
+        await expect(
+          orphanStorage.publications.compactPublicationTombstones(tenantA, compaction.cutoff, 1),
+        ).resolves.toEqual({ compacted: 1, deferredForPendingArtifactDeletions: false });
+        await expect(
+          remainingCompactionFixtureProjects(orphanInspection, tenantA, tenantFixtureProjects),
+        ).resolves.toEqual([compaction.cutoffProjectId]);
         await expect(orphanStorage.artifacts.read(tenantA, orphan)).rejects.toMatchObject({
           code: "missing",
           name: SnapshotArtifactReadErrorV1.name,
