@@ -173,8 +173,19 @@ export type SnapshotArtifactDeletionV1 = Readonly<{
   tenantId: string;
 }>;
 
+export type SnapshotPublicationTombstoneCompactionResultV1 = Readonly<{
+  compacted: number;
+  deferredForPendingArtifactDeletions: boolean;
+}>;
+
 export interface SnapshotPublicationRepositoryV1 {
   acknowledgeArtifactDeletion(tenantId: string, deletionId: string, signal?: AbortSignal): Promise<void>;
+  compactPublicationTombstones(
+    tenantId: string,
+    cutoff: Date,
+    maximum: number,
+    signal?: AbortSignal,
+  ): Promise<SnapshotPublicationTombstoneCompactionResultV1>;
   clearHeadIfGeneration(
     identity: SnapshotPublicationIdentityV1,
     generation: bigint,

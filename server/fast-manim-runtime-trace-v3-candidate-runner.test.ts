@@ -4,7 +4,10 @@ import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3 } from "../src/render-pipeline/source-lowering";
+import {
+  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+} from "../src/render-pipeline/source-lowering";
 import type { FastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { digestFastManimRuntimeTraceDomainV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
@@ -39,6 +42,15 @@ const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
 const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH);
+const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
+);
+const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+  RESIZE_CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+);
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
   return digestFastManimRuntimeTraceDomainV3("poietra.fast-manim-runtime-trace-visual-semantics.v3", {
@@ -59,6 +71,7 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
   constructor(
     private readonly corruptCandidate = false,
     private readonly onStart: ((count: number) => Promise<void> | void) | undefined = undefined,
+    private readonly edit: "move" | "resize" = "move",
   ) {}
 
   async close() {}
@@ -98,7 +111,7 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
     if (!binding) throw new Error("Synthetic V3 request lost its square binding.");
     trace.sourceBindings[0]!.binding = binding;
     const candidate = request.sourceHash !== PLAN.baseSourceHash;
-    if (candidate) {
+    if (candidate && this.edit === "move") {
       for (const endpoint of Object.values(trace.sourceBindings[0]!.endpoints)) {
         endpoint.center.x = PLAN.expectedWorldCenter.x;
         endpoint.center.y = PLAN.expectedWorldCenter.y;
@@ -109,8 +122,38 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
           state.transform.ty += PLAN.expectedWorldCenter.y;
         }
       }
-      if (this.corruptCandidate) trace.frames[0]!.states[0]!.opacity = 0.5;
     }
+    if (candidate && this.edit === "resize") {
+      const factor = RESIZE_PLAN.expectedScaleFactor;
+      const canonical = (value: number) => Number((value * factor).toFixed(13));
+      for (const endpoint of Object.values(trace.sourceBindings[0]!.endpoints)) {
+        endpoint.dimensions.height = canonical(endpoint.dimensions.height);
+        endpoint.dimensions.width = canonical(endpoint.dimensions.width);
+      }
+      const scaledPathIds = new Map<string, string>();
+      trace.resources.paths = trace.resources.paths.map((resource) => {
+        const path = {
+          subpaths: resource.path.subpaths.map((subpath) => ({
+            closed: subpath.closed,
+            segments: subpath.segments.map((segment) => ({
+              control1: { x: canonical(segment.control1.x), y: canonical(segment.control1.y) },
+              control2: { x: canonical(segment.control2.x), y: canonical(segment.control2.y) },
+              end: { x: canonical(segment.end.x), y: canonical(segment.end.y) },
+            })),
+            start: { x: canonical(subpath.start.x), y: canonical(subpath.start.y) },
+          })),
+        };
+        const id = `path:${digestFastManimRuntimeTraceDomainV3("poietra.runtime-trace-v3-path", path)}`;
+        scaledPathIds.set(resource.id, id);
+        return { id, path };
+      });
+      for (const frame of trace.frames) {
+        for (const state of frame.states) {
+          state.pathId = scaledPathIds.get(state.pathId) ?? state.pathId;
+        }
+      }
+    }
+    if (candidate && this.corruptCandidate) trace.frames[0]!.states[0]!.opacity = 0.5;
     trace.producer.correlationSha256 = digestFastManimRuntimeTraceSourceBindingsV3(
       trace.sourceHash,
       trace.sceneId,
@@ -204,6 +247,22 @@ function candidateRequest() {
   };
 }
 
+function resizeCandidateRequest() {
+  return {
+    genericInitialResize: {
+      baseBinding: RESIZE_PLAN.baseBinding,
+      baseSourceHash: RESIZE_PLAN.baseSourceHash,
+      entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+      expectedScaleFactor: RESIZE_PLAN.expectedScaleFactor,
+      kind: "fast-manim-generic-initial-resize-v3" as const,
+    },
+    projectId: "generic-preview",
+    requestId: "generic-initial-resize-v3-candidate",
+    sceneName: SCENE_NAME,
+    sourcePath: SOURCE_PATH,
+  };
+}
+
 describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
   "generic Runtime Trace V3 initial-move candidate runner",
   () => {
@@ -227,6 +286,50 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       expect(backend.requests.map(({ sourceBindings }) => sourceBindings[0]?.name)).toEqual(["square", "square"]);
       expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(PLAN.baseBinding.id);
       expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(PLAN.candidateBinding.id);
+    });
+
+    it("executes fresh base and resize-candidate V3 traces and verifies the scaled pair", async () => {
+      const backend = new GenericCandidateArtifactBackend(false, undefined, "resize");
+      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+        RESIZE_CANDIDATE_SOURCE,
+        resizeCandidateRequest(),
+      );
+
+      expect(result).toMatchObject({
+        sourceHash: expect.not.stringMatching(RESIZE_PLAN.baseSourceHash),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
+      expect(backend.requests).toHaveLength(2);
+      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+        { sourceHash: RESIZE_PLAN.baseSourceHash, version: 3 },
+        { sourceHash: result.sourceHash, version: 3 },
+      ]);
+      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.baseBinding.id);
+      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.candidateBinding.id);
+    });
+
+    it("rejects a request carrying both generic initial-edit authorities", async () => {
+      const backend = new GenericCandidateArtifactBackend();
+      await expect(
+        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(RESIZE_CANDIDATE_SOURCE, {
+          ...resizeCandidateRequest(),
+          genericInitialMove: candidateRequest().genericInitialMove,
+        }),
+      ).rejects.toThrow(/exactly one initial-edit authority/i);
+      expect(backend.requests).toHaveLength(0);
+    });
+
+    it("rejects a resize candidate whose producer pair did not actually scale", async () => {
+      // The fake backend replays the base artifact for the candidate, so the
+      // scaled-path proof must fail closed instead of trusting the preflight.
+      const backend = new GenericCandidateArtifactBackend(false, undefined, "move");
+      await expect(
+        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+          RESIZE_CANDIDATE_SOURCE,
+          resizeCandidateRequest(),
+        ),
+      ).rejects.toMatchObject({ code: "candidate-endpoint" });
     });
 
     it("fails closed on stale authority, semantic drift, and a base source changed during execution", async () => {

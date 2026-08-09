@@ -61,7 +61,11 @@ function accountRequest() {
 
 function accountSwitchRequest() {
   return new Request(`${origin}/api/account/session`, {
-    body: JSON.stringify({ expectedVersion: 1, organizationId: "organization-a" }),
+    body: JSON.stringify({
+      expectedVersion: 1,
+      mutationId: "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b",
+      organizationId: "organization-a",
+    }),
     headers: {
       "content-type": "application/json",
       cookie: `__Host-poietra_session=${opaqueToken}`,

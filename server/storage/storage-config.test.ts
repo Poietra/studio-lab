@@ -115,6 +115,7 @@ describe("durable storage configuration", () => {
           graceMs: 60_000,
           intervalMs: 60_000,
           onFailure: () => undefined,
+          onTombstoneCompactionMetrics: () => undefined,
           sweepTimeoutMs: 30_000,
         },
         sandbox: {} as never,

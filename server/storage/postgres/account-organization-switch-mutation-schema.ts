@@ -1,0 +1,3 @@
+// Generated from server/storage/postgres/migrations/0028_account_organization_switch_mutations.sql.
+export const ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_CHECKSUM =
+  "e4239c55008cb6dac3c48442d8e9d081abcc56277e0c93f623e54761620265ff";

@@ -1,5 +1,14 @@
 import { LazyMotion } from "motion/react";
-import { type KeyboardEvent, type PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  type PointerEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { AccountSessionBadge } from "./accounts/account-session-badge";
 import type { AccountSessionActionsV1 } from "./accounts/account-session-bootstrap";
@@ -78,7 +87,7 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  studioPreviewGenericInitialMoveProgramSetV1,
+  studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditTargetIsPresentV1,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -94,17 +103,11 @@ import {
   sameShapeGeometry,
 } from "./studio/shape-resize";
 import { projectRuntimeSceneToSourceTimeline } from "./studio/source-timeline";
+import { createStudioGesturePreviewStore } from "./studio/studio-gesture-preview-store";
 import { StudioPreviewControl } from "./studio/studio-preview-control";
 import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import type { StudioTool } from "./studio/studio-toolbar";
-import {
-  type EntityDragPreview,
-  type EntityGeometryPreview,
-  type EntityScalePreview,
-  entityLabel,
-  STUDIO_VIEWPORT,
-  StudioViewport,
-} from "./studio/studio-viewport";
+import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -387,9 +390,13 @@ export function App({
   const [draftApplyPending, setDraftApplyPending] = useState(false);
   const [lifetimeEditMessage, setLifetimeEditMessage] = useState<string | null>(null);
   const [isMagicEditVisible, setIsMagicEditVisible] = useState(() => window.matchMedia("(min-width: 640px)").matches);
-  const [dragPreview, setDragPreview] = useState<EntityDragPreview | null>(null);
-  const [geometryPreview, setGeometryPreview] = useState<EntityGeometryPreview | null>(null);
-  const [scalePreview, setScalePreview] = useState<EntityScalePreview | null>(null);
+  const gesturePreviewStore = useMemo(createStudioGesturePreviewStore, []);
+  const readGesturePreviewKind = useCallback(() => gesturePreviewStore.getSnapshot().kind, [gesturePreviewStore]);
+  const gesturePreviewKind = useSyncExternalStore(
+    gesturePreviewStore.subscribe,
+    readGesturePreviewKind,
+    readGesturePreviewKind,
+  );
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
   const suggestionContext = useRef("");
@@ -499,11 +506,9 @@ export function App({
       });
     }
     setLifetimeEditMessage(null);
-    setDragPreview(null);
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
     setInspectorReturnFocus(null);
-  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId]);
+  }, [activeScene?.sceneId, activeScene?.sourceHash, activeProjectId, gesturePreviewStore]);
 
   const editorDocumentIdentity = useMemo(
     () =>
@@ -773,8 +778,7 @@ export function App({
     retainedSourceDuration: editorRevision.retainedSourceDuration,
     runtimeTraceTerminalProgramRecords: previewProgramRecords,
     sampleTime: currentTime,
-    transientEdit:
-      dragPreview !== null || geometryPreview !== null || scalePreview !== null || importedSceneBoundaryActive,
+    transientEdit: gesturePreviewKind !== "idle" || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const genericInitialEditCandidate = previewRenderer?.genericInitialEditCandidate ?? null;
@@ -861,9 +865,9 @@ export function App({
     const genericCandidate = previewRenderer?.genericInitialEditCandidate;
     if (
       genericCandidate &&
-      studioPreviewGenericInitialMoveProgramSetV1(records, genericCandidate).kind !== "authorized"
+      studioPreviewGenericInitialEditProgramSetV1(records, genericCandidate).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move.";
+      return "This generic Runtime Trace permits exactly one initial position move or uniform resize.";
     }
     return null;
   }
@@ -1056,7 +1060,7 @@ export function App({
   const boundary = workspaceProjection?.boundary ?? null;
   const initialEditProjectionAuthority = previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate;
   const retainedInitialEditDragAuthority =
-    (dragPreview !== null || scalePreview !== null) &&
+    (gesturePreviewKind === "drag" || gesturePreviewKind === "scale") &&
     (currentTime === 0 || previewRenderer?.initialEditRuntimeAuthority?.profile === "write-stuff-v12")
       ? initialEditProjectionAuthority
       : null;
@@ -2027,17 +2031,18 @@ export function App({
   function directGestureContext() {
     const previousDraft =
       !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
-    const replacesGenericInitialMove =
+    const replacesGenericInitialEdit =
       previousDraft !== null &&
       genericInitialEditCandidate !== null &&
-      studioPreviewGenericInitialMoveProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
+      studioPreviewGenericInitialEditProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
     const sourcePrograms =
-      previousDraft && !replacesGenericInitialMove
+      previousDraft && !replacesGenericInitialEdit
         ? [...appliedCanonicalPrograms, previousDraft.program]
         : appliedCanonicalPrograms;
     return {
-      preserveDraft: replacesGenericInitialMove ? null : previousDraft,
+      preserveDraft: replacesGenericInitialEdit ? null : previousDraft,
       proposedState: previousDraft ? (workspaceProjection?.proposedState ?? null) : draftBaseState,
+      replacesDraft: replacesGenericInitialEdit,
       sourcePrograms,
     } as const;
   }
@@ -2149,7 +2154,7 @@ export function App({
     }
     if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports one initial position move only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (
@@ -2216,13 +2221,13 @@ export function App({
       targetEntityIds,
     };
     setIsPlaying(false);
-    setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
+    gesturePreviewStore.setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
   }
 
   function moveEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     const drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    setDragPreview({
+    gesturePreviewStore.setDragPreview({
       delta: canvasPointerDelta(drag, { x: event.clientX, y: event.clientY }),
       entityIds: drag.targetEntityIds,
     });
@@ -2232,7 +2237,7 @@ export function App({
     const drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
-    setDragPreview(null);
+    gesturePreviewStore.clear();
     if (!activeScene || !draftBaseState || !draftSourceScene) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
@@ -2273,7 +2278,7 @@ export function App({
   function cancelEntityDrag(event: PointerEvent<HTMLButtonElement>) {
     if (canvasDrag.current?.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
-    setDragPreview(null);
+    gesturePreviewStore.clear();
   }
 
   function beginEntityResize(
@@ -2307,9 +2312,9 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports position only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (
@@ -2384,7 +2389,7 @@ export function App({
         scale: entity.scale,
         shape,
       };
-      setGeometryPreview({
+      gesturePreviewStore.setGeometryPreview({
         dimensions: entity.geometry.dimensions.value,
         entityId,
         position: entity.position,
@@ -2396,7 +2401,7 @@ export function App({
         fromScale: entity.scale,
         mode: "scale",
       };
-      setScalePreview({ entityId, scale: entity.scale });
+      gesturePreviewStore.setScalePreview({ entityId, scale: entity.scale });
     }
     event.currentTarget.setPointerCapture(event.pointerId);
   }
@@ -2407,9 +2412,9 @@ export function App({
     if (!resize || resize.pointerId !== event.pointerId) return;
     if (resize.mode === "shape") {
       const geometry = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
-      setGeometryPreview({ ...geometry, entityId: resize.entityId });
+      gesturePreviewStore.setGeometryPreview({ ...geometry, entityId: resize.entityId });
     } else {
-      setScalePreview({
+      gesturePreviewStore.setScalePreview({
         entityId: resize.entityId,
         scale: resizedEntityScale(resize, { x: event.clientX, y: event.clientY }),
       });
@@ -2421,8 +2426,7 @@ export function App({
     const resize = canvasResize.current;
     if (!resize || resize.pointerId !== event.pointerId) return;
     canvasResize.current = null;
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
     if (resize.mode === "shape") {
       const target = resizedShapeGeometry(resize, { x: event.clientX, y: event.clientY });
       if (sameShapeGeometry(target, resize.from)) return;
@@ -2463,8 +2467,7 @@ export function App({
     event.stopPropagation();
     if (canvasResize.current?.pointerId !== event.pointerId) return;
     canvasResize.current = null;
-    setGeometryPreview(null);
-    setScalePreview(null);
+    gesturePreviewStore.clear();
   }
 
   function nudgeEntityResize(event: KeyboardEvent<HTMLButtonElement>, entityId: string, handle: ResizeHandleDirection) {
@@ -2484,9 +2487,9 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
+    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports position only.");
+      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2733,11 +2736,25 @@ export function App({
           })
         : { sourceTime: capturedSourceAnchor };
     if (!anchor) return false;
+    // A replaced draft leaves the staged program set, so the multiplicative
+    // `from` must come from the draft-free baseline: sampling the projection
+    // that still contains the replaced scale would fold that scale into the
+    // relative factor and commit a smaller resize than the gesture showed.
+    const replacementBaselineScene = gestureContext.replacesDraft
+      ? projectRuntimeSceneToSourceTimeline(draftBaseState.evaluatedScene, gestureContext.sourcePrograms)
+      : null;
+    const scaleBasisScene = replacementBaselineScene ?? sourceScene;
     const sampledScale = samplePropertyValue(
-      sourceScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
+      scaleBasisScene.propertyChannels[`${entityId}/scale`]?.samples ?? [],
       anchor.sourceTime,
     );
-    const executionScale = typeof sampledScale === "number" ? sampledScale : fromScale;
+    const baselineEntityScale = replacementBaselineScene?.objectGraph.entities[entityId]?.geometry?.scale;
+    const executionScale =
+      typeof sampledScale === "number"
+        ? sampledScale
+        : baselineEntityScale?.kind === "known"
+          ? baselineEntityScale.value
+          : fromScale;
     const end = animated ? anchor.sourceTime + motionDuration : anchor.sourceTime;
     if (animated && (motionDuration < 0.1 || end > sourceScene.duration + 0.001)) {
       setDraftError("The resize must be at least 0.1 seconds and fit within the current Scene duration.");
@@ -2784,10 +2801,6 @@ export function App({
       previewRenderer.initialEditRuntimeAuthority.studioEntityId === entityId
     ) {
       setDraftError("This SquareToCircle proof currently supports position only.");
-      return false;
-    }
-    if (genericInitialEditCandidate?.studioEntityId === entityId) {
-      setDraftError("This generic Runtime Trace target supports position only.");
       return false;
     }
     if (previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entityId) {
@@ -2873,7 +2886,7 @@ export function App({
           initialTransformAuthority.profile === "square-to-circle-v8"
             ? "This SquareToCircle proof currently supports position only."
             : initialTransformAuthority.profile === "generic-runtime-trace-v3"
-              ? "This generic Runtime Trace target supports position only."
+              ? "This generic Runtime Trace target supports position and uniform scale only."
               : "This runtime-backed object currently supports position and uniform scale only.",
         );
         return false;
@@ -3153,8 +3166,8 @@ export function App({
     ? previewAppliedPrograms.map((record) => record.program)
     : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
-  const genericInitialMoveProgramSet = genericInitialEditCandidate
-    ? studioPreviewGenericInitialMoveProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
+  const genericInitialEditProgramSet = genericInitialEditCandidate
+    ? studioPreviewGenericInitialEditProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
     : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
@@ -3162,7 +3175,7 @@ export function App({
     activeScene &&
     activeProjectId &&
     renderProgram &&
-    (!genericInitialEditCandidate || genericInitialMoveProgramSet?.kind === "authorized")
+    (!genericInitialEditCandidate || genericInitialEditProgramSet?.kind === "authorized")
       ? {
           anchors: activeScene.anchors,
           ...(previewRenderer?.cameraCenter &&
@@ -3186,7 +3199,7 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
-          ...(previewRenderer?.initialEditRuntimeAuthority || genericInitialMoveProgramSet?.kind === "authorized"
+          ...(previewRenderer?.initialEditRuntimeAuthority || genericInitialEditProgramSet?.kind === "authorized"
             ? { verifiedInitialEditAnchor: 0 as const }
             : {}),
           ...(previewRenderer?.runtimeTraceValidationPending
@@ -3224,9 +3237,7 @@ export function App({
       suspendEditor();
       canvasDrag.current = null;
       canvasResize.current = null;
-      setDragPreview(null);
-      setGeometryPreview(null);
-      setScalePreview(null);
+      gesturePreviewStore.clear();
       setInspectorReturnFocus(null);
       leaveWorkspace();
     });
@@ -3581,13 +3592,12 @@ export function App({
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
               draftTransactionId={draftProgram?.program.transactionId ?? null}
-              dragPreview={dragPreview}
               duration={activeDuration}
               editableMotionIds={editableMotionIds}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
               entities={visibleEntities}
               frame={workspace?.frame ?? { height: 8, width: 14.222 }}
-              geometryPreview={geometryPreview}
+              gesturePreviewStore={gesturePreviewStore}
               incomingSceneName={nextScene?.name ?? null}
               insertTool={insertTool}
               insertValue={insertValue}
@@ -3639,7 +3649,6 @@ export function App({
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
               projection={projection}
               readOnly={boundary !== null || studioAuthoringLocked}
-              scalePreview={scalePreview}
               selectedIds={selectedSet}
             />
 

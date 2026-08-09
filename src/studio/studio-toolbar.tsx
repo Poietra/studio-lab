@@ -1,6 +1,7 @@
 import { cn } from "../lib/cn";
-import { shortcutLabel, studioCommand, type StudioCommandId } from "./commands";
 import type { InsertEntityType } from "./authoring-commands";
+import { type StudioCommandId, shortcutLabel, studioCommand } from "./commands";
+import { markStudioRenderBoundary } from "./studio-render-profiler";
 
 export type StudioTool = "select" | InsertEntityType;
 
@@ -31,6 +32,7 @@ export function StudioToolbar({
   onToolChange: (tool: StudioTool) => void;
   tool: StudioTool;
 }>) {
+  markStudioRenderBoundary("toolbar");
   const requiresContent = tool === "Text" || tool === "MathTex";
   return (
     <section aria-label="Studio tools" className="shrink-0 border-b border-zinc-800 bg-zinc-950 px-3 py-2">
@@ -40,7 +42,10 @@ export function StudioToolbar({
           const shortcut = shortcutLabel(command.shortcut, navigator.platform);
           return (
             <button
-              aria-keyshortcuts={command.shortcut.replace("Mod", navigator.platform.includes("Mac") ? "Meta" : "Control")}
+              aria-keyshortcuts={command.shortcut.replace(
+                "Mod",
+                navigator.platform.includes("Mac") ? "Meta" : "Control",
+              )}
               aria-label={`${command.label} (${shortcut})`}
               aria-pressed={tool === item.tool}
               className={cn(
@@ -80,10 +85,7 @@ export function StudioToolbar({
               value={insertValue}
             />
           </label>
-          <button
-            className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400"
-            type="submit"
-          >
+          <button className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400" type="submit">
             Insert at center
           </button>
         </form>

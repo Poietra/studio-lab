@@ -15,8 +15,11 @@ import {
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
   deriveOpeningManimTerminalPositionSourceEditPlanV2,
+  type GenericRuntimeTraceInitialEditPreflightV3,
   type GenericRuntimeTraceInitialMovePreflightV3,
+  type GenericRuntimeTraceInitialResizePreflightV3,
   recoverOpeningManimOfficialSourceV2,
   recoverUpdatersTerminalOfficialSourceV1,
 } from "../src/render-pipeline/source-lowering";
@@ -71,7 +74,10 @@ import {
   parseFastManimRuntimeTraceProducerJsonV2,
   parseFastManimRuntimeTraceSelfSealedJsonV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
-import { verifyFastManimRuntimeTraceInitialMoveCandidateV3 } from "./fast-manim-runtime-trace-v3-candidate";
+import {
+  verifyFastManimRuntimeTraceInitialMoveCandidateV3,
+  verifyFastManimRuntimeTraceInitialResizeCandidateV3,
+} from "./fast-manim-runtime-trace-v3-candidate";
 import {
   createFastManimRuntimeTraceProducerRequestV3,
   fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
@@ -225,6 +231,7 @@ export type FastManimRuntimeTraceCandidateRunRequestV1 = Omit<
 > &
   Readonly<{
     genericInitialMove?: GenericRuntimeTraceInitialMovePreflightV3;
+    genericInitialResize?: GenericRuntimeTraceInitialResizePreflightV3;
   }>;
 
 type FastManimRuntimeTraceVerifiedRootsV1 = Extract<
@@ -1223,9 +1230,18 @@ export class FastManimSnapshotRunner {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
-    const { genericInitialMove, ...runtimeRequestValue } = requestValue;
-    const version =
+    const { genericInitialMove, genericInitialResize, ...runtimeRequestValue } = requestValue;
+    if (genericInitialMove !== undefined && genericInitialResize !== undefined) {
+      throw new TypeError("A generic Runtime Trace candidate carries exactly one initial-edit authority.");
+    }
+    const genericInitialEdit =
       genericInitialMove?.kind === "fast-manim-generic-initial-move-v3"
+        ? genericInitialMove
+        : genericInitialResize?.kind === "fast-manim-generic-initial-resize-v3"
+          ? genericInitialResize
+          : undefined;
+    const version =
+      genericInitialEdit !== undefined
         ? 3
         : requestValue.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V1
           ? 1
@@ -1235,7 +1251,7 @@ export class FastManimSnapshotRunner {
     if (version === null) {
       throw new TypeError("Runtime Trace candidate preflight is outside the reviewed Scene profiles.");
     }
-    const genericPreflight = version === 3 ? genericInitialMove : undefined;
+    const genericPreflight = version === 3 ? genericInitialEdit : undefined;
     if (version === 3 && genericPreflight === undefined) {
       throw new TypeError("Generic Runtime Trace candidate authority is unavailable.");
     }
@@ -1492,7 +1508,7 @@ export class FastManimSnapshotRunner {
   private async runRuntimeTraceCandidateLockedV3(
     sourceText: string,
     request: FastManimRuntimeTraceRunRequestV1,
-    preflight: GenericRuntimeTraceInitialMovePreflightV3,
+    preflight: GenericRuntimeTraceInitialEditPreflightV3,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
     const throwIfHalted = () => {
@@ -1507,17 +1523,22 @@ export class FastManimSnapshotRunner {
     }
     throwIfHalted();
 
-    const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
-      sourceText,
-      request.sceneName,
-      request.sourcePath,
-    );
+    const plan =
+      preflight.kind === "fast-manim-generic-initial-move-v3"
+        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath)
+        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath);
+    const planMatchesPreflight =
+      "expectedWorldCenter" in plan
+        ? preflight.kind === "fast-manim-generic-initial-move-v3" &&
+          isDeepStrictEqual(plan.expectedWorldCenter, preflight.expectedWorldCenter)
+        : preflight.kind === "fast-manim-generic-initial-resize-v3" &&
+          plan.expectedScaleFactor === preflight.expectedScaleFactor;
     if (
       before.hash !== preflight.baseSourceHash ||
       before.hash !== plan.baseSourceHash ||
       before.source !== plan.baseSource ||
       !isDeepStrictEqual(plan.baseBinding, preflight.baseBinding) ||
-      !isDeepStrictEqual(plan.expectedWorldCenter, preflight.expectedWorldCenter) ||
+      !planMatchesPreflight ||
       !isDeepStrictEqual(plan.candidateBinding, {
         ...plan.baseBinding,
         id: plan.candidateBinding.id,
@@ -1610,14 +1631,23 @@ export class FastManimSnapshotRunner {
 
     const baseTrace = await produceTrace(baseProducerRequest);
     const candidateTrace = await produceTrace(candidateProducerRequest);
-    const verified = verifyFastManimRuntimeTraceInitialMoveCandidateV3({
+    const candidatePair = {
       base: baseTrace,
       baseRequest: baseProducerRequest,
       binding: baseBinding,
       candidate: candidateTrace,
       candidateRequest: candidateProducerRequest,
-      expectedInitialCenter: preflight.expectedWorldCenter,
-    });
+    };
+    const verified =
+      preflight.kind === "fast-manim-generic-initial-move-v3"
+        ? verifyFastManimRuntimeTraceInitialMoveCandidateV3({
+            ...candidatePair,
+            expectedInitialCenter: preflight.expectedWorldCenter,
+          })
+        : verifyFastManimRuntimeTraceInitialResizeCandidateV3({
+            ...candidatePair,
+            expectedScaleFactor: preflight.expectedScaleFactor,
+          });
 
     let after: FastManimSnapshotSourceReadV1;
     try {

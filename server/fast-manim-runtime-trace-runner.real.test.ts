@@ -8,7 +8,10 @@ import { describe, expect, it } from "vitest";
 
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
-import { deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3 } from "../src/render-pipeline/source-lowering";
+import {
+  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+} from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
 import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
@@ -183,6 +186,76 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         if (initial.kind !== "ready") throw new Error(initial.message);
         expect(initial.frame.packet.draws[0]?.transform.tx).toBeCloseTo(plan.expectedWorldCenter.x, 12);
         expect(initial.frame.packet.draws[0]?.transform.ty).toBeCloseTo(plan.expectedWorldCenter.y, 12);
+      } finally {
+        await runner.close();
+        await rm(root, { force: true, recursive: true });
+      }
+    });
+
+    it("verifies one real generic initial uniform resize as a fresh V3 base/candidate pair", {
+      timeout: 60_000,
+    }, async () => {
+      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-resize-real-"));
+      await mkdir(join(root, "scenes"));
+      const sourcePath = "scenes/static_square.py";
+      await writeFile(join(root, sourcePath), GENERIC_STATIC_SQUARE_SOURCE, "utf8");
+      const candidateSource = GENERIC_STATIC_SQUARE_SOURCE.replace(
+        "        square.set_stroke(WHITE, width=2)\n",
+        "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
+      );
+      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(candidateSource, "StaticSquare", sourcePath);
+      const runner = new FastManimSnapshotRunner({
+        backend: createConfiguredFastManimSandboxBackendV1({
+          command: producerCommand,
+          deployment: "test",
+          localProcessDevOptIn: true,
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
+          projectRoot: root,
+        }),
+        deployment: "test",
+        frame: { height: 8, width: 14.222222222222221 },
+        projectId: "demo",
+        projectRoot: root,
+        tenantId: "test-tenant",
+        timeoutMs: 60_000,
+      });
+      try {
+        const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
+          genericInitialResize: {
+            baseBinding: plan.baseBinding,
+            baseSourceHash: plan.baseSourceHash,
+            entityId: `source:${sourcePath}#StaticSquare:square`,
+            expectedScaleFactor: plan.expectedScaleFactor,
+            kind: "fast-manim-generic-initial-resize-v3",
+          },
+          projectId: "demo",
+          requestId: "runtime-trace-v3-resize-real-1",
+          sceneName: "StaticSquare",
+          sourcePath,
+        });
+        expect(preflight).toMatchObject({
+          sourceHash: createHash("sha256").update(candidateSource).digest("hex"),
+          status: "verified",
+          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        });
+
+        await writeFile(join(root, sourcePath), candidateSource, "utf8");
+        const preview = await runner.runRuntimeTrace({
+          projectId: "demo",
+          requestId: "runtime-trace-v3-resize-preview-real-1",
+          responseVersion: 2,
+          sceneName: "StaticSquare",
+          sourceHash: preflight.sourceHash,
+          sourcePath,
+        });
+        expect(preview.status).toBe("verified");
+        if (preview.status !== "verified" || preview.version !== 2) {
+          throw new Error(preview.status === "verified" ? "Expected Runtime Trace wire V2." : preview.failure.message);
+        }
+        expect(preview.roots[0]?.evidence.endpoints).toMatchObject({
+          initial: { center: { x: 0, y: 0 }, dimensions: { height: 3, width: 3 }, frameIndex: 0 },
+          terminal: { center: { x: 0, y: 0 }, dimensions: { height: 3, width: 3 }, frameIndex: 5 },
+        });
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });

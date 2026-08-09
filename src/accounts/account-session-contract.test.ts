@@ -4,6 +4,7 @@ import { accountOrganizationSwitchRequestSchemaV1, accountSessionViewSchemaV1 } 
 
 const session = {
   activeOrganization: { displayName: "Poietra", id: "organization-a", role: "owner" as const },
+  organizationSwitch: null,
   organizations: [
     { displayName: "Poietra", id: "organization-a", role: "owner" as const },
     { displayName: "Studio Team", id: "organization-b", role: "member" as const },
@@ -11,18 +12,24 @@ const session = {
   user: { displayName: "Ada", id: "2f2e3ea4-88de-4f37-81f7-1860d8f942f8" },
   version: 3,
 };
+const mutationId = "8adbe79b-41af-4caf-bb6f-84fd13a4ca6b";
 
 describe("account session contract", () => {
   it("requires one strict organization switch compare-and-set request", () => {
     expect(
-      accountOrganizationSwitchRequestSchemaV1.parse({ expectedVersion: 3, organizationId: "organization-b" }),
-    ).toEqual({ expectedVersion: 3, organizationId: "organization-b" });
+      accountOrganizationSwitchRequestSchemaV1.parse({
+        expectedVersion: 3,
+        mutationId,
+        organizationId: "organization-b",
+      }),
+    ).toEqual({ expectedVersion: 3, mutationId, organizationId: "organization-b" });
     expect(accountOrganizationSwitchRequestSchemaV1.safeParse({ organizationId: "organization-b" }).success).toBe(
       false,
     );
     expect(
       accountOrganizationSwitchRequestSchemaV1.safeParse({
         expectedVersion: 3,
+        mutationId,
         organizationId: "organization-b",
         sessionToken: "must-not-cross",
       }).success,

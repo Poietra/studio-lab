@@ -123,9 +123,13 @@ export type StudioPreviewInitialEditProjectionAuthorityV1 =
   | StudioPreviewGenericInitialEditAuthorityCandidateV1
   | StudioPreviewInitialEditRuntimeAuthorityV1;
 
-export type StudioPreviewGenericInitialMoveProgramSetV1 =
+export type StudioPreviewGenericInitialEditV1 =
+  | Readonly<{ kind: "move"; position: Point }>
+  | Readonly<{ kind: "resize"; scaleFactor: number }>;
+
+export type StudioPreviewGenericInitialEditProgramSetV1 =
   | Readonly<{ kind: "none" }>
-  | Readonly<{ kind: "authorized"; position: Point }>
+  | Readonly<{ edit: StudioPreviewGenericInitialEditV1; kind: "authorized" }>
   | Readonly<{ kind: "unauthorized" }>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
@@ -463,10 +467,10 @@ export function studioPreviewGenericInitialEditAuthorityCandidateV1(
   };
 }
 
-function genericInitialMoveProgramPositionV1(
+function genericInitialEditProgramV1(
   record: ProgramRecord,
   candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
-): Point | null {
+): StudioPreviewGenericInitialEditV1 | null {
   const program = record.program;
   const operation = program.operations[0];
   if (
@@ -487,33 +491,55 @@ function genericInitialMoveProgramPositionV1(
       (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
       (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0)
     ) ||
-    operation.kind !== "SetProperty" ||
-    operation.key !== "position" ||
+    !("entityId" in operation) ||
     operation.entityId !== candidate.studioEntityId ||
     operation.dependsOn.length !== 0 ||
     operation.interval.start !== 0 ||
     operation.interval.end !== 0 ||
-    operation.provenance.origin !== "direct-manipulation" ||
-    !isFinitePoint(operation.value)
+    operation.provenance.origin !== "direct-manipulation"
   ) {
     return null;
   }
-  return { x: operation.value.x, y: operation.value.y };
+  if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
+    return { kind: "move", position: { x: operation.value.x, y: operation.value.y } };
+  }
+  if (
+    operation.kind === "AnimateProperty" &&
+    operation.key === "scale" &&
+    operation.control === undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    typeof operation.relativeFactor === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    Number.isFinite(operation.relativeFactor) &&
+    operation.from > 0 &&
+    operation.to > 0 &&
+    operation.relativeFactor > 0 &&
+    // The server lowerer canonicalizes to twelve significant digits and
+    // rejects the identity factor; mirror it so an authorized set never
+    // carries a request the mutation authority is guaranteed to refuse.
+    Number(operation.relativeFactor.toPrecision(12)) !== 1 &&
+    closeEnough(operation.to / operation.from, operation.relativeFactor)
+  ) {
+    return { kind: "resize", scaleFactor: operation.relativeFactor };
+  }
+  return null;
 }
 
 /**
- * Browser-side capability gate for the one request #523 may send to the
+ * Browser-side capability gate for the one request #523/#510 may send to the
  * server. It does not verify Python source authority; the fresh-source V3
  * lowerer owns that decision and must reject independently.
  */
-export function studioPreviewGenericInitialMoveProgramSetV1(
+export function studioPreviewGenericInitialEditProgramSetV1(
   records: readonly ProgramRecord[],
   candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
-): StudioPreviewGenericInitialMoveProgramSetV1 {
+): StudioPreviewGenericInitialEditProgramSetV1 {
   if (records.length === 0) return { kind: "none" };
   if (records.length !== 1) return { kind: "unauthorized" };
-  const position = genericInitialMoveProgramPositionV1(records[0]!, candidate);
-  return position ? { kind: "authorized", position } : { kind: "unauthorized" };
+  const edit = genericInitialEditProgramV1(records[0]!, candidate);
+  return edit ? { edit, kind: "authorized" } : { kind: "unauthorized" };
 }
 
 /**
@@ -1365,11 +1391,32 @@ function planInitialTransformEdit(
 }
 
 /**
- * Reprojects one authorized t=0 move onto the verified generic V3 hierarchy.
- * The runtime root remains the geometry authority; Studio only adds a
- * top-level translation and never reconstructs or flattens its descendants.
+ * Composes a uniform scale about a fixed center with an existing entity
+ * transform, keeping the center's image invariant while every descendant
+ * scales with the linear part.
  */
-export function compileStudioPreviewGenericInitialMoveV1(
+export function conjugateUniformScaleAboutCenterV1(
+  transform: SceneEntityV1["transform"],
+  center: Point,
+  factor: number,
+): SceneEntityV1["transform"] {
+  return {
+    m11: transform.m11 * factor,
+    m12: transform.m12 * factor,
+    m21: transform.m21 * factor,
+    m22: transform.m22 * factor,
+    tx: center.x + (transform.tx - center.x) * factor,
+    ty: center.y + (transform.ty - center.y) * factor,
+  };
+}
+
+/**
+ * Reprojects one authorized t=0 move or uniform resize onto the verified
+ * generic V3 hierarchy. The runtime root remains the geometry authority;
+ * Studio only composes a top-level translation or a uniform scale about the
+ * verified initial center and never reconstructs or flattens descendants.
+ */
+export function compileStudioPreviewGenericInitialEditV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
@@ -1379,7 +1426,7 @@ export function compileStudioPreviewGenericInitialMoveV1(
 ): StudioPreviewTemporalRebaseResultV1 {
   const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(input.snapshot);
   if (!candidate) {
-    return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-move evidence is unavailable.");
+    return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-edit evidence is unavailable.");
   }
   const scene = input.snapshot.snapshot.scene;
   const context = input.snapshot.correlation.context;
@@ -1397,47 +1444,63 @@ export function compileStudioPreviewGenericInitialMoveV1(
   ) {
     return unsupported(
       "source-correlation-invalid",
-      "Studio state is not correlated with the generic Runtime Trace initial-move evidence.",
+      "Studio state is not correlated with the generic Runtime Trace initial-edit evidence.",
     );
   }
-  const programSet = studioPreviewGenericInitialMoveProgramSetV1(input.proposedState.programs, candidate);
+  const programSet = studioPreviewGenericInitialEditProgramSetV1(input.proposedState.programs, candidate);
   if (programSet.kind !== "authorized") {
-    return unsupported("target-edit-unsupported", "Generic Runtime Trace permits exactly one initial position edit.");
+    return unsupported(
+      "target-edit-unsupported",
+      "Generic Runtime Trace permits exactly one initial position move or uniform resize.",
+    );
   }
   const targetIndex = scene.entities.findIndex(({ id }) => id === candidate.runtimeEntityId);
   const target = scene.entities[targetIndex];
   if (!target || target.parentId !== null || target.geometry.kind !== "group") {
     return unsupported("identity-unverified", "The generic Runtime Trace edit target is not its verified root group.");
   }
-  const targetCenter = studioPointToScenePoint(programSet.position, input.frame, scene.camera.view.center);
+  const edit = programSet.edit;
   const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
-  const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+  let editedTransform: SceneEntityV1["transform"];
+  if (edit.kind === "move") {
+    const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
+    const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+    if (![translation.x, translation.y].every(Number.isFinite)) {
+      return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
+    }
+    editedTransform = {
+      ...target.transform,
+      tx: target.transform.tx + translation.x,
+      ty: target.transform.ty + translation.y,
+    };
+  } else {
+    // Conjugate the uniform scale about the verified initial center so the
+    // root keeps its placement while every descendant scales with it.
+    editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
+  }
   if (
     ![
-      target.transform.m11,
-      target.transform.m12,
-      target.transform.m21,
-      target.transform.m22,
-      target.transform.tx,
-      target.transform.ty,
-      translation.x,
-      translation.y,
+      editedTransform.m11,
+      editedTransform.m12,
+      editedTransform.m21,
+      editedTransform.m22,
+      editedTransform.tx,
+      editedTransform.ty,
     ].every(Number.isFinite)
   ) {
-    return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
+    return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root transform is not finite.");
   }
-  const provenanceId = `studio-generic-v3-initial-move:${input.sourceRevisionHash}`;
+  const provenanceId =
+    edit.kind === "move"
+      ? `studio-generic-v3-initial-move:${input.sourceRevisionHash}`
+      : `studio-generic-v3-initial-resize:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
-    return unsupported("conflicting-edit-unsupported", "The generic initial-move provenance identity already exists.");
+    return unsupported("conflicting-edit-unsupported", "The generic initial-edit provenance identity already exists.");
   }
   const editedEntity: SceneEntityV1 = {
     ...target,
     provenanceId,
-    transform: {
-      ...target.transform,
-      tx: target.transform.tx + translation.x,
-      ty: target.transform.ty + translation.y,
-    },
+    transform: editedTransform,
   };
   const rebased: SceneIrV1 = {
     ...scene,
@@ -1446,7 +1509,9 @@ export function compileStudioPreviewGenericInitialMoveV1(
       ...scene.provenance,
       {
         evidence: [
-          "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root",
+          edit.kind === "move"
+            ? "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root"
+            : "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root",
           `source binding ${candidate.bindingId}`,
           `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
         ],
@@ -1461,7 +1526,7 @@ export function compileStudioPreviewGenericInitialMoveV1(
     ? { kind: "rebased", scene: parsed.data }
     : unsupported(
         "conflicting-edit-unsupported",
-        `The generic initial move is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
+        `The generic initial edit is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
       );
 }
 
