@@ -27,6 +27,7 @@ import {
   fastManimRuntimeTraceConfigV2Schema,
   fastManimRuntimeTraceProducerRequestV2Schema,
 } from "./fast-manim-runtime-trace-v2-contract";
+import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2 = "poietra.fast-manim-runtime-trace" as const;
@@ -533,9 +534,11 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
     [720, 780],
     [840, 900],
   ] as const) {
-    const hold = canonicalJsonV1(trace.frames[start]?.draws);
+    // Digesting each hold streams the same canonical bytes the comparison used
+    // to materialize, so 300 frame-sized strings never exist at once.
+    const hold = digestCanonicalJsonV1(trace.frames[start]?.draws);
     for (let index = start + 1; index < end; index += 1) {
-      if (canonicalJsonV1(trace.frames[index]?.draws) !== hold) {
+      if (digestCanonicalJsonV1(trace.frames[index]?.draws) !== hold) {
         context.addIssue({
           code: "custom",
           message: "Runtime Trace V2 requires each exact one-second Wait hold.",
@@ -737,8 +740,13 @@ function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array)
       cause,
     });
   }
+  // A 900-frame trace decodes to tens of MiB of text and a far larger object
+  // graph. Drop both as soon as the next stage owns the data so a base and a
+  // candidate never hold four graphs between them.
+  json = "";
   assertBoundedRuntimeTraceV2ResultJson(document);
   const parsed = fastManimRuntimeTraceV2Schema.safeParse(document);
+  document = undefined;
   if (!parsed.success) {
     throw new FastManimRuntimeTraceV2ContractError("result-invalid", "Runtime Trace V2 violates its closed contract.", {
       cause: parsed.error,
@@ -765,7 +773,7 @@ export function parseFastManimRuntimeTraceProducerJsonV2(
 }
 
 export function digestFastManimRuntimeTraceV2(trace: FastManimRuntimeTraceV2) {
-  return createHash("sha256").update(canonicalJsonV1(trace)).digest("hex");
+  return digestCanonicalJsonV1(trace);
 }
 
 export function expectedFastManimRuntimeTraceCorrelationV2(

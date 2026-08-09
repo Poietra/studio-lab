@@ -29,6 +29,7 @@ import {
   manimSourcePathSchema,
 } from "../src/render-pipeline/manim-identity-contract";
 import { sourceRuntimeSceneIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
+import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V1 = "poietra.fast-manim-runtime-trace" as const;
@@ -700,6 +701,9 @@ function parseRuntimeTraceJson(value: string | Uint8Array, maximumBytes: number,
       cause,
     });
   }
+  // The decoded text is dead once the graph exists; a 900-frame trace makes
+  // that tens of MiB worth releasing before the schema builds its own copy.
+  json = "";
   assertBoundedRuntimeTraceJson(parsed, kind);
   return parsed;
 }
@@ -829,7 +833,7 @@ export function parseFastManimRuntimeTraceSelfSealedJsonV1(value: string | Uint8
 }
 
 export function digestFastManimRuntimeTraceV1(trace: FastManimRuntimeTraceV1) {
-  return createHash("sha256").update(canonicalJsonV1(trace)).digest("hex");
+  return digestCanonicalJsonV1(trace);
 }
 
 /**

@@ -17,6 +17,7 @@ import {
 } from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
+import { FastManimSnapshotAdmissionController } from "./fast-manim-snapshot-publication";
 import {
   RUNTIME_TRACE_SOURCE_TEXT,
   runtimeTraceRequestFixture,
@@ -98,6 +99,78 @@ process.stdin.on("end", () => {
     });
     await expect(materializeFastManimSandboxPngV2(runtimeRoot, request)).rejects.toThrow();
     await expect(readFile(outside, "utf8")).resolves.toBe("unchanged");
+  });
+});
+
+describe("local-process producer admission release", () => {
+  async function runOnce(
+    controller: FastManimSnapshotAdmissionController,
+    child: string,
+    signal?: AbortSignal,
+    deadlineEpochMs = Date.now() + 10_000,
+  ) {
+    const projectRoot = await temporaryRoot();
+    const producer = runtimeTraceRequestFixture();
+    const request = new FastManimSandboxRequestBundleV1(producer);
+    const backend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [process.execPath, "-e", child],
+      projectRoot,
+    });
+    try {
+      return await backend.start(request, {
+        ...context(producer.requestId),
+        deadlineEpochMs,
+        ...(signal ? { signal } : {}),
+      }).result;
+    } finally {
+      await backend.close();
+    }
+  }
+
+  it("returns the shared slot on success, producer failure, abort, and an expired deadline", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    expect(controller.activeCount).toBe(0);
+
+    const ok = await runOnce(controller, 'process.stdout.write("{}")');
+    expect(ok.kind).toBe("ok");
+    expect(controller.activeCount).toBe(0);
+
+    const failed = await runOnce(controller, "process.exit(3)");
+    expect(failed).toMatchObject({ code: "producer-exit", kind: "failed" });
+    expect(controller.activeCount).toBe(0);
+
+    const aborter = new AbortController();
+    const aborting = runOnce(controller, "setTimeout(() => {}, 60_000)", aborter.signal);
+    aborter.abort();
+    await expect(aborting).rejects.toThrow();
+    expect(controller.activeCount).toBe(0);
+
+    // The deadline check returns before the slot is taken at all.
+    const expired = await runOnce(controller, 'process.stdout.write("{}")', undefined, Date.now() - 1);
+    expect(expired).toMatchObject({ code: "producer-timeout", kind: "failed" });
+    expect(controller.activeCount).toBe(0);
+
+    // The cap is intact: a fresh run is still admitted after every path above.
+    expect(controller.tryAcquire()).not.toBeNull();
+    expect(controller.activeCount).toBe(1);
+  });
+
+  it("refuses admission at the shared cap without leaking the held slot", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    const release = controller.tryAcquire();
+    expect(release).not.toBeNull();
+
+    await expect(runOnce(controller, 'process.stdout.write("{}")')).rejects.toMatchObject({ code: "capacity" });
+    expect(controller.activeCount).toBe(1);
+
+    release?.();
+    expect(controller.activeCount).toBe(0);
+    release?.();
+    expect(controller.activeCount).toBe(0);
+
+    await expect(runOnce(controller, 'process.stdout.write("{}")')).resolves.toMatchObject({ kind: "ok" });
+    expect(controller.activeCount).toBe(0);
   });
 });
 
