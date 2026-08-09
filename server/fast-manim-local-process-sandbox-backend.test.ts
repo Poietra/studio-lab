@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -30,6 +31,19 @@ async function temporaryRoot() {
   const root = await mkdtemp(join(tmpdir(), "poietra-png-sandbox-test-"));
   roots.push(root);
   return root;
+}
+
+async function waitForFile(path: string) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    try {
+      await readFile(path);
+      return;
+    } catch {
+      await delay(10);
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}.`);
 }
 
 afterEach(async () => {
@@ -140,11 +154,34 @@ describe("local-process producer admission release", () => {
     expect(failed).toMatchObject({ code: "producer-exit", kind: "failed" });
     expect(controller.activeCount).toBe(0);
 
+    const abortRoot = await temporaryRoot();
+    const readyPath = join(abortRoot, "producer-ready");
+    const abortProducer = runtimeTraceRequestFixture();
+    const abortRequest = new FastManimSandboxRequestBundleV1(abortProducer);
+    const abortBackend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [
+        process.execPath,
+        "-e",
+        'require("node:fs").writeFileSync(process.argv.at(-1), "ready"); setInterval(() => {}, 60_000)',
+        readyPath,
+      ],
+      projectRoot: abortRoot,
+    });
     const aborter = new AbortController();
-    const aborting = runOnce(controller, "setTimeout(() => {}, 60_000)", aborter.signal);
-    aborter.abort();
-    await expect(aborting).rejects.toThrow();
-    expect(controller.activeCount).toBe(0);
+    try {
+      const aborting = abortBackend.start(abortRequest, {
+        ...context(abortProducer.requestId),
+        signal: aborter.signal,
+      }).result;
+      expect(controller.activeCount).toBe(1);
+      await waitForFile(readyPath);
+      aborter.abort();
+      await expect(aborting).rejects.toMatchObject({ name: "AbortError" });
+      expect(controller.activeCount).toBe(0);
+    } finally {
+      await abortBackend.close();
+    }
 
     // The deadline check returns before the slot is taken at all.
     const expired = await runOnce(controller, 'process.stdout.write("{}")', undefined, Date.now() - 1);
@@ -152,8 +189,11 @@ describe("local-process producer admission release", () => {
     expect(controller.activeCount).toBe(0);
 
     // The cap is intact: a fresh run is still admitted after every path above.
-    expect(controller.tryAcquire()).not.toBeNull();
+    const finalRelease = controller.tryAcquire();
+    expect(finalRelease).not.toBeNull();
     expect(controller.activeCount).toBe(1);
+    finalRelease?.();
+    expect(controller.activeCount).toBe(0);
   });
 
   it("refuses admission at the shared cap without leaking the held slot", async () => {
@@ -171,6 +211,29 @@ describe("local-process producer admission release", () => {
 
     await expect(runOnce(controller, 'process.stdout.write("{}")')).resolves.toMatchObject({ kind: "ok" });
     expect(controller.activeCount).toBe(0);
+  });
+
+  it("returns the shared slot before reporting cleanup failure", async () => {
+    const controller = new FastManimSnapshotAdmissionController({ maxConcurrent: 1 });
+    const projectRoot = await temporaryRoot();
+    const producer = runtimeTraceRequestFixture();
+    const backend = new LocalProcessFastManimSandboxBackendV1({
+      admissionController: controller,
+      command: [process.execPath, "-e", 'process.stdout.write("{}")'],
+      projectRoot,
+      runtimeDirectoryRemover: async (runtimeDir) => {
+        roots.push(runtimeDir);
+        throw new Error("synthetic cleanup failure");
+      },
+    });
+    try {
+      await expect(
+        backend.start(new FastManimSandboxRequestBundleV1(producer), context(producer.requestId)).result,
+      ).rejects.toMatchObject({ code: "cleanup" });
+      expect(controller.activeCount).toBe(0);
+    } finally {
+      await backend.close().catch(() => undefined);
+    }
   });
 });
 

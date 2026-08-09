@@ -39,9 +39,15 @@ export function writeCanonicalJsonV1(value: unknown, sink: CanonicalJsonSinkV1):
   }
   if (Array.isArray(value)) {
     sink.update("[");
-    for (const [index, entry] of value.entries()) {
+    // Array#map snapshots length before visiting entries; do the same so an
+    // accessor cannot change the byte sequence by resizing its outer array.
+    const length = value.length;
+    for (let index = 0; index < length; index += 1) {
       if (index > 0) sink.update(",");
-      writeCanonicalJsonV1(entry, sink);
+      // `canonicalJsonV1` uses Array#map + join, which leaves sparse slots
+      // empty. Preserve that behavior so existing digests remain identical
+      // even for values outside the dense JSON graphs used by Runtime Trace.
+      if (index in value) writeCanonicalJsonV1(value[index], sink);
     }
     sink.update("]");
     return;

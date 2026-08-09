@@ -14,6 +14,7 @@ import {
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { sourceBindingV1Schema } from "../src/engine/source-runtime-identity";
+import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import {
   digestFastManimRuntimeTraceConfigV2,
   FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V2,
@@ -27,7 +28,6 @@ import {
   fastManimRuntimeTraceConfigV2Schema,
   fastManimRuntimeTraceProducerRequestV2Schema,
 } from "./fast-manim-runtime-trace-v2-contract";
-import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 import { canonicalF64HexV1 } from "./fast-manim-snapshot-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2 = "poietra.fast-manim-runtime-trace" as const;
@@ -535,7 +535,8 @@ export const fastManimRuntimeTraceV2Schema = fastManimRuntimeTraceV2BaseSchema.s
     [840, 900],
   ] as const) {
     // Digesting each hold streams the same canonical bytes the comparison used
-    // to materialize, so 300 frame-sized strings never exist at once.
+    // to materialize. Equality relies on the repository's SHA-256 collision
+    // resistance assumption, and avoids ~300 frame-sized temporary strings.
     const hold = digestCanonicalJsonV1(trace.frames[start]?.draws);
     for (let index = start + 1; index < end; index += 1) {
       if (digestCanonicalJsonV1(trace.frames[index]?.draws) !== hold) {
@@ -740,9 +741,9 @@ function parseFastManimRuntimeTraceSelfSealedValueV2(value: string | Uint8Array)
       cause,
     });
   }
-  // A 900-frame trace decodes to tens of MiB of text and a far larger object
-  // graph. Drop both as soon as the next stage owns the data so a base and a
-  // candidate never hold four graphs between them.
+  // On the production Uint8Array path, drop local references once the next
+  // stage owns the data. This makes the decoded text and pre-schema graph
+  // eligible for collection earlier without assuming when V8 runs GC.
   json = "";
   assertBoundedRuntimeTraceV2ResultJson(document);
   const parsed = fastManimRuntimeTraceV2Schema.safeParse(document);

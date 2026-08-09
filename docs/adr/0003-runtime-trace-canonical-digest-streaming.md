@@ -41,8 +41,9 @@ between them.
 
 ## Decision
 
-Keep every verification rule exactly as it is. Change only how the same bytes
-are produced.
+Keep the whole-trace digest bytes and every frame/correlation input unchanged.
+Change how canonical bytes are produced, and use their SHA-256 digest as the
+equality key for each one-second Wait frame.
 
 `writeCanonicalJsonV1(value, sink)` performs the identical traversal in the
 identical order and emits one scalar token per call instead of concatenating a
@@ -51,25 +52,28 @@ buffer. The hashed byte sequence is unchanged by construction, so every
 persisted digest, correlation check, and self-seal keeps its value.
 
 The Wait-hold comparison now compares per-frame digests produced by the same
-streaming writer rather than materialized canonical strings. `canonicalJsonV1`
-and `writeCanonicalJsonV1` walk the full value and raise the same `TypeError`
-for non-finite numbers and non-JSON values, so the failure surface is unchanged.
+streaming writer rather than materialized canonical strings. This is
+computationally equivalent under the repository's existing SHA-256 collision
+resistance assumption, but it is not mathematical byte equality in the event
+of a hash collision. No frames or fields are omitted.
 
-The parse path releases the decoded text once the object graph exists, and
-releases the pre-schema graph once the schema owns its own copy.
+On the production `Uint8Array` path, the parser drops its local decoded-text
+reference once the object graph exists, and drops its local pre-schema graph
+reference once Zod owns its parsed copy. This makes those allocations eligible
+for collection earlier; it does not assert when the JavaScript engine runs GC.
 
 ## Consequences
 
 `server/canonical-json-digest.test.ts` pins the equivalence: the streamed
 characters equal `canonicalJsonV1` over a corpus that includes `-0`, key
-ordering, escapes, astral characters, and documents that cross the flush
-boundary repeatedly; the digests equal
+ordering, escapes, astral characters, sparse arrays, and documents that cross
+the flush boundary repeatedly; the digests equal
 `createHash("sha256").update(canonicalJsonV1(value))`; and the writer never
 hands a sink more than one scalar token, which is the structural property the
 memory reduction rests on.
 
-Measured effect on the closest available proxy, the V2 OpeningManim candidate
-runner integration test, on one WSL2 host:
+The first authoring run on the closest available proxy, the V2 OpeningManim
+candidate runner integration test, recorded:
 
 | | before | after |
 | --- | --- | --- |
@@ -77,6 +81,13 @@ runner integration test, on one WSL2 host:
 | full `vitest run` | 150 s, 1 failed | 82 s, 0 failed |
 
 That test was failing on this host before the change and passes after it.
+
+This timing did **not** reproduce reliably during review: an independent run
+of the changed branch took about 134 seconds and exceeded the old 120-second
+correctness-test timeout despite low system load. The timeout is now 240
+seconds, and the test is treated only as a correctness gate. Neither timing is
+accepted as performance evidence for #499; AC1 still requires the pinned RSS
+and wall-time harness described below.
 
 ### Budget still to confirm
 
@@ -101,6 +112,7 @@ Playwright and the server retain evidence.
 
 ## Non-goals
 
-Unchanged, per #499: the verification contract is not relaxed, frames are not
-sampled, and the fresh producer is not replaced by a stored fixture. No trace
-fixture is committed to the repository.
+Unchanged, per #499: frames are not sampled and the fresh producer is not
+replaced by a stored fixture. No trace fixture is committed to the repository.
+The Wait comparator's explicit SHA-256 collision assumption is the only formal
+difference from direct string equality.

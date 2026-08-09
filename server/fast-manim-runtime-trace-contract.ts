@@ -701,8 +701,8 @@ function parseRuntimeTraceJson(value: string | Uint8Array, maximumBytes: number,
       cause,
     });
   }
-  // The decoded text is dead once the graph exists; a 900-frame trace makes
-  // that tens of MiB worth releasing before the schema builds its own copy.
+  // On the production Uint8Array path, drop the local decoded-text reference
+  // once the graph exists so it can become collectible before schema parsing.
   json = "";
   assertBoundedRuntimeTraceJson(parsed, kind);
   return parsed;
