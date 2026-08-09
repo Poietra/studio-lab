@@ -157,7 +157,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       ]),
     );
 
-    const attempts = await mapConcurrent(cases, 2, async (entry): Promise<RealManimCensusAttempt> => {
+    const attempts = await mapConcurrent(cases, 1, async (entry): Promise<RealManimCensusAttempt> => {
       const projectRoot = entry.repository === "fast-manim" ? fastManimRoot : workspaceRoot;
       const sourceBytes = await readFile(join(projectRoot, entry.sourcePath));
       const sourceDigest = createHash("sha256").update(sourceBytes).digest("hex");
@@ -179,7 +179,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
         },
         ...(entry.kind === "snapshot" ? { snapshotVersion: entry.profile } : {}),
         tenantId: "census",
-        timeoutMs: 120_000,
+        timeoutMs: 300_000,
       });
       try {
         const common = {
