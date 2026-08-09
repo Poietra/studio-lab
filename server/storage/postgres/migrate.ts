@@ -41,6 +41,7 @@ import snapshotRuntimeConfigHeadSqlV25 from "./migrations/0025_snapshot_runtime_
 import collaborationAuthorizationSqlV26 from "./migrations/0026_collaboration_authorization_ids.sql?raw";
 import snapshotPublicationTombstoneRetentionSqlV27 from "./migrations/0027_snapshot_publication_tombstone_retention.sql?raw";
 import accountOrganizationSwitchMutationSqlV28 from "./migrations/0028_account_organization_switch_mutations.sql?raw";
+import runtimeCellAssignmentSqlV29 from "./migrations/0029_runtime_cell_assignments.sql?raw";
 import { OIDC_LOGIN_MIGRATION_V13_CHECKSUM } from "./oidc-login-schema";
 import { RENDER_ARTIFACT_MIGRATION_V4_CHECKSUM } from "./postgres-artifact-repository";
 import { PROJECT_PNG_MIGRATION_V5_CHECKSUM } from "./postgres-project-png-repository";
@@ -53,6 +54,7 @@ import { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 import { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 import { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 import { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+import { RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_CHECKSUM } from "./runtime-cell-assignment-schema";
 import { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 import { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 import { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
@@ -77,6 +79,7 @@ export { RENDER_SESSION_CPU_FAILURE_MIGRATION_V9_CHECKSUM } from "./render-sessi
 export { RENDER_SESSION_FAILURE_MIGRATION_V8_CHECKSUM } from "./render-session-failure-schema";
 export { RENDER_SESSION_SCENE_NAME_MIGRATION_V19_CHECKSUM } from "./render-session-scene-name-schema";
 export { RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM } from "./render-session-usage-schema";
+export { RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_CHECKSUM } from "./runtime-cell-assignment-schema";
 export { SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM } from "./snapshot-publication-tombstone-retention-schema";
 export { SNAPSHOT_RUNTIME_CONFIG_HEAD_MIGRATION_V25_CHECKSUM } from "./snapshot-runtime-config-head-schema";
 export { SNAPSHOT_RUNTIME_DIGEST_MIGRATION_V10_CHECKSUM } from "./snapshot-runtime-digest-schema";
@@ -134,6 +137,7 @@ export const COLLABORATION_AUTHORIZATION_MIGRATION_V26_SOURCE = collaborationAut
 export const SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE =
   snapshotPublicationTombstoneRetentionSqlV27;
 export const ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE = accountOrganizationSwitchMutationSqlV28;
+export const RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE = runtimeCellAssignmentSqlV29;
 
 const workspaceSourceMigrationV1: DurableStorageMigration<1> = Object.freeze({
   checksum: WORKSPACE_SOURCE_MIGRATION_V1_CHECKSUM,
@@ -427,6 +431,17 @@ const accountOrganizationSwitchMutationMigrationV28: DurableStorageMigration<28>
   version: 28,
 });
 
+const runtimeCellAssignmentMigrationV29: DurableStorageMigration<29> = Object.freeze({
+  checksum: RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_CHECKSUM,
+  checksumMismatch: "The runtime-cell assignment migration checksum is invalid.",
+  installedMismatch: "The installed runtime-cell assignment schema does not match migration v29.",
+  missingPrerequisite: "Runtime-cell assignment migration v29 requires durable storage migrations v1 through v28.",
+  prerequisiteMismatch:
+    "Runtime-cell assignment migration v29 requires exact durable storage migrations v1 through v28.",
+  source: RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE,
+  version: 29,
+});
+
 const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   workspaceSourceMigrationV1,
   renderSessionMigrationV2,
@@ -456,6 +471,7 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   collaborationAuthorizationMigrationV26,
   snapshotPublicationTombstoneRetentionMigrationV27,
   accountOrganizationSwitchMutationMigrationV28,
+  runtimeCellAssignmentMigrationV29,
 ]);
 
 function bundledMigrationsThrough(version: number) {
@@ -728,6 +744,10 @@ export function applyAccountOrganizationSwitchMutationMigrationV28(pool: Pool, s
     { ...accountOrganizationSwitchMutationMigrationV28, source },
     bundledMigrationsBefore(28),
   );
+}
+
+export function applyRuntimeCellAssignmentMigrationV29(pool: Pool, source: string) {
+  return applyMigration(pool, { ...runtimeCellAssignmentMigrationV29, source }, bundledMigrationsBefore(29));
 }
 
 /** Apply bundled migrations in order through one exact, validated catalog version. */

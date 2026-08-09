@@ -21,10 +21,12 @@ import {
   createProductionDurableManimRenderExecutorV1,
   type ProductionDurableManimRenderExecutorV1,
 } from "./production-durable-manim-render-executor";
-import type {
-  ProductionManimRuntimeAdapterV1,
-  ProductionManimRuntimeCellProvisionerV1,
-  ProductionRuntimeCellAssignmentV1,
+import {
+  BoundedProductionManimRuntimeCellResolverV1,
+  type ProductionManimRuntimeAdapterV1,
+  type ProductionManimRuntimeCellProvisionerV1,
+  type ProductionManimRuntimeCellResolverV1,
+  type ProductionRuntimeCellAssignmentV1,
 } from "./production-runtime-cell";
 import { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { applyBundledDurableStorageMigrations } from "./storage/postgres/migrate";
@@ -32,6 +34,7 @@ import { PostgresArtifactRepositoryV1 } from "./storage/postgres/postgres-artifa
 import { PostgresEditorDocumentRepositoryV1 } from "./storage/postgres/postgres-editor-document-repository";
 import { PostgresProjectPngRepositoryV1 } from "./storage/postgres/postgres-project-png-repository";
 import { PostgresRenderSessionRepositoryV1 } from "./storage/postgres/postgres-render-session-repository";
+import { PostgresRuntimeCellAssignmentRepositoryV1 } from "./storage/postgres/postgres-runtime-cell-assignment-repository";
 import { PostgresSnapshotPublicationRepositoryV1 } from "./storage/postgres/postgres-snapshot-publication-repository";
 import {
   PostgresWorkspaceSourceRepositoryV1,
@@ -173,6 +176,49 @@ export function createDurablePostgresS3ProductionRuntimeCellProvisionerV1(
     provision: (assignment: ProductionRuntimeCellAssignmentV1, signal: AbortSignal) =>
       createDurablePostgresS3ProductionRuntimeV1({ ...options, tenantId: assignment.tenantId }, signal),
   });
+}
+
+export type PostgresProductionManimRuntimeCellResolverOptionsV1 = Readonly<{
+  assignmentDatabase: Readonly<{
+    poolConfig: PoolConfig;
+    statementTimeoutMs?: number;
+  }>;
+  maxAssignments?: number;
+  maxCells?: number;
+  provisioner: ProductionManimRuntimeCellProvisionerV1;
+}>;
+
+/**
+ * Owns a PostgreSQL assignment reader and the provisioner behind one bounded
+ * resolver. A successful resolver closes both dependencies; construction also
+ * closes them before reporting a failure. Assignment mutations intentionally
+ * remain outside this request composition and must be performed by a
+ * server-owned control plane.
+ */
+export async function createPostgresProductionManimRuntimeCellResolverV1(
+  options: PostgresProductionManimRuntimeCellResolverOptionsV1,
+): Promise<ProductionManimRuntimeCellResolverV1> {
+  assertProductionPoolConfig(options.assignmentDatabase.poolConfig, "Runtime-cell assignment");
+  let assignments: PostgresRuntimeCellAssignmentRepositoryV1 | undefined;
+  try {
+    assignments = new PostgresRuntimeCellAssignmentRepositoryV1(options.assignmentDatabase);
+    return new BoundedProductionManimRuntimeCellResolverV1({
+      assignments,
+      ...(options.maxAssignments === undefined ? {} : { maxAssignments: options.maxAssignments }),
+      ...(options.maxCells === undefined ? {} : { maxCells: options.maxCells }),
+      provisioner: options.provisioner,
+    });
+  } catch (error) {
+    const cleanup = await Promise.allSettled([
+      Promise.resolve().then(() => assignments?.close()),
+      Promise.resolve().then(() => options.provisioner.close?.()),
+    ]);
+    const cleanupErrors = cleanup.flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
+    if (cleanupErrors.length > 0) {
+      throw new AggregateError([error, ...cleanupErrors], "Production runtime cell resolver construction failed.");
+    }
+    throw error;
+  }
 }
 
 function migrationTimeout(value: number | undefined) {

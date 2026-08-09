@@ -82,6 +82,13 @@ const STORAGE_SUITES = [
     ],
   },
   {
+    database: "poietra_runtime_cell_assignment",
+    file: "server/storage/runtime-cell-assignment-storage.real.test.ts",
+    id: "runtime-cell-assignment",
+    objectStorage: false,
+    title: "routes two Organizations through replay-safe durable assignments and drains rotated cells",
+  },
+  {
     database: "poietra_editor_document",
     file: "server/storage/editor-document-storage.real.test.ts",
     id: "editor-document",

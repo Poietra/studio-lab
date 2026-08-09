@@ -36,6 +36,7 @@ import {
   applyRenderSessionMigrationV2,
   applyRenderSessionRetentionMigrationV6,
   applyRenderSessionSceneNameMigrationV19,
+  applyRuntimeCellAssignmentMigrationV29,
   applySnapshotPublicationMigrationV3,
   applySnapshotPublicationTombstoneRetentionMigrationV27,
   applySnapshotRuntimeConfigHeadMigrationV25,
@@ -69,6 +70,8 @@ import {
   RENDER_SESSION_SCENE_NAME_MIGRATION_V19_SOURCE,
   RENDER_SESSION_USAGE_MIGRATION_V15_CHECKSUM,
   RENDER_SESSION_USAGE_MIGRATION_V15_SOURCE,
+  RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_CHECKSUM,
+  RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE,
   SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE,
   SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_CHECKSUM,
   SNAPSHOT_PUBLICATION_TOMBSTONE_RETENTION_MIGRATION_V27_SOURCE,
@@ -121,12 +124,12 @@ describe("durable storage migrations", () => {
 
   it("applies the ordered catalog and then verifies it idempotently", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 28 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: true, version: 29 });
     expect([...db.installed.keys()]).toEqual([
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
     ]);
 
-    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 28 });
+    await expect(applyBundledDurableStorageMigrations(db.pool)).resolves.toEqual({ applied: false, version: 29 });
     expect(db.queries.filter(({ text }) => text === WORKSPACE_SOURCE_MIGRATION_V1_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === RENDER_SESSION_MIGRATION_V2_SOURCE)).toHaveLength(1);
     expect(db.queries.filter(({ text }) => text === SNAPSHOT_PUBLICATION_MIGRATION_V3_SOURCE)).toHaveLength(1);
@@ -159,7 +162,8 @@ describe("durable storage migrations", () => {
     expect(
       db.queries.filter(({ text }) => text === ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE),
     ).toHaveLength(1);
-    expect(db.release).toHaveBeenCalledTimes(56);
+    expect(db.queries.filter(({ text }) => text === RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toHaveLength(1);
+    expect(db.release).toHaveBeenCalledTimes(58);
   });
 
   it("applies an exact bundled prefix before a later cutover", async () => {
@@ -223,12 +227,16 @@ describe("durable storage migrations", () => {
       applied: true,
       version: 28,
     });
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 29)).resolves.toEqual({
+      applied: true,
+      version: 29,
+    });
   });
 
   it("rejects an unknown bundled target before acquiring a connection", async () => {
     const db = database();
-    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 29)).rejects.toThrow(
-      /migration v29 is not bundled/i,
+    await expect(applyBundledDurableStorageMigrationsThrough(db.pool, 30)).rejects.toThrow(
+      /migration v30 is not bundled/i,
     );
     expect(db.connect).not.toHaveBeenCalled();
   });
@@ -775,6 +783,52 @@ describe("durable storage migrations", () => {
         ACCOUNT_ORGANIZATION_SWITCH_MUTATION_MIGRATION_V28_SOURCE,
       ),
     ).rejects.toThrow(/requires durable storage migrations v1 through v27/i);
+    expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
+  });
+
+  it("adds durable replay-safe runtime-cell assignments in v29", async () => {
+    expect(durableStorageMigrationChecksum(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE)).toBe(
+      RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_CHECKSUM,
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("CREATE TABLE public.runtime_cell_assignments");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "CREATE TABLE public.runtime_cell_assignment_mutations",
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("cell_id text NOT NULL UNIQUE");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "REFERENCES public.organizations (tenant_id) ON DELETE RESTRICT",
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("generation BETWEEN 1 AND 9007199254740991");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("state IN ('active', 'disabled')");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("kind IN ('create', 'rotate', 'disable')");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("PRIMARY KEY (tenant_id, mutation_id)");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("UNIQUE (tenant_id, result_generation)");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("result_generation = expected_generation + 1");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("kind = 'disable'");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("request_cell_id IS NULL");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "runtime_cell_assignment_mutations_allocated_cell_v29",
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("WHERE kind IN ('create', 'rotate')");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("IF OLD.state <> 'active' THEN");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("A disabled runtime-cell assignment is terminal.");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("NEW.generation <> OLD.generation + 1");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("DEFERRABLE INITIALLY DEFERRED");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "CREATE CONSTRAINT TRIGGER runtime_cell_assignment_mutations_require_projection_v29",
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain("assignment.cell_id = NEW.result_cell_id");
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "A runtime-cell assignment mutation must be applied to the current projection.",
+    );
+    expect(RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE).toContain(
+      "BEFORE UPDATE OR DELETE ON public.runtime_cell_assignment_mutations",
+    );
+
+    const db = database();
+    await expect(
+      applyRuntimeCellAssignmentMigrationV29(db.pool, RUNTIME_CELL_ASSIGNMENT_MIGRATION_V29_SOURCE),
+    ).rejects.toThrow(/requires durable storage migrations v1 through v28/i);
     expect(db.queries.at(-1)?.text).toBe("ROLLBACK");
   });
 
