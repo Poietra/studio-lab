@@ -1,0 +1,239 @@
+{
+  "outcome": "verified",
+  "producer": {
+    "fastManimCommit": "d24026e11fbf30fa820593e1f0c59dd02ea82c25",
+    "fastManimTree": "93a1467e7d6ba23e9fac5baf827523ae893b6267"
+  },
+  "producerEvidence": {
+    "correlationSha256": "d5f1737fa4604c084c934a033a5245d2620026139a18767a9619535aec080904",
+    "semanticsSha256": "8a3115900fda667282094e5095cc01e5e5da31178a1eaabe3c13a2d9d12f0319"
+  },
+  "roots": [
+    {
+      "binding": {
+        "id": "source-binding:1af7ea50b08a2275cf73c34c09942aff1e82ecbc01453d1b9192c18e3e681bf4",
+        "name": "axes_epi",
+        "ordinal": 1,
+        "span": {
+          "endColumn": 16,
+          "endLine": 46,
+          "startColumn": 8,
+          "startLine": 46
+        }
+      },
+      "entityId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b/runtime-v3-root:0",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": 0,
+              "y": 2.5
+            },
+            "dimensions": {
+              "height": 4.5,
+              "width": 4.5
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": 0,
+              "y": 2.5
+            },
+            "dimensions": {
+              "height": 4.5,
+              "width": 4.5
+            },
+            "frameIndex": 869,
+            "sampleTime": 14.4833333333333
+          }
+        },
+        "updaterStatus": "conflict"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:2742e8e96d98689e79b3b2500ad7bc978c5e66a6b6e431c9d8b1b7abd2689383",
+        "name": "axes_wave",
+        "ordinal": 2,
+        "span": {
+          "endColumn": 17,
+          "endLine": 47,
+          "startColumn": 8,
+          "startLine": 47
+        }
+      },
+      "entityId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b/runtime-v3-root:1",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": 0.137721875,
+              "y": -2
+            },
+            "dimensions": {
+              "height": 4,
+              "width": 13.37544375
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": 0.137721875,
+              "y": -2
+            },
+            "dimensions": {
+              "height": 4,
+              "width": 13.37544375
+            },
+            "frameIndex": 869,
+            "sampleTime": 14.4833333333333
+          }
+        },
+        "updaterStatus": "conflict"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:50e070ff3f146fa55060ca6dd598fc8b445822135d8a77bef692bd099d68797d",
+        "name": "epicycles_group",
+        "ordinal": 4,
+        "span": {
+          "endColumn": 23,
+          "endLine": 54,
+          "startColumn": 8,
+          "startLine": 54
+        }
+      },
+      "entityId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b/runtime-v3-root:3",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": 0.7847664807719,
+              "y": 2.5
+            },
+            "dimensions": {
+              "height": 3.4377467707849,
+              "width": 5.0072797323287
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": -0.7847664807719,
+              "y": 2.5
+            },
+            "dimensions": {
+              "height": 3.4377467707849,
+              "width": 5.0072797323287
+            },
+            "frameIndex": 869,
+            "sampleTime": 14.4833333333333
+          }
+        },
+        "updaterStatus": "conflict"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:e0f4e995708957de03b8e1fee8c4fba4930689d6fb90d182e6c45d98d76ca37a",
+        "name": "waves",
+        "ordinal": 5,
+        "span": {
+          "endColumn": 13,
+          "endLine": 57,
+          "startColumn": 8,
+          "startLine": 57
+        }
+      },
+      "entityId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b/runtime-v3-root:2",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": -2.1166666666667,
+              "y": -1.999998062223
+            },
+            "dimensions": {
+              "height": 3.0557908814769,
+              "width": 8.6666666666667
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": -2.1166666666667,
+              "y": -1.999998062223
+            },
+            "dimensions": {
+              "height": 3.0557908814769,
+              "width": 8.6666666666667
+            },
+            "frameIndex": 869,
+            "sampleTime": 14.4833333333333
+          }
+        },
+        "updaterStatus": "conflict"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:bd2b252ff7fd86b4697e44de1f6312cee31310097717713f24dd173ea762e5c0",
+        "name": "trace_lines",
+        "ordinal": 7,
+        "span": {
+          "endColumn": 19,
+          "endLine": 77,
+          "startColumn": 8,
+          "startLine": 77
+        }
+      },
+      "entityId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b/runtime-v3-root:6",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": 2.2166666666667,
+              "y": -2
+            },
+            "dimensions": {
+              "height": 0,
+              "width": 0
+            },
+            "frameIndex": 630,
+            "sampleTime": 10.5
+          },
+          "terminal": {
+            "center": {
+              "x": -0.5058698401348,
+              "y": 0.25
+            },
+            "dimensions": {
+              "height": 4.5,
+              "width": 5.4450730136029
+            },
+            "frameIndex": 869,
+            "sampleTime": 14.4833333333333
+          }
+        },
+        "updaterStatus": "conflict"
+      }
+    }
+  ],
+  "runtimeConfigHash": "746f68cc656a3045643730e4fab8a94d35351c04354d83d5a2ca88808fcef720",
+  "scene": {
+    "className": "FourierSeriesSquareWave",
+    "sourcePath": "legacy/Math-To-Manim/examples/mathematics/trigonometry/TrigInference.py",
+    "sourceSha256": "3071f55153631e1b74df945fb0ebf57a56372bc0cb58498c58a01fcdf31fbd72"
+  },
+  "sceneDuration": 14.5,
+  "sceneId": "scene:3ce9fcd8560aff85ee4493b09677f9324ceace0f789748bca11e94042e21e93b",
+  "schema": "poietra.fourier-v3-runtime-trace-evidence",
+  "traceDigest": "0e13c3e12f1f6eab42760be5318382fd5cc83e7dc49f3a5c230623d0dfbd71c0",
+  "version": 1
+}
