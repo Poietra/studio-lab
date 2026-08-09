@@ -304,6 +304,14 @@ export class BoundedProductionManimRuntimeCellResolverV1 implements ProductionMa
       throw unavailableCell();
     }
     signal.throwIfAborted();
+    if (rawAssignment === null) {
+      const existing = this.#current.get(principal.tenantId);
+      if (existing) {
+        this.#current.delete(principal.tenantId);
+        this.#retire(existing);
+      }
+      throw unavailableCell();
+    }
     const parsed = productionRuntimeCellAssignmentSchemaV1.safeParse(rawAssignment);
     if (!parsed.success || parsed.data.tenantId !== principal.tenantId) throw unavailableCell();
     const assignment = parsed.data;

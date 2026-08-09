@@ -98,6 +98,26 @@ describe("bounded production runtime cell resolver", () => {
     expect(newClose).toHaveBeenCalledOnce();
   });
 
+  it("drains the cached cell when the assignment source removes the tenant", async () => {
+    let current: ProductionRuntimeCellAssignmentV1 | null = assignment("tenant-a");
+    const close = vi.fn(async () => undefined);
+    const resolver = new BoundedProductionManimRuntimeCellResolverV1({
+      assignments: { ready: async () => true, resolve: async () => current },
+      provisioner: { provision: async ({ tenantId }) => runtime(tenantId, close) },
+    });
+    const verified = await principal("tenant-a");
+    const lease = await resolver.acquire(verified, new AbortController().signal);
+
+    current = null;
+    await expect(resolver.acquire(verified, new AbortController().signal)).rejects.toMatchObject({ status: 503 });
+    expect(close).not.toHaveBeenCalled();
+
+    lease.release();
+    await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+    await resolver.close();
+    expect(close).toHaveBeenCalledOnce();
+  });
+
   it("fails closed for missing, disabled, stale, conflicting, or forged assignments", async () => {
     let current: unknown = assignment("tenant-a", 2, "shared-cell");
     const activeClose = vi.fn(async () => undefined);
