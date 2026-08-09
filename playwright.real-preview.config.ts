@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -136,20 +136,36 @@ const harnessRoot = mutableHarness
 if (mutableHarness) {
   cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
 }
-// Publish this run's opaque namespace so the teardown reporter reclaims exactly
-// what the run owns. A setup failure after this point never reaches the
-// reporter, so the same bounded reclamation runs best-effort at process exit.
-process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = dataRoot;
-if (mutableHarness) process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = harnessRoot;
-process.once("exit", () => {
-  const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
-  if (!namespace) return;
-  try {
-    reclaimRealPreviewRunStateV1({ ...namespace, now: Date.now(), outcome: "failed" });
-  } catch {
-    // Best-effort only: an exit-time failure must not mask the original error.
+// Playwright evaluates this config file in every worker process too, so each
+// worker builds a harness copy of its own that backs nothing — the server only
+// ever sees the runner's copy through the webServer env below. A worker must
+// therefore not publish a namespace or retain its pristine copy as failure
+// evidence; it only removes its own copy on exit. The runner process publishes
+// this run's opaque namespace for the teardown reporter and keeps a best-effort
+// exit reclamation for setup failures the reporter never sees.
+if (process.env.TEST_WORKER_INDEX !== undefined) {
+  if (mutableHarness) {
+    process.once("exit", () => {
+      try {
+        rmSync(harnessRoot, { force: true, recursive: true });
+      } catch {
+        // Best-effort only: an exit-time failure must not mask the original error.
+      }
+    });
   }
-});
+} else {
+  process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = dataRoot;
+  if (mutableHarness) process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = harnessRoot;
+  process.once("exit", () => {
+    const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
+    if (!namespace) return;
+    try {
+      reclaimRealPreviewRunStateV1({ ...namespace, now: Date.now(), outcome: "failed" });
+    } catch {
+      // Best-effort only: an exit-time failure must not mask the original error.
+    }
+  });
+}
 if (snapshotProfile === "8" && !externalBaseUrl) {
   if (!officialV8ProjectRoot) throw new Error("The official SquareToCircle V8 source root is unavailable.");
   const relativeSourcePath = join("example_scenes", "basic.py");
