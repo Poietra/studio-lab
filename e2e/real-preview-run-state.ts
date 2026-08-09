@@ -98,7 +98,12 @@ function pruneEvidence(evidenceRoot: string, keep: string, now: number) {
   let entries: Array<Readonly<{ modifiedAt: number; path: string }>>;
   try {
     entries = readdirSync(evidenceRoot, { withFileTypes: true })
-      .filter((entry) => entry.isDirectory())
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          entry.name.startsWith(REAL_PREVIEW_HARNESS_PREFIX_V1) &&
+          entry.name.length > REAL_PREVIEW_HARNESS_PREFIX_V1.length,
+      )
       .map((entry) => {
         const path = join(evidenceRoot, entry.name);
         return { modifiedAt: statSync(path).mtimeMs, path };
@@ -190,6 +195,18 @@ export function realPreviewRunStateFromEnvironmentV1(
     outputRoot,
     temporaryRoot,
   };
+}
+
+/** Clears inherited state first, then publishes only the namespace this runner created. */
+export function publishRealPreviewRunStateEnvironmentV1(
+  environment: NodeJS.ProcessEnv,
+  state: Readonly<{ dataRoot: string; harnessRoot: string | null }> | null,
+) {
+  delete environment.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT;
+  delete environment.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT;
+  if (!state) return;
+  environment.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = state.dataRoot;
+  if (state.harnessRoot !== null) environment.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = state.harnessRoot;
 }
 
 export function realPreviewRunStateSummaryV1(result: RealPreviewRunStateResultV1) {

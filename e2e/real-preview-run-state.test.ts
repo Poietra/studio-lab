@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -19,6 +20,7 @@ import {
   MAX_REAL_PREVIEW_EVIDENCE_AGE_MS_V1,
   MAX_REAL_PREVIEW_EVIDENCE_FILES_V1,
   MAX_REAL_PREVIEW_EVIDENCE_RUNS_V1,
+  publishRealPreviewRunStateEnvironmentV1,
   REAL_PREVIEW_DATA_PREFIX_V1,
   REAL_PREVIEW_HARNESS_PREFIX_V1,
   realPreviewRunStateFromEnvironmentV1,
@@ -195,6 +197,27 @@ describe("real-preview run state reclamation", () => {
     expect(copied.length).toBeLessThanOrEqual(MAX_REAL_PREVIEW_EVIDENCE_FILES_V1);
   });
 
+  it("never prunes unrelated directories from the evidence root", () => {
+    const { evidenceRoot, outputRoot, temporaryRoot } = sandbox();
+    const unrelated = join(evidenceRoot, "user-notes");
+    mkdirSync(unrelated, { recursive: true });
+    utimesSync(unrelated, 1, 1);
+    const harnessRoot = harnessAt(temporaryRoot, "Current");
+
+    const result = reclaimRealPreviewRunStateV1({
+      dataRoot: null,
+      evidenceRoot,
+      harnessRoot,
+      now: MAX_REAL_PREVIEW_EVIDENCE_AGE_MS_V1 * 2,
+      outcome: "failed",
+      outputRoot,
+      temporaryRoot,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(existsSync(unrelated)).toBe(true);
+  });
+
   it("treats an already-reclaimed namespace as done instead of a cleanup failure", () => {
     const { evidenceRoot, outputRoot, temporaryRoot } = sandbox();
 
@@ -209,6 +232,38 @@ describe("real-preview run state reclamation", () => {
         temporaryRoot,
       }),
     ).toEqual({ failures: [], removed: [], retainedEvidencePath: null });
+  });
+
+  it("reclaims a mutable harness when config setup fails immediately after mkdtemp", () => {
+    const { root } = sandbox();
+    const prefix = `${REAL_PREVIEW_HARNESS_PREFIX_V1}runtime-trace-opening-`;
+    const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(prefix)));
+    const executable = join(
+      process.cwd(),
+      "node_modules",
+      ".bin",
+      process.platform === "win32" ? "playwright.cmd" : "playwright",
+    );
+    const environment = {
+      ...process.env,
+      POIETRA_E2E_EXTERNAL_BASE_URL: "http://127.0.0.1:41999",
+      POIETRA_E2E_REAL_PREVIEW_PROFILE: "runtime-trace-opening",
+      POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND: '["node","-e",""]',
+      POIETRA_MANIM_COMMAND: '["node","-e",""]',
+    };
+    delete environment.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT;
+    delete environment.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT;
+
+    const result = spawnSync(
+      executable,
+      ["test", "--config", join(process.cwd(), "playwright.real-preview.config.ts"), "--list"],
+      { cwd: root, encoding: "utf8", env: environment },
+    );
+    const leaked = readdirSync(tmpdir()).filter((name) => name.startsWith(prefix) && !before.has(name));
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}${result.stdout}`).toContain("ENOENT");
+    expect(leaked).toEqual([]);
   });
 
   it("reclaims through the Playwright reporter on both run outcomes without rewriting the run status", async () => {
@@ -251,8 +306,10 @@ describe("real-preview run state reclamation", () => {
     } finally {
       process.stdout.write = stdout;
       process.stderr.write = stderr;
-      process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = previousData;
-      process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = previousHarness;
+      if (previousData === undefined) delete process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT;
+      else process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = previousData;
+      if (previousHarness === undefined) delete process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT;
+      else process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = previousHarness;
     }
     expect(written.join("")).toContain("real-preview teardown reclaimed");
     expect(written.join("")).not.toContain("teardown failed");
@@ -281,6 +338,28 @@ describe("real-preview run state reclamation", () => {
       harnessRoot: "/harness",
       outputRoot,
       temporaryRoot,
+    });
+  });
+
+  it("clears inherited run state before publishing the namespace created by this process", () => {
+    const environment: NodeJS.ProcessEnv = {
+      POIETRA_E2E_REAL_PREVIEW_DATA_ROOT: "/stale-data",
+      POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT: "/stale-harness",
+    };
+
+    publishRealPreviewRunStateEnvironmentV1(environment, null);
+    expect(environment).toEqual({});
+
+    publishRealPreviewRunStateEnvironmentV1(environment, { dataRoot: "/current-data", harnessRoot: null });
+    expect(environment).toEqual({ POIETRA_E2E_REAL_PREVIEW_DATA_ROOT: "/current-data" });
+
+    publishRealPreviewRunStateEnvironmentV1(environment, {
+      dataRoot: "/next-data",
+      harnessRoot: "/current-harness",
+    });
+    expect(environment).toEqual({
+      POIETRA_E2E_REAL_PREVIEW_DATA_ROOT: "/next-data",
+      POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT: "/current-harness",
     });
   });
 });

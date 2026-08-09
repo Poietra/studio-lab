@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { defineConfig } from "@playwright/test";
 import { encodeRgbaPngV1 } from "./e2e/png-rgba";
 import {
+  publishRealPreviewRunStateEnvironmentV1,
   REAL_PREVIEW_HARNESS_PREFIX_V1,
   realPreviewRunStateFromEnvironmentV1,
   reclaimRealPreviewRunStateV1,
@@ -133,8 +134,27 @@ const mutableHarness =
 const harnessRoot = mutableHarness
   ? mkdtempSync(join(tmpdir(), `${REAL_PREVIEW_HARNESS_PREFIX_V1}${snapshotProfile}-`))
   : join(process.cwd(), "fixtures", "real-preview-harness");
+let setupHarnessCleanupArmed = mutableHarness;
 if (mutableHarness) {
-  cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+  process.once("exit", () => {
+    if (!setupHarnessCleanupArmed) return;
+    try {
+      rmSync(harnessRoot, { force: true, recursive: true });
+    } catch {
+      // Best-effort only: an exit-time failure must not mask the original error.
+    }
+  });
+  try {
+    cpSync(join(process.cwd(), "fixtures", "real-preview-harness"), harnessRoot, { recursive: true });
+  } catch (cause) {
+    try {
+      rmSync(harnessRoot, { force: true, recursive: true });
+      setupHarnessCleanupArmed = false;
+    } catch {
+      // Keep the exit hook armed for one last best-effort attempt.
+    }
+    throw cause;
+  }
 }
 // Playwright evaluates this config file in every worker process too, so each
 // worker builds a harness copy of its own that backs nothing — the server only
@@ -144,27 +164,22 @@ if (mutableHarness) {
 // this run's opaque namespace for the teardown reporter and keeps a best-effort
 // exit reclamation for setup failures the reporter never sees.
 if (process.env.TEST_WORKER_INDEX !== undefined) {
-  if (mutableHarness) {
-    process.once("exit", () => {
-      try {
-        rmSync(harnessRoot, { force: true, recursive: true });
-      } catch {
-        // Best-effort only: an exit-time failure must not mask the original error.
-      }
-    });
-  }
+  publishRealPreviewRunStateEnvironmentV1(process.env, null);
 } else {
-  process.env.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT = dataRoot;
-  if (mutableHarness) process.env.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT = harnessRoot;
+  publishRealPreviewRunStateEnvironmentV1(process.env, {
+    dataRoot,
+    harnessRoot: mutableHarness ? harnessRoot : null,
+  });
+  const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
+  if (!namespace) throw new Error("The real-preview runner did not publish its generated namespace.");
   process.once("exit", () => {
-    const namespace = realPreviewRunStateFromEnvironmentV1(process.env, join(process.cwd(), "test-results"), tmpdir());
-    if (!namespace) return;
     try {
       reclaimRealPreviewRunStateV1({ ...namespace, now: Date.now(), outcome: "failed" });
     } catch {
       // Best-effort only: an exit-time failure must not mask the original error.
     }
   });
+  setupHarnessCleanupArmed = false;
 }
 if (snapshotProfile === "8" && !externalBaseUrl) {
   if (!officialV8ProjectRoot) throw new Error("The official SquareToCircle V8 source root is unavailable.");
