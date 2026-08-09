@@ -1,6 +1,13 @@
 # Real-Manim census regeneration
 
-The checked-in v1 and v2 census evidence is valid only when the fast-manim checkout, the identity injected into the Runtime Trace producer, and the Studio trust anchor name the same commit and tree.
+The active v1 and v2 manifests are valid only when the verified fast-manim
+checkout, the Python environment that imports it, the identity injected into
+the Runtime Trace producer, and the Studio trust anchor name the same commit
+and tree. The reproduced v2 baseline uses that active identity. The checked-in
+v1 baseline is a historical compatibility floor and remains bound to its
+original producer through
+`fixtures/real-manim-editability-census-v1/playback-manifest.json`; it must not
+be relabelled as a run of the active manifest.
 
 Current producer identity:
 
@@ -23,21 +30,59 @@ test -z "$(git -C /work/fast-manim status --porcelain)"
 uv sync --frozen --python 3.13.11 --project /work/fast-manim
 ```
 
-Verify the existing baseline:
+`uv sync` alone is not a complete V1 producer environment. Profiles 3, 5, 7,
+11, and 12 also require the native `poietra_mathtex_outline` extension. The
+pinned fast-manim checkout deliberately does not declare or build that Studio
+artifact, and its snapshot producer fails closed when the extension is absent.
+
+Before treating a V1 run as regeneration evidence, pin and verify the Studio
+engine commit and tree, the extension SHA-256 and ABI, and the font/toolchain
+digests, then install that exact native artifact into the same Python
+interpreter used by both producer commands. Production promotion of that
+artifact is tracked by existing Issue #280. Until its non-zero artifact pin and
+reproduction path are available, do not use `--update` and do not relabel the
+previous V1 measurements with the new producer digest.
+
+The historical V1 baseline cannot be verified by running the active manifest:
+the producer identities intentionally differ. Its archived playback manifest
+exists only to preserve the provenance and editability floor of those earlier
+measurements. After the native-provider prerequisite is complete, run the
+active manifest without writing evidence first:
 
 ```sh
 pnpm census:manim --fast-manim-root /work/fast-manim
 ```
 
-Regenerate it after an intentional producer repin:
+That command compares the active run with the historical compatibility floor
+without writing evidence. A producer-pin difference alone is allowed, but all
+previously accepted cases must remain accepted, fallback must not become
+rejection, and aggregate acceptance floors and rejection ceilings must hold.
+The currently
+missing native provider causes that comparison to fail because previously
+accepted cases are lost.
+
+Only after a successful comparison and intentional review of the producer
+repin, write the new evidence. Update mode enforces the same historical floor
+before replacing the baseline:
 
 ```sh
 pnpm census:manim --update --fast-manim-root /work/fast-manim
 ```
 
-The real test verifies the checkout commit, tree, cleanliness, repository digest, source bytes, and producer modules before executing a producer. It derives the Runtime Trace environment from the manifest and rejects it unless that identity also matches Studio's trust anchor.
+The update is valid only after the native-provider prerequisite above has been
+met. A provider-absent run is useful fail-closed evidence, but it is not a basis
+for lowering the accepted-case floor.
 
-The v1 lane runs producer cases one at a time with a five-minute per-case deadline. This avoids turning host process pressure into misleading compatibility evidence as the pinned Runtime Trace producer grows.
+The real test verifies the checkout commit, tree, cleanliness, repository
+digest, source bytes, exact `.venv/bin/python` command, imported `manim` module
+path, and producer modules before executing a producer. It derives the Runtime
+Trace environment from the manifest and rejects it unless that identity also
+matches Studio's trust anchor.
+
+The v1 lane uses bounded concurrency of two and a 120-second deadline for each
+producer case; the complete Vitest case has a 15-minute deadline. This avoids
+turning host process pressure into misleading compatibility evidence as the
+pinned Runtime Trace producer grows.
 
 ## V2 project census
 

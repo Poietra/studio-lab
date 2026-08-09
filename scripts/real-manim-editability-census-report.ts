@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { type RealManimCensusManifest, realManimCensusRuntimeTraceCaseId } from "./real-manim-census-report";
+import { realManimCensusRuntimeTraceCaseId } from "./real-manim-census-report";
 
 const REPORT_SCHEMA = "poietra.real-manim-editability-census-report";
 const SHA256 = /^[a-f0-9]{64}$/;
@@ -118,6 +118,17 @@ export type RealManimEditabilityCapability = z.infer<typeof capabilitySchema>;
 export type RealManimEditabilityCensusCaseId = z.infer<typeof caseIdSchema>;
 export type RealManimEditabilityCensusObservation = z.input<typeof observationSchema>;
 export type RealManimEditabilityCensusReport = z.infer<typeof reportSchema>;
+export type RealManimEditabilityPlaybackManifest = Readonly<{
+  producer: Readonly<{ digest: string }>;
+  sources: readonly Readonly<{
+    id: string;
+    scenes: readonly Readonly<{
+      name: string;
+      runtimeTraceVersions?: readonly (1 | 2)[];
+    }>[];
+  }>[];
+  version: 1;
+}>;
 
 function buildCaseCapabilities(
   caseId: RealManimEditabilityCensusCaseId,
@@ -142,7 +153,7 @@ function buildCaseCapabilities(
   );
 }
 
-function manifestRuntimeTraceCases(manifest: RealManimCensusManifest) {
+function manifestRuntimeTraceCases(manifest: RealManimEditabilityPlaybackManifest) {
   return manifest.sources
     .flatMap((source) =>
       source.scenes.flatMap((scene) =>
@@ -157,7 +168,7 @@ function manifestRuntimeTraceCases(manifest: RealManimCensusManifest) {
 }
 
 export function buildRealManimEditabilityCensusReport(
-  manifest: RealManimCensusManifest,
+  manifest: RealManimEditabilityPlaybackManifest,
   producerDigest: string,
   inputs: readonly RealManimEditabilityCensusObservation[],
 ): RealManimEditabilityCensusReport {

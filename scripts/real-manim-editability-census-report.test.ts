@@ -10,6 +10,7 @@ import {
   REAL_MANIM_EDITABILITY_PRODUCER_DIGEST,
   type RealManimEditabilityCensusCaseId,
   type RealManimEditabilityCensusObservation,
+  type RealManimEditabilityPlaybackManifest,
 } from "./real-manim-editability-census-report";
 
 const openingCaseId = "fast-manim-basic/OpeningManim/runtime-trace-v2";
@@ -17,17 +18,24 @@ const updatersCaseId = "fast-manim-basic/UpdatersExample/runtime-trace-v1";
 const fixtureDirectory = join(import.meta.dirname, "..", "fixtures");
 
 async function loadInputs() {
-  const [manifest, baselineBytes, playbackBaselineBytes] = await Promise.all([
+  const [historicalManifestBytes, currentManifest, baselineBytes, playbackBaselineBytes] = await Promise.all([
+    readFile(join(fixtureDirectory, "real-manim-editability-census-v1", "playback-manifest.json")),
     loadRealManimCensusManifest(join(fixtureDirectory, "real-manim-census-v1", "manifest.json")),
     readFile(join(fixtureDirectory, "real-manim-editability-census-v1", "baseline.json")),
     readFile(join(fixtureDirectory, "real-manim-census-v1", "baseline.json")),
   ]);
+  const manifest = JSON.parse(historicalManifestBytes.toString("utf8")) as RealManimEditabilityPlaybackManifest;
   const playbackBaseline = JSON.parse(playbackBaselineBytes.toString("utf8")) as {
     manifestDigest: string;
     producerDigest: string;
     summary: { corpora: { compatibility: { scenes: Record<string, number> } } };
   };
-  return { baseline: JSON.parse(baselineBytes.toString("utf8")) as unknown, manifest, playbackBaseline };
+  return {
+    baseline: JSON.parse(baselineBytes.toString("utf8")) as unknown,
+    currentManifest,
+    manifest,
+    playbackBaseline,
+  };
 }
 
 function provenCase(caseId: RealManimEditabilityCensusCaseId): RealManimEditabilityCensusObservation[] {
@@ -74,7 +82,7 @@ describe("real Manim editability census report", () => {
   });
 
   it("fails closed on incomplete, duplicate, unpinned, and dependency-invalid evidence", async () => {
-    const { manifest } = await loadInputs();
+    const { currentManifest, manifest } = await loadInputs();
     const observations = baselineObservations();
     expect(() =>
       buildRealManimEditabilityCensusReport(manifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, observations.slice(1)),
@@ -88,6 +96,9 @@ describe("real Manim editability census report", () => {
     expect(() => buildRealManimEditabilityCensusReport(manifest, "a".repeat(64), observations)).toThrow(
       "does not match the pinned playback census",
     );
+    expect(() =>
+      buildRealManimEditabilityCensusReport(currentManifest, REAL_MANIM_EDITABILITY_PRODUCER_DIGEST, observations),
+    ).toThrow("does not match the pinned playback census");
 
     const dependencyInvalid = [...blockedTail(openingCaseId, 1), ...provenCase(updatersCaseId)];
     dependencyInvalid[2] = { capability: "edit", caseId: openingCaseId, status: "proven" };

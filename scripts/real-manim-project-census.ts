@@ -269,7 +269,10 @@ export function buildRealManimProjectCensusReport(
         right.featureOccurrenceTotal - left.featureOccurrenceTotal ||
         left.codebaseId.localeCompare(right.codebaseId),
     );
-  if (eligible.length === 0) throw new Error("No safe generic Runtime Trace target candidate was measured.");
+  const selectedCodebaseId = eligible[0]?.codebaseId ?? null;
+  const noSelectionReasons = candidates.some(({ runtimeTraceOutcome }) => runtimeTraceOutcome === "fallback")
+    ? ["safe-generic-runtime-trace-target-not-observed"]
+    : ["generic-runtime-trace-gap-not-observed"];
   const stageSummary = Object.fromEntries(
     stages.map((stage) => {
       const stageResults = Object.values(results).map((result) => result.stages[stage]);
@@ -296,14 +299,17 @@ export function buildRealManimProjectCensusReport(
     targetSelection: {
       candidates,
       followUpIssue: 509,
-      selectedCodebaseId: eligible[0]!.codebaseId,
-      reasons: [
-        "bounded-source-execution-passed",
-        "generic-runtime-trace-gap-observed",
-        "safe-snapshot-fallback",
-        "source-scene-recognized",
-        "producer-compatible-dependencies",
-      ],
+      selectedCodebaseId,
+      reasons:
+        selectedCodebaseId === null
+          ? noSelectionReasons
+          : [
+              "bounded-source-execution-passed",
+              "generic-runtime-trace-gap-observed",
+              "safe-snapshot-fallback",
+              "source-scene-recognized",
+              "producer-compatible-dependencies",
+            ],
     },
     v1Reference: {
       compatibilityAttempts: { accepted: 7, fallback: 49, rejected: 0, total: 56 },

@@ -13,55 +13,72 @@ const observations = [
   {
     codebaseId: "math-to-manim",
     execution: {
-      artifactBytes: 89_953,
-      artifactDigest: "45d48c46a6c296d7800b1057d5782072912d5f63e4fa1775be7b530dc7552a93",
+      artifactBytes: 89_930,
+      artifactDigest: "b786567c23f235befbbb386ae81ea57eb7793ec5910ef8ed5d3c5e67b9e3c25a",
       status: "passed",
     },
-    runtimeTrace: { outcome: "fallback", reasons: ["unsupported:unsupported-profile"] },
+    runtimeTrace: {
+      artifactDigest: "99c2455bcd2658378ba10171b257a977c731811a60f64f092b110cbe1dca78fe",
+      outcome: "accepted",
+      reasons: [],
+    },
     snapshotProbe: { outcome: "fallback", reasons: ["unsupported:animation-evidence-incomplete"] },
     staticImport: { entityCount: 0, sceneRecognized: true, unknownCount: 0 },
   },
   {
     codebaseId: "manim-ml",
     execution: { reason: "external-dependencies-unpinned", status: "blocked" },
-    runtimeTrace: { outcome: "fallback", reasons: ["unsupported:unsupported-profile"] },
+    runtimeTrace: { outcome: "rejected", reasons: ["failure:producer-exit"] },
     snapshotProbe: { outcome: "fallback", reasons: ["unsupported:animation-evidence-incomplete"] },
     staticImport: { entityCount: 0, sceneRecognized: true, unknownCount: 0 },
   },
   {
     codebaseId: "manim-slides",
     execution: { reason: "plugin-runtime-not-installed", status: "blocked" },
-    runtimeTrace: { outcome: "fallback", reasons: ["unsupported:unsupported-profile"] },
-    snapshotProbe: {
-      outcome: "rejected",
-      reasons: ["contract:identity-evidence-invalid", "failure:result-rejected"],
-    },
+    runtimeTrace: { outcome: "rejected", reasons: ["failure:producer-exit"] },
+    snapshotProbe: { outcome: "fallback", reasons: ["unsupported:animation-evidence-incomplete"] },
     staticImport: { entityCount: 0, sceneRecognized: false, unknownCount: 0 },
   },
 ] as const satisfies readonly RealManimProjectCensusObservation[];
 
 describe("real Manim project census", () => {
-  it("rebuilds the measured baseline and derives the #509 target from its evidence", async () => {
+  it("rebuilds the measured baseline and reports when no generic Runtime Trace gap remains", async () => {
     const manifest = await loadRealManimProjectCensusManifest(join(fixtureRoot, "manifest.json"));
     const baseline = JSON.parse(await readFile(join(fixtureRoot, "baseline.json"), "utf8"));
     const report = buildRealManimProjectCensusReport(manifest, observations);
     expect(report).toEqual(baseline);
-    expect(report.targetSelection.selectedCodebaseId).toBe("math-to-manim");
-    expect(report.results["manim-slides"].snapshotProbe.reasons).toEqual([
-      "contract:identity-evidence-invalid",
-      "failure:result-rejected",
+    expect(report.targetSelection.selectedCodebaseId).toBeNull();
+    expect(report.targetSelection.reasons).toEqual(["generic-runtime-trace-gap-not-observed"]);
+    expect(report.results["manim-slides"].snapshotProbe.reasons).toEqual(["unsupported:animation-evidence-incomplete"]);
+
+    const withGap = structuredClone(observations) as RealManimProjectCensusObservation[];
+    withGap[0] = {
+      ...withGap[0]!,
+      runtimeTrace: { outcome: "fallback", reasons: ["unsupported:unsupported-profile"] },
+    };
+    const selected = buildRealManimProjectCensusReport(manifest, withGap);
+    expect(selected.targetSelection.candidates).toEqual(
+      report.targetSelection.candidates.map((candidate) =>
+        candidate.codebaseId === "math-to-manim" ? { ...candidate, runtimeTraceOutcome: "fallback" } : candidate,
+      ),
+    );
+    expect(selected.targetSelection.selectedCodebaseId).toBe("math-to-manim");
+    expect(selected.targetSelection.reasons).toEqual([
+      "bounded-source-execution-passed",
+      "generic-runtime-trace-gap-observed",
+      "safe-snapshot-fallback",
+      "source-scene-recognized",
+      "producer-compatible-dependencies",
     ]);
 
-    const changed = structuredClone(observations) as RealManimProjectCensusObservation[];
-    changed[0] = {
-      ...changed[0]!,
-      runtimeTrace: {
-        artifactDigest: "45d48c46a6c296d7800b1057d5782072912d5f63e4fa1775be7b530dc7552a93",
-        outcome: "accepted",
-        reasons: [],
-      },
+    const unsafeGap = structuredClone(observations) as RealManimProjectCensusObservation[];
+    unsafeGap[1] = {
+      ...unsafeGap[1]!,
+      runtimeTrace: { outcome: "fallback", reasons: ["unsupported:unsupported-profile"] },
     };
-    expect(() => buildRealManimProjectCensusReport(manifest, changed)).toThrow("No safe generic Runtime Trace target");
+    const notSelected = buildRealManimProjectCensusReport(manifest, unsafeGap);
+    expect(notSelected.targetSelection.selectedCodebaseId).toBeNull();
+    expect(notSelected.targetSelection.reasons).toEqual(["safe-generic-runtime-trace-target-not-observed"]);
   });
 
   it("fails closed on manifest identity drift and incomplete observations", async () => {

@@ -10,6 +10,10 @@ import { fastManimRuntimeTraceProducerEnvironment } from "../server/fast-manim-r
 import { FastManimSnapshotAdmissionController, FastManimSnapshotRunner } from "../server/fast-manim-snapshot-runner";
 import { importSourceSnapshot } from "../server/manim-workspace";
 import {
+  assertRealManimProducerRuntimeBinding,
+  type RealManimProducerToolchainProbe,
+} from "./real-manim-producer-runtime";
+import {
   buildRealManimProjectCensusReport,
   loadRealManimProjectCensusManifest,
   type RealManimProjectCensusManifest,
@@ -282,18 +286,25 @@ describe.skipIf(!required)("pinned real Manim project census v2", () => {
     });
     const python = join(producerRoot, ".venv", "bin", "python");
     const texBin = await texBinFromEnvironment();
-    const { stdout: runtimeVersions } = await execute(
+    const { stdout: runtimeToolchainJson } = await execute(
       python,
-      ["-c", "import manim, platform; print(platform.python_version()); print(manim.__version__)"],
+      [
+        "-c",
+        "import json, manim, platform; from pathlib import Path; print(json.dumps({'manimFile': str(Path(manim.__file__).resolve()), 'manimVersion': manim.__version__, 'pythonVersion': platform.python_version()}))",
+      ],
       {
         encoding: "utf8",
         env: { LANG: "C.UTF-8", LC_ALL: "C.UTF-8", PATH: `${dirname(python)}:/usr/bin:/bin` },
         timeout: 15_000,
       },
     );
-    if (runtimeVersions.trim() !== `${manifest.producer.pythonVersion}\n${manifest.producer.manimVersion}`) {
-      throw new Error("Producer runtime versions drifted.");
-    }
+    await assertRealManimProducerRuntimeBinding({
+      expectedManimVersion: manifest.producer.manimVersion,
+      expectedPythonVersion: manifest.producer.pythonVersion,
+      producerRoot,
+      pythonCommand: python,
+      toolchain: JSON.parse(runtimeToolchainJson) as RealManimProducerToolchainProbe,
+    });
     const observations = [];
     for (const selected of manifest.codebases) {
       const root = roots[selected.id]!;
@@ -306,6 +317,7 @@ describe.skipIf(!required)("pinned real Manim project census v2", () => {
     } else {
       expect(report).toEqual(JSON.parse(await readFile(baselinePath, "utf8")));
     }
-    expect(report.targetSelection.selectedCodebaseId).toBe("math-to-manim");
+    expect(report.targetSelection.selectedCodebaseId).toBeNull();
+    expect(report.targetSelection.reasons).toEqual(["generic-runtime-trace-gap-not-observed"]);
   });
 });

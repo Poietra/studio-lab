@@ -17,6 +17,10 @@ import {
   realManimCensusCaseId,
   realManimCensusRuntimeTraceCaseId,
 } from "./real-manim-census-report";
+import {
+  assertRealManimProducerRuntimeBinding,
+  type RealManimProducerToolchainProbe,
+} from "./real-manim-producer-runtime";
 
 const execute = promisify(execFile);
 const workspaceRoot = resolve(import.meta.dirname, "..");
@@ -84,18 +88,23 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     const snapshotProducerCommand = snapshotCommand!;
     const runtimeTraceProducerCommand = runtimeTraceCommand!;
     const manifest = await loadRealManimCensusManifest(manifestPath);
-    if (snapshotProducerCommand[0] !== runtimeTraceProducerCommand[0]) {
-      throw new Error("The snapshot and Runtime Trace census commands must use the same pinned Python executable.");
-    }
-    if (snapshotProducerCommand.at(-2) !== "-m" || snapshotProducerCommand.at(-1) !== manifest.producer.module) {
-      throw new Error(`The census command must execute the pinned ${manifest.producer.module} module.`);
+    const producerPython = resolve(fastManimRoot, ".venv", "bin", "python");
+    if (
+      snapshotProducerCommand.length !== 3 ||
+      snapshotProducerCommand[0] !== producerPython ||
+      snapshotProducerCommand[1] !== "-m" ||
+      snapshotProducerCommand[2] !== manifest.producer.module
+    ) {
+      throw new Error(`The census command must be exactly ${producerPython} -m ${manifest.producer.module}.`);
     }
     if (
-      runtimeTraceProducerCommand.at(-2) !== "-m" ||
-      runtimeTraceProducerCommand.at(-1) !== manifest.producer.runtimeTraceModule
+      runtimeTraceProducerCommand.length !== 3 ||
+      runtimeTraceProducerCommand[0] !== producerPython ||
+      runtimeTraceProducerCommand[1] !== "-m" ||
+      runtimeTraceProducerCommand[2] !== manifest.producer.runtimeTraceModule
     ) {
       throw new Error(
-        `The Runtime Trace census command must execute the pinned ${manifest.producer.runtimeTraceModule} module.`,
+        `The Runtime Trace census command must be exactly ${producerPython} -m ${manifest.producer.runtimeTraceModule}.`,
       );
     }
     const producerDigest = await verifyPinnedProducer(fastManimRoot, manifest.producer);
@@ -111,16 +120,18 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
       snapshotProducerCommand[0]!,
       [
         "-c",
-        "import json, manim, platform; print(json.dumps({'manim': manim.__version__, 'python': platform.python_version()}))",
+        "import json, manim, platform; from pathlib import Path; print(json.dumps({'manimFile': str(Path(manim.__file__).resolve()), 'manimVersion': manim.__version__, 'pythonVersion': platform.python_version()}))",
       ],
       { cwd: fastManimRoot, encoding: "utf8" },
     );
-    const toolchain = JSON.parse(toolchainJson) as { manim?: unknown; python?: unknown };
-    if (toolchain.python !== manifest.producer.pythonVersion || toolchain.manim !== manifest.producer.manimVersion) {
-      throw new Error(
-        `Expected Python ${manifest.producer.pythonVersion} and Manim ${manifest.producer.manimVersion}, received Python ${String(toolchain.python)} and Manim ${String(toolchain.manim)}.`,
-      );
-    }
+    const toolchain = JSON.parse(toolchainJson) as RealManimProducerToolchainProbe;
+    await assertRealManimProducerRuntimeBinding({
+      expectedManimVersion: manifest.producer.manimVersion,
+      expectedPythonVersion: manifest.producer.pythonVersion,
+      producerRoot: fastManimRoot,
+      pythonCommand: snapshotProducerCommand[0]!,
+      toolchain,
+    });
     const assetBytes = new Map([["fixture-png", pngBytes]]);
     for (const asset of manifest.assets) {
       const bytes = assetBytes.get(asset.id);

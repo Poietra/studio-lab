@@ -4,12 +4,12 @@ This corpus measures three pinned MIT-licensed projects with a pinned fast-manim
 
 The required run produced two distinct kinds of preview evidence:
 
-- the generic Runtime Trace entry point safely fell back for all three Scenes with `unsupported-profile`;
-- the separate profile-V2 snapshot probe safely fell back with `animation-evidence-incomplete` for Math-To-Manim and ManimML, while manim-slides was rejected with both `result-rejected` and `identity-evidence-invalid`;
+- the generic Runtime Trace entry point accepted Math-To-Manim and rejected ManimML and manim-slides with `producer-exit`;
+- the separate profile-V2 snapshot probe safely fell back with `animation-evidence-incomplete` for all three projects;
 - static import recognized the Math-To-Manim and ManimML Scene declarations but produced zero entities; the plugin Scene base in manim-slides was not recognized;
-- a bounded Cairo construct smoke for Math-To-Manim completed and produced an 89,953-byte PNG with SHA-256 `45d48c46a6c296d7800b1057d5782072912d5f63e4fa1775be7b530dc7552a93`.
+- a bounded Cairo construct smoke for Math-To-Manim completed and produced an 89,930-byte PNG with SHA-256 `b786567c23f235befbbb386ae81ea57eb7793ec5910ef8ed5d3c5e67b9e3c25a`.
 
-`FourierSeriesSquareWave` is the #509 target because it is the only candidate that combines an observed generic Runtime Trace gap, a safe snapshot fallback, a recognized Scene, a successful source execution, and dependencies already present in the pinned producer environment. It also covers `always_redraw`, ValueTracker, an updater, MathTex, and multiple objects. Demo value and implementation cost are reviewed 1–3 values in the manifest; feature occurrence totals are derived in the baseline rather than converted into a synthetic precision score.
+No follow-up target is selected in the current report. `FourierSeriesSquareWave`, the only candidate that otherwise satisfies the bounded-execution, snapshot-fallback, recognized-Scene, and producer-dependency gates, is now accepted by generic Runtime Trace, so the gap this census selects for is no longer observed. A zero-candidate result is represented by `selectedCodebaseId: null`; it does not relax or substitute any selection metric. `followUpIssue: 509` is retained as provenance for the generic Runtime Trace work that this selection measures, not as a claim that the closed issue needs another target. Demo value and implementation cost are reviewed 1–3 values in the manifest; feature occurrence totals are derived in the baseline rather than converted into a synthetic precision score.
 
 Selection/edit/export/fresh-validation are explicitly `measured: false` fallbacks. They are not success evidence. Accepted evidence from the old Scene-specific profiles is also not relabeled as generic capability.
 
