@@ -1,0 +1,222 @@
+{
+  "cairoSmoke": {
+    "artifactBytes": 10641,
+    "artifactSha256": "d3eecdd445a72679be8437fa2bfa1d5f670846bb211b8decf115dc2b803373ad",
+    "pixelHeight": 480,
+    "pixelWidth": 854,
+    "renderer": "cairo"
+  },
+  "outcome": "verified",
+  "producer": {
+    "fastManimCommit": "d24026e11fbf30fa820593e1f0c59dd02ea82c25",
+    "fastManimTree": "93a1467e7d6ba23e9fac5baf827523ae893b6267"
+  },
+  "producerEvidence": {
+    "correlationSha256": "17b2ffe100d122420012685ec8c198c56d259d01fe0064896c2ead011fb5d1ef",
+    "semanticsSha256": "44d98aa3274efed2b5ed341a17278b23b3092005503b260c49747d2559ea096e"
+  },
+  "roots": [
+    {
+      "binding": {
+        "id": "source-binding:f7fb962af53441f6140aa5a8cd9f3da77325089725160b141afaf381e5e01343",
+        "name": "electron1",
+        "ordinal": 1,
+        "span": {
+          "endColumn": 17,
+          "endLine": 138,
+          "startColumn": 8,
+          "startLine": 138
+        }
+      },
+      "entityId": "scene:8dd944d3faeaa230b0bbe83f3cc7d95aa9727221883c30eb86b5628faeb72f1d/runtime-v3-root:0",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": -3,
+              "y": 0
+            },
+            "dimensions": {
+              "height": 0,
+              "width": 0
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": -0.0018375547829,
+              "y": 0.0018241575561
+            },
+            "dimensions": {
+              "height": 1.9939016154807,
+              "width": 5.9963248904341
+            },
+            "frameIndex": 59,
+            "sampleTime": 0.9833333333333
+          }
+        },
+        "updaterStatus": "none"
+      },
+      "sourceCapabilities": {
+        "move": "source-eligible",
+        "uniformResize": "source-eligible"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:711738ce1922925f34a97556a1f5608a5b119ac7332e73e40d88cdbf6cafded8",
+        "name": "electron2",
+        "ordinal": 2,
+        "span": {
+          "endColumn": 17,
+          "endLine": 145,
+          "startColumn": 8,
+          "startLine": 145
+        }
+      },
+      "entityId": "scene:8dd944d3faeaa230b0bbe83f3cc7d95aa9727221883c30eb86b5628faeb72f1d/runtime-v3-root:1",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": 3,
+              "y": 0
+            },
+            "dimensions": {
+              "height": 0,
+              "width": 0
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": 0.0018375547829,
+              "y": 0.0018241575561
+            },
+            "dimensions": {
+              "height": 1.9939016154807,
+              "width": 5.9963248904341
+            },
+            "frameIndex": 59,
+            "sampleTime": 0.9833333333333
+          }
+        },
+        "updaterStatus": "none"
+      },
+      "sourceCapabilities": {
+        "move": "source-eligible",
+        "uniformResize": "source-eligible"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:cef80086477181c501f376be6537d3f62bdd7a028a62edba488f290baa170cbc",
+        "name": "photon",
+        "ordinal": 3,
+        "span": {
+          "endColumn": 14,
+          "endLine": 152,
+          "startColumn": 8,
+          "startLine": 152
+        }
+      },
+      "entityId": "scene:8dd944d3faeaa230b0bbe83f3cc7d95aa9727221883c30eb86b5628faeb72f1d/runtime-v3-root:2",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": -2,
+              "y": 0
+            },
+            "dimensions": {
+              "height": 0,
+              "width": 0
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": -0.0018330890407,
+              "y": 0
+            },
+            "dimensions": {
+              "height": 0,
+              "width": 3.9963338219187
+            },
+            "frameIndex": 59,
+            "sampleTime": 0.9833333333333
+          }
+        },
+        "updaterStatus": "none"
+      },
+      "sourceCapabilities": {
+        "move": "source-eligible",
+        "uniformResize": "source-eligible"
+      }
+    },
+    {
+      "binding": {
+        "id": "source-binding:23dd101da9b0c51fe4996d0d27e6a6b9252a1bf58bf2f03664c73cd627ebf917",
+        "name": "labels",
+        "ordinal": 4,
+        "span": {
+          "endColumn": 14,
+          "endLine": 160,
+          "startColumn": 8,
+          "startLine": 160
+        }
+      },
+      "entityId": "scene:8dd944d3faeaa230b0bbe83f3cc7d95aa9727221883c30eb86b5628faeb72f1d/runtime-v3-root:3",
+      "evidence": {
+        "endpoints": {
+          "initial": {
+            "center": {
+              "x": -1.8907352,
+              "y": 0.2253247875
+            },
+            "dimensions": {
+              "height": 0.516598325,
+              "width": 3.5428651
+            },
+            "frameIndex": 0,
+            "sampleTime": 0
+          },
+          "terminal": {
+            "center": {
+              "x": -1.800822375,
+              "y": 0.2118752125
+            },
+            "dimensions": {
+              "height": 0.730795075,
+              "width": 3.86316405
+            },
+            "frameIndex": 59,
+            "sampleTime": 0.9833333333333
+          }
+        },
+        "updaterStatus": "none"
+      },
+      "sourceCapabilities": {
+        "move": "source-eligible",
+        "uniformResize": "source-eligible"
+      }
+    }
+  ],
+  "runtimeConfigHash": "746f68cc656a3045643730e4fab8a94d35351c04354d83d5a2ca88808fcef720",
+  "scene": {
+    "className": "FeynmanDiagram",
+    "repository": "https://github.com/HarleyCoops/Math-To-Manim.git",
+    "revision": "fcad0674c9791690d47664492fd1a052024b63a0",
+    "sourcePath": "legacy/Math-To-Manim/examples/physics/quantum/Hunyuan-T1QED.py",
+    "sourceSha256": "50588cf26a63b955f59c0411886f1781276c59c8cd5ad65963dc9c56759a5e9f",
+    "tree": "d71dcdbdac8bf52bd8fd2e6540d36136ce9ae698"
+  },
+  "sceneDuration": 1,
+  "sceneId": "scene:8dd944d3faeaa230b0bbe83f3cc7d95aa9727221883c30eb86b5628faeb72f1d",
+  "schema": "poietra.second-editable-scene-v3-runtime-trace-evidence",
+  "traceDigest": "a52227459039b7d60c451b58fa1e449b6fd1a4b3806f457d4e7f86e21b7f6292",
+  "version": 1
+}
