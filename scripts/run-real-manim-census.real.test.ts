@@ -33,6 +33,66 @@ const pngBytes = Buffer.from(
   "base64",
 );
 
+// The hermetic MathTex outline provider (`poietra_mathtex_outline.abi3.so`,
+// built from engine/crates/poietra-mathtex-py) is a census prerequisite that
+// `uv sync` does not install. Without it every MathTex-bearing case silently
+// degrades to `unsupported:runtime-semantics-unsupported`, which is exactly
+// the accepted-floor regression this preflight makes impossible to miss.
+const MATHTEX_PROVIDER_MODULE_V1 = "poietra_mathtex_outline";
+const MATHTEX_PROVIDER_ABI_V1 = 1;
+const MATHTEX_PROVIDER_SEGMENTED_ABI_V1 = 1;
+const MATHTEX_PROVIDER_PROBE_TEX_V1 = "E=mc^2";
+const MATHTEX_PROVIDER_RECIPE =
+  "Build it with `cargo build --locked --profile mathtex-python-release --package poietra-mathtex-py " +
+  "--manifest-path engine/Cargo.toml` (rustc pinned by scripts/derive-mathtex-artifact.mjs) and install " +
+  "engine/target/mathtex-python-release/libpoietra_mathtex_outline.so into the census venv site-packages " +
+  `as ${MATHTEX_PROVIDER_MODULE_V1}.abi3.so.`;
+
+async function verifyHermeticMathTexProvider(root: string) {
+  const probe = [
+    "import json, sys",
+    `import ${MATHTEX_PROVIDER_MODULE_V1} as provider`,
+    `response = json.loads(provider.compile_mathtex_outline_v1((${JSON.stringify(MATHTEX_PROVIDER_PROBE_TEX_V1)},)))`,
+    "payload = {",
+    '    "abi": provider.abi_version(),',
+    '    "segmentedAbi": provider.segmented_abi_version(),',
+    '    "schema": response.get("schema"),',
+    '    "version": response.get("version"),',
+    '    "resultKind": response.get("result", {}).get("kind"),',
+    "}",
+    "json.dump(payload, sys.stdout)",
+  ].join("\n");
+  let stdout: string;
+  try {
+    ({ stdout } = await execute(join(root, ".venv", "bin", "python"), ["-c", probe], { encoding: "utf8" }));
+  } catch (error) {
+    throw new Error(
+      `The hermetic MathTex outline provider is unavailable in the census venv. ${MATHTEX_PROVIDER_RECIPE}`,
+      { cause: error },
+    );
+  }
+  const payload = JSON.parse(stdout) as Readonly<{
+    abi: number;
+    resultKind: string;
+    schema: string;
+    segmentedAbi: number;
+    version: number;
+  }>;
+  if (
+    payload.abi !== MATHTEX_PROVIDER_ABI_V1 ||
+    payload.segmentedAbi !== MATHTEX_PROVIDER_SEGMENTED_ABI_V1 ||
+    payload.schema !== "poietra.mathtex-outline-response" ||
+    payload.version !== 1 ||
+    payload.resultKind !== "compiled"
+  ) {
+    throw new Error(
+      `The hermetic MathTex outline provider failed its compile preflight (abi ${payload.abi}/` +
+        `${payload.segmentedAbi}, ${payload.schema}@${payload.version}, result ${payload.resultKind}). ` +
+        MATHTEX_PROVIDER_RECIPE,
+    );
+  }
+}
+
 async function gitValue(root: string, expression: string) {
   const { stdout } = await execute("git", ["-C", root, "rev-parse", expression], { encoding: "utf8" });
   return stdout.trim();
@@ -97,6 +157,7 @@ describe.skipIf(!enabled)("pinned real-Manim compatibility census", () => {
     }
     const producerDigest = await verifyPinnedProducer(fastManimRoot, manifest.producer);
     await execute("uv", ["sync", "--frozen", "--project", fastManimRoot], { cwd: workspaceRoot, encoding: "utf8" });
+    await verifyHermeticMathTexProvider(fastManimRoot);
     const assetBytes = new Map([["fixture-png", pngBytes]]);
     for (const asset of manifest.assets) {
       const bytes = assetBytes.get(asset.id);
