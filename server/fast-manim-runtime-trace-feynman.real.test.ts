@@ -12,10 +12,6 @@ import { z } from "zod";
 
 import { parseVerifiedSceneIrBundleV1, sha256V1Schema, sourceIdentityV1Schema } from "../src/engine/contracts";
 import {
-  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
-} from "../src/render-pipeline/source-lowering";
-import {
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
   FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3,
   fastManimRuntimeTraceCoordinateV3Schema,
@@ -23,6 +19,10 @@ import {
   fastManimRuntimeTraceSourceBindingV3Schema,
 } from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
+import {
+  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+} from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
   fastManimRuntimeTraceProducerEnvironment,
