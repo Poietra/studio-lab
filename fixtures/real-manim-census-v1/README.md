@@ -21,17 +21,14 @@ so a clean host cannot silently regress the accepted floor (#539).
     /path/to/fast-manim/.venv/lib/python3.13/site-packages/poietra_mathtex_outline.abi3.so
   ```
 
-  Use the rustc release pinned by `scripts/derive-mathtex-artifact.mjs`.
-  The census preflight verifies the provider's ABI versions and a
-  deterministic probe digest before any case runs; without the provider,
+  The census preflight imports this module, checks its ABI versions, and
+  compiles one bounded expression before any case runs. Without the provider,
   every MathTex-bearing case degrades to
   `unsupported:runtime-semantics-unsupported` and the accepted floor
   regresses by six scenes.
 - **TeX toolchain**: `latex` and `dvisvgm` must be on `PATH`. The reviewed
-  measurement used the executables recorded by
-  `fixtures/fourier-v3-cairo-reference-v1/reference.json` (pdfTeX
-  1.40.29 / TeX Live 2026, dvisvgm 3.6; the executable SHA-256 values are
-  pinned there).
+  measurement's versions are recorded by
+  `fixtures/fourier-v3-cairo-reference-v1/reference.json`.
 
 ## Known bit-reproducibility limits
 
@@ -43,11 +40,7 @@ output, so two environment facts matter beyond the pins above:
   (`server/fast-manim-runtime-trace-producer-identity.ts`); trace hashes
   therefore only reproduce from the studio-lab revision that recorded the
   baseline.
-- Scenes whose animations evaluate transcendental functions
-  (`OpeningManim`, `SpiralInExample`) inherit last-ULP differences from
-  the host libm. Their byte pins reproduce only on a host with the same C
-  library build; scenes with polynomial-only motion (for example
-  `UpdatersExample`) reproduce byte-exactly across hosts. Regenerating
-  those pins on a different host is a reviewed-evidence update, not a
-  drop-in reproduction; a pinned container runtime is the long-term fix
-  (#280 direction).
+- Scenes that evaluate transcendental functions may inherit last-ULP
+  differences from the host libm. Treating those differences as a new
+  baseline still requires review; the preflight does not attempt to identify
+  or pin a host C library.

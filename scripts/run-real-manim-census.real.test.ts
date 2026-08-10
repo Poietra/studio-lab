@@ -42,7 +42,6 @@ const MATHTEX_PROVIDER_MODULE_V1 = "poietra_mathtex_outline";
 const MATHTEX_PROVIDER_ABI_V1 = 1;
 const MATHTEX_PROVIDER_SEGMENTED_ABI_V1 = 1;
 const MATHTEX_PROVIDER_PROBE_TEX_V1 = "E=mc^2";
-const MATHTEX_PROVIDER_PROBE_SHA256_V1 = "8cb507fe39db0aa281ddd87d7e69aca0a4aed0e44069ffb6b1369ee322380133";
 const MATHTEX_PROVIDER_RECIPE =
   "Build it with `cargo build --locked --profile mathtex-python-release --package poietra-mathtex-py " +
   "--manifest-path engine/Cargo.toml` (rustc pinned by scripts/derive-mathtex-artifact.mjs) and install " +
@@ -51,14 +50,15 @@ const MATHTEX_PROVIDER_RECIPE =
 
 async function verifyHermeticMathTexProvider(root: string) {
   const probe = [
-    "import hashlib, json, sys",
+    "import json, sys",
     `import ${MATHTEX_PROVIDER_MODULE_V1} as provider`,
+    `response = json.loads(provider.compile_mathtex_outline_v1((${JSON.stringify(MATHTEX_PROVIDER_PROBE_TEX_V1)},)))`,
     "payload = {",
     '    "abi": provider.abi_version(),',
     '    "segmentedAbi": provider.segmented_abi_version(),',
-    `    "probeSha256": hashlib.sha256(provider.compile_mathtex_outline_v1((${JSON.stringify(
-      MATHTEX_PROVIDER_PROBE_TEX_V1,
-    )},))).hexdigest(),`,
+    '    "schema": response.get("schema"),',
+    '    "version": response.get("version"),',
+    '    "resultKind": response.get("result", {}).get("kind"),',
     "}",
     "json.dump(payload, sys.stdout)",
   ].join("\n");
@@ -71,15 +71,24 @@ async function verifyHermeticMathTexProvider(root: string) {
       { cause: error },
     );
   }
-  const payload = JSON.parse(stdout) as Readonly<{ abi: number; probeSha256: string; segmentedAbi: number }>;
+  const payload = JSON.parse(stdout) as Readonly<{
+    abi: number;
+    resultKind: string;
+    schema: string;
+    segmentedAbi: number;
+    version: number;
+  }>;
   if (
     payload.abi !== MATHTEX_PROVIDER_ABI_V1 ||
     payload.segmentedAbi !== MATHTEX_PROVIDER_SEGMENTED_ABI_V1 ||
-    payload.probeSha256 !== MATHTEX_PROVIDER_PROBE_SHA256_V1
+    payload.schema !== "poietra.mathtex-outline-response" ||
+    payload.version !== 1 ||
+    payload.resultKind !== "compiled"
   ) {
     throw new Error(
-      `The hermetic MathTex outline provider does not match the census pin (abi ${payload.abi}/` +
-        `${payload.segmentedAbi}, probe ${payload.probeSha256}). ${MATHTEX_PROVIDER_RECIPE}`,
+      `The hermetic MathTex outline provider failed its compile preflight (abi ${payload.abi}/` +
+        `${payload.segmentedAbi}, ${payload.schema}@${payload.version}, result ${payload.resultKind}). ` +
+        MATHTEX_PROVIDER_RECIPE,
     );
   }
 }
