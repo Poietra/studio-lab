@@ -407,11 +407,18 @@ export class ManimRenderCandidateVerifierV1 {
     ) {
       reject("runtime-trace-authority-unavailable");
     }
+    const preflightRequestBindings = genericPreflight
+      ? request.sourceBindings.filter(({ entityId }) => entityId === genericPreflight.entityId)
+      : [];
     if (
       genericPreflight !== null &&
-      (request.sourceBindings.length !== 1 ||
-        request.sourceBindings[0]?.entityId !== genericPreflight.entityId ||
-        request.sourceBindings[0]?.sourceVariable !== genericPreflight.baseBinding.name ||
+      (preflightRequestBindings.length !== 1 ||
+        preflightRequestBindings[0]?.sourceVariable !== genericPreflight.baseBinding.name ||
+        // The gesture entity must BE the canonical Studio identity of the
+        // selected binding; a request row aliasing another entity id could
+        // otherwise cross-wire an authorized gesture into a different binding.
+        genericPreflight.entityId !==
+          `source:${request.sourcePath}#${request.sceneName}:${genericPreflight.baseBinding.name}` ||
         (genericPreflight.kind === "fast-manim-generic-initial-move-v3"
           ? !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
             !Number.isFinite(genericPreflight.expectedWorldCenter.y)

@@ -146,13 +146,13 @@ function previewView(
   runtimeTraceValidationPending: StudioPreviewRendererViewV1["runtimeTraceValidationPending"] = null,
   runtimeTraceBaseFrameRetained = runtimeTraceValidationPending?.baseFrameRetained === true,
   runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererViewV1["runtimeTraceOpaqueSelectionEntities"] = [],
-  genericInitialEditCandidate: StudioPreviewRendererViewV1["genericInitialEditCandidate"] = null,
+  genericInitialEditCandidates: StudioPreviewRendererViewV1["genericInitialEditCandidates"] = [],
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
-    genericInitialEditCandidate,
+    genericInitialEditCandidates,
     initialEditRuntimeAuthority,
     interactionGeometry,
     interactionAuthority,
@@ -770,7 +770,7 @@ describe("StudioCanvas retained preview layer", () => {
       studioSceneId: "scenes/staticsquare.py#StaticSquare",
     };
     const boundedAuthority = {
-      editableRuntimeEntityId: runtimeId,
+      editableRuntimeEntityIds: [runtimeId],
       kind: "bounded-interactive" as const,
       reason: "runtime-trace-initial-edit" as const,
       sourceAnchor: 0 as const,
@@ -797,7 +797,7 @@ describe("StudioCanvas retained preview layer", () => {
         null,
         false,
         [],
-        candidate,
+        [candidate],
       ),
       selectedIds: new Set([squareId]),
     };

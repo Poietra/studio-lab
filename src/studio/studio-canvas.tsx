@@ -347,11 +347,14 @@ export function StudioCanvas({
   const showingCanvasPixels = presentingCanvasPixels || retainingRuntimeTraceBasePixels;
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
-  const boundedRuntimeEditAuthority =
-    preview?.genericInitialEditCandidate ??
-    preview?.initialEditRuntimeAuthority ??
-    preview?.runtimeTraceTerminalEditAuthority ??
-    null;
+  const genericInitialEditCandidates = preview?.genericInitialEditCandidates ?? [];
+  const pinnedRuntimeEditAuthority =
+    preview?.initialEditRuntimeAuthority ?? preview?.runtimeTraceTerminalEditAuthority ?? null;
+  const boundedRuntimeEditTargetIds = new Set([
+    ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
+    ...(pinnedRuntimeEditAuthority ? [pinnedRuntimeEditAuthority.studioEntityId] : []),
+  ]);
+  const boundedRuntimeEditActive = boundedRuntimeEditTargetIds.size > 0;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
   remotePeers.forEach((participant, index) => {
@@ -482,8 +485,7 @@ export function StudioCanvas({
               readOnly ||
               displayOnlyPreview ||
               (entity.provisional && !(entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
-            const runtimeMutationLocked =
-              boundedRuntimeEditAuthority !== null && entity.id !== boundedRuntimeEditAuthority.studioEntityId;
+            const runtimeMutationLocked = boundedRuntimeEditActive && !boundedRuntimeEditTargetIds.has(entity.id);
             const selectionOnlyEntity = selectionOnlyPreview || runtimeMutationLocked;
             const mutationLocked = selectionLocked || selectionOnlyEntity;
             const positionUnknown = entity.geometry.position.kind === "unknown";
@@ -506,7 +508,7 @@ export function StudioCanvas({
             // Exact V8 is position-only and its sealed source projection owns
             // the hit target even when the retained packet has no AABB table.
             if (
-              (selectionOnlyPreview || boundedRuntimeEditAuthority !== null) &&
+              (selectionOnlyPreview || boundedRuntimeEditActive) &&
               showingCanvasPixels &&
               presentedIdentity === null &&
               !sealedPositionOnlyTarget
@@ -515,7 +517,7 @@ export function StudioCanvas({
             const runtimeTraceTargetGhost =
               pendingRuntimeTraceTargetId === entity.id ||
               (retainingRuntimeTraceBasePixels &&
-                boundedRuntimeEditAuthority?.studioEntityId === entity.id &&
+                boundedRuntimeEditTargetIds.has(entity.id) &&
                 (dragPreview?.entityIds.includes(entity.id) === true ||
                   scalePreview?.entityId === entity.id ||
                   geometryPreview?.entityId === entity.id));
@@ -549,7 +551,7 @@ export function StudioCanvas({
             };
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const shape = resizeKindForType(entity.type);
-            const runtimeUniformScaleOnly = boundedRuntimeEditAuthority?.studioEntityId === entity.id;
+            const runtimeUniformScaleOnly = boundedRuntimeEditTargetIds.has(entity.id);
             const runtimePositionOnly =
               (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
                 preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||

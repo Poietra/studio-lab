@@ -110,10 +110,11 @@ function exactMappingForBinding(
   expected: FastManimRuntimeTraceSourceBindingV3,
   side: "base" | "candidate",
 ) {
-  if (trace.sourceBindings.length !== 1) {
-    reject(`${side}-binding`, `A generic Runtime Trace ${side} must map exactly one source binding.`);
+  const matching = trace.sourceBindings.filter(({ binding }) => binding.name === expected.name);
+  const mapping = matching[0];
+  if (matching.length !== 1 || !mapping) {
+    reject(`${side}-binding`, `A generic Runtime Trace ${side} must map the selected source binding exactly once.`);
   }
-  const mapping = trace.sourceBindings[0]!;
   const expectedId = fastManimSourceBindingIdentifierV1(trace.sourceHash, trace.sceneId, mapping.binding);
   if (
     mapping.binding.id !== expectedId ||
@@ -124,6 +125,38 @@ function exactMappingForBinding(
     reject(`${side}-binding`, `A generic Runtime Trace ${side} changed its exact source binding authority.`);
   }
   return mapping;
+}
+
+function siblingMappingSummary(mapping: FastManimRuntimeTraceV3["sourceBindings"][number]) {
+  // Sibling spans legitimately shift when the edit statement is inserted, so
+  // sibling identity compares everything except the source span and the
+  // sourceHash-derived binding id.
+  return {
+    endpoints: mapping.endpoints,
+    name: mapping.binding.name,
+    ordinal: mapping.binding.ordinal,
+    rootId: mapping.rootId,
+    updaterStatus: mapping.updaterStatus,
+  };
+}
+
+function verifySiblingMappingsUnchanged(
+  base: FastManimRuntimeTraceV3,
+  candidate: FastManimRuntimeTraceV3,
+  selectedName: string,
+) {
+  const baseSiblings = base.sourceBindings.filter(({ binding }) => binding.name !== selectedName);
+  const candidateSiblings = candidate.sourceBindings.filter(({ binding }) => binding.name !== selectedName);
+  if (
+    baseSiblings.length !== candidateSiblings.length ||
+    baseSiblings.some(
+      (sibling, index) =>
+        !candidateSiblings[index] ||
+        !same(siblingMappingSummary(sibling), siblingMappingSummary(candidateSiblings[index]!)),
+    )
+  ) {
+    reject("candidate-binding", "A generic initial edit changed a sibling source binding it did not select.");
+  }
 }
 
 function exactRequestedBinding(
@@ -216,17 +249,17 @@ function verifiedGenericInitialCandidatePairV3(
   exactRequestedBinding(candidateRequest, binding, "candidate");
   const baseMapping = exactMappingForBinding(base, binding, "base");
   const candidateMapping = exactMappingForBinding(candidate, binding, "candidate");
+  verifySiblingMappingsUnchanged(base, candidate, binding.name);
 
+  const selectedRoot = base.roots.find(({ id }) => id === baseMapping.rootId);
   if (
-    base.roots.length !== 1 ||
-    candidate.roots.length !== 1 ||
     !same(base.roots, candidate.roots) ||
-    baseMapping.rootId !== base.roots[0]!.id ||
+    !selectedRoot ||
     candidateMapping.rootId !== baseMapping.rootId ||
-    base.roots[0]!.lifetimes.length !== 1 ||
-    base.roots[0]!.lifetimes[0]!.startFrame !== 0
+    selectedRoot.lifetimes.length !== 1 ||
+    selectedRoot.lifetimes[0]!.startFrame !== 0
   ) {
-    reject("candidate-root", "A generic initial edit requires one stable top-level root from frame zero.");
+    reject("candidate-root", "A generic initial edit requires one stable selected top-level root from frame zero.");
   }
   if (!same(base.draws, candidate.draws)) {
     reject("candidate-root", "A generic initial edit changed its root draw identity or lifetime topology.");
@@ -238,7 +271,11 @@ function verifiedGenericInitialCandidatePairV3(
  * Proves one generic initial move after both documents have independently
  * crossed the closed V3 producer contract. The source lowerer owns the exact
  * `move_to` rewrite; this verifier owns the runtime claim that the one
- * source-bound root and every presented draw are only translated.
+ * source-bound root and every presented draw are only translated. `move_to`
+ * places the constructed object, which an entrance animation reveals over
+ * time, so the settled (terminal) endpoint is the observable anchor that must
+ * land exactly on the requested world center; a Scene whose settled endpoint
+ * is not that constructed placement fails closed here.
  */
 export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
   input: Readonly<{
@@ -247,12 +284,12 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     binding: FastManimRuntimeTraceSourceBindingV3;
     candidate: FastManimRuntimeTraceV3;
     candidateRequest: FastManimRuntimeTraceProducerRequestV3;
-    expectedInitialCenter: Readonly<{ x: number; y: number }>;
+    expectedWorldCenter: Readonly<{ x: number; y: number }>;
   }>,
 ) {
-  const expectedInitialCenter = {
-    x: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedInitialCenter.x),
-    y: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedInitialCenter.y),
+  const expectedWorldCenter = {
+    x: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedWorldCenter.x),
+    y: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedWorldCenter.y),
   };
   const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
   if (!same(base.resources, candidate.resources)) {
@@ -260,10 +297,11 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
   }
 
   const baseInitial = baseMapping.endpoints.initial;
-  const candidateInitial = candidateMapping.endpoints.initial;
+  const baseTerminal = baseMapping.endpoints.terminal;
+  const candidateTerminal = candidateMapping.endpoints.terminal;
   const delta = {
-    x: candidateInitial.center.x - baseInitial.center.x,
-    y: candidateInitial.center.y - baseInitial.center.y,
+    x: candidateTerminal.center.x - baseTerminal.center.x,
+    y: candidateTerminal.center.y - baseTerminal.center.y,
   };
   if (
     baseInitial.frameIndex !== 0 ||
@@ -272,13 +310,13 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     !Number.isFinite(delta.y) ||
     (coordinateMatches(delta.x, 0) && coordinateMatches(delta.y, 0))
   ) {
-    reject("candidate-noop", "A generic initial move must produce one finite non-zero frame-zero translation.");
+    reject("candidate-noop", "A generic initial move must produce one finite non-zero full-trace translation.");
   }
   if (
-    !coordinateMatches(candidateInitial.center.x, expectedInitialCenter.x) ||
-    !coordinateMatches(candidateInitial.center.y, expectedInitialCenter.y)
+    !coordinateMatches(candidateTerminal.center.x, expectedWorldCenter.x) ||
+    !coordinateMatches(candidateTerminal.center.y, expectedWorldCenter.y)
   ) {
-    reject("candidate-endpoint", "The candidate initial center does not match the server-derived move target.");
+    reject("candidate-endpoint", "The candidate settled center does not match the server-derived move target.");
   }
 
   for (const endpointName of ["initial", "terminal"] as const) {
@@ -315,10 +353,23 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
       const draw = drawById.get(baseState.drawId);
+      if (!candidateState || !draw) {
+        reject(
+          "candidate-semantic",
+          `A generic initial move changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      if (draw.rootId !== baseMapping.rootId) {
+        // Non-selected roots must replay byte-identically.
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic initial move disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        return;
+      }
       if (
-        !candidateState ||
-        !draw ||
-        draw.rootId !== baseMapping.rootId ||
         !same(fixedState(baseState), fixedState(candidateState)) ||
         !coordinateMatches(candidateState.transform.tx, baseState.transform.tx + delta.x) ||
         !coordinateMatches(candidateState.transform.ty, baseState.transform.ty + delta.y)
@@ -382,8 +433,8 @@ function pathResourcesById(trace: FastManimRuntimeTraceV3, side: "base" | "candi
  * independently crossed the closed V3 producer contract. The producer bakes a
  * scale into localized path bytes while keeping translation-only state
  * transforms, so this verifier proves that every presented draw keeps its
- * appearance, that each draw anchor conjugates about the preserved initial
- * center, and that its path geometry is uniformly scaled.
+ * appearance, that each draw anchor conjugates about the preserved settled
+ * (terminal) center, and that its path geometry is uniformly scaled.
  */
 export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   input: Readonly<{
@@ -411,6 +462,10 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   if (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0) {
     reject("candidate-noop", "A generic initial resize requires one frame-zero base endpoint.");
   }
+  // `scale` conjugates about the constructed object center, which the settled
+  // (terminal) endpoint observes; an entrance animation's partial frame-zero
+  // box scales about that same pivot rather than its own transient center.
+  const pivot = baseMapping.endpoints.terminal.center;
   for (const endpointName of ["initial", "terminal"] as const) {
     const baseEndpoint = baseMapping.endpoints[endpointName];
     const candidateEndpoint = candidateMapping.endpoints[endpointName];
@@ -421,28 +476,38 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       baseEndpoint.dimensions.width <= 0 ||
       candidateEndpoint.dimensions.height <= 0 ||
       candidateEndpoint.dimensions.width <= 0 ||
-      !coordinateMatches(candidateEndpoint.center.x, baseEndpoint.center.x) ||
-      !coordinateMatches(candidateEndpoint.center.y, baseEndpoint.center.y) ||
+      !scaledCoordinateMatches(
+        candidateEndpoint.center.x,
+        pivot.x + (baseEndpoint.center.x - pivot.x) * factor,
+        factor,
+      ) ||
+      !scaledCoordinateMatches(
+        candidateEndpoint.center.y,
+        pivot.y + (baseEndpoint.center.y - pivot.y) * factor,
+        factor,
+      ) ||
       !scaledCoordinateMatches(candidateEndpoint.dimensions.height, baseEndpoint.dimensions.height * factor, factor) ||
       !scaledCoordinateMatches(candidateEndpoint.dimensions.width, baseEndpoint.dimensions.width * factor, factor)
     ) {
       reject(
         "candidate-endpoint",
-        `The candidate ${endpointName} endpoint is not the exact center-preserving scaled base geometry.`,
+        `The candidate ${endpointName} endpoint is not the exact pivot-conjugated scaled base geometry.`,
       );
     }
   }
 
   const drawById = new Map(base.draws.map((draw) => [draw.id, draw] as const));
   const candidatePathIdByBasePathId = new Map<string, string>();
+  const referencedBasePathIds = new Set<string>();
+  const referencedCandidatePathIds = new Set<string>();
   const basePathIdByCandidatePathId = new Map<string, string>();
   if (base.frames.length !== candidate.frames.length) {
     reject("candidate-semantic", "A generic initial resize changed its frame count.");
   }
   // Producer states anchor each draw at its own localized-path center, so a
-  // uniform scale about the preserved root center conjugates every anchor:
-  // an off-center draw must land at center + (anchor - center) * factor.
-  const center = baseInitial.center;
+  // uniform scale about the preserved constructed center conjugates every
+  // anchor: an off-center draw must land at pivot + (anchor - pivot) * factor.
+  const center = pivot;
   base.frames.forEach((baseFrame, frameIndex) => {
     const candidateFrame = candidate.frames[frameIndex];
     if (
@@ -456,10 +521,25 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
       const draw = drawById.get(baseState.drawId);
+      if (!candidateState || !draw) {
+        reject(
+          "candidate-semantic",
+          `A generic initial resize changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      if (draw.rootId !== baseMapping.rootId) {
+        // Non-selected roots must replay byte-identically, path bytes included.
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic initial resize disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        referencedBasePathIds.add(baseState.pathId);
+        referencedCandidatePathIds.add(candidateState.pathId);
+        return;
+      }
       if (
-        !candidateState ||
-        !draw ||
-        draw.rootId !== baseMapping.rootId ||
         baseState.appearanceId !== candidateState.appearanceId ||
         baseState.drawId !== candidateState.drawId ||
         baseState.opacity !== candidateState.opacity ||
@@ -499,18 +579,29 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       }
       candidatePathIdByBasePathId.set(baseState.pathId, candidateState.pathId);
       basePathIdByCandidatePathId.set(candidateState.pathId, baseState.pathId);
+      referencedBasePathIds.add(baseState.pathId);
+      referencedCandidatePathIds.add(candidateState.pathId);
     });
   });
 
   const basePaths = pathResourcesById(base, "base");
   const candidatePaths = pathResourcesById(candidate, "candidate");
   if (
-    candidatePathIdByBasePathId.size !== basePaths.size ||
-    basePathIdByCandidatePathId.size !== candidatePaths.size ||
-    ![...basePaths.keys()].every((pathId) => candidatePathIdByBasePathId.has(pathId)) ||
-    ![...candidatePaths.keys()].every((pathId) => basePathIdByCandidatePathId.has(pathId))
+    basePaths.size !== referencedBasePathIds.size ||
+    candidatePaths.size !== referencedCandidatePathIds.size ||
+    ![...basePaths.keys()].every((pathId) => referencedBasePathIds.has(pathId)) ||
+    ![...candidatePaths.keys()].every((pathId) => referencedCandidatePathIds.has(pathId))
   ) {
     reject("candidate-resource", "A generic initial resize carries path resources outside its presented states.");
+  }
+  // A path shared between the selected and a non-selected root keeps its
+  // original bytes for the non-selected usage; identical ids must stay
+  // byte-identical on both sides.
+  for (const [pathId, basePath] of basePaths) {
+    const candidatePath = candidatePaths.get(pathId);
+    if (candidatePath && !same(basePath.path, candidatePath.path)) {
+      reject("candidate-resource", "A generic initial resize changed a retained path resource in place.");
+    }
   }
   for (const [basePathId, candidatePathId] of candidatePathIdByBasePathId) {
     const basePath = basePaths.get(basePathId);

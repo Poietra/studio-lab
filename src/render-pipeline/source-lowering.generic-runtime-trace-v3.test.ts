@@ -126,7 +126,12 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
       kind: "fast-manim-generic-initial-move-v3",
     });
 
-    const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(lowered!.source, sceneName, sourcePath);
+    const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+      lowered!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
@@ -135,18 +140,60 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     expect(derived.expectedWorldCenter).toEqual({ x: 2, y: 1 });
   });
 
-  it("fails closed when SourceAnalysis projects multiple bindings or only a control-flow binding", () => {
+  it("selects the request-named binding among multiple projected candidates", () => {
     const multiple = source.replace(
       "        square.set_stroke(WHITE, width=2)",
       "        circle = Circle()\n        square.set_stroke(WHITE, width=2)",
     );
+
+    const lowered = lower(multiple, request(multiple));
+    expect(lowered?.insertedCode).toBe("        square.move_to((2, 1, 0))");
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: { name: "square", ordinal: 1 },
+      kind: "fast-manim-generic-initial-move-v3",
+    });
+
+    const derived = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+      lowered!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
+    expect(derived.baseSource).toBe(multiple);
+    expect(derived.expectedWorldCenter).toEqual({ x: 2, y: 1 });
+    // The sibling candidate never authorizes the edit: deriving for it fails.
+    expect(() =>
+      deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(lowered!.source, sceneName, sourcePath, "circle"),
+    ).toThrow(/canonical finite bounded move_to/i);
+  });
+
+  it("fails closed on a request row that cross-wires the gesture entity into a sibling binding", () => {
+    const multiple = source.replace(
+      "        square.set_stroke(WHITE, width=2)",
+      "        circle = Circle()\n        square.set_stroke(WHITE, width=2)",
+    );
+
+    // The row names the square gesture entity but retargets its variable to
+    // the projected circle binding; the canonical-identity pin must reject
+    // instead of lowering a circle edit for a square-authorized gesture.
+    expect(() =>
+      lower(multiple, {
+        ...request(multiple),
+        sourceBindings: [{ entityId, sourceVariable: "circle" }],
+      }),
+    ).toThrow(/canonical Studio identity of the selected binding/i);
+  });
+
+  it("fails closed on a control-flow binding or an unknown request name", () => {
     const controlled = source.replace(
       "        square = Square().set_fill(BLUE, opacity=0.6)",
       "        if True:\n            square = Square().set_fill(BLUE, opacity=0.6)",
     );
 
-    expect(() => lower(multiple, request(multiple))).toThrow(/one projected top-level V3 source occurrence/i);
-    expect(() => lower(controlled, request(controlled))).toThrow(/one projected top-level V3 source occurrence/i);
+    expect(() => lower(controlled, request(controlled))).toThrow(/one exact request binding/i);
+    expect(() => lower(source, { ...request(), sourceBindings: [{ entityId, sourceVariable: "missing" }] })).toThrow(
+      /one exact request binding/i,
+    );
   });
 
   it("fails closed on a transition, resize, multi-operation edit, or multiple request bindings", () => {
@@ -182,12 +229,23 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
       schedule: { edges: [], mode: "parallel", order: [first.id, second.id] },
     };
     expect(() => lower(source, request(source, multiProgram))).toThrow(/only one exact direct-manipulation/i);
-    expect(() =>
+    // A second binding for another entity no longer blocks selection; only a
+    // duplicated entry for the edited entity stays ambiguous.
+    expect(
       lower(source, {
         ...request(),
         sourceBindings: [
           { entityId, sourceVariable: "square" },
           { entityId: `${entityId}:extra`, sourceVariable: "extra" },
+        ],
+      })?.insertedCode,
+    ).toBe("        square.move_to((2, 1, 0))");
+    expect(() =>
+      lower(source, {
+        ...request(),
+        sourceBindings: [
+          { entityId, sourceVariable: "square" },
+          { entityId, sourceVariable: "square" },
         ],
       }),
     ).toThrow(/one exact request binding/i);
@@ -202,12 +260,12 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
       "        self.add(square)\n        square.move_to((2, 1, 0))\n        square.set_stroke",
     );
 
-    expect(() => deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(nonCanonical, sceneName, sourcePath)).toThrow(
-      /canonical finite bounded move_to/i,
-    );
-    expect(() => deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(nonAdjacent, sceneName, sourcePath)).toThrow(
-      /candidate move/i,
-    );
+    expect(() =>
+      deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(nonCanonical, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical finite bounded move_to/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(nonAdjacent, sceneName, sourcePath, "square"),
+    ).toThrow(/candidate move/i);
   });
 
   it("withholds the V3 candidate when a nested definition rebinds the projected name, keeping preview available", () => {
@@ -221,9 +279,9 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     // the producer never receives a binding its own inventory would reject.
     expect(imported?.runtimeSceneState.duration).toBe(0.1);
     expect(() => lower(rebound, request(rebound))).toThrow(/one projected top-level V3 source occurrence/i);
-    expect(() => deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(rebound, sceneName, sourcePath)).toThrow(
-      /exactly one unambiguous top-level V3 binding/i,
-    );
+    expect(() =>
+      deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(rebound, sceneName, sourcePath, "square"),
+    ).toThrow(/exactly one unambiguous top-level V3 binding/i);
   });
 
   it("leaves an explicit source-time-zero anchor to the established general lowerer", () => {
@@ -258,7 +316,12 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
       kind: "fast-manim-generic-initial-resize-v3",
     });
 
-    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(lowered!.source, sceneName, sourcePath);
+    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+      lowered!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
@@ -304,15 +367,15 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
       "        self.add(square)\n        square.scale(1.5)\n        square.set_stroke",
     );
 
-    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonCanonical, sceneName, sourcePath)).toThrow(
-      /canonical positive non-identity bounded scale/i,
-    );
-    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(identity, sceneName, sourcePath)).toThrow(
-      /canonical positive non-identity bounded scale/i,
-    );
-    expect(() => deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonAdjacent, sceneName, sourcePath)).toThrow(
-      /candidate resize/i,
-    );
+    expect(() =>
+      deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonCanonical, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical positive non-identity bounded scale/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(identity, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical positive non-identity bounded scale/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonAdjacent, sceneName, sourcePath, "square"),
+    ).toThrow(/candidate resize/i);
   });
 
   it("re-derives sequential edits with the newest statement directly after the assignment", () => {
@@ -327,7 +390,12 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
         "        square.move_to((2, 1, 0))\n" +
         "        square.set_stroke(WHITE, width=2)",
     );
-    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(resized!.source, sceneName, sourcePath);
+    const derived = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+      resized!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
     expect(derived.baseSource).toBe(moved);
     expect(derived.expectedScaleFactor).toBe(1.5);
   });

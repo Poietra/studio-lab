@@ -31,7 +31,7 @@ import {
   conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  studioPreviewGenericInitialEditAuthorityCandidateV1,
+  studioPreviewGenericInitialEditAuthorityCandidatesV1,
   studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
@@ -653,8 +653,8 @@ async function sampledSemantics(scene: SceneIrV1, sampleTime: number) {
   return canonicalEngineBenchmarkJsonV1({ camera: result.frame.packet.camera, draws: result.frame.packet.draws });
 }
 
-async function genericRuntimeTraceV3Snapshot() {
-  const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
+async function genericRuntimeTraceV3Snapshot(traceOverride?: ReturnType<typeof fastManimRuntimeTraceV3Schema.parse>) {
+  const trace = traceOverride ?? fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
   const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
   const source = bundle.scene.source;
   const mapping = trace.sourceBindings[0];
@@ -682,27 +682,27 @@ async function genericRuntimeTraceV3Snapshot() {
     sceneId: bundle.scene.sceneId,
     snapshot: bundle,
     sourceLabel: "verified Runtime Trace (preview-only)",
-    sourceRuntimeIdentity: new Map([
-      [
-        mapping.binding.name,
+    sourceRuntimeIdentity: new Map(
+      trace.sourceBindings.map((entry) => [
+        entry.binding.name,
         {
-          bindingId: mapping.binding.id,
-          entityId: mapping.rootId,
+          bindingId: entry.binding.id,
+          entityId: entry.rootId,
           runtimeTraceEvidence: {
-            endpoints: mapping.endpoints,
-            updaterStatus: mapping.updaterStatus,
+            endpoints: entry.endpoints,
+            updaterStatus: entry.updaterStatus,
           },
-          sourceName: mapping.binding.name,
+          sourceName: entry.binding.name,
         },
-      ],
-    ]),
+      ]),
+    ),
   };
   return { mapping, snapshot };
 }
 
 async function genericRuntimeTraceV3MoveInput() {
   const { snapshot } = await genericRuntimeTraceV3Snapshot();
-  const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+  const candidate = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
   if (!candidate) throw new Error("The generic V3 fixture lost its initial-move candidate.");
   const entity: RuntimeEntity = {
     ...importedSquareEntity(),
@@ -775,10 +775,14 @@ async function genericRuntimeTraceV3ResizeInput(scaleFactor: number) {
   };
 }
 
-describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
+function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
+  return studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
+}
+
+describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
-    const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+    const candidate = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
 
     expect(candidate).toEqual({
       baseCenter: { x: 320, y: 180 },
@@ -796,7 +800,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
     expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
     const interactionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
     expect(interactionAuthority).toEqual({
-      editableRuntimeEntityId: mapping.rootId,
+      editableRuntimeEntityIds: [mapping.rootId],
       kind: "bounded-interactive",
       reason: "runtime-trace-initial-edit",
       sourceAnchor: 0,
@@ -846,11 +850,9 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       runtimeTraceEvidence: NonNullable<StudioPreviewSourceRuntimeMappingV1["runtimeTraceEvidence"]>,
     ) => replaceMapping({ ...mapping, runtimeTraceEvidence });
 
+    expect(candidateOf(withEvidence({ ...evidence, updaterStatus: "conflict" }))).toBeNull();
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1(withEvidence({ ...evidence, updaterStatus: "conflict" })),
-    ).toBeNull();
-    expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1(
+      candidateOf(
         withEvidence({
           ...evidence,
           endpoints: {
@@ -864,7 +866,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       ),
     ).toBeNull();
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      candidateOf({
         ...snapshot,
         sourceRuntimeIdentity: new Map([
           ...snapshot.sourceRuntimeIdentity!,
@@ -873,13 +875,13 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      candidateOf({
         ...snapshot,
         correlation: { ...snapshot.correlation, engineRevisionHash: "f".repeat(64) },
       }),
     ).toBeNull();
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      candidateOf({
         ...snapshot,
         correlation: {
           ...snapshot.correlation,
@@ -888,7 +890,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      candidateOf({
         ...snapshot,
         snapshot: {
           ...snapshot.snapshot,
@@ -901,22 +903,115 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
         },
       }),
     ).toBeNull();
+  });
+
+  it("keeps the mapped binding editable when the scene holds additional unmapped runtime roots", async () => {
+    const { snapshot } = await genericRuntimeTraceV3Snapshot();
+    const mapping = snapshot.sourceRuntimeIdentity?.get("square");
+    if (!mapping) throw new Error("Generic V3 test mapping lost endpoint evidence.");
     const extraRoot = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId !== null);
     if (!extraRoot) throw new Error("Generic V3 fixture needs one drawable child.");
-    expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
-        ...snapshot,
-        snapshot: {
-          ...snapshot.snapshot,
-          scene: {
-            ...snapshot.snapshot.scene,
-            entities: snapshot.snapshot.scene.entities.map((entity) =>
-              entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
-            ),
-          },
+    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1({
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          entities: snapshot.snapshot.scene.entities.map((entity) =>
+            entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
+          ),
         },
-      }),
-    ).toBeNull();
+      },
+    });
+    expect(candidates.map(({ runtimeEntityId }) => runtimeEntityId)).toEqual([mapping.entityId]);
+  });
+
+  it("anchors the candidate at the settled terminal endpoint when an entrance animation offsets frame zero", async () => {
+    const { snapshot } = await genericRuntimeTraceV3Snapshot();
+    const pristine = candidateOf(snapshot);
+    const mapping = snapshot.sourceRuntimeIdentity?.get("square");
+    if (!pristine || !mapping?.runtimeTraceEvidence) throw new Error("Generic V3 test mapping lost endpoint evidence.");
+    const evidence = mapping.runtimeTraceEvidence;
+    const terminal = evidence.endpoints.terminal;
+    const settled = candidateOf({
+      ...snapshot,
+      sourceRuntimeIdentity: new Map([
+        [
+          "square",
+          {
+            ...mapping,
+            runtimeTraceEvidence: {
+              ...evidence,
+              endpoints: {
+                ...evidence.endpoints,
+                terminal: {
+                  ...terminal,
+                  center: { x: terminal.center.x + 0.5, y: terminal.center.y + 0.25 },
+                  dimensions: { height: terminal.dimensions.height * 1.5, width: terminal.dimensions.width * 1.5 },
+                },
+              },
+            },
+          },
+        ],
+      ]),
+    });
+    if (!settled) throw new Error("The settled-endpoint candidate must still mint.");
+    expect(settled.baseDimensions).toEqual({
+      height: terminal.dimensions.height * 1.5,
+      width: terminal.dimensions.width * 1.5,
+    });
+    // 45 studio px per world unit at frame width 128/9 on the 640x360 studio
+    // stage; studio y grows downward.
+    expect(pristine.baseCenter).toEqual({ x: 320, y: 180 });
+    expect(settled.baseCenter).toEqual({ x: 320 + 0.5 * 45, y: 180 - 0.25 * 45 });
+  });
+
+  it("mints one candidate per positively-dimensioned mapping from a Feynman-shaped multi-root trace", async () => {
+    const trace = fastManimRuntimeTraceV3Schema.parse(structuredClone(genericRuntimeTraceFixture));
+    const selected = trace.sourceBindings[0]!;
+    const baseRoot = trace.roots[0]!;
+    // Mirror the FeynmanDiagram baseline: sibling roots exist from frame zero
+    // but their initial endpoints report degenerate 0x0 dimensions, so only
+    // the labels-shaped binding may mint a candidate.
+    const positiveSiblings = new Set(["photon"]);
+    ["electron1", "electron2", "photon"].forEach((name, index) => {
+      const rootId = `${baseRoot.id.slice(0, -1)}${index + 1}`;
+      trace.roots.push({ id: rootId, lifetimes: structuredClone(baseRoot.lifetimes), sceneOrder: index + 1 });
+      trace.draws.push({
+        familyPath: [],
+        id: `${rootId}/draw:0`,
+        lifetimes: structuredClone(baseRoot.lifetimes),
+        rootId,
+      });
+      for (const frame of trace.frames) {
+        frame.states.push({
+          ...structuredClone(frame.states[0]!),
+          drawId: `${rootId}/draw:0`,
+          paintOrder: frame.states.length,
+        });
+      }
+      const endpoints = structuredClone(selected.endpoints);
+      if (!positiveSiblings.has(name)) endpoints.initial.dimensions = { height: 0, width: 0 };
+      trace.sourceBindings.push({
+        binding: {
+          ...structuredClone(selected.binding),
+          id: `source-binding:${String(index + 1).repeat(64)}`,
+          name,
+          ordinal: index + 2,
+        },
+        endpoints,
+        rootId,
+        updaterStatus: "none",
+      });
+    });
+    const { snapshot } = await genericRuntimeTraceV3Snapshot(trace);
+    expect(snapshot.sourceRuntimeIdentity?.size).toBe(4);
+
+    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot);
+    expect(candidates.map(({ sourceName }) => sourceName)).toEqual(["square", "photon"]);
+    expect(candidates[0]!.runtimeEntityId).toBe(selected.rootId);
+    expect(candidates[1]!.runtimeEntityId).toBe(`${selected.rootId.slice(0, -1)}3`);
+    expect(new Set(candidates.map(({ studioEntityId }) => studioEntityId)).size).toBe(2);
   });
 });
 
@@ -957,14 +1052,35 @@ describe("generic Runtime Trace V3 initial move", () => {
     );
   });
 
-  it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
-    const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
-    expect(studioPreviewGenericInitialEditProgramSetV1([], candidate)).toEqual({ kind: "none" });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], candidate)).toEqual({
+  it("authorizes the one candidate the staged Program targets and rejects absent or ambiguous targets", async () => {
+    const { candidate, record } = await genericRuntimeTraceV3MoveInput();
+    const sibling = {
+      ...candidate,
+      bindingId: `source-binding:${"a".repeat(64)}`,
+      runtimeEntityId: `${candidate.runtimeEntityId.slice(0, -1)}1`,
+      sourceName: "circle",
+      studioEntityId: candidate.studioEntityId.replace(/:square$/, ":circle"),
+    };
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [sibling, candidate])).toEqual({
+      candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [sibling])).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate, candidate])).toEqual({
+      kind: "unauthorized",
+    });
+  });
+
+  it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
+    const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
+    expect(studioPreviewGenericInitialEditProgramSetV1([], [candidate])).toEqual({ kind: "none" });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+      candidate,
+      edit: { kind: "move", position: { x: 384, y: 144 } },
+      kind: "authorized",
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -978,11 +1094,12 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (resize.kind !== "valid") throw new Error("Generic resize fixture did not validate.");
     const resizeRecord = programRecord(resize.program, resize);
-    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], [candidate])).toEqual({
+      candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -996,8 +1113,9 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (rebasedResize.kind !== "valid") throw new Error("Generic rebased resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], candidate),
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
     ).toEqual({
+      candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
@@ -1012,7 +1130,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (identityResize.kind !== "valid") throw new Error("Generic identity resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], candidate),
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], [candidate]),
     ).toEqual({ kind: "unauthorized" });
     expect(
       studioPreviewGenericInitialEditProgramSetV1(
@@ -1025,7 +1143,7 @@ describe("generic Runtime Trace V3 initial move", () => {
             },
           },
         ],
-        candidate,
+        [candidate],
       ),
     ).toEqual({ kind: "unauthorized" });
   });

@@ -12,6 +12,10 @@ import { z } from "zod";
 
 import { parseVerifiedSceneIrBundleV1, sha256V1Schema, sourceIdentityV1Schema } from "../src/engine/contracts";
 import {
+  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+} from "../src/render-pipeline/source-lowering";
+import {
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
   FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3,
   fastManimRuntimeTraceCoordinateV3Schema,
@@ -313,6 +317,123 @@ describe.skipIf(!producerCommand || !sourceRoot || !texBin || !ManimSourceStore.
           await rm(root, { force: true, recursive: true });
         }
       }
+    });
+
+    // The labels VGroup assignment closes on this unique line; a generic
+    // initial edit inserts its one statement immediately after it.
+    const LABELS_ASSIGNMENT_ANCHOR = ".next_to(photon.get_center(), UP)\n        )\n";
+
+    async function candidateRoundtrip(
+      candidateSource: string,
+      request: Parameters<FastManimSnapshotRunner["runRuntimeTraceCandidateUnpublished"]>[1],
+    ) {
+      const root = await mkdtemp(join(tmpdir(), "poietra-feynman-labels-candidate-"));
+      await mkdir(dirname(join(root, SOURCE_PATH)), { recursive: true });
+      await writeFile(join(root, SOURCE_PATH), readFileSync(join(sourceRoot!, SOURCE_PATH), "utf8"), "utf8");
+      const runner = new FastManimSnapshotRunner({
+        backend: createConfiguredFastManimSandboxBackendV1({
+          command: producerCommand,
+          deployment: "test",
+          localProcessDevOptIn: true,
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
+          projectRoot: root,
+        }),
+        deployment: "test",
+        frame: { height: 8, width: 14.222222222222221 },
+        projectId: "second-editable-scene-evidence",
+        projectRoot: root,
+        tenantId: "test-tenant",
+        timeoutMs: 120_000,
+      });
+      try {
+        return await runner.runRuntimeTraceCandidateUnpublished(candidateSource, request);
+      } finally {
+        try {
+          await runner.close();
+        } finally {
+          await rm(root, { force: true, recursive: true });
+        }
+      }
+    }
+
+    it("verifies a real labels initial-move candidate pair on the multi-root Scene", { timeout: 600_000 }, async () => {
+      const source = readFileSync(join(sourceRoot!, SOURCE_PATH), "utf8");
+      expect(createHash("sha256").update(source, "utf8").digest("hex")).toBe(PINNED_SOURCE_SHA256);
+      expect(source.split(LABELS_ASSIGNMENT_ANCHOR)).toHaveLength(2);
+      const candidateSource = source.replace(
+        LABELS_ASSIGNMENT_ANCHOR,
+        `${LABELS_ASSIGNMENT_ANCHOR}        labels.move_to((-1.5, 0.5, 0))\n`,
+      );
+      const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+        candidateSource,
+        SCENE_NAME,
+        SOURCE_PATH,
+        "labels",
+      );
+      expect(plan.baseSource).toBe(source);
+      expect(plan.baseSourceHash).toBe(PINNED_SOURCE_SHA256);
+      expect(plan.baseBinding.name).toBe("labels");
+      expect(plan.expectedWorldCenter).toEqual({ x: -1.5, y: 0.5 });
+
+      const result = await candidateRoundtrip(candidateSource, {
+        genericInitialMove: {
+          baseBinding: plan.baseBinding,
+          baseSourceHash: plan.baseSourceHash,
+          entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:labels`,
+          expectedWorldCenter: plan.expectedWorldCenter,
+          kind: "fast-manim-generic-initial-move-v3",
+        },
+        projectId: "second-editable-scene-evidence",
+        requestId: "feynman-labels-initial-move-v3-candidate",
+        sceneName: SCENE_NAME,
+        sourcePath: SOURCE_PATH,
+      });
+      expect(result).toMatchObject({
+        sourceHash: createHash("sha256").update(candidateSource, "utf8").digest("hex"),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
+    });
+
+    it("verifies a real labels uniform-resize candidate pair on the multi-root Scene", {
+      timeout: 600_000,
+    }, async () => {
+      const source = readFileSync(join(sourceRoot!, SOURCE_PATH), "utf8");
+      expect(createHash("sha256").update(source, "utf8").digest("hex")).toBe(PINNED_SOURCE_SHA256);
+      expect(source.split(LABELS_ASSIGNMENT_ANCHOR)).toHaveLength(2);
+      const candidateSource = source.replace(
+        LABELS_ASSIGNMENT_ANCHOR,
+        `${LABELS_ASSIGNMENT_ANCHOR}        labels.scale(1.25)\n`,
+      );
+      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+        candidateSource,
+        SCENE_NAME,
+        SOURCE_PATH,
+        "labels",
+      );
+      expect(plan.baseSource).toBe(source);
+      expect(plan.baseSourceHash).toBe(PINNED_SOURCE_SHA256);
+      expect(plan.baseBinding.name).toBe("labels");
+      expect(plan.expectedScaleFactor).toBe(1.25);
+
+      const result = await candidateRoundtrip(candidateSource, {
+        genericInitialResize: {
+          baseBinding: plan.baseBinding,
+          baseSourceHash: plan.baseSourceHash,
+          entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:labels`,
+          expectedScaleFactor: plan.expectedScaleFactor,
+          kind: "fast-manim-generic-initial-resize-v3",
+        },
+        projectId: "second-editable-scene-evidence",
+        requestId: "feynman-labels-initial-resize-v3-candidate",
+        sceneName: SCENE_NAME,
+        sourcePath: SOURCE_PATH,
+      });
+      expect(result).toMatchObject({
+        sourceHash: createHash("sha256").update(candidateSource, "utf8").digest("hex"),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
     });
   },
 );

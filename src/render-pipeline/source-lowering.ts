@@ -2123,16 +2123,32 @@ function parseCanonicalGenericInitialResizeV3(statement: string, bindingName: st
   return factor;
 }
 
+function selectedGenericRuntimeTraceSourceBindingV3(
+  bindings: readonly ProjectedGenericRuntimeTraceSourceBindingV3[],
+  bindingName: string,
+  side: "base" | "candidate",
+) {
+  const matching = bindings.filter(({ evidence }) => evidence.name === bindingName);
+  const selected = matching[0];
+  if (matching.length !== 1 || !selected) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      `${side} SourceAnalysis must project exactly one unambiguous top-level V3 binding named by the request.`,
+    );
+  }
+  return selected;
+}
+
 /**
- * Re-derives one generic V3 source edit from candidate bytes alone. The
- * candidate must contain exactly one canonical edit statement immediately
- * after its one projected assignment; removing that statement must recover
- * equally exact base binding evidence.
+ * Re-derives one generic V3 source edit from candidate bytes and the edited
+ * binding name. The candidate may project several top-level bindings; exactly
+ * one canonical edit statement must sit immediately after the named binding's
+ * assignment, and removing it must recover equally exact base evidence.
  */
 function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  bindingName: string,
   edit: Readonly<{
     label: "move" | "resize";
     malformed: string;
@@ -2141,12 +2157,7 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
 ) {
   const candidateAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(candidateSource, sceneName, sourcePath);
   const candidateBindings = projectedGenericRuntimeTraceSourceBindingsV3(candidateAnalysis);
-  if (candidateBindings.length !== 1) {
-    genericRuntimeTraceInitialMoveV3LoweringError(
-      "candidate SourceAnalysis must project exactly one unambiguous top-level V3 binding.",
-    );
-  }
-  const candidateBinding = candidateBindings[0]!;
+  const candidateBinding = selectedGenericRuntimeTraceSourceBindingV3(candidateBindings, bindingName, "candidate");
   const assignmentIndex = candidateAnalysis.scene.statements.findIndex(
     ({ id }) => id === candidateBinding.binding.statementId,
   );
@@ -2180,16 +2191,30 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   }
   const baseAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(baseSource, sceneName, sourcePath);
   const baseBindings = projectedGenericRuntimeTraceSourceBindingsV3(baseAnalysis);
-  const baseBinding = baseBindings[0];
+  const baseBinding = selectedGenericRuntimeTraceSourceBindingV3(baseBindings, bindingName, "base");
   if (
-    baseBindings.length !== 1 ||
-    !baseBinding ||
     baseBinding.evidence.name !== candidateBinding.evidence.name ||
     baseBinding.evidence.ordinal !== candidateBinding.evidence.ordinal ||
     JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span)
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
       `removing the candidate ${edit.label} must recover the same one exact base binding occurrence.`,
+    );
+  }
+  // Removing the edit statement must not disturb any sibling candidate: every
+  // other projected binding recovers with identical name/ordinal evidence.
+  const candidateSiblings = candidateBindings.filter(({ evidence }) => evidence.name !== bindingName);
+  const baseSiblings = baseBindings.filter(({ evidence }) => evidence.name !== bindingName);
+  if (
+    candidateSiblings.length !== baseSiblings.length ||
+    candidateSiblings.some(
+      (sibling, index) =>
+        baseSiblings[index]?.evidence.name !== sibling.evidence.name ||
+        baseSiblings[index]?.evidence.ordinal !== sibling.evidence.ordinal,
+    )
+  ) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      `removing the candidate ${edit.label} must leave every sibling binding occurrence unchanged.`,
     );
   }
   return {
@@ -2205,12 +2230,19 @@ export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  bindingName: string,
 ): GenericRuntimeTraceInitialMoveSourceEditPlanV3 {
-  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
-    label: "move",
-    malformed: "one canonical finite bounded move_to call",
-    parse: parseCanonicalGenericInitialMoveV3,
-  });
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "move",
+      malformed: "one canonical finite bounded move_to call",
+      parse: parseCanonicalGenericInitialMoveV3,
+    },
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
@@ -2224,12 +2256,19 @@ export function deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  bindingName: string,
 ): GenericRuntimeTraceInitialResizeSourceEditPlanV3 {
-  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
-    label: "resize",
-    malformed: "one canonical positive non-identity bounded scale call",
-    parse: parseCanonicalGenericInitialResizeV3,
-  });
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "resize",
+      malformed: "one canonical positive non-identity bounded scale call",
+      parse: parseCanonicalGenericInitialResizeV3,
+    },
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
@@ -2361,18 +2400,25 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
     genericRuntimeTraceInitialMoveV3LoweringError("the edit must be rebased from the current source generation.");
   }
   const projectedBindings = projectedGenericRuntimeTraceSourceBindingsV3(analysis);
-  const projected = projectedBindings[0];
-  const requestBinding = request.sourceBindings[0];
-  if (
-    projectedBindings.length !== 1 ||
-    !projected ||
-    request.sourceBindings.length !== 1 ||
-    !requestBinding ||
-    requestBinding.sourceVariable !== projected.evidence.name ||
-    requestBinding.entityId !== operation.entityId
-  ) {
+  const requestBindings = request.sourceBindings.filter(({ entityId }) => entityId === operation.entityId);
+  const requestBinding = requestBindings[0];
+  const matchingBindings = requestBinding
+    ? projectedBindings.filter(({ evidence }) => evidence.name === requestBinding.sourceVariable)
+    : [];
+  const projected = matchingBindings[0];
+  if (requestBindings.length !== 1 || !requestBinding || matchingBindings.length !== 1 || !projected) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "one exact request binding must match the one projected top-level V3 source occurrence.",
+      "one exact request binding must match one projected top-level V3 source occurrence.",
+    );
+  }
+  // Generic candidates only ever mint the canonical Studio identity of their
+  // binding, so the gesture entity must resolve to that exact identity here.
+  // A request row aliasing another entity id (for example through a duplicate
+  // imported entity marker) could otherwise cross-wire a gesture authorized
+  // against one binding into a lowered edit of another.
+  if (operation.entityId !== `source:${request.sourcePath}#${request.sceneName}:${projected.evidence.name}`) {
+    genericRuntimeTraceInitialMoveV3LoweringError(
+      "the gesture entity must be the canonical Studio identity of the selected binding.",
     );
   }
   const assignment = analysis.scene.statements.find(({ id }) => id === projected.binding.statementId);
@@ -2409,6 +2455,7 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
       loweredSource,
       request.sceneName,
       request.sourcePath,
+      projected.evidence.name,
     );
     if (
       derived.baseSource !== source ||
@@ -2456,6 +2503,7 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
     loweredSource,
     request.sceneName,
     request.sourcePath,
+    projected.evidence.name,
   );
   if (
     derived.baseSource !== source ||

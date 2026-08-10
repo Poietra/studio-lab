@@ -41,7 +41,7 @@ const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
-const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH);
+const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
 const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
@@ -50,6 +50,7 @@ const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   RESIZE_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
+  "square",
 );
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
