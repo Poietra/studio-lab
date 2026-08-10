@@ -32,6 +32,14 @@ const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
+const MULTI_BASE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  "        circle = Circle()\n        square.set_stroke(WHITE, width=2)\n",
+);
+const MULTI_CANDIDATE_SOURCE = MULTI_BASE_SOURCE.replace(
+  "        square = Square().set_fill(BLUE, opacity=0.6)\n",
+  "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.move_to((1.25, -0.5, 0))\n",
+);
 const TARGET: { x: number; y: number } = { x: 1.25, y: -0.5 };
 
 function request(sourceText: string) {
@@ -61,10 +69,12 @@ function request(sourceText: string) {
   );
 }
 
-function fixture() {
-  const baseRequest = request(BASE_SOURCE);
-  const candidateRequest = request(CANDIDATE_SOURCE);
+function fixture(baseSource = BASE_SOURCE, candidateSource = CANDIDATE_SOURCE) {
+  const baseRequest = request(baseSource);
+  const candidateRequest = request(candidateSource);
   const base = fastManimRuntimeTraceV3Schema.parse(structuredClone(genericRuntimeTraceFixture));
+  base.sourceHash = baseRequest.sourceHash;
+  base.sourceBindings[0]!.binding = structuredClone(baseRequest.sourceBindings[0]!);
   const candidate = structuredClone(base);
   candidate.sourceHash = candidateRequest.sourceHash;
   candidate.sourceBindings[0]!.binding = structuredClone(candidateRequest.sourceBindings[0]!);
@@ -84,8 +94,67 @@ function fixture() {
     binding: structuredClone(baseRequest.sourceBindings[0]!),
     candidate,
     candidateRequest,
-    expectedInitialCenter: TARGET,
   };
+}
+
+function addUnselectedRoot<T extends ReturnType<typeof fixture> | ResizeFixture>(
+  input: T,
+  shareSelectedResizePath = false,
+) {
+  const baseBinding = input.baseRequest.sourceBindings.find(({ name }) => name === "circle");
+  const candidateBinding = input.candidateRequest.sourceBindings.find(({ name }) => name === "circle");
+  if (!baseBinding || !candidateBinding) throw new Error("The multi-root fixture lost its circle binding.");
+  const rootId = `${input.base.sceneId}/runtime-v3-root:1`;
+  const drawId = `${rootId}/draw:1`;
+  const root = {
+    id: rootId,
+    lifetimes: structuredClone(input.base.roots[0]!.lifetimes),
+    sceneOrder: 1,
+  };
+  const draw = {
+    familyPath: [],
+    id: drawId,
+    lifetimes: structuredClone(input.base.draws[0]!.lifetimes),
+    rootId,
+  };
+  input.base.roots.push(structuredClone(root));
+  input.candidate.roots.push(structuredClone(root));
+  input.base.draws.push(structuredClone(draw));
+  input.candidate.draws.push(structuredClone(draw));
+
+  const unselectedPathId = `path:${"c".repeat(64)}`;
+  const unselectedPath = {
+    id: unselectedPathId,
+    path: structuredClone(input.base.resources.paths[0]!.path),
+  };
+  if (shareSelectedResizePath) {
+    input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
+  } else {
+    input.base.resources.paths.push(structuredClone(unselectedPath));
+    input.candidate.resources.paths.push(structuredClone(unselectedPath));
+  }
+  for (const [frameIndex, baseFrame] of input.base.frames.entries()) {
+    const baseState = baseFrame.states[0]!;
+    const state = {
+      ...structuredClone(baseState),
+      drawId,
+      paintOrder: baseFrame.states.length,
+      pathId: shareSelectedResizePath ? baseState.pathId : unselectedPathId,
+      transform: { ...baseState.transform, tx: baseState.transform.tx + 3 },
+    };
+    baseFrame.states.push(structuredClone(state));
+    input.candidate.frames[frameIndex]!.states.push(structuredClone(state));
+  }
+  const endpoints = structuredClone(input.base.sourceBindings[0]!.endpoints);
+  for (const endpoint of Object.values(endpoints)) endpoint.center.x += 3;
+  input.base.sourceBindings.push({ binding: structuredClone(baseBinding), endpoints, rootId, updaterStatus: "none" });
+  input.candidate.sourceBindings.push({
+    binding: structuredClone(candidateBinding),
+    endpoints: structuredClone(endpoints),
+    rootId,
+    updaterStatus: "none",
+  });
+  return input;
 }
 
 function rejectCode(
@@ -109,6 +178,58 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
     expect(input.base.draws).toEqual(input.candidate.draws);
   });
 
+  it("moves only the selected root in a multi-root trace", () => {
+    const input = addUnselectedRoot(fixture(MULTI_BASE_SOURCE, MULTI_CANDIDATE_SOURCE));
+    const unselectedMapping = structuredClone(input.base.sourceBindings[1]);
+    const unselectedStates = input.base.frames.map((frame) => structuredClone(frame.states[1]));
+
+    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.sourceBindings[1]).toMatchObject({
+      endpoints: unselectedMapping?.endpoints,
+      rootId: unselectedMapping?.rootId,
+      updaterStatus: unselectedMapping?.updaterStatus,
+    });
+    expect(input.candidate.frames.map((frame) => frame.states[1])).toEqual(unselectedStates);
+  });
+
+  it("accepts one translation when partial Write bounds have different endpoint centers", () => {
+    const input = fixture();
+    input.base.sourceBindings[0]!.endpoints.initial.center = { x: -1.8907352, y: 0.2253247875 };
+    input.base.sourceBindings[0]!.endpoints.terminal.center = { x: -1.800822375, y: 0.2118752125 };
+    for (const endpointName of ["initial", "terminal"] as const) {
+      const baseCenter = input.base.sourceBindings[0]!.endpoints[endpointName].center;
+      input.candidate.sourceBindings[0]!.endpoints[endpointName].center = {
+        x: Number((baseCenter.x + TARGET.x).toFixed(13)),
+        y: Number((baseCenter.y + TARGET.y).toFixed(13)),
+      };
+    }
+
+    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toEqual(input.candidate);
+  });
+
+  it("rejects duplicate selected mappings and any unselected root drift", () => {
+    const rejectMulti = (
+      mutate: (input: ReturnType<typeof addUnselectedRoot<ReturnType<typeof fixture>>>) => void,
+      code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+    ) => {
+      const input = addUnselectedRoot(fixture(MULTI_BASE_SOURCE, MULTI_CANDIDATE_SOURCE));
+      mutate(input);
+      expect(() => verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toThrowError(
+        expect.objectContaining({ code }),
+      );
+    };
+    rejectMulti(
+      (input) => input.candidate.sourceBindings.push(structuredClone(input.candidate.sourceBindings[0]!)),
+      "candidate-binding",
+    );
+    rejectMulti((input) => (input.candidate.sourceBindings[1]!.rootId = input.base.roots[0]!.id), "candidate-root");
+    rejectMulti(
+      (input) => (input.candidate.sourceBindings[1]!.endpoints.initial.center.x += 0.1),
+      "candidate-semantic",
+    );
+    rejectMulti((input) => (input.candidate.frames[0]!.states[1]!.opacity = 0.5), "candidate-semantic");
+  });
+
   it("rejects stale SourceAnalysis binding evidence and changed runtime roots", () => {
     rejectCode((input) => (input.binding.id = `source-binding:${"f".repeat(64)}`), "base-binding");
     rejectCode((input) => (input.candidate.sourceBindings[0]!.binding.ordinal += 1), "candidate-binding");
@@ -128,14 +249,12 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
     rejectCode((input) => (input.candidate.frames[0]!.states[0]!.transform.tx += 0.1), "candidate-semantic");
   });
 
-  it("rejects a no-op or a target substituted independently of the source-derived result", () => {
+  it("rejects a no-op translation", () => {
     rejectCode((input) => {
       input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: 0, y: 0 };
       input.candidate.sourceBindings[0]!.endpoints.terminal.center = { x: 0, y: 0 };
       input.candidate.frames[0]!.states[0]!.transform = { ...input.base.frames[0]!.states[0]!.transform };
-      input.expectedInitialCenter = { x: 0, y: 0 };
     }, "candidate-noop");
-    rejectCode((input) => (input.expectedInitialCenter = { x: TARGET.x + 0.25, y: TARGET.y }), "candidate-endpoint");
   });
 
   it("requires the candidate binding ID to be derived from the edited source hash", () => {
@@ -153,6 +272,10 @@ const RESIZE_FACTOR = 1.5;
 const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
+);
+const MULTI_RESIZE_CANDIDATE_SOURCE = MULTI_BASE_SOURCE.replace(
+  "        square = Square().set_fill(BLUE, opacity=0.6)\n",
+  "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.scale(1.5)\n",
 );
 const SCALED_PATH_ID = `path:${"b".repeat(64)}`;
 
@@ -177,10 +300,12 @@ function scaledPathValue(
   };
 }
 
-function resizeFixture() {
-  const baseRequest = request(BASE_SOURCE);
-  const candidateRequest = request(RESIZE_CANDIDATE_SOURCE);
+function resizeFixture(baseSource = BASE_SOURCE, candidateSource = RESIZE_CANDIDATE_SOURCE) {
+  const baseRequest = request(baseSource);
+  const candidateRequest = request(candidateSource);
   const base = fastManimRuntimeTraceV3Schema.parse(structuredClone(genericRuntimeTraceFixture));
+  base.sourceHash = baseRequest.sourceHash;
+  base.sourceBindings[0]!.binding = structuredClone(baseRequest.sourceBindings[0]!);
   const candidate = structuredClone(base);
   candidate.sourceHash = candidateRequest.sourceHash;
   candidate.sourceBindings[0]!.binding = structuredClone(candidateRequest.sourceBindings[0]!);
@@ -227,6 +352,54 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
     expect(input.base.draws).toEqual(input.candidate.draws);
     expect(input.base.resources.appearances).toEqual(input.candidate.resources.appearances);
     expect(input.base.resources.paths).not.toEqual(input.candidate.resources.paths);
+  });
+
+  it("scales only the selected root and retains unselected state and path bytes", () => {
+    const input = addUnselectedRoot(resizeFixture(MULTI_BASE_SOURCE, MULTI_RESIZE_CANDIDATE_SOURCE));
+    const unselectedState = structuredClone(input.base.frames[0]!.states[1]!);
+    const unselectedPath = structuredClone(input.base.resources.paths[1]!);
+
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.frames[0]!.states[1]).toEqual(unselectedState);
+    expect(input.candidate.resources.paths[1]).toEqual(unselectedPath);
+  });
+
+  it("rejects unselected resize drift and permits copy-on-write scaling of a shared base path", () => {
+    const drift = addUnselectedRoot(resizeFixture(MULTI_BASE_SOURCE, MULTI_RESIZE_CANDIDATE_SOURCE));
+    drift.candidate.frames[0]!.states[1]!.opacity = 0.5;
+    expect(() => verifyFastManimRuntimeTraceInitialResizeCandidateV3(drift)).toThrowError(
+      expect.objectContaining({ code: "candidate-semantic" }),
+    );
+
+    const shared = addUnselectedRoot(resizeFixture(MULTI_BASE_SOURCE, MULTI_RESIZE_CANDIDATE_SOURCE), true);
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(shared)).toEqual(shared.candidate);
+    expect(shared.candidate.frames[0]!.states[1]!.pathId).toBe(shared.base.frames[0]!.states[1]!.pathId);
+    expect(shared.candidate.frames[0]!.states[0]!.pathId).not.toBe(shared.base.frames[0]!.states[0]!.pathId);
+  });
+
+  it("uses one affine scale offset when partial Write bounds change center over time", () => {
+    const input = resizeFixture();
+    const offset = { x: 0.75, y: -0.05 };
+    input.base.sourceBindings[0]!.endpoints.initial.center = { x: -1.8907352, y: 0.2253247875 };
+    input.base.sourceBindings[0]!.endpoints.terminal.center = { x: -1.800822375, y: 0.2118752125 };
+    for (const endpointName of ["initial", "terminal"] as const) {
+      const baseCenter = input.base.sourceBindings[0]!.endpoints[endpointName].center;
+      input.candidate.sourceBindings[0]!.endpoints[endpointName].center = {
+        x: Number((baseCenter.x * RESIZE_FACTOR + offset.x).toFixed(13)),
+        y: Number((baseCenter.y * RESIZE_FACTOR + offset.y).toFixed(13)),
+      };
+    }
+    for (const [frameIndex, baseFrame] of input.base.frames.entries()) {
+      const baseTransform = baseFrame.states[0]!.transform;
+      input.candidate.frames[frameIndex]!.states[0]!.transform.tx = Number(
+        (baseTransform.tx * RESIZE_FACTOR + offset.x).toFixed(13),
+      );
+      input.candidate.frames[frameIndex]!.states[0]!.transform.ty = Number(
+        (baseTransform.ty * RESIZE_FACTOR + offset.y).toFixed(13),
+      );
+    }
+
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toEqual(input.candidate);
   });
 
   it("rejects endpoint drift, moved placement, and unscaled or foreign path resources", () => {

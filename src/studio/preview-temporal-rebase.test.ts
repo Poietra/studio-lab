@@ -31,7 +31,7 @@ import {
   conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  studioPreviewGenericInitialEditAuthorityCandidateV1,
+  studioPreviewGenericInitialEditAuthorityCandidatesV1,
   studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
@@ -700,9 +700,45 @@ async function genericRuntimeTraceV3Snapshot() {
   return { mapping, snapshot };
 }
 
+async function genericRuntimeTraceV3MultiRootSnapshot() {
+  const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
+  const root = snapshot.snapshot.scene.entities.find(({ id }) => id === mapping.rootId);
+  const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === mapping.rootId);
+  if (!root || !child) throw new Error("The generic Runtime Trace fixture lost its root hierarchy.");
+  const otherRuntimeEntityId = `${mapping.rootId}:other`;
+  const otherMapping: StudioPreviewSourceRuntimeMappingV1 = {
+    bindingId: `source-binding:${"b".repeat(64)}`,
+    entityId: otherRuntimeEntityId,
+    runtimeTraceEvidence: {
+      endpoints: {
+        initial: { ...mapping.endpoints.initial, center: { x: 2, y: 1 } },
+        terminal: { ...mapping.endpoints.terminal, center: { x: 2, y: 1 } },
+      },
+      updaterStatus: "none",
+    },
+    sourceName: "other",
+  };
+  const multiRootSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+    ...snapshot,
+    snapshot: {
+      ...snapshot.snapshot,
+      scene: {
+        ...snapshot.snapshot.scene,
+        entities: [
+          ...snapshot.snapshot.scene.entities,
+          { ...root, id: otherRuntimeEntityId, sceneOrder: 100 },
+          { ...child, id: `${otherRuntimeEntityId}/draw:0`, parentId: otherRuntimeEntityId, sceneOrder: 101 },
+        ],
+      },
+    },
+    sourceRuntimeIdentity: new Map([...snapshot.sourceRuntimeIdentity!, ["other", otherMapping]]),
+  };
+  return { mapping, otherMapping, snapshot: multiRootSnapshot };
+}
+
 async function genericRuntimeTraceV3MoveInput() {
   const { snapshot } = await genericRuntimeTraceV3Snapshot();
-  const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+  const [candidate] = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot);
   if (!candidate) throw new Error("The generic V3 fixture lost its initial-move candidate.");
   const entity: RuntimeEntity = {
     ...importedSquareEntity(),
@@ -775,10 +811,10 @@ async function genericRuntimeTraceV3ResizeInput(scaleFactor: number) {
   };
 }
 
-describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
+describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
-    const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot);
+    const [candidate] = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot);
 
     expect(candidate).toEqual({
       baseCenter: { x: 320, y: 180 },
@@ -792,11 +828,12 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
       studioEntityId: `source:${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}:square`,
       studioSceneId: `${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}`,
     });
+    expect(studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)).toEqual([candidate]);
     expect(candidate).not.toHaveProperty("relativeScale");
     expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
     const interactionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
     expect(interactionAuthority).toEqual({
-      editableRuntimeEntityId: mapping.rootId,
+      editableRuntimeEntityIds: [mapping.rootId],
       kind: "bounded-interactive",
       reason: "runtime-trace-initial-edit",
       sourceAnchor: 0,
@@ -833,7 +870,40 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
     ).toBeNull();
   });
 
-  it("rejects updater, degenerate, ambiguous, stale, non-pristine, and non-root evidence", async () => {
+  it("projects each updater-free mapped root independently and keeps conflicts selection-only", async () => {
+    const { mapping, otherMapping, snapshot } = await genericRuntimeTraceV3MultiRootSnapshot();
+    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot);
+    expect(candidates.map(({ sourceName }) => sourceName)).toEqual(["square", "other"]);
+    expect(candidates.find(({ sourceName }) => sourceName === "other")?.baseCenter).toEqual({ x: 320, y: 180 });
+    expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
+      editableRuntimeEntityIds: [mapping.rootId, otherMapping.entityId],
+      kind: "bounded-interactive",
+      reason: "runtime-trace-initial-edit",
+      sourceAnchor: 0,
+      verifiedRuntimeEntityIds: [mapping.rootId, otherMapping.entityId],
+    });
+
+    const conflictedIdentity = new Map(
+      [...snapshot.sourceRuntimeIdentity!].map(([sourceName, candidate]) => [
+        sourceName,
+        {
+          ...candidate,
+          runtimeTraceEvidence: candidate.runtimeTraceEvidence
+            ? { ...candidate.runtimeTraceEvidence, updaterStatus: "conflict" as const }
+            : undefined,
+        },
+      ]),
+    );
+    const conflicted = { ...snapshot, sourceRuntimeIdentity: conflictedIdentity };
+    expect(studioPreviewGenericInitialEditAuthorityCandidatesV1(conflicted)).toEqual([]);
+    expect(studioPreviewInteractionAuthorityV1(conflicted)).toEqual({
+      kind: "selection-only",
+      reason: "runtime-trace-preview-only",
+      verifiedRuntimeEntityIds: [mapping.rootId, otherMapping.entityId],
+    });
+  });
+
+  it("omits updater, degenerate, and non-root mappings while rejecting stale snapshots", async () => {
     const { snapshot } = await genericRuntimeTraceV3Snapshot();
     const mapping = snapshot.sourceRuntimeIdentity?.get("square");
     if (!mapping?.runtimeTraceEvidence) throw new Error("Generic V3 test mapping lost endpoint evidence.");
@@ -847,10 +917,10 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
     ) => replaceMapping({ ...mapping, runtimeTraceEvidence });
 
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1(withEvidence({ ...evidence, updaterStatus: "conflict" })),
-    ).toBeNull();
+      studioPreviewGenericInitialEditAuthorityCandidatesV1(withEvidence({ ...evidence, updaterStatus: "conflict" })),
+    ).toEqual([]);
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1(
+      studioPreviewGenericInitialEditAuthorityCandidatesV1(
         withEvidence({
           ...evidence,
           endpoints: {
@@ -862,33 +932,24 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
           },
         }),
       ),
-    ).toBeNull();
+    ).toEqual([]);
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
-        ...snapshot,
-        sourceRuntimeIdentity: new Map([
-          ...snapshot.sourceRuntimeIdentity!,
-          ["alias", { ...mapping, bindingId: "binding:alias", sourceName: "alias" }],
-        ]),
-      }),
-    ).toBeNull();
-    expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      studioPreviewGenericInitialEditAuthorityCandidatesV1({
         ...snapshot,
         correlation: { ...snapshot.correlation, engineRevisionHash: "f".repeat(64) },
       }),
-    ).toBeNull();
+    ).toEqual([]);
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      studioPreviewGenericInitialEditAuthorityCandidatesV1({
         ...snapshot,
         correlation: {
           ...snapshot.correlation,
           context: { ...snapshot.correlation.context, workingRevision: WORKING_REVISION },
         },
       }),
-    ).toBeNull();
+    ).toEqual([]);
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      studioPreviewGenericInitialEditAuthorityCandidatesV1({
         ...snapshot,
         snapshot: {
           ...snapshot.snapshot,
@@ -900,23 +961,24 @@ describe("studioPreviewGenericInitialEditAuthorityCandidateV1", () => {
           },
         },
       }),
-    ).toBeNull();
-    const extraRoot = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId !== null);
-    if (!extraRoot) throw new Error("Generic V3 fixture needs one drawable child.");
+    ).toEqual([]);
+    const mappedRoot = snapshot.snapshot.scene.entities.find(({ id }) => id === mapping.entityId);
+    if (!mappedRoot) throw new Error("Generic V3 fixture needs its mapped root.");
     expect(
-      studioPreviewGenericInitialEditAuthorityCandidateV1({
+      studioPreviewGenericInitialEditAuthorityCandidatesV1({
         ...snapshot,
         snapshot: {
           ...snapshot.snapshot,
           scene: {
             ...snapshot.snapshot.scene,
-            entities: snapshot.snapshot.scene.entities.map((entity) =>
-              entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
-            ),
+            entities: [
+              ...snapshot.snapshot.scene.entities,
+              { ...mappedRoot, id: `${mapping.entityId}:unmapped`, sceneOrder: 100 },
+            ],
           },
         },
       }),
-    ).toBeNull();
+    ).toHaveLength(1);
   });
 });
 
@@ -959,12 +1021,22 @@ describe("generic Runtime Trace V3 initial move", () => {
 
   it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
     const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
-    expect(studioPreviewGenericInitialEditProgramSetV1([], candidate)).toEqual({ kind: "none" });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([], [candidate])).toEqual({ kind: "none" });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+      candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], [candidate])).toEqual({
+      kind: "unauthorized",
+    });
+    const multiRoot = await genericRuntimeTraceV3MultiRootSnapshot();
+    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(multiRoot.snapshot);
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], candidates)).toMatchObject({
+      candidate: { sourceName: "square" },
+      kind: "authorized",
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [...candidates, candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -978,11 +1050,12 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (resize.kind !== "valid") throw new Error("Generic resize fixture did not validate.");
     const resizeRecord = programRecord(resize.program, resize);
-    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], [candidate])).toEqual({
+      candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], candidate)).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -996,8 +1069,9 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (rebasedResize.kind !== "valid") throw new Error("Generic rebased resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], candidate),
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
     ).toEqual({
+      candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
@@ -1012,7 +1086,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (identityResize.kind !== "valid") throw new Error("Generic identity resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], candidate),
+      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], [candidate]),
     ).toEqual({ kind: "unauthorized" });
     expect(
       studioPreviewGenericInitialEditProgramSetV1(
@@ -1025,7 +1099,7 @@ describe("generic Runtime Trace V3 initial move", () => {
             },
           },
         ],
-        candidate,
+        [candidate],
       ),
     ).toEqual({ kind: "unauthorized" });
   });
@@ -1066,6 +1140,29 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(compiled.scene.interactionEntityIds).toEqual([candidate.runtimeEntityId]);
     expect(compiled.scene.bundle.scene.entities.find(({ id }) => id === root.id)?.transform).toEqual(
       movedRoot?.transform,
+    );
+  });
+
+  it("changes only the exact Program-selected root in a multi-root Scene", async () => {
+    const { proposedState } = await genericRuntimeTraceV3MoveInput();
+    const { mapping, otherMapping, snapshot } = await genericRuntimeTraceV3MultiRootSnapshot();
+    const untouchedRoot = snapshot.snapshot.scene.entities.find(({ id }) => id === otherMapping.entityId);
+    if (!untouchedRoot) throw new Error("The multi-root fixture lost its non-selected root.");
+    const result = compileStudioPreviewGenericInitialEditV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      sourceRevisionHash: "9".repeat(64),
+    });
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+    expect(result.scene.entities.find(({ id }) => id === otherMapping.entityId)).toEqual(untouchedRoot);
+    for (const entity of snapshot.snapshot.scene.entities) {
+      if (entity.id === mapping.rootId) continue;
+      expect(result.scene.entities.find(({ id }) => id === entity.id)).toEqual(entity);
+    }
+    expect(result.scene.entities.find(({ id }) => id === mapping.rootId)).not.toEqual(
+      snapshot.snapshot.scene.entities.find(({ id }) => id === mapping.rootId),
     );
   });
 

@@ -166,7 +166,10 @@ describe("ManimRenderCandidateVerifierV1", () => {
     const renderRequest = {
       ...fixtureRequest,
       sceneName: "StaticSquare",
-      sourceBindings: [{ entityId, sourceVariable: "square" }],
+      sourceBindings: [
+        { entityId, sourceVariable: "square" },
+        { entityId: "source:scenes/static_square.py#StaticSquare:circle", sourceVariable: "circle" },
+      ],
       sourceHash: baseSourceHash,
       sourcePath: "scenes/static_square.py",
     };
@@ -226,7 +229,10 @@ describe("ManimRenderCandidateVerifierV1", () => {
     const renderRequest = {
       ...fixtureRequest,
       sceneName: "StaticSquare",
-      sourceBindings: [{ entityId, sourceVariable: "square" }],
+      sourceBindings: [
+        { entityId, sourceVariable: "square" },
+        { entityId: "source:scenes/static_square.py#StaticSquare:circle", sourceVariable: "circle" },
+      ],
       sourceHash: baseSourceHash,
       sourcePath: "scenes/static_square.py",
     };

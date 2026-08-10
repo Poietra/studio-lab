@@ -6,7 +6,11 @@ import {
 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { evaluateWorkingState } from "./evaluator";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
-import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
+import {
+  PRISTINE_WORKING_REVISION,
+  type StudioPreviewRuntimeTraceEndpointEvidenceV1,
+  type StudioVerifiedPreviewSnapshotV1,
+} from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 export type StudioPreviewTemporalRebaseIssueCodeV1 =
@@ -129,7 +133,11 @@ export type StudioPreviewGenericInitialEditV1 =
 
 export type StudioPreviewGenericInitialEditProgramSetV1 =
   | Readonly<{ kind: "none" }>
-  | Readonly<{ edit: StudioPreviewGenericInitialEditV1; kind: "authorized" }>
+  | Readonly<{
+      candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1;
+      edit: StudioPreviewGenericInitialEditV1;
+      kind: "authorized";
+    }>
   | Readonly<{ kind: "unauthorized" }>;
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCodeV1, message: string) {
@@ -375,48 +383,29 @@ function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifie
 }
 
 /**
- * Projects one pristine generic V3 mapping into a future-authoring candidate.
- * The function rechecks every fact it consumes, but does not grant GUI or
- * source-rewrite authority; that promotion belongs to the generic lowerer.
+ * Projects each independently verified pristine generic V3 mapping into a
+ * future-authoring candidate. Invalid or updater-backed mappings are omitted
+ * without granting authority to a sibling; source mutation still belongs to
+ * the fresh-source lowerer.
  */
-export function studioPreviewGenericInitialEditAuthorityCandidateV1(
+export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
   snapshot: StudioVerifiedPreviewSnapshotV1,
-): StudioPreviewGenericInitialEditAuthorityCandidateV1 | null {
-  if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return null;
+): readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[] {
+  if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return [];
   const identity = snapshot.sourceRuntimeIdentity;
-  if (!identity || identity.size !== 1) return null;
-  const [sourceName, mapping] = identity.entries().next().value ?? [];
-  const evidence = mapping?.runtimeTraceEvidence;
+  if (!identity) return [];
+  const scene = snapshot.snapshot.scene;
+  const entitiesById = new Map(scene.entities.map((entity) => [entity.id, entity]));
+  const camera = scene.camera.view;
   if (
-    typeof sourceName !== "string" ||
-    !mapping ||
-    mapping.sourceName !== sourceName ||
-    !evidence ||
-    evidence.updaterStatus !== "none"
+    !Number.isFinite(camera.frameHeight) ||
+    !Number.isFinite(camera.frameWidth) ||
+    camera.frameHeight <= 0 ||
+    camera.frameWidth <= 0
   ) {
-    return null;
+    return [];
   }
-  const topLevelRoots = snapshot.snapshot.scene.entities.filter(({ parentId }) => parentId === null);
-  const root = topLevelRoots[0];
-  const lifetime = root?.lifetimes[0];
-  if (
-    topLevelRoots.length !== 1 ||
-    !root ||
-    root.id !== mapping.entityId ||
-    root.parentId !== null ||
-    root.geometry.kind !== "group" ||
-    root.lifetimes.length !== 1 ||
-    !lifetime ||
-    lifetime.start !== 0 ||
-    !Number.isFinite(lifetime.end) ||
-    lifetime.end <= 0
-  ) {
-    return null;
-  }
-  const { initial, terminal } = evidence.endpoints;
-  const terminalEndFrameValue = lifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
-  const terminalFrame = Math.round(terminalEndFrameValue) - 1;
-  const finiteEndpoint = (endpoint: typeof initial) =>
+  const finiteEndpoint = (endpoint: StudioPreviewRuntimeTraceEndpointEvidenceV1) =>
     [
       endpoint.center.x,
       endpoint.center.y,
@@ -426,45 +415,64 @@ export function studioPreviewGenericInitialEditAuthorityCandidateV1(
     ].every(Number.isFinite) &&
     endpoint.dimensions.height > 0 &&
     endpoint.dimensions.width > 0;
-  if (
-    !finiteEndpoint(initial) ||
-    !finiteEndpoint(terminal) ||
-    initial.frameIndex !== 0 ||
-    initial.sampleTime !== 0 ||
-    terminalFrame < 0 ||
-    Math.abs(terminalEndFrameValue - (terminalFrame + 1)) > Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) ||
-    terminal.frameIndex !== terminalFrame ||
-    canonicalRuntimeTraceF64HexV3(terminal.sampleTime) !==
-      canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame))
-  ) {
-    return null;
-  }
-  const camera = snapshot.snapshot.scene.camera.view;
-  if (
-    !Number.isFinite(camera.frameHeight) ||
-    !Number.isFinite(camera.frameWidth) ||
-    camera.frameHeight <= 0 ||
-    camera.frameWidth <= 0
-  ) {
-    return null;
-  }
   const context = snapshot.correlation.context;
-  return {
-    baseCenter: scenePointToStudioPoint(
-      initial.center,
-      { height: camera.frameHeight, width: camera.frameWidth },
-      camera.center,
-    ),
-    baseDimensions: { ...initial.dimensions },
-    bindingId: mapping.bindingId,
-    duration: snapshot.duration,
-    lifetime: { end: lifetime.end, start: 0 },
-    profile: "generic-runtime-trace-v3",
-    runtimeEntityId: mapping.entityId,
-    sourceName,
-    studioEntityId: `source:${context.sourcePath}#${context.sceneName}:${sourceName}`,
-    studioSceneId: `${context.sourcePath}#${context.sceneName}`,
-  };
+  const candidates: StudioPreviewGenericInitialEditAuthorityCandidateV1[] = [];
+  for (const [sourceName, mapping] of identity) {
+    const evidence = mapping.runtimeTraceEvidence;
+    const root = entitiesById.get(mapping.entityId);
+    const lifetime = root?.lifetimes[0];
+    const localCenter = root ? localBoundaryCenter(scene, root) : null;
+    const sourceTransform = root && localCenter ? uniformSourceTransform(root, localCenter) : null;
+    if (
+      mapping.sourceName !== sourceName ||
+      !evidence ||
+      evidence.updaterStatus !== "none" ||
+      !root ||
+      !sourceTransform ||
+      root.parentId !== null ||
+      root.geometry.kind !== "group" ||
+      root.lifetimes.length !== 1 ||
+      !lifetime ||
+      lifetime.start !== 0 ||
+      !Number.isFinite(lifetime.end) ||
+      lifetime.end <= 0
+    ) {
+      continue;
+    }
+    const { initial, terminal } = evidence.endpoints;
+    const terminalEndFrameValue = lifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+    const terminalFrame = Math.round(terminalEndFrameValue) - 1;
+    if (
+      !finiteEndpoint(initial) ||
+      !finiteEndpoint(terminal) ||
+      initial.frameIndex !== 0 ||
+      initial.sampleTime !== 0 ||
+      terminalFrame < 0 ||
+      Math.abs(terminalEndFrameValue - (terminalFrame + 1)) > Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) ||
+      terminal.frameIndex !== terminalFrame ||
+      canonicalRuntimeTraceF64HexV3(terminal.sampleTime) !==
+        canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame))
+    ) {
+      continue;
+    }
+    candidates.push({
+      baseCenter: scenePointToStudioPoint(
+        sourceTransform.worldCenter,
+        { height: camera.frameHeight, width: camera.frameWidth },
+        camera.center,
+      ),
+      baseDimensions: { ...initial.dimensions },
+      bindingId: mapping.bindingId,
+      duration: snapshot.duration,
+      lifetime: { end: lifetime.end, start: 0 },
+      profile: "generic-runtime-trace-v3",
+      runtimeEntityId: mapping.entityId,
+      sourceName,
+      studioEntityId: `source:${context.sourcePath}#${context.sceneName}:${sourceName}`,
+      studioSceneId: `${context.sourcePath}#${context.sceneName}`,
+    });
+  }
+  return candidates;
 }
 
 function genericInitialEditProgramV1(
@@ -534,12 +542,17 @@ function genericInitialEditProgramV1(
  */
 export function studioPreviewGenericInitialEditProgramSetV1(
   records: readonly ProgramRecord[],
-  candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
+  candidates: readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[],
 ): StudioPreviewGenericInitialEditProgramSetV1 {
   if (records.length === 0) return { kind: "none" };
   if (records.length !== 1) return { kind: "unauthorized" };
+  const operation = records[0]!.program.operations[0];
+  if (!operation || !("entityId" in operation)) return { kind: "unauthorized" };
+  const matchingCandidates = candidates.filter(({ studioEntityId }) => studioEntityId === operation.entityId);
+  if (matchingCandidates.length !== 1) return { kind: "unauthorized" };
+  const candidate = matchingCandidates[0]!;
   const edit = genericInitialEditProgramV1(records[0]!, candidate);
-  return edit ? { edit, kind: "authorized" } : { kind: "unauthorized" };
+  return edit ? { candidate, edit, kind: "authorized" } : { kind: "unauthorized" };
 }
 
 /**
@@ -940,7 +953,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
   if (studioPreviewInitialEditRuntimeAuthorityV1(snapshot)) return 0;
-  if (studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot)) return 0;
+  if (studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot).length > 0) return 0;
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
@@ -1424,13 +1437,21 @@ export function compileStudioPreviewGenericInitialEditV1(
     sourceRevisionHash: string;
   }>,
 ): StudioPreviewTemporalRebaseResultV1 {
-  const candidate = studioPreviewGenericInitialEditAuthorityCandidateV1(input.snapshot);
-  if (!candidate) {
+  const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(input.snapshot);
+  if (candidates.length === 0) {
     return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-edit evidence is unavailable.");
   }
   const scene = input.snapshot.snapshot.scene;
   const context = input.snapshot.correlation.context;
   const base = input.proposedState.base;
+  const programSet = studioPreviewGenericInitialEditProgramSetV1(input.proposedState.programs, candidates);
+  if (programSet.kind !== "authorized") {
+    return unsupported(
+      "target-edit-unsupported",
+      "Generic Runtime Trace permits exactly one initial position move or uniform resize.",
+    );
+  }
+  const candidate = programSet.candidate;
   if (
     input.frame.width !== scene.camera.view.frameWidth ||
     input.frame.height !== scene.camera.view.frameHeight ||
@@ -1445,13 +1466,6 @@ export function compileStudioPreviewGenericInitialEditV1(
     return unsupported(
       "source-correlation-invalid",
       "Studio state is not correlated with the generic Runtime Trace initial-edit evidence.",
-    );
-  }
-  const programSet = studioPreviewGenericInitialEditProgramSetV1(input.proposedState.programs, candidate);
-  if (programSet.kind !== "authorized") {
-    return unsupported(
-      "target-edit-unsupported",
-      "Generic Runtime Trace permits exactly one initial position move or uniform resize.",
     );
   }
   const targetIndex = scene.entities.findIndex(({ id }) => id === candidate.runtimeEntityId);

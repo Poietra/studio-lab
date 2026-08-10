@@ -409,9 +409,10 @@ export class ManimRenderCandidateVerifierV1 {
     }
     if (
       genericPreflight !== null &&
-      (request.sourceBindings.length !== 1 ||
-        request.sourceBindings[0]?.entityId !== genericPreflight.entityId ||
-        request.sourceBindings[0]?.sourceVariable !== genericPreflight.baseBinding.name ||
+      (request.sourceBindings.filter(
+        ({ entityId, sourceVariable }) =>
+          entityId === genericPreflight.entityId && sourceVariable === genericPreflight.baseBinding.name,
+      ).length !== 1 ||
         (genericPreflight.kind === "fast-manim-generic-initial-move-v3"
           ? !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
             !Number.isFinite(genericPreflight.expectedWorldCenter.y)

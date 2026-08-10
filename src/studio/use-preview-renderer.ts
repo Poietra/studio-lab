@@ -60,7 +60,7 @@ import {
   compileStudioPreviewTemporalRebaseV1,
   type StudioPreviewGenericInitialEditAuthorityCandidateV1,
   type StudioPreviewInitialEditRuntimeAuthorityV1,
-  studioPreviewGenericInitialEditAuthorityCandidateV1,
+  studioPreviewGenericInitialEditAuthorityCandidatesV1,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
@@ -77,8 +77,8 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthorityV1;
-  /** Verified generic V3 evidence that may request one server-authorized t=0 move. */
-  genericInitialEditCandidate: StudioPreviewGenericInitialEditAuthorityCandidateV1 | null;
+  /** Verified generic V3 mappings that may each request one server-authorized t=0 edit. */
+  genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[];
   /** Exact runtime authority for one bounded initial imported-Scene edit. */
   initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
   /** Exact authority for one reviewed Runtime Trace terminal edit profile. */
@@ -106,7 +106,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
 export type StudioPreviewInteractionAuthorityV1 =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
   | Readonly<{
-      editableRuntimeEntityId: string;
+      editableRuntimeEntityIds: readonly string[];
       kind: "bounded-interactive";
       reason: "runtime-trace-initial-edit";
       sourceAnchor: 0;
@@ -956,18 +956,14 @@ export function studioPreviewInteractionAuthorityV1(
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
-    // Generic V3 stays selection-only unless the exact one-root initial-edit
-    // candidate exists. The browser may then submit one bounded request; the
+    // Generic V3 stays selection-only unless at least one exact source/root
+    // candidate exists. One selected target may be submitted per request; the
     // fresh-source server lowerer remains the mutation authority.
     if (source.traceVersion === 3) {
-      const candidate = snapshot ? studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot) : null;
-      if (
-        candidate &&
-        verifiedRuntimeEntityIds.length === 1 &&
-        verifiedRuntimeEntityIds[0] === candidate.runtimeEntityId
-      ) {
+      const candidates = snapshot ? studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot) : [];
+      if (candidates.length > 0) {
         return {
-          editableRuntimeEntityId: candidate.runtimeEntityId,
+          editableRuntimeEntityIds: candidates.map(({ runtimeEntityId }) => runtimeEntityId),
           kind: "bounded-interactive",
           reason: "runtime-trace-initial-edit",
           sourceAnchor: 0,
@@ -1566,7 +1562,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot) ??
     studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
   const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
-  const genericInitialEditCandidate = snapshot ? studioPreviewGenericInitialEditAuthorityCandidateV1(snapshot) : null;
+  const genericInitialEditCandidates = snapshot ? studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot) : [];
 
   useEffect(() => {
     const proposedState =
@@ -1943,7 +1939,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     attachCanvas,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
-    genericInitialEditCandidate,
+    genericInitialEditCandidates,
     initialEditRuntimeAuthority: snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null,
     interactionGeometry: presentedOrRetainedInteractionGeometry,
     interactionAuthority,

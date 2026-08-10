@@ -2124,15 +2124,16 @@ function parseCanonicalGenericInitialResizeV3(statement: string, bindingName: st
 }
 
 /**
- * Re-derives one generic V3 source edit from candidate bytes alone. The
- * candidate must contain exactly one canonical edit statement immediately
- * after its one projected assignment; removing that statement must recover
- * equally exact base binding evidence.
+ * Re-derives one generic V3 source edit from candidate bytes and the selected
+ * base occurrence. The candidate may contain unrelated projected bindings,
+ * but it must contain exactly one structural match for the selected binding
+ * and one canonical edit statement immediately after that assignment.
  */
 function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  selectedBaseBinding: GenericRuntimeTraceSourceBindingEvidenceV3 | undefined,
   edit: Readonly<{
     label: "move" | "resize";
     malformed: string;
@@ -2141,12 +2142,20 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
 ) {
   const candidateAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(candidateSource, sceneName, sourcePath);
   const candidateBindings = projectedGenericRuntimeTraceSourceBindingsV3(candidateAnalysis);
-  if (candidateBindings.length !== 1) {
+  const candidateMatches = selectedBaseBinding
+    ? candidateBindings.filter(
+        ({ evidence }) =>
+          evidence.name === selectedBaseBinding.name &&
+          evidence.ordinal === selectedBaseBinding.ordinal &&
+          JSON.stringify(evidence.span) === JSON.stringify(selectedBaseBinding.span),
+      )
+    : candidateBindings;
+  if (candidateMatches.length !== 1) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "candidate SourceAnalysis must project exactly one unambiguous top-level V3 binding.",
+      "candidate SourceAnalysis must project exactly one structural match for the selected top-level V3 binding.",
     );
   }
-  const candidateBinding = candidateBindings[0]!;
+  const candidateBinding = candidateMatches[0]!;
   const assignmentIndex = candidateAnalysis.scene.statements.findIndex(
     ({ id }) => id === candidateBinding.binding.statementId,
   );
@@ -2180,18 +2189,19 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   }
   const baseAnalysis = analyzeGenericRuntimeTraceInitialMoveSourceV3(baseSource, sceneName, sourcePath);
   const baseBindings = projectedGenericRuntimeTraceSourceBindingsV3(baseAnalysis);
-  const baseBinding = baseBindings[0];
-  if (
-    baseBindings.length !== 1 ||
-    !baseBinding ||
-    baseBinding.evidence.name !== candidateBinding.evidence.name ||
-    baseBinding.evidence.ordinal !== candidateBinding.evidence.ordinal ||
-    JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span)
-  ) {
+  const baseMatches = baseBindings.filter(({ evidence }) =>
+    selectedBaseBinding
+      ? JSON.stringify(evidence) === JSON.stringify(selectedBaseBinding)
+      : evidence.name === candidateBinding.evidence.name &&
+        evidence.ordinal === candidateBinding.evidence.ordinal &&
+        JSON.stringify(evidence.span) === JSON.stringify(candidateBinding.evidence.span),
+  );
+  if (baseMatches.length !== 1) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      `removing the candidate ${edit.label} must recover the same one exact base binding occurrence.`,
+      `removing the candidate ${edit.label} must recover the selected exact base binding occurrence.`,
     );
   }
+  const baseBinding = baseMatches[0]!;
   return {
     baseBinding: baseBinding.evidence,
     baseSource,
@@ -2205,12 +2215,19 @@ export function deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  selectedBaseBinding?: GenericRuntimeTraceSourceBindingEvidenceV3,
 ): GenericRuntimeTraceInitialMoveSourceEditPlanV3 {
-  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
-    label: "move",
-    malformed: "one canonical finite bounded move_to call",
-    parse: parseCanonicalGenericInitialMoveV3,
-  });
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    selectedBaseBinding,
+    {
+      label: "move",
+      malformed: "one canonical finite bounded move_to call",
+      parse: parseCanonicalGenericInitialMoveV3,
+    },
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
@@ -2224,12 +2241,19 @@ export function deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
+  selectedBaseBinding?: GenericRuntimeTraceSourceBindingEvidenceV3,
 ): GenericRuntimeTraceInitialResizeSourceEditPlanV3 {
-  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(candidateSource, sceneName, sourcePath, {
-    label: "resize",
-    malformed: "one canonical positive non-identity bounded scale call",
-    parse: parseCanonicalGenericInitialResizeV3,
-  });
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    selectedBaseBinding,
+    {
+      label: "resize",
+      malformed: "one canonical positive non-identity bounded scale call",
+      parse: parseCanonicalGenericInitialResizeV3,
+    },
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
@@ -2361,20 +2385,18 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
     genericRuntimeTraceInitialMoveV3LoweringError("the edit must be rebased from the current source generation.");
   }
   const projectedBindings = projectedGenericRuntimeTraceSourceBindingsV3(analysis);
-  const projected = projectedBindings[0];
-  const requestBinding = request.sourceBindings[0];
-  if (
-    projectedBindings.length !== 1 ||
-    !projected ||
-    request.sourceBindings.length !== 1 ||
-    !requestBinding ||
-    requestBinding.sourceVariable !== projected.evidence.name ||
-    requestBinding.entityId !== operation.entityId
-  ) {
+  const requestBindingMatches = request.sourceBindings.filter(({ entityId }) => entityId === operation.entityId);
+  if (requestBindingMatches.length !== 1) {
+    genericRuntimeTraceInitialMoveV3LoweringError("one exact request binding must match the edited entity.");
+  }
+  const requestBinding = requestBindingMatches[0]!;
+  const projectedMatches = projectedBindings.filter(({ evidence }) => evidence.name === requestBinding.sourceVariable);
+  if (projectedMatches.length !== 1) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "one exact request binding must match the one projected top-level V3 source occurrence.",
+      "one exact projected top-level V3 source occurrence must match the edited entity's request binding.",
     );
   }
+  const projected = projectedMatches[0]!;
   const assignment = analysis.scene.statements.find(({ id }) => id === projected.binding.statementId);
   const insertionBoundary = assignment?.insertionAfter;
   if (!assignment || !insertionBoundary || insertionBoundary.indentation !== assignment.indentation) {
@@ -2409,6 +2431,7 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
       loweredSource,
       request.sceneName,
       request.sourcePath,
+      projected.evidence,
     );
     if (
       derived.baseSource !== source ||
@@ -2456,6 +2479,7 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
     loweredSource,
     request.sceneName,
     request.sourcePath,
+    projected.evidence,
   );
   if (
     derived.baseSource !== source ||

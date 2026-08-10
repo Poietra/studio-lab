@@ -1525,8 +1525,18 @@ export class FastManimSnapshotRunner {
 
     const plan =
       preflight.kind === "fast-manim-generic-initial-move-v3"
-        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath)
-        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath);
+        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+            sourceText,
+            request.sceneName,
+            request.sourcePath,
+            preflight.baseBinding,
+          )
+        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+            sourceText,
+            request.sceneName,
+            request.sourcePath,
+            preflight.baseBinding,
+          );
     const planMatchesPreflight =
       "expectedWorldCenter" in plan
         ? preflight.kind === "fast-manim-generic-initial-move-v3" &&
@@ -1565,16 +1575,14 @@ export class FastManimSnapshotRunner {
     const sceneId = fastManimRuntimeTraceSceneIdV1(request.sourcePath, request.sceneName);
     const baseBindings = fastManimRuntimeTraceSourceBindingsFromAnalysisV3(baseAnalysis, sceneId);
     const candidateBindings = fastManimRuntimeTraceSourceBindingsFromAnalysisV3(candidateAnalysis, sceneId);
-    const baseBinding = baseBindings.find(({ id }) => id === preflight.baseBinding.id);
-    const candidateBinding = candidateBindings.find(({ name }) => name === preflight.baseBinding.name);
-    if (
-      !baseBinding ||
-      !candidateBinding ||
-      !isDeepStrictEqual(baseBinding, plan.baseBinding) ||
-      !isDeepStrictEqual(candidateBinding, plan.candidateBinding)
-    ) {
+    const baseBindingMatches = baseBindings.filter((binding) => isDeepStrictEqual(binding, plan.baseBinding));
+    const candidateBindingMatches = candidateBindings.filter((binding) =>
+      isDeepStrictEqual(binding, plan.candidateBinding),
+    );
+    if (baseBindingMatches.length !== 1 || candidateBindingMatches.length !== 1) {
       throw new HttpError("The generic Runtime Trace candidate SourceAnalysis evidence changed before execution.", 409);
     }
+    const baseBinding = baseBindingMatches[0]!;
 
     const baseRun = fastManimRuntimeTraceRunRequestV1Schema.parse({ ...request, sourceHash: before.hash });
     const baseProducerRequest = createFastManimRuntimeTraceProducerRequestV3(
@@ -1640,10 +1648,7 @@ export class FastManimSnapshotRunner {
     };
     const verified =
       preflight.kind === "fast-manim-generic-initial-move-v3"
-        ? verifyFastManimRuntimeTraceInitialMoveCandidateV3({
-            ...candidatePair,
-            expectedInitialCenter: preflight.expectedWorldCenter,
-          })
+        ? verifyFastManimRuntimeTraceInitialMoveCandidateV3(candidatePair)
         : verifyFastManimRuntimeTraceInitialResizeCandidateV3({
             ...candidatePair,
             expectedScaleFactor: preflight.expectedScaleFactor,

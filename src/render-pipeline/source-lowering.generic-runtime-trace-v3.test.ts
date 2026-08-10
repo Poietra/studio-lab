@@ -135,21 +135,38 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     expect(derived.expectedWorldCenter).toEqual({ x: 2, y: 1 });
   });
 
-  it("fails closed when SourceAnalysis projects multiple bindings or only a control-flow binding", () => {
+  it("selects the edited binding while preserving unrelated projected and request bindings", () => {
     const multiple = source.replace(
       "        square.set_stroke(WHITE, width=2)",
       "        circle = Circle()\n        square.set_stroke(WHITE, width=2)",
     );
+    const circleEntityId = `source:${sourcePath}#${sceneName}:circle`;
+    const lowered = lower(multiple, {
+      ...request(multiple),
+      sourceBindings: [
+        { entityId, sourceVariable: "square" },
+        { entityId: circleEntityId, sourceVariable: "circle" },
+      ],
+    });
+
+    expect(lowered?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.move_to((2, 1, 0))\n" +
+        "        circle = Circle()",
+    );
+    expect(lowered?.preflight).toMatchObject({ entityId, baseBinding: { name: "square", ordinal: 1 } });
+  });
+
+  it("fails closed when the selected binding is only available in control flow", () => {
     const controlled = source.replace(
       "        square = Square().set_fill(BLUE, opacity=0.6)",
       "        if True:\n            square = Square().set_fill(BLUE, opacity=0.6)",
     );
 
-    expect(() => lower(multiple, request(multiple))).toThrow(/one projected top-level V3 source occurrence/i);
-    expect(() => lower(controlled, request(controlled))).toThrow(/one projected top-level V3 source occurrence/i);
+    expect(() => lower(controlled, request(controlled))).toThrow(/projected top-level V3 source occurrence/i);
   });
 
-  it("fails closed on a transition, resize, multi-operation edit, or multiple request bindings", () => {
+  it("fails closed on a transition, resize, multi-operation edit, or missing target binding", () => {
     expect(() => lower(source, { ...request(), destination: { sceneName: "Other", sourcePath } })).toThrow(
       /Scene transitions/i,
     );
@@ -185,12 +202,9 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     expect(() =>
       lower(source, {
         ...request(),
-        sourceBindings: [
-          { entityId, sourceVariable: "square" },
-          { entityId: `${entityId}:extra`, sourceVariable: "extra" },
-        ],
+        sourceBindings: [{ entityId: `${entityId}:extra`, sourceVariable: "square" }],
       }),
-    ).toThrow(/one exact request binding/i);
+    ).toThrow(/request binding must match the edited entity/i);
   });
 
   it("rejects non-canonical or non-adjacent candidate move statements during independent derivation", () => {
@@ -220,9 +234,9 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     // Preview stays available: only the source-edit candidate is withheld, so
     // the producer never receives a binding its own inventory would reject.
     expect(imported?.runtimeSceneState.duration).toBe(0.1);
-    expect(() => lower(rebound, request(rebound))).toThrow(/one projected top-level V3 source occurrence/i);
+    expect(() => lower(rebound, request(rebound))).toThrow(/projected top-level V3 source occurrence/i);
     expect(() => deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(rebound, sceneName, sourcePath)).toThrow(
-      /exactly one unambiguous top-level V3 binding/i,
+      /structural match for the selected top-level V3 binding/i,
     );
   });
 

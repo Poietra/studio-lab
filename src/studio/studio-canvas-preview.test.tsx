@@ -146,13 +146,13 @@ function previewView(
   runtimeTraceValidationPending: StudioPreviewRendererViewV1["runtimeTraceValidationPending"] = null,
   runtimeTraceBaseFrameRetained = runtimeTraceValidationPending?.baseFrameRetained === true,
   runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererViewV1["runtimeTraceOpaqueSelectionEntities"] = [],
-  genericInitialEditCandidate: StudioPreviewRendererViewV1["genericInitialEditCandidate"] = null,
+  genericInitialEditCandidates: StudioPreviewRendererViewV1["genericInitialEditCandidates"] = [],
 ): StudioPreviewRendererViewV1 {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
-    genericInitialEditCandidate,
+    genericInitialEditCandidates,
     initialEditRuntimeAuthority,
     interactionGeometry,
     interactionAuthority,
@@ -770,7 +770,7 @@ describe("StudioCanvas retained preview layer", () => {
       studioSceneId: "scenes/staticsquare.py#StaticSquare",
     };
     const boundedAuthority = {
-      editableRuntimeEntityId: runtimeId,
+      editableRuntimeEntityIds: [runtimeId],
       kind: "bounded-interactive" as const,
       reason: "runtime-trace-initial-edit" as const,
       sourceAnchor: 0 as const,
@@ -797,7 +797,7 @@ describe("StudioCanvas retained preview layer", () => {
         null,
         false,
         [],
-        candidate,
+        [candidate],
       ),
       selectedIds: new Set([squareId]),
     };
@@ -810,6 +810,103 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
     expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);
     expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
+  });
+
+  it("opens every generic V3 candidate without opening an unverified sibling", () => {
+    const sceneId = "scenes/feynman.py#FeynmanDiagram";
+    const firstId = `source:${sceneId}:electron`;
+    const secondId = `source:${sceneId}:labels`;
+    const lockedId = `source:${sceneId}:unmapped`;
+    const firstRuntimeId = "scene:feynman/runtime-v3-root:0";
+    const secondRuntimeId = "scene:feynman/runtime-v3-root:1";
+    const entities = [
+      { ...CIRCLE_ENTITY, id: firstId, sourceIdentity: { kind: "known" as const, value: "electron" } },
+      {
+        ...CIRCLE_ENTITY,
+        id: secondId,
+        position: { x: 420, y: 180 },
+        sourceIdentity: { kind: "known" as const, value: "labels" },
+      },
+      {
+        ...CIRCLE_ENTITY,
+        id: lockedId,
+        position: { x: 520, y: 180 },
+        sourceIdentity: { kind: "known" as const, value: "unmapped" },
+      },
+    ];
+    const candidates = [
+      {
+        baseCenter: { x: 320, y: 180 },
+        baseDimensions: { height: 2, width: 2 },
+        bindingId: `source-binding:${"a".repeat(64)}`,
+        duration: 1,
+        lifetime: { end: 1, start: 0 as const },
+        profile: "generic-runtime-trace-v3" as const,
+        runtimeEntityId: firstRuntimeId,
+        sourceName: "electron",
+        studioEntityId: firstId,
+        studioSceneId: sceneId,
+      },
+      {
+        baseCenter: { x: 420, y: 180 },
+        baseDimensions: { height: 1, width: 3 },
+        bindingId: `source-binding:${"b".repeat(64)}`,
+        duration: 1,
+        lifetime: { end: 1, start: 0 as const },
+        profile: "generic-runtime-trace-v3" as const,
+        runtimeEntityId: secondRuntimeId,
+        sourceName: "labels",
+        studioEntityId: secondId,
+        studioSceneId: sceneId,
+      },
+    ];
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities,
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:generic-v3-multi-root",
+            revision: "b".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([
+          [firstRuntimeId, { dimensions: { height: 60, width: 60 }, position: { x: 320, y: 180 } }],
+          [secondRuntimeId, { dimensions: { height: 50, width: 120 }, position: { x: 420, y: 180 } }],
+        ]),
+        new Map([
+          ["electron", { bindingId: candidates[0]!.bindingId, entityId: firstRuntimeId, sourceName: "electron" }],
+          ["labels", { bindingId: candidates[1]!.bindingId, entityId: secondRuntimeId, sourceName: "labels" }],
+        ]),
+        {
+          editableRuntimeEntityIds: [firstRuntimeId, secondRuntimeId],
+          kind: "bounded-interactive",
+          reason: "runtime-trace-initial-edit",
+          sourceAnchor: 0,
+          verifiedRuntimeEntityIds: [firstRuntimeId, secondRuntimeId],
+        },
+        null,
+        null,
+        null,
+        false,
+        [],
+        candidates,
+      ),
+      selectedIds: new Set([firstId]),
+    };
+    const tree = StudioCanvas(props);
+    expect(findEntityButton(tree, firstId).props.onPointerMove).toBe(props.onEntityPointerMove);
+    expect(findEntityButton(tree, secondId).props.onPointerMove).toBe(props.onEntityPointerMove);
+    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
+    expect(markup).not.toContain(`data-studio-entity="${lockedId}"`);
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(markup).toContain(`data-studio-resize-handle="${firstId}"`);
+    const secondSelectedMarkup = renderToStaticMarkup(<StudioCanvas {...props} selectedIds={new Set([secondId])} />);
+    expect(secondSelectedMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(secondSelectedMarkup).toContain(`data-studio-resize-handle="${secondId}"`);
   });
 
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {

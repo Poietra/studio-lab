@@ -1,15 +1,20 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
-
+import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
 } from "../src/render-pipeline/source-lowering";
+import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
 import type { FastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
-import { digestFastManimRuntimeTraceDomainV3 } from "./fast-manim-runtime-trace-v3-contract";
+import {
+  digestFastManimRuntimeTraceDomainV3,
+  fastManimRuntimeTraceSourceBindingsFromAnalysisV3,
+} from "./fast-manim-runtime-trace-v3-contract";
 import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import {
   digestFastManimRuntimeTraceSourceBindingsV3,
@@ -34,14 +39,30 @@ class StaticSquare(Scene):
     def construct(self):
         square = Square().set_fill(BLUE, opacity=0.6)
         square.set_stroke(WHITE, width=2)
-        self.add(square)
+        circle = Circle()
+        self.add(square, circle)
         self.wait(1 / 60)
 `;
+const BASE_ANALYSIS = studioSourceAnalysisProviderV1.analyze({
+  expectedSourceHash: createHash("sha256").update(BASE_SOURCE, "utf8").digest("hex"),
+  sceneName: SCENE_NAME,
+  sourcePath: SOURCE_PATH,
+  sourceText: BASE_SOURCE,
+});
+const BASE_BINDING = fastManimRuntimeTraceSourceBindingsFromAnalysisV3(
+  BASE_ANALYSIS,
+  fastManimRuntimeTraceSceneIdV1(SOURCE_PATH, SCENE_NAME),
+).find(({ name }) => name === "square")!;
 const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
-const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH);
+const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+  CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+  BASE_BINDING,
+);
 const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
@@ -50,6 +71,7 @@ const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   RESIZE_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
+  BASE_BINDING,
 );
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
@@ -283,7 +305,10 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
         { sourceHash: PLAN.baseSourceHash, version: 3 },
         { sourceHash: result.sourceHash, version: 3 },
       ]);
-      expect(backend.requests.map(({ sourceBindings }) => sourceBindings[0]?.name)).toEqual(["square", "square"]);
+      expect(backend.requests.map(({ sourceBindings }) => sourceBindings.map(({ name }) => name))).toEqual([
+        ["square", "circle"],
+        ["square", "circle"],
+      ]);
       expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(PLAN.baseBinding.id);
       expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(PLAN.candidateBinding.id);
     });
