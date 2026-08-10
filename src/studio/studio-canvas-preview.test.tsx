@@ -789,7 +789,10 @@ describe("StudioCanvas retained preview layer", () => {
           },
           phase: "presented",
         },
-        new Map([[runtimeId, { dimensions: { height: 90, width: 90 }, position: { x: 320, y: 180 } }]]),
+        // Runtime interaction metadata intentionally omits top-level logical
+        // groups. The verified candidate endpoint must still expose its one
+        // bounded hit target.
+        new Map(),
         new Map([["square", { bindingId: candidate.bindingId, entityId: runtimeId, sourceName: "square" }]]),
         boundedAuthority,
         null,
@@ -806,6 +809,8 @@ describe("StudioCanvas retained preview layer", () => {
     const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
     expect(markup).toContain("Runtime Trace initial move / uniform resize");
     expect(markup).not.toContain(`data-studio-entity="${otherId}"`);
+    expect(markup).toContain(`data-studio-runtime-entity="${runtimeId}"`);
+    expect(markup).toContain('data-studio-entity-width="2.0000"');
     // The verified candidate root exposes exactly its uniform SE resize handle.
     expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
     expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);

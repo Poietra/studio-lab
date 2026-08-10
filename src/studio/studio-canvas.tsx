@@ -348,6 +348,9 @@ export function StudioCanvas({
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
   const genericInitialEditCandidates = preview?.genericInitialEditCandidates ?? [];
+  const genericInitialEditCandidatesByStudioEntityId = new Map(
+    genericInitialEditCandidates.map((candidate) => [candidate.studioEntityId, candidate]),
+  );
   const pinnedRuntimeEditAuthority =
     preview?.initialEditRuntimeAuthority ?? preview?.runtimeTraceTerminalEditAuthority ?? null;
   const boundedRuntimeEditTargetIds = new Set([
@@ -458,9 +461,24 @@ export function StudioCanvas({
               entity.id !== pendingRuntimeTraceTargetId
             )
               return null;
+            const genericInitialEditCandidate = genericInitialEditCandidatesByStudioEntityId.get(entity.id);
+            const genericInitialEditIdentity: ReturnType<typeof verifiedPreviewGeometryForStudioEntityV1> =
+              preview?.interactionAuthority.kind === "bounded-interactive" &&
+              preview.interactionAuthority.reason === "runtime-trace-initial-edit" &&
+              genericInitialEditCandidate
+                ? {
+                    bindingId: genericInitialEditCandidate.bindingId,
+                    geometry: {
+                      dimensions: genericInitialEditCandidate.baseDimensions,
+                      position: genericInitialEditCandidate.baseCenter,
+                    },
+                    runtimeEntityId: genericInitialEditCandidate.runtimeEntityId,
+                  }
+                : null;
             const presentedIdentity =
               showingCanvasPixels && preview
-                ? verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity)
+                ? (verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity) ??
+                  genericInitialEditIdentity)
                 : null;
             // Source projection does not expand a directly-added VGroup into
             // present child rows. A correlated selection-only frame does: its
