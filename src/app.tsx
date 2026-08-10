@@ -73,7 +73,7 @@ import {
 } from "./studio/lifetime-editing";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE, magicEditCapabilities } from "./studio/magic-edit-capabilities";
 import { MagicEditPanel } from "./studio/magic-edit-panel";
-import type { Point, ProgramRecord, ProposedState, RuntimeSceneState } from "./studio/model";
+import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./studio/model";
 import {
   adjustAppliedMotionClipControl,
   appliedMotionClipReadOnlyReason,
@@ -87,6 +87,7 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
+  type StudioPreviewInitialEditProjectionAuthorityV1,
   studioPreviewGenericInitialEditProgramSetV1,
   studioPreviewInitialEditTargetIsPresentV1,
 } from "./studio/preview-temporal-rebase";
@@ -781,14 +782,20 @@ export function App({
     transientEdit: gesturePreviewKind !== "idle" || importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
-  const genericInitialEditCandidate = previewRenderer?.genericInitialEditCandidate ?? null;
-  const boundedRuntimeEditTargetId =
-    genericInitialEditCandidate?.studioEntityId ??
-    previewRenderer?.initialEditRuntimeAuthority?.studioEntityId ??
-    previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId ??
-    null;
+  const genericInitialEditCandidates = previewRenderer?.genericInitialEditCandidates ?? [];
+  const genericInitialEditCandidateFor = (entityId: string | null | undefined) =>
+    entityId == null
+      ? null
+      : (genericInitialEditCandidates.find(({ studioEntityId }) => studioEntityId === entityId) ?? null);
+  const boundedRuntimeEditTargetIds = new Set(
+    [
+      ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
+      previewRenderer?.initialEditRuntimeAuthority?.studioEntityId,
+      previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId,
+    ].filter((entityId): entityId is string => typeof entityId === "string"),
+  );
   const boundedRuntimeMutationIsLocked = (entityId: string) =>
-    boundedRuntimeEditTargetId !== null && entityId !== boundedRuntimeEditTargetId;
+    boundedRuntimeEditTargetIds.size > 0 && !boundedRuntimeEditTargetIds.has(entityId);
   const {
     beginRequest: beginEditorRevisionRequest,
     blockDurationAuthority,
@@ -862,12 +869,12 @@ export function App({
         ? "This Runtime Trace permits at most one terminal Square move and one positive uniform resize."
         : "This Runtime Trace permits exactly one terminal grid title move.";
     }
-    const genericCandidate = previewRenderer?.genericInitialEditCandidate;
+    const genericCandidates = previewRenderer?.genericInitialEditCandidates ?? [];
     if (
-      genericCandidate &&
-      studioPreviewGenericInitialEditProgramSetV1(records, genericCandidate).kind !== "authorized"
+      genericCandidates.length > 0 &&
+      studioPreviewGenericInitialEditProgramSetV1(records, genericCandidates).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move or uniform resize.";
+      return "This generic Runtime Trace permits exactly one initial position move or uniform resize on one verified binding.";
     }
     return null;
   }
@@ -878,7 +885,8 @@ export function App({
     // presentation evidence and can never authorize a Program.
     if (rejectSelectionOnlyPreviewMutation()) return false;
     const plannedRestrictedPrograms =
-      previewRenderer?.runtimeTraceTerminalEditAuthority || previewRenderer?.genericInitialEditCandidate
+      previewRenderer?.runtimeTraceTerminalEditAuthority ||
+      (previewRenderer?.genericInitialEditCandidates.length ?? 0) > 0
         ? (() => {
             const planned = stageEditorDraftTransition(editorState, input);
             return [...planned.appliedPrograms, ...(planned.draftProgram ? [planned.draftProgram] : [])];
@@ -1058,25 +1066,33 @@ export function App({
       : {};
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
-  const initialEditProjectionAuthority = previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate;
-  const retainedInitialEditDragAuthority =
+  const initialEditProjectionAuthorities: readonly StudioPreviewInitialEditProjectionAuthorityV1[] =
+    previewRenderer?.initialEditRuntimeAuthority
+      ? [previewRenderer.initialEditRuntimeAuthority]
+      : genericInitialEditCandidates;
+  const initialEditProjectionAuthorityFor = (entityId: string | null | undefined) =>
+    entityId == null
+      ? null
+      : (initialEditProjectionAuthorities.find(({ studioEntityId }) => studioEntityId === entityId) ?? null);
+  const retainedInitialEditDragAuthorities =
     (gesturePreviewKind === "drag" || gesturePreviewKind === "scale") &&
     (currentTime === 0 || previewRenderer?.initialEditRuntimeAuthority?.profile === "write-stuff-v12")
-      ? initialEditProjectionAuthority
-      : null;
-  const presentedInitialEditAuthority =
+      ? initialEditProjectionAuthorities
+      : [];
+  const presentedInitialEditAuthorities =
     previewRenderer?.state.phase === "presented" && previewRenderer.syntheticInitialEditAnchor === 0
-      ? initialEditProjectionAuthority
-      : (retainedInitialEditDragAuthority ?? null);
+      ? initialEditProjectionAuthorities
+      : retainedInitialEditDragAuthorities;
   const initialEditInteractionGeometry =
     previewRenderer?.interactionGeometry ??
-    (retainedInitialEditDragAuthority ? new Map([[retainedInitialEditDragAuthority.runtimeEntityId, null]]) : null);
+    (retainedInitialEditDragAuthorities.length > 0
+      ? new Map(retainedInitialEditDragAuthorities.map(({ runtimeEntityId }) => [runtimeEntityId, null]))
+      : null);
   const semanticVisibleEntities = projectStudioPreviewRuntimeTraceTerminalEntityV1(
-    projectStudioPreviewInitialEntityPresenceV1(
+    presentedInitialEditAuthorities.reduce<readonly ProjectedEntity[]>(
+      (entities, authority) =>
+        projectStudioPreviewInitialEntityPresenceV1(entities, authority, initialEditInteractionGeometry, currentTime),
       workspaceProjection?.visibleEntities ?? [],
-      presentedInitialEditAuthority,
-      initialEditInteractionGeometry,
-      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -1093,11 +1109,10 @@ export function App({
     ...semanticVisibleEntities,
   ];
   const editableEntities = projectStudioPreviewRuntimeTraceTerminalEntityV1(
-    projectStudioPreviewInitialEntityPresenceV1(
+    presentedInitialEditAuthorities.reduce<readonly ProjectedEntity[]>(
+      (entities, authority) =>
+        projectStudioPreviewInitialEntityPresenceV1(entities, authority, initialEditInteractionGeometry, currentTime),
       workspaceProjection?.editableEntities ?? [],
-      presentedInitialEditAuthority,
-      initialEditInteractionGeometry,
-      currentTime,
     ),
     previewRenderer?.runtimeTraceTerminalEditAuthority ?? null,
     previewRenderer?.runtimeTraceValidationPending ?? null,
@@ -2033,8 +2048,8 @@ export function App({
       !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
     const replacesGenericInitialEdit =
       previousDraft !== null &&
-      genericInitialEditCandidate !== null &&
-      studioPreviewGenericInitialEditProgramSetV1([previousDraft], genericInitialEditCandidate).kind === "authorized";
+      genericInitialEditCandidates.length > 0 &&
+      studioPreviewGenericInitialEditProgramSetV1([previousDraft], genericInitialEditCandidates).kind === "authorized";
     const sourcePrograms =
       previousDraft && !replacesGenericInitialEdit
         ? [...appliedCanonicalPrograms, previousDraft.program]
@@ -2088,7 +2103,10 @@ export function App({
       : undefined;
     const runtimePresenceAuthority =
       sourceAnchor === null && syntheticSourceAnchor === 0
-        ? (previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidate)
+        ? (previewRenderer?.initialEditRuntimeAuthority ??
+          genericInitialEditCandidateFor(input.targetEntityIds?.[0]) ??
+          genericInitialEditCandidates[0] ??
+          null)
         : null;
     const anchor =
       terminalTargetIsExact && syntheticSourceAnchor !== null && syntheticSourceAnchor !== undefined
@@ -2152,7 +2170,7 @@ export function App({
       setDraftError("Apply or discard the Applied Program edit before moving another object.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
+    if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
@@ -2183,12 +2201,11 @@ export function App({
           (!candidate.provisional || (candidate.transactionId && appliedTransactionIds.has(candidate.transactionId))),
       ),
     );
-    const targetEntityIds =
-      boundedRuntimeEditTargetId === entityId
-        ? [entityId]
-        : selectedEditableIds.includes(entityId)
-          ? selectedEditableIds
-          : [entityId];
+    const targetEntityIds = boundedRuntimeEditTargetIds.has(entityId)
+      ? [entityId]
+      : selectedEditableIds.includes(entityId)
+        ? selectedEditableIds
+        : [entityId];
     const gestureContext = directGestureContext();
     if (!gestureContext.proposedState) return;
     const sourceScene = projectRuntimeSceneToSourceTimeline(
@@ -2312,7 +2329,7 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
+    if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
@@ -2332,7 +2349,7 @@ export function App({
       (!entity.provisional || (entity.transactionId && appliedTransactionIds.has(entity.transactionId)));
     if (!editable) return;
     const runtimeUniformResizeOnly =
-      genericInitialEditCandidate?.studioEntityId === entity.id ||
+      genericInitialEditCandidateFor(entity.id) !== null ||
       previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
@@ -2487,7 +2504,7 @@ export function App({
       setDraftError("This SquareToCircle proof currently supports position only.");
       return;
     }
-    if (genericInitialEditCandidate?.studioEntityId === entityId && interactionMode !== "position") {
+    if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
       return;
@@ -2496,7 +2513,7 @@ export function App({
     const entity = editableEntities.find((candidate) => candidate.id === entityId && candidate.present);
     if (!entity) return;
     const runtimeUniformResizeOnly =
-      genericInitialEditCandidate?.studioEntityId === entity.id ||
+      genericInitialEditCandidateFor(entity.id) !== null ||
       previewRenderer?.initialEditRuntimeAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEditAuthority?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
@@ -2763,7 +2780,7 @@ export function App({
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
       projectStudioPreviewInitialValidationSceneV1(
         sourceScene,
-        anchor.sourceTime === 0 ? initialEditProjectionAuthority : null,
+        anchor.sourceTime === 0 ? initialEditProjectionAuthorityFor(entityId) : null,
       ),
       anchor.sourceTime === previewRenderer?.runtimeTraceTerminalEditAuthority?.sourceAnchor
         ? previewRenderer.runtimeTraceTerminalEditAuthority
@@ -2828,7 +2845,7 @@ export function App({
       setDraftError("Only the runtime-proven source edit target can be changed in this preview.");
       return false;
     }
-    const initialTransformAuthority = initialEditProjectionAuthority;
+    const initialTransformAuthority = initialEditProjectionAuthorityFor(entityId);
     const runtimeTraceTerminalAuthority = previewRenderer?.runtimeTraceTerminalEditAuthority;
     const entity = editableEntities.find((candidate) => candidate.id === entityId);
     if (
@@ -3019,7 +3036,9 @@ export function App({
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
       projectStudioPreviewInitialValidationSceneV1(
         sourceScene,
-        anchor.sourceTime === 0 ? initialEditProjectionAuthority : null,
+        anchor.sourceTime === 0
+          ? (previewRenderer?.initialEditRuntimeAuthority ?? genericInitialEditCandidateFor(targetIds[0]) ?? null)
+          : null,
       ),
       anchor.sourceTime === previewRenderer?.runtimeTraceTerminalEditAuthority?.sourceAnchor
         ? previewRenderer.runtimeTraceTerminalEditAuthority
@@ -3063,12 +3082,11 @@ export function App({
       return;
     }
     const multiplier = event.shiftKey ? 5 : 1;
-    const targetIds =
-      boundedRuntimeEditTargetId === entityId
-        ? [entityId]
-        : selectedObjectIds.includes(entityId)
-          ? selectedObjectIds
-          : [entityId];
+    const targetIds = boundedRuntimeEditTargetIds.has(entityId)
+      ? [entityId]
+      : selectedObjectIds.includes(entityId)
+        ? selectedObjectIds
+        : [entityId];
     installPositionDraft(
       { x: delta.x * multiplier, y: delta.y * multiplier },
       targetIds,
@@ -3166,16 +3184,17 @@ export function App({
     ? previewAppliedPrograms.map((record) => record.program)
     : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
-  const genericInitialEditProgramSet = genericInitialEditCandidate
-    ? studioPreviewGenericInitialEditProgramSetV1(previewProgramRecords, genericInitialEditCandidate)
-    : null;
+  const genericInitialEditProgramSet =
+    genericInitialEditCandidates.length > 0
+      ? studioPreviewGenericInitialEditProgramSetV1(previewProgramRecords, genericInitialEditCandidates)
+      : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
   const renderCandidate: RenderProgramCandidate | null =
     activeScene &&
     activeProjectId &&
     renderProgram &&
-    (!genericInitialEditCandidate || genericInitialEditProgramSet?.kind === "authorized")
+    (genericInitialEditCandidates.length === 0 || genericInitialEditProgramSet?.kind === "authorized")
       ? {
           anchors: activeScene.anchors,
           ...(previewRenderer?.cameraCenter &&

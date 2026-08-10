@@ -1525,8 +1525,18 @@ export class FastManimSnapshotRunner {
 
     const plan =
       preflight.kind === "fast-manim-generic-initial-move-v3"
-        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath)
-        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(sourceText, request.sceneName, request.sourcePath);
+        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+            sourceText,
+            request.sceneName,
+            request.sourcePath,
+            preflight.baseBinding.name,
+          )
+        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+            sourceText,
+            request.sceneName,
+            request.sourcePath,
+            preflight.baseBinding.name,
+          );
     const planMatchesPreflight =
       "expectedWorldCenter" in plan
         ? preflight.kind === "fast-manim-generic-initial-move-v3" &&
@@ -1642,7 +1652,7 @@ export class FastManimSnapshotRunner {
       preflight.kind === "fast-manim-generic-initial-move-v3"
         ? verifyFastManimRuntimeTraceInitialMoveCandidateV3({
             ...candidatePair,
-            expectedInitialCenter: preflight.expectedWorldCenter,
+            expectedWorldCenter: preflight.expectedWorldCenter,
           })
         : verifyFastManimRuntimeTraceInitialResizeCandidateV3({
             ...candidatePair,

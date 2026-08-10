@@ -121,7 +121,12 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(candidateSource, "StaticSquare", sourcePath);
+      const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+        candidateSource,
+        "StaticSquare",
+        sourcePath,
+        "square",
+      );
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -203,7 +208,12 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(candidateSource, "StaticSquare", sourcePath);
+      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+        candidateSource,
+        "StaticSquare",
+        sourcePath,
+        "square",
+      );
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,

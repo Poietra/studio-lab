@@ -16,6 +16,8 @@ import {
 import { fastManimRuntimeTraceV3Schema } from "./fast-manim-runtime-trace-v3-result-contract";
 import genericRuntimeTraceFixture from "./test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 
+type TraceDocument = ReturnType<typeof fastManimRuntimeTraceV3Schema.parse>;
+
 const FRAME = { height: 8, width: 128 / 9 } as const;
 const SOURCE_PATH = "scenes/staticsquare.py";
 const SCENE_NAME = "StaticSquare";
@@ -84,8 +86,52 @@ function fixture() {
     binding: structuredClone(baseRequest.sourceBindings[0]!),
     candidate,
     candidateRequest,
-    expectedInitialCenter: TARGET,
+    expectedWorldCenter: TARGET,
   };
+}
+
+function withSiblingRoot(input: Readonly<{ base: TraceDocument; candidate: TraceDocument }>) {
+  // Extend both traces with one Feynman-shaped sibling: a second top-level
+  // root carrying its own updater-free source mapping, byte-identical on both
+  // sides so only the selected binding may move or scale.
+  const { base, candidate } = input;
+  const baseRoot = base.roots[0]!;
+  const rootId = `${baseRoot.id.slice(0, -1)}1`;
+  const siblingMapping = structuredClone(base.sourceBindings[0]!);
+  siblingMapping.binding.id = `source-binding:${"a".repeat(64)}`;
+  siblingMapping.binding.name = "circle";
+  siblingMapping.binding.ordinal = 2;
+  siblingMapping.rootId = rootId;
+  siblingMapping.endpoints.initial.center.x += 3;
+  siblingMapping.endpoints.terminal.center.x += 3;
+  for (const trace of [base, candidate]) {
+    trace.roots.push({ id: rootId, lifetimes: structuredClone(baseRoot.lifetimes), sceneOrder: 1 });
+    trace.draws.push({
+      familyPath: [],
+      id: `${rootId}/draw:0`,
+      lifetimes: structuredClone(baseRoot.lifetimes),
+      rootId,
+    });
+    trace.sourceBindings.push(structuredClone(siblingMapping));
+  }
+  // Inserting the edit statement legitimately shifts sibling spans and their
+  // sourceHash-derived ids on the candidate side; sibling invariance must
+  // still hold across exactly that divergence.
+  const candidateSibling = candidate.sourceBindings.at(-1)!;
+  candidateSibling.binding.id = `source-binding:${"b".repeat(64)}`;
+  candidateSibling.binding.span.endLine += 1;
+  candidateSibling.binding.span.startLine += 1;
+  base.frames.forEach((baseFrame, frameIndex) => {
+    const siblingState = {
+      ...structuredClone(baseFrame.states[0]!),
+      drawId: `${rootId}/draw:0`,
+      paintOrder: baseFrame.states.length,
+    };
+    siblingState.transform.tx += 3;
+    baseFrame.states.push(structuredClone(siblingState));
+    candidate.frames[frameIndex]!.states.push(structuredClone(siblingState));
+  });
+  return rootId;
 }
 
 function rejectCode(
@@ -133,9 +179,68 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
       input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: 0, y: 0 };
       input.candidate.sourceBindings[0]!.endpoints.terminal.center = { x: 0, y: 0 };
       input.candidate.frames[0]!.states[0]!.transform = { ...input.base.frames[0]!.states[0]!.transform };
-      input.expectedInitialCenter = { x: 0, y: 0 };
+      input.expectedWorldCenter = { x: 0, y: 0 };
     }, "candidate-noop");
-    rejectCode((input) => (input.expectedInitialCenter = { x: TARGET.x + 0.25, y: TARGET.y }), "candidate-endpoint");
+    rejectCode((input) => (input.expectedWorldCenter = { x: TARGET.x + 0.25, y: TARGET.y }), "candidate-endpoint");
+  });
+
+  it("anchors the move target on the settled endpoint when an entrance animation offsets frame zero", () => {
+    // Feynman-shaped evidence: the frame-zero box of a Write()-revealed group
+    // sits offset from the constructed placement that move_to positions, so
+    // the settled (terminal) endpoint is what must land on the target.
+    const entrance = fixture();
+    entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+    entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.5 + TARGET.x, y: 0.25 + TARGET.y };
+
+    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(entrance)).toEqual(entrance.candidate);
+
+    // The old initial-center anchoring is a wrong accept here: a candidate
+    // landing its transient frame-zero center on the target while the settled
+    // placement misses it must reject.
+    rejectCode((input) => {
+      input.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+      input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: TARGET.x, y: TARGET.y };
+      input.candidate.sourceBindings[0]!.endpoints.terminal.center = { x: TARGET.x + 0.5, y: TARGET.y - 0.25 };
+    }, "candidate-endpoint");
+  });
+
+  it("multi-root: accepts a selected-only translation beside an untouched sibling root and mapping", () => {
+    const input = fixture();
+    withSiblingRoot(input);
+
+    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.roots).toHaveLength(2);
+    expect(input.candidate.sourceBindings).toHaveLength(2);
+  });
+
+  it("multi-root: rejects a move that disturbs a sibling mapping, sibling state, or the root selection", () => {
+    rejectCode((input) => {
+      withSiblingRoot(input);
+      input.candidate.sourceBindings[1]!.endpoints.initial.center.x += 0.1;
+    }, "candidate-binding");
+    rejectCode((input) => {
+      withSiblingRoot(input);
+      input.candidate.frames[0]!.states[1]!.transform.tx += 0.1;
+    }, "candidate-semantic");
+    rejectCode((input) => {
+      withSiblingRoot(input);
+      input.candidate.roots[1]!.lifetimes[0]!.endFrame += 1;
+    }, "candidate-root");
+    rejectCode((input) => {
+      const rootId = withSiblingRoot(input);
+      input.candidate.sourceBindings[0]!.rootId = rootId;
+    }, "candidate-root");
+  });
+
+  it("multi-root: rejects an ambiguous selected-name mapping on either side", () => {
+    rejectCode((input) => {
+      withSiblingRoot(input);
+      input.base.sourceBindings.push(structuredClone(input.base.sourceBindings[0]!));
+    }, "base-binding");
+    rejectCode((input) => {
+      withSiblingRoot(input);
+      input.candidate.sourceBindings.push(structuredClone(input.candidate.sourceBindings[0]!));
+    }, "candidate-binding");
   });
 
   it("requires the candidate binding ID to be derived from the edited source hash", () => {
@@ -274,7 +379,55 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
     rejectResizeCode((input) => (input.expectedScaleFactor = -1.5), "candidate-endpoint");
   });
 
-  it("conjugates off-center draw anchors about the preserved initial center", () => {
+  it("conjugates an entrance-offset frame-zero endpoint about the settled pivot", () => {
+    // scale() acts about the constructed center that the settled endpoint
+    // observes; the transient frame-zero box must conjugate about that pivot
+    // rather than keep its own center.
+    const entrance = resizeFixture();
+    entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+    entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.75, y: 0.375 };
+
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(entrance)).toEqual(entrance.candidate);
+
+    // A candidate preserving the transient frame-zero center (the old
+    // initial-center anchoring) is a wrong accept and must reject.
+    rejectResizeCode((input) => {
+      input.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+      input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+    }, "candidate-endpoint");
+  });
+
+  it("multi-root: accepts a selected-only resize that retains the sibling's original path bytes", () => {
+    const input = resizeFixture();
+    withSiblingRoot(input);
+    input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
+
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.resources.paths.map(({ id }) => id).sort()).toEqual(
+      [input.base.resources.paths[0]!.id, SCALED_PATH_ID].sort(),
+    );
+  });
+
+  it("multi-root: rejects a resize that rescales the sibling's usage or loses or mutates its retained path", () => {
+    rejectResizeCode((input) => {
+      withSiblingRoot(input);
+      input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
+      for (const frame of input.candidate.frames) {
+        for (const state of frame.states) state.pathId = SCALED_PATH_ID;
+      }
+    }, "candidate-semantic");
+    rejectResizeCode((input) => {
+      withSiblingRoot(input);
+      const retained = structuredClone(input.base.resources.paths[0]!);
+      retained.path.subpaths[0]!.start.x += 0.1;
+      input.candidate.resources.paths.push(retained);
+    }, "candidate-resource");
+    rejectResizeCode((input) => {
+      withSiblingRoot(input);
+    }, "candidate-resource");
+  });
+
+  it("conjugates off-center draw anchors about the preserved settled center", () => {
     // The producer anchors each drawn family member at its OWN localized-path
     // center, so a genuine scale about the root center must move an off-center
     // member's anchor from a to center + (a - center) * factor.
