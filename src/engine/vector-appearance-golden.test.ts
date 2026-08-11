@@ -114,6 +114,36 @@ describe("vector-appearance Scene IR channel", () => {
     expect(draw.stroke.widthWorld).toBeCloseTo(0.04280414866180433, 14);
   });
 
+  it("holds stroke cap and join on the left until the next keyframe boundary", async () => {
+    const fixture = await loadFixture();
+    const assets = assetManifestV1Schema.parse(fixture.assets);
+    const scene = sceneIrV1Schema.parse(fixture.scene);
+    const channel = scene.animationChannels.find((candidate) => candidate.kind === "vector-appearance");
+    if (channel?.kind !== "vector-appearance" || channel.keyframes[1]?.value.stroke === null) {
+      throw new Error("Fixture must contain a vector-appearance stroke channel.");
+    }
+    channel.keyframes[1].value.stroke.cap = "round";
+    channel.keyframes[1].value.stroke.join = "bevel";
+    expect(sceneIrV1Schema.safeParse(scene).success).toBe(true);
+
+    const sampleStroke = async (sampleTime: number) => {
+      const result = await compileEngineFrameV1({
+        assets,
+        packetId: `appearance:discrete-stroke:${sampleTime}`,
+        sampleTime,
+        scene,
+        viewport: fixture.viewport,
+      });
+      if (result.kind !== "ready") throw new Error(result.message);
+      const draw = result.frame.packet.draws[0];
+      if (draw?.kind !== "path" || draw.stroke === null) throw new Error("Expected a stroked path draw.");
+      return draw.stroke;
+    };
+
+    expect(await sampleStroke(2 - Number.EPSILON)).toMatchObject({ cap: "butt", join: "miter" });
+    expect(await sampleStroke(2)).toMatchObject({ cap: "round", join: "bevel" });
+  });
+
   it("normalizes an animated zero-width endpoint without weakening static stroke validation", async () => {
     const fixture = await loadFixture();
     const assets = assetManifestV1Schema.parse(fixture.assets);
@@ -165,7 +195,7 @@ describe("vector-appearance Scene IR channel", () => {
     },
   );
 
-  it("fails closed for implicit paint cross-fades and unsupported style transitions", async () => {
+  it("fails closed for implicit paint cross-fades and unsupported style changes", async () => {
     const fixture = await loadFixture();
     const candidateScene = () => sceneIrV1Schema.parse(fixture.scene);
     const channel = (scene: ReturnType<typeof candidateScene>) => {
@@ -186,9 +216,13 @@ describe("vector-appearance Scene IR channel", () => {
     channel(fillRuleTransition).keyframes[1]!.value.fill!.rule = "evenodd";
     expect(sceneIrV1Schema.safeParse(fillRuleTransition).success).toBe(false);
 
-    const strokeStyleTransition = candidateScene();
-    channel(strokeStyleTransition).keyframes[1]!.value.stroke!.cap = "round";
-    expect(sceneIrV1Schema.safeParse(strokeStyleTransition).success).toBe(false);
+    const baseStrokeStyleMismatch = candidateScene();
+    channel(baseStrokeStyleMismatch).keyframes[0]!.value.stroke!.cap = "round";
+    expect(sceneIrV1Schema.safeParse(baseStrokeStyleMismatch).success).toBe(false);
+
+    const miterLimitTransition = candidateScene();
+    channel(miterLimitTransition).keyframes[1]!.value.stroke!.miterLimit = 4;
+    expect(sceneIrV1Schema.safeParse(miterLimitTransition).success).toBe(false);
 
     const unknownPaint = candidateScene();
     Object.assign(channel(unknownPaint).keyframes[1]!.value.fill!, { gradient: "unsupported" });

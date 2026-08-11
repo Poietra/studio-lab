@@ -216,6 +216,43 @@ describe("generic Runtime Trace V3 lowering", () => {
     expect(await compile(2 / 60)).toEqual(forward);
   });
 
+  it("lowers producer-captured stroke cap and join changes as vector appearance keyframes", async () => {
+    const trace = await traceFixture();
+    const initialAppearance = trace.resources.appearances[0]!;
+    const changedAppearance = structuredClone(initialAppearance);
+    changedAppearance.id = `appearance:${"5".repeat(64)}`;
+    if (!changedAppearance.stroke) throw new Error("Expected the producer fixture to contain a stroke.");
+    changedAppearance.stroke.cap = "round";
+    changedAppearance.stroke.join = "bevel";
+    trace.resources.appearances.push(changedAppearance);
+    trace.roots[0]!.lifetimes = [{ endFrame: 2, startFrame: 0 }];
+    trace.draws[0]!.lifetimes = [{ endFrame: 2, startFrame: 0 }];
+    const initialState = trace.frames[0]!.states[0]!;
+    trace.frames = [
+      trace.frames[0]!,
+      {
+        frameIndex: 1,
+        sampleTime: 1 / 60,
+        states: [{ ...initialState, appearanceId: changedAppearance.id }],
+      },
+    ];
+    trace.sampleSchedule = { ...trace.sampleSchedule, durationSeconds: 2 / 60, frameCount: 2 };
+
+    const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
+    const channel = bundle.scene.animationChannels.find(({ kind }) => kind === "vector-appearance");
+    if (channel?.kind !== "vector-appearance") throw new Error("Expected a vector-appearance channel.");
+    expect(
+      channel.keyframes.map(({ at, value }) => ({
+        at,
+        cap: value.stroke?.cap,
+        join: value.stroke?.join,
+      })),
+    ).toEqual([
+      { at: 0, cap: "butt", join: "miter" },
+      { at: 1 / 60, cap: "round", join: "bevel" },
+    ]);
+  });
+
   it("compacts content-addressed path IDs before materializing morph values", async () => {
     const trace = await traceFixture();
     const initialPath = trace.resources.paths[0]!;
