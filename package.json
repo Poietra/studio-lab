@@ -87,8 +87,10 @@
     "deploy:collaboration-worker": "wrangler deploy --config wrangler.editor-collaboration.jsonc",
     "build:sandbox-broker": "vite build --config vite.sandbox-broker.config.ts",
     "build:render-sandbox-broker": "vite build --config vite.render-sandbox-broker.config.ts",
+    "build:production-runtime": "vite build --config vite.production-runtime.config.ts",
     "start:sandbox-broker": "node dist-sandbox-broker/fast-manim-sandbox-broker.mjs",
     "start:render-sandbox-broker": "node dist-render-sandbox-broker/manim-render-sandbox-broker.mjs",
+    "start:production-runtime": "node dist-production-runtime/poietra-production-runtime.mjs",
     "package:electron": "pnpm electron:install && pnpm build:electron && node scripts/package-electron.mjs && node scripts/smoke-third-party-notices.mjs --electron",
     "check:web": "pnpm build:web",
     "tauri": "tauri"

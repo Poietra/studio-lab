@@ -4,6 +4,7 @@ dist-electron/
 dist-server/
 dist-sandbox-broker/
 dist-render-sandbox-broker/
+dist-production-runtime/
 dist-account-worker/
 dist-billing-worker/
 dist-collaboration-worker/

@@ -279,6 +279,40 @@ does not persist, log, or navigate to it. The lane uses bounded requests and
 best-effort cancellation/Customer deletion; a passing local run is still not a
 claim that production billing credentials or routes are configured.
 
+## Runtime server process
+
+`pnpm build:production-runtime` bundles `server/production-runtime-entry.ts` to
+`dist-production-runtime/poietra-production-runtime.mjs`, and
+`pnpm start:production-runtime -- /etc/poietra/runtime.json` runs it. That entry
+is the only supported way to start the Node runtime server: it is the
+composition root that turns one reviewed config file into the admission
+adapter, the runtime-cell resolver, and the server itself.
+
+The config path must be canonical and absolute, and the file must be
+root-owned and not group- or world-writable, exactly like the sandbox broker's
+config. Everything the process needs is plain data in that file, so no
+credential ever reaches an environment variable, a command line, or a log. The
+process prints nothing but a fixed failure sentence on stderr; the structured
+log is the operator's channel.
+
+Database endpoints are expressed as fields, never as a connection string,
+because `assertProductionPoolConfig` refuses a connection string, a socket
+host, a custom stream, and unverified TLS. The entry builds two pools from
+those fields: a `max: 1` migration pool and the request pool, so a migration
+can never contend with request traffic. Apply the catalog with
+`pnpm storage:migrate` before starting the process.
+
+Only endpoints and identities are required. Sweep intervals, batch sizes,
+retention windows, and lease durations all carry defaults, so a minimal config
+names the database, the object storage bucket and provider, the two sandbox
+broker sockets, the render staging root, the namespace, and the listening
+socket. Unknown keys are rejected rather than ignored.
+
+Exit codes distinguish the two failures an operator must tell apart: `2` means
+the command line was wrong, `1` means the process failed closed. `SIGINT` and
+`SIGTERM` drain the server first and only then close the repositories behind
+it.
+
 ## Bundled durable-storage migrations
 
 Every Worker and runtime-server deployment described in this document requires
