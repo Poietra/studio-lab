@@ -12,7 +12,11 @@ import {
   FAST_MANIM_GATED_OCI_RELEASE_SCHEMA_V1,
 } from "./fast-manim-gated-oci-release";
 import { createStructuredLogger } from "./logging/structured-logger";
-import { productionRuntimeConfigV1Schema, resolveProductionRuntimeCompositionV1 } from "./production-runtime-entry";
+import {
+  createProductionRuntimeLoggerV1,
+  productionRuntimeConfigV1Schema,
+  resolveProductionRuntimeCompositionV1,
+} from "./production-runtime-entry";
 
 function productionRelease() {
   const keys = generateKeyPairSync("ed25519");
@@ -128,26 +132,47 @@ describe("production runtime composition", () => {
   });
 
   it("routes every background failure through the logger instead of the process", () => {
-    const records: string[] = [];
-    const sink = {
-      write: (record: { context?: Record<string, unknown>; event: string }) => {
-        records.push(`${String(record.context?.component)}:${record.event}`);
-      },
-    };
+    const records: { context?: Record<string, unknown>; data?: unknown; event: string }[] = [];
     const composition = resolveProductionRuntimeCompositionV1(
       parse(),
-      createStructuredLogger({ context: { component: "production-runtime" }, sinks: [sink] }),
+      createStructuredLogger({
+        context: { component: "production-runtime" },
+        sinks: [{ write: (record) => void records.push(record) }],
+      }),
     );
 
-    composition.provisioner.sourceGc.onFailure(new Error("sweep failed"));
+    composition.provisioner.sourceGc.onFailure(new TypeError("sweep failed"));
     composition.provisioner.renderWorker.onFailure(new Error("worker failed"));
-    composition.provisioner.snapshot.artifactGc.onFailure(new Error("gc failed"));
+    composition.provisioner.snapshot.artifactGc.onFailure("not an error");
 
-    expect(records).toEqual([
+    expect(records.map((record) => `${String(record.context?.component)}:${record.event}`)).toEqual([
       "source-gc:runtime.background_failure",
       "render-worker:runtime.background_failure",
       "snapshot-artifact-gc:runtime.background_failure",
     ]);
+    // Only the error class is recorded: a message or stack can carry a path,
+    // an endpoint, or a credential.
+    expect(records.map((record) => record.data)).toEqual([
+      { failure: "TypeError" },
+      { failure: "Error" },
+      { failure: "unknown" },
+    ]);
+    expect(JSON.stringify(records)).not.toContain("sweep failed");
+  });
+
+  it("logs a real process to an observable sink rather than discarding every record", () => {
+    // A sinkless default would make each background failure above invisible.
+    const lines: string[] = [];
+    const info = vi.spyOn(console, "info").mockImplementation((line: unknown) => void lines.push(String(line)));
+    try {
+      createProductionRuntimeLoggerV1().info("runtime.started");
+    } finally {
+      info.mockRestore();
+    }
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain("poietra-runtime");
+    expect(lines[0]).toContain("runtime.started");
   });
 
   it("passes the deployment identity through to the server config unchanged", () => {
@@ -163,6 +188,22 @@ describe("production runtime composition", () => {
       publicOrigin: "https://studio.example.com",
       trustedProxyAddresses: ["10.0.0.1"],
     });
+  });
+
+  it("refuses the versioned write lane this entry cannot construct storage for", () => {
+    // assertObjectStorageCutoverOptions rejects a versioned lane without legacy
+    // storage at the first provision; the config contract must not admit what
+    // the composition can never build.
+    expect(() => parse({ objectStorage: { ...MINIMAL.objectStorage, writeLane: "versioned" } })).toThrow(
+      /only the immutable write lane/iu,
+    );
+    expect(resolveProductionRuntimeCompositionV1(parse(), logger()).provisioner.objectStorage).toEqual({
+      immutable: MINIMAL.objectStorage.immutable,
+      writeLane: "immutable",
+    });
+    // Whatever the schema accepts must satisfy the runtime's cutover rule.
+    const { objectStorage } = resolveProductionRuntimeCompositionV1(parse(), logger()).provisioner;
+    expect(objectStorage.writeLane === "versioned" && objectStorage.legacy === undefined).toBe(false);
   });
 
   it("refuses a config that could weaken the database or storage boundary", () => {

@@ -11,7 +11,7 @@ import {
   type DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1,
 } from "./durable-manim-production-composition";
 import { fastManimGatedOciSignedReleaseV1Schema } from "./fast-manim-gated-oci-release";
-import { createStructuredLogger, type StructuredLogger } from "./logging/structured-logger";
+import { createConsoleJsonSink, createStructuredLogger, type StructuredLogger } from "./logging/structured-logger";
 import { type ProductionManimServer, startProductionManimServer } from "./manim-production-server";
 import { readRootOwnedProductionConfigV1 } from "./root-owned-production-config";
 import { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
@@ -102,7 +102,15 @@ export const productionRuntimeConfigV1Schema = z
     objectStorage: z
       .object({
         immutable: z.object({ bucket: identifierSchema, provider: immutableProviderSchema }).strict(),
-        writeLane: z.enum(["immutable", "versioned"]),
+        // The versioned lane additionally requires legacy object storage, which
+        // this entry constructs nowhere; `assertObjectStorageCutoverOptions`
+        // would reject it at the first provision, long after the config passed
+        // validation. Refuse it here instead, while #305 removes the S3
+        // VersionId dependence the lane exists for.
+        writeLane: z.literal("immutable", {
+          error:
+            "This runtime accepts only the immutable write lane; the versioned lane requires legacy object storage that no deployment config can supply yet.",
+        }),
       })
       .strict(),
     render: z
@@ -211,8 +219,14 @@ function poolConfig(database: ProductionRuntimeConfigV1["database"], max: number
  * can be proven correct without a database, an object store, or a sandbox.
  */
 export function resolveProductionRuntimeCompositionV1(config: ProductionRuntimeConfigV1, logger: StructuredLogger) {
+  // Background sweeps, the render worker, and every GC report failure without
+  // stopping the process, so the log is the only place an operator can see
+  // them. Only the error class is recorded: a raw message or stack can carry a
+  // path, an endpoint, or a credential, which must never reach the log.
   const onFailure = (component: string) => (error: unknown) => {
-    logger.child({ component }).error("runtime.background_failure", error);
+    logger.child({ component }).error("runtime.background_failure", {
+      failure: error instanceof Error ? error.name : "unknown",
+    });
   };
   const runtimePoolConfig = poolConfig(config.database, config.database.maxConnections);
   const provisioner: DurablePostgresS3ProductionRuntimeCellProvisionerOptionsV1 = {
@@ -270,6 +284,18 @@ async function closeQuietly(resources: readonly (Closeable | undefined)[]) {
 }
 
 /**
+ * The sink a real process logs to. Tests inject their own logger; nothing else
+ * may fall back to a sinkless one, because that silently discards every
+ * background failure this runtime is designed to survive rather than crash on.
+ */
+export function createProductionRuntimeLoggerV1(): StructuredLogger {
+  return createStructuredLogger({
+    context: { component: "production-runtime" },
+    sinks: [createConsoleJsonSink({ prefix: "poietra-runtime" })],
+  });
+}
+
+/**
  * Composition root for one runtime server process. It owns every dependency it
  * builds: a construction failure closes what already exists before rethrowing,
  * and SIGINT/SIGTERM drain the server before the repositories behind it.
@@ -279,8 +305,7 @@ export async function startProductionRuntimeEntryV1(
   overrides?: Readonly<{ logger?: StructuredLogger }>,
 ): Promise<ProductionManimServer> {
   const config = await readRootOwnedProductionConfigV1(configPath, productionRuntimeConfigV1Schema);
-  const logger =
-    overrides?.logger ?? createStructuredLogger({ context: { component: "production-runtime" }, sinks: [] });
+  const logger = overrides?.logger ?? createProductionRuntimeLoggerV1();
   const composition = resolveProductionRuntimeCompositionV1(config, logger);
 
   let accountSessions: PostgresAccountSessionRepositoryV1 | undefined;

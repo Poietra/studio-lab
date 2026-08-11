@@ -308,6 +308,19 @@ names the database, the object storage bucket and provider, the two sandbox
 broker sockets, the render staging root, the namespace, and the listening
 socket. Unknown keys are rejected rather than ignored.
 
+Object storage accepts only the `immutable` write lane. The `versioned` lane
+additionally requires legacy object storage, which this entry constructs
+nowhere, so admitting it would pass config validation and then fail at the
+first cell provision. The config refuses it up front instead; the lane itself
+is what #305 removes.
+
+The process logs to stdout as one JSON record per line, prefixed
+`poietra-runtime`. Background sweeps, the render worker, and every GC report
+failure without stopping the process, so that log is the only place an
+operator sees them; a deployment must collect it. Failure records name the
+component and the error class only, because a message or stack can carry a
+path, an endpoint, or a credential.
+
 Exit codes distinguish the two failures an operator must tell apart: `2` means
 the command line was wrong, `1` means the process failed closed. `SIGINT` and
 `SIGTERM` drain the server first and only then close the repositories behind
