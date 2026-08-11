@@ -7,6 +7,7 @@ import type { ProgramRenderRequest } from "./contracts";
 import { importManimScene } from "./source-import";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
   lowerCanonicalProgramBatchSource,
@@ -92,6 +93,25 @@ function initialRotationProgram(angleRadians = 0.5): CanonicalEditProgram {
     operations: [operation],
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
     transactionId: "generic-v3-initial-rotation",
+  };
+}
+
+function initialOpacityProgram(opacity: number | string = 0.25): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: "generic-v3-initial-opacity",
+    interval: { end: 0, start: 0 },
+    key: "appearance",
+    kind: "SetProperty",
+    provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+    value: opacity,
+  };
+  return {
+    ...initialMoveProgram(),
+    operations: [operation],
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "generic-v3-initial-opacity",
   };
 }
 
@@ -335,6 +355,24 @@ describe("generic Runtime Trace V3 initial-edit source lowering", () => {
     ).toThrow(/rotation requires the bounded generic Runtime Trace V3 source lowerer/i);
   });
 
+  it("fails closed instead of dropping opacity when an explicit zero anchor selects the general lowerer", () => {
+    const anchored = source.replace(
+      "        square.set_stroke(WHITE, width=2)",
+      "        # poietra:anchor 0.000\n        square.set_stroke(WHITE, width=2)",
+    );
+    const renderRequest = request(anchored, initialOpacityProgram());
+
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        anchored,
+        renderRequest,
+        [{ program: renderRequest.program, sourceAnchor: 0 }],
+        frame,
+        null,
+      ),
+    ).toThrow(/opacity requires the bounded generic Runtime Trace V3 source lowerer/i);
+  });
+
   it("inserts one canonical uniform resize after the exact assignment and emits re-derivable evidence", () => {
     const lowered = lower(source, request(source, initialResizeProgram()));
 
@@ -418,6 +456,74 @@ describe("generic Runtime Trace V3 initial-edit source lowering", () => {
     expect(() =>
       deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(nonAdjacent, sceneName, sourcePath, "square"),
     ).toThrow(/candidate resize/i);
+  });
+
+  it("inserts one canonical opacity after the exact assignment and emits re-derivable evidence", () => {
+    const lowered = lower(source, request(source, initialOpacityProgram(0.25)));
+
+    expect(lowered).not.toBeNull();
+    expect(lowered?.insertedCode).toBe("        square.set_opacity(0.25)");
+    expect(lowered?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.set_opacity(0.25)\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: {
+        id: expect.stringMatching(/^source-binding:[0-9a-f]{64}$/u),
+        name: "square",
+        ordinal: 1,
+        span: { endColumn: 14, endLine: 6, startColumn: 8, startLine: 6 },
+      },
+      baseSourceHash: request().sourceHash,
+      entityId,
+      expectedOpacity: 0.25,
+      kind: "fast-manim-generic-initial-opacity-v3",
+    });
+
+    const derived = deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+      lowered!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
+    expect(derived.baseSource).toBe(source);
+    expect(derived.baseBinding).toEqual(
+      lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
+    );
+    expect(derived.candidateBinding.id).not.toBe(derived.baseBinding.id);
+    expect(derived.expectedOpacity).toBe(0.25);
+  });
+
+  it("accepts opacity endpoints and rejects non-finite, out-of-range, or non-numeric values", () => {
+    expect(lower(source, request(source, initialOpacityProgram(0)))?.insertedCode).toBe(
+      "        square.set_opacity(0)",
+    );
+    expect(lower(source, request(source, initialOpacityProgram(1)))?.insertedCode).toBe(
+      "        square.set_opacity(1)",
+    );
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01, "0.5"] as const) {
+      expect(() => lower(source, request(source, initialOpacityProgram(invalid)))).toThrow(
+        /only one exact direct-manipulation/i,
+      );
+    }
+  });
+
+  it("rejects non-canonical or non-adjacent candidate opacity statements during independent derivation", () => {
+    const lowered = lower(source, request(source, initialOpacityProgram()));
+    expect(lowered).not.toBeNull();
+    const nonCanonical = lowered!.source.replace("square.set_opacity(0.25)", "square.set_opacity(0.250)");
+    const nonAdjacent = lowered!.source.replace(
+      "        square.set_opacity(0.25)\n        square.set_stroke",
+      "        self.add(square)\n        square.set_opacity(0.25)\n        square.set_stroke",
+    );
+
+    expect(() =>
+      deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(nonCanonical, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical finite opacity between zero and one/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(nonAdjacent, sceneName, sourcePath, "square"),
+    ).toThrow(/candidate opacity/i);
   });
 
   it("inserts one canonical rotation after the exact assignment and emits re-derivable evidence", () => {
@@ -549,5 +655,25 @@ describe("generic Runtime Trace V3 initial-edit source lowering", () => {
     );
     expect(derived.baseSource).toBe(first);
     expect(derived.expectedAngleRadians).toBe(0.5);
+  });
+
+  it("appends a repeated absolute opacity after the prior canonical opacity", () => {
+    const first = lower(source, request(source, initialOpacityProgram(0.4)))!.source;
+    const second = lower(first, request(first, initialOpacityProgram(0.75)));
+
+    expect(second?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.set_opacity(0.4)\n" +
+        "        square.set_opacity(0.75)\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    const derived = deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+      second!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
+    expect(derived.baseSource).toBe(first);
+    expect(derived.expectedOpacity).toBe(0.75);
   });
 });

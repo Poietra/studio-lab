@@ -72,6 +72,57 @@ function resizeWithConcurrentMotion(
 }
 
 describe("EditProgram execution capabilities", () => {
+  it("supports only finite numeric opacity values between zero and one", () => {
+    const validateOpacity = (value: number | string) => {
+      const operation: CanonicalEditOperation = {
+        dependsOn: [],
+        entityId: "equation_1",
+        id: `opacity-${String(value)}`,
+        interval: { end: 0, start: 0 },
+        key: "appearance",
+        kind: "SetProperty",
+        provenance: { evidence: ["opacity control"], origin: "direct-manipulation" },
+        value,
+      };
+      return validateAndScheduleProgram(
+        {
+          anchor: {
+            capturedPlayhead: 0,
+            evidence: ["source time zero"],
+            resolvedSeconds: 0,
+            source: { kind: "absolute", seconds: 0 },
+          },
+          intentCount: 1,
+          loweringStatus: "supported",
+          operations: [operation],
+          provenance: { evidence: ["opacity control"], origin: "direct-manipulation" },
+          requestedExecution: "parallel",
+          schedule: { edges: [], mode: "parallel", order: [operation.id] },
+          transactionId: `opacity-${String(value)}`,
+          version: 1,
+        },
+        STUDIO_FIXTURE_SCENE,
+      );
+    };
+
+    for (const value of [0, 0.25, 1]) {
+      const validation = validateOpacity(value);
+      expect(validation.kind).toBe("valid");
+      expect(validation.program.loweringStatus).toBe("supported");
+      expect(programExecutionCapabilities(validation.program).apply).toBe("supported");
+    }
+    for (const value of [-0.01, 1.01, Number.NaN, Number.POSITIVE_INFINITY, "0.5"]) {
+      const validation = validateOpacity(value);
+      expect(validation.kind).toBe("invalid");
+      expect(validation.issues).toContainEqual(expect.objectContaining({ field: "value" }));
+      if (typeof value !== "number" || Number.isFinite(value)) {
+        expect(validation.issues).toContainEqual(
+          expect.objectContaining({ field: "value", message: expect.stringMatching(/between zero and one/i) }),
+        );
+      }
+    }
+  });
+
   it("keeps CameraFocus previewable but blocks Apply before source lowering", () => {
     const validation = canonicalizeSuggestionProgram(cameraFocusSuggestion(), {
       capturedPlayhead: 4.42,

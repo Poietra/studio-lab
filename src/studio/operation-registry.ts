@@ -237,6 +237,14 @@ function setPropertyExecution(
   operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
 ): OperationExecutionCapabilities {
   if (operation.key === "position" && isPointValue(operation.value)) return SUPPORTED_EXECUTION;
+  if (
+    operation.key === "appearance" &&
+    typeof operation.value === "number" &&
+    Number.isFinite(operation.value) &&
+    operation.value >= 0 &&
+    operation.value <= 1
+  )
+    return SUPPORTED_EXECUTION;
   if (operation.key === "content") {
     if (canonicalEditableContent(operation.value, "Text") || canonicalEditableContent(operation.value, "MathTex"))
       return SUPPORTED_EXECUTION;
@@ -646,6 +654,21 @@ function setPropertyIssues(
       code: "schema-invalid" as const,
       field: "value",
       message: "Position edits require finite x and y values.",
+      operationId: operation.id,
+      severity: "error" as const,
+    });
+  }
+  if (
+    operation.key === "appearance" &&
+    (typeof operation.value !== "number" ||
+      !Number.isFinite(operation.value) ||
+      operation.value < 0 ||
+      operation.value > 1)
+  ) {
+    issues.push({
+      code: "schema-invalid" as const,
+      field: "value",
+      message: "Opacity edits require a finite value between zero and one.",
       operationId: operation.id,
       severity: "error" as const,
     });

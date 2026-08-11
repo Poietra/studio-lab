@@ -103,8 +103,17 @@ export type GenericRuntimeTraceInitialRotationPreflightV3 = Readonly<{
   kind: "fast-manim-generic-initial-rotation-v3";
 }>;
 
+export type GenericRuntimeTraceInitialOpacityPreflightV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSourceHash: string;
+  entityId: string;
+  expectedOpacity: number;
+  kind: "fast-manim-generic-initial-opacity-v3";
+}>;
+
 export type GenericRuntimeTraceInitialEditPreflightV3 =
   | GenericRuntimeTraceInitialMovePreflightV3
+  | GenericRuntimeTraceInitialOpacityPreflightV3
   | GenericRuntimeTraceInitialResizePreflightV3
   | GenericRuntimeTraceInitialRotationPreflightV3;
 
@@ -967,6 +976,12 @@ function assertLoweringSupported(operation: CanonicalEditOperation, options: Pro
     }
   }
   if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
+  if (operation.kind === "SetProperty" && operation.key === "appearance") {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Opacity requires the bounded generic Runtime Trace V3 source lowerer.",
+    );
+  }
   if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
     throw new ProgramLoweringError(
       "operation-unsupported",
@@ -2042,6 +2057,14 @@ export type GenericRuntimeTraceInitialRotationSourceEditPlanV3 = Readonly<{
   expectedAngleRadians: number;
 }>;
 
+export type GenericRuntimeTraceInitialOpacitySourceEditPlanV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSource: string;
+  baseSourceHash: string;
+  candidateBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  expectedOpacity: number;
+}>;
+
 function genericRuntimeTraceInitialMoveV3LoweringError(message: string): never {
   throw new ProgramLoweringError("operation-unsupported", `Generic Runtime Trace V3 initial edit: ${message}`);
 }
@@ -2169,6 +2192,22 @@ function parseCanonicalGenericInitialRotationV3(statement: string, bindingName: 
   return angleRadians;
 }
 
+function formatGenericInitialOpacityV3(opacity: number) {
+  return Number(opacity.toPrecision(12)).toString();
+}
+
+function parseCanonicalGenericInitialOpacityV3(statement: string, bindingName: string) {
+  const match = statement.match(
+    new RegExp(`^${escapeRegularExpression(bindingName)}\\.set_opacity\\(([^()]+)\\)$`, "u"),
+  );
+  if (!match) return null;
+  const opacity = Number(match[1]);
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1 || formatGenericInitialOpacityV3(opacity) !== match[1]) {
+    return null;
+  }
+  return opacity;
+}
+
 function contiguousCanonicalGenericInitialEditStatementsV3(
   analysis: StudioSourceAnalysisV1,
   assignmentIndex: number,
@@ -2184,7 +2223,8 @@ function contiguousCanonicalGenericInitialEditStatementsV3(
       statement.indentation !== previous.indentation ||
       (parseCanonicalGenericInitialMoveV3(statement.text, bindingName) === null &&
         parseCanonicalGenericInitialResizeV3(statement.text, bindingName) === null &&
-        parseCanonicalGenericInitialRotationV3(statement.text, bindingName) === null)
+        parseCanonicalGenericInitialRotationV3(statement.text, bindingName) === null &&
+        parseCanonicalGenericInitialOpacityV3(statement.text, bindingName) === null)
     ) {
       break;
     }
@@ -2221,7 +2261,7 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   sourcePath: string,
   bindingName: string,
   edit: Readonly<{
-    label: "move" | "resize" | "rotation";
+    label: "move" | "opacity" | "resize" | "rotation";
     malformed: string;
     parse: (statement: string, bindingName: string) => Value | null;
   }>,
@@ -2234,25 +2274,23 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   );
   const assignment = candidateAnalysis.scene.statements[assignmentIndex];
   const directStatement = candidateAnalysis.scene.statements[assignmentIndex + 1];
-  const statement =
-    edit.label === "rotation"
-      ? (contiguousCanonicalGenericInitialEditStatementsV3(
-          candidateAnalysis,
-          assignmentIndex,
-          candidateBinding.evidence.name,
-        ).reduce<(typeof candidateAnalysis.scene.statements)[number] | undefined>(
-          (selected, candidate) =>
-            parseCanonicalGenericInitialRotationV3(candidate.text, candidateBinding.evidence.name) === null
-              ? selected
-              : candidate,
-          undefined,
-        ) ?? directStatement)
-      : directStatement;
+  const appendedEdit = edit.label === "opacity" || edit.label === "rotation";
+  const statement = appendedEdit
+    ? (contiguousCanonicalGenericInitialEditStatementsV3(
+        candidateAnalysis,
+        assignmentIndex,
+        candidateBinding.evidence.name,
+      ).reduce<(typeof candidateAnalysis.scene.statements)[number] | undefined>(
+        (selected, candidate) =>
+          edit.parse(candidate.text, candidateBinding.evidence.name) === null ? selected : candidate,
+        undefined,
+      ) ?? directStatement)
+    : directStatement;
   if (
     assignmentIndex < 0 ||
     !assignment ||
     !statement ||
-    (edit.label !== "rotation" &&
+    (!appendedEdit &&
       (statement.line !== assignment.span.endLine + 1 || statement.indentation !== assignment.indentation))
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
@@ -2389,8 +2427,35 @@ export function deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
   };
 }
 
+export function deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+  candidateSource: string,
+  sceneName: string,
+  sourcePath: string,
+  bindingName: string,
+): GenericRuntimeTraceInitialOpacitySourceEditPlanV3 {
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "opacity",
+      malformed: "one canonical finite opacity between zero and one",
+      parse: parseCanonicalGenericInitialOpacityV3,
+    },
+  );
+  return {
+    baseBinding: derived.baseBinding,
+    baseSource: derived.baseSource,
+    baseSourceHash: derived.baseSourceHash,
+    candidateBinding: derived.candidateBinding,
+    expectedOpacity: derived.value,
+  };
+}
+
 type GenericRuntimeTraceInitialEditOperationV3 =
   | Readonly<{ entityId: string; kind: "move"; value: Readonly<{ x: number; y: number }> }>
+  | Readonly<{ entityId: string; kind: "opacity"; value: number }>
   | Readonly<{ entityId: string; factor: number; kind: "resize" }>
   | Readonly<{ angleRadians: number; entityId: string; kind: "rotation" }>;
 
@@ -2402,7 +2467,7 @@ function genericRuntimeTraceInitialEditOperationV3(
   if (!entries.some(({ sourceAnchor }) => sourceAnchor === 0)) return null;
   const fail: () => never = () =>
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "only one exact direct-manipulation position move, uniform resize, or rotation Program at source time zero is accepted.",
+      "only one exact direct-manipulation position move, opacity, uniform resize, or rotation Program at source time zero is accepted.",
     );
   const program = programs[0];
   const entry = entries[0];
@@ -2446,6 +2511,16 @@ function genericRuntimeTraceInitialEditOperationV3(
     return { entityId: operation.entityId, kind: "move", value: { x: value.x, y: value.y } };
   }
   if (
+    operation.kind === "SetProperty" &&
+    operation.key === "appearance" &&
+    typeof operation.value === "number" &&
+    Number.isFinite(operation.value) &&
+    operation.value >= 0 &&
+    operation.value <= 1
+  ) {
+    return { entityId: operation.entityId, kind: "opacity", value: operation.value };
+  }
+  if (
     operation.kind === "AnimateProperty" &&
     operation.key === "rotation" &&
     operation.control === undefined &&
@@ -2481,7 +2556,7 @@ function genericRuntimeTraceInitialEditOperationV3(
 }
 
 /**
- * Promotes the generic Runtime Trace V3 initial move, uniform resize, and rotation.
+ * Promotes the generic Runtime Trace V3 initial move, opacity, uniform resize, and rotation.
  * Browser evidence is correlation only: current source bytes and canonical
  * SourceAnalysis independently choose the one rewritable binding occurrence.
  */
@@ -2605,6 +2680,60 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
         entityId: operation.entityId,
         expectedWorldCenter: derived.expectedWorldCenter,
         kind: "fast-manim-generic-initial-move-v3",
+      },
+      source: loweredSource,
+    };
+  }
+
+  if (operation.kind === "opacity") {
+    const formattedOpacity = formatGenericInitialOpacityV3(operation.value);
+    const expectedOpacity = Number(formattedOpacity);
+    if (!Number.isFinite(expectedOpacity) || expectedOpacity < 0 || expectedOpacity > 1) {
+      genericRuntimeTraceInitialMoveV3LoweringError("opacity must lower to one finite value between zero and one.");
+    }
+    const assignmentIndex = analysis.scene.statements.findIndex(({ id }) => id === assignment.id);
+    const directInitialEdits = contiguousCanonicalGenericInitialEditStatementsV3(
+      analysis,
+      assignmentIndex,
+      projected.evidence.name,
+    );
+    const priorOpacity = directInitialEdits.reduce<(typeof directInitialEdits)[number] | undefined>(
+      (selected, statement) =>
+        parseCanonicalGenericInitialOpacityV3(statement.text, projected.evidence.name) === null ? selected : statement,
+      undefined,
+    );
+    const opacityBoundary = priorOpacity?.insertionAfter ?? insertionBoundary;
+    if (!opacityBoundary || opacityBoundary.indentation !== assignment.indentation) {
+      genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis could not append the opacity edit.");
+    }
+    const insertedCode = `${opacityBoundary.indentation}${projected.evidence.name}.set_opacity(${formattedOpacity})`;
+    const loweredSource = emitLoweredSource(insertedCode, opacityBoundary);
+    const derived = deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+      loweredSource,
+      request.sceneName,
+      request.sourcePath,
+      projected.evidence.name,
+    );
+    if (
+      derived.baseSource !== source ||
+      derived.baseSourceHash !== request.sourceHash ||
+      JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
+      derived.expectedOpacity !== expectedOpacity
+    ) {
+      genericRuntimeTraceInitialMoveV3LoweringError(
+        "the emitted source does not re-derive the exact base binding and requested opacity.",
+      );
+    }
+    return {
+      anchorLine: opacityBoundary.line,
+      anchorLines: [opacityBoundary.line],
+      insertedCode,
+      preflight: {
+        baseBinding: derived.baseBinding,
+        baseSourceHash: derived.baseSourceHash,
+        entityId: operation.entityId,
+        expectedOpacity: derived.expectedOpacity,
+        kind: "fast-manim-generic-initial-opacity-v3",
       },
       source: loweredSource,
     };
