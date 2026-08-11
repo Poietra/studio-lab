@@ -1,4 +1,9 @@
-import { canonicalEditableContent } from "../studio/editable-content";
+import { type AssetManifestV1, parseVerifiedAssetManifestV1 } from "../engine/asset-manifest";
+import type { SceneIrBundleV1 } from "../engine/contracts";
+import type { MathTexOutlineArtifactV1 } from "../engine/mathtex-outline";
+import type { EnginePointV1 } from "../engine/primitives";
+import { type SceneEntityV1, type SceneIrV1, sceneIrV1Schema } from "../engine/scene-ir";
+import { canonicalEditableContent } from "./editable-content";
 import type {
   EntityDimensions,
   Knowledge,
@@ -8,19 +13,14 @@ import type {
   PropertyValue,
   ProposedState,
   RuntimeEntity,
-} from "../studio/model";
+} from "./model";
 import {
   isEntityDimensionsValue,
   isPointValue,
   samplePropertyKnowledge,
   samplePropertyValue,
-} from "../studio/property-sampling";
-import { STUDIO_VIEWPORT } from "../studio/studio-viewport-geometry";
-import { type AssetManifestV1, parseVerifiedAssetManifestV1 } from "./asset-manifest";
-import type { SceneIrBundleV1 } from "./contracts";
-import type { MathTexOutlineArtifactV1 } from "./mathtex-outline";
-import type { EnginePointV1 } from "./primitives";
-import { type SceneEntityV1, type SceneIrV1, sceneIrV1Schema } from "./scene-ir";
+} from "./property-sampling";
+import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 type VectorAppearanceV1 = Extract<SceneIrV1["entities"][number]["appearance"], { kind: "vector" }>;
 type EntityAppearanceV1 = SceneEntityV1["appearance"];

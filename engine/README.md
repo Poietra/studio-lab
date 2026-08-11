@@ -256,7 +256,7 @@ before the atomic swap. The page client advances its revision only after that
 ACK; malformed, unsupported, or stale deltas retain the base revision and may
 recover through the existing full `replace-scene` operation. The authoring
 call site that turns subsequent Studio edits into deltas remains part of #67;
-initial Studio compilation still belongs to `studio-scene-adapter`. Dirty sets
+initial Studio compilation still belongs to `src/studio/scene-ir-adapter.ts`. Dirty sets
 are dependency-safe invalidation candidates, not a minimal list of changed
 records: channel edits include both their old and new entity target (or the
 camera), while entity edits include descendants from both the installed and

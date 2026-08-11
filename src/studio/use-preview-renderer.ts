@@ -22,7 +22,7 @@ import {
   buildStudioSceneIrAdapterEvidenceV1,
   collectStudioMathTexOutlineInputsV1,
   compileStudioSceneIrV1,
-} from "../engine/studio-scene-adapter";
+} from "./scene-ir-adapter";
 import type {
   EntityDimensions,
   Point,
