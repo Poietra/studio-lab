@@ -1,6 +1,8 @@
 use std::collections::BTreeSet;
 
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
+#[cfg(target_arch = "wasm32")]
+use poietra_eval::{SceneDeltaErrorV1, scene_delta_updates_assets_v1};
 #[cfg(any(target_arch = "wasm32", test))]
 use poietra_scene_ir::SceneIrV1;
 use poietra_scene_ir::{
@@ -11,8 +13,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
 use crate::bounded_writer::BoundedWriter;
-#[cfg(target_arch = "wasm32")]
-use crate::scene_delta::{SceneDeltaErrorV1, apply_scene_delta_json, scene_delta_updates_assets};
 
 /// Playhead requests should remain small compared with the retained snapshot.
 /// The envelope still accommodates every contract-valid evidence array.
@@ -449,13 +449,12 @@ impl EngineWorkerSessionV1 {
         expected_base_revision: &str,
         expected_next_revision: &str,
     ) -> Result<Vec<u8>, SceneDeltaErrorV1> {
-        if scene_delta_updates_assets(delta_json)? {
+        if scene_delta_updates_assets_v1(delta_json)? {
             return Err(SceneDeltaErrorV1::Invalid(
                 "canvas Scene deltas cannot change the asset manifest; use atomic replacement",
             ));
         }
-        apply_scene_delta_json(
-            &mut self.session,
+        self.session.apply_scene_delta_json_v1(
             delta_json,
             expected_base_revision,
             expected_next_revision,

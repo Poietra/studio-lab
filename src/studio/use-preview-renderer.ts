@@ -16,13 +16,7 @@ import {
   StudioPreviewRendererHost,
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
-import { createSceneIrDeltaV1, type SceneIrDeltaV1 } from "../engine/scene-delta";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import {
-  buildStudioSceneIrAdapterEvidenceV1,
-  collectStudioMathTexOutlineInputsV1,
-  compileStudioSceneIrV1,
-} from "./scene-ir-adapter";
 import type {
   EntityDimensions,
   Point,
@@ -65,6 +59,11 @@ import {
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
 import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
+import {
+  buildStudioSceneIrAdapterEvidenceV1,
+  collectStudioMathTexOutlineInputsV1,
+  compileStudioSceneIrV1,
+} from "./scene-ir-adapter";
 
 export type StudioPreviewRendererViewV1 = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -1184,19 +1183,6 @@ export function studioPreviewPresentedSyntheticInitialEditAnchorV1(
     : null;
 }
 
-/** Unexpected producer failures use the same explicit full-snapshot recovery as an oversized delta. */
-export async function createStudioPreviewDeltaOrReplacementV1(
-  base: SceneIrBundleV1,
-  next: SceneIrBundleV1,
-  producer: (base: SceneIrBundleV1, next: SceneIrBundleV1) => Promise<SceneIrDeltaV1 | null> = createSceneIrDeltaV1,
-) {
-  try {
-    return await producer(base, next);
-  } catch {
-    return null;
-  }
-}
-
 export function studioPreviewHostReadyForSceneUpdateV1(state: PreviewRendererHostStateV1) {
   return !(state.phase === "fallback" && state.reason === "installing");
 }
@@ -1534,7 +1520,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   latestCommittedProposedState.current = committedProposedState;
   const latestDraftProposedState = useRef(draftProposedState);
   latestDraftProposedState.current = draftProposedState;
-  const latestCompiledScene = useRef<CompiledStudioPreviewSceneV1 | null>(null);
   const retainedRuntimeTraceTerminalFrame = useRef<Readonly<{
     authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1;
     geometry: StudioPreviewInteractionGeometryV1;
@@ -1624,7 +1609,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     compilation.scene.frame.width === frame.width
       ? compilation.scene
       : null;
-  latestCompiledScene.current = currentCompiledScene;
   const compilationError =
     compilation.phase === "unsupported" &&
     compilation.workspaceKey === workspaceKey &&
@@ -1745,27 +1729,15 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
       queued.scene.engineRevisionHash === currentCompiledScene.engineRevisionHash
     )
       return;
-    let cancelled = false;
-    const base = queued.scene;
-    const dispatchUpdate = (delta: SceneIrDeltaV1 | null) => {
-      if (cancelled || latestCompiledScene.current !== currentCompiledScene || queuedScene.current !== queued) return;
-      queuedScene.current = { binding: updateBinding, scene: currentCompiledScene };
-      void updateHost
-        .update({
-          assetPayloads: currentCompiledScene.snapshot.assetPayloads,
-          delta,
-          interactionEntityIds: currentCompiledScene.interactionEntityIds,
-          revision: currentCompiledScene.engineRevisionHash,
-          snapshot: currentCompiledScene.bundle,
-        })
-        .catch(() => undefined);
-    };
-    void createStudioPreviewDeltaOrReplacementV1(base.bundle, currentCompiledScene.bundle).then(dispatchUpdate, () =>
-      dispatchUpdate(null),
-    );
-    return () => {
-      cancelled = true;
-    };
+    queuedScene.current = { binding: updateBinding, scene: currentCompiledScene };
+    void updateHost
+      .update({
+        assetPayloads: currentCompiledScene.snapshot.assetPayloads,
+        interactionEntityIds: currentCompiledScene.interactionEntityIds,
+        revision: currentCompiledScene.engineRevisionHash,
+        snapshot: currentCompiledScene.bundle,
+      })
+      .catch(() => undefined);
   }, [currentCompiledScene, hostReadyForSceneUpdate, updateBinding, updateHost]);
 
   const host = bound?.host ?? null;
