@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { writeCanonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import { writeCanonicalJsonV1 } from "../src/engine/canonical-json";
 
 /**
  * Chunks are flushed into the hash at this size. Large enough that a 900-frame

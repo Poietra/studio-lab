@@ -3,7 +3,6 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
   createFastManimRuntimeTraceProducerRequestV3,
@@ -147,25 +146,21 @@ describe("generic Runtime Trace V3 lowering", () => {
     expect(bundle.scene.entities.map(({ geometry }) => geometry.kind)).toEqual(["group", "cubic-path"]);
     expect(bundle.scene.animationChannels).toEqual([]);
 
-    const compiled = await compileEngineFrameV1({
-      assets: bundle.assets,
-      packetId: "runtime-v3:0",
-      sampleTime: 0,
-      scene: bundle.scene,
-      viewport: { heightPx: 720, widthPx: 1_280 },
-    });
-    if (compiled.kind !== "ready") throw new Error(compiled.message);
-    expect(compiled.frame.packet.draws).toHaveLength(1);
-    expect(compiled.frame.packet.draws[0]).toMatchObject({
-      fill: { color: { alpha: 0.6 } },
-      kind: "path",
-      opacity: 1,
-      stroke: { color: { alpha: 1 }, widthWorld: 0.02 },
+    const entity = bundle.scene.entities[1];
+    expect(entity).toMatchObject({
+      appearance: {
+        fill: { color: { alpha: 0.6 } },
+        kind: "vector",
+        opacity: 1,
+        stroke: { color: { alpha: 1 }, widthWorld: 0.02 },
+      },
+      geometry: { kind: "cubic-path" },
+      lifetimes: [{ end: 1 / 60, start: 0 }],
       transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
     });
   });
 
-  it("seeks backward and forward across captured affine, opacity, and path samples deterministically", async () => {
+  it("preserves captured affine, opacity, and path samples as ordered keyframes", async () => {
     const trace = await traceFixture();
     const changedPath = structuredClone(trace.resources.paths[0]!.path);
     changedPath.subpaths[0]!.segments[0]!.control1.x += 0.25;
@@ -196,24 +191,27 @@ describe("generic Runtime Trace V3 lowering", () => {
       "opacity",
       "path-morph",
     ]);
-
-    const compile = async (sampleTime: number) => {
-      const result = await compileEngineFrameV1({
-        assets: bundle.assets,
-        packetId: `runtime-v3:${sampleTime}`,
-        sampleTime,
-        scene: bundle.scene,
-        viewport: { heightPx: 720, widthPx: 1_280 },
-      });
-      if (result.kind !== "ready") throw new Error(result.message);
-      return result.frame.packet.draws[0]!;
-    };
-    const forward = await compile(2 / 60);
-    const backward = await compile(0);
-    const middle = await compile(1 / 60);
-    expect([forward.transform.tx, backward.transform.tx, middle.transform.tx]).toEqual([2, 0, 1]);
-    expect(middle.opacity).toBe(0.5);
-    expect(await compile(2 / 60)).toEqual(forward);
+    const affine = bundle.scene.animationChannels.find(({ kind }) => kind === "affine-transform");
+    const opacity = bundle.scene.animationChannels.find(({ kind }) => kind === "opacity");
+    const path = bundle.scene.animationChannels.find(({ kind }) => kind === "path-morph");
+    if (affine?.kind !== "affine-transform" || opacity?.kind !== "opacity" || path?.kind !== "path-morph") {
+      throw new Error("Expected affine, opacity, and path channels.");
+    }
+    expect(affine.keyframes.map(({ at, value }) => ({ at, tx: value.tx }))).toEqual([
+      { at: 0, tx: 0 },
+      { at: 1 / 60, tx: 1 },
+      { at: 2 / 60, tx: 2 },
+    ]);
+    expect(opacity.keyframes.map(({ at, value }) => ({ at, value }))).toEqual([
+      { at: 0, value: 1 },
+      { at: 1 / 60, value: 0.5 },
+      { at: 2 / 60, value: 1 },
+    ]);
+    expect(path.keyframes.map(({ at, value }) => ({ at, value }))).toEqual([
+      { at: 0, value: trace.resources.paths[0]?.path },
+      { at: 1 / 60, value: changedPath },
+      { at: 2 / 60, value: trace.resources.paths[0]?.path },
+    ]);
   });
 
   it("lowers producer-captured stroke cap and join changes as vector appearance keyframes", async () => {

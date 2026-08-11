@@ -9,7 +9,6 @@ import {
 } from "../studio/model";
 import { EDIT_OPERATION_VERSION } from "../studio/operations";
 import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "./asset-manifest";
-import { compileEngineFrameV1 } from "./reference-evaluator";
 import { sceneIrV1Schema } from "./scene-ir";
 import {
   buildStudioSceneIrAdapterEvidenceV1,
@@ -420,7 +419,7 @@ function expectIssue(result: Awaited<ReturnType<typeof compileStudioSceneIrV1>>,
 }
 
 describe("Studio to SceneIrV1 truthful adapter", () => {
-  it("compiles static Circle and Rectangle evidence and feeds the reference evaluator", async () => {
+  it("compiles static Circle and Rectangle evidence into validated Scene IR", async () => {
     const adapterInput = await input();
     const result = await compileStudioSceneIrV1(adapterInput);
     if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
@@ -438,15 +437,6 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       geometry: { kind: "circle", radius: 1 },
       transform: { m11: 2, m22: 2, tx: 0, ty: 0 },
     });
-
-    const frame = await compileEngineFrameV1({
-      assets: adapterInput.assets,
-      packetId: "studio-adapter-frame",
-      sampleTime: 1,
-      scene: result.scene,
-      viewport: { heightPx: 1_080, widthPx: 1_920 },
-    });
-    expect(frame.kind).toBe("ready");
   });
 
   it("uses camera-relative top-left Studio coordinate conversion", () => {

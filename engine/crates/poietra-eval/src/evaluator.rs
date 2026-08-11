@@ -333,9 +333,9 @@ fn sample_affine_transform(
     // before motion/world composition. Ancestor or motion-induced singularity,
     // and any composition that loses exact singularity, remain fail-closed.
     //
-    // The predicate is the one `poietra-scene-ir` validates against, so this
-    // production path and the reference evaluator cannot classify a sample
-    // differently. It is the renderer's threshold rather than an exact zero:
+    // The predicate is the one `poietra-scene-ir` validates against, so
+    // evaluation and packet validation cannot classify a sample differently.
+    // It is the renderer's threshold rather than an exact zero:
     // `stretch(1e-50, 1)` survives an f64 determinant but collapses in f32
     // preparation, which would fail the whole frame instead of this draw.
     let singular = active && affine_transform_is_singular_v1(&transform);
@@ -1307,8 +1307,7 @@ mod tests {
         // `stretch(1e-50, 1)` has a non-zero f64 determinant, so an exact
         // `== 0.0` predicate emits a Path draw here and f32 preparation then
         // collapses it and fails the complete frame. The shared threshold
-        // classifies it as singular on this production path, exactly as it
-        // does in the reference evaluator and in packet validation.
+        // classifies it as singular during evaluation and packet validation.
         let (assets, mut scene) = fixture();
         let mut sibling = scene.entities[0].clone();
         sibling.id = "sibling".to_owned();

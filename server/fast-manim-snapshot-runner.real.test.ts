@@ -5,8 +5,6 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
-import { canonicalEngineBenchmarkJsonV1 } from "../src/engine/benchmark";
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
   deriveLineJointsV10TransformPlan,
@@ -148,23 +146,6 @@ const LINE_JOINTS_EDITED_FAST_MANIM_TREE = "8007d53a31d2918e81116c675c352edc761a
 // correlation below. Snapshot envelopes carry those correlation fields, so a
 // different requestId or projectId intentionally produces a different digest.
 const LINE_JOINTS_EDITED_PRODUCER_SNAPSHOT_DIGEST = "6262b10ed9af78be6ad939987f043ed52d6500b392c4d0007070937bc1abaac8";
-const LINE_JOINTS_EDITED_ENGINE_COMMIT = "f11f6278466c54055d7c7043e0f32bec68a12a16";
-const SEMANTIC_NUMBER_SCALE = 1_000_000_000;
-
-function normalizeSemanticNumbers(value: unknown): unknown {
-  if (typeof value === "number") return Math.sign(value) * Math.round(Math.abs(value) * SEMANTIC_NUMBER_SCALE);
-  if (Array.isArray(value)) return value.map(normalizeSemanticNumbers);
-  if (typeof value === "object" && value !== null) {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, normalizeSemanticNumbers(entry)]));
-  }
-  return value;
-}
-
-function digestSemanticValue(value: unknown) {
-  return createHash("sha256")
-    .update(canonicalEngineBenchmarkJsonV1(normalizeSemanticNumbers(value)), "utf8")
-    .digest("hex");
-}
 
 function editedLineJointsSource(official: string) {
   const source = official.replace(
@@ -173,54 +154,6 @@ function editedLineJointsSource(official: string) {
   );
   if (source === official) throw new Error("The exact official LineJoints edit anchor is missing.");
   return source;
-}
-
-async function editedLineJointsEngineFixture(
-  snapshot: Extract<ReturnType<typeof fastManimSnapshotRunViewV1Schema.parse>, { status: "verified" }>["snapshot"],
-  sourceHash: string,
-  producerSnapshotDigest: string,
-) {
-  const bundle = snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
-  const sample = {
-    evidence: ["real edited LineJoints V10 retained WebGPU fixture"],
-    packetId: "real-line-joints-v10-edited:static",
-    sampleTime: 0.5,
-    viewport: { heightPx: 360, widthPx: 640 },
-  } as const;
-  const compiled = await compileEngineFrameV1({ assets: bundle.assets, scene: bundle.scene, ...sample });
-  if (compiled.kind !== "ready") {
-    throw new Error(`Edited LineJoints V10 reference evaluation failed: ${compiled.message}`);
-  }
-  const fixture = {
-    assets: bundle.assets,
-    id: "eng-v1-real-line-joints-v10-edited",
-    producerReference: {
-      engineCommit: LINE_JOINTS_EDITED_ENGINE_COMMIT,
-      fastManimCommit: LINE_JOINTS_EDITED_FAST_MANIM_COMMIT,
-      fastManimTree: LINE_JOINTS_EDITED_FAST_MANIM_TREE,
-      kind: "server-sealed-real-fast-manim-profile-v10",
-      producerSnapshotDigest,
-      snapshotHash: snapshot.snapshotHash,
-      sourcePath: "example_scenes/basic.py",
-      sourceSha256: sourceHash,
-    },
-    samples: [
-      {
-        expected: {
-          semanticDigest: digestSemanticValue({
-            camera: compiled.frame.packet.camera,
-            draws: compiled.frame.packet.draws,
-          }),
-        },
-        id: "static",
-        packetId: sample.packetId,
-        sampleTime: sample.sampleTime,
-        viewport: sample.viewport,
-      },
-    ],
-    scene: bundle.scene,
-  };
-  return `${canonicalEngineBenchmarkJsonV1(fixture)}\n`;
 }
 
 const temporaryRoots: string[] = [];
@@ -374,11 +307,26 @@ describe.skipIf(!realSeamEnabled)("real fast-manim LineJoints V10 edited-source 
       { familyPath: [2], name: "t3" },
     ]);
 
-    const generatedFixture = await editedLineJointsEngineFixture(view.snapshot, sourceHash, producerSnapshotDigest);
-    if (process.env.POIETRA_UPDATE_LINE_JOINTS_V10_EDITED_FIXTURE === "1") {
-      await writeFile(LINE_JOINTS_EDITED_FIXTURE_URL, generatedFixture, "utf8");
-    }
-    await expect(readFile(LINE_JOINTS_EDITED_FIXTURE_URL, "utf8")).resolves.toBe(generatedFixture);
+    const pinnedFixture = JSON.parse(await readFile(LINE_JOINTS_EDITED_FIXTURE_URL, "utf8")) as {
+      assets: typeof bundle.assets;
+      id: string;
+      producerReference: Record<string, unknown>;
+      scene: typeof bundle.scene;
+    };
+    expect(pinnedFixture).toMatchObject({
+      id: "eng-v1-real-line-joints-v10-edited",
+      producerReference: {
+        fastManimCommit: LINE_JOINTS_EDITED_FAST_MANIM_COMMIT,
+        fastManimTree: LINE_JOINTS_EDITED_FAST_MANIM_TREE,
+        kind: "server-sealed-real-fast-manim-profile-v10",
+        producerSnapshotDigest,
+        snapshotHash: view.snapshot.snapshotHash,
+        sourcePath,
+        sourceSha256: sourceHash,
+      },
+    });
+    expect(pinnedFixture.assets).toEqual(bundle.assets);
+    expect(pinnedFixture.scene).toEqual(bundle.scene);
   });
 });
 

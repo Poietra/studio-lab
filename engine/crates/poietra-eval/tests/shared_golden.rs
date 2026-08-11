@@ -48,9 +48,8 @@ struct ExpectedCamera {
     top: f64,
 }
 
-/// Every fixture both implementations must agree on. A shared case is the
-/// only thing that fails when the two evaluators drift apart, so a semantic
-/// rule that exists in one of them belongs here.
+/// Stable Scene IR fixtures pin the canonical Rust evaluator independently of
+/// browser delivery through the WASM adapter.
 const SHARED_FIXTURE_FILES: [&str; 2] = [
     "shared-circle-opacity.json",
     "shared-near-singular-affine.json",
@@ -70,7 +69,7 @@ fn assert_close(actual: f64, expected: f64, tolerance: f64, label: &str) {
 }
 
 #[test]
-fn parses_and_evaluates_shared_typescript_rust_fixtures() {
+fn parses_and_evaluates_scene_ir_golden_fixtures() {
     for file_name in SHARED_FIXTURE_FILES {
         parses_and_evaluates_shared_fixture(file_name);
     }

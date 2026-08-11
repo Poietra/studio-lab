@@ -3,10 +3,8 @@ import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
 import { digestAssetManifestV1 } from "../src/engine/asset-manifest";
-import { applyEngineEasingV1 } from "../src/engine/easing";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import type { CubicPathV1 } from "../src/engine/primitives";
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8,
@@ -26,24 +24,6 @@ import {
 import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 
 const SOURCE_PATH = "fixtures/real-preview-harness/scene_square_to_circle.py";
-const CUBIC_SIGNED_AREA_ROOT_PROGRESS = 0.5301583604406768;
-// Inverse of Manim's normalized logistic smooth rate function for the
-// analytic cubic signed-area root above. Scene time is one second plus this
-// local Transform progress because the morph occupies [1, 2].
-const CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME = 1.5119159473817447;
-
-type ReadyReferenceSample = Extract<Awaited<ReturnType<typeof compileEngineFrameV1>>, { kind: "ready" }>;
-
-function referenceSampleSemantics(sample: ReadyReferenceSample) {
-  const { evidence: _evidence, packetId: _packetId, ...semantics } = sample.frame.packet;
-  return semantics;
-}
-
-function semanticSequenceDigest(samples: readonly ReadyReferenceSample[]) {
-  return createHash("sha256")
-    .update(canonicalJsonV1(samples.map(referenceSampleSemantics)), "utf8")
-    .digest("hex");
-}
 
 function cubicPathBoundsCenter(path: CubicPathV1) {
   const points = path.subpaths.flatMap((subpath) => [
@@ -142,8 +122,8 @@ async function loadPositionCandidateProducerFixture() {
 }
 
 describe("fast-manim SquareToCircle snapshot profile V8", () => {
-  it("accepts, seals, identity-maps, and samples the frozen real producer output", async () => {
-    const { combined, expected, manifest, producer, sourceText } = await loadProducerFixture();
+  it("accepts, seals, identity-maps, and verifies the frozen real producer Scene IR", async () => {
+    const { combined, expected, producer, sourceText } = await loadProducerFixture();
     expect(expected.sourceHash).toBe(FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8);
     expect(FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8).toBe(
       "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
@@ -179,83 +159,59 @@ describe("fast-manim SquareToCircle snapshot profile V8", () => {
     });
     expect(() => assertFastManimSnapshotIdentityAuthorityV1(sealed, identity)).not.toThrow();
 
-    expect(applyEngineEasingV1({ kind: "manim-smooth" }, CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME - 1)).toBeCloseTo(
-      CUBIC_SIGNED_AREA_ROOT_PROGRESS,
-      14,
-    );
-    const sampled = new Map<number, Awaited<ReturnType<typeof compileEngineFrameV1>>>();
-    for (const sampleTime of [0, 0.5, 1, 1.5, CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME, 2, 2.5, 3]) {
-      const sample = await compileEngineFrameV1({
-        assets: sealed.bundle.assets,
-        packetId: `square-to-circle-v8:${sampleTime}`,
-        sampleTime,
-        scene: sealed.bundle.scene,
-        viewport: { heightPx: 360, widthPx: 640 },
-      });
-      expect(sample.kind, `sampleTime=${sampleTime}`).toBe("ready");
-      sampled.set(sampleTime, sample);
-    }
-    const start = sampled.get(0);
-    if (start?.kind !== "ready") throw new Error("Expected the start boundary sample to be ready.");
-    expect(start.frame.packet.draws).toEqual([expect.objectContaining({ kind: "empty", reason: "path-trim-zero" })]);
-    const end = sampled.get(3);
-    if (end?.kind !== "ready") throw new Error("Expected the end boundary sample to be ready.");
-    expect(end.frame.packet.draws).toHaveLength(0);
-    for (const sampleTime of [0.5, 1, 1.5, CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME, 2, 2.5]) {
-      const sample = sampled.get(sampleTime);
-      if (sample?.kind !== "ready") throw new Error(`Expected a ready interior sample at ${sampleTime}.`);
-      expect(sample.frame.packet.draws, `sampleTime=${sampleTime}`).toHaveLength(1);
-    }
-    const midpoint = sampled.get(1.5);
-    if (midpoint?.kind !== "ready") throw new Error("Expected the midpoint sample to be ready.");
-    const draw = midpoint.frame.packet.draws[0];
-    if (draw?.kind !== "path" || draw.fill === null || draw.stroke === null) {
-      throw new Error("Expected one sampled fill-and-stroke SquareToCircle path.");
-    }
-    expect(draw.path.subpaths[0]?.segments).toHaveLength(8);
-    expect(draw.fill.color.alpha).toBeCloseTo(0.25, 14);
-    expect(draw.stroke.widthWorld).toBeCloseTo(0.04, 14);
-    const root = sampled.get(CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME);
-    if (root?.kind !== "ready") throw new Error("Expected the analytic-root sample to be ready.");
-    const rootDraw = root.frame.packet.draws[0];
-    if (rootDraw?.kind !== "path" || rootDraw.fill === null || rootDraw.stroke === null) {
-      throw new Error("Expected one fill-and-stroke path at the analytic winding root.");
-    }
-    expect(rootDraw.path.subpaths[0]?.segments).toHaveLength(8);
-
-    const forwardSamples = [0, 0.5, 1, 1.5, CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME, 2, 2.5, 3].map((sampleTime) => {
-      const sample = sampled.get(sampleTime);
-      if (sample?.kind !== "ready") throw new Error(`Expected a ready forward sample at ${sampleTime}.`);
-      return sample;
+    const scene = sealed.bundle.scene;
+    expect(scene).toMatchObject({
+      duration: 3,
+      requiredCapabilities: [
+        "cubic-path-geometry",
+        "opacity-animation",
+        "path-morph-animation",
+        "path-trim-animation",
+        "vector-appearance-animation",
+      ],
     });
-    const nonMonotonicSamples: ReadyReferenceSample[] = [];
-    for (const sampleTime of [
-      2.5,
-      0.5,
-      CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
-      1,
-      2,
-      0,
-      1.5,
-      3,
-      CUBIC_SIGNED_AREA_ROOT_SAMPLE_TIME,
-    ]) {
-      const sample = await compileEngineFrameV1({
-        assets: sealed.bundle.assets,
-        packetId: `square-to-circle-v8:seek:${sampleTime}`,
-        sampleTime,
-        scene: sealed.bundle.scene,
-        viewport: { heightPx: 360, widthPx: 640 },
-      });
-      if (sample.kind !== "ready") throw new Error(`Expected a ready non-monotonic sample at ${sampleTime}.`);
-      const forward = sampled.get(sampleTime);
-      if (forward?.kind !== "ready") throw new Error(`Expected a corresponding forward sample at ${sampleTime}.`);
-      expect(referenceSampleSemantics(sample)).toEqual(referenceSampleSemantics(forward));
-      nonMonotonicSamples.push(sample);
+    expect(scene.camera.view).toEqual({ center: { x: 0, y: 0 }, frameHeight: 8, frameWidth: 14.222222222222221 });
+    expect(scene.entities).toHaveLength(1);
+    const entity = scene.entities[0];
+    if (!entity || entity.geometry.kind !== "cubic-path" || entity.appearance.kind !== "vector") {
+      throw new Error("Expected one vector cubic-path SquareToCircle entity.");
     }
-    expect(manifest).toMatchObject({
-      forwardSampleSemanticsSha256: semanticSequenceDigest(forwardSamples),
-      nonMonotonicSampleSemanticsSha256: semanticSequenceDigest(nonMonotonicSamples),
+    expect(entity.lifetimes).toEqual([{ end: 3, start: 0 }]);
+    expect(entity.geometry.path.subpaths[0]?.segments).toHaveLength(8);
+    expect(entity.appearance.fill).toBeNull();
+    expect(entity.appearance.stroke?.widthWorld).toBeCloseTo(0.04, 14);
+
+    expect(scene.animationChannels.map(({ kind }) => kind)).toEqual([
+      "opacity",
+      "path-morph",
+      "vector-appearance",
+      "path-trim",
+    ]);
+    const opacity = scene.animationChannels.find((channel) => channel.kind === "opacity");
+    const morph = scene.animationChannels.find((channel) => channel.kind === "path-morph");
+    const appearance = scene.animationChannels.find((channel) => channel.kind === "vector-appearance");
+    const trim = scene.animationChannels.find((channel) => channel.kind === "path-trim");
+    if (!opacity || !morph || !appearance || !trim) {
+      throw new Error("Expected the complete SquareToCircle animation channel set.");
+    }
+    expect(opacity.keyframes).toEqual([
+      { at: 2, easingToNext: { kind: "manim-smooth" }, value: 1 },
+      { at: 3, easingToNext: null, value: 0 },
+    ]);
+    expect(morph.keyframes.map(({ at, easingToNext }) => ({ at, easingToNext }))).toEqual([
+      { at: 1, easingToNext: { kind: "manim-smooth" } },
+      { at: 2, easingToNext: null },
+    ]);
+    expect(morph.keyframes.every(({ value }) => value.subpaths[0]?.segments.length === 8)).toBe(true);
+    expect(appearance.keyframes[0]?.value.fill?.color.alpha).toBe(0);
+    expect(appearance.keyframes[1]?.value.fill?.color.alpha).toBe(0.5);
+    expect(appearance.keyframes.every(({ value }) => value.stroke?.widthWorld === 0.04)).toBe(true);
+    expect(trim).toMatchObject({
+      keyframes: [
+        { at: 0, easingToNext: { kind: "manim-smooth" }, value: 0 },
+        { at: 1, easingToNext: null, value: 1 },
+      ],
+      parameterization: "uniform-cubic-parameter-v1",
     });
   });
 

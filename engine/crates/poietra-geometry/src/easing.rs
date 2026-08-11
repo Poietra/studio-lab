@@ -68,7 +68,7 @@ fn solve_bezier_parameter(x1: f64, x2: f64, target: f64) -> f64 {
 
 /// Applies the deterministic v1 timing function to a normalized progress value.
 ///
-/// Progress is clamped to `[0, 1]`, matching the TypeScript reference evaluator.
+/// Progress is clamped to `[0, 1]` as required by the Scene IR v1 contract.
 pub fn apply_easing_v1(easing: &EasingV1, progress: f64) -> f64 {
     let bounded = progress.clamp(0.0, 1.0);
     match easing {

@@ -1,23 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import { digestFastManimRuntimeTracePathV2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
 const fixture = fastManimRuntimeTraceV2Fixture;
-
-async function frameAt(bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>, sampleTime: number) {
-  const result = await compileEngineFrameV1({
-    assets: bundle.assets,
-    packetId: `opening-v2:${sampleTime}`,
-    sampleTime,
-    scene: bundle.scene,
-    viewport: { heightPx: 720, widthPx: 1_280 },
-  });
-  if (result.kind !== "ready") throw new Error(result.message);
-  return result.frame;
-}
 
 function expectCompactedPlateausToRemainExact(
   bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>,
@@ -62,46 +49,86 @@ describe("OpeningManim Runtime Trace V2 lowering", () => {
     ]);
     expectCompactedPlateausToRemainExact(bundle);
 
-    const initial = await frameAt(bundle, 0);
-    expect(initial.packet.draws).toHaveLength(44);
-    expect(initial.packet.draws[1].kind).toBe("empty");
-    expect(initial.packet.draws[30].opacity).toBe(1);
-    expect(initial.packet.draws[30].transform.tx).toBe(0);
-
-    const midpoint = await frameAt(bundle, 0.5);
-    expect(midpoint.packet.draws[1].kind).toBe("path");
-    expect(midpoint.packet.draws[30].opacity).toBe(1);
-    expect(midpoint.packet.draws[30].transform.tx).toBe(0.5);
-
-    const hold = await frameAt(bundle, 3);
-    expect(hold.packet.draws).toHaveLength(46);
-    expect(hold.packet.draws[1]).toMatchObject({
-      kind: "path",
-      stroke: { color: { alpha: 0 } },
-    });
-    expect(hold.packet.draws[32].opacity).toBe(1);
-    expect(hold.packet.draws[32].transform.tx).toBe(1);
-
-    const gridStart = await frameAt(bundle, 5);
-    const gridMidpoint = await frameAt(bundle, 6.5);
-    const gridComplete = await frameAt(bundle, 479 / 60);
-    const finalHold = await frameAt(bundle, 539 / 60);
-    const gridWarpHold = await frameAt(bundle, 779 / 60);
-    const finalTitleStart = await frameAt(bundle, 780 / 60);
-    const completeScene = await frameAt(bundle, 899 / 60);
-    expect([gridStart, gridMidpoint, gridComplete, finalHold].map(({ packet }) => packet.draws.length)).toEqual([
-      67, 67, 67, 35,
+    const paths = bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
+    expect(paths).toHaveLength(112);
+    expect(paths.every(({ lifetimes }) => lifetimes.length === 1)).toBe(true);
+    expect(
+      [0, 3, 5, 13].map((at) => ({
+        at,
+        count: paths.filter(({ lifetimes }) => lifetimes[0]?.start === at).length,
+      })),
+    ).toEqual([
+      { at: 0, count: 44 },
+      { at: 3, count: 2 },
+      { at: 5, count: 35 },
+      { at: 13, count: 31 },
     ]);
     expect(
-      [gridStart, gridMidpoint, gridComplete, finalHold].map(
-        ({ packet }) => packet.draws.filter((draw) => draw.kind === "path").length,
-      ),
-    ).toEqual([43, 66, 67, 35]);
-    expect([gridWarpHold, finalTitleStart, completeScene].map(({ packet }) => packet.draws.length)).toEqual([
-      35, 66, 66,
+      [4, 8, 15].map((at) => ({
+        at,
+        count: paths.filter(({ lifetimes }) => lifetimes[0]?.end === at).length,
+      })),
+    ).toEqual([
+      { at: 4, count: 14 },
+      { at: 8, count: 32 },
+      { at: 15, count: 66 },
     ]);
+    expect({
+      affine: bundle.scene.animationChannels.filter(({ kind }) => kind === "affine-transform").length,
+      morph: bundle.scene.animationChannels.filter(({ kind }) => kind === "path-morph").length,
+      opacity: bundle.scene.animationChannels.filter(({ kind }) => kind === "opacity").length,
+      trim: bundle.scene.animationChannels.filter(({ kind }) => kind === "path-trim").length,
+      vectorAppearance: bundle.scene.animationChannels.filter(({ kind }) => kind === "vector-appearance").length,
+    }).toEqual({ affine: 14, morph: 43, opacity: 57, trim: 39, vectorAppearance: 44 });
 
-    expect(await frameAt(bundle, 0.5)).toEqual(midpoint);
+    const baselMotion = bundle.scene.animationChannels.find(
+      (candidate) =>
+        candidate.kind === "affine-transform" && candidate.entityId.endsWith("/runtime-root:basel/runtime-draw:0"),
+    );
+    const titleTrim = bundle.scene.animationChannels.find(
+      (candidate) =>
+        candidate.kind === "path-trim" &&
+        candidate.entityId.endsWith("/runtime-root:title/runtime-draw:0/paint:stroke"),
+    );
+    const gridTitleOpacity = bundle.scene.animationChannels.find(
+      (candidate) =>
+        candidate.kind === "opacity" && candidate.entityId.endsWith("/runtime-root:grid-title/runtime-draw:0"),
+    );
+    if (
+      baselMotion?.kind !== "affine-transform" ||
+      titleTrim?.kind !== "path-trim" ||
+      gridTitleOpacity?.kind !== "opacity"
+    ) {
+      throw new Error("Expected representative retained channels.");
+    }
+    expect(
+      baselMotion.keyframes
+        .filter(({ at }) => at === 0 || at === 0.5 || at === 1 || at === 3)
+        .map(({ at, value }) => ({ at, tx: value.tx, ty: value.ty })),
+    ).toEqual([
+      { at: 0, tx: 0, ty: 0 },
+      { at: 0.5, tx: 0.5, ty: 0 },
+      { at: 1, tx: 1, ty: 0 },
+      { at: 3, tx: 1, ty: 0 },
+    ]);
+    expect(
+      titleTrim.keyframes
+        .filter(({ at }) => at === 0 || at === 1 || at === 479 / 60)
+        .map(({ at, value }) => ({ at, value })),
+    ).toEqual([
+      { at: 0, value: 0 },
+      { at: 1, value: 1 },
+      { at: 479 / 60, value: 1 },
+    ]);
+    expect(
+      gridTitleOpacity.keyframes
+        .filter(({ at }) => at === 5 || at === 6 || at === 899 / 60)
+        .map(({ at, value }) => ({ at, value })),
+    ).toEqual([
+      { at: 5, value: 0 },
+      { at: 6, value: 1 },
+      { at: 899 / 60, value: 1 },
+    ]);
   });
 
   it("fails closed when one frame changes stable draw identity", async () => {

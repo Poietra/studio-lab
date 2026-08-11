@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { verifyFastManimRuntimeTraceTerminalCandidateV1 } from "./fast-manim-runtime-trace-candidate";
 import {
   canonicalFastManimRuntimeTraceCoordinateV1,
@@ -29,18 +28,6 @@ async function lower(trace = runtimeTraceFixture(), trusted?: TrustedFastManimRu
     runtimeTraceRequestFixture(),
     trusted ?? trustedRuntimeTraceProducer(sealed),
   );
-}
-
-async function frameAt(bundle: Awaited<ReturnType<typeof lower>>, sampleTime: number) {
-  const result = await compileEngineFrameV1({
-    assets: bundle.assets,
-    packetId: `runtime-trace-${sampleTime}`,
-    sampleTime,
-    scene: bundle.scene,
-    viewport: { heightPx: 720, widthPx: 1_280 },
-  });
-  if (result.kind !== "ready") throw new Error(result.message);
-  return result.frame;
 }
 
 const terminalCandidateSource = RUNTIME_TRACE_SOURCE_TEXT.replace(
@@ -95,17 +82,6 @@ function terminalCandidateFixture() {
   };
 }
 
-function comparablePathDraw(draw: Awaited<ReturnType<typeof frameAt>>["packet"]["draws"][number]) {
-  if (draw.kind !== "path") throw new Error("Expected a path draw.");
-  return {
-    fill: draw.fill,
-    opacity: draw.opacity,
-    path: draw.path,
-    stroke: draw.stroke,
-    transform: draw.transform,
-  };
-}
-
 describe("fast-manim Runtime Trace V1 lowering", () => {
   it("preserves frame 299 and folds terminal move, scale, and updater geometry into frame 300", async () => {
     const { base, request, verified } = terminalCandidateFixture();
@@ -121,32 +97,61 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     });
     expect(candidateBundle.scene.animationChannels).toEqual(officialBundle.scene.animationChannels);
 
-    const [officialProtected, candidateProtected, officialTerminal, candidateTerminal] = await Promise.all([
-      frameAt(officialBundle, 299 / 60),
-      frameAt(candidateBundle, 299 / 60),
-      frameAt(officialBundle, 5),
-      frameAt(candidateBundle, 5),
-    ]);
-    expect(candidateProtected.packet.draws.map(comparablePathDraw)).toEqual(
-      officialProtected.packet.draws.map(comparablePathDraw),
+    const officialPaths = officialBundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
+    const candidateProtected = candidateBundle.scene.entities.filter(
+      ({ geometry, lifetimes }) => geometry.kind === "cubic-path" && lifetimes[0]?.start === 0,
     );
+    const candidateTerminal = candidateBundle.scene.entities.filter(
+      ({ geometry, lifetimes }) => geometry.kind === "cubic-path" && lifetimes[0]?.start === 5,
+    );
+    expect(officialPaths).toHaveLength(10);
+    expect(candidateProtected).toHaveLength(10);
+    expect(candidateTerminal).toHaveLength(10);
+    expect(
+      candidateProtected.map(({ appearance, geometry, parentId, transform }) => ({
+        appearance,
+        geometry,
+        parentRole: parentId?.split("/").at(-1),
+        transform,
+      })),
+    ).toEqual(
+      officialPaths.map(({ appearance, geometry, parentId, transform }) => ({
+        appearance,
+        geometry,
+        parentRole: parentId?.split("/").at(-1),
+        transform,
+      })),
+    );
+    expect(
+      candidateProtected.every(
+        ({ lifetimes }) => canonicalJsonV1(lifetimes) === canonicalJsonV1([{ end: 5, start: 0 }]),
+      ),
+    ).toBe(true);
 
-    const officialSquare = comparablePathDraw(officialTerminal.packet.draws[0]);
-    const candidateSquare = comparablePathDraw(candidateTerminal.packet.draws[0]);
+    const officialSquare = officialPaths[0];
+    const candidateSquare = candidateTerminal[0];
+    if (officialSquare?.geometry.kind !== "cubic-path" || candidateSquare?.geometry.kind !== "cubic-path") {
+      throw new Error("Expected the lowered Square paths.");
+    }
     expect(candidateSquare.transform.tx).toBeCloseTo(1.25, 12);
-    expect(candidateSquare.transform.ty).toBeCloseTo(2.5, 12);
-    expect(candidateSquare.path.subpaths[0].segments[0].end.x).toBeCloseTo(
-      officialSquare.path.subpaths[0].segments[0].end.x * 0.5,
+    expect(candidateSquare.transform.ty).toBe(0);
+    expect(candidateSquare.geometry.path.subpaths[0]?.segments[0]?.end.x).toBeCloseTo(
+      (officialSquare.geometry.path.subpaths[0]?.segments[0]?.end.x ?? 0) * 0.5,
       12,
     );
 
-    const officialDecimal = officialTerminal.packet.draws.slice(1).map(comparablePathDraw);
-    const candidateDecimal = candidateTerminal.packet.draws.slice(1).map(comparablePathDraw);
+    const officialDecimal = officialPaths.slice(1);
+    const candidateDecimal = candidateTerminal.slice(1);
     expect(candidateDecimal).toHaveLength(9);
-    candidateDecimal.forEach((draw, index) => {
-      expect(draw.transform.tx).toBeCloseTo(officialDecimal[index].transform.tx + 0.75, 12);
-      expect(draw.transform.ty).toBeCloseTo(2.5, 12);
+    candidateDecimal.forEach((entity, index) => {
+      expect(entity.appearance).toEqual(officialDecimal[index]?.appearance);
+      expect(entity.geometry).toEqual(officialDecimal[index]?.geometry);
+      expect(entity.transform.tx).toBeCloseTo((officialDecimal[index]?.transform.tx ?? 0) + 0.75, 12);
+      expect(entity.transform.ty).toBe(0);
     });
+    const motion = candidateBundle.scene.animationChannels.find(({ kind }) => kind === "affine-transform");
+    if (motion?.kind !== "affine-transform") throw new Error("Expected the shared motion channel.");
+    expect(motion.keyframes.at(-1)).toMatchObject({ at: 5, value: { tx: 0, ty: 2.5 } });
   });
 
   it("normalizes the measured trace into existing Scene IR groups, states, and motion", async () => {
@@ -166,19 +171,30 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     expect(bundle.scene.entities).toHaveLength(13);
     expect(bundle.scene.entities.filter(({ geometry }) => geometry.kind === "group")).toHaveLength(3);
     expect(bundle.scene.animationChannels).toHaveLength(1);
+    const paths = bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
+    expect(paths).toHaveLength(10);
+    expect(paths.map(({ lifetimes }) => lifetimes)).toEqual(Array.from({ length: 10 }, () => [{ end: 6, start: 0 }]));
+    expect(paths.map(({ sceneOrder }) => sceneOrder)).toEqual([3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 
-    for (const [sampleTime, expectedY] of [
-      [0, 2.5],
-      [2.5, -2.5],
-      [5, 2.5],
-      [6, 2.5],
-    ] as const) {
-      const frame = await frameAt(bundle, sampleTime);
-      expect(frame.packet.compositing).toBe("manim-cairo-srgb");
-      expect(frame.packet.draws).toHaveLength(10);
-      expect(frame.packet.draws[0].transform.ty).toBeCloseTo(expectedY, 12);
-      expect(frame.packet.draws.map(({ paintOrder }) => paintOrder)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    }
+    const motion = bundle.scene.animationChannels[0];
+    if (motion?.kind !== "affine-transform") throw new Error("Expected the measured motion channel.");
+    expect(motion.keyframes).toEqual([
+      {
+        at: 0,
+        easingToNext: { kind: "manim-smooth" },
+        value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 2.5 },
+      },
+      {
+        at: 2.5,
+        easingToNext: { kind: "manim-smooth" },
+        value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: -2.5 },
+      },
+      {
+        at: 5,
+        easingToNext: null,
+        value: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 2.5 },
+      },
+    ]);
   });
 
   it("deduplicates recurring visual states into bounded half-open lifetime runs", async () => {
@@ -193,13 +209,25 @@ describe("fast-manim Runtime Trace V1 lowering", () => {
     expect(Math.max(...bundle.scene.entities.map(({ lifetimes }) => lifetimes.length))).toBe(64);
     expect(bundle.scene.entities.reduce((total, entity) => total + entity.lifetimes.length, 0)).toBe(313);
 
+    const recurringStates = bundle.scene.entities.filter(({ id }) => id.includes("/runtime-trace:draw:1:"));
+    expect(recurringStates).toHaveLength(6);
+    expect(recurringStates.map(({ transform }) => transform.tx)).toEqual([0, 0, 0.1, 0.1, 0.2, 0.2]);
     for (const frameIndex of [0, 1, 2, 149, 299]) {
-      const frame = await frameAt(bundle, frameIndex * (1 / 60));
-      expect(frame.packet.draws).toHaveLength(10);
-      expect(frame.packet.draws[1].transform.tx).toBeCloseTo(1.25 + (frameIndex % 3) / 10, 12);
+      const expectedX = (frameIndex % 3) / 10;
+      expect(
+        recurringStates.some(
+          ({ lifetimes, transform }) =>
+            Math.abs(transform.tx - expectedX) < 1e-12 &&
+            lifetimes.some(({ end, start }) => start === frameIndex / 60 && end === (frameIndex + 1) / 60),
+        ),
+      ).toBe(true);
     }
-    const betweenFrames = await frameAt(bundle, 31.5 / 60);
-    expect(betweenFrames.packet.draws[1].transform.tx).toBeCloseTo(1.25 + (31 % 3) / 10, 12);
+    expect(
+      recurringStates.some(
+        ({ lifetimes, transform }) =>
+          transform.tx === 0.1 && lifetimes.some(({ end, start }) => start === 31 / 60 && end === 32 / 60),
+      ),
+    ).toBe(true);
   });
 
   it("rejects motion substitution even when the structural wire contract is valid", async () => {
