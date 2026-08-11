@@ -6,7 +6,7 @@ import { cpus, release, version } from "node:os";
 import { gzipSync } from "node:zlib";
 import { z } from "zod";
 
-import { canonicalEngineBenchmarkJsonV1 } from "../src/engine/benchmark";
+import { canonicalJsonV1 } from "../src/engine/canonical-json";
 import {
   POIETRA_CANVAS_TELEMETRY_ABI_VERSION,
   POIETRA_CANVAS_WORKER_VERSION,
@@ -581,7 +581,7 @@ export function reportContracts(reportSchema: string, reportVersion: number) {
  * the exact workload content a report measured.
  */
 export function canonicalSceneBundleSha256(bundle: unknown): string {
-  return createHash("sha256").update(canonicalEngineBenchmarkJsonV1(bundle)).digest("hex");
+  return createHash("sha256").update(canonicalJsonV1(bundle)).digest("hex");
 }
 
 const WINDOWS_ROOT = String.raw`C:\Windows`;

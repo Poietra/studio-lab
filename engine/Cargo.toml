@@ -18,6 +18,7 @@ license = "MIT"
 rust-version = "1.85"
 
 [workspace.dependencies]
+flate2 = "=1.1.9"
 poietra-geometry = { path = "crates/poietra-geometry" }
 poietra-scene-ir = { path = "crates/poietra-scene-ir" }
 poietra-eval = { path = "crates/poietra-eval" }

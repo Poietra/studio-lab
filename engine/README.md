@@ -90,16 +90,16 @@ exceptions require both an explicit override and a non-empty reason. This is
 test-only instrumentation: the production canvas response and frame-evidence ABIs
 are unchanged.
 
-Both evaluators consume the JSON fixtures under `fixtures/engine-v1`; categorical
-results are exact and floating-point results use the fixture's explicit combined
-absolute/relative tolerance. The TypeScript evaluator remains Studio's current
-implementation while the Rust path is experimental. Studio can explicitly opt into
-the retained worker through `?previewRenderer=server`: it loads a same-origin,
-server-verified fast-manim snapshot and reveals the WebGPU canvas only after an
-exactly correlated frame is presented. The semantic editor stays mounted as the
-interactive overlay and whole-Scene fallback; it remains the default without that
-query. Server-backed final video rendering and `.py` export remain separate,
-authoritative workflows.
+The Rust evaluator is the only Scene IR evaluation implementation. Its native tests
+consume the JSON fixtures under `fixtures/engine-v1`; categorical results are exact
+and floating-point results use each fixture's explicit tolerance. TypeScript owns
+Studio authoring and integration state, but no longer contains a second Scene IR
+frame evaluator. Studio still opts into the retained worker through
+`?previewRenderer=server`: it loads a same-origin, server-verified fast-manim snapshot
+and reveals the WebGPU canvas only after an exactly correlated frame is presented.
+The semantic editor remains mounted as the interaction overlay and whole-Scene
+fallback during that separate preview migration. Server-backed final video rendering
+and `.py` export remain authoritative workflows.
 
 `poietra-render-wgpu` is a deliberately narrow GPU slice. Its pure CPU
 stage validates the complete `RenderPacketV1`, maps each local cubic's controls to

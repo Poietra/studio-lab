@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
@@ -181,17 +180,14 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
           terminal: { center: plan.expectedWorldCenter, frameIndex: 5 },
         });
         const bundle = await parseVerifiedSceneIrBundleV1(preview.bundle);
-        const initial = await compileEngineFrameV1({
-          assets: bundle.assets,
-          packetId: "runtime-trace-v3-candidate-preview-real-1",
-          sampleTime: 0,
-          scene: bundle.scene,
-          viewport: { heightPx: 486, widthPx: 864 },
-        });
-        expect(initial.kind).toBe("ready");
-        if (initial.kind !== "ready") throw new Error(initial.message);
-        expect(initial.frame.packet.draws[0]?.transform.tx).toBeCloseTo(plan.expectedWorldCenter.x, 12);
-        expect(initial.frame.packet.draws[0]?.transform.ty).toBeCloseTo(plan.expectedWorldCenter.y, 12);
+        expect(bundle.scene.animationChannels).toHaveLength(0);
+        const rootId = preview.roots[0]?.entityId;
+        const rootEntity = bundle.scene.entities.find(({ id }) => id === rootId);
+        const paths = bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
+        expect(rootEntity).toMatchObject({ appearance: { kind: "group" }, geometry: { kind: "group" } });
+        expect(paths).toHaveLength(1);
+        expect(paths[0]?.transform.tx).toBeCloseTo(plan.expectedWorldCenter.x, 12);
+        expect(paths[0]?.transform.ty).toBeCloseTo(plan.expectedWorldCenter.y, 12);
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });
@@ -412,23 +408,48 @@ class StaticTriangle(Scene):
           sourceHash: preflight.sourceHash,
           traceDigest: preview.traceDigest,
         });
-        const terminal = await compileEngineFrameV1({
-          assets: bundle.assets,
-          packetId: "runtime-trace-terminal-edit-preview-real-1",
-          sampleTime: 5,
-          scene: bundle.scene,
-          viewport: { heightPx: 486, widthPx: 864 },
-        });
-        expect(terminal.kind).toBe("ready");
-        if (terminal.kind !== "ready") throw new Error(terminal.message);
-        expect(terminal.frame.packet.draws[0]?.transform.tx).toBeCloseTo(0.806934594169, 12);
-        expect(terminal.frame.packet.draws[0]?.transform.ty).toBeCloseTo(2.096532702916, 12);
-        const decimalDraws = terminal.frame.packet.draws.slice(1);
-        expect(decimalDraws).not.toEqual([]);
-        expect(Math.min(...decimalDraws.map(({ transform }) => transform.tx))).toBeGreaterThan(0.806934594169);
-        expect(Math.max(...decimalDraws.map(({ transform }) => Math.abs(transform.ty - 2.096532702916)))).toBeLessThan(
-          0.2,
+        const motion = bundle.scene.animationChannels.find((channel) => channel.kind === "affine-transform");
+        if (!motion) throw new Error("Expected the retained Runtime Trace motion channel.");
+        expect(motion.keyframes.map(({ at }) => at)).toEqual([0, 2.5, 5]);
+        const terminalMotion = motion.keyframes.at(-1)?.value;
+        expect(terminalMotion).toMatchObject({ tx: 0, ty: 2.5 });
+        if (!terminalMotion) throw new Error("Expected the terminal retained motion keyframe.");
+
+        const motionRoot = bundle.scene.entities.find(({ id }) => id === motion.entityId);
+        const squareRoot = bundle.scene.entities.find(({ id }) => id.endsWith("/runtime-root:square"));
+        const decimalRoot = bundle.scene.entities.find(({ id }) => id.endsWith("/runtime-root:decimal"));
+        expect(motionRoot).toMatchObject({ appearance: { kind: "group" }, parentId: null });
+        if (!squareRoot || !decimalRoot) throw new Error("Expected the Square and DecimalNumber Runtime Trace roots.");
+        const activeAtFive = (entity: (typeof bundle.scene.entities)[number]) =>
+          entity.lifetimes.some(({ end, start }) => start <= 5 && 5 < end);
+        const squareStates = bundle.scene.entities.filter(
+          (entity) =>
+            entity.parentId === squareRoot.id && entity.geometry.kind === "cubic-path" && activeAtFive(entity),
         );
+        const decimalStates = bundle.scene.entities.filter(
+          (entity) =>
+            entity.parentId === decimalRoot.id && entity.geometry.kind === "cubic-path" && activeAtFive(entity),
+        );
+        expect(squareStates).toHaveLength(1);
+        expect(decimalStates).toHaveLength(9);
+        const square = squareStates[0];
+        if (!square || square.geometry.kind !== "cubic-path") throw new Error("Expected the terminal Square state.");
+        expect(square.transform.tx).toBeCloseTo(0.806934594169, 12);
+        expect(square.transform.ty).toBeCloseTo(2.096532702916 - terminalMotion.ty, 12);
+        expect(square.geometry.path.subpaths[0]?.start.x).toBeCloseTo(1.6071941072, 12);
+        expect(square.geometry.path.subpaths[0]?.start.y).toBeCloseTo(1.6071941072, 12);
+        expect(squareRoot.transform.tx + square.transform.tx + terminalMotion.tx).toBeCloseTo(0.806934594169, 12);
+        expect(squareRoot.transform.ty + square.transform.ty + terminalMotion.ty).toBeCloseTo(2.096532702916, 12);
+        expect(
+          Math.min(...decimalStates.map(({ transform }) => decimalRoot.transform.tx + transform.tx)),
+        ).toBeGreaterThan(0.806934594169);
+        expect(
+          Math.max(
+            ...decimalStates.map(({ transform }) =>
+              Math.abs(decimalRoot.transform.ty + transform.ty + terminalMotion.ty - 2.096532702916),
+            ),
+          ),
+        ).toBeLessThan(0.2);
       } finally {
         await runner.close();
         await rm(root, { force: true, recursive: true });

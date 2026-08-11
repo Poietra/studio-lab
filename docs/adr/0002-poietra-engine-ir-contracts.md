@@ -308,14 +308,14 @@ library is involved. Both implementations spell the same literal:
 `MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir` and `MIN_AFFINE_DETERMINANT`
 in `src/engine/primitives.ts`.
 
-The rendering path and the reference evaluator classify a sample with the same
-predicate, not with two copies of it: `poietra-eval` — the crate the Canvas
-worker loads through `poietra-wasm` — calls
+Evaluation and packet validation classify a sample with the same predicate, not
+with two copies of it: `poietra-eval` — the crate the Canvas worker loads through
+`poietra-wasm` — calls
 `poietra_scene_ir::affine_transform_is_singular_v1`, the function packet
-validation itself uses. The shared golden fixture set carries a near-singular
-case (`fixtures/engine-v1/shared-near-singular-affine.json`), which both the
-Rust and the TypeScript harness run, so the two evaluators cannot drift apart
-on this rule without a failing test.
+validation itself uses. The golden fixture set carries a near-singular case
+(`fixtures/engine-v1/shared-near-singular-affine.json`) which the native Rust
+evaluator runs. The retired TypeScript reference evaluator no longer duplicates
+this rule.
 
 GPU preparation has one operation order:
 
@@ -477,12 +477,11 @@ pinned by this repository. Decision-grade performance runs use installed native
 Edge and its production-default D3D12 path on the checked-in, separately hashed
 reference profile:
 
-The checked-in TypeScript harness enforces at least 30 warm-up and 300 measured
-frames, records every evaluator sample, uses nearest-rank p50/p95, and hashes the
-canonical sampled RenderPackets for reproducibility. Its metric is explicitly
-`typescript-reference` evaluation time; GPU submit/presentation, cold start,
-memory, transfer, and bundle measurements remain separate reports rather than
-being mislabeled as part of that number.
+The former TypeScript-only evaluator benchmark was retired with its duplicate
+evaluator. The canonical browser lane measures the shipped Rust/WASM/WebGPU worker
+through `pnpm benchmark:engine:webgpu`; GPU submit/presentation, cold start, memory,
+transfer, and bundle measurements remain separate fields rather than being folded
+into one misleading evaluator number.
 
 - Windows 11 Home build 26200, native Edge 150.0.4078.105;
 - Intel Core Ultra 7 255H, 16 logical CPUs, 64 GiB RAM;
@@ -621,7 +620,7 @@ The following evidence is reproducible in this repository:
 | Area | Status | Evidence |
 | --- | --- | --- |
 | closed v1 contracts and integrity checks | met | TypeScript and Rust reject unknown fields, versions, capabilities, stale manifests, invalid references, and bounded-resource violations |
-| cross-runtime evaluation | met for the shared fill/Line fixture | TypeScript and Rust produce the pinned semantic result for `eng-v1-shared-circle-opacity`, including the canonical Line cubic |
+| canonical evaluation | met for the shared fill/Line fixture | the same Rust evaluator produces the pinned semantic result for `eng-v1-shared-circle-opacity` through native tests and the browser WASM adapter, including the canonical Line cubic |
 | native WGPU output | met for the shared fill/Line fixture | Lavapipe readback proves black background, opaque blue fill, opacity-composited red fill, and green round-cap/interior pixels |
 | browser WASM/WebGPU output | met for the shared fill/Line fixture | Chromium 146 Worker readback proves the same fill and round-capped Line sample points through retained Scene evaluation |
 | retained browser boundary | met | the Worker transfers one Scene snapshot and canvas, retains both in Rust, and returns only bounded presentation correlation per frame |

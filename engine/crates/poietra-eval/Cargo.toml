@@ -11,6 +11,7 @@ poietra-scene-ir.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+flate2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

@@ -79,9 +79,9 @@ export function createFixturePreviewSnapshotProviderV1(): StudioPreviewSnapshotP
       if (authoredFixture.scene.source.kind !== "studio-edit-program") {
         throw new Error("The shared renderer fixture does not carry its authored revision evidence.");
       }
-      // The shared golden is authored as a Studio Edit Program so both the
-      // TypeScript and Rust evaluators can consume it. This provider is the
-      // preview-server boundary: wrap the same revision in the imported
+      // The shared golden is authored as a Studio Edit Program so the
+      // TypeScript contract boundary and canonical Rust evaluator consume the
+      // same document. This provider wraps that revision in the imported
       // snapshot authority required by Studio's pristine correlation gate.
       const snapshot = await parseVerifiedSceneIrBundleV1({
         assets: authoredFixture.assets,

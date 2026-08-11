@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 
 import { describe, expect, it } from "vitest";
 
-import { canonicalJsonV1, writeCanonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
+import { canonicalJsonV1, writeCanonicalJsonV1 } from "../src/engine/canonical-json";
 import { digestCanonicalJsonV1 } from "./canonical-json-digest";
 
 function written(value: unknown) {

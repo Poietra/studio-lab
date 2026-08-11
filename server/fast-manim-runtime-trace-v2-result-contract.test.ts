@@ -1,11 +1,10 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
+import { readFileSync, writeFileSync } from "node:fs";
+import { gzipSync, gunzipSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import {
   createFastManimRuntimeTraceProducerRequestV2,
@@ -45,21 +44,10 @@ const artifactBytes = gunzipSync(
   readFileSync(new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url)),
 );
 const artifactJson = artifactBytes.toString("utf8");
+const loweredBundleFixtureUrl = new URL("../fixtures/engine-v1/real-opening-runtime-v2.json.gz", import.meta.url);
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-async function frameAt(bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>, sampleTime: number) {
-  const result = await compileEngineFrameV1({
-    assets: bundle.assets,
-    packetId: `opening-runtime-trace-v2:${sampleTime}`,
-    sampleTime,
-    scene: bundle.scene,
-    viewport: { heightPx: 720, widthPx: 1_280 },
-  });
-  if (result.kind !== "ready") throw new Error(result.message);
-  return result.frame;
 }
 
 function expectCompactedPlateausToRemainExact(
@@ -138,10 +126,15 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
     expect(trace.resources.appearances).toHaveLength(349);
 
     const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
-    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBe(5_488_665);
-    expect(Buffer.byteLength(canonicalJsonV1(bundle), "utf8")).toBeLessThan(
+    const canonicalBundle = canonicalJsonV1(bundle);
+    expect(Buffer.byteLength(canonicalBundle, "utf8")).toBe(5_488_665);
+    expect(Buffer.byteLength(canonicalBundle, "utf8")).toBeLessThan(
       MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
     );
+    if (process.env.POIETRA_UPDATE_OPENING_RUNTIME_V2_ENGINE_FIXTURE === "1") {
+      writeFileSync(loweredBundleFixtureUrl, gzipSync(canonicalBundle, { level: 9 }));
+    }
+    expect(gunzipSync(readFileSync(loweredBundleFixtureUrl)).toString("utf8")).toBe(canonicalBundle);
     expect(bundle.scene.entities).toHaveLength(194);
     expect(bundle.scene.animationChannels).toHaveLength(269);
     expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(12_551);
@@ -166,68 +159,55 @@ describe("fast-manim Runtime Trace V2 result contract", () => {
         .every((channel) => channel.parameterization === "uniform-cubic-parameter-v1"),
     ).toBe(true);
     expectCompactedPlateausToRemainExact(bundle);
-    const packetDrawCounts = await Promise.all(
-      [
-        0,
-        0.5,
-        1,
-        2,
-        179 / 60,
-        3,
-        3.5,
-        4,
-        299 / 60,
-        5,
-        5.5,
-        6.5,
-        479 / 60,
-        8,
-        539 / 60,
-        9,
-        10.5,
-        719 / 60,
-        12,
-        779 / 60,
-        13,
-        13.5,
-        839 / 60,
-        14,
-        899 / 60,
-      ].map(async (sampleTime) => {
-        const frame = await frameAt(bundle, sampleTime);
+    const pathEntities = bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
+    expect(pathEntities).toHaveLength(189);
+    expect(pathEntities.every(({ lifetimes }) => lifetimes.length === 1)).toBe(true);
+    expect(
+      [0, 3, 181 / 60, 4, 5, 9, 13, 781 / 60, 14].map((at) => ({
+        at,
+        count: pathEntities.filter(({ lifetimes }) => lifetimes[0]?.start === at).length,
+      })),
+    ).toEqual([
+      { at: 0, count: 44 },
+      { at: 3, count: 12 },
+      { at: 181 / 60, count: 4 },
+      { at: 4, count: 6 },
+      { at: 5, count: 35 },
+      { at: 9, count: 24 },
+      { at: 13, count: 38 },
+      { at: 781 / 60, count: 10 },
+      { at: 14, count: 16 },
+    ]);
+    expect(
+      [3, 181 / 60, 4, 8, 9, 13, 781 / 60, 14, 15].map((at) => ({
+        at,
+        count: pathEntities.filter(({ lifetimes }) => lifetimes[0]?.end === at).length,
+      })),
+    ).toEqual([
+      { at: 3, count: 20 },
+      { at: 181 / 60, count: 5 },
+      { at: 4, count: 20 },
+      { at: 8, count: 21 },
+      { at: 9, count: 24 },
+      { at: 13, count: 7 },
+      { at: 781 / 60, count: 10 },
+      { at: 14, count: 16 },
+      { at: 15, count: 66 },
+    ]);
+    expect(
+      ["affine-transform", "path-morph", "path-trim", "vector-appearance"].map((kind) => {
+        const channels = bundle.scene.animationChannels.filter((channel) => channel.kind === kind);
         return {
-          drawCount: frame.packet.draws.length,
-          pathCount: frame.packet.draws.filter((draw) => draw.kind === "path").length,
-          sampleTime,
+          channels: channels.length,
+          keyframes: channels.reduce((total, channel) => total + channel.keyframes.length, 0),
+          kind,
         };
       }),
-    );
-    expect(packetDrawCounts).toEqual([
-      { drawCount: 44, pathCount: 29, sampleTime: 0 },
-      { drawCount: 44, pathCount: 34, sampleTime: 0.5 },
-      { drawCount: 44, pathCount: 39, sampleTime: 1 },
-      { drawCount: 44, pathCount: 44, sampleTime: 2 },
-      { drawCount: 44, pathCount: 44, sampleTime: 179 / 60 },
-      { drawCount: 36, pathCount: 36, sampleTime: 3 },
-      { drawCount: 35, pathCount: 35, sampleTime: 3.5 },
-      { drawCount: 21, pathCount: 21, sampleTime: 4 },
-      { drawCount: 21, pathCount: 21, sampleTime: 299 / 60 },
-      { drawCount: 56, pathCount: 32, sampleTime: 5 },
-      { drawCount: 56, pathCount: 38, sampleTime: 5.5 },
-      { drawCount: 56, pathCount: 49, sampleTime: 6.5 },
-      { drawCount: 56, pathCount: 56, sampleTime: 479 / 60 },
-      { drawCount: 35, pathCount: 35, sampleTime: 8 },
-      { drawCount: 35, pathCount: 35, sampleTime: 539 / 60 },
-      { drawCount: 35, pathCount: 35, sampleTime: 9 },
-      { drawCount: 35, pathCount: 35, sampleTime: 10.5 },
-      { drawCount: 35, pathCount: 35, sampleTime: 719 / 60 },
-      { drawCount: 35, pathCount: 35, sampleTime: 12 },
-      { drawCount: 35, pathCount: 35, sampleTime: 779 / 60 },
-      { drawCount: 66, pathCount: 66, sampleTime: 13 },
-      { drawCount: 66, pathCount: 66, sampleTime: 13.5 },
-      { drawCount: 66, pathCount: 66, sampleTime: 839 / 60 },
-      { drawCount: 66, pathCount: 66, sampleTime: 14 },
-      { drawCount: 66, pathCount: 66, sampleTime: 899 / 60 },
+    ).toEqual([
+      { channels: 21, keyframes: 2_128, kind: "affine-transform" },
+      { channels: 87, keyframes: 509, kind: "path-morph" },
+      { channels: 39, keyframes: 1_696, kind: "path-trim" },
+      { channels: 122, keyframes: 8_218, kind: "vector-appearance" },
     ]);
   });
 

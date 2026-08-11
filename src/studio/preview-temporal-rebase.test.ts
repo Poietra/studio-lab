@@ -4,10 +4,8 @@ import { describe, expect, it } from "vitest";
 import { lowerVerifiedFastManimRuntimeTraceV3 } from "../../server/fast-manim-runtime-trace-v3-lowering";
 import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-trace-v3-result-contract";
 import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
-import { canonicalEngineBenchmarkJsonV1 } from "../engine/benchmark";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import { compileEngineFrameV1 } from "../engine/reference-evaluator";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
@@ -64,7 +62,6 @@ const OFFICIAL_SQUARE_TO_CIRCLE_SNAPSHOT_HASH = "fbe5f70ca7ddda9a87fb39491acbf46
 const SNAPSHOT_HASH = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
 const SOURCE_BINDING_ID = "source-binding:555240577158406fa67c9ef3fd4eced1471249d8e97362c3939e8a8a6f1e9b0f";
 const WORKING_REVISION = "4".repeat(64);
-const WINDING_ROOT = 1.5119159473817447;
 const WARP_SQUARE_SOURCE_PATH = "example_scenes/basic.py";
 const WARP_SQUARE_SCENE_ID = `${WARP_SQUARE_SOURCE_PATH}#WarpSquare`;
 const WARP_SQUARE_ENTITY_ID = `source:${WARP_SQUARE_SCENE_ID}:square`;
@@ -643,19 +640,6 @@ function replaceFirstOperation(
       ...proposedState.programs.slice(1),
     ],
   };
-}
-
-async function sampledSemantics(scene: SceneIrV1, sampleTime: number) {
-  const result = await compileEngineFrameV1({
-    assets: (await sealedSquareToCircleV8()).assets,
-    evidence: ["Studio #414 temporal rebase", `sample ${sampleTime}`],
-    packetId: `studio-414:${sampleTime}`,
-    sampleTime,
-    scene,
-    viewport: { heightPx: 360, widthPx: 640 },
-  });
-  if (result.kind !== "ready") throw new Error(result.message);
-  return canonicalEngineBenchmarkJsonV1({ camera: result.frame.packet.camera, draws: result.frame.packet.draws });
 }
 
 async function genericRuntimeTraceV3Snapshot(traceOverride?: ReturnType<typeof fastManimRuntimeTraceV3Schema.parse>) {
@@ -1680,17 +1664,6 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       "path-trim",
     ]);
     expect(result.scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
-
-    const forwardTimes = [0, 0.5, 1, WINDING_ROOT, 2, 2.5, 3] as const;
-    const forward: string[] = [];
-    for (const time of forwardTimes) forward.push(await sampledSemantics(result.scene, time));
-    const aFirst = await sampledSemantics(result.scene, WINDING_ROOT);
-    const b = await sampledSemantics(result.scene, 0.5);
-    const aAgain = await sampledSemantics(result.scene, WINDING_ROOT);
-    expect(aFirst).toBe(forward[3]);
-    expect(aAgain).toBe(aFirst);
-    expect(b).toBe(forward[1]);
-    expect(b).not.toBe(aFirst);
   });
 
   it.each([
