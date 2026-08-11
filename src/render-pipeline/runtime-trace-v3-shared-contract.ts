@@ -98,3 +98,66 @@ export const fastManimRuntimeTraceSourceBindingEndpointV3Schema = z
       .max(FAST_MANIM_RUNTIME_TRACE_MAX_FRAME_COUNT_V3 / FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3),
   })
   .strict();
+
+export type FastManimRuntimeTraceSourceBindingEndpointV3 = z.infer<
+  typeof fastManimRuntimeTraceSourceBindingEndpointV3Schema
+>;
+
+function sampledCoordinatesMatchV3(left: number, right: number) {
+  // Endpoint coordinates are canonicalized to thirteen decimals; admit that
+  // decimal boundary plus binary64 noise and nothing wider.
+  return Math.abs(left - right) <= Math.max(1e-12, Number.EPSILON * 16 * Math.max(1, Math.abs(left), Math.abs(right)));
+}
+
+/**
+ * Names the sampled endpoint that observes a binding's constructed placement —
+ * the geometry `move_to` positions and `scale` pivots about.
+ *
+ * A trace samples only frame zero and the settled frame, so the constructed
+ * placement is never observed directly. Exactly two shapes are decidable from
+ * that pair: an object complete at construction reports its placement at frame
+ * zero (its box keeps its dimensions even when later animation moves it),
+ * while an entrance animation such as `Write` or `Create` is still revealing
+ * the object at frame zero and grows its box toward the settled placement.
+ * Anything else is ambiguous, so this returns null and the caller must refuse
+ * to claim where an edit lands.
+ *
+ * A misclassification cannot silently mislocate an edit: callers pin the
+ * candidate against the endpoint named here, so naming the wrong one makes
+ * that pin fail rather than admit a wrong placement.
+ */
+export function fastManimRuntimeTraceConstructedEndpointV3(
+  endpoints: Readonly<{
+    initial: FastManimRuntimeTraceSourceBindingEndpointV3;
+    terminal: FastManimRuntimeTraceSourceBindingEndpointV3;
+  }>,
+): "initial" | "terminal" | null {
+  const { initial, terminal } = endpoints;
+  const sampled = [
+    initial.center.x,
+    initial.center.y,
+    initial.dimensions.height,
+    initial.dimensions.width,
+    terminal.center.x,
+    terminal.center.y,
+    terminal.dimensions.height,
+    terminal.dimensions.width,
+  ];
+  if (!sampled.every(Number.isFinite)) return null;
+  if (
+    sampledCoordinatesMatchV3(initial.center.x, terminal.center.x) &&
+    sampledCoordinatesMatchV3(initial.center.y, terminal.center.y)
+  ) {
+    return "initial";
+  }
+  if (
+    sampledCoordinatesMatchV3(initial.dimensions.height, terminal.dimensions.height) &&
+    sampledCoordinatesMatchV3(initial.dimensions.width, terminal.dimensions.width)
+  ) {
+    return "initial";
+  }
+  if (terminal.dimensions.height > initial.dimensions.height && terminal.dimensions.width > initial.dimensions.width) {
+    return "terminal";
+  }
+  return null;
+}

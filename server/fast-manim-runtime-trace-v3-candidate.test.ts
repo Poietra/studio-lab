@@ -184,23 +184,60 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
     rejectCode((input) => (input.expectedWorldCenter = { x: TARGET.x + 0.25, y: TARGET.y }), "candidate-endpoint");
   });
 
-  it("anchors the move target on the settled endpoint when an entrance animation offsets frame zero", () => {
-    // Feynman-shaped evidence: the frame-zero box of a Write()-revealed group
-    // sits offset from the constructed placement that move_to positions, so
-    // the settled (terminal) endpoint is what must land on the target.
+  it("pins the move target on the settled endpoint when an entrance animation is still revealing frame zero", () => {
+    // Feynman-shaped evidence: a Write()-revealed group reports a smaller,
+    // offset box at frame zero and grows into its constructed placement, so
+    // the settled endpoint is the one move_to positions.
     const entrance = fixture();
-    entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
-    entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.5 + TARGET.x, y: 0.25 + TARGET.y };
+    const enterBase = (input: ReturnType<typeof fixture>) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      const candidate = input.candidate.sourceBindings[0]!.endpoints;
+      base.initial.center = { x: -0.5, y: 0.25 };
+      base.initial.dimensions = { height: 1, width: 1 };
+      candidate.initial.dimensions = { height: 1, width: 1 };
+      return { base, candidate };
+    };
+    const entranceEndpoints = enterBase(entrance);
+    entranceEndpoints.candidate.initial.center = { x: -0.5 + TARGET.x, y: 0.25 + TARGET.y };
 
     expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(entrance)).toEqual(entrance.candidate);
 
-    // The old initial-center anchoring is a wrong accept here: a candidate
-    // landing its transient frame-zero center on the target while the settled
-    // placement misses it must reject.
+    // Landing the transient frame-zero box on the target while the settled
+    // placement misses it is a wrong accept.
     rejectCode((input) => {
-      input.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
-      input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: TARGET.x, y: TARGET.y };
-      input.candidate.sourceBindings[0]!.endpoints.terminal.center = { x: TARGET.x + 0.5, y: TARGET.y - 0.25 };
+      const endpoints = enterBase(input);
+      endpoints.candidate.initial.center = { x: TARGET.x, y: TARGET.y };
+      endpoints.candidate.terminal.center = { x: TARGET.x + 0.5, y: TARGET.y - 0.25 };
+    }, "candidate-endpoint");
+  });
+
+  it("pins the move target on frame zero when the object keeps its box and is animated afterwards", () => {
+    // `self.play(square.animate.shift(...))` leaves frame zero holding the
+    // constructed placement while the settled sample sits at the end of the
+    // animation, so the settled endpoint must NOT be the pin.
+    const animate = (input: ReturnType<typeof fixture>, candidateDelta: Readonly<{ x: number; y: number }>) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      const candidate = input.candidate.sourceBindings[0]!.endpoints;
+      base.terminal.center = { x: 2, y: 0 };
+      candidate.initial.center = { x: candidateDelta.x, y: candidateDelta.y };
+      candidate.terminal.center = { x: 2 + candidateDelta.x, y: candidateDelta.y };
+    };
+
+    const animated = fixture();
+    animate(animated, TARGET);
+    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(animated)).toEqual(animated.candidate);
+
+    // A pair rendered somewhere else entirely stays a rigid non-zero
+    // translation, so only the target pin can reject it.
+    rejectCode((input) => animate(input, { x: 9, y: 9 }), "candidate-endpoint");
+  });
+
+  it("fails closed when the sampled pair cannot name the constructed placement", () => {
+    rejectCode((input) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      base.initial.center = { x: -0.5, y: 0.25 };
+      base.initial.dimensions = { height: 3, width: 3 };
+      input.candidate.sourceBindings[0]!.endpoints.initial.dimensions = { height: 3, width: 3 };
     }, "candidate-endpoint");
   });
 
@@ -379,21 +416,55 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
     rejectResizeCode((input) => (input.expectedScaleFactor = -1.5), "candidate-endpoint");
   });
 
-  it("conjugates an entrance-offset frame-zero endpoint about the settled pivot", () => {
-    // scale() acts about the constructed center that the settled endpoint
-    // observes; the transient frame-zero box must conjugate about that pivot
-    // rather than keep its own center.
-    const entrance = resizeFixture();
-    entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
-    entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.75, y: 0.375 };
+  it("conjugates an entrance-offset frame zero about the settled pivot", () => {
+    // The settled placement is the fixed point of a genuine in-place scale;
+    // the still-revealed frame-zero box conjugates about it.
+    const enter = (input: ResizeFixture) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      const candidate = input.candidate.sourceBindings[0]!.endpoints;
+      base.initial.center = { x: -0.5, y: 0.25 };
+      base.initial.dimensions = { height: 1, width: 1 };
+      candidate.initial.dimensions = { height: 1.5, width: 1.5 };
+      return { base, candidate };
+    };
 
+    const entrance = resizeFixture();
+    enter(entrance).candidate.initial.center = { x: -0.75, y: 0.375 };
     expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(entrance)).toEqual(entrance.candidate);
 
-    // A candidate preserving the transient frame-zero center (the old
-    // initial-center anchoring) is a wrong accept and must reject.
+    // Preserving the transient frame-zero center instead of conjugating it is
+    // a scale about the wrong pivot.
+    rejectResizeCode((input) => enter(input), "candidate-endpoint");
+  });
+
+  it("pivots on frame zero when the object keeps its box and is animated afterwards", () => {
+    const animate = (input: ResizeFixture) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      const candidate = input.candidate.sourceBindings[0]!.endpoints;
+      base.terminal.center = { x: 2, y: 0 };
+      candidate.terminal.center = { x: 3, y: 0 };
+      return { base, candidate };
+    };
+
+    const animated = resizeFixture();
+    animate(animated);
+    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(animated)).toEqual(animated.candidate);
+
+    // A scale composed with a stray translation moves the placement that must
+    // stay fixed, so it can never pass as an in-place resize.
     rejectResizeCode((input) => {
-      input.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
-      input.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
+      const endpoints = animate(input);
+      endpoints.candidate.initial.center = { x: 0.5, y: -0.25 };
+      endpoints.candidate.terminal.center = { x: 3.5, y: -0.25 };
+    }, "candidate-endpoint");
+  });
+
+  it("fails closed when the sampled pair cannot name the resize pivot", () => {
+    rejectResizeCode((input) => {
+      const base = input.base.sourceBindings[0]!.endpoints;
+      base.initial.center = { x: -0.5, y: 0.25 };
+      base.initial.dimensions = { height: 3, width: 3 };
+      input.candidate.sourceBindings[0]!.endpoints.initial.dimensions = { height: 4.5, width: 4.5 };
     }, "candidate-endpoint");
   });
 

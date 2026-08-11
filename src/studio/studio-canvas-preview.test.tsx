@@ -812,6 +812,169 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
   });
 
+  it("opens every minted generic V3 candidate and no other verified runtime root", () => {
+    const squareId = "source:scenes/twosquares.py#TwoSquares:square";
+    const otherSquareId = "source:scenes/twosquares.py#TwoSquares:other_square";
+    const labelId = "source:scenes/twosquares.py#TwoSquares:label";
+    const squareRuntimeId = "scene:two-squares/runtime-v3-root:0";
+    const otherSquareRuntimeId = "scene:two-squares/runtime-v3-root:1";
+    const labelRuntimeId = "scene:two-squares/runtime-v3-root:2";
+    const square: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: squareId,
+      sourceIdentity: { kind: "known", value: "square" },
+      type: "Square",
+    };
+    const otherSquare: ProjectedEntity = {
+      ...square,
+      id: otherSquareId,
+      position: { x: 440, y: 180 },
+      sourceIdentity: { kind: "known", value: "other_square" },
+    };
+    // A verified root whose runtime dimensions are updater-conflicted mints no
+    // initial-edit candidate, so it stays a paint-free selector beside two
+    // candidates that each own an independent bounded request.
+    const label: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      geometry: {
+        ...CIRCLE_ENTITY.geometry,
+        dimensions: { kind: "unknown", reason: "A dependent updater owns runtime dimensions." },
+      },
+      id: labelId,
+      position: { x: 200, y: 300 },
+      sourceIdentity: { kind: "known", value: "label" },
+      type: "Tex",
+    };
+    const squareCandidate = {
+      baseCenter: { x: 320, y: 180 },
+      baseDimensions: { height: 2, width: 2 },
+      bindingId: `source-binding:${"a".repeat(64)}`,
+      duration: 0.1,
+      lifetime: { end: 0.1, start: 0 as const },
+      profile: "generic-runtime-trace-v3" as const,
+      runtimeEntityId: squareRuntimeId,
+      sourceName: "square",
+      studioEntityId: squareId,
+      studioSceneId: "scenes/twosquares.py#TwoSquares",
+    };
+    const otherSquareCandidate = {
+      ...squareCandidate,
+      baseCenter: { x: 440, y: 180 },
+      bindingId: `source-binding:${"b".repeat(64)}`,
+      runtimeEntityId: otherSquareRuntimeId,
+      sourceName: "other_square",
+      studioEntityId: otherSquareId,
+    };
+    const boundedAuthority = {
+      editableRuntimeEntityIds: [squareRuntimeId, otherSquareRuntimeId],
+      kind: "bounded-interactive" as const,
+      reason: "runtime-trace-initial-edit" as const,
+      sourceAnchor: 0 as const,
+      verifiedRuntimeEntityIds: [squareRuntimeId, otherSquareRuntimeId, labelRuntimeId],
+    };
+    const beginAuthorizedMutation = vi.fn();
+    const nudgeMutation = vi.fn();
+    const selected: string[] = [];
+    const props: StudioCanvasProps = {
+      ...baseProps(),
+      entities: [square, otherSquare, label],
+      onEntityKeyDown: nudgeMutation,
+      onEntityPointerDown: beginAuthorizedMutation,
+      onSelectEntity: (entityId) => selected.push(entityId),
+      preview: previewView(
+        {
+          frame: {
+            packetId: "canvas:generic-v3-multi-candidate",
+            revision: "a".repeat(64),
+            sampleTime: 0,
+            viewport: { heightPx: 360, widthPx: 640 },
+          },
+          phase: "presented",
+        },
+        new Map([
+          [squareRuntimeId, { dimensions: { height: 90, width: 90 }, position: { x: 320, y: 180 } }],
+          [otherSquareRuntimeId, { dimensions: { height: 90, width: 90 }, position: { x: 440, y: 180 } }],
+          [labelRuntimeId, { dimensions: { height: 36, width: 130 }, position: { x: 200, y: 300 } }],
+        ]),
+        new Map([
+          ["square", { bindingId: squareCandidate.bindingId, entityId: squareRuntimeId, sourceName: "square" }],
+          [
+            "other_square",
+            { bindingId: otherSquareCandidate.bindingId, entityId: otherSquareRuntimeId, sourceName: "other_square" },
+          ],
+          ["label", { bindingId: `source-binding:${"c".repeat(64)}`, entityId: labelRuntimeId, sourceName: "label" }],
+        ]),
+        boundedAuthority,
+        null,
+        null,
+        null,
+        false,
+        [],
+        [squareCandidate, otherSquareCandidate],
+      ),
+      selectedIds: new Set([squareId]),
+    };
+    const tree = StudioCanvas(props);
+    for (const candidateId of [squareId, otherSquareId]) {
+      const button = findEntityButton(tree, candidateId);
+      expect(button.props.disabled).toBe(false);
+      expect(button.props.onPointerMove).toBe(props.onEntityPointerMove);
+      expect(button.props.onPointerUp).toBe(props.onEntityPointerUp);
+      const pointerDown = button.props.onPointerDown as ((event: unknown) => void) | undefined;
+      pointerDown?.({});
+      expect(beginAuthorizedMutation).toHaveBeenCalledWith({}, candidateId);
+      const nudge = button.props.onKeyDown as ((event: unknown) => void) | undefined;
+      nudge?.({ key: "ArrowRight" });
+      expect(nudgeMutation).toHaveBeenCalledWith({ key: "ArrowRight" }, candidateId);
+    }
+    expect(beginAuthorizedMutation).toHaveBeenCalledTimes(2);
+    expect(nudgeMutation).toHaveBeenCalledTimes(2);
+
+    const lockedButton = findEntityButton(tree, labelId);
+    expect(lockedButton.props.onPointerMove).toBeUndefined();
+    expect(lockedButton.props.onPointerUp).toBeUndefined();
+    const stopPropagation = vi.fn();
+    const lockedPointerDown = lockedButton.props.onPointerDown as
+      | ((event: Readonly<{ stopPropagation: () => void }>) => void)
+      | undefined;
+    lockedPointerDown?.({ stopPropagation });
+    expect(stopPropagation).toHaveBeenCalledOnce();
+    const preventDefault = vi.fn();
+    const lockedKeyDown = lockedButton.props.onKeyDown as
+      | ((event: Readonly<{ key: string; preventDefault: () => void }>) => void)
+      | undefined;
+    lockedKeyDown?.({ key: "ArrowRight", preventDefault });
+    expect(preventDefault).not.toHaveBeenCalled();
+    expect(selected).toEqual([labelId]);
+    expect(beginAuthorizedMutation).toHaveBeenCalledTimes(2);
+    expect(nudgeMutation).toHaveBeenCalledTimes(2);
+
+    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
+    expect(markup).toContain("Runtime Trace initial move / uniform resize");
+    expect(markup).toContain(`data-studio-runtime-entity="${squareRuntimeId}"`);
+    expect(markup).toContain(`data-studio-runtime-entity="${otherSquareRuntimeId}"`);
+    expect(markup).toContain(`data-studio-runtime-entity="${labelRuntimeId}"`);
+    // Exactly the non-candidate root carries the selection-only affordance.
+    expect(
+      markup.match(/title="This verified object can be selected, but source rewriting is unavailable\."/g),
+    ).toHaveLength(1);
+    // Each selected candidate exposes its own uniform SE resize handle.
+    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);
+    expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
+
+    const otherSelectedMarkup = renderToStaticMarkup(
+      <StudioCanvas {...props} selectedIds={new Set([otherSquareId])} />,
+    );
+    expect(otherSelectedMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
+    expect(otherSelectedMarkup).toContain(`data-studio-resize-handle="${otherSquareId}"`);
+    expect(otherSelectedMarkup.match(/data-resize-direction="se"/g)).toHaveLength(1);
+
+    const lockedSelectedMarkup = renderToStaticMarkup(<StudioCanvas {...props} selectedIds={new Set([labelId])} />);
+    expect(lockedSelectedMarkup).toContain(`data-studio-entity="${labelId}"`);
+    expect(lockedSelectedMarkup).not.toContain("data-studio-resize-handle");
+  });
+
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {
     const squareId = "source:example_scenes/basic.py#UpdatersExample:square";
     const decimalId = "source:example_scenes/basic.py#UpdatersExample:decimal";

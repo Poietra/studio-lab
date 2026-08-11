@@ -1,5 +1,6 @@
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
+  fastManimRuntimeTraceConstructedEndpointV3,
   fastManimRuntimeTraceCoordinateV3Schema,
   fastManimRuntimeTraceSourceBindingV3Schema,
 } from "../src/render-pipeline/runtime-trace-v3-shared-contract";
@@ -271,11 +272,11 @@ function verifiedGenericInitialCandidatePairV3(
  * Proves one generic initial move after both documents have independently
  * crossed the closed V3 producer contract. The source lowerer owns the exact
  * `move_to` rewrite; this verifier owns the runtime claim that the one
- * source-bound root and every presented draw are only translated. `move_to`
- * places the constructed object, which an entrance animation reveals over
- * time, so the settled (terminal) endpoint is the observable anchor that must
- * land exactly on the requested world center; a Scene whose settled endpoint
- * is not that constructed placement fails closed here.
+ * source-bound root and every presented draw are only translated, and that
+ * the object is observably at the requested world center. `move_to` places
+ * the constructed object, so the pin lands on whichever sampled endpoint
+ * observes that placement; a Scene whose sampled pair cannot name it fails
+ * closed here rather than guess.
  */
 export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
   input: Readonly<{
@@ -297,11 +298,15 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
   }
 
   const baseInitial = baseMapping.endpoints.initial;
-  const baseTerminal = baseMapping.endpoints.terminal;
-  const candidateTerminal = candidateMapping.endpoints.terminal;
+  const placement = fastManimRuntimeTraceConstructedEndpointV3(baseMapping.endpoints);
+  if (!placement) {
+    reject("candidate-endpoint", "A generic initial move requires one sampled endpoint that observes the placement.");
+  }
+  const basePlacement = baseMapping.endpoints[placement];
+  const candidatePlacement = candidateMapping.endpoints[placement];
   const delta = {
-    x: candidateTerminal.center.x - baseTerminal.center.x,
-    y: candidateTerminal.center.y - baseTerminal.center.y,
+    x: candidatePlacement.center.x - basePlacement.center.x,
+    y: candidatePlacement.center.y - basePlacement.center.y,
   };
   if (
     baseInitial.frameIndex !== 0 ||
@@ -313,10 +318,10 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     reject("candidate-noop", "A generic initial move must produce one finite non-zero full-trace translation.");
   }
   if (
-    !coordinateMatches(candidateTerminal.center.x, expectedWorldCenter.x) ||
-    !coordinateMatches(candidateTerminal.center.y, expectedWorldCenter.y)
+    !coordinateMatches(candidatePlacement.center.x, expectedWorldCenter.x) ||
+    !coordinateMatches(candidatePlacement.center.y, expectedWorldCenter.y)
   ) {
-    reject("candidate-endpoint", "The candidate settled center does not match the server-derived move target.");
+    reject("candidate-endpoint", "The candidate placement center does not match the server-derived move target.");
   }
 
   for (const endpointName of ["initial", "terminal"] as const) {
@@ -462,10 +467,19 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   if (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0) {
     reject("candidate-noop", "A generic initial resize requires one frame-zero base endpoint.");
   }
-  // `scale` conjugates about the constructed object center, which the settled
-  // (terminal) endpoint observes; an entrance animation's partial frame-zero
-  // box scales about that same pivot rather than its own transient center.
-  const pivot = baseMapping.endpoints.terminal.center;
+  // `scale` conjugates about the constructed object center, so the pivot is
+  // whichever sampled endpoint observes that placement; the other endpoint's
+  // transient box conjugates about it rather than about its own center.
+  const placement = fastManimRuntimeTraceConstructedEndpointV3(baseMapping.endpoints);
+  if (!placement) {
+    reject("candidate-endpoint", "A generic initial resize requires one sampled endpoint that observes the placement.");
+  }
+  const pivot = baseMapping.endpoints[placement].center;
+  const candidatePivot = candidateMapping.endpoints[placement].center;
+  // The placement is the fixed point of a genuine in-place scale.
+  if (!coordinateMatches(candidatePivot.x, pivot.x) || !coordinateMatches(candidatePivot.y, pivot.y)) {
+    reject("candidate-endpoint", "A generic initial resize moved the placement it must pivot about.");
+  }
   for (const endpointName of ["initial", "terminal"] as const) {
     const baseEndpoint = baseMapping.endpoints[endpointName];
     const candidateEndpoint = candidateMapping.endpoints[endpointName];

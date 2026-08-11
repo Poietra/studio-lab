@@ -52,6 +52,23 @@ const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   SOURCE_PATH,
   "square",
 );
+// A Scene whose construct projects two top-level bindings: the edited one is
+// the second occurrence, so a producer request narrowed to the first binding
+// cannot carry the selected authority.
+const MULTI_BINDING_BASE_SOURCE = BASE_SOURCE.replace(
+  "        self.add(square)\n",
+  "        circle = Circle()\n        self.add(square)\n        self.add(circle)\n",
+);
+const MULTI_BINDING_CANDIDATE_SOURCE = MULTI_BINDING_BASE_SOURCE.replace(
+  "        self.add(square)\n",
+  "        circle.move_to((1.25, -0.5, 0))\n        self.add(square)\n",
+);
+const MULTI_BINDING_PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+  MULTI_BINDING_CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+  "circle",
+);
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
   return digestFastManimRuntimeTraceDomainV3("poietra.fast-manim-runtime-trace-visual-semantics.v3", {
@@ -73,6 +90,11 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
     private readonly corruptCandidate = false,
     private readonly onStart: ((count: number) => Promise<void> | void) | undefined = undefined,
     private readonly edit: "move" | "resize" = "move",
+    private readonly selected: Readonly<{
+      baseSourceHash: string;
+      expectedWorldCenter: Readonly<{ x: number; y: number }>;
+      name: string;
+    }> = { baseSourceHash: PLAN.baseSourceHash, expectedWorldCenter: PLAN.expectedWorldCenter, name: "square" },
   ) {}
 
   async close() {}
@@ -108,19 +130,19 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
       sourcePath: request.sourcePath,
     });
     Object.assign(trace.producer, trustedFastManimRuntimeTraceProducerV3());
-    const binding = request.sourceBindings.find(({ name }) => name === "square");
-    if (!binding) throw new Error("Synthetic V3 request lost its square binding.");
+    const binding = request.sourceBindings.find(({ name }) => name === this.selected.name);
+    if (!binding) throw new Error(`Synthetic V3 request lost its ${this.selected.name} binding.`);
     trace.sourceBindings[0]!.binding = binding;
-    const candidate = request.sourceHash !== PLAN.baseSourceHash;
+    const candidate = request.sourceHash !== this.selected.baseSourceHash;
     if (candidate && this.edit === "move") {
       for (const endpoint of Object.values(trace.sourceBindings[0]!.endpoints)) {
-        endpoint.center.x = PLAN.expectedWorldCenter.x;
-        endpoint.center.y = PLAN.expectedWorldCenter.y;
+        endpoint.center.x = this.selected.expectedWorldCenter.x;
+        endpoint.center.y = this.selected.expectedWorldCenter.y;
       }
       for (const frame of trace.frames) {
         for (const state of frame.states) {
-          state.transform.tx += PLAN.expectedWorldCenter.x;
-          state.transform.ty += PLAN.expectedWorldCenter.y;
+          state.transform.tx += this.selected.expectedWorldCenter.x;
+          state.transform.ty += this.selected.expectedWorldCenter.y;
         }
       }
     }
@@ -210,11 +232,11 @@ afterEach(async () => {
   await Promise.all(projectRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function projectRoot() {
+async function projectRoot(baseSource = BASE_SOURCE) {
   const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-candidate-"));
   projectRoots.push(root);
   await mkdir(join(root, "scenes"));
-  await writeFile(join(root, SOURCE_PATH), BASE_SOURCE, "utf8");
+  await writeFile(join(root, SOURCE_PATH), baseSource, "utf8");
   return root;
 }
 
@@ -243,6 +265,22 @@ function candidateRequest() {
     },
     projectId: "generic-preview",
     requestId: "generic-initial-move-v3-candidate",
+    sceneName: SCENE_NAME,
+    sourcePath: SOURCE_PATH,
+  };
+}
+
+function multiBindingCandidateRequest() {
+  return {
+    genericInitialMove: {
+      baseBinding: MULTI_BINDING_PLAN.baseBinding,
+      baseSourceHash: MULTI_BINDING_PLAN.baseSourceHash,
+      entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:circle`,
+      expectedWorldCenter: MULTI_BINDING_PLAN.expectedWorldCenter,
+      kind: "fast-manim-generic-initial-move-v3" as const,
+    },
+    projectId: "generic-preview",
+    requestId: "generic-initial-move-v3-multi-binding-candidate",
     sceneName: SCENE_NAME,
     sourcePath: SOURCE_PATH,
   };
@@ -287,6 +325,40 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       expect(backend.requests.map(({ sourceBindings }) => sourceBindings[0]?.name)).toEqual(["square", "square"]);
       expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(PLAN.baseBinding.id);
       expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(PLAN.candidateBinding.id);
+    });
+
+    it("sends every projected binding to the producer and selects the requested non-first binding", async () => {
+      const backend = new GenericCandidateArtifactBackend(false, undefined, "move", {
+        baseSourceHash: MULTI_BINDING_PLAN.baseSourceHash,
+        expectedWorldCenter: MULTI_BINDING_PLAN.expectedWorldCenter,
+        name: "circle",
+      });
+      const result = await runner(
+        await projectRoot(MULTI_BINDING_BASE_SOURCE),
+        backend,
+      ).runRuntimeTraceCandidateUnpublished(MULTI_BINDING_CANDIDATE_SOURCE, multiBindingCandidateRequest());
+
+      expect(MULTI_BINDING_PLAN.baseBinding.name).toBe("circle");
+      expect(MULTI_BINDING_PLAN.baseSource).toBe(MULTI_BINDING_BASE_SOURCE);
+      expect(result).toMatchObject({
+        sourceHash: expect.not.stringMatching(MULTI_BINDING_PLAN.baseSourceHash),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
+      expect(backend.requests).toHaveLength(2);
+      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+        { sourceHash: MULTI_BINDING_PLAN.baseSourceHash, version: 3 },
+        { sourceHash: result.sourceHash, version: 3 },
+      ]);
+      // Both projected bindings correlate every producer run; a request
+      // narrowed to the first binding would strand the selected authority.
+      expect(backend.requests.map(({ sourceBindings }) => sourceBindings.map(({ name }) => name))).toEqual([
+        ["square", "circle"],
+        ["square", "circle"],
+      ]);
+      expect(backend.requests[0]?.sourceBindings[1]?.id).toBe(MULTI_BINDING_PLAN.baseBinding.id);
+      expect(backend.requests[1]?.sourceBindings[1]?.id).toBe(MULTI_BINDING_PLAN.candidateBinding.id);
+      expect(backend.requests[0]?.sourceBindings[0]?.id).not.toBe(MULTI_BINDING_PLAN.baseBinding.id);
     });
 
     it("executes fresh base and resize-candidate V3 traces and verifies the scaled pair", async () => {

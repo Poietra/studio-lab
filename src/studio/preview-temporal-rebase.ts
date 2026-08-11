@@ -3,6 +3,7 @@ import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-
 import {
   canonicalFastManimRuntimeTraceSampleTimeV3,
   FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+  fastManimRuntimeTraceConstructedEndpointV3,
 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { evaluateWorkingState } from "./evaluator";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
@@ -449,17 +450,20 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
     ) {
       continue;
     }
-    // The gesture edits the settled object: `move_to`/`scale` act on the
-    // constructed placement, observed by the terminal endpoint. An entrance
-    // animation's partial frame-zero box is evidence-gated above but never
-    // the manipulation anchor.
+    // The gesture edits the constructed object: `move_to`/`scale` act on the
+    // placement, not on a transient sample of it. The browser must anchor on
+    // the same endpoint the server pins against, so an ambiguous sampled pair
+    // mints no candidate and its root stays selection-only.
+    const placementName = fastManimRuntimeTraceConstructedEndpointV3(evidence.endpoints);
+    if (!placementName) continue;
+    const placement = evidence.endpoints[placementName];
     candidates.push({
       baseCenter: scenePointToStudioPoint(
-        terminal.center,
+        placement.center,
         { height: camera.frameHeight, width: camera.frameWidth },
         camera.center,
       ),
-      baseDimensions: { ...terminal.dimensions },
+      baseDimensions: { ...placement.dimensions },
       bindingId: mapping.bindingId,
       duration: snapshot.duration,
       lifetime: { end: lifetime.end, start: 0 },
