@@ -5,10 +5,12 @@
 //! [`poietra_scene_ir::RenderPacketV1`] boundary. It performs no I/O and has no
 //! renderer or shell dependency, so native and WASM adapters use the same core.
 
+mod authoring;
 mod evaluator;
 mod retained_index;
 mod scene_delta;
 
+pub use authoring::{RotateSceneEntityCommandV1, RotateSceneEntityErrorV1};
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
     compile_engine_frame_v1, compile_render_packet_v1,

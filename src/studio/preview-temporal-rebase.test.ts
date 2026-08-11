@@ -6,6 +6,7 @@ import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-t
 import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
+import type { RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
@@ -26,7 +27,6 @@ import {
 import {
   compileStudioPreviewGenericInitialEditV1,
   compileStudioPreviewTemporalRebaseV1,
-  conjugateRotationAboutCenterV1,
   conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
@@ -1315,7 +1315,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || child?.appearance.kind !== "vector") throw new Error("Generic V3 fixture lost its paint subtree.");
 
-    const result = compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1362,7 +1362,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       kind: "unauthorized",
     });
     expect(
-      compileStudioPreviewGenericInitialEditV1({
+      await compileStudioPreviewGenericInitialEditV1({
         frame: FRAME,
         proposedState: { ...proposedState, base, programs: [forgedRecord] },
         snapshot,
@@ -1376,7 +1376,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
-    const result = compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1416,7 +1416,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
-    const result = compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1458,10 +1458,35 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+    const operationId = proposedState.programs[0]?.program.operations[0]?.id;
+    if (!operationId) throw new Error("Generic V3 rotation fixture lost its authorized operation.");
+    const coreTransform = { ...root.transform, m11: root.transform.m11 + 0.125 };
+    const commands: Parameters<RotateSceneEntityCompilerV1>[1][] = [];
+    const rotationCompiler: RotateSceneEntityCompilerV1 = async (bundle, command) => {
+      commands.push(command);
+      return await parseVerifiedSceneIrBundleV1({
+        ...bundle,
+        scene: {
+          ...bundle.scene,
+          entities: bundle.scene.entities.map((entity) =>
+            entity.id === command.entityId
+              ? { ...entity, provenanceId: command.provenance.id, transform: coreTransform }
+              : entity,
+          ),
+          provenance: [...bundle.scene.provenance, command.provenance],
+          source: {
+            editProgramVersion: 1,
+            kind: "studio-edit-program",
+            revisionHash: command.nextRevision,
+          },
+        },
+      });
+    };
 
-    const result = compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
+      rotationCompiler,
       snapshot,
       sourceRevisionHash: "a".repeat(64),
     });
@@ -1469,31 +1494,29 @@ describe("generic Runtime Trace V3 initial move", () => {
     if (result.kind !== "rebased") throw new Error(result.issue.message);
     const rotatedRoot = result.scene.entities.find(({ id }) => id === root.id);
     const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
-    expect(rotatedRoot?.transform.m11).toBeCloseTo(-root.transform.m21, 12);
-    expect(rotatedRoot?.transform.m12).toBeCloseTo(-root.transform.m22, 12);
-    expect(rotatedRoot?.transform.m21).toBeCloseTo(root.transform.m11, 12);
-    expect(rotatedRoot?.transform.m22).toBeCloseTo(root.transform.m12, 12);
-    expect(rotatedRoot?.transform.tx).toBeCloseTo(-root.transform.ty, 12);
-    expect(rotatedRoot?.transform.ty).toBeCloseTo(root.transform.tx, 12);
+    expect(rotatedRoot?.transform).toEqual(coreTransform);
     expect(retainedChild).toEqual(child);
     expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-rotation:${"a".repeat(64)}`);
-  });
-});
-
-describe("conjugateRotationAboutCenterV1", () => {
-  it("keeps an off-origin pivot fixed while rotating the affine transform", () => {
-    const rotated = conjugateRotationAboutCenterV1(
-      { m11: 1, m12: 0, m21: 0, m22: 1, tx: 3, ty: -2 },
-      { x: 1, y: -0.5 },
-      Math.PI / 2,
-    );
-
-    expect(rotated.m11).toBeCloseTo(0, 12);
-    expect(rotated.m12).toBeCloseTo(-1, 12);
-    expect(rotated.m21).toBeCloseTo(1, 12);
-    expect(rotated.m22).toBeCloseTo(0, 12);
-    expect(rotated.tx).toBeCloseTo(2.5, 12);
-    expect(rotated.ty).toBeCloseTo(1.5, 12);
+    expect(commands).toEqual([
+      {
+        angleRadians,
+        entityId: root.id,
+        expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+        nextRevision: "a".repeat(64),
+        pivot: { x: 0, y: 0 },
+        provenance: {
+          evidence: [
+            "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
+            `source binding ${candidate.bindingId}`,
+            `authorized operation ${operationId}`,
+          ],
+          id: `studio-generic-v3-initial-rotation:${"a".repeat(64)}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.rotate-scene-entity",
+        version: 1,
+      },
+    ]);
   });
 });
 
