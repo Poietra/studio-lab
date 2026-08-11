@@ -28,6 +28,7 @@ import {
 import {
   compileStudioPreviewGenericInitialEditV1,
   compileStudioPreviewTemporalRebaseV1,
+  conjugateRotationAboutCenterV1,
   conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
@@ -37,7 +38,11 @@ import {
   studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
-import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import {
+  createDirectManipulationPositionProgram,
+  createDirectManipulationRotationProgram,
+  createDirectManipulationScaleProgram,
+} from "./suggestion-program";
 import {
   compileStudioPreviewSceneV1,
   studioPreviewInteractionAuthorityV1,
@@ -775,6 +780,29 @@ async function genericRuntimeTraceV3ResizeInput(scaleFactor: number) {
   };
 }
 
+async function genericRuntimeTraceV3RotationInput(angleRadians: number) {
+  const { base, candidate, snapshot, validationScene } = await genericRuntimeTraceV3MoveInput();
+  const validation = createDirectManipulationRotationProgram({
+    angleRadians,
+    capturedPlayhead: 0,
+    entityId: candidate.studioEntityId,
+    scene: validationScene,
+    start: 0,
+    transactionId: "generic-v3-initial-rotation",
+  });
+  if (validation.kind !== "valid") {
+    throw new Error(`The generic V3 rotation fixture is invalid: ${JSON.stringify(validation.issues)}`);
+  }
+  const record = programRecord(validation.program, validation);
+  return {
+    base,
+    candidate,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
+    record,
+    snapshot,
+  };
+}
+
 function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
   return studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
 }
@@ -1148,6 +1176,36 @@ describe("generic Runtime Trace V3 initial move", () => {
     ).toEqual({ kind: "unauthorized" });
   });
 
+  it("authorizes one finite t=0 rotation and rejects non-finite or mismatched authority", async () => {
+    const { base, candidate, proposedState, record, snapshot } = await genericRuntimeTraceV3RotationInput(Math.PI / 4);
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+      candidate,
+      edit: { angleRadians: Math.PI / 4, kind: "rotation" },
+      kind: "authorized",
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [])).toEqual({ kind: "unauthorized" });
+
+    const operation = record.program.operations[0];
+    if (!operation || operation.kind !== "AnimateProperty") {
+      throw new Error("Rotation fixture lost its relative AnimateProperty.");
+    }
+    const forgedRecord: ProgramRecord = {
+      ...record,
+      program: { ...record.program, operations: [{ ...operation, relativeDelta: Number.NaN, to: Number.NaN }] },
+    };
+    expect(studioPreviewGenericInitialEditProgramSetV1([forgedRecord], [candidate])).toEqual({
+      kind: "unauthorized",
+    });
+    expect(
+      compileStudioPreviewGenericInitialEditV1({
+        frame: FRAME,
+        proposedState: { ...proposedState, base, programs: [forgedRecord] },
+        snapshot,
+        sourceRevisionHash: "9".repeat(64),
+      }),
+    ).toMatchObject({ issue: { code: "target-edit-unsupported" }, kind: "unsupported" });
+  });
+
   it("translates the verified root group without flattening its children", async () => {
     const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3MoveInput();
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
@@ -1226,6 +1284,51 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(compiled.scene.bundle.scene.entities.find(({ id }) => id === root.id)?.transform).toEqual(
       scaledRoot?.transform,
     );
+  });
+
+  it("rotates the verified root group about its settled center without flattening its children", async () => {
+    const angleRadians = Math.PI / 2;
+    const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3RotationInput(angleRadians);
+    expect(candidate.baseCenter).toEqual({ x: 320, y: 180 });
+    const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
+    const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
+    if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+
+    const result = compileStudioPreviewGenericInitialEditV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      sourceRevisionHash: "a".repeat(64),
+    });
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+    const rotatedRoot = result.scene.entities.find(({ id }) => id === root.id);
+    const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
+    expect(rotatedRoot?.transform.m11).toBeCloseTo(-root.transform.m21, 12);
+    expect(rotatedRoot?.transform.m12).toBeCloseTo(-root.transform.m22, 12);
+    expect(rotatedRoot?.transform.m21).toBeCloseTo(root.transform.m11, 12);
+    expect(rotatedRoot?.transform.m22).toBeCloseTo(root.transform.m12, 12);
+    expect(rotatedRoot?.transform.tx).toBeCloseTo(-root.transform.ty, 12);
+    expect(rotatedRoot?.transform.ty).toBeCloseTo(root.transform.tx, 12);
+    expect(retainedChild).toEqual(child);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-rotation:${"a".repeat(64)}`);
+  });
+});
+
+describe("conjugateRotationAboutCenterV1", () => {
+  it("keeps an off-origin pivot fixed while rotating the affine transform", () => {
+    const rotated = conjugateRotationAboutCenterV1(
+      { m11: 1, m12: 0, m21: 0, m22: 1, tx: 3, ty: -2 },
+      { x: 1, y: -0.5 },
+      Math.PI / 2,
+    );
+
+    expect(rotated.m11).toBeCloseTo(0, 12);
+    expect(rotated.m12).toBeCloseTo(-1, 12);
+    expect(rotated.m21).toBeCloseTo(1, 12);
+    expect(rotated.m22).toBeCloseTo(0, 12);
+    expect(rotated.tx).toBeCloseTo(2.5, 12);
+    expect(rotated.ty).toBeCloseTo(1.5, 12);
   });
 });
 

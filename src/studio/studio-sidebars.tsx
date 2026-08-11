@@ -361,6 +361,7 @@ export function StudioInspector({
   onDiscardDraft,
   onDraftOperationChange,
   onEntityEdit,
+  onEntityRotate,
   onEntityScaleChange,
   onInspectorFocusRestored,
   onRenderSessionChange,
@@ -371,6 +372,7 @@ export function StudioInspector({
   renderCandidateUnavailableReason,
   renderSession,
   replacingAppliedProgram,
+  rotationAvailable,
   selectedEntity,
   inspectorReturnFocus,
   sourceExport,
@@ -387,6 +389,7 @@ export function StudioInspector({
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
   onEntityEdit: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
+  onEntityRotate: (entityId: string, angleRadians: number) => void;
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onInspectorFocusRestored: () => void;
   onRenderSessionChange: (session: RenderSessionView | null, projectId?: string) => void;
@@ -397,6 +400,7 @@ export function StudioInspector({
   renderCandidateUnavailableReason: string;
   renderSession: RenderSessionView | null;
   replacingAppliedProgram: boolean;
+  rotationAvailable: boolean;
   selectedEntity: ProjectedEntity | null;
   inspectorReturnFocus: InspectorEditField | null;
   sourceExport: OriginalManimSourceExportRequest | null;
@@ -497,6 +501,27 @@ export function StudioInspector({
                       Set
                     </button>
                   </form>
+                </dd>
+                <dt className="self-center text-zinc-600">Rotate</dt>
+                <dd className="flex gap-1">
+                  {([-15, 15] as const).map((degrees) => (
+                    <button
+                      aria-label={`Rotate ${entityLabel(selectedEntity)} ${degrees > 0 ? "counterclockwise" : "clockwise"} by ${Math.abs(degrees)} degrees`}
+                      className="h-7 border border-zinc-700 px-2 text-[10px] tabular-nums text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={!rotationAvailable}
+                      key={degrees}
+                      onClick={() => onEntityRotate(selectedEntity.id, (degrees * Math.PI) / 180)}
+                      title={
+                        rotationAvailable
+                          ? `Create a ${degrees > 0 ? "+" : ""}${degrees}° source rotation draft`
+                          : "Rotation requires an exact updater-free Runtime Trace binding at t=0"
+                      }
+                      type="button"
+                    >
+                      {degrees > 0 ? "+" : ""}
+                      {degrees}°
+                    </button>
+                  ))}
                 </dd>
               </dl>
               <EntityInspectorEditor

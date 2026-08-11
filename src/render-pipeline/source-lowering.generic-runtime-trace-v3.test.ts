@@ -8,6 +8,8 @@ import { importManimScene } from "./source-import";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
+  lowerCanonicalProgramBatchSource,
   lowerGenericRuntimeTraceInitialEditSourceV3,
 } from "./source-lowering";
 
@@ -71,6 +73,28 @@ function initialResizeProgram(relativeFactor = 1.5, from = 1): CanonicalEditProg
   };
 }
 
+function initialRotationProgram(angleRadians = 0.5): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    easing: "smooth",
+    entityId,
+    from: 0,
+    id: "generic-v3-initial-rotation",
+    interval: { end: 0, start: 0 },
+    key: "rotation",
+    kind: "AnimateProperty",
+    provenance: { evidence: ["generic V3 initial root"], origin: "direct-manipulation" },
+    relativeDelta: angleRadians,
+    to: angleRadians,
+  };
+  return {
+    ...initialMoveProgram(),
+    operations: [operation],
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "generic-v3-initial-rotation",
+  };
+}
+
 function request(sourceText = source, program = initialMoveProgram()): ProgramRenderRequest {
   return {
     cameraCenter: { x: 0, y: 0 },
@@ -95,7 +119,7 @@ function lower(sourceText = source, renderRequest = request(sourceText)) {
   );
 }
 
-describe("generic Runtime Trace V3 initial-move source lowering", () => {
+describe("generic Runtime Trace V3 initial-edit source lowering", () => {
   it("keeps the demo Scene on Studio's minimum duration and frame grid", () => {
     const imported = importManimScene(source, sourcePath, sceneName, frame);
 
@@ -293,6 +317,24 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     expect(lower(anchored, request(anchored))).toBeNull();
   });
 
+  it("fails closed instead of dropping rotation when an explicit zero anchor selects the general lowerer", () => {
+    const anchored = source.replace(
+      "        square.set_stroke(WHITE, width=2)",
+      "        # poietra:anchor 0.000\n        square.set_stroke(WHITE, width=2)",
+    );
+    const renderRequest = request(anchored, initialRotationProgram());
+
+    expect(() =>
+      lowerCanonicalProgramBatchSource(
+        anchored,
+        renderRequest,
+        [{ program: renderRequest.program, sourceAnchor: 0 }],
+        frame,
+        null,
+      ),
+    ).toThrow(/rotation requires the bounded generic Runtime Trace V3 source lowerer/i);
+  });
+
   it("inserts one canonical uniform resize after the exact assignment and emits re-derivable evidence", () => {
     const lowered = lower(source, request(source, initialResizeProgram()));
 
@@ -378,6 +420,95 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     ).toThrow(/candidate resize/i);
   });
 
+  it("inserts one canonical rotation after the exact assignment and emits re-derivable evidence", () => {
+    const lowered = lower(source, request(source, initialRotationProgram(Math.PI / 4)));
+
+    expect(lowered).not.toBeNull();
+    expect(lowered?.insertedCode).toBe("        square.rotate(0.785398163397)");
+    expect(lowered?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.rotate(0.785398163397)\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      baseBinding: {
+        id: expect.stringMatching(/^source-binding:[0-9a-f]{64}$/u),
+        name: "square",
+        ordinal: 1,
+        span: { endColumn: 14, endLine: 6, startColumn: 8, startLine: 6 },
+      },
+      baseSourceHash: request().sourceHash,
+      entityId,
+      expectedAngleRadians: 0.785398163397,
+      kind: "fast-manim-generic-initial-rotation-v3",
+    });
+
+    const derived = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+      lowered!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
+    expect(derived.baseSource).toBe(source);
+    expect(derived.baseBinding).toEqual(
+      lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
+    );
+    expect(derived.candidateBinding.id).not.toBe(derived.baseBinding.id);
+    expect(derived.expectedAngleRadians).toBe(0.785398163397);
+  });
+
+  it("accepts a negative rotation and rejects no-op, non-finite, or unbounded angles", () => {
+    expect(lower(source, request(source, initialRotationProgram(-0.5)))?.insertedCode).toBe(
+      "        square.rotate(-0.5)",
+    );
+    expect(() => lower(source, request(source, initialRotationProgram(0)))).toThrow(/finite non-noop bounded angle/i);
+    expect(() => lower(source, request(source, initialRotationProgram(2 * Math.PI)))).toThrow(
+      /finite non-noop bounded angle/i,
+    );
+    expect(() => lower(source, request(source, initialRotationProgram(Number.NaN)))).toThrow(
+      /only one exact direct-manipulation/i,
+    );
+    expect(() => lower(source, request(source, initialRotationProgram(1e100)))).toThrow(
+      /finite non-noop bounded angle/i,
+    );
+
+    const setProperty = initialMoveProgram();
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId,
+      id: "unsupported-set-rotation",
+      interval: { end: 0, start: 0 },
+      key: "rotation",
+      kind: "SetProperty",
+      provenance: { evidence: ["legacy absolute rotation"], origin: "direct-manipulation" },
+      value: 0.5,
+    };
+    expect(() => lower(source, request(source, { ...setProperty, operations: [operation] }))).toThrow(
+      /only one exact direct-manipulation/i,
+    );
+  });
+
+  it("rejects non-canonical or non-adjacent candidate rotation statements during independent derivation", () => {
+    const lowered = lower(source, request(source, initialRotationProgram()));
+    expect(lowered).not.toBeNull();
+    const nonCanonical = lowered!.source.replace("square.rotate(0.5)", "square.rotate(0.50)");
+    const identity = lowered!.source.replace("square.rotate(0.5)", "square.rotate(0)");
+    const nonAdjacent = lowered!.source.replace(
+      "        square.rotate(0.5)\n        square.set_stroke",
+      "        self.add(square)\n        square.rotate(0.5)\n        square.set_stroke",
+    );
+
+    expect(() =>
+      deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(nonCanonical, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical finite non-noop bounded rotate/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(identity, sceneName, sourcePath, "square"),
+    ).toThrow(/canonical finite non-noop bounded rotate/i);
+    expect(() =>
+      deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(nonAdjacent, sceneName, sourcePath, "square"),
+    ).toThrow(/candidate rotation/i);
+  });
+
   it("re-derives sequential edits with the newest statement directly after the assignment", () => {
     // A resize on an already-moved base keeps the earlier canonical move as
     // plain base program text; only the newest inserted statement is removed.
@@ -398,5 +529,25 @@ describe("generic Runtime Trace V3 initial-move source lowering", () => {
     );
     expect(derived.baseSource).toBe(moved);
     expect(derived.expectedScaleFactor).toBe(1.5);
+  });
+
+  it("appends a repeated relative rotation after the prior canonical rotation", () => {
+    const first = lower(source, request(source, initialRotationProgram(0.3)))!.source;
+    const second = lower(first, request(first, initialRotationProgram(0.5)));
+
+    expect(second?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.rotate(0.3)\n" +
+        "        square.rotate(0.5)\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    const derived = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+      second!.source,
+      sceneName,
+      sourcePath,
+      "square",
+    );
+    expect(derived.baseSource).toBe(first);
+    expect(derived.expectedAngleRadians).toBe(0.5);
   });
 });

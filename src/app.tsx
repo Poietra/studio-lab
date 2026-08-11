@@ -112,6 +112,7 @@ import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-vi
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
+  createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
 } from "./studio/suggestion-program";
 import { replaceAppliedProgram } from "./studio/transactions";
@@ -874,7 +875,7 @@ export function App({
       genericCandidates.length > 0 &&
       studioPreviewGenericInitialEditProgramSetV1(records, genericCandidates).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move or uniform resize on one verified binding.";
+      return "This generic Runtime Trace permits exactly one initial position move, uniform resize, or rotation on one verified binding.";
     }
     return null;
   }
@@ -2172,7 +2173,7 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
+      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
       return;
     }
     if (
@@ -2331,7 +2332,7 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
+      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
       return;
     }
     if (
@@ -2506,7 +2507,7 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move or uniform resize only.");
+      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2836,6 +2837,44 @@ export function App({
     );
   }
 
+  function rotateEntityFromInspector(entityId: string, angleRadians: number) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const authority = initialEditProjectionAuthorityFor(entityId);
+    if (authority?.profile !== "generic-runtime-trace-v3") {
+      setDraftError("Rotation currently requires one exact updater-free Runtime Trace binding at source time zero.");
+      return false;
+    }
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "object rotation",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || anchor.sourceTime !== 0) return false;
+    try {
+      const validation = createDirectManipulationRotationProgram({
+        angleRadians,
+        capturedPlayhead: 0,
+        entityId,
+        scene: projectStudioPreviewInitialValidationSceneV1(sourceScene, authority),
+        start: 0,
+        transactionId: `studio-rotation-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, 0);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The object could not be rotated.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -2903,7 +2942,7 @@ export function App({
           initialTransformAuthority.profile === "square-to-circle-v8"
             ? "This SquareToCircle proof currently supports position only."
             : initialTransformAuthority.profile === "generic-runtime-trace-v3"
-              ? "This generic Runtime Trace target supports position and uniform scale only."
+              ? "Use the dedicated Rotate controls for rotation; these Inspector fields support position and uniform scale only."
               : "This runtime-backed object currently supports position and uniform scale only.",
         );
         return false;
@@ -3683,6 +3722,7 @@ export function App({
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
               onEntityEdit={editEntityFromInspector}
+              onEntityRotate={(entityId, angleRadians) => void rotateEntityFromInspector(entityId, angleRadians)}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onInspectorFocusRestored={() => setInspectorReturnFocus(null)}
               onRenderSessionChange={retainRenderSession}
@@ -3693,6 +3733,9 @@ export function App({
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
+              rotationAvailable={
+                initialEditProjectionAuthorityFor(selectedEntity?.id)?.profile === "generic-runtime-trace-v3"
+              }
               selectedEntity={selectedEntity}
               sourceExport={
                 activeProjectId && activeScene

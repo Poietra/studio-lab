@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
 } from "../src/render-pipeline/source-lowering";
 import type { FastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { digestFastManimRuntimeTraceDomainV3 } from "./fast-manim-runtime-trace-v3-contract";
@@ -52,6 +53,16 @@ const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   SOURCE_PATH,
   "square",
 );
+const ROTATION_CANDIDATE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  "        square.rotate(0.5)\n        square.set_stroke(WHITE, width=2)\n",
+);
+const ROTATION_PLAN = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+  ROTATION_CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+  "square",
+);
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
   return digestFastManimRuntimeTraceDomainV3("poietra.fast-manim-runtime-trace-visual-semantics.v3", {
@@ -72,7 +83,7 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
   constructor(
     private readonly corruptCandidate = false,
     private readonly onStart: ((count: number) => Promise<void> | void) | undefined = undefined,
-    private readonly edit: "move" | "resize" = "move",
+    private readonly edit: "move" | "resize" | "rotation" = "move",
   ) {}
 
   async close() {}
@@ -152,6 +163,41 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
         for (const state of frame.states) {
           state.pathId = scaledPathIds.get(state.pathId) ?? state.pathId;
         }
+      }
+    }
+    if (candidate && this.edit === "rotation") {
+      const angle = ROTATION_PLAN.expectedAngleRadians;
+      const canonical = (value: number) => Number(value.toFixed(13));
+      const rotate = ({ x, y }: Readonly<{ x: number; y: number }>) => ({
+        x: canonical(Math.cos(angle) * x - Math.sin(angle) * y),
+        y: canonical(Math.sin(angle) * x + Math.cos(angle) * y),
+      });
+      const rotatedPathIds = new Map<string, string>();
+      trace.resources.paths = trace.resources.paths.map((resource) => {
+        const path = {
+          subpaths: resource.path.subpaths.map((subpath) => ({
+            closed: subpath.closed,
+            segments: subpath.segments.map((segment) => ({
+              control1: rotate(segment.control1),
+              control2: rotate(segment.control2),
+              end: rotate(segment.end),
+            })),
+            start: rotate(subpath.start),
+          })),
+        };
+        const id = `path:${digestFastManimRuntimeTraceDomainV3("poietra.runtime-trace-v3-path", path)}`;
+        rotatedPathIds.set(resource.id, id);
+        return { id, path };
+      });
+      for (const frame of trace.frames) {
+        for (const state of frame.states) {
+          state.pathId = rotatedPathIds.get(state.pathId) ?? state.pathId;
+        }
+      }
+      const rotatedSquareSize = canonical(2 * (Math.abs(Math.cos(angle)) + Math.abs(Math.sin(angle))));
+      for (const endpoint of Object.values(trace.sourceBindings[0]!.endpoints)) {
+        endpoint.dimensions.height = rotatedSquareSize;
+        endpoint.dimensions.width = rotatedSquareSize;
       }
     }
     if (candidate && this.corruptCandidate) trace.frames[0]!.states[0]!.opacity = 0.5;
@@ -264,6 +310,22 @@ function resizeCandidateRequest() {
   };
 }
 
+function rotationCandidateRequest() {
+  return {
+    genericInitialRotation: {
+      baseBinding: ROTATION_PLAN.baseBinding,
+      baseSourceHash: ROTATION_PLAN.baseSourceHash,
+      entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+      expectedAngleRadians: ROTATION_PLAN.expectedAngleRadians,
+      kind: "fast-manim-generic-initial-rotation-v3" as const,
+    },
+    projectId: "generic-preview",
+    requestId: "generic-initial-rotation-v3-candidate",
+    sceneName: SCENE_NAME,
+    sourcePath: SOURCE_PATH,
+  };
+}
+
 describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
   "generic Runtime Trace V3 initial-move candidate runner",
   () => {
@@ -310,11 +372,32 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.candidateBinding.id);
     });
 
+    it("derives the rotation plan and verifies the rotated V3 pair", async () => {
+      const backend = new GenericCandidateArtifactBackend(false, undefined, "rotation");
+      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+        ROTATION_CANDIDATE_SOURCE,
+        rotationCandidateRequest(),
+      );
+
+      expect(result).toMatchObject({
+        sourceHash: expect.not.stringMatching(ROTATION_PLAN.baseSourceHash),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
+      expect(backend.requests).toHaveLength(2);
+      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+        { sourceHash: ROTATION_PLAN.baseSourceHash, version: 3 },
+        { sourceHash: result.sourceHash, version: 3 },
+      ]);
+      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.baseBinding.id);
+      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.candidateBinding.id);
+    });
+
     it("rejects a request carrying both generic initial-edit authorities", async () => {
       const backend = new GenericCandidateArtifactBackend();
       await expect(
-        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(RESIZE_CANDIDATE_SOURCE, {
-          ...resizeCandidateRequest(),
+        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(ROTATION_CANDIDATE_SOURCE, {
+          ...rotationCandidateRequest(),
           genericInitialMove: candidateRequest().genericInitialMove,
         }),
       ).rejects.toThrow(/exactly one initial-edit authority/i);

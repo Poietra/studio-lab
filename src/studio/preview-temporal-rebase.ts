@@ -125,7 +125,8 @@ export type StudioPreviewInitialEditProjectionAuthorityV1 =
 
 export type StudioPreviewGenericInitialEditV1 =
   | Readonly<{ kind: "move"; position: Point }>
-  | Readonly<{ kind: "resize"; scaleFactor: number }>;
+  | Readonly<{ kind: "resize"; scaleFactor: number }>
+  | Readonly<{ angleRadians: number; kind: "rotation" }>;
 
 export type StudioPreviewGenericInitialEditProgramSetV1 =
   | Readonly<{ kind: "none" }>
@@ -508,6 +509,21 @@ function genericInitialEditProgramV1(
   }
   if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
     return { kind: "move", position: { x: operation.value.x, y: operation.value.y } };
+  }
+  if (
+    operation.kind === "AnimateProperty" &&
+    operation.key === "rotation" &&
+    operation.control === undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    typeof operation.relativeDelta === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    Number.isFinite(operation.relativeDelta) &&
+    Math.abs(operation.to - operation.from - operation.relativeDelta) < 0.000001 &&
+    Math.abs(Math.atan2(Math.sin(operation.relativeDelta), Math.cos(operation.relativeDelta))) > 1e-12
+  ) {
+    return { angleRadians: operation.relativeDelta, kind: "rotation" };
   }
   if (
     operation.kind === "AnimateProperty" &&
@@ -1423,8 +1439,26 @@ export function conjugateUniformScaleAboutCenterV1(
   };
 }
 
+/** Applies one world-space planar rotation while keeping the pivot fixed. */
+export function conjugateRotationAboutCenterV1(
+  transform: SceneEntityV1["transform"],
+  center: Point,
+  angleRadians: number,
+): SceneEntityV1["transform"] {
+  const cosine = Math.cos(angleRadians);
+  const sine = Math.sin(angleRadians);
+  return {
+    m11: cosine * transform.m11 - sine * transform.m21,
+    m12: cosine * transform.m12 - sine * transform.m22,
+    m21: sine * transform.m11 + cosine * transform.m21,
+    m22: sine * transform.m12 + cosine * transform.m22,
+    tx: center.x + cosine * (transform.tx - center.x) - sine * (transform.ty - center.y),
+    ty: center.y + sine * (transform.tx - center.x) + cosine * (transform.ty - center.y),
+  };
+}
+
 /**
- * Reprojects one authorized t=0 move or uniform resize onto the verified
+ * Reprojects one authorized t=0 move, uniform resize, or planar rotation onto the verified
  * generic V3 hierarchy. The runtime root remains the geometry authority;
  * Studio only composes a top-level translation or a uniform scale about the
  * verified initial center and never reconstructs or flattens descendants.
@@ -1465,7 +1499,7 @@ export function compileStudioPreviewGenericInitialEditV1(
   if (programSet.kind !== "authorized") {
     return unsupported(
       "target-edit-unsupported",
-      "Generic Runtime Trace permits exactly one initial position move or uniform resize.",
+      "Generic Runtime Trace permits exactly one initial position move, uniform resize, or rotation.",
     );
   }
   const candidate = programSet.candidate;
@@ -1488,10 +1522,12 @@ export function compileStudioPreviewGenericInitialEditV1(
       tx: target.transform.tx + translation.x,
       ty: target.transform.ty + translation.y,
     };
-  } else {
+  } else if (edit.kind === "resize") {
     // Conjugate the uniform scale about the verified initial center so the
     // root keeps its placement while every descendant scales with it.
     editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
+  } else {
+    editedTransform = conjugateRotationAboutCenterV1(target.transform, baseCenter, edit.angleRadians);
   }
   if (
     ![
@@ -1505,10 +1541,7 @@ export function compileStudioPreviewGenericInitialEditV1(
   ) {
     return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root transform is not finite.");
   }
-  const provenanceId =
-    edit.kind === "move"
-      ? `studio-generic-v3-initial-move:${input.sourceRevisionHash}`
-      : `studio-generic-v3-initial-resize:${input.sourceRevisionHash}`;
+  const provenanceId = `studio-generic-v3-initial-${edit.kind}:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
     return unsupported("conflicting-edit-unsupported", "The generic initial-edit provenance identity already exists.");
   }
@@ -1526,7 +1559,9 @@ export function compileStudioPreviewGenericInitialEditV1(
         evidence: [
           edit.kind === "move"
             ? "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root"
-            : "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root",
+            : edit.kind === "resize"
+              ? "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root"
+              : "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
           `source binding ${candidate.bindingId}`,
           `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
         ],
