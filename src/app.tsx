@@ -110,6 +110,7 @@ import { StudioInspector, WorkspaceSidebar } from "./studio/studio-sidebars";
 import type { StudioTool } from "./studio/studio-toolbar";
 import { entityLabel, STUDIO_VIEWPORT, StudioViewport } from "./studio/studio-viewport";
 import {
+  createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
@@ -875,7 +876,7 @@ export function App({
       genericCandidates.length > 0 &&
       studioPreviewGenericInitialEditProgramSetV1(records, genericCandidates).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move, uniform resize, or rotation on one verified binding.";
+      return "This generic Runtime Trace permits exactly one initial position move, uniform resize, rotation, or opacity edit on one verified binding.";
     }
     return null;
   }
@@ -2173,7 +2174,9 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
+      setDraftError(
+        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+      );
       return;
     }
     if (
@@ -2332,7 +2335,9 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
+      setDraftError(
+        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+      );
       return;
     }
     if (
@@ -2507,7 +2512,9 @@ export function App({
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
-      setDraftError("This generic Runtime Trace target supports an initial move, uniform resize, or rotation only.");
+      setDraftError(
+        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+      );
       return;
     }
     if (!resizeHandleUsesDelta(handle, delta)) return;
@@ -2875,6 +2882,49 @@ export function App({
     }
   }
 
+  function setEntityOpacityFromInspector(entityId: string, opacity: number) {
+    if (previewSelectionOnly || boundedRuntimeMutationIsLocked(entityId)) return false;
+    const authority = initialEditProjectionAuthorityFor(entityId);
+    if (authority?.profile !== "generic-runtime-trace-v3" || !authority.opacityEditable) {
+      setDraftError("Opacity currently requires one exact updater-free Runtime Trace binding with static paint.");
+      return false;
+    }
+    if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1) {
+      setDraftError("Opacity must be a number from 0 to 1.");
+      return false;
+    }
+    if (authority.baseOpacity !== null && Math.abs(authority.baseOpacity - opacity) < 0.0005) return false;
+    const gestureContext = directGestureContext();
+    if (!gestureContext.proposedState) return false;
+    const sourceScene = projectRuntimeSceneToSourceTimeline(
+      gestureContext.proposedState.evaluatedScene,
+      gestureContext.sourcePrograms,
+    );
+    const anchor = manualAuthoringAnchor({
+      action: "object opacity edit",
+      allowSyntheticPreviewAnchor: true,
+      requireAlignedPlayhead: true,
+      scene: sourceScene,
+      sourcePrograms: gestureContext.sourcePrograms,
+      targetEntityIds: [entityId],
+    });
+    if (!anchor || anchor.sourceTime !== 0) return false;
+    try {
+      const validation = createDirectManipulationOpacityProgram({
+        capturedPlayhead: 0,
+        entityId,
+        opacity,
+        scene: projectStudioPreviewInitialValidationSceneV1(sourceScene, authority),
+        start: 0,
+        transactionId: `studio-opacity-input-${crypto.randomUUID()}`,
+      });
+      return acceptDirectManipulationDraft(validation, gestureContext, 0);
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The object opacity could not be changed.");
+      return false;
+    }
+  }
+
   function editEntityFromInspector(entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) {
     if (previewSelectionOnly) {
       setDraftError("This verified snapshot is selection-only because it has no safe .py source edit anchor.");
@@ -2942,7 +2992,7 @@ export function App({
           initialTransformAuthority.profile === "square-to-circle-v8"
             ? "This SquareToCircle proof currently supports position only."
             : initialTransformAuthority.profile === "generic-runtime-trace-v3"
-              ? "Use the dedicated Rotate controls for rotation; these Inspector fields support position and uniform scale only."
+              ? "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only."
               : "This runtime-backed object currently supports position and uniform scale only.",
         );
         return false;
@@ -3273,6 +3323,11 @@ export function App({
       : null;
 
   const selectedEntity = editableEntities.find((entity) => selectedSet.has(entity.id)) ?? null;
+  const selectedInitialEditAuthority = initialEditProjectionAuthorityFor(selectedEntity?.id);
+  const selectedOpacityAuthority =
+    selectedInitialEditAuthority?.profile === "generic-runtime-trace-v3" && selectedInitialEditAuthority.opacityEditable
+      ? selectedInitialEditAuthority
+      : null;
   const appliedProgramReadOnlyReasons = Object.fromEntries(
     appliedPrograms.map((record) => {
       const transactionId = record.program.transactionId;
@@ -3722,6 +3777,7 @@ export function App({
               onDiscardDraft={discardDraft}
               onDraftOperationChange={updateDraftOperation}
               onEntityEdit={editEntityFromInspector}
+              onEntityOpacityChange={(entityId, opacity) => void setEntityOpacityFromInspector(entityId, opacity)}
               onEntityRotate={(entityId, angleRadians) => void rotateEntityFromInspector(entityId, angleRadians)}
               onEntityScaleChange={(entityId, scale) => void resizeEntityFromInspector(entityId, scale)}
               onInspectorFocusRestored={() => setInspectorReturnFocus(null)}
@@ -3733,9 +3789,9 @@ export function App({
               renderCandidateUnavailableReason={renderCandidateUnavailableReason}
               renderSession={activeProjectId ? (renderSessions[activeProjectId] ?? null) : null}
               replacingAppliedProgram={editingAppliedProgram !== null}
-              rotationAvailable={
-                initialEditProjectionAuthorityFor(selectedEntity?.id)?.profile === "generic-runtime-trace-v3"
-              }
+              opacityAvailable={selectedOpacityAuthority !== null}
+              opacityValue={selectedOpacityAuthority?.baseOpacity ?? null}
+              rotationAvailable={selectedInitialEditAuthority?.profile === "generic-runtime-trace-v3"}
               selectedEntity={selectedEntity}
               sourceExport={
                 activeProjectId && activeScene

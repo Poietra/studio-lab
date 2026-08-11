@@ -361,6 +361,7 @@ export function StudioInspector({
   onDiscardDraft,
   onDraftOperationChange,
   onEntityEdit,
+  onEntityOpacityChange,
   onEntityRotate,
   onEntityScaleChange,
   onInspectorFocusRestored,
@@ -372,6 +373,8 @@ export function StudioInspector({
   renderCandidateUnavailableReason,
   renderSession,
   replacingAppliedProgram,
+  opacityAvailable,
+  opacityValue,
   rotationAvailable,
   selectedEntity,
   inspectorReturnFocus,
@@ -389,6 +392,7 @@ export function StudioInspector({
   onDiscardDraft: () => void;
   onDraftOperationChange: (operation: EditSuggestionOperation) => void;
   onEntityEdit: (entityId: string, edits: ValidatedInspectorEdits, returnFocus: InspectorEditField) => boolean;
+  onEntityOpacityChange: (entityId: string, opacity: number) => void;
   onEntityRotate: (entityId: string, angleRadians: number) => void;
   onEntityScaleChange: (entityId: string, scale: number) => void;
   onInspectorFocusRestored: () => void;
@@ -400,6 +404,8 @@ export function StudioInspector({
   renderCandidateUnavailableReason: string;
   renderSession: RenderSessionView | null;
   replacingAppliedProgram: boolean;
+  opacityAvailable: boolean;
+  opacityValue: number | null;
   rotationAvailable: boolean;
   selectedEntity: ProjectedEntity | null;
   inspectorReturnFocus: InspectorEditField | null;
@@ -470,6 +476,44 @@ export function StudioInspector({
                 <dt className="text-zinc-600">Style</dt>
                 <dd className="truncate text-zinc-300" title={styleSummary(selectedEntity)}>
                   {styleSummary(selectedEntity)}
+                </dd>
+                <dt className="self-center text-zinc-600">Opacity</dt>
+                <dd>
+                  <form
+                    className="flex items-center gap-1"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      const data = new FormData(event.currentTarget);
+                      onEntityOpacityChange(selectedEntity.id, Number(data.get("opacity")));
+                    }}
+                  >
+                    <input
+                      aria-label={`Opacity ${entityLabel(selectedEntity)}`}
+                      className="h-7 min-w-0 w-20 border border-zinc-700 bg-zinc-950 px-1.5 tabular-nums text-xs text-zinc-300 outline-none focus:border-sky-500"
+                      defaultValue={opacityValue ?? undefined}
+                      disabled={!opacityAvailable}
+                      key={`${selectedEntity.id}/${opacityValue ?? "mixed"}`}
+                      max="1"
+                      min="0"
+                      name="opacity"
+                      placeholder={opacityAvailable && opacityValue === null ? "Mixed" : undefined}
+                      required
+                      step="0.05"
+                      title={
+                        opacityAvailable
+                          ? "Set the source object's absolute opacity"
+                          : "Opacity requires a static updater-free Runtime Trace binding at t=0"
+                      }
+                      type="number"
+                    />
+                    <button
+                      className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-700 disabled:hover:bg-transparent"
+                      disabled={!opacityAvailable}
+                      type="submit"
+                    >
+                      Set
+                    </button>
+                  </form>
                 </dd>
                 <dt className="self-center text-zinc-600">Scale</dt>
                 <dd>

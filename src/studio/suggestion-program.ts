@@ -813,6 +813,56 @@ export function createDirectManipulationRotationProgram(
   );
 }
 
+export function createDirectManipulationOpacityProgram(
+  input: Readonly<{
+    capturedPlayhead: number;
+    entityId: string;
+    opacity: number;
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
+  if (!Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1) {
+    throw new Error("Object opacity must be a finite number from 0 to 1.");
+  }
+  if (input.start !== 0 || input.capturedPlayhead !== 0) {
+    throw new Error("Object opacity is currently available only at source time zero.");
+  }
+  const resolution = resolveTimeAnchorOnce(
+    { kind: "playhead", referenceSeconds: input.capturedPlayhead },
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      sceneDuration: input.scene.duration,
+    },
+  );
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId: input.entityId,
+    id: operationId(input.transactionId, "set-opacity"),
+    interval: { end: 0, start: 0 },
+    key: "appearance",
+    kind: "SetProperty",
+    provenance: provenance("direct-manipulation", ["opacity control", "absolute object opacity"]),
+    value: input.opacity,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["exact Runtime Trace appearance constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
 export function createDirectManipulationScaleProgram(
   input: Readonly<{
     capturedPlayhead: number;
