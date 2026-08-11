@@ -125,11 +125,15 @@ production configuration.
 
 Authentication must use a dedicated Hyperdrive configuration created or
 updated with `--caching-disabled`; stale reads are not acceptable for sessions,
-memberships, invitations, or one-time login state. Apply bundled migrations
-through v24 before deploying this Worker. The invitation repository requires
-the exact v24 quota migration, while the OIDC repository requires the exact v22
-invitation migration. The Worker routes must remain limited to the same-origin
-`/auth/oidc/*` path and the exact `/api/account/session`,
+memberships, invitations, or one-time login state. Apply the bundled catalog
+with `pnpm storage:migrate` before deploying this Worker: it must reach at
+least v28. `GET` and `PATCH /api/account/session` resolve through the v28
+`account_organization_switch_mutations` table, so at v24 they fail on the
+missing relation while `POST /api/account/logout` still succeeds — a partial
+outage rather than a clean failure. The invitation repository additionally
+requires the exact v24 quota migration, while the OIDC repository requires the
+exact v22 invitation migration. The Worker routes must remain limited to the
+same-origin `/auth/oidc/*` path and the exact `/api/account/session`,
 `/api/account/logout`, and `/api/account/invitations[/<id>]` paths, with
 `workers_dev` and preview URLs off.
 Set those security-critical routes to fail closed in Cloudflare before promotion.
@@ -274,6 +278,51 @@ server-owned return URL; it validates the credential-free HTTPS response but
 does not persist, log, or navigate to it. The lane uses bounded requests and
 best-effort cancellation/Customer deletion; a passing local run is still not a
 claim that production billing credentials or routes are configured.
+
+## Bundled durable-storage migrations
+
+Every Worker and runtime-server deployment described in this document requires
+the bundled catalog to be applied first. `pnpm storage:migrate` is the only
+supported way to do that. It reads the same `PG*` environment the other
+operator tools read, so no connection string is ever passed on the command line
+or written to the report it prints on stdout.
+
+```sh
+PGHOST=... PGPORT=5432 PGDATABASE=... PGUSER=... PGPASSWORD=... \
+  pnpm storage:migrate -- --dry-run
+```
+
+`PGHOST` must name a TCP endpoint; a socket path is rejected. The connection
+always verifies TLS (`rejectUnauthorized`), so the host's CA must already be
+trusted by the operator machine — export `NODE_EXTRA_CA_CERTS` when the
+provider issues a private CA. Every `PG*` value must be an explicit non-empty
+setting without an embedded NUL, because the PostgreSQL startup packet would
+truncate rather than reject one. Pass `PGPASSWORD` from the operator secret
+store rather than shell history.
+
+Run `--dry-run` first: it applies nothing and reports `recorded` (what the
+database already has) and `pending` (what this bundle would add).
+
+The default target is the catalog head. That default is for a database with no
+live process attached to it — a freshly provisioned staging or production
+instance, or a cell whose traffic is already drained. It is not a general
+upgrade command: several bundled migrations are stop-the-world cutovers whose
+own sections in this document own the sequence, including v10 and v25, the
+v14/v15 billing pair, the v18 editor cutover, and v19. Where such a section
+applies, its drain-and-stop sequence takes precedence, and `--through <version>`
+is how you land one migration at a time within it. A staged report carries
+`"atHead":false` so a partial stage can never read as a finished one.
+
+The tool fails closed rather than repairing state. It refuses to run when the
+database records a migration this bundle does not carry, which means the
+deployment artifact is older than the database and must not be promoted. It
+also re-reads the recorded inventory after applying and refuses to report
+success unless every version through the target is present.
+
+Pin operator tooling against `BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1` rather
+than a literal version. A literal goes stale the moment a migration is added,
+and because the applier always runs the catalog to its head, a stale literal
+rejects every run instead of failing visibly at review time.
 
 ## Runtime cell routing
 

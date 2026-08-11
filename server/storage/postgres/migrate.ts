@@ -474,6 +474,25 @@ const BUNDLED_DURABLE_STORAGE_MIGRATIONS = Object.freeze([
   runtimeCellAssignmentMigrationV29,
 ]);
 
+function bundledDurableStorageMigrationHead() {
+  const latest = BUNDLED_DURABLE_STORAGE_MIGRATIONS.at(-1);
+  if (!latest) throw new Error("No durable storage migrations are bundled.");
+  return latest;
+}
+
+/**
+ * The exact catalog head a deployment must reach before it may serve traffic.
+ * Operators and rollout tooling pin against this rather than a literal version,
+ * so adding a migration can never leave a caller silently asserting a stale
+ * head that the applier will always overshoot.
+ */
+export const BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1 = bundledDurableStorageMigrationHead().version;
+
+/** Every bundled catalog version in apply order, for preflight and drift reports. */
+export const BUNDLED_DURABLE_STORAGE_MIGRATION_VERSIONS_V1: readonly number[] = Object.freeze(
+  BUNDLED_DURABLE_STORAGE_MIGRATIONS.map(({ version }) => version),
+);
+
 function bundledMigrationsThrough(version: number) {
   const index = BUNDLED_DURABLE_STORAGE_MIGRATIONS.findIndex((migration) => migration.version === version);
   if (index < 0) throw new TypeError(`Durable storage migration v${version} is not bundled.`);

@@ -8,6 +8,7 @@ import { z } from "zod";
 
 export const BILLING_ENTITLEMENT_ROLLOUT_SCHEMA_V1 = "poietra.billing-entitlement-rollout";
 export const BILLING_ENTITLEMENT_ROLLOUT_VERSION_V1 = 1;
+/** The bundled migration that carries the render lifecycle this rollout writes through. */
 export const BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 = 19;
 
 const MAX_SPEC_BYTES = 16 * 1024;
@@ -105,9 +106,16 @@ function activeAt(input, now) {
 
 export async function rolloutBillingEntitlementV1(specValue, dependencies) {
   const input = parseBillingEntitlementRolloutSpecV1(specValue);
+  // The applier always runs the catalog to its head, so this pins the head the
+  // bundle actually carries. A literal version here would silently pin a stale
+  // head and reject every rollout as soon as one migration is added.
+  const migrationHead = dependencies.migrationHead();
+  if (!Number.isSafeInteger(migrationHead) || migrationHead < BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1) {
+    fail("The bundled durable-storage catalog no longer carries the billing render-lifecycle migration.");
+  }
   const migration = await dependencies.migrate();
-  if (migration?.version !== BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1) {
-    fail("PostgreSQL did not reach the exact bundled durable-storage migration v19.");
+  if (migration?.version !== migrationHead) {
+    fail(`PostgreSQL did not reach the exact bundled durable-storage catalog head v${migrationHead}.`);
   }
   if (!(await dependencies.ready())) fail("PostgreSQL is not ready at the exact billing-entitlement schema v14.");
 
@@ -286,6 +294,7 @@ async function main() {
         return result.rows[0]?.now;
       },
       migrate: () => migrationModule.applyBundledDurableStorageMigrations(pool),
+      migrationHead: () => migrationModule.BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1,
       readCurrentHead: (tenantId) => readCurrentHead(pool, domainModule.parseEntitlementSnapshotV1, tenantId),
       ready: () => repository.ready(),
     });

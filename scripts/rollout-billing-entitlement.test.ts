@@ -2,11 +2,18 @@ import { resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
+import { BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1 } from "../server/storage/postgres/migrate";
 import {
+  BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1,
   parseBillingEntitlementRolloutArgumentsV1,
   parseBillingEntitlementRolloutSpecV1,
   rolloutBillingEntitlementV1,
 } from "./rollout-billing-entitlement.mjs";
+
+// The applier runs the catalog to its head, so the rollout must pin the head
+// the bundle carries rather than a literal that goes stale on the next
+// migration.
+const HEAD = BUNDLED_DURABLE_STORAGE_MIGRATION_HEAD_V1;
 
 const SPEC = Object.freeze({
   accessUntil: "2026-08-31T00:00:00.000Z",
@@ -34,7 +41,8 @@ function dependencies(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     applySnapshot: vi.fn(async (input) => ({ kind: "applied", snapshot: { ...input, createdAt: DATABASE_NOW } })),
     databaseNow: vi.fn(async () => DATABASE_NOW),
-    migrate: vi.fn(async () => ({ applied: true, version: 19 })),
+    migrate: vi.fn(async () => ({ applied: true, version: HEAD })),
+    migrationHead: vi.fn(() => HEAD),
     readCurrentHead: vi.fn(async () => exactHead()),
     ready: vi.fn(async () => true),
     ...overrides,
@@ -77,7 +85,7 @@ describe("billing entitlement rollout", () => {
       }),
       migrate: vi.fn(async () => {
         calls.push("migrate");
-        return { applied: true, version: 19 };
+        return { applied: true, version: HEAD };
       }),
       readCurrentHead: vi.fn(async () => {
         calls.push("verify");
@@ -99,6 +107,32 @@ describe("billing entitlement rollout", () => {
     expect(calls).toEqual(["migrate", "ready", "clock", "apply", "verify"]);
   });
 
+  it("pins the catalog head the bundle carries, not a literal that goes stale", async () => {
+    // The regression this guards: the head was pinned to a literal v19 while the
+    // bundle had grown past it, so every rollout failed and no operator could
+    // grant a generation-1 entitlement.
+    expect(HEAD).toBeGreaterThanOrEqual(BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1);
+    await expect(rolloutBillingEntitlementV1(SPEC, dependencies())).resolves.toMatchObject({ status: "seeded" });
+
+    await expect(
+      rolloutBillingEntitlementV1(
+        SPEC,
+        dependencies({
+          migrate: vi.fn(async () => ({ applied: true, version: BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 })),
+        }),
+      ),
+    ).rejects.toThrow(/catalog head/iu);
+    await expect(
+      rolloutBillingEntitlementV1(
+        SPEC,
+        dependencies({
+          migrate: vi.fn(async () => ({ applied: true, version: BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 - 1 })),
+          migrationHead: vi.fn(() => BILLING_RENDER_LIFECYCLE_MIGRATION_VERSION_V1 - 1),
+        }),
+      ),
+    ).rejects.toThrow(/render-lifecycle migration/iu);
+  });
+
   it("accepts only an exact generation-1 replay", async () => {
     const fixture = dependencies({
       applySnapshot: vi.fn(async () => ({ appliedGeneration: 1n, kind: "conflict" })),
@@ -114,7 +148,7 @@ describe("billing entitlement rollout", () => {
   it("fails closed before promotion for readiness, generation, identity, or activity drift", async () => {
     const input = parseBillingEntitlementRolloutSpecV1(SPEC);
     const cases = [
-      dependencies({ migrate: vi.fn(async () => ({ applied: true, version: 14 })) }),
+      dependencies({ migrate: vi.fn(async () => ({ applied: true, version: HEAD - 1 })) }),
       dependencies({ ready: vi.fn(async () => false) }),
       dependencies({ applySnapshot: vi.fn(async () => ({ appliedGeneration: 2n, kind: "conflict" })) }),
       dependencies({

@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run",
     "test:unit": "vitest run src/accounts src/ai src/billing src/collaboration src/engine src/studio e2e/benchmark-support.test.ts e2e/fourier-v3-cairo-reference.test.ts e2e/real-preview-run-state.test.ts e2e/spiral-in-cairo-reference.test.ts e2e/square-to-circle-cairo-reference.test.ts e2e/write-stuff-cairo-reference.test.ts e2e/visual-parity.test.ts --exclude src/studio/workspace-projection.test.ts",
-    "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/derive-mathtex-artifact.test.ts scripts/real-manim-editability-census-report.test.ts scripts/rollout-billing-entitlement.test.ts",
+    "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/apply-bundled-migrations.test.ts scripts/derive-mathtex-artifact.test.ts scripts/real-manim-editability-census-report.test.ts scripts/rollout-billing-entitlement.test.ts",
     "conformance:sandbox:isolation": "vitest run server/fast-manim-sandbox-isolation-conformance.test.ts",
     "test:billing:stripe:required": "POIETRA_STRIPE_E2E_REQUIRED=1 vitest run server/billing/stripe-sandbox.real.test.ts",
     "test:storage:e2e": "node scripts/run-workspace-source-storage-e2e.mjs",
@@ -65,6 +65,7 @@
     "benchmark:engine:webgpu:promote": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs",
     "benchmark:engine:webgpu:verify": "node scripts/promote-engine-webgpu-benchmark-evidence.mjs --verify",
     "billing:entitlement:rollout": "node scripts/rollout-billing-entitlement.mjs",
+    "storage:migrate": "node scripts/apply-bundled-migrations.mjs",
     "evidence:manim-compositor:promote": "node scripts/promote-manim-compositor-parity-evidence.mjs",
     "evidence:manim-compositor:verify": "node scripts/promote-manim-compositor-parity-evidence.mjs --verify",
     "visual-parity:regenerate": "node scripts/regenerate-visual-parity.mjs",
