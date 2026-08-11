@@ -86,6 +86,21 @@ const runtimeTraceResizeCandidateRequest = {
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
+const runtimeTraceOpacityCandidateRequest = {
+  genericInitialOpacity: {
+    baseBinding: {
+      id: `source-binding:${"1".repeat(64)}`,
+      name: "square",
+      ordinal: 1,
+      span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+    },
+    baseSourceHash: "2".repeat(64),
+    entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+    expectedOpacity: 0.35,
+    kind: "fast-manim-generic-initial-opacity-v3",
+  },
+  ...request,
+} as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
 const runtimeTraceCandidateView = {
   sourceHash: "3".repeat(64),
   status: "verified",
@@ -575,6 +590,23 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     expect(fixture.runnerRunRuntimeTraceCandidate).toHaveBeenCalledWith(
       candidateSource,
       runtimeTraceResizeCandidateRequest,
+      undefined,
+    );
+    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("forwards a generic Runtime Trace opacity pair to the project runner without publication", async () => {
+    const fixture = harness();
+    const candidateSource = "from manim import Scene, Square\n";
+
+    await expect(
+      fixture.service.runRuntimeTraceCandidateUnpublished(candidateSource, runtimeTraceOpacityCandidateRequest),
+    ).resolves.toBe(runtimeTraceCandidateView);
+
+    expect(fixture.runnerRunRuntimeTraceCandidate).toHaveBeenCalledWith(
+      candidateSource,
+      runtimeTraceOpacityCandidateRequest,
       undefined,
     );
     expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();

@@ -294,10 +294,17 @@ export class DurableFastManimSnapshotServiceV1 {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ) {
-    const { genericInitialMove, genericInitialResize, genericInitialRotation, ...requestFields } = requestValue;
+    const {
+      genericInitialMove,
+      genericInitialOpacity,
+      genericInitialResize,
+      genericInitialRotation,
+      ...requestFields
+    } = requestValue;
     const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestFields);
     const request: FastManimRuntimeTraceCandidateRunRequestV1 = {
       ...(genericInitialMove === undefined ? {} : { genericInitialMove }),
+      ...(genericInitialOpacity === undefined ? {} : { genericInitialOpacity }),
       ...(genericInitialResize === undefined ? {} : { genericInitialResize }),
       ...(genericInitialRotation === undefined ? {} : { genericInitialRotation }),
       projectId: parsed.projectId,

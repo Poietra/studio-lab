@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
 } from "../src/render-pipeline/source-lowering";
@@ -63,6 +64,16 @@ const ROTATION_PLAN = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
   SOURCE_PATH,
   "square",
 );
+const OPACITY_CANDIDATE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  "        square.set_opacity(0.35)\n        square.set_stroke(WHITE, width=2)\n",
+);
+const OPACITY_PLAN = deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+  OPACITY_CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+  "square",
+);
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
   return digestFastManimRuntimeTraceDomainV3("poietra.fast-manim-runtime-trace-visual-semantics.v3", {
@@ -83,7 +94,7 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
   constructor(
     private readonly corruptCandidate = false,
     private readonly onStart: ((count: number) => Promise<void> | void) | undefined = undefined,
-    private readonly edit: "move" | "resize" | "rotation" = "move",
+    private readonly edit: "move" | "opacity" | "resize" | "rotation" = "move",
   ) {}
 
   async close() {}
@@ -198,6 +209,25 @@ class GenericCandidateArtifactBackend implements FastManimSandboxBackendV1 {
       for (const endpoint of Object.values(trace.sourceBindings[0]!.endpoints)) {
         endpoint.dimensions.height = rotatedSquareSize;
         endpoint.dimensions.width = rotatedSquareSize;
+      }
+    }
+    if (candidate && this.edit === "opacity") {
+      trace.resources.appearances = trace.resources.appearances.map((appearance) => {
+        const fill = appearance.fill
+          ? { ...appearance.fill, color: { ...appearance.fill.color, alpha: OPACITY_PLAN.expectedOpacity } }
+          : null;
+        const stroke = appearance.stroke
+          ? { ...appearance.stroke, color: { ...appearance.stroke.color, alpha: OPACITY_PLAN.expectedOpacity } }
+          : null;
+        return {
+          fill,
+          id: `appearance:${digestFastManimRuntimeTraceDomainV3("poietra.runtime-trace-v3-appearance", { fill, stroke })}`,
+          stroke,
+        };
+      });
+      const appearanceId = trace.resources.appearances[0]!.id;
+      for (const frame of trace.frames) {
+        for (const state of frame.states) state.appearanceId = appearanceId;
       }
     }
     if (candidate && this.corruptCandidate) trace.frames[0]!.states[0]!.opacity = 0.5;
@@ -326,6 +356,22 @@ function rotationCandidateRequest() {
   };
 }
 
+function opacityCandidateRequest() {
+  return {
+    genericInitialOpacity: {
+      baseBinding: OPACITY_PLAN.baseBinding,
+      baseSourceHash: OPACITY_PLAN.baseSourceHash,
+      entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+      expectedOpacity: OPACITY_PLAN.expectedOpacity,
+      kind: "fast-manim-generic-initial-opacity-v3" as const,
+    },
+    projectId: "generic-preview",
+    requestId: "generic-initial-opacity-v3-candidate",
+    sceneName: SCENE_NAME,
+    sourcePath: SOURCE_PATH,
+  };
+}
+
 describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
   "generic Runtime Trace V3 initial-move candidate runner",
   () => {
@@ -391,6 +437,23 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       ]);
       expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.baseBinding.id);
       expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.candidateBinding.id);
+    });
+
+    it("derives the opacity plan and verifies the appearance-only V3 pair", async () => {
+      const backend = new GenericCandidateArtifactBackend(false, undefined, "opacity");
+      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+        OPACITY_CANDIDATE_SOURCE,
+        opacityCandidateRequest(),
+      );
+
+      expect(result).toMatchObject({
+        sourceHash: expect.not.stringMatching(OPACITY_PLAN.baseSourceHash),
+        status: "verified",
+        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      });
+      expect(backend.requests).toHaveLength(2);
+      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.baseBinding.id);
+      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.candidateBinding.id);
     });
 
     it("rejects a request carrying both generic initial-edit authorities", async () => {

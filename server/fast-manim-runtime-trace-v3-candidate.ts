@@ -848,3 +848,199 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
   }
   return candidate;
 }
+
+type FastManimRuntimeTraceAppearanceResourceV3 = FastManimRuntimeTraceV3["resources"]["appearances"][number];
+
+function appearanceResourcesById(trace: FastManimRuntimeTraceV3, side: "base" | "candidate") {
+  const appearances = new Map(trace.resources.appearances.map((resource) => [resource.id, resource] as const));
+  if (appearances.size !== trace.resources.appearances.length) {
+    reject("candidate-resource", `A generic initial opacity ${side} repeats an appearance resource identity.`);
+  }
+  return appearances;
+}
+
+function paintAlphaReplacementMatches(
+  base: FastManimRuntimeTraceAppearanceResourceV3["fill"] | FastManimRuntimeTraceAppearanceResourceV3["stroke"],
+  candidate: FastManimRuntimeTraceAppearanceResourceV3["fill"] | FastManimRuntimeTraceAppearanceResourceV3["stroke"],
+  expectedOpacity: number,
+) {
+  if (base === null || candidate === null) return base === candidate;
+  const { color: baseColor, ...basePaint } = base;
+  const { color: candidateColor, ...candidatePaint } = candidate;
+  const { alpha: _baseAlpha, ...baseRgb } = baseColor;
+  const { alpha: candidateAlpha, ...candidateRgb } = candidateColor;
+  return candidateAlpha === expectedOpacity && same(basePaint, candidatePaint) && same(baseRgb, candidateRgb);
+}
+
+function appearanceAlphaReplacementMatches(
+  base: FastManimRuntimeTraceAppearanceResourceV3,
+  candidate: FastManimRuntimeTraceAppearanceResourceV3,
+  expectedOpacity: number,
+) {
+  return (
+    paintAlphaReplacementMatches(base.fill, candidate.fill, expectedOpacity) &&
+    paintAlphaReplacementMatches(base.stroke, candidate.stroke, expectedOpacity)
+  );
+}
+
+function appearanceHasDifferentAlpha(resource: FastManimRuntimeTraceAppearanceResourceV3, expectedOpacity: number) {
+  return (
+    (resource.fill !== null && resource.fill.color.alpha !== expectedOpacity) ||
+    (resource.stroke !== null && resource.stroke.color.alpha !== expectedOpacity)
+  );
+}
+
+function stateWithoutAppearanceId(state: FastManimRuntimeTraceV3["frames"][number]["states"][number]) {
+  const { appearanceId: _appearanceId, ...fixed } = state;
+  return fixed;
+}
+
+/**
+ * Proves one source-level `set_opacity` on an updater-free generic V3 root.
+ * The edit is intentionally limited to statically painted draws: every
+ * selected draw must retain one appearance and one state-opacity value across
+ * its lifetime. The only admitted visual delta is replacing every existing
+ * fill/stroke alpha in that selected subtree with the server-derived value.
+ */
+export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
+  input: Readonly<{
+    base: FastManimRuntimeTraceV3;
+    baseRequest: FastManimRuntimeTraceProducerRequestV3;
+    binding: FastManimRuntimeTraceSourceBindingV3;
+    candidate: FastManimRuntimeTraceV3;
+    candidateRequest: FastManimRuntimeTraceProducerRequestV3;
+    expectedOpacity: number;
+  }>,
+) {
+  if (!Number.isFinite(input.expectedOpacity) || input.expectedOpacity < 0 || input.expectedOpacity > 1) {
+    reject("candidate-endpoint", "A generic initial opacity requires one finite value between zero and one.");
+  }
+  const expectedOpacity = input.expectedOpacity;
+  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  if (!same(baseMapping.endpoints, candidateMapping.endpoints)) {
+    reject("candidate-endpoint", "A generic initial opacity changed the selected root geometry endpoints.");
+  }
+  if (!same(base.resources.paths, candidate.resources.paths)) {
+    reject("candidate-resource", "A generic initial opacity changed path resources.");
+  }
+
+  const selectedDrawIds = new Set(base.draws.filter(({ rootId }) => rootId === baseMapping.rootId).map(({ id }) => id));
+  if (selectedDrawIds.size === 0) {
+    reject("candidate-root", "A generic initial opacity selected a root without presented draws.");
+  }
+  const selectedAppearanceIdByDraw = new Map<string, string>();
+  const candidateAppearanceIdByDraw = new Map<string, string>();
+  const selectedStateOpacityByDraw = new Map<string, number>();
+  const candidateStateOpacityByDraw = new Map<string, number>();
+  const candidateAppearanceIdByBaseId = new Map<string, string>();
+  const untouchedAppearanceIds = new Set<string>();
+  const referencedBaseAppearanceIds = new Set<string>();
+  const referencedCandidateAppearanceIds = new Set<string>();
+
+  if (base.frames.length !== candidate.frames.length) {
+    reject("candidate-semantic", "A generic initial opacity changed its frame count.");
+  }
+  base.frames.forEach((baseFrame, frameIndex) => {
+    const candidateFrame = candidate.frames[frameIndex];
+    if (
+      !candidateFrame ||
+      baseFrame.frameIndex !== candidateFrame.frameIndex ||
+      baseFrame.sampleTime !== candidateFrame.sampleTime ||
+      baseFrame.states.length !== candidateFrame.states.length
+    ) {
+      reject("candidate-semantic", `A generic initial opacity changed frame ${frameIndex} structure.`);
+    }
+    baseFrame.states.forEach((baseState, stateIndex) => {
+      const candidateState = candidateFrame.states[stateIndex];
+      if (!candidateState) {
+        reject("candidate-semantic", `A generic initial opacity removed frame ${frameIndex}, state ${stateIndex}.`);
+      }
+      referencedBaseAppearanceIds.add(baseState.appearanceId);
+      referencedCandidateAppearanceIds.add(candidateState.appearanceId);
+      if (!selectedDrawIds.has(baseState.drawId)) {
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic initial opacity disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        untouchedAppearanceIds.add(baseState.appearanceId);
+        return;
+      }
+      if (
+        !selectedDrawIds.has(candidateState.drawId) ||
+        !same(stateWithoutAppearanceId(baseState), stateWithoutAppearanceId(candidateState))
+      ) {
+        reject(
+          "candidate-semantic",
+          `A generic initial opacity changed non-appearance semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+
+      const baseDrawAppearanceId = selectedAppearanceIdByDraw.get(baseState.drawId);
+      const candidateDrawAppearanceId = candidateAppearanceIdByDraw.get(baseState.drawId);
+      const baseDrawOpacity = selectedStateOpacityByDraw.get(baseState.drawId);
+      const candidateDrawOpacity = candidateStateOpacityByDraw.get(baseState.drawId);
+      if (
+        (baseDrawAppearanceId !== undefined && baseDrawAppearanceId !== baseState.appearanceId) ||
+        (candidateDrawAppearanceId !== undefined && candidateDrawAppearanceId !== candidateState.appearanceId) ||
+        (baseDrawOpacity !== undefined && baseDrawOpacity !== baseState.opacity) ||
+        (candidateDrawOpacity !== undefined && candidateDrawOpacity !== candidateState.opacity)
+      ) {
+        reject("candidate-semantic", "A generic initial opacity does not accept dynamic appearance or opacity.");
+      }
+      selectedAppearanceIdByDraw.set(baseState.drawId, baseState.appearanceId);
+      candidateAppearanceIdByDraw.set(baseState.drawId, candidateState.appearanceId);
+      selectedStateOpacityByDraw.set(baseState.drawId, baseState.opacity);
+      candidateStateOpacityByDraw.set(baseState.drawId, candidateState.opacity);
+
+      const mappedCandidateId = candidateAppearanceIdByBaseId.get(baseState.appearanceId);
+      if (mappedCandidateId !== undefined && mappedCandidateId !== candidateState.appearanceId) {
+        reject("candidate-semantic", "A generic initial opacity mapped one base appearance inconsistently.");
+      }
+      candidateAppearanceIdByBaseId.set(baseState.appearanceId, candidateState.appearanceId);
+    });
+  });
+  if (
+    selectedAppearanceIdByDraw.size !== selectedDrawIds.size ||
+    candidateAppearanceIdByDraw.size !== selectedDrawIds.size
+  ) {
+    reject("candidate-semantic", "A generic initial opacity did not preserve every selected draw lifetime.");
+  }
+
+  const baseAppearances = appearanceResourcesById(base, "base");
+  const candidateAppearances = appearanceResourcesById(candidate, "candidate");
+  if (
+    referencedBaseAppearanceIds.size !== baseAppearances.size ||
+    referencedCandidateAppearanceIds.size !== candidateAppearances.size ||
+    [...baseAppearances.keys()].some((id) => !referencedBaseAppearanceIds.has(id)) ||
+    [...candidateAppearances.keys()].some((id) => !referencedCandidateAppearanceIds.has(id))
+  ) {
+    reject("candidate-resource", "A generic initial opacity carries appearance resources outside presented states.");
+  }
+  for (const appearanceId of untouchedAppearanceIds) {
+    const baseAppearance = baseAppearances.get(appearanceId);
+    const candidateAppearance = candidateAppearances.get(appearanceId);
+    if (!baseAppearance || !candidateAppearance || !same(baseAppearance, candidateAppearance)) {
+      reject("candidate-resource", "A generic initial opacity changed a non-selected appearance resource.");
+    }
+  }
+
+  let changedAppearanceCount = 0;
+  for (const [baseAppearanceId, candidateAppearanceId] of candidateAppearanceIdByBaseId) {
+    const baseAppearance = baseAppearances.get(baseAppearanceId);
+    const candidateAppearance = candidateAppearances.get(candidateAppearanceId);
+    if (
+      !baseAppearance ||
+      !candidateAppearance ||
+      !appearanceAlphaReplacementMatches(baseAppearance, candidateAppearance, expectedOpacity)
+    ) {
+      reject("candidate-resource", "A generic initial opacity changed paint semantics other than fill/stroke alpha.");
+    }
+    if (appearanceHasDifferentAlpha(baseAppearance, expectedOpacity)) changedAppearanceCount += 1;
+  }
+  if (changedAppearanceCount === 0) {
+    reject("candidate-noop", "A generic initial opacity did not change any selected fill or stroke alpha.");
+  }
+  return candidate;
+}
