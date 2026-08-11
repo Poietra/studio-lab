@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "../engine/asset-manifest";
+import { sceneIrV1Schema } from "../engine/scene-ir";
 import {
   type ProgramRecord,
   type PropertyChannelSample,
@@ -6,16 +8,14 @@ import {
   type ProposedState,
   type RuntimeSceneState,
   STUDIO_STATE_VERSION,
-} from "../studio/model";
-import { EDIT_OPERATION_VERSION } from "../studio/operations";
-import { type AssetManifestV1, assetManifestV1Schema, digestAssetManifestV1 } from "./asset-manifest";
-import { sceneIrV1Schema } from "./scene-ir";
+} from "./model";
+import { EDIT_OPERATION_VERSION } from "./operations";
 import {
   buildStudioSceneIrAdapterEvidenceV1,
   compileStudioSceneIrV1,
   type StudioSceneIrAdapterInputV1,
   studioPointToScenePointV1,
-} from "./studio-scene-adapter";
+} from "./scene-ir-adapter";
 
 const ZERO_HASH = "0".repeat(64);
 const REVISION_HASH = "a".repeat(64);
