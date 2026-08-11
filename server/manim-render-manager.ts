@@ -717,7 +717,8 @@ export class ManimRenderManager {
       const prepared = await this.lowerRequest(request, signal);
       if (
         prepared.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3" ||
-        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3"
+        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3" ||
+        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-rotation-v3"
       ) {
         await this.candidateVerifier.verify(prepared.lowered, prepared.renderRequest, signal);
       }

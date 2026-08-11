@@ -16,10 +16,12 @@ import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-an
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
   deriveOpeningManimTerminalPositionSourceEditPlanV2,
   type GenericRuntimeTraceInitialEditPreflightV3,
   type GenericRuntimeTraceInitialMovePreflightV3,
   type GenericRuntimeTraceInitialResizePreflightV3,
+  type GenericRuntimeTraceInitialRotationPreflightV3,
   recoverOpeningManimOfficialSourceV2,
   recoverUpdatersTerminalOfficialSourceV1,
 } from "../src/render-pipeline/source-lowering";
@@ -77,6 +79,7 @@ import {
 import {
   verifyFastManimRuntimeTraceInitialMoveCandidateV3,
   verifyFastManimRuntimeTraceInitialResizeCandidateV3,
+  verifyFastManimRuntimeTraceInitialRotationCandidateV3,
 } from "./fast-manim-runtime-trace-v3-candidate";
 import {
   createFastManimRuntimeTraceProducerRequestV3,
@@ -231,6 +234,7 @@ export type FastManimRuntimeTraceCandidateRunRequestV1 = Omit<
 > &
   Readonly<{
     genericInitialMove?: GenericRuntimeTraceInitialMovePreflightV3;
+    genericInitialRotation?: GenericRuntimeTraceInitialRotationPreflightV3;
     genericInitialResize?: GenericRuntimeTraceInitialResizePreflightV3;
   }>;
 
@@ -1230,8 +1234,8 @@ export class FastManimSnapshotRunner {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
-    const { genericInitialMove, genericInitialResize, ...runtimeRequestValue } = requestValue;
-    if (genericInitialMove !== undefined && genericInitialResize !== undefined) {
+    const { genericInitialMove, genericInitialResize, genericInitialRotation, ...runtimeRequestValue } = requestValue;
+    if ([genericInitialMove, genericInitialResize, genericInitialRotation].filter(Boolean).length > 1) {
       throw new TypeError("A generic Runtime Trace candidate carries exactly one initial-edit authority.");
     }
     const genericInitialEdit =
@@ -1239,7 +1243,9 @@ export class FastManimSnapshotRunner {
         ? genericInitialMove
         : genericInitialResize?.kind === "fast-manim-generic-initial-resize-v3"
           ? genericInitialResize
-          : undefined;
+          : genericInitialRotation?.kind === "fast-manim-generic-initial-rotation-v3"
+            ? genericInitialRotation
+            : undefined;
     const version =
       genericInitialEdit !== undefined
         ? 3
@@ -1531,18 +1537,28 @@ export class FastManimSnapshotRunner {
             request.sourcePath,
             preflight.baseBinding.name,
           )
-        : deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
-            sourceText,
-            request.sceneName,
-            request.sourcePath,
-            preflight.baseBinding.name,
-          );
+        : preflight.kind === "fast-manim-generic-initial-resize-v3"
+          ? deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+              sourceText,
+              request.sceneName,
+              request.sourcePath,
+              preflight.baseBinding.name,
+            )
+          : deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+              sourceText,
+              request.sceneName,
+              request.sourcePath,
+              preflight.baseBinding.name,
+            );
     const planMatchesPreflight =
       "expectedWorldCenter" in plan
         ? preflight.kind === "fast-manim-generic-initial-move-v3" &&
           isDeepStrictEqual(plan.expectedWorldCenter, preflight.expectedWorldCenter)
-        : preflight.kind === "fast-manim-generic-initial-resize-v3" &&
-          plan.expectedScaleFactor === preflight.expectedScaleFactor;
+        : "expectedScaleFactor" in plan
+          ? preflight.kind === "fast-manim-generic-initial-resize-v3" &&
+            plan.expectedScaleFactor === preflight.expectedScaleFactor
+          : preflight.kind === "fast-manim-generic-initial-rotation-v3" &&
+            plan.expectedAngleRadians === preflight.expectedAngleRadians;
     if (
       before.hash !== preflight.baseSourceHash ||
       before.hash !== plan.baseSourceHash ||
@@ -1654,10 +1670,15 @@ export class FastManimSnapshotRunner {
             ...candidatePair,
             expectedWorldCenter: preflight.expectedWorldCenter,
           })
-        : verifyFastManimRuntimeTraceInitialResizeCandidateV3({
-            ...candidatePair,
-            expectedScaleFactor: preflight.expectedScaleFactor,
-          });
+        : preflight.kind === "fast-manim-generic-initial-resize-v3"
+          ? verifyFastManimRuntimeTraceInitialResizeCandidateV3({
+              ...candidatePair,
+              expectedScaleFactor: preflight.expectedScaleFactor,
+            })
+          : verifyFastManimRuntimeTraceInitialRotationCandidateV3({
+              ...candidatePair,
+              expectedAngleRadians: preflight.expectedAngleRadians,
+            });
 
     let after: FastManimSnapshotSourceReadV1;
     try {

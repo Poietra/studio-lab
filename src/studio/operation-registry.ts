@@ -73,6 +73,7 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     from: z.union([pointSchema, z.number()]).optional(),
     key: z.enum(["appearance", "position", "rotation", "scale"]),
     kind: z.literal("AnimateProperty"),
+    relativeDelta: z.number().optional(),
     relativeFactor: z.number().positive().optional(),
     to: z.union([pointSchema, z.number()]),
   }),
@@ -212,6 +213,14 @@ function previewOnlyExecution(
   };
 }
 
+function finiteNonNoopRotationDelta(value: unknown): value is number {
+  return (
+    typeof value === "number" &&
+    Number.isFinite(value) &&
+    Math.abs(Math.atan2(Math.sin(value), Math.cos(value))) > 1e-12
+  );
+}
+
 function createEntityExecution(
   operation: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>,
 ): OperationExecutionCapabilities {
@@ -241,6 +250,18 @@ function setPropertyExecution(
 function animatePropertyExecution(
   operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
+  if (
+    operation.key === "rotation" &&
+    operation.control === undefined &&
+    operation.relativeFactor === undefined &&
+    operation.interval.start === 0 &&
+    operation.interval.end === 0 &&
+    operation.from === 0 &&
+    finiteNonNoopRotationDelta(operation.relativeDelta) &&
+    operation.to === operation.relativeDelta
+  ) {
+    return SUPPORTED_EXECUTION;
+  }
   if (
     operation.key === "scale" &&
     typeof operation.from === "number" &&
@@ -629,6 +650,15 @@ function setPropertyIssues(
       severity: "error" as const,
     });
   }
+  if (operation.key === "rotation" && (typeof operation.value !== "number" || !Number.isFinite(operation.value))) {
+    issues.push({
+      code: "schema-invalid" as const,
+      field: "value",
+      message: "Rotation edits require a finite angle in radians.",
+      operationId: operation.id,
+      severity: "error" as const,
+    });
+  }
   if (operation.key === "content") {
     const entity = scene.objectGraph.entities[operation.entityId];
     const type = entity?.type === "Text" || entity?.type === "MathTex" ? entity.type : null;
@@ -758,10 +788,22 @@ export const OPERATION_REGISTRY = {
         typeof sampledFrom === "number" &&
         Number.isFinite(sampledFrom) &&
         sampledFrom > 0;
+      const relativeRotation =
+        operation.key === "rotation" &&
+        operation.relativeDelta !== undefined &&
+        (typeof sampledFrom === "number" || sampledFrom === undefined);
+      const relativeFrom = typeof sampledFrom === "number" ? sampledFrom : 0;
       const from = relativeScale
         ? sampledFrom
-        : (operation.from ?? (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined));
-      const value = relativeScale ? sampledFrom * operation.relativeFactor! : operation.to;
+        : relativeRotation
+          ? relativeFrom
+          : (operation.from ??
+            (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined));
+      const value = relativeScale
+        ? sampledFrom * operation.relativeFactor!
+        : relativeRotation
+          ? relativeFrom + operation.relativeDelta!
+          : operation.to;
       appendSample(draft, operation.entityId, operation.key, {
         control: operation.control,
         easing: operation.easing,
@@ -770,7 +812,7 @@ export const OPERATION_REGISTRY = {
         kind: "animated",
         operationId: operation.id,
         provenanceId: `${operation.id}/provenance`,
-        ...(relativeScale ? { relative: true } : {}),
+        ...(relativeScale || relativeRotation ? { relative: true } : {}),
         value,
       });
     },
@@ -780,6 +822,28 @@ export const OPERATION_REGISTRY = {
     targetRequirement: "entity",
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
+      if (operation.relativeDelta !== undefined) {
+        if (
+          operation.key !== "rotation" ||
+          operation.control !== undefined ||
+          operation.relativeFactor !== undefined ||
+          typeof operation.from !== "number" ||
+          typeof operation.to !== "number" ||
+          !finiteNonNoopRotationDelta(operation.relativeDelta) ||
+          !Number.isFinite(operation.from) ||
+          !Number.isFinite(operation.to) ||
+          Math.abs(operation.to - operation.from - operation.relativeDelta) >= 0.000001
+        ) {
+          issues.push({
+            code: "schema-invalid",
+            field: "relativeDelta",
+            message: "A relative rotation requires one finite non-zero delta matching its captured from/to pair.",
+            operationId: operation.id,
+            severity: "error",
+          });
+        }
+        return issues;
+      }
       if (operation.relativeFactor === undefined) return issues;
       if (
         operation.key !== "scale" ||

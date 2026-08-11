@@ -95,9 +95,18 @@ export type GenericRuntimeTraceInitialResizePreflightV3 = Readonly<{
   kind: "fast-manim-generic-initial-resize-v3";
 }>;
 
+export type GenericRuntimeTraceInitialRotationPreflightV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSourceHash: string;
+  entityId: string;
+  expectedAngleRadians: number;
+  kind: "fast-manim-generic-initial-rotation-v3";
+}>;
+
 export type GenericRuntimeTraceInitialEditPreflightV3 =
   | GenericRuntimeTraceInitialMovePreflightV3
-  | GenericRuntimeTraceInitialResizePreflightV3;
+  | GenericRuntimeTraceInitialResizePreflightV3
+  | GenericRuntimeTraceInitialRotationPreflightV3;
 
 type PinnedCandidatePreflight = Readonly<{
   baseSourceHash: typeof WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9;
@@ -958,6 +967,12 @@ function assertLoweringSupported(operation: CanonicalEditOperation, options: Pro
     }
   }
   if (operation.kind === "SetProperty" && operation.key === "content" && contentTarget(operation.value)) return;
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Relative rotation requires the bounded generic Runtime Trace V3 source lowerer.",
+    );
+  }
   const execution = operationExecutionCapabilities(operation);
   if (execution.lowering === "supported") return;
   throw new ProgramLoweringError(
@@ -2019,6 +2034,14 @@ export type GenericRuntimeTraceInitialResizeSourceEditPlanV3 = Readonly<{
   expectedScaleFactor: number;
 }>;
 
+export type GenericRuntimeTraceInitialRotationSourceEditPlanV3 = Readonly<{
+  baseBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  baseSource: string;
+  baseSourceHash: string;
+  candidateBinding: GenericRuntimeTraceSourceBindingEvidenceV3;
+  expectedAngleRadians: number;
+}>;
+
 function genericRuntimeTraceInitialMoveV3LoweringError(message: string): never {
   throw new ProgramLoweringError("operation-unsupported", `Generic Runtime Trace V3 initial edit: ${message}`);
 }
@@ -2123,6 +2146,54 @@ function parseCanonicalGenericInitialResizeV3(statement: string, bindingName: st
   return factor;
 }
 
+function formatGenericInitialRotationAngleV3(angleRadians: number) {
+  return Number(angleRadians.toPrecision(12)).toString();
+}
+
+function genericInitialRotationIsNoopV3(angleRadians: number) {
+  return Math.abs(Math.atan2(Math.sin(angleRadians), Math.cos(angleRadians))) <= 1e-12;
+}
+
+function parseCanonicalGenericInitialRotationV3(statement: string, bindingName: string) {
+  const match = statement.match(new RegExp(`^${escapeRegularExpression(bindingName)}\\.rotate\\(([^()]+)\\)$`, "u"));
+  if (!match) return null;
+  const angleRadians = Number(match[1]);
+  if (
+    !Number.isFinite(angleRadians) ||
+    genericInitialRotationIsNoopV3(angleRadians) ||
+    Math.abs(angleRadians) > MAX_COORDINATE ||
+    formatGenericInitialRotationAngleV3(angleRadians) !== match[1]
+  ) {
+    return null;
+  }
+  return angleRadians;
+}
+
+function contiguousCanonicalGenericInitialEditStatementsV3(
+  analysis: StudioSourceAnalysisV1,
+  assignmentIndex: number,
+  bindingName: string,
+) {
+  const statements: StudioSourceAnalysisV1["scene"]["statements"][number][] = [];
+  let previous = analysis.scene.statements[assignmentIndex];
+  for (let index = assignmentIndex + 1; previous; index += 1) {
+    const statement = analysis.scene.statements[index];
+    if (
+      !statement ||
+      statement.line !== previous.span.endLine + 1 ||
+      statement.indentation !== previous.indentation ||
+      (parseCanonicalGenericInitialMoveV3(statement.text, bindingName) === null &&
+        parseCanonicalGenericInitialResizeV3(statement.text, bindingName) === null &&
+        parseCanonicalGenericInitialRotationV3(statement.text, bindingName) === null)
+    ) {
+      break;
+    }
+    statements.push(statement);
+    previous = statement;
+  }
+  return statements;
+}
+
 function selectedGenericRuntimeTraceSourceBindingV3(
   bindings: readonly ProjectedGenericRuntimeTraceSourceBindingV3[],
   bindingName: string,
@@ -2141,8 +2212,8 @@ function selectedGenericRuntimeTraceSourceBindingV3(
 /**
  * Re-derives one generic V3 source edit from candidate bytes and the edited
  * binding name. The candidate may project several top-level bindings; exactly
- * one canonical edit statement must sit immediately after the named binding's
- * assignment, and removing it must recover equally exact base evidence.
+ * one canonical edit statement must be recoverable from the named binding's
+ * direct initial-edit prefix, and removing it must recover exact base evidence.
  */
 function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   candidateSource: string,
@@ -2150,7 +2221,7 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
   sourcePath: string,
   bindingName: string,
   edit: Readonly<{
-    label: "move" | "resize";
+    label: "move" | "resize" | "rotation";
     malformed: string;
     parse: (statement: string, bindingName: string) => Value | null;
   }>,
@@ -2162,16 +2233,30 @@ function deriveGenericRuntimeTraceInitialEditSourceEditPlanV3<Value>(
     ({ id }) => id === candidateBinding.binding.statementId,
   );
   const assignment = candidateAnalysis.scene.statements[assignmentIndex];
-  const statement = candidateAnalysis.scene.statements[assignmentIndex + 1];
+  const directStatement = candidateAnalysis.scene.statements[assignmentIndex + 1];
+  const statement =
+    edit.label === "rotation"
+      ? (contiguousCanonicalGenericInitialEditStatementsV3(
+          candidateAnalysis,
+          assignmentIndex,
+          candidateBinding.evidence.name,
+        ).reduce<(typeof candidateAnalysis.scene.statements)[number] | undefined>(
+          (selected, candidate) =>
+            parseCanonicalGenericInitialRotationV3(candidate.text, candidateBinding.evidence.name) === null
+              ? selected
+              : candidate,
+          undefined,
+        ) ?? directStatement)
+      : directStatement;
   if (
     assignmentIndex < 0 ||
     !assignment ||
     !statement ||
-    statement.line !== assignment.span.endLine + 1 ||
-    statement.indentation !== assignment.indentation
+    (edit.label !== "rotation" &&
+      (statement.line !== assignment.span.endLine + 1 || statement.indentation !== assignment.indentation))
   ) {
     genericRuntimeTraceInitialMoveV3LoweringError(
-      `candidate ${edit.label} must be the direct statement immediately after the projected assignment.`,
+      `candidate ${edit.label} must be one canonical statement in the direct initial-edit prefix.`,
     );
   }
   const value = edit.parse(statement.text, candidateBinding.evidence.name);
@@ -2278,9 +2363,36 @@ export function deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
   };
 }
 
+export function deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+  candidateSource: string,
+  sceneName: string,
+  sourcePath: string,
+  bindingName: string,
+): GenericRuntimeTraceInitialRotationSourceEditPlanV3 {
+  const derived = deriveGenericRuntimeTraceInitialEditSourceEditPlanV3(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "rotation",
+      malformed: "one canonical finite non-noop bounded rotate call",
+      parse: parseCanonicalGenericInitialRotationV3,
+    },
+  );
+  return {
+    baseBinding: derived.baseBinding,
+    baseSource: derived.baseSource,
+    baseSourceHash: derived.baseSourceHash,
+    candidateBinding: derived.candidateBinding,
+    expectedAngleRadians: derived.value,
+  };
+}
+
 type GenericRuntimeTraceInitialEditOperationV3 =
   | Readonly<{ entityId: string; kind: "move"; value: Readonly<{ x: number; y: number }> }>
-  | Readonly<{ entityId: string; factor: number; kind: "resize" }>;
+  | Readonly<{ entityId: string; factor: number; kind: "resize" }>
+  | Readonly<{ angleRadians: number; entityId: string; kind: "rotation" }>;
 
 function genericRuntimeTraceInitialEditOperationV3(
   request: ProgramRenderRequest,
@@ -2290,7 +2402,7 @@ function genericRuntimeTraceInitialEditOperationV3(
   if (!entries.some(({ sourceAnchor }) => sourceAnchor === 0)) return null;
   const fail: () => never = () =>
     genericRuntimeTraceInitialMoveV3LoweringError(
-      "only one exact direct-manipulation position move or uniform resize Program at source time zero is accepted.",
+      "only one exact direct-manipulation position move, uniform resize, or rotation Program at source time zero is accepted.",
     );
   const program = programs[0];
   const entry = entries[0];
@@ -2335,6 +2447,21 @@ function genericRuntimeTraceInitialEditOperationV3(
   }
   if (
     operation.kind === "AnimateProperty" &&
+    operation.key === "rotation" &&
+    operation.control === undefined &&
+    typeof operation.from === "number" &&
+    typeof operation.to === "number" &&
+    typeof operation.relativeDelta === "number" &&
+    Number.isFinite(operation.from) &&
+    Number.isFinite(operation.to) &&
+    Number.isFinite(operation.relativeDelta) &&
+    operation.from === 0 &&
+    operation.to === operation.relativeDelta
+  ) {
+    return { angleRadians: operation.relativeDelta, entityId: operation.entityId, kind: "rotation" };
+  }
+  if (
+    operation.kind === "AnimateProperty" &&
     operation.key === "scale" &&
     operation.control === undefined &&
     typeof operation.from === "number" &&
@@ -2354,7 +2481,7 @@ function genericRuntimeTraceInitialEditOperationV3(
 }
 
 /**
- * Promotes the generic Runtime Trace V3 initial move and uniform resize.
+ * Promotes the generic Runtime Trace V3 initial move, uniform resize, and rotation.
  * Browser evidence is correlation only: current source bytes and canonical
  * SourceAnalysis independently choose the one rewritable binding occurrence.
  */
@@ -2429,9 +2556,9 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
     );
   }
 
-  const emitLoweredSource = (insertedCode: string) => {
+  const emitLoweredSource = (insertedCode: string, boundary = insertionBoundary) => {
     try {
-      return insertAtSourceBoundaryV1(source, analysis, insertionBoundary, [insertedCode]);
+      return insertAtSourceBoundaryV1(source, analysis, boundary, [insertedCode]);
     } catch {
       genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis rejected the canonical assignment insertion.");
     }
@@ -2478,6 +2605,66 @@ export function lowerGenericRuntimeTraceInitialEditSourceV3(
         entityId: operation.entityId,
         expectedWorldCenter: derived.expectedWorldCenter,
         kind: "fast-manim-generic-initial-move-v3",
+      },
+      source: loweredSource,
+    };
+  }
+
+  if (operation.kind === "rotation") {
+    const formattedAngleRadians = formatGenericInitialRotationAngleV3(operation.angleRadians);
+    const expectedAngleRadians = Number(formattedAngleRadians);
+    if (
+      !Number.isFinite(expectedAngleRadians) ||
+      genericInitialRotationIsNoopV3(expectedAngleRadians) ||
+      Math.abs(expectedAngleRadians) > MAX_COORDINATE
+    ) {
+      genericRuntimeTraceInitialMoveV3LoweringError(
+        "rotation must lower to one finite non-noop bounded angle in radians.",
+      );
+    }
+    const assignmentIndex = analysis.scene.statements.findIndex(({ id }) => id === assignment.id);
+    const directInitialEdits = contiguousCanonicalGenericInitialEditStatementsV3(
+      analysis,
+      assignmentIndex,
+      projected.evidence.name,
+    );
+    const priorRotation = directInitialEdits.reduce<(typeof directInitialEdits)[number] | undefined>(
+      (selected, statement) =>
+        parseCanonicalGenericInitialRotationV3(statement.text, projected.evidence.name) === null ? selected : statement,
+      undefined,
+    );
+    const rotationBoundary = priorRotation?.insertionAfter ?? insertionBoundary;
+    if (!rotationBoundary || rotationBoundary.indentation !== assignment.indentation) {
+      genericRuntimeTraceInitialMoveV3LoweringError("SourceAnalysis could not append the relative rotation.");
+    }
+    const insertedCode = `${rotationBoundary.indentation}${projected.evidence.name}.rotate(${formattedAngleRadians})`;
+    const loweredSource = emitLoweredSource(insertedCode, rotationBoundary);
+    const derived = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+      loweredSource,
+      request.sceneName,
+      request.sourcePath,
+      projected.evidence.name,
+    );
+    if (
+      derived.baseSource !== source ||
+      derived.baseSourceHash !== request.sourceHash ||
+      JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
+      derived.expectedAngleRadians !== expectedAngleRadians
+    ) {
+      genericRuntimeTraceInitialMoveV3LoweringError(
+        "the emitted source does not re-derive the exact base binding and requested rotation angle.",
+      );
+    }
+    return {
+      anchorLine: rotationBoundary.line,
+      anchorLines: [rotationBoundary.line],
+      insertedCode,
+      preflight: {
+        baseBinding: derived.baseBinding,
+        baseSourceHash: derived.baseSourceHash,
+        entityId: operation.entityId,
+        expectedAngleRadians: derived.expectedAngleRadians,
+        kind: "fast-manim-generic-initial-rotation-v3",
       },
       source: loweredSource,
     };

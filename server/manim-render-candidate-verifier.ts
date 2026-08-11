@@ -227,7 +227,8 @@ export class ManimRenderCandidateVerifierV1 {
       preflight.kind === "fast-manim-updaters-terminal-v1" ||
       preflight.kind === "fast-manim-opening-terminal-v2" ||
       preflight.kind === "fast-manim-generic-initial-move-v3" ||
-      preflight.kind === "fast-manim-generic-initial-resize-v3"
+      preflight.kind === "fast-manim-generic-initial-resize-v3" ||
+      preflight.kind === "fast-manim-generic-initial-rotation-v3"
     ) {
       await this.#verifyRuntimeTraceCandidate(lowered, request, signal);
       return;
@@ -367,42 +368,49 @@ export class ManimRenderCandidateVerifierV1 {
     const opening = preflight?.kind === "fast-manim-opening-terminal-v2";
     const genericMove = preflight?.kind === "fast-manim-generic-initial-move-v3";
     const genericResize = preflight?.kind === "fast-manim-generic-initial-resize-v3";
+    const genericRotation = preflight?.kind === "fast-manim-generic-initial-rotation-v3";
     const reject = (failure: string): never => {
       this.#logger.warn(
-        genericResize
-          ? "render.generic_initial_resize_runtime_trace_candidate_preflight_rejected"
-          : genericMove
-            ? "render.generic_initial_move_runtime_trace_candidate_preflight_rejected"
-            : opening
-              ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
-              : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
+        genericRotation
+          ? "render.generic_initial_rotation_runtime_trace_candidate_preflight_rejected"
+          : genericResize
+            ? "render.generic_initial_resize_runtime_trace_candidate_preflight_rejected"
+            : genericMove
+              ? "render.generic_initial_move_runtime_trace_candidate_preflight_rejected"
+              : opening
+                ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
+                : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
         {
           failure,
           sourcePath: request.sourcePath,
         },
       );
       throw new HttpError(
-        genericResize
-          ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace resize. Reimport and try again."
-          : genericMove
-            ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
-            : opening
-              ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
-              : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        genericRotation
+          ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace rotation. Reimport and try again."
+          : genericResize
+            ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace resize. Reimport and try again."
+            : genericMove
+              ? "The edited generic Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
+              : opening
+                ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
+                : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
         409,
       );
     };
     const candidatePreflight = preflight ?? reject("runtime-trace-authority-unavailable");
     const genericPreflight: GenericRuntimeTraceInitialEditPreflightV3 | null =
       candidatePreflight.kind === "fast-manim-generic-initial-move-v3" ||
-      candidatePreflight.kind === "fast-manim-generic-initial-resize-v3"
+      candidatePreflight.kind === "fast-manim-generic-initial-resize-v3" ||
+      candidatePreflight.kind === "fast-manim-generic-initial-rotation-v3"
         ? (candidatePreflight as GenericRuntimeTraceInitialEditPreflightV3)
         : null;
     if (
       (candidatePreflight.kind !== "fast-manim-updaters-terminal-v1" &&
         candidatePreflight.kind !== "fast-manim-opening-terminal-v2" &&
         candidatePreflight.kind !== "fast-manim-generic-initial-move-v3" &&
-        candidatePreflight.kind !== "fast-manim-generic-initial-resize-v3") ||
+        candidatePreflight.kind !== "fast-manim-generic-initial-resize-v3" &&
+        candidatePreflight.kind !== "fast-manim-generic-initial-rotation-v3") ||
       request.sourceHash !== candidatePreflight.baseSourceHash
     ) {
       reject("runtime-trace-authority-unavailable");
@@ -422,9 +430,11 @@ export class ManimRenderCandidateVerifierV1 {
         (genericPreflight.kind === "fast-manim-generic-initial-move-v3"
           ? !Number.isFinite(genericPreflight.expectedWorldCenter.x) ||
             !Number.isFinite(genericPreflight.expectedWorldCenter.y)
-          : !Number.isFinite(genericPreflight.expectedScaleFactor) ||
-            genericPreflight.expectedScaleFactor <= 0 ||
-            genericPreflight.expectedScaleFactor === 1))
+          : genericPreflight.kind === "fast-manim-generic-initial-resize-v3"
+            ? !Number.isFinite(genericPreflight.expectedScaleFactor) ||
+              genericPreflight.expectedScaleFactor <= 0 ||
+              genericPreflight.expectedScaleFactor === 1
+            : !Number.isFinite(genericPreflight.expectedAngleRadians) || genericPreflight.expectedAngleRadians === 0))
     ) {
       reject("runtime-trace-authority-unavailable");
     }
@@ -434,7 +444,9 @@ export class ManimRenderCandidateVerifierV1 {
       ? {
           ...(genericPreflight.kind === "fast-manim-generic-initial-move-v3"
             ? { genericInitialMove: genericPreflight }
-            : { genericInitialResize: genericPreflight }),
+            : genericPreflight.kind === "fast-manim-generic-initial-resize-v3"
+              ? { genericInitialResize: genericPreflight }
+              : { genericInitialRotation: genericPreflight }),
           projectId: request.projectId,
           requestId: renderRequestId(request),
           sceneName: request.sceneName,

@@ -60,6 +60,30 @@ function scaledCoordinateMatches(actual: number, expected: number, factor: numbe
   return Math.abs(actual - expected) <= Math.max(decimalRoundoff, binaryRoundoff);
 }
 
+function rotatedCoordinateMatches(actual: number, expected: number, coordinateScale: number) {
+  const decimalRoundoff = 2e-12 * Math.max(1, coordinateScale);
+  const binaryRoundoff = Number.EPSILON * 32 * Math.max(1, Math.abs(actual), Math.abs(expected));
+  return Math.abs(actual - expected) <= Math.max(decimalRoundoff, binaryRoundoff);
+}
+
+function rotatePoint(point: Readonly<{ x: number; y: number }>, angleRadians: number) {
+  const cosine = Math.cos(angleRadians);
+  const sine = Math.sin(angleRadians);
+  return {
+    x: cosine * point.x - sine * point.y,
+    y: sine * point.x + cosine * point.y,
+  } as const;
+}
+
+function rotatePointAbout(
+  point: Readonly<{ x: number; y: number }>,
+  pivot: Readonly<{ x: number; y: number }>,
+  angleRadians: number,
+) {
+  const rotated = rotatePoint({ x: point.x - pivot.x, y: point.y - pivot.y }, angleRadians);
+  return { x: pivot.x + rotated.x, y: pivot.y + rotated.y } as const;
+}
+
 function bindingWithoutId(binding: FastManimRuntimeTraceSourceBindingV3) {
   const { id: _id, ...structural } = binding;
   return structural;
@@ -420,12 +444,65 @@ function scaledPathMatches(
   });
 }
 
-function pathResourcesById(trace: FastManimRuntimeTraceV3, side: "base" | "candidate") {
+function pathResourcesById(
+  trace: FastManimRuntimeTraceV3,
+  side: "base" | "candidate",
+  edit: "resize" | "rotation" = "resize",
+) {
   const paths = new Map(trace.resources.paths.map((resource) => [resource.id, resource] as const));
   if (paths.size !== trace.resources.paths.length) {
-    reject("candidate-resource", `A generic initial resize ${side} repeats a path resource identity.`);
+    reject("candidate-resource", `A generic initial ${edit} ${side} repeats a path resource identity.`);
   }
   return paths;
+}
+
+function transformPoint(
+  point: Readonly<{ x: number; y: number }>,
+  transform: FastManimRuntimeTraceV3["frames"][number]["states"][number]["transform"],
+) {
+  return {
+    x: transform.a * point.x + transform.b * point.y + transform.tx,
+    y: transform.c * point.x + transform.d * point.y + transform.ty,
+  } as const;
+}
+
+function rotatedWorldPathMatches(
+  basePath: FastManimRuntimeTracePathResourceV3["path"],
+  candidatePath: FastManimRuntimeTracePathResourceV3["path"],
+  baseTransform: FastManimRuntimeTraceV3["frames"][number]["states"][number]["transform"],
+  candidateTransform: FastManimRuntimeTraceV3["frames"][number]["states"][number]["transform"],
+  pivot: Readonly<{ x: number; y: number }>,
+  angleRadians: number,
+) {
+  if (basePath.subpaths.length !== candidatePath.subpaths.length) return false;
+  const pointMatches = (
+    basePoint: Readonly<{ x: number; y: number }>,
+    candidatePoint: Readonly<{ x: number; y: number }>,
+  ) => {
+    const expected = rotatePointAbout(transformPoint(basePoint, baseTransform), pivot, angleRadians);
+    const actual = transformPoint(candidatePoint, candidateTransform);
+    const coordinateScale = Math.max(Math.abs(expected.x), Math.abs(expected.y), Math.abs(pivot.x), Math.abs(pivot.y));
+    return (
+      rotatedCoordinateMatches(actual.x, expected.x, coordinateScale) &&
+      rotatedCoordinateMatches(actual.y, expected.y, coordinateScale)
+    );
+  };
+  return basePath.subpaths.every((baseSubpath, subpathIndex) => {
+    const candidateSubpath = candidatePath.subpaths[subpathIndex]!;
+    if (
+      baseSubpath.closed !== candidateSubpath.closed ||
+      baseSubpath.segments.length !== candidateSubpath.segments.length ||
+      !pointMatches(baseSubpath.start, candidateSubpath.start)
+    ) {
+      return false;
+    }
+    return baseSubpath.segments.every((baseSegment, segmentIndex) => {
+      const candidateSegment = candidateSubpath.segments[segmentIndex]!;
+      return (["control1", "control2", "end"] as const).every((pointName) =>
+        pointMatches(baseSegment[pointName], candidateSegment[pointName]),
+      );
+    });
+  });
 }
 
 /**
@@ -612,6 +689,162 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   }
   if ([...candidatePathIdByBasePathId].every(([basePathId, candidatePathId]) => basePathId === candidatePathId)) {
     reject("candidate-noop", "A generic initial resize did not scale any presented path.");
+  }
+  return candidate;
+}
+
+/**
+ * Proves one generic initial planar rotation in world space. Runtime Trace V3
+ * localizes each path around its axis-aligned bounds, whose center can move
+ * when asymmetric geometry rotates, so path bytes and anchors cannot be
+ * checked independently.
+ */
+export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
+  input: Readonly<{
+    base: FastManimRuntimeTraceV3;
+    baseRequest: FastManimRuntimeTraceProducerRequestV3;
+    binding: FastManimRuntimeTraceSourceBindingV3;
+    candidate: FastManimRuntimeTraceV3;
+    candidateRequest: FastManimRuntimeTraceProducerRequestV3;
+    expectedAngleRadians: number;
+  }>,
+) {
+  const angleRadians = fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedAngleRadians);
+  const normalizedAngle = Math.atan2(Math.sin(angleRadians), Math.cos(angleRadians));
+  if (coordinateMatches(normalizedAngle, 0)) {
+    reject("candidate-noop", "A generic initial rotation requires one finite non-zero planar angle.");
+  }
+  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  if (!same(base.resources.appearances, candidate.resources.appearances)) {
+    reject("candidate-resource", "A generic initial rotation changed paint appearances.");
+  }
+
+  const baseInitial = baseMapping.endpoints.initial;
+  if (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0) {
+    reject("candidate-noop", "A generic initial rotation requires one frame-zero base endpoint.");
+  }
+  const pivot = baseMapping.endpoints.terminal.center;
+  for (const endpointName of ["initial", "terminal"] as const) {
+    const baseEndpoint = baseMapping.endpoints[endpointName];
+    const candidateEndpoint = candidateMapping.endpoints[endpointName];
+    if (
+      baseEndpoint.frameIndex !== candidateEndpoint.frameIndex ||
+      baseEndpoint.sampleTime !== candidateEndpoint.sampleTime ||
+      baseEndpoint.dimensions.height <= 0 ||
+      baseEndpoint.dimensions.width <= 0 ||
+      candidateEndpoint.dimensions.height <= 0 ||
+      candidateEndpoint.dimensions.width <= 0
+    ) {
+      reject("candidate-endpoint", `The candidate ${endpointName} endpoint changed its sampled frame structure.`);
+    }
+  }
+
+  const drawById = new Map(base.draws.map((draw) => [draw.id, draw] as const));
+  const basePaths = pathResourcesById(base, "base", "rotation");
+  const candidatePaths = pathResourcesById(candidate, "candidate", "rotation");
+  const candidatePathIdByBasePathId = new Map<string, string>();
+  const basePathIdByCandidatePathId = new Map<string, string>();
+  const referencedBasePathIds = new Set<string>();
+  const referencedCandidatePathIds = new Set<string>();
+  if (base.frames.length !== candidate.frames.length) {
+    reject("candidate-semantic", "A generic initial rotation changed its frame count.");
+  }
+  base.frames.forEach((baseFrame, frameIndex) => {
+    const candidateFrame = candidate.frames[frameIndex];
+    if (
+      !candidateFrame ||
+      baseFrame.frameIndex !== candidateFrame.frameIndex ||
+      baseFrame.sampleTime !== candidateFrame.sampleTime ||
+      baseFrame.states.length !== candidateFrame.states.length
+    ) {
+      reject("candidate-semantic", `A generic initial rotation changed frame ${frameIndex} structure.`);
+    }
+    baseFrame.states.forEach((baseState, stateIndex) => {
+      const candidateState = candidateFrame.states[stateIndex];
+      const draw = drawById.get(baseState.drawId);
+      if (!candidateState || !draw) {
+        reject(
+          "candidate-semantic",
+          `A generic initial rotation changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      referencedBasePathIds.add(baseState.pathId);
+      referencedCandidatePathIds.add(candidateState.pathId);
+      if (draw.rootId !== baseMapping.rootId) {
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic initial rotation disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        return;
+      }
+
+      if (
+        baseState.appearanceId !== candidateState.appearanceId ||
+        baseState.drawId !== candidateState.drawId ||
+        baseState.opacity !== candidateState.opacity ||
+        baseState.paintOrder !== candidateState.paintOrder ||
+        baseState.sourceZIndex !== candidateState.sourceZIndex ||
+        !same(baseState.pathTrim, candidateState.pathTrim) ||
+        baseState.transform.a !== candidateState.transform.a ||
+        baseState.transform.b !== candidateState.transform.b ||
+        baseState.transform.c !== candidateState.transform.c ||
+        baseState.transform.d !== candidateState.transform.d
+      ) {
+        reject(
+          "candidate-semantic",
+          `A generic initial rotation changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      const mappedCandidatePathId = candidatePathIdByBasePathId.get(baseState.pathId);
+      const mappedBasePathId = basePathIdByCandidatePathId.get(candidateState.pathId);
+      if (
+        (mappedCandidatePathId !== undefined && mappedCandidatePathId !== candidateState.pathId) ||
+        (mappedBasePathId !== undefined && mappedBasePathId !== baseState.pathId)
+      ) {
+        reject(
+          "candidate-semantic",
+          `A generic initial rotation broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+      candidatePathIdByBasePathId.set(baseState.pathId, candidateState.pathId);
+      basePathIdByCandidatePathId.set(candidateState.pathId, baseState.pathId);
+      const basePath = basePaths.get(baseState.pathId);
+      const candidatePath = candidatePaths.get(candidateState.pathId);
+      if (
+        !basePath ||
+        !candidatePath ||
+        !rotatedWorldPathMatches(
+          basePath.path,
+          candidatePath.path,
+          baseState.transform,
+          candidateState.transform,
+          pivot,
+          angleRadians,
+        )
+      ) {
+        reject(
+          "candidate-semantic",
+          `A generic initial rotation did not exactly rotate the selected world geometry in frame ${frameIndex}, state ${stateIndex}.`,
+        );
+      }
+    });
+  });
+
+  if (
+    basePaths.size !== referencedBasePathIds.size ||
+    candidatePaths.size !== referencedCandidatePathIds.size ||
+    ![...basePaths.keys()].every((pathId) => referencedBasePathIds.has(pathId)) ||
+    ![...candidatePaths.keys()].every((pathId) => referencedCandidatePathIds.has(pathId))
+  ) {
+    reject("candidate-resource", "A generic initial rotation carries path resources outside its presented states.");
+  }
+  for (const [pathId, basePath] of basePaths) {
+    const candidatePath = candidatePaths.get(pathId);
+    if (candidatePath && !same(basePath.path, candidatePath.path)) {
+      reject("candidate-resource", "A generic initial rotation changed a retained path resource in place.");
+    }
   }
   return candidate;
 }

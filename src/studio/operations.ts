@@ -67,6 +67,8 @@ export type AnimatePropertyOperation = OperationBase &
     from?: Point | number;
     key: "appearance" | "position" | "rotation" | "scale";
     kind: "AnimateProperty";
+    /** Adds a planar angle to the source-backed rotation at execution time. */
+    relativeDelta?: number;
     /**
      * Preserves the user's multiplicative intent when a scale edit is rebased
      * around Programs inserted later at an earlier source anchor. `from` and

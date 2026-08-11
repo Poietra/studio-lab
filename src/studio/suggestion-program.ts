@@ -1,33 +1,33 @@
 import type {
   CreateCameraFocusSuggestion,
-  DeleteObjectsSuggestion,
   CreateEquationSuggestion,
   CreateExplainedEquationSuggestion,
   CreateExplanationSuggestion,
   CreateSceneTransitionSuggestion,
   CreateTextTransformSuggestion,
   CreateTransformSuggestion,
+  DeleteObjectsSuggestion,
   EditProgramStep,
   EditSuggestionOperation,
   ScaleObjectsSuggestion,
   SuggestionTimeAnchor,
 } from "../ai/edit-suggestions";
-import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
 import {
   exactEntityScaleAt,
   hasSafeMagicEditIdentity,
   MAX_ENTITY_SCALE,
   MIN_ENTITY_SCALE,
 } from "./magic-edit-capabilities";
+import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
 import {
-  EDIT_OPERATION_VERSION,
-  operationId,
-  provisionalEntityId,
   type CanonicalEditOperation,
   type CanonicalEditProgram,
+  EDIT_OPERATION_VERSION,
   type OperationOrigin,
+  operationId,
+  provisionalEntityId,
 } from "./operations";
-import { validateAndScheduleProgram, type ProgramValidationResult } from "./program-validation";
+import { type ProgramValidationResult, validateAndScheduleProgram } from "./program-validation";
 import { resolveTimeAnchorOnce } from "./time";
 
 type CanonicalizationContext = Readonly<{
@@ -752,6 +752,60 @@ export function createDirectManipulationPositionProgram(
       provenance: provenance("direct-manipulation", ["gesture constraint"]),
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: operations.map((operation) => operation.id) },
+      transactionId: input.transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    input.scene,
+  );
+}
+
+export function createDirectManipulationRotationProgram(
+  input: Readonly<{
+    angleRadians: number;
+    capturedPlayhead: number;
+    entityId: string;
+    scene: RuntimeSceneState;
+    start: number;
+    transactionId: string;
+  }>,
+): ProgramValidationResult {
+  if (!Number.isFinite(input.angleRadians)) throw new Error("Object rotation must be a finite angle.");
+  const normalizedAngle = Math.atan2(Math.sin(input.angleRadians), Math.cos(input.angleRadians));
+  if (Math.abs(normalizedAngle) <= 1e-12) throw new Error("Object rotation must change the current angle.");
+  if (input.start !== 0 || input.capturedPlayhead !== 0) {
+    throw new Error("Object rotation is currently available only at source time zero.");
+  }
+  const sourceAnchor =
+    Math.abs(input.start - input.capturedPlayhead) < 0.001
+      ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
+      : { kind: "absolute" as const, seconds: input.start };
+  const resolution = resolveTimeAnchorOnce(sourceAnchor, {
+    capturedPlayhead: input.capturedPlayhead,
+    sceneDuration: input.scene.duration,
+  });
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    easing: "smooth",
+    entityId: input.entityId,
+    from: 0,
+    id: operationId(input.transactionId, "set-rotation"),
+    interval: { end: input.start, start: input.start },
+    key: "rotation",
+    kind: "AnimateProperty",
+    provenance: provenance("direct-manipulation", ["rotation control", "relative planar angle"]),
+    relativeDelta: input.angleRadians,
+    to: input.angleRadians,
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: provenance("direct-manipulation", ["center-pivot rotation constraint"]),
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: input.transactionId,
       version: EDIT_OPERATION_VERSION,
     },

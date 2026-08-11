@@ -429,7 +429,8 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     });
     if (
       lowered.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3" ||
-      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3"
+      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3" ||
+      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-rotation-v3"
     ) {
       if (!this.#candidateVerifier) {
         throw new HttpError("Edited Manim source candidate verification is unavailable.", 503);
