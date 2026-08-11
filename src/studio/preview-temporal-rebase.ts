@@ -1,3 +1,4 @@
+import { compileRotateSceneEntityV1, type RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
 import {
@@ -1513,37 +1514,20 @@ export function conjugateUniformScaleAboutCenterV1(
   };
 }
 
-/** Applies one world-space planar rotation while keeping the pivot fixed. */
-export function conjugateRotationAboutCenterV1(
-  transform: SceneEntityV1["transform"],
-  center: Point,
-  angleRadians: number,
-): SceneEntityV1["transform"] {
-  const cosine = Math.cos(angleRadians);
-  const sine = Math.sin(angleRadians);
-  return {
-    m11: cosine * transform.m11 - sine * transform.m21,
-    m12: cosine * transform.m12 - sine * transform.m22,
-    m21: sine * transform.m11 + cosine * transform.m21,
-    m22: sine * transform.m12 + cosine * transform.m22,
-    tx: center.x + cosine * (transform.tx - center.x) - sine * (transform.ty - center.y),
-    ty: center.y + sine * (transform.tx - center.x) + cosine * (transform.ty - center.y),
-  };
-}
-
 /**
  * Reprojects one authorized t=0 transform or absolute paint opacity onto the
  * verified generic V3 hierarchy. Transform edits stay on the root group;
  * opacity edits preserve every descendant paint style except color alpha.
  */
-export function compileStudioPreviewGenericInitialEditV1(
+export async function compileStudioPreviewGenericInitialEditV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
+    rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
   }>,
-): StudioPreviewTemporalRebaseResultV1 {
+): Promise<StudioPreviewTemporalRebaseResultV1> {
   const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(input.snapshot);
   if (candidates.length === 0) {
     return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-edit evidence is unavailable.");
@@ -1586,6 +1570,21 @@ export function compileStudioPreviewGenericInitialEditV1(
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
     return unsupported("conflicting-edit-unsupported", "The generic initial-edit provenance identity already exists.");
   }
+  const provenance = {
+    evidence: [
+      edit.kind === "move"
+        ? "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root"
+        : edit.kind === "opacity"
+          ? "Studio t=0 absolute opacity request projected onto static vector paints in one verified generic Runtime Trace V3 root"
+          : edit.kind === "resize"
+            ? "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root"
+            : "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
+      `source binding ${candidate.bindingId}`,
+      `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
+    ],
+    id: provenanceId,
+    origin: "studio-edit-program" as const,
+  };
   let entities: SceneEntityV1[];
   if (edit.kind === "opacity") {
     const paintEvidence = genericRuntimeTraceSubtreePaintEvidenceV1(scene, target.id);
@@ -1621,6 +1620,28 @@ export function compileStudioPreviewGenericInitialEditV1(
     }
   } else {
     const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
+    if (edit.kind === "rotation") {
+      try {
+        const rebased = await (input.rotationCompiler ?? compileRotateSceneEntityV1)(input.snapshot.snapshot, {
+          angleRadians: edit.angleRadians,
+          entityId: target.id,
+          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+          nextRevision: input.sourceRevisionHash,
+          pivot: baseCenter,
+          provenance,
+          schema: "poietra.rotate-scene-entity",
+          version: 1,
+        });
+        return { kind: "rebased", scene: rebased.scene };
+      } catch (error) {
+        return unsupported(
+          "geometry-edit-unsupported",
+          `Rust core rejected the generic Runtime Trace rotation: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        );
+      }
+    }
     let editedTransform: SceneEntityV1["transform"];
     if (edit.kind === "move") {
       const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
@@ -1633,12 +1654,10 @@ export function compileStudioPreviewGenericInitialEditV1(
         tx: target.transform.tx + translation.x,
         ty: target.transform.ty + translation.y,
       };
-    } else if (edit.kind === "resize") {
+    } else {
       // Conjugate the uniform scale about the verified initial center so the
       // root keeps its placement while every descendant scales with it.
       editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
-    } else {
-      editedTransform = conjugateRotationAboutCenterV1(target.transform, baseCenter, edit.angleRadians);
     }
     if (
       ![
@@ -1658,24 +1677,7 @@ export function compileStudioPreviewGenericInitialEditV1(
   const rebased: SceneIrV1 = {
     ...scene,
     entities,
-    provenance: [
-      ...scene.provenance,
-      {
-        evidence: [
-          edit.kind === "move"
-            ? "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root"
-            : edit.kind === "opacity"
-              ? "Studio t=0 absolute opacity request projected onto static vector paints in one verified generic Runtime Trace V3 root"
-              : edit.kind === "resize"
-                ? "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root"
-                : "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
-          `source binding ${candidate.bindingId}`,
-          `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
-        ],
-        id: provenanceId,
-        origin: "studio-edit-program",
-      },
-    ],
+    provenance: [...scene.provenance, provenance],
     source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: input.sourceRevisionHash },
   };
   const parsed = sceneIrV1Schema.safeParse(rebased);

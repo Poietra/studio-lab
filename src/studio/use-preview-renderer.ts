@@ -16,6 +16,7 @@ import {
   StudioPreviewRendererHost,
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
+import type { RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
   EntityDimensions,
@@ -1242,6 +1243,7 @@ export async function compileStudioPreviewSceneV1(
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
+    rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     workingRevision: string;
     workspaceKey: string;
@@ -1302,9 +1304,10 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = compileStudioPreviewGenericInitialEditV1({
+    const rebased = await compileStudioPreviewGenericInitialEditV1({
       frame: input.frame,
       proposedState: input.proposedState,
+      rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
     });

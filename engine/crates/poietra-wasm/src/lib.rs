@@ -4,6 +4,7 @@
 //! bounded playhead requests. The legacy sampling handle returns a `RenderPacket`;
 //! the canvas handle keeps that packet in Rust and returns presentation metadata.
 
+mod authoring;
 mod bounded_writer;
 #[cfg(target_arch = "wasm32")]
 mod canvas;
@@ -16,6 +17,8 @@ mod canvas_telemetry;
 mod protocol;
 
 use wasm_bindgen::prelude::*;
+
+pub use authoring::rotate_scene_entity_v1;
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
 pub use canvas_telemetry::{
