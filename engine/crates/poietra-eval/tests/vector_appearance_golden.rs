@@ -3,8 +3,8 @@ use std::path::PathBuf;
 
 use poietra_eval::{EngineSessionV1, SampleEngineSessionOptionsV1};
 use poietra_scene_ir::{
-    AnimationChannelV1, RenderDrawV1, SceneIrBundleV1, StrokeStyleV1, VectorAppearanceValueV1,
-    ViewportV1, validate_scene_ir_v1,
+    AnimationChannelV1, RenderDrawV1, SceneIrBundleV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
+    VectorAppearanceValueV1, ViewportV1, validate_scene_ir_v1,
 };
 use serde::Deserialize;
 
@@ -188,6 +188,83 @@ fn contract_rejects_implicit_cross_fades_and_samples_stroke_width() {
         panic!("expected a stroked path");
     };
     assert_close(stroke.width_world, 0.042_804_148_661_804_33);
+}
+
+#[test]
+fn stroke_cap_and_join_keyframes_are_left_held_at_the_boundary() {
+    let (fixture, mut bundle) = fixture();
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut bundle.scene.animation_channels[1]
+    else {
+        panic!("fixture appearance channel is missing");
+    };
+    let terminal_stroke = keyframes[1].value.stroke.as_mut().unwrap();
+    terminal_stroke.cap = StrokeCapV1::Round;
+    terminal_stroke.join = StrokeJoinV1::Bevel;
+
+    validate_scene_ir_v1(&bundle.scene).unwrap();
+    let session = EngineSessionV1::new(bundle).unwrap();
+    let sample_stroke = |sample_time| {
+        let packet = session
+            .sample_render_packet(SampleEngineSessionOptionsV1 {
+                evidence: &[],
+                packet_id: "appearance:discrete-stroke",
+                sample_time,
+                viewport: fixture.viewport.clone(),
+            })
+            .unwrap();
+        let RenderDrawV1::Path {
+            stroke: Some(stroke),
+            ..
+        } = &packet.draws[0]
+        else {
+            panic!("expected a stroked path");
+        };
+        (stroke.cap, stroke.join)
+    };
+
+    assert_eq!(
+        sample_stroke(f64::from_bits(2.0_f64.to_bits() - 1)),
+        (StrokeCapV1::Butt, StrokeJoinV1::Miter)
+    );
+    assert_eq!(
+        sample_stroke(2.0),
+        (StrokeCapV1::Round, StrokeJoinV1::Bevel)
+    );
+}
+
+#[test]
+fn stroke_style_keyframes_keep_base_and_miter_limit_constraints() {
+    for mutate_first in [
+        |stroke: &mut StrokeStyleV1| stroke.cap = StrokeCapV1::Round,
+        |stroke: &mut StrokeStyleV1| stroke.join = StrokeJoinV1::Bevel,
+    ] {
+        let (_, mut bundle) = fixture();
+        let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+            &mut bundle.scene.animation_channels[1]
+        else {
+            panic!("fixture appearance channel is missing");
+        };
+        mutate_first(keyframes[0].value.stroke.as_mut().unwrap());
+        assert!(
+            validate_scene_ir_v1(&bundle.scene)
+                .unwrap_err()
+                .contains_message("stroke cap, join, or miter-limit styles")
+        );
+    }
+
+    let (_, mut bundle) = fixture();
+    let AnimationChannelV1::VectorAppearance { keyframes, .. } =
+        &mut bundle.scene.animation_channels[1]
+    else {
+        panic!("fixture appearance channel is missing");
+    };
+    keyframes[1].value.stroke.as_mut().unwrap().miter_limit = 4.0;
+    assert!(
+        validate_scene_ir_v1(&bundle.scene)
+            .unwrap_err()
+            .contains_message("miter-limit styles")
+    );
 }
 
 #[test]

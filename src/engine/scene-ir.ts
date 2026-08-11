@@ -728,15 +728,11 @@ function validateChannels(scene: SceneIrV1Input, context: z.RefinementCtx) {
             path: [...valuePath, "stroke"],
           });
         } else if (value.stroke !== null && first.stroke !== null) {
-          if (
-            value.stroke.cap !== first.stroke.cap ||
-            value.stroke.join !== first.stroke.join ||
-            value.stroke.miterLimit !== first.stroke.miterLimit
-          ) {
+          if (value.stroke.miterLimit !== first.stroke.miterLimit) {
             context.addIssue({
               code: "custom",
-              message: "vector-appearance cannot transition between stroke cap, join, or miter-limit styles.",
-              path: [...valuePath, "stroke"],
+              message: "vector-appearance cannot transition between stroke miter-limit styles.",
+              path: [...valuePath, "stroke", "miterLimit"],
             });
           }
         }

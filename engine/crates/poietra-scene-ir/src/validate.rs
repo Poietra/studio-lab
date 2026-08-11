@@ -1297,14 +1297,12 @@ pub fn validate_scene_ir_v1(scene: &SceneIrV1) -> Result<(), ValidationErrors> {
                                 );
                             } else if let (Some(stroke), Some(first_stroke)) =
                                 (&value.stroke, &first.stroke)
-                                && (stroke.cap != first_stroke.cap
-                                    || stroke.join != first_stroke.join
-                                    || stroke.miter_limit.to_bits()
-                                        != first_stroke.miter_limit.to_bits())
+                                && stroke.miter_limit.to_bits()
+                                    != first_stroke.miter_limit.to_bits()
                             {
                                 validator.issue(
-                                    format!("{value_path}.stroke"),
-                                    "vector-appearance cannot transition between stroke cap, join, or miter-limit styles",
+                                    format!("{value_path}.stroke.miterLimit"),
+                                    "vector-appearance cannot transition between stroke miter-limit styles",
                                 );
                             }
                         }

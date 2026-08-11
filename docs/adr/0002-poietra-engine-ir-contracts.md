@@ -127,11 +127,12 @@ V1 motion paths contain exactly one subpath. Path morph is component-wise
 interpolation of matching cubic control points. Path trim is restricted to
 stroke-only entities because filling an open prefix would introduce an implicit
 closing edge. Vector appearance interpolates solid fill/stroke RGBA components and
-stroke width while keeping paint presence, fill rule, stroke cap/join, and miter
-limit fixed. An absent base paint may be materialized only by an explicit transparent
-first keyframe; later `null`/solid cross-fades are invalid. A camera channel replaces
-the base camera view. Only one channel may write a given entity/property, and only
-one camera channel may exist.
+stroke width; stroke cap and join are left-held discrete values that switch at a
+keyframe boundary, while paint presence, fill rule, and miter limit remain fixed.
+An absent base paint may be materialized only by an explicit transparent first
+keyframe; later `null`/solid cross-fades are invalid. A camera channel replaces the
+base camera view. Only one channel may write a given entity/property, and only one
+camera channel may exist.
 
 V1 `arc-length-v1` evaluation is deterministic rather than adaptive: every cubic
 is sampled at 64 equal parameter intervals and the resulting chord lengths are
