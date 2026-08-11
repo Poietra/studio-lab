@@ -109,9 +109,13 @@ export type StudioPreviewGenericInitialEditAuthorityCandidateV1 = Readonly<{
   baseCenter: Point;
   /** Runtime endpoint dimensions in Scene units; never an assumed scale=1. */
   baseDimensions: Readonly<{ height: number; width: number }>;
+  /** Uniform existing paint alpha, or null when the static subtree mixes alpha values. */
+  baseOpacity: number | null;
   bindingId: string;
   duration: number;
   lifetime: Readonly<{ end: number; start: 0 }>;
+  /** True only when every presented subtree surface is static vector paint. */
+  opacityEditable: boolean;
   profile: "generic-runtime-trace-v3";
   runtimeEntityId: string;
   sourceName: string;
@@ -125,6 +129,7 @@ export type StudioPreviewInitialEditProjectionAuthorityV1 =
 
 export type StudioPreviewGenericInitialEditV1 =
   | Readonly<{ kind: "move"; position: Point }>
+  | Readonly<{ kind: "opacity"; opacity: number }>
   | Readonly<{ kind: "resize"; scaleFactor: number }>
   | Readonly<{ angleRadians: number; kind: "rotation" }>;
 
@@ -379,6 +384,60 @@ function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifie
   );
 }
 
+function genericRuntimeTraceSubtreePaintEvidenceV1(scene: SceneIrV1, rootId: string) {
+  const entityById = new Map(scene.entities.map((entity) => [entity.id, entity] as const));
+  const childrenByParent = new Map<string, SceneEntityV1[]>();
+  for (const entity of scene.entities) {
+    if (entity.parentId === null) continue;
+    const children = childrenByParent.get(entity.parentId) ?? [];
+    children.push(entity);
+    childrenByParent.set(entity.parentId, children);
+  }
+  const entityIds = new Set<string>();
+  const queue = [rootId];
+  const paintAlphas: number[] = [];
+  let vectorPaintCount = 0;
+  let surfacesAreVectorPaint = true;
+  for (let queueIndex = 0; queueIndex < queue.length; queueIndex += 1) {
+    const entityId = queue[queueIndex]!;
+    if (entityIds.has(entityId)) continue;
+    entityIds.add(entityId);
+    const entity = entityById.get(entityId);
+    if (!entity) {
+      surfacesAreVectorPaint = false;
+      continue;
+    }
+    queue.push(...(childrenByParent.get(entityId) ?? []).map(({ id }) => id));
+    if (entity.geometry.kind === "group") continue;
+    if (entity.appearance.kind !== "vector") {
+      surfacesAreVectorPaint = false;
+      continue;
+    }
+    const paints = [entity.appearance.fill, entity.appearance.stroke].flatMap((paint) =>
+      paint === null ? [] : [paint],
+    );
+    if (paints.length === 0) {
+      surfacesAreVectorPaint = false;
+      continue;
+    }
+    vectorPaintCount += paints.length;
+    paintAlphas.push(...paints.map(({ color }) => color.alpha));
+  }
+  const paintIsDynamic = scene.animationChannels.some(
+    (channel) =>
+      "entityId" in channel &&
+      entityIds.has(channel.entityId) &&
+      (channel.kind === "opacity" || channel.kind === "vector-appearance"),
+  );
+  const opacityEditable = surfacesAreVectorPaint && vectorPaintCount > 0 && !paintIsDynamic;
+  const firstAlpha = paintAlphas[0];
+  const baseOpacity =
+    opacityEditable && firstAlpha !== undefined && paintAlphas.every((alpha) => alpha === firstAlpha)
+      ? firstAlpha
+      : null;
+  return { baseOpacity, entityIds, opacityEditable } as const;
+}
+
 /**
  * Projects every pristine generic V3 mapping into a future-authoring
  * candidate. Each candidate rechecks every fact it consumes, but does not
@@ -454,6 +513,7 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
     // constructed placement, observed by the terminal endpoint. An entrance
     // animation's partial frame-zero box is evidence-gated above but never
     // the manipulation anchor.
+    const paintEvidence = genericRuntimeTraceSubtreePaintEvidenceV1(snapshot.snapshot.scene, mapping.entityId);
     candidates.push({
       baseCenter: scenePointToStudioPoint(
         terminal.center,
@@ -461,9 +521,11 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
         camera.center,
       ),
       baseDimensions: { ...terminal.dimensions },
+      baseOpacity: paintEvidence.baseOpacity,
       bindingId: mapping.bindingId,
       duration: snapshot.duration,
       lifetime: { end: lifetime.end, start: 0 },
+      opacityEditable: paintEvidence.opacityEditable,
       profile: "generic-runtime-trace-v3",
       runtimeEntityId: mapping.entityId,
       sourceName,
@@ -509,6 +571,18 @@ function genericInitialEditProgramV1(
   }
   if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
     return { kind: "move", position: { x: operation.value.x, y: operation.value.y } };
+  }
+  if (
+    operation.kind === "SetProperty" &&
+    operation.key === "appearance" &&
+    candidate.opacityEditable &&
+    typeof operation.value === "number" &&
+    Number.isFinite(operation.value) &&
+    operation.value >= 0 &&
+    operation.value <= 1 &&
+    (candidate.baseOpacity === null || !closeEnough(operation.value, candidate.baseOpacity))
+  ) {
+    return { kind: "opacity", opacity: operation.value };
   }
   if (
     operation.kind === "AnimateProperty" &&
@@ -1458,10 +1532,9 @@ export function conjugateRotationAboutCenterV1(
 }
 
 /**
- * Reprojects one authorized t=0 move, uniform resize, or planar rotation onto the verified
- * generic V3 hierarchy. The runtime root remains the geometry authority;
- * Studio only composes a top-level translation or a uniform scale about the
- * verified initial center and never reconstructs or flattens descendants.
+ * Reprojects one authorized t=0 transform or absolute paint opacity onto the
+ * verified generic V3 hierarchy. Transform edits stay on the root group;
+ * opacity edits preserve every descendant paint style except color alpha.
  */
 export function compileStudioPreviewGenericInitialEditV1(
   input: Readonly<{
@@ -1499,7 +1572,7 @@ export function compileStudioPreviewGenericInitialEditV1(
   if (programSet.kind !== "authorized") {
     return unsupported(
       "target-edit-unsupported",
-      "Generic Runtime Trace permits exactly one initial position move, uniform resize, or rotation.",
+      "Generic Runtime Trace permits exactly one initial position move, uniform resize, rotation, or static-paint opacity edit.",
     );
   }
   const candidate = programSet.candidate;
@@ -1509,59 +1582,93 @@ export function compileStudioPreviewGenericInitialEditV1(
     return unsupported("identity-unverified", "The generic Runtime Trace edit target is not its verified root group.");
   }
   const edit = programSet.edit;
-  const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
-  let editedTransform: SceneEntityV1["transform"];
-  if (edit.kind === "move") {
-    const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
-    const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
-    if (![translation.x, translation.y].every(Number.isFinite)) {
-      return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
-    }
-    editedTransform = {
-      ...target.transform,
-      tx: target.transform.tx + translation.x,
-      ty: target.transform.ty + translation.y,
-    };
-  } else if (edit.kind === "resize") {
-    // Conjugate the uniform scale about the verified initial center so the
-    // root keeps its placement while every descendant scales with it.
-    editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
-  } else {
-    editedTransform = conjugateRotationAboutCenterV1(target.transform, baseCenter, edit.angleRadians);
-  }
-  if (
-    ![
-      editedTransform.m11,
-      editedTransform.m12,
-      editedTransform.m21,
-      editedTransform.m22,
-      editedTransform.tx,
-      editedTransform.ty,
-    ].every(Number.isFinite)
-  ) {
-    return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root transform is not finite.");
-  }
   const provenanceId = `studio-generic-v3-initial-${edit.kind}:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
     return unsupported("conflicting-edit-unsupported", "The generic initial-edit provenance identity already exists.");
   }
-  const editedEntity: SceneEntityV1 = {
-    ...target,
-    provenanceId,
-    transform: editedTransform,
-  };
+  let entities: SceneEntityV1[];
+  if (edit.kind === "opacity") {
+    const paintEvidence = genericRuntimeTraceSubtreePaintEvidenceV1(scene, target.id);
+    if (!paintEvidence.opacityEditable || !candidate.opacityEditable) {
+      return unsupported(
+        "target-edit-unsupported",
+        "Generic Runtime Trace opacity edits require static vector paint throughout the selected subtree.",
+      );
+    }
+    let changedPaints = 0;
+    entities = scene.entities.map((entity) => {
+      if (!paintEvidence.entityIds.has(entity.id) || entity.appearance.kind !== "vector") return entity;
+      const fillChanged = entity.appearance.fill !== null && entity.appearance.fill.color.alpha !== edit.opacity;
+      const strokeChanged = entity.appearance.stroke !== null && entity.appearance.stroke.color.alpha !== edit.opacity;
+      if (!fillChanged && !strokeChanged) return entity;
+      const fill = entity.appearance.fill
+        ? {
+            ...entity.appearance.fill,
+            color: { ...entity.appearance.fill.color, alpha: edit.opacity },
+          }
+        : null;
+      const stroke = entity.appearance.stroke
+        ? {
+            ...entity.appearance.stroke,
+            color: { ...entity.appearance.stroke.color, alpha: edit.opacity },
+          }
+        : null;
+      changedPaints += Number(fillChanged) + Number(strokeChanged);
+      return { ...entity, appearance: { ...entity.appearance, fill, stroke }, provenanceId };
+    });
+    if (changedPaints === 0) {
+      return unsupported("target-edit-unsupported", "The generic Runtime Trace opacity edit is a no-op.");
+    }
+  } else {
+    const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
+    let editedTransform: SceneEntityV1["transform"];
+    if (edit.kind === "move") {
+      const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
+      const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+      if (![translation.x, translation.y].every(Number.isFinite)) {
+        return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
+      }
+      editedTransform = {
+        ...target.transform,
+        tx: target.transform.tx + translation.x,
+        ty: target.transform.ty + translation.y,
+      };
+    } else if (edit.kind === "resize") {
+      // Conjugate the uniform scale about the verified initial center so the
+      // root keeps its placement while every descendant scales with it.
+      editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
+    } else {
+      editedTransform = conjugateRotationAboutCenterV1(target.transform, baseCenter, edit.angleRadians);
+    }
+    if (
+      ![
+        editedTransform.m11,
+        editedTransform.m12,
+        editedTransform.m21,
+        editedTransform.m22,
+        editedTransform.tx,
+        editedTransform.ty,
+      ].every(Number.isFinite)
+    ) {
+      return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root transform is not finite.");
+    }
+    const editedEntity: SceneEntityV1 = { ...target, provenanceId, transform: editedTransform };
+    entities = scene.entities.map((entity, index) => (index === targetIndex ? editedEntity : entity));
+  }
   const rebased: SceneIrV1 = {
     ...scene,
-    entities: scene.entities.map((entity, index) => (index === targetIndex ? editedEntity : entity)),
+    entities,
     provenance: [
       ...scene.provenance,
       {
         evidence: [
           edit.kind === "move"
             ? "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root"
-            : edit.kind === "resize"
-              ? "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root"
-              : "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
+            : edit.kind === "opacity"
+              ? "Studio t=0 absolute opacity request projected onto static vector paints in one verified generic Runtime Trace V3 root"
+              : edit.kind === "resize"
+                ? "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root"
+                : "Studio t=0 planar rotation request projected onto one verified generic Runtime Trace V3 root",
           `source binding ${candidate.bindingId}`,
           `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
         ],

@@ -106,6 +106,8 @@ function renderSelectedInspector(
   draftError: string | null,
   draftProgram: Parameters<typeof StudioInspector>[0]["draftProgram"] = null,
   rotationAvailable = false,
+  opacityAvailable = false,
+  opacityValue: number | null = null,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -119,6 +121,7 @@ function renderSelectedInspector(
       onDiscardDraft={vi.fn()}
       onDraftOperationChange={vi.fn()}
       onEntityEdit={vi.fn()}
+      onEntityOpacityChange={vi.fn()}
       onEntityRotate={vi.fn()}
       onEntityScaleChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
@@ -130,6 +133,8 @@ function renderSelectedInspector(
       renderCandidateUnavailableReason="No render candidate."
       renderSession={null}
       replacingAppliedProgram={false}
+      opacityAvailable={opacityAvailable}
+      opacityValue={opacityValue}
       rotationAvailable={rotationAvailable}
       selectedEntity={entity}
       sourceExport={null}
@@ -763,9 +768,11 @@ describe("StudioCanvas retained preview layer", () => {
     const candidate = {
       baseCenter: { x: 320, y: 180 },
       baseDimensions: { height: 2, width: 2 },
+      baseOpacity: 1,
       bindingId: `source-binding:${"a".repeat(64)}`,
       duration: 0.1,
       lifetime: { end: 0.1, start: 0 as const },
+      opacityEditable: true,
       profile: "generic-runtime-trace-v3" as const,
       runtimeEntityId: runtimeId,
       sourceName: "square",
@@ -1188,6 +1195,18 @@ describe("StudioCanvas retained preview layer", () => {
     expect(disabled.match(counterclockwise)?.[0]).toContain('disabled=""');
     expect(enabled.match(clockwise)?.[0]).not.toContain('disabled=""');
     expect(enabled.match(counterclockwise)?.[0]).not.toContain('disabled=""');
+  });
+
+  it("enables opacity only for a static-paint generic Runtime Trace target", () => {
+    const disabled = renderSelectedInspector(CIRCLE_ENTITY, null);
+    const enabled = renderSelectedInspector(CIRCLE_ENTITY, null, null, false, true, 0.35);
+    const mixed = renderSelectedInspector(CIRCLE_ENTITY, null, null, false, true, null);
+    const control = /<input aria-label="Opacity circle_1"[^>]*>/u;
+
+    expect(disabled.match(control)?.[0]).toContain('disabled=""');
+    expect(enabled.match(control)?.[0]).not.toContain('disabled=""');
+    expect(enabled.match(control)?.[0]).toContain('value="0.35"');
+    expect(mixed.match(control)?.[0]).toContain('placeholder="Mixed"');
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

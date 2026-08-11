@@ -7,6 +7,7 @@ import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contr
 import {
   type FastManimRuntimeTraceInitialEditCandidateErrorV3,
   verifyFastManimRuntimeTraceInitialMoveCandidateV3,
+  verifyFastManimRuntimeTraceInitialOpacityCandidateV3,
   verifyFastManimRuntimeTraceInitialResizeCandidateV3,
   verifyFastManimRuntimeTraceInitialRotationCandidateV3,
 } from "./fast-manim-runtime-trace-v3-candidate";
@@ -646,5 +647,176 @@ describe("verifyFastManimRuntimeTraceInitialRotationCandidateV3", () => {
   it("rejects zero and full-turn angles as no-ops", () => {
     rejectRotationCode((input) => (input.expectedAngleRadians = 0), "candidate-noop");
     rejectRotationCode((input) => (input.expectedAngleRadians = 6.2831853071796), "candidate-noop");
+  });
+});
+
+const OPACITY = 0.35;
+const OPACITY_CANDIDATE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  `        square.set_opacity(${OPACITY})\n        square.set_stroke(WHITE, width=2)\n`,
+);
+const OPACITY_APPEARANCE_ID = `appearance:${"e".repeat(64)}`;
+
+type OpacityFixture = ReturnType<typeof opacityFixture>;
+
+function opacityFixture() {
+  const baseRequest = request(BASE_SOURCE);
+  const candidateRequest = request(OPACITY_CANDIDATE_SOURCE);
+  const base = fastManimRuntimeTraceV3Schema.parse(structuredClone(genericRuntimeTraceFixture));
+  const candidate = structuredClone(base);
+  candidate.sourceHash = candidateRequest.sourceHash;
+  candidate.sourceBindings[0]!.binding = structuredClone(candidateRequest.sourceBindings[0]!);
+  const appearance = structuredClone(base.resources.appearances[0]!);
+  appearance.id = OPACITY_APPEARANCE_ID;
+  if (appearance.fill) appearance.fill.color.alpha = OPACITY;
+  if (appearance.stroke) appearance.stroke.color.alpha = OPACITY;
+  candidate.resources.appearances = [appearance];
+  for (const frame of candidate.frames) {
+    for (const state of frame.states) state.appearanceId = OPACITY_APPEARANCE_ID;
+  }
+  return {
+    base,
+    baseRequest,
+    binding: structuredClone(baseRequest.sourceBindings[0]!),
+    candidate,
+    candidateRequest,
+    expectedOpacity: OPACITY,
+  };
+}
+
+function rejectOpacityCode(
+  mutate: (input: OpacityFixture) => void,
+  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+) {
+  const input = opacityFixture();
+  mutate(input);
+  expect(() => verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toThrowError(
+    expect.objectContaining({ code }),
+  );
+}
+
+describe("verifyFastManimRuntimeTraceInitialOpacityCandidateV3", () => {
+  it("accepts an exact selected-subtree fill/stroke alpha replacement", () => {
+    const input = opacityFixture();
+
+    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.sourceBindings[0]!.endpoints).toEqual(input.base.sourceBindings[0]!.endpoints);
+    expect(input.candidate.resources.paths).toEqual(input.base.resources.paths);
+    expect(input.candidate.draws).toEqual(input.base.draws);
+    expect(input.candidate.frames[0]!.states[0]!.opacity).toBe(input.base.frames[0]!.states[0]!.opacity);
+  });
+
+  it("accepts distinct base appearances that converge after alpha replacement", () => {
+    const input = opacityFixture();
+    const baseDraw = structuredClone(input.base.draws[0]!);
+    const candidateDraw = structuredClone(input.candidate.draws[0]!);
+    baseDraw.id = `${baseDraw.rootId}/draw:1`;
+    candidateDraw.id = baseDraw.id;
+    input.base.draws.push(baseDraw);
+    input.candidate.draws.push(candidateDraw);
+
+    const secondBaseAppearance = structuredClone(input.base.resources.appearances[0]!);
+    secondBaseAppearance.id = `appearance:${"c".repeat(64)}`;
+    if (secondBaseAppearance.fill) secondBaseAppearance.fill.color.alpha = 0.2;
+    if (secondBaseAppearance.stroke) secondBaseAppearance.stroke.color.alpha = 0.2;
+    input.base.resources.appearances.push(secondBaseAppearance);
+
+    const baseState = structuredClone(input.base.frames[0]!.states[0]!);
+    const candidateState = structuredClone(input.candidate.frames[0]!.states[0]!);
+    baseState.appearanceId = secondBaseAppearance.id;
+    baseState.drawId = baseDraw.id;
+    candidateState.drawId = candidateDraw.id;
+    input.base.frames[0]!.states.push(baseState);
+    input.candidate.frames[0]!.states.push(candidateState);
+
+    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+  });
+
+  it("rejects values outside zero-to-one and a source-level no-op", () => {
+    rejectOpacityCode((input) => (input.expectedOpacity = -0.1), "candidate-endpoint");
+    rejectOpacityCode((input) => (input.expectedOpacity = 1.1), "candidate-endpoint");
+    rejectOpacityCode((input) => {
+      input.expectedOpacity = 1;
+      const baseAppearance = input.base.resources.appearances[0]!;
+      if (!baseAppearance.fill || !baseAppearance.stroke) throw new Error("Expected fill and stroke paint.");
+      baseAppearance.fill.color.alpha = 1;
+      baseAppearance.stroke.color.alpha = 1;
+      input.candidate.resources.appearances[0]!.fill!.color.alpha = 1;
+      input.candidate.resources.appearances[0]!.stroke!.color.alpha = 1;
+    }, "candidate-noop");
+  });
+
+  it("rejects geometry, ordering, state opacity, and path drift", () => {
+    rejectOpacityCode(
+      (input) => (input.candidate.sourceBindings[0]!.endpoints.terminal.center.x += 0.1),
+      "candidate-endpoint",
+    );
+    rejectOpacityCode((input) => (input.candidate.frames[0]!.states[0]!.transform.tx += 0.1), "candidate-semantic");
+    rejectOpacityCode((input) => (input.candidate.frames[0]!.states[0]!.paintOrder += 1), "candidate-semantic");
+    rejectOpacityCode((input) => (input.candidate.frames[0]!.states[0]!.opacity = 0.5), "candidate-semantic");
+    rejectOpacityCode(
+      (input) => (input.candidate.resources.paths[0]!.path.subpaths[0]!.start.x += 0.1),
+      "candidate-resource",
+    );
+  });
+
+  it("rejects RGB, fill rule, and stroke style changes", () => {
+    rejectOpacityCode((input) => {
+      input.candidate.resources.appearances[0]!.fill!.color.red += 0.1;
+    }, "candidate-resource");
+    rejectOpacityCode((input) => {
+      input.candidate.resources.appearances[0]!.fill!.rule = "evenodd";
+    }, "candidate-resource");
+    rejectOpacityCode((input) => {
+      input.candidate.resources.appearances[0]!.stroke!.widthWorld += 0.01;
+    }, "candidate-resource");
+    rejectOpacityCode((input) => {
+      input.candidate.resources.appearances[0]!.stroke!.cap = "round";
+    }, "candidate-resource");
+  });
+
+  it("rejects dynamic selected appearance or state opacity", () => {
+    rejectOpacityCode((input) => {
+      const baseFrame = structuredClone(input.base.frames[0]!);
+      const candidateFrame = structuredClone(input.candidate.frames[0]!);
+      baseFrame.frameIndex = 1;
+      baseFrame.sampleTime = 0.0166666666667;
+      candidateFrame.frameIndex = 1;
+      candidateFrame.sampleTime = 0.0166666666667;
+      baseFrame.states[0]!.appearanceId = `appearance:${"c".repeat(64)}`;
+      input.base.resources.appearances.push({
+        ...structuredClone(input.base.resources.appearances[0]!),
+        id: baseFrame.states[0]!.appearanceId,
+      });
+      input.base.frames.push(baseFrame);
+      input.candidate.frames.push(candidateFrame);
+    }, "candidate-semantic");
+    rejectOpacityCode((input) => {
+      const baseFrame = structuredClone(input.base.frames[0]!);
+      const candidateFrame = structuredClone(input.candidate.frames[0]!);
+      baseFrame.frameIndex = 1;
+      baseFrame.sampleTime = 0.0166666666667;
+      candidateFrame.frameIndex = 1;
+      candidateFrame.sampleTime = 0.0166666666667;
+      baseFrame.states[0]!.opacity = 0.8;
+      candidateFrame.states[0]!.opacity = 0.8;
+      input.base.frames.push(baseFrame);
+      input.candidate.frames.push(candidateFrame);
+    }, "candidate-semantic");
+  });
+
+  it("accepts an untouched sibling sharing the base appearance and rejects sibling paint drift", () => {
+    const input = opacityFixture();
+    withSiblingRoot(input);
+    input.candidate.resources.appearances.push(structuredClone(input.base.resources.appearances[0]!));
+
+    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+
+    rejectOpacityCode((changed) => {
+      withSiblingRoot(changed);
+      const siblingAppearance = structuredClone(changed.base.resources.appearances[0]!);
+      siblingAppearance.fill!.color.alpha = 0.9;
+      changed.candidate.resources.appearances.push(siblingAppearance);
+    }, "candidate-resource");
   });
 });

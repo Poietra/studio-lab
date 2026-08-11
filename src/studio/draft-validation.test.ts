@@ -6,6 +6,7 @@ import { evaluateWorkingState, programRecord, projectProposedState } from "./eva
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
 import {
+  createDirectManipulationOpacityProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationRotationProgram,
@@ -273,6 +274,51 @@ describe("Studio draft validation boundary", () => {
         })),
       }),
     ).toMatchObject({ apply: "blocked", lowering: "illustrative" });
+  });
+
+  it("creates one bounded initial opacity edit", () => {
+    const validation = createDirectManipulationOpacityProgram({
+      capturedPlayhead: 0,
+      entityId: "equation_1",
+      opacity: 0.35,
+      scene: STUDIO_FIXTURE_SCENE,
+      start: 0,
+      transactionId: "opacity-projection",
+    });
+
+    expect(validation.kind).toBe("valid");
+    expect(validation.program).toMatchObject({
+      loweringStatus: "supported",
+      operations: [
+        {
+          entityId: "equation_1",
+          interval: { end: 0, start: 0 },
+          key: "appearance",
+          kind: "SetProperty",
+          value: 0.35,
+        },
+      ],
+    });
+    expect(() =>
+      createDirectManipulationOpacityProgram({
+        capturedPlayhead: 0,
+        entityId: "equation_1",
+        opacity: 1.01,
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 0,
+        transactionId: "opacity-out-of-range",
+      }),
+    ).toThrow(/0 to 1/i);
+    expect(() =>
+      createDirectManipulationOpacityProgram({
+        capturedPlayhead: 5,
+        entityId: "equation_1",
+        opacity: 0.35,
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 5,
+        transactionId: "opacity-after-zero",
+      }),
+    ).toThrow(/source time zero/i);
   });
 
   it("previews an animated resize throughout its requested interval", () => {

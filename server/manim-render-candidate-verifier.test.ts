@@ -254,6 +254,66 @@ describe("ManimRenderCandidateVerifierV1", () => {
     );
   });
 
+  it("delegates one source-bound generic initial opacity with its server-derived value", async () => {
+    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
+    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
+      frame: { height: 8, width: 14.222222222222221 },
+      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
+      projectId: input.projectId,
+      request: input,
+    });
+    const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
+    const entityId = "source:scenes/static_square.py#StaticSquare:square";
+    const baseSourceHash = "c".repeat(64);
+    const lowered = {
+      anchorLine: 5,
+      anchorLines: [5],
+      insertedCode: "        square.set_opacity(0.35)",
+      preflight: {
+        baseBinding: {
+          id: `source-binding:${"d".repeat(64)}`,
+          name: "square",
+          ordinal: 1,
+          span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+        },
+        baseSourceHash,
+        entityId,
+        expectedOpacity: 0.35,
+        kind: "fast-manim-generic-initial-opacity-v3" as const,
+      },
+      source: candidateSource,
+    } satisfies LoweredProgramBatchSource;
+    const renderRequest = {
+      ...fixtureRequest,
+      sceneName: "StaticSquare",
+      sourceBindings: [{ entityId, sourceVariable: "square" }],
+      sourceHash: baseSourceHash,
+      sourcePath: "scenes/static_square.py",
+    };
+    const runRuntimeTraceCandidateUnpublished = vi.fn().mockResolvedValue({
+      sourceHash: sourceHash(candidateSource),
+      status: "verified",
+      traceDigest: "e".repeat(64),
+    });
+    const verifier = new ManimRenderCandidateVerifierV1({
+      frame: { height: 8, width: 14.222222222222221 },
+      runner: { runCandidateUnpublished: vi.fn() },
+      runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
+    });
+
+    await expect(verifier.verify(lowered, renderRequest)).resolves.toBeUndefined();
+    expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
+      candidateSource,
+      expect.objectContaining({
+        genericInitialOpacity: lowered.preflight,
+        projectId: renderRequest.projectId,
+        sceneName: "StaticSquare",
+        sourcePath: "scenes/static_square.py",
+      }),
+      undefined,
+    );
+  });
+
   it("delegates one source-bound generic initial rotation with its server-derived angle evidence", async () => {
     const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
     const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
@@ -350,6 +410,46 @@ describe("ManimRenderCandidateVerifierV1", () => {
         sourcePath: "scene.py",
       };
       await expect(verifier.verify(lowered, renderRequest)).rejects.toMatchObject({ status: 409 });
+    }
+    expect(runRuntimeTraceCandidateUnpublished).not.toHaveBeenCalled();
+  });
+
+  it("rejects a generic initial opacity outside the closed unit interval", async () => {
+    const entityId = "source:scene.py#StaticSquare:square";
+    const runRuntimeTraceCandidateUnpublished = vi.fn();
+    const verifier = new ManimRenderCandidateVerifierV1({
+      frame: { height: 8, width: 14.222222222222221 },
+      runner: { runCandidateUnpublished: vi.fn() },
+      runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
+    });
+    for (const expectedOpacity of [-0.1, 1.1, Number.NaN]) {
+      const lowered = {
+        anchorLine: 1,
+        anchorLines: [1],
+        insertedCode: "square.set_opacity(0.35)",
+        preflight: {
+          baseBinding: {
+            id: `source-binding:${"a".repeat(64)}`,
+            name: "square",
+            ordinal: 1,
+            span: { endColumn: 6, endLine: 1, startColumn: 0, startLine: 1 },
+          },
+          baseSourceHash: "c".repeat(64),
+          entityId,
+          expectedOpacity,
+          kind: "fast-manim-generic-initial-opacity-v3" as const,
+        },
+        source: "candidate",
+      } satisfies LoweredProgramBatchSource;
+      await expect(
+        verifier.verify(lowered, {
+          ...CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request(),
+          sceneName: "StaticSquare",
+          sourceBindings: [{ entityId, sourceVariable: "square" }],
+          sourceHash: lowered.preflight.baseSourceHash,
+          sourcePath: "scene.py",
+        }),
+      ).rejects.toMatchObject({ status: 409 });
     }
     expect(runRuntimeTraceCandidateUnpublished).not.toHaveBeenCalled();
   });

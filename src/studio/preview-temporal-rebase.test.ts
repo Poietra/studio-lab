@@ -803,6 +803,32 @@ async function genericRuntimeTraceV3RotationInput(angleRadians: number) {
   };
 }
 
+async function genericRuntimeTraceV3OpacityInput(opacity: number) {
+  const { base, candidate, record: moveRecord, snapshot } = await genericRuntimeTraceV3MoveInput();
+  const move = moveRecord.program.operations[0];
+  if (!move || move.kind !== "SetProperty") throw new Error("The generic V3 move fixture lost its SetProperty.");
+  const operation: CanonicalEditOperation = {
+    ...move,
+    id: "generic-v3-initial-opacity/operation:set-appearance",
+    key: "appearance",
+    value: opacity,
+  };
+  const program = {
+    ...moveRecord.program,
+    operations: [operation],
+    schedule: { ...moveRecord.program.schedule, order: [operation.id] },
+    transactionId: "generic-v3-initial-opacity",
+  };
+  const record: ProgramRecord = { program, validation: { issues: [], status: "valid" } };
+  return {
+    base,
+    candidate,
+    proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
+    record,
+    snapshot,
+  };
+}
+
 function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
   return studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
 }
@@ -815,9 +841,11 @@ describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
     expect(candidate).toEqual({
       baseCenter: { x: 320, y: 180 },
       baseDimensions: mapping.endpoints.initial.dimensions,
+      baseOpacity: null,
       bindingId: mapping.binding.id,
       duration: 1 / 60,
       lifetime: { end: 1 / 60, start: 0 },
+      opacityEditable: true,
       profile: "generic-runtime-trace-v3",
       runtimeEntityId: mapping.rootId,
       sourceName: "square",
@@ -863,6 +891,93 @@ describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
         interactionAuthority,
       ),
     ).toBeNull();
+  });
+
+  it("separates static-paint opacity editability from a uniform current alpha", async () => {
+    const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
+    const mixed = candidateOf(snapshot);
+    expect(mixed).toMatchObject({ baseOpacity: null, opacityEditable: true });
+
+    const uniformScene: SceneIrV1 = {
+      ...snapshot.snapshot.scene,
+      entities: snapshot.snapshot.scene.entities.map((entity) =>
+        entity.appearance.kind !== "vector"
+          ? entity
+          : {
+              ...entity,
+              appearance: {
+                ...entity.appearance,
+                fill: entity.appearance.fill
+                  ? {
+                      ...entity.appearance.fill,
+                      color: { ...entity.appearance.fill.color, alpha: 0.4 },
+                    }
+                  : null,
+                stroke: entity.appearance.stroke
+                  ? {
+                      ...entity.appearance.stroke,
+                      color: { ...entity.appearance.stroke.color, alpha: 0.4 },
+                    }
+                  : null,
+              },
+            },
+      ),
+    };
+    expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: uniformScene } })).toMatchObject({
+      baseOpacity: 0.4,
+      opacityEditable: true,
+    });
+
+    const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === mapping.rootId);
+    if (!child) throw new Error("The generic V3 fixture lost its vector child.");
+    const opacityChannel: SceneIrV1["animationChannels"][number] = {
+      entityId: child.id,
+      id: `${child.id}/test-opacity`,
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: 1 },
+        { at: snapshot.duration, easingToNext: null, value: 0.5 },
+      ],
+      kind: "opacity",
+      provenanceId: child.provenanceId,
+    };
+    const dynamicScene: SceneIrV1 = {
+      ...snapshot.snapshot.scene,
+      animationChannels: [...snapshot.snapshot.scene.animationChannels, opacityChannel],
+    };
+    expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: dynamicScene } })).toMatchObject({
+      baseOpacity: null,
+      opacityEditable: false,
+    });
+
+    if (child.appearance.kind !== "vector") throw new Error("The generic V3 paint child changed appearance kind.");
+    const appearanceValue = { fill: child.appearance.fill, stroke: child.appearance.stroke };
+    const appearanceChannel: SceneIrV1["animationChannels"][number] = {
+      entityId: child.id,
+      id: `${child.id}/test-vector-appearance`,
+      keyframes: [
+        { at: 0, easingToNext: { kind: "linear" }, value: appearanceValue },
+        { at: snapshot.duration, easingToNext: null, value: appearanceValue },
+      ],
+      kind: "vector-appearance",
+      provenanceId: child.provenanceId,
+    };
+    const dynamicPaintScene: SceneIrV1 = {
+      ...snapshot.snapshot.scene,
+      animationChannels: [...snapshot.snapshot.scene.animationChannels, appearanceChannel],
+    };
+    expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: dynamicPaintScene } })).toMatchObject({
+      baseOpacity: null,
+      opacityEditable: false,
+    });
+
+    const paintlessScene: SceneIrV1 = {
+      ...snapshot.snapshot.scene,
+      entities: snapshot.snapshot.scene.entities.filter(({ id }) => id === mapping.rootId),
+    };
+    expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: paintlessScene } })).toMatchObject({
+      baseOpacity: null,
+      opacityEditable: false,
+    });
   });
 
   it("rejects updater, degenerate, ambiguous, stale, non-pristine, and non-root evidence", async () => {
@@ -1174,6 +1289,72 @@ describe("generic Runtime Trace V3 initial move", () => {
         [candidate],
       ),
     ).toEqual({ kind: "unauthorized" });
+  });
+
+  it("authorizes one bounded absolute opacity on static paint and rejects unsafe or no-op values", async () => {
+    const { candidate, record } = await genericRuntimeTraceV3OpacityInput(0.25);
+    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+      candidate,
+      edit: { kind: "opacity", opacity: 0.25 },
+      kind: "authorized",
+    });
+
+    const operation = record.program.operations[0];
+    if (!operation || operation.kind !== "SetProperty") throw new Error("Opacity fixture lost its SetProperty.");
+    const withValue = (value: number): ProgramRecord => ({
+      ...record,
+      program: { ...record.program, operations: [{ ...operation, value }] },
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([withValue(Number.NaN)], [candidate])).toEqual({
+      kind: "unauthorized",
+    });
+    expect(studioPreviewGenericInitialEditProgramSetV1([withValue(1.01)], [candidate])).toEqual({
+      kind: "unauthorized",
+    });
+    expect(
+      studioPreviewGenericInitialEditProgramSetV1(
+        [record],
+        [{ ...candidate, baseOpacity: 0.25, opacityEditable: true }],
+      ),
+    ).toEqual({ kind: "unauthorized" });
+    expect(
+      studioPreviewGenericInitialEditProgramSetV1(
+        [record],
+        [{ ...candidate, baseOpacity: null, opacityEditable: false }],
+      ),
+    ).toEqual({ kind: "unauthorized" });
+  });
+
+  it("rewrites only selected static descendant paint alpha and preserves root/state opacity", async () => {
+    const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3OpacityInput(0.25);
+    const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
+    const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
+    if (!root || child?.appearance.kind !== "vector") throw new Error("Generic V3 fixture lost its paint subtree.");
+
+    const result = compileStudioPreviewGenericInitialEditV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      sourceRevisionHash: "b".repeat(64),
+    });
+    expect(result.kind).toBe("rebased");
+    if (result.kind !== "rebased") throw new Error(result.issue.message);
+    const editedRoot = result.scene.entities.find(({ id }) => id === root.id);
+    const editedChild = result.scene.entities.find(({ id }) => id === child.id);
+    if (editedChild?.appearance.kind !== "vector") throw new Error("Rebased V3 paint child is missing.");
+    expect(editedRoot).toEqual(root);
+    expect(editedChild.appearance).toEqual({
+      ...child.appearance,
+      fill: child.appearance.fill
+        ? { ...child.appearance.fill, color: { ...child.appearance.fill.color, alpha: 0.25 } }
+        : null,
+      stroke: child.appearance.stroke
+        ? { ...child.appearance.stroke, color: { ...child.appearance.stroke.color, alpha: 0.25 } }
+        : null,
+    });
+    expect(editedChild.appearance.opacity).toBe(child.appearance.opacity);
+    expect(result.scene.animationChannels).toEqual(snapshot.snapshot.scene.animationChannels);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-opacity:${"b".repeat(64)}`);
   });
 
   it("authorizes one finite t=0 rotation and rejects non-finite or mismatched authority", async () => {
