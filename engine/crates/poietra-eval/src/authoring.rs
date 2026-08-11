@@ -18,6 +18,16 @@ pub struct RotateSceneEntityCommandV1 {
     pub provenance: ProvenanceRecordV1,
 }
 
+/// One profile-free Studio command that translates a root entity in world space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MoveSceneEntityCommandV1 {
+    pub delta: PointV1,
+    pub entity_id: String,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RotateSceneEntityErrorV1 {
     #[error("the installed Scene revision does not match expectedBaseRevision")]
@@ -39,6 +49,28 @@ pub enum RotateSceneEntityErrorV1 {
     #[error("the rotation provenance ID already exists: {0}")]
     ProvenanceConflict(String),
     #[error("the rotated Scene failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MoveSceneEntityErrorV1 {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the move must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the world-space move delta must be finite and non-zero")]
+    InvalidDelta,
+    #[error("the move target does not exist: {0}")]
+    TargetMissing(String),
+    #[error("world-space move currently requires a root entity: {0}")]
+    TargetIsNotRoot(String),
+    #[error("world-space move does not yet support an animated transform target: {0}")]
+    AnimatedTransformUnsupported(String),
+    #[error("the move provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("the move provenance ID already exists: {0}")]
+    ProvenanceConflict(String),
+    #[error("the moved Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
 }
 
@@ -139,6 +171,85 @@ impl EngineSessionV1 {
         self.replace_snapshot(candidate)?;
         Ok(result)
     }
+
+    /// Atomically translates one root entity by a world-space delta.
+    ///
+    /// The command is deliberately independent of source profiles, viewport coordinates, and
+    /// Manim bindings. Integration code must authorize and lower those concerns before calling
+    /// this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene and retained index.
+    pub fn move_scene_entity_v1(
+        &mut self,
+        command: MoveSceneEntityCommandV1,
+    ) -> Result<SceneIrBundleV1, MoveSceneEntityErrorV1> {
+        if self.scene().source.revision_hash() != command.expected_base_revision {
+            return Err(MoveSceneEntityErrorV1::StaleBaseRevision);
+        }
+        if command.next_revision == command.expected_base_revision {
+            return Err(MoveSceneEntityErrorV1::RevisionDidNotAdvance);
+        }
+        if !command.delta.x.is_finite()
+            || !command.delta.y.is_finite()
+            || (command.delta.x == 0.0 && command.delta.y == 0.0)
+        {
+            return Err(MoveSceneEntityErrorV1::InvalidDelta);
+        }
+        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+            return Err(MoveSceneEntityErrorV1::InvalidProvenanceOrigin);
+        }
+        if self
+            .scene()
+            .provenance
+            .iter()
+            .any(|record| record.id == command.provenance.id)
+        {
+            return Err(MoveSceneEntityErrorV1::ProvenanceConflict(
+                command.provenance.id,
+            ));
+        }
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        if candidate.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::AffineTransform { entity_id, .. }
+                    | AnimationChannelV1::MotionPath { entity_id, .. }
+                    if entity_id == &command.entity_id
+            )
+        }) {
+            return Err(MoveSceneEntityErrorV1::AnimatedTransformUnsupported(
+                command.entity_id,
+            ));
+        }
+        let target = candidate
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == command.entity_id)
+            .ok_or_else(|| MoveSceneEntityErrorV1::TargetMissing(command.entity_id.clone()))?;
+        if target.parent_id.is_some() {
+            return Err(MoveSceneEntityErrorV1::TargetIsNotRoot(command.entity_id));
+        }
+        target.transform.tx += command.delta.x;
+        target.transform.ty += command.delta.y;
+        target.provenance_id.clone_from(&command.provenance.id);
+        candidate.scene.provenance.push(command.provenance);
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -205,6 +316,49 @@ mod tests {
         }
     }
 
+    fn move_command() -> MoveSceneEntityCommandV1 {
+        MoveSceneEntityCommandV1 {
+            delta: PointV1 { x: -1.25, y: 4.0 },
+            entity_id: "later".to_owned(),
+            expected_base_revision: BASE_REVISION.to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio move".to_owned()],
+                id: "studio-move".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+        }
+    }
+
+    fn move_command_for(bundle: &SceneIrBundleV1, entity_id: &str) -> MoveSceneEntityCommandV1 {
+        let expected_base_revision = bundle.scene.source.revision_hash().to_owned();
+        let next_revision = if expected_base_revision == NEXT_REVISION {
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned()
+        } else {
+            NEXT_REVISION.to_owned()
+        };
+        MoveSceneEntityCommandV1 {
+            entity_id: entity_id.to_owned(),
+            expected_base_revision,
+            next_revision,
+            ..move_command()
+        }
+    }
+
+    fn rejected_move(
+        bundle: SceneIrBundleV1,
+        command: MoveSceneEntityCommandV1,
+    ) -> MoveSceneEntityErrorV1 {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.move_scene_entity_v1(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
     #[test]
     fn rotates_an_imported_root_and_returns_the_installed_bundle() {
         let bundle = imported_bundle();
@@ -238,6 +392,114 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
         assert_eq!(session.assets(), &result.assets);
         assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn moves_an_imported_root_by_one_world_delta() {
+        let bundle = imported_bundle();
+        let original = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .clone();
+        let untouched = bundle.scene.entities[1..].to_vec();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.move_scene_entity_v1(move_command()).unwrap();
+        let moved = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+
+        assert_eq!(
+            moved.transform,
+            poietra_scene_ir::AffineTransformV1 {
+                tx: 1.75,
+                ty: 2.0,
+                ..original.transform
+            }
+        );
+        assert_eq!(moved.provenance_id, "studio-move");
+        assert_eq!(result.scene.entities[1..], untouched);
+        assert_eq!(
+            result.scene.provenance.last(),
+            Some(&move_command().provenance)
+        );
+        assert_eq!(
+            result.scene.source,
+            SceneSourceV1::StudioEditProgram {
+                edit_program_version: ContractVersionV1,
+                revision_hash: NEXT_REVISION.to_owned(),
+            }
+        );
+        assert_eq!(session.scene(), &result.scene);
+        assert_eq!(session.assets(), &result.assets);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn every_rejected_move_preserves_the_retained_scene() {
+        let mut rejected = Vec::new();
+
+        let mut stale = move_command();
+        stale.expected_base_revision =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned();
+        rejected.push(stale);
+
+        let mut invalid_revision = move_command();
+        invalid_revision.next_revision = "not-a-revision".to_owned();
+        rejected.push(invalid_revision);
+
+        let mut unchanged_revision = move_command();
+        unchanged_revision.next_revision = BASE_REVISION.to_owned();
+        rejected.push(unchanged_revision);
+
+        let mut missing = move_command();
+        missing.entity_id = "missing".to_owned();
+        rejected.push(missing);
+
+        let mut invalid_delta = move_command();
+        invalid_delta.delta.x = f64::NAN;
+        rejected.push(invalid_delta);
+
+        let mut zero_delta = move_command();
+        zero_delta.delta = PointV1 { x: 0.0, y: -0.0 };
+        rejected.push(zero_delta);
+
+        let mut wrong_origin = move_command();
+        wrong_origin.provenance.origin = ProvenanceOriginV1::Fixture;
+        rejected.push(wrong_origin);
+
+        let mut duplicate_provenance = move_command();
+        duplicate_provenance.provenance.id = "fixture".to_owned();
+        rejected.push(duplicate_provenance);
+
+        for command in rejected {
+            let _error = rejected_move(imported_bundle(), command);
+        }
+
+        let child_bundle = fixture_bundle("dynamic-affine-camera.json");
+        let child_command = move_command_for(&child_bundle, "asymmetric-child");
+        assert!(matches!(
+            rejected_move(child_bundle, child_command),
+            MoveSceneEntityErrorV1::TargetIsNotRoot(id) if id == "asymmetric-child"
+        ));
+
+        for (fixture, entity_id) in [
+            ("dynamic-affine-camera.json", "dynamic-parent"),
+            ("manim-motion-path.json", "mover"),
+        ] {
+            let bundle = fixture_bundle(fixture);
+            let command = move_command_for(&bundle, entity_id);
+            assert!(matches!(
+                rejected_move(bundle, command),
+                MoveSceneEntityErrorV1::AnimatedTransformUnsupported(id) if id == entity_id
+            ));
+        }
     }
 
     #[test]

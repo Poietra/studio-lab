@@ -24,9 +24,34 @@ export type RotateSceneEntityCompilerV1 = (
   command: RotateSceneEntityCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-type SceneAuthoringBindingsV1 = Readonly<{
+export type MoveSceneEntityCommandV1 = Readonly<{
+  delta: Readonly<{ x: number; y: number }>;
+  entityId: string;
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.move-scene-entity";
+  version: 1;
+}>;
+
+export type MoveSceneEntityCompilerV1 = (
+  snapshot: SceneIrBundleV1,
+  command: MoveSceneEntityCommandV1,
+) => Promise<SceneIrBundleV1>;
+
+type RotateSceneAuthoringBindingsV1 = Readonly<{
   rotateSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
+
+type MoveSceneAuthoringBindingsV1 = Readonly<{
+  moveSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
+type SceneAuthoringBindingsV1 = MoveSceneAuthoringBindingsV1 & RotateSceneAuthoringBindingsV1;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null;
@@ -49,11 +74,13 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     if (
       typeof candidate.poietraEngineAbiVersion !== "function" ||
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
+      typeof candidate.moveSceneEntityV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function"
     ) {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
     }
     return {
+      moveSceneEntityV1: candidate.moveSceneEntityV1 as SceneAuthoringBindingsV1["moveSceneEntityV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
     };
   })();
@@ -61,18 +88,34 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   return pending;
 }
 
+async function invokeSceneAuthoringCommandV1(
+  snapshot: SceneIrBundleV1,
+  command: unknown,
+  invoke: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array,
+) {
+  const response = invoke(encoder.encode(JSON.stringify(snapshot)), encoder.encode(JSON.stringify(command)));
+  return parseVerifiedSceneIrBundleV1(JSON.parse(decoder.decode(response)) as unknown);
+}
+
 /** Creates the browser adapter around one concrete, profile-free Rust command. */
 export function createRotateSceneEntityCompilerV1(
-  getBindings: () => Promise<SceneAuthoringBindingsV1>,
+  getBindings: () => Promise<RotateSceneAuthoringBindingsV1>,
 ): RotateSceneEntityCompilerV1 {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    const response = bindings.rotateSceneEntityV1(
-      encoder.encode(JSON.stringify(snapshot)),
-      encoder.encode(JSON.stringify(command)),
-    );
-    return parseVerifiedSceneIrBundleV1(JSON.parse(decoder.decode(response)) as unknown);
+    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.rotateSceneEntityV1);
+  };
+}
+
+/** Creates the browser adapter around one concrete, profile-free Rust command. */
+export function createMoveSceneEntityCompilerV1(
+  getBindings: () => Promise<MoveSceneAuthoringBindingsV1>,
+): MoveSceneEntityCompilerV1 {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.moveSceneEntityV1);
   };
 }
 
 export const compileRotateSceneEntityV1 = createRotateSceneEntityCompilerV1(loadBindings);
+export const compileMoveSceneEntityV1 = createMoveSceneEntityCompilerV1(loadBindings);

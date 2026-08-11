@@ -1,4 +1,9 @@
-import { compileRotateSceneEntityV1, type RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
+import {
+  compileMoveSceneEntityV1,
+  compileRotateSceneEntityV1,
+  type MoveSceneEntityCompilerV1,
+  type RotateSceneEntityCompilerV1,
+} from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
 import {
@@ -1522,6 +1527,7 @@ export function conjugateUniformScaleAboutCenterV1(
 export async function compileStudioPreviewGenericInitialEditV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
+    moveCompiler?: MoveSceneEntityCompilerV1;
     proposedState: ProposedState;
     rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
@@ -1620,6 +1626,29 @@ export async function compileStudioPreviewGenericInitialEditV1(
     }
   } else {
     const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
+    if (edit.kind === "move") {
+      const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
+      const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+      try {
+        const rebased = await (input.moveCompiler ?? compileMoveSceneEntityV1)(input.snapshot.snapshot, {
+          delta,
+          entityId: target.id,
+          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+          nextRevision: input.sourceRevisionHash,
+          provenance,
+          schema: "poietra.move-scene-entity",
+          version: 1,
+        });
+        return { kind: "rebased", scene: rebased.scene };
+      } catch (error) {
+        return unsupported(
+          "geometry-edit-unsupported",
+          `Rust core rejected the generic Runtime Trace move: ${
+            error instanceof Error ? error.message : "unknown error"
+          }`,
+        );
+      }
+    }
     if (edit.kind === "rotation") {
       try {
         const rebased = await (input.rotationCompiler ?? compileRotateSceneEntityV1)(input.snapshot.snapshot, {
@@ -1642,23 +1671,13 @@ export async function compileStudioPreviewGenericInitialEditV1(
         );
       }
     }
-    let editedTransform: SceneEntityV1["transform"];
-    if (edit.kind === "move") {
-      const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
-      const translation = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
-      if (![translation.x, translation.y].every(Number.isFinite)) {
-        return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root translation is not finite.");
-      }
-      editedTransform = {
-        ...target.transform,
-        tx: target.transform.tx + translation.x,
-        ty: target.transform.ty + translation.y,
-      };
-    } else {
-      // Conjugate the uniform scale about the verified initial center so the
-      // root keeps its placement while every descendant scales with it.
-      editedTransform = conjugateUniformScaleAboutCenterV1(target.transform, baseCenter, edit.scaleFactor);
-    }
+    // Conjugate the uniform scale about the verified initial center so the
+    // root keeps its placement while every descendant scales with it.
+    const editedTransform: SceneEntityV1["transform"] = conjugateUniformScaleAboutCenterV1(
+      target.transform,
+      baseCenter,
+      edit.scaleFactor,
+    );
     if (
       ![
         editedTransform.m11,
