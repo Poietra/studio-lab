@@ -105,6 +105,7 @@ function renderSelectedInspector(
   entity: ProjectedEntity,
   draftError: string | null,
   draftProgram: Parameters<typeof StudioInspector>[0]["draftProgram"] = null,
+  rotationAvailable = false,
 ) {
   return renderToStaticMarkup(
     <StudioInspector
@@ -118,6 +119,7 @@ function renderSelectedInspector(
       onDiscardDraft={vi.fn()}
       onDraftOperationChange={vi.fn()}
       onEntityEdit={vi.fn()}
+      onEntityRotate={vi.fn()}
       onEntityScaleChange={vi.fn()}
       onInspectorFocusRestored={vi.fn()}
       onRenderSessionChange={vi.fn()}
@@ -128,6 +130,7 @@ function renderSelectedInspector(
       renderCandidateUnavailableReason="No render candidate."
       renderSession={null}
       replacingAppliedProgram={false}
+      rotationAvailable={rotationAvailable}
       selectedEntity={entity}
       sourceExport={null}
       suggestion={null}
@@ -1173,6 +1176,18 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('aria-label="Y draft position of equation_1"');
     expect(markup).toContain('value="202.5"');
     expect(markup).toContain("Update draft position");
+  });
+
+  it("enables rotation controls only for an exact generic Runtime Trace target", () => {
+    const disabled = renderSelectedInspector(CIRCLE_ENTITY, null);
+    const enabled = renderSelectedInspector(CIRCLE_ENTITY, null, null, true);
+    const clockwise = /<button aria-label="Rotate circle_1 clockwise by 15 degrees"[^>]*>/u;
+    const counterclockwise = /<button aria-label="Rotate circle_1 counterclockwise by 15 degrees"[^>]*>/u;
+
+    expect(disabled.match(clockwise)?.[0]).toContain('disabled=""');
+    expect(disabled.match(counterclockwise)?.[0]).toContain('disabled=""');
+    expect(enabled.match(clockwise)?.[0]).not.toContain('disabled=""');
+    expect(enabled.match(counterclockwise)?.[0]).not.toContain('disabled=""');
   });
 
   it("never guesses a runtime entity from geometry or a duplicated current source name", () => {

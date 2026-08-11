@@ -11,6 +11,7 @@ import { compileEngineFrameV1 } from "../src/engine/reference-evaluator";
 import {
   deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
   deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
 } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
@@ -265,6 +266,92 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         expect(preview.roots[0]?.evidence.endpoints).toMatchObject({
           initial: { center: { x: 0, y: 0 }, dimensions: { height: 3, width: 3 }, frameIndex: 0 },
           terminal: { center: { x: 0, y: 0 }, dimensions: { height: 3, width: 3 }, frameIndex: 5 },
+        });
+      } finally {
+        await runner.close();
+        await rm(root, { force: true, recursive: true });
+      }
+    });
+
+    it("verifies one real generic initial rotation as a fresh V3 base/candidate pair", {
+      timeout: 60_000,
+    }, async () => {
+      const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-rotation-real-"));
+      await mkdir(join(root, "scenes"));
+      const sourcePath = "scenes/triangle.py";
+      const baseSource = `from manim import *
+
+class StaticTriangle(Scene):
+    def construct(self):
+        triangle = Triangle().set_fill(BLUE, opacity=0.6)
+        triangle.rotate(0.3)
+        triangle.set_stroke(WHITE, width=2)
+        self.add(triangle)
+        self.wait(0.1)
+`;
+      await writeFile(join(root, sourcePath), baseSource, "utf8");
+      const candidateSource = baseSource.replace(
+        "        triangle.rotate(0.3)\n",
+        "        triangle.rotate(0.3)\n        triangle.rotate(0.261799387799)\n",
+      );
+      const plan = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+        candidateSource,
+        "StaticTriangle",
+        sourcePath,
+        "triangle",
+      );
+      const runner = new FastManimSnapshotRunner({
+        backend: createConfiguredFastManimSandboxBackendV1({
+          command: producerCommand,
+          deployment: "test",
+          localProcessDevOptIn: true,
+          producerEnv: fastManimRuntimeTraceProducerEnvironment(),
+          projectRoot: root,
+        }),
+        deployment: "test",
+        frame: { height: 8, width: 14.222222222222221 },
+        projectId: "demo",
+        projectRoot: root,
+        tenantId: "test-tenant",
+        timeoutMs: 60_000,
+      });
+      try {
+        const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
+          genericInitialRotation: {
+            baseBinding: plan.baseBinding,
+            baseSourceHash: plan.baseSourceHash,
+            entityId: `source:${sourcePath}#StaticTriangle:triangle`,
+            expectedAngleRadians: plan.expectedAngleRadians,
+            kind: "fast-manim-generic-initial-rotation-v3",
+          },
+          projectId: "demo",
+          requestId: "runtime-trace-v3-rotation-real-1",
+          sceneName: "StaticTriangle",
+          sourcePath,
+        });
+        expect(preflight).toMatchObject({
+          sourceHash: createHash("sha256").update(candidateSource).digest("hex"),
+          status: "verified",
+          traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+        });
+
+        await writeFile(join(root, sourcePath), candidateSource, "utf8");
+        const preview = await runner.runRuntimeTrace({
+          projectId: "demo",
+          requestId: "runtime-trace-v3-rotation-preview-real-1",
+          responseVersion: 2,
+          sceneName: "StaticTriangle",
+          sourceHash: preflight.sourceHash,
+          sourcePath,
+        });
+        expect(preview.status).toBe("verified");
+        if (preview.status !== "verified" || preview.version !== 2) {
+          throw new Error(preview.status === "verified" ? "Expected Runtime Trace wire V2." : preview.failure.message);
+        }
+        expect(preview.roots[0]?.evidence.endpoints.initial.center).not.toEqual({ x: 0, y: 0 });
+        expect(preview.roots[0]?.evidence.endpoints).toMatchObject({
+          initial: { frameIndex: 0 },
+          terminal: { frameIndex: 5 },
         });
       } finally {
         await runner.close();

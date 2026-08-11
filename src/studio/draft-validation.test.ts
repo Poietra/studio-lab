@@ -1,13 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import { projectedPositions, validateSuggestionDraft, validatedProgramRecord } from "./draft-validation";
+import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./draft-validation";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { canonicalOperationSchema } from "./operation-registry";
+import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
+  createDirectManipulationRotationProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
 
@@ -215,6 +216,63 @@ describe("Studio draft validation boundary", () => {
     expect(
       projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
     ).toBeCloseTo(1.5);
+  });
+
+  it("creates one finite rotation and rejects identity angles before validation", () => {
+    const validation = createDirectManipulationRotationProgram({
+      angleRadians: Math.PI / 4,
+      capturedPlayhead: 0,
+      entityId: "equation_1",
+      scene: STUDIO_FIXTURE_SCENE,
+      start: 0,
+      transactionId: "rotation-projection",
+    });
+
+    expect(validation.kind).toBe("valid");
+    expect(validation.program).toMatchObject({
+      loweringStatus: "supported",
+      operations: [
+        {
+          entityId: "equation_1",
+          from: 0,
+          interval: { end: 0, start: 0 },
+          key: "rotation",
+          kind: "AnimateProperty",
+          relativeDelta: Math.PI / 4,
+          to: Math.PI / 4,
+        },
+      ],
+    });
+    const create = (angleRadians: number) =>
+      createDirectManipulationRotationProgram({
+        angleRadians,
+        capturedPlayhead: 0,
+        entityId: "equation_1",
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 0,
+        transactionId: "rotation-noop",
+      });
+    expect(() => create(0)).toThrow(/must change the current angle/i);
+    expect(() => create(2 * Math.PI)).toThrow(/must change the current angle/i);
+    expect(() =>
+      createDirectManipulationRotationProgram({
+        angleRadians: Math.PI / 4,
+        capturedPlayhead: 5,
+        entityId: "equation_1",
+        scene: STUDIO_FIXTURE_SCENE,
+        start: 5,
+        transactionId: "rotation-after-zero",
+      }),
+    ).toThrow(/source time zero/i);
+    expect(
+      programExecutionCapabilities({
+        ...validation.program,
+        operations: validation.program.operations.map((operation) => ({
+          ...operation,
+          interval: { end: 5, start: 5 },
+        })),
+      }),
+    ).toMatchObject({ apply: "blocked", lowering: "illustrative" });
   });
 
   it("previews an animated resize throughout its requested interval", () => {

@@ -8,6 +8,7 @@ import {
   type FastManimRuntimeTraceInitialEditCandidateErrorV3,
   verifyFastManimRuntimeTraceInitialMoveCandidateV3,
   verifyFastManimRuntimeTraceInitialResizeCandidateV3,
+  verifyFastManimRuntimeTraceInitialRotationCandidateV3,
 } from "./fast-manim-runtime-trace-v3-candidate";
 import {
   createFastManimRuntimeTraceProducerRequestV3,
@@ -463,5 +464,187 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
 
     rejectResizeCode((input) => offCenter(input, { x: 1, y: 0.25 }), "candidate-semantic");
     rejectResizeCode((input) => offCenter(input, { x: 2, y: 0.5 }), "candidate-semantic");
+  });
+});
+
+const ROTATION_ANGLE_RADIANS = 0.523598775598;
+const ROTATION_CANDIDATE_SOURCE = BASE_SOURCE.replace(
+  "        square.set_stroke(WHITE, width=2)\n",
+  `        square.rotate(${ROTATION_ANGLE_RADIANS})\n        square.set_stroke(WHITE, width=2)\n`,
+);
+const ROTATED_PATH_ID = `path:${"d".repeat(64)}`;
+
+function rotatedPathValue(
+  path: ReturnType<typeof fastManimRuntimeTraceV3Schema.parse>["resources"]["paths"][number]["path"],
+  angleRadians: number,
+) {
+  const cosine = Math.cos(angleRadians);
+  const sine = Math.sin(angleRadians);
+  const rotate = ({ x, y }: Readonly<{ x: number; y: number }>) => ({
+    x: Number((cosine * x - sine * y).toFixed(13)),
+    y: Number((sine * x + cosine * y).toFixed(13)),
+  });
+  return {
+    subpaths: path.subpaths.map((subpath) => ({
+      closed: subpath.closed,
+      segments: subpath.segments.map((segment) => ({
+        control1: rotate(segment.control1),
+        control2: rotate(segment.control2),
+        end: rotate(segment.end),
+      })),
+      start: rotate(subpath.start),
+    })),
+  };
+}
+
+function rotationFixture() {
+  const baseRequest = request(BASE_SOURCE);
+  const candidateRequest = request(ROTATION_CANDIDATE_SOURCE);
+  const base = fastManimRuntimeTraceV3Schema.parse(structuredClone(genericRuntimeTraceFixture));
+  const candidate = structuredClone(base);
+  candidate.sourceHash = candidateRequest.sourceHash;
+  candidate.sourceBindings[0]!.binding = structuredClone(candidateRequest.sourceBindings[0]!);
+  const rotatedExtent = Number(
+    (2 * (Math.abs(Math.cos(ROTATION_ANGLE_RADIANS)) + Math.abs(Math.sin(ROTATION_ANGLE_RADIANS)))).toFixed(13),
+  );
+  for (const endpoint of Object.values(candidate.sourceBindings[0]!.endpoints)) {
+    endpoint.dimensions = { height: rotatedExtent, width: rotatedExtent };
+  }
+  candidate.resources.paths = base.resources.paths.map((resource) => ({
+    id: ROTATED_PATH_ID,
+    path: rotatedPathValue(resource.path, ROTATION_ANGLE_RADIANS),
+  }));
+  for (const frame of candidate.frames) {
+    for (const state of frame.states) state.pathId = ROTATED_PATH_ID;
+  }
+  return {
+    base,
+    baseRequest,
+    binding: structuredClone(baseRequest.sourceBindings[0]!),
+    candidate,
+    candidateRequest,
+    expectedAngleRadians: ROTATION_ANGLE_RADIANS,
+  };
+}
+
+function asymmetricRotationFixture() {
+  const input = rotationFixture();
+  const canonical = (value: number) => Number(value.toFixed(13));
+  const line = (from: Readonly<{ x: number; y: number }>, to: Readonly<{ x: number; y: number }>) => ({
+    control1: { x: canonical(from.x + (to.x - from.x) / 3), y: canonical(from.y + (to.y - from.y) / 3) },
+    control2: {
+      x: canonical(from.x + (2 * (to.x - from.x)) / 3),
+      y: canonical(from.y + (2 * (to.y - from.y)) / 3),
+    },
+    end: { ...to },
+  });
+  const top = { x: 0, y: 1 } as const;
+  const left = { x: -1, y: -1 } as const;
+  const right = { x: 1, y: -1 } as const;
+  const trianglePath = {
+    subpaths: [
+      {
+        closed: true,
+        segments: [line(top, left), line(left, right), line(right, top)],
+        start: { ...top },
+      },
+    ],
+  };
+  input.base.resources.paths[0]!.path = trianglePath;
+  input.candidate.resources.paths[0]!.path = rotatedPathValue(trianglePath, ROTATION_ANGLE_RADIANS);
+  const candidatePoints = input.candidate.resources.paths[0]!.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
+  ]);
+  const xs = candidatePoints.map(({ x }) => x);
+  const ys = candidatePoints.map(({ y }) => y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const center = {
+    x: Number(((minX + maxX) / 2).toFixed(13)),
+    y: Number(((minY + maxY) / 2).toFixed(13)),
+  };
+  for (const point of candidatePoints) {
+    point.x = Number((point.x - center.x).toFixed(13));
+    point.y = Number((point.y - center.y).toFixed(13));
+  }
+  for (const frame of input.candidate.frames) {
+    for (const state of frame.states) {
+      state.transform.tx = center.x;
+      state.transform.ty = center.y;
+    }
+  }
+  for (const endpoint of Object.values(input.base.sourceBindings[0]!.endpoints)) {
+    endpoint.center = { x: 0, y: 0 };
+    endpoint.dimensions = { height: 2, width: 2 };
+  }
+  for (const endpoint of Object.values(input.candidate.sourceBindings[0]!.endpoints)) {
+    endpoint.center = center;
+    endpoint.dimensions = {
+      height: Number((maxY - minY).toFixed(13)),
+      width: Number((maxX - minX).toFixed(13)),
+    };
+  }
+  return input;
+}
+
+type RotationFixture = ReturnType<typeof rotationFixture>;
+
+function rejectRotationCode(
+  mutate: (input: RotationFixture) => void,
+  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+) {
+  const input = rotationFixture();
+  mutate(input);
+  expect(() => verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toThrowError(
+    expect.objectContaining({ code }),
+  );
+}
+
+describe("verifyFastManimRuntimeTraceInitialRotationCandidateV3", () => {
+  it("accepts one exact center-preserving path rotation", () => {
+    const input = rotationFixture();
+
+    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+    expect(input.base.resources.paths).not.toEqual(input.candidate.resources.paths);
+    expect(input.base.resources.appearances).toEqual(input.candidate.resources.appearances);
+  });
+
+  it("accepts an asymmetric path when rotation changes its localized AABB anchor", () => {
+    const input = asymmetricRotationFixture();
+
+    expect(input.candidate.sourceBindings[0]!.endpoints.initial.center).not.toEqual({ x: 0, y: 0 });
+    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+  });
+
+  it("rejects a selected path or draw anchor that does not match the requested rotation", () => {
+    rejectRotationCode((input) => {
+      const start = input.candidate.resources.paths[0]!.path.subpaths[0]!.start;
+      start.x = Number((start.x + 0.1).toFixed(13));
+    }, "candidate-semantic");
+    rejectRotationCode((input) => {
+      input.candidate.frames[0]!.states[0]!.transform.tx += 0.1;
+    }, "candidate-semantic");
+  });
+
+  it("accepts an untouched sibling and rejects any sibling state change", () => {
+    const input = rotationFixture();
+    withSiblingRoot(input);
+    input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
+
+    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+
+    rejectRotationCode((changed) => {
+      withSiblingRoot(changed);
+      changed.candidate.resources.paths.push(structuredClone(changed.base.resources.paths[0]!));
+      changed.candidate.frames[0]!.states[1]!.transform.tx += 0.1;
+    }, "candidate-semantic");
+  });
+
+  it("rejects zero and full-turn angles as no-ops", () => {
+    rejectRotationCode((input) => (input.expectedAngleRadians = 0), "candidate-noop");
+    rejectRotationCode((input) => (input.expectedAngleRadians = 6.2831853071796), "candidate-noop");
   });
 });
