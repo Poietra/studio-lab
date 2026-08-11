@@ -33,6 +33,17 @@ function sessionRepository() {
   };
   const value: AccountSessionControlRepositoryV1 = {
     close,
+    listActiveOrganizationMembers: vi.fn(async () => ({
+      kind: "listed" as const,
+      members: [
+        {
+          displayName: "Ada Lovelace",
+          id: "6b0cd2da-7b88-4542-87ea-e48e73b33df3",
+          role: "owner" as const,
+          version: 1,
+        },
+      ],
+    })),
     revokeAccountSession: vi.fn(async () => undefined),
     resolveAccountSession: vi.fn(async () => account),
     switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const, mutation })),
@@ -113,6 +124,14 @@ describe("OIDC account control-plane composition", () => {
     ).resolves.toMatchObject({ status: 200 });
     await expect(
       controlPlane.fetch(
+        new Request("https://studio.example/api/account/members", {
+          headers: { cookie: `__Host-poietra_session=${token}` },
+        }),
+        environment,
+      ),
+    ).resolves.toMatchObject({ status: 200 });
+    await expect(
+      controlPlane.fetch(
         new Request("https://studio.example/api/account/session", {
           body: JSON.stringify({
             expectedVersion: 4,
@@ -155,12 +174,12 @@ describe("OIDC account control-plane composition", () => {
 
     expect(created).toHaveLength(2);
     expect(invitationCreated).toHaveLength(1);
-    expect(sessionCreated).toHaveLength(3);
+    expect(sessionCreated).toHaveLength(4);
     expect(created[0]?.value.ready).toHaveBeenCalledOnce();
     expect(created[1]?.value.consumeLoginAttempt).toHaveBeenCalledOnce();
     expect(created.map(({ close }) => close.mock.calls.length)).toEqual([1, 1]);
     expect(invitationCreated[0]?.close).toHaveBeenCalledOnce();
-    expect(sessionCreated.map(({ close }) => close.mock.calls.length)).toEqual([1, 1, 1]);
+    expect(sessionCreated.map(({ close }) => close.mock.calls.length)).toEqual([1, 1, 1, 1]);
   });
 
   it("does not initialize OIDC configuration for an existing account session", async () => {

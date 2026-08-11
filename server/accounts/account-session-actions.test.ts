@@ -27,6 +27,7 @@ const account = {
 function fixture() {
   const repository: AccountSessionControlRepositoryV1 = {
     close: vi.fn(async () => undefined),
+    listActiveOrganizationMembers: vi.fn(async () => ({ kind: "listed" as const, members: [] })),
     resolveAccountSession: vi.fn(async () => account),
     revokeAccountSession: vi.fn(async () => undefined),
     switchActiveOrganization: vi.fn(async () => ({ account, kind: "updated" as const, mutation })),

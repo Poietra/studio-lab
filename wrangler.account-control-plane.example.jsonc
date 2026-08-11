@@ -16,6 +16,10 @@
       "zone_name": "example.com"
     },
     {
+      "pattern": "https://studio.example.com/api/account/members",
+      "zone_name": "example.com"
+    },
+    {
       "pattern": "https://studio.example.com/api/account/logout",
       "zone_name": "example.com"
     },

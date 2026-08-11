@@ -1,4 +1,16 @@
 import {
+  ACCOUNT_INVITATIONS_ROUTE_V1,
+  createAccountInvitationFetchHandlerV1,
+  createAccountInvitationFetchRequestGuardV1,
+} from "./accounts/account-invitation-fetch";
+import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
+import { createAccountInvitationServiceV1 } from "./accounts/account-invitation-service";
+import {
+  ACCOUNT_MEMBERS_ROUTE_V1,
+  createAccountMembershipFetchHandlerV1,
+  createAccountMembershipFetchRequestGuardV1,
+} from "./accounts/account-membership-fetch";
+import {
   ACCOUNT_LOGOUT_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
   createAccountSessionActionFetchHandlerV1,
@@ -7,13 +19,6 @@ import {
   createAccountSessionFetchRequestGuardV1,
 } from "./accounts/account-session-fetch";
 import type { AccountSessionControlRepositoryV1 } from "./accounts/account-session-repository";
-import {
-  ACCOUNT_INVITATIONS_ROUTE_V1,
-  createAccountInvitationFetchHandlerV1,
-  createAccountInvitationFetchRequestGuardV1,
-} from "./accounts/account-invitation-fetch";
-import type { AccountInvitationRepositoryV1 } from "./accounts/account-invitation-repository";
-import { createAccountInvitationServiceV1 } from "./accounts/account-invitation-service";
 import { createOidcLoginFetchHandlerV1, createOidcLoginFetchRequestGuardV1 } from "./accounts/oidc-login-fetch";
 import type { OidcLoginRepositoryV1 } from "./accounts/oidc-login-repository";
 import { createOidcLoginServiceV1 } from "./accounts/oidc-login-service";
@@ -45,6 +50,7 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   const sessionRequestGuard = createAccountSessionFetchRequestGuardV1(options.oidc.publicOrigin);
   const sessionActionRequestGuard = createAccountSessionActionFetchRequestGuardV1(options.oidc.publicOrigin);
   const invitationRequestGuard = createAccountInvitationFetchRequestGuardV1(options.oidc.publicOrigin);
+  const membershipRequestGuard = createAccountMembershipFetchRequestGuardV1(options.oidc.publicOrigin);
   const withService = async <T>(
     environment: Environment,
     operation: (service: ReturnType<typeof createOidcLoginServiceV1>) => Promise<T>,
@@ -108,6 +114,13 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
           createAccountSessionFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
         );
       }
+      if (pathname === ACCOUNT_MEMBERS_ROUTE_V1) {
+        const rejected = membershipRequestGuard.reject(request);
+        if (rejected) return Promise.resolve(rejected);
+        return withSessionRepository(environment, (repository) =>
+          createAccountMembershipFetchHandlerV1(repository, options.oidc.publicOrigin).fetch(request),
+        );
+      }
       if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1) {
         const rejected = sessionActionRequestGuard.reject(request);
         if (rejected) return Promise.resolve(rejected);
@@ -126,13 +139,14 @@ export function createOidcAccountControlPlaneV1<Environment>(options: OidcAccoun
   });
 }
 
-export { ACCOUNT_LOGOUT_ROUTE_V1, ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
 export { ACCOUNT_INVITATIONS_ROUTE_V1 } from "./accounts/account-invitation-fetch";
+export { ACCOUNT_MEMBERS_ROUTE_V1 } from "./accounts/account-membership-fetch";
+export { ACCOUNT_LOGOUT_ROUTE_V1, ACCOUNT_SESSION_ROUTE_V1 } from "./accounts/account-session-fetch";
 export {
   OIDC_LOGIN_BINDING_COOKIE_NAME_V1,
   OIDC_LOGIN_CALLBACK_ROUTE_V1,
   OIDC_LOGIN_START_ROUTE_V1,
 } from "./accounts/oidc-login-fetch";
-export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 export { PostgresAccountInvitationRepositoryV1 } from "./storage/postgres/postgres-account-invitation-repository";
+export { PostgresAccountSessionRepositoryV1 } from "./storage/postgres/postgres-account-session-repository";
 export { PostgresOidcLoginRepositoryV1 } from "./storage/postgres/postgres-oidc-login-repository";

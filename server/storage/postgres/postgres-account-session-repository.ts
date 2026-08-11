@@ -1,6 +1,10 @@
 import type { Pool, PoolConfig, QueryResultRow } from "pg";
 
 import {
+  type AccountOrganizationMemberV1,
+  accountOrganizationMemberSchemaV1,
+} from "../../../src/accounts/account-membership-contract";
+import {
   accountDisplayNameSchemaV1,
   accountOrganizationSwitchMutationIdSchemaV1,
 } from "../../../src/accounts/account-session-contract";
@@ -8,6 +12,7 @@ import { accountUserIdSchemaV1, organizationIdSchemaV1, organizationRoleSchemaV1
 import type {
   AccountSessionControlRepositoryV1,
   AccountSessionRepositoryV1,
+  ListActiveOrganizationMembersResultV1,
   ResolvedAccountSessionAccountV1,
   ResolvedAccountSessionV1,
   SwitchActiveOrganizationResultV1,
@@ -42,7 +47,16 @@ type AccountSessionSwitchRow = AccountSessionAccountRow & {
   mutation_status: string;
 };
 
+type AccountOrganizationMemberRow = QueryResultRow & {
+  access_status: string;
+  member_display_name: string | null;
+  member_id: string | null;
+  member_role: string | null;
+  member_version: string | null;
+};
+
 const MAX_ACCOUNT_ORGANIZATIONS_V1 = 256;
+const MAX_ACCOUNT_ORGANIZATION_MEMBERS_V1 = 256;
 
 function throwIfAborted(signal?: AbortSignal) {
   signal?.throwIfAborted();
@@ -229,6 +243,50 @@ function switchResultFromRows(rows: readonly AccountSessionSwitchRow[]): SwitchA
   };
 }
 
+function membersFromRows(rows: readonly AccountOrganizationMemberRow[]): ListActiveOrganizationMembersResultV1 {
+  const first = rows[0];
+  if (!first || rows.some((row) => row.access_status !== first.access_status)) {
+    throw new TypeError("PostgreSQL returned an invalid organization member result.");
+  }
+  if (first.access_status === "invalid-session" || first.access_status === "forbidden") {
+    if (
+      rows.length !== 1 ||
+      first.member_id !== null ||
+      first.member_display_name !== null ||
+      first.member_role !== null ||
+      first.member_version !== null
+    ) {
+      throw new TypeError("PostgreSQL returned members without organization access.");
+    }
+    return { kind: first.access_status };
+  }
+  if (first.access_status !== "listed") {
+    throw new TypeError("PostgreSQL returned an unknown organization member access status.");
+  }
+  if (rows.length > MAX_ACCOUNT_ORGANIZATION_MEMBERS_V1) {
+    throw new TypeError("PostgreSQL returned too many organization members.");
+  }
+  const members: AccountOrganizationMemberV1[] = rows.map((row) => {
+    const parsed = accountOrganizationMemberSchemaV1.safeParse({
+      displayName: row.member_display_name,
+      id: row.member_id,
+      role: row.member_role,
+      version:
+        typeof row.member_version === "string" && /^[1-9][0-9]*$/u.test(row.member_version)
+          ? Number(row.member_version)
+          : Number.NaN,
+    });
+    if (!parsed.success) throw new TypeError("PostgreSQL returned an invalid organization member.");
+    return parsed.data;
+  });
+  for (let index = 1; index < members.length; index += 1) {
+    if (members[index - 1]!.id >= members[index]!.id) {
+      throw new TypeError("PostgreSQL returned non-canonical organization members.");
+    }
+  }
+  return { kind: "listed", members };
+}
+
 export class PostgresAccountSessionRepositoryV1
   implements AccountSessionRepositoryV1, AccountSessionControlRepositoryV1
 {
@@ -336,6 +394,64 @@ export class PostgresAccountSessionRepositoryV1
     throwIfAborted(signal);
     const account = accountFromRows(result.rows);
     return account;
+  }
+
+  async listActiveOrganizationMembers(sessionTokenHashValue: Uint8Array, signal?: AbortSignal) {
+    const sessionTokenHash = exactSessionTokenHash(sessionTokenHashValue);
+    throwIfAborted(signal);
+    const result = await this.#connection.query<AccountOrganizationMemberRow>(
+      `WITH selected_session AS MATERIALIZED (
+         SELECT session.user_id, session.active_tenant_id
+           FROM public.account_sessions session
+           JOIN public.users account ON account.user_id = session.user_id
+          WHERE session.session_token_hash = $1
+            AND session.revoked_at IS NULL
+            AND session.expires_at > clock_timestamp()
+            AND account.status = 'active'
+          LIMIT 1
+       ), actor AS MATERIALIZED (
+         SELECT selected.user_id, selected.active_tenant_id
+           FROM selected_session selected
+           JOIN public.organization_memberships membership
+             ON membership.tenant_id = selected.active_tenant_id
+            AND membership.user_id = selected.user_id
+           JOIN public.organizations organization ON organization.tenant_id = membership.tenant_id
+          WHERE membership.status = 'active'
+            AND membership.role IN ('owner', 'admin', 'member')
+            AND organization.status = 'active'
+       ), active_members AS MATERIALIZED (
+         SELECT membership.user_id::text AS member_id,
+                account.display_name AS member_display_name,
+                membership.role AS member_role,
+                membership.version::text AS member_version
+           FROM actor
+           JOIN public.organization_memberships membership
+             ON membership.tenant_id = actor.active_tenant_id
+           JOIN public.users account ON account.user_id = membership.user_id
+          WHERE membership.status = 'active'
+            AND account.status = 'active'
+          ORDER BY membership.user_id
+          LIMIT ${MAX_ACCOUNT_ORGANIZATION_MEMBERS_V1 + 1}
+       )
+       SELECT CASE
+                WHEN selected.user_id IS NULL THEN 'invalid-session'
+                WHEN actor.user_id IS NULL THEN 'forbidden'
+                ELSE 'listed'
+              END AS access_status,
+              member.member_id,
+              member.member_display_name,
+              member.member_role,
+              member.member_version
+         FROM (VALUES (1)) AS request_anchor(value)
+         LEFT JOIN selected_session selected ON true
+         LEFT JOIN actor ON actor.user_id = selected.user_id
+         LEFT JOIN active_members member ON actor.user_id IS NOT NULL
+        ORDER BY member.member_id COLLATE "C" NULLS LAST`,
+      [sessionTokenHash],
+      signal,
+    );
+    throwIfAborted(signal);
+    return membersFromRows(result.rows);
   }
 
   async switchActiveOrganization(

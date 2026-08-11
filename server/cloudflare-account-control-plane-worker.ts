@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   ACCOUNT_INVITATIONS_ROUTE_V1,
   ACCOUNT_LOGOUT_ROUTE_V1,
+  ACCOUNT_MEMBERS_ROUTE_V1,
   ACCOUNT_SESSION_ROUTE_V1,
   createOidcAccountControlPlaneV1,
   OIDC_LOGIN_START_ROUTE_V1,
@@ -12,6 +13,7 @@ import {
   PostgresOidcLoginRepositoryV1,
 } from "./account-control-plane";
 import { createAccountInvitationFetchRequestGuardV1 } from "./accounts/account-invitation-fetch";
+import { createAccountMembershipFetchRequestGuardV1 } from "./accounts/account-membership-fetch";
 import { accountSessionTokenHashV1 } from "./accounts/account-session-authenticator";
 import {
   createAccountSessionActionFetchRequestGuardV1,
@@ -238,7 +240,12 @@ export function createCloudflareAccountControlPlaneWorkerV1(
       const pathname = new URL(request.url).pathname;
       const isInvitation =
         pathname === ACCOUNT_INVITATIONS_ROUTE_V1 || pathname.startsWith(`${ACCOUNT_INVITATIONS_ROUTE_V1}/`);
-      if (pathname === ACCOUNT_SESSION_ROUTE_V1 || pathname === ACCOUNT_LOGOUT_ROUTE_V1 || isInvitation) {
+      if (
+        pathname === ACCOUNT_SESSION_ROUTE_V1 ||
+        pathname === ACCOUNT_LOGOUT_ROUTE_V1 ||
+        pathname === ACCOUNT_MEMBERS_ROUTE_V1 ||
+        isInvitation
+      ) {
         try {
           const publicOrigin = boundedString(environment.POIETRA_PUBLIC_ORIGIN, "Public origin", 2_048);
           const rejected =
@@ -246,6 +253,8 @@ export function createCloudflareAccountControlPlaneWorkerV1(
               ? pathname === ACCOUNT_SESSION_ROUTE_V1 && request.method === "GET"
                 ? createAccountSessionFetchRequestGuardV1(publicOrigin).reject(request)
                 : createAccountSessionActionFetchRequestGuardV1(publicOrigin).reject(request)
+              : pathname === ACCOUNT_MEMBERS_ROUTE_V1
+                ? createAccountMembershipFetchRequestGuardV1(publicOrigin).reject(request)
               : createAccountInvitationFetchRequestGuardV1(publicOrigin).reject(request);
           if (rejected) return rejected;
           if (isInvitation) {
