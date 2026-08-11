@@ -203,7 +203,6 @@ fn sealed_v10_retains_three_joined_leaves_through_native_evaluation_and_wgpu_pre
     let interaction_bounds = direct
         .interaction_clip_bounds_by_entity(&bundle.scene)
         .expect("the installed V10 Scene must match the prepared packet");
-    assert_eq!(interaction_bounds.get(group_id), None);
     let bounds = bundle.scene.entities[1..]
         .iter()
         .map(|entity| {
@@ -214,6 +213,15 @@ fn sealed_v10_retains_three_joined_leaves_through_native_evaluation_and_wgpu_pre
             bounds
         })
         .collect::<Vec<_>>();
+    let group_bounds = bounds.iter().copied().reduce(|left, right| {
+        [
+            left[0].min(right[0]),
+            left[1].min(right[1]),
+            left[2].max(right[2]),
+            left[3].max(right[3]),
+        ]
+    });
+    assert_eq!(interaction_bounds.get(group_id).copied(), group_bounds);
     assert!(bounds.iter().all(|[min_x, min_y, max_x, max_y]| {
         min_x.is_finite() && min_y.is_finite() && max_x > min_x && max_y > min_y
     }));

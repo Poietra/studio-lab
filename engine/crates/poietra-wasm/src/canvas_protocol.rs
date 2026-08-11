@@ -605,7 +605,7 @@ mod tests {
     }
 
     #[test]
-    fn line_joints_v10_presents_three_leaf_bounds_and_no_group_hit_target() {
+    fn line_joints_v10_presents_requested_leaf_and_top_level_group_bounds() {
         let (session, entity_ids) = line_joints_v10_session();
         let request = serde_json::to_vec(&json!({
             "evidence": ["real LineJoints V10 WASM canvas interaction"],
@@ -621,8 +621,11 @@ mod tests {
         assert_eq!(sampled.packet.draws.len(), 3);
         let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
         assert_eq!(prepared.draws().len(), 3);
+        let bounds = prepared
+            .interaction_clip_bounds_by_entity(session.scene())
+            .unwrap();
         let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
-            prepared.clip_bounds_for_entity(entity_id)
+            bounds.get(entity_id).copied()
         });
         let response =
             presented_response_with_interaction(&sampled.correlation, false, interaction);
@@ -631,14 +634,12 @@ mod tests {
             .as_array()
             .unwrap();
         assert_eq!(entries.len(), 4);
-        assert_eq!(entries[0]["status"], "empty");
-        assert!(entries[0].get("bounds").is_none());
-        for entry in &entries[1..] {
+        for entry in entries {
             assert_eq!(entry["status"], "present");
             let bounds = entry["bounds"].as_array().unwrap();
             assert_eq!(bounds.len(), 4);
         }
-        let bounds = entries[1..]
+        let bounds = entries
             .iter()
             .map(|entry| {
                 entry["bounds"]
@@ -649,7 +650,9 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        assert!(bounds[0][2] < bounds[1][0] && bounds[1][2] < bounds[2][0]);
+        assert!(bounds[1][2] < bounds[2][0] && bounds[2][2] < bounds[3][0]);
+        assert!((bounds[0][0] - bounds[1][0]).abs() < 1e-6);
+        assert!((bounds[0][2] - bounds[3][2]).abs() < 1e-6);
     }
 
     #[test]
@@ -700,14 +703,14 @@ mod tests {
     }
 
     #[test]
-    fn write_stuff_v12_presents_nested_tex_roots_without_promoting_the_scene_group() {
+    fn write_stuff_v12_presents_every_requested_group_with_prepared_descendants() {
         let (session, entity_ids) = write_stuff_v12_session();
         for (sample_time, expected_statuses) in [
             (0.0, ["empty", "empty", "inactive"]),
-            (0.25, ["empty", "present", "inactive"]),
-            (2.0, ["empty", "present", "empty"]),
-            (2.5, ["empty", "present", "present"]),
-            (4.0, ["empty", "present", "present"]),
+            (0.25, ["present", "present", "inactive"]),
+            (2.0, ["present", "present", "empty"]),
+            (2.5, ["present", "present", "present"]),
+            (4.0, ["present", "present", "present"]),
         ] {
             let request = serde_json::to_vec(&json!({
                 "evidence": ["real WriteStuff V12 WASM canvas interaction"],

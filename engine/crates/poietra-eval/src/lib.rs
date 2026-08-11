@@ -10,7 +10,10 @@ mod evaluator;
 mod retained_index;
 mod scene_delta;
 
-pub use authoring::{RotateSceneEntityCommandV1, RotateSceneEntityErrorV1};
+pub use authoring::{
+    MoveSceneEntityCommandV1, MoveSceneEntityErrorV1, RotateSceneEntityCommandV1,
+    RotateSceneEntityErrorV1,
+};
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
     compile_engine_frame_v1, compile_render_packet_v1,

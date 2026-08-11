@@ -349,7 +349,6 @@ fn sealed_v12_evaluates_and_prepares_all_61_entities_and_58_write_channels() {
         let interaction_bounds = direct
             .interaction_clip_bounds_by_entity(&bundle.scene)
             .expect("the retained V12 Scene must match its prepared packet");
-        assert_eq!(interaction_bounds.get(group_id), None);
         assert_eq!(interaction_bounds.contains_key(tex_root_id), tex_present);
         assert_eq!(interaction_bounds.contains_key(math_root_id), math_present);
 
@@ -366,6 +365,12 @@ fn sealed_v12_evaluates_and_prepares_all_61_entities_and_58_write_channels() {
                 expected_root
             );
         }
+        let expected_group = union_bounds(
+            [tex_root_id, math_root_id]
+                .into_iter()
+                .filter_map(|entity_id| interaction_bounds.get(entity_id)),
+        );
+        assert_eq!(interaction_bounds.get(group_id).copied(), expected_group);
         assert_eq!(session.retained_index_stats(), installed_index);
     }
 }

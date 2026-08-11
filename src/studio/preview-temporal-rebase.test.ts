@@ -6,7 +6,7 @@ import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-t
 import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import type { RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
+import type { MoveSceneEntityCompilerV1, RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
@@ -1376,8 +1376,33 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+    const operationId = proposedState.programs[0]?.program.operations[0]?.id;
+    if (!operationId) throw new Error("Generic V3 move fixture lost its authorized operation.");
+    const coreTransform = { ...root.transform, tx: root.transform.tx + 9, ty: root.transform.ty - 4 };
+    const commands: Parameters<MoveSceneEntityCompilerV1>[1][] = [];
+    const moveCompiler: MoveSceneEntityCompilerV1 = async (bundle, command) => {
+      commands.push(command);
+      return await parseVerifiedSceneIrBundleV1({
+        ...bundle,
+        scene: {
+          ...bundle.scene,
+          entities: bundle.scene.entities.map((entity) =>
+            entity.id === command.entityId
+              ? { ...entity, provenanceId: command.provenance.id, transform: coreTransform }
+              : entity,
+          ),
+          provenance: [...bundle.scene.provenance, command.provenance],
+          source: {
+            editProgramVersion: 1,
+            kind: "studio-edit-program",
+            revisionHash: command.nextRevision,
+          },
+        },
+      });
+    };
     const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
+      moveCompiler,
       proposedState,
       snapshot,
       sourceRevisionHash: "7".repeat(64),
@@ -1386,17 +1411,37 @@ describe("generic Runtime Trace V3 initial move", () => {
     if (result.kind !== "rebased") throw new Error(result.issue.message);
     const movedRoot = result.scene.entities.find(({ id }) => id === root.id);
     const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
-    expect(movedRoot?.transform.tx).toBeCloseTo(root.transform.tx + 64 / 45, 12);
-    expect(movedRoot?.transform.ty).toBeCloseTo(root.transform.ty + 0.8, 12);
+    expect(movedRoot?.transform).toEqual(coreTransform);
     expect(retainedChild).toEqual(child);
     expect(result.scene.source).toEqual({
       editProgramVersion: 1,
       kind: "studio-edit-program",
       revisionHash: "7".repeat(64),
     });
+    const directCommand = commands[0];
+    if (!directCommand) throw new Error("Generic V3 move did not reach the Rust compiler boundary.");
+    expect(directCommand).toMatchObject({
+      entityId: root.id,
+      expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+      nextRevision: "7".repeat(64),
+      provenance: {
+        evidence: [
+          "Studio t=0 position request projected onto one verified generic Runtime Trace V3 root",
+          `source binding ${candidate.bindingId}`,
+          `authorized operation ${operationId}`,
+        ],
+        id: `studio-generic-v3-initial-move:${"7".repeat(64)}`,
+        origin: "studio-edit-program",
+      },
+      schema: "poietra.move-scene-entity",
+      version: 1,
+    });
+    expect(directCommand.delta.x).toBeCloseTo(64 / 45, 12);
+    expect(directCommand.delta.y).toBeCloseTo(0.8, 12);
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: FRAME,
+      moveCompiler,
       proposedState,
       snapshot,
       workingRevision: "generic-v3-initial-move-revision",

@@ -16,7 +16,7 @@ import {
   StudioPreviewRendererHost,
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
-import type { RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
+import type { MoveSceneEntityCompilerV1, RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
   EntityDimensions,
@@ -1122,11 +1122,11 @@ export function studioPreviewInteractionEntityIdsV1(
 ) {
   if (authority.kind === "display-only") return [];
   if (!identity) return [];
-  // Canvas interaction must be derived from the verified render graph: a
-  // top-level logical group has source identity but no independently useful
-  // hit target. A nested source-bound group is selectable only when the worker
-  // can aggregate prepared descendant bounds (V12 Tex/MathTex). Missing Scene
-  // evidence remains fail-closed for selection-only mode.
+  // Canvas interaction admission comes from the verified render graph, not
+  // from every bound emitted by the geometry provider. A verified Runtime
+  // Trace root may be a top-level group; other groups are selectable only when
+  // explicitly admitted here. Missing Scene evidence remains fail-closed for
+  // selection-only mode.
   const editableNestedGroups =
     authority.kind === "interactive" ? new Set(authority.nestedGroupEntityIds ?? []) : new Set<string>();
   const runtimeTraceSelection =
@@ -1242,6 +1242,7 @@ export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
+    moveCompiler?: MoveSceneEntityCompilerV1;
     proposedState: ProposedState;
     rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
@@ -1306,6 +1307,7 @@ export async function compileStudioPreviewSceneV1(
     });
     const rebased = await compileStudioPreviewGenericInitialEditV1({
       frame: input.frame,
+      moveCompiler: input.moveCompiler,
       proposedState: input.proposedState,
       rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,

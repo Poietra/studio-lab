@@ -11,6 +11,7 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 1);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
+assert.equal(typeof engine.moveSceneEntityV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
@@ -78,6 +79,35 @@ assert.ok(Math.abs(rotatedEntity.transform.m21 - 1) < 1e-12);
 assert.ok(Math.abs(rotatedEntity.transform.m22) < 1e-12);
 assert.equal(rotatedEntity.provenanceId, "wasm-smoke-rotation");
 assert.equal(rotatedBundle.scene.source.revisionHash, "b".repeat(64));
+
+const movedBundle = JSON.parse(
+  new TextDecoder("utf-8", { fatal: true }).decode(
+    engine.moveSceneEntityV1(
+      snapshot,
+      encoder.encode(
+        JSON.stringify({
+          delta: { x: 1.25, y: -0.5 },
+          entityId: "later",
+          expectedBaseRevision: "a".repeat(64),
+          nextRevision: "c".repeat(64),
+          provenance: {
+            evidence: ["engine WASM smoke move"],
+            id: "wasm-smoke-move",
+            origin: "studio-edit-program",
+          },
+          schema: "poietra.move-scene-entity",
+          version: 1,
+        }),
+      ),
+    ),
+  ),
+);
+const movedEntity = movedBundle.scene.entities.find(({ id }) => id === "later");
+assert.ok(movedEntity, "move response lost its target");
+assert.equal(movedEntity.transform.tx, 1.25);
+assert.equal(movedEntity.transform.ty, -0.5);
+assert.equal(movedEntity.provenanceId, "wasm-smoke-move");
+assert.equal(movedBundle.scene.source.revisionHash, "c".repeat(64));
 
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 assert.ok(gzipBytes <= 3 * 1024 * 1024, "compressed engine payload exceeds the adoption budget");

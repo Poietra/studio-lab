@@ -422,16 +422,16 @@ impl PreparedFrameV1 {
         bounds
     }
 
-    /// Returns interaction AABBs for prepared draw entities and nested logical
-    /// groups in one validated Scene snapshot.
+    /// Returns interaction AABBs for prepared draw entities and logical groups
+    /// in one validated Scene snapshot.
     ///
-    /// A drawable entity receives only its own prepared paint bounds. A nested
-    /// group receives the union of every prepared descendant paint phase.
-    /// Top-level groups remain absent so existing Scene-wide logical containers
-    /// do not become accidental hit targets. The packet revision, hierarchy,
-    /// and every prepared entity ID must agree with `scene`; any inconsistency
-    /// fails this advisory metadata closed without affecting the already
-    /// prepared pixel frame.
+    /// A drawable entity receives only its own prepared paint bounds. A logical
+    /// group receives the union of every prepared descendant paint phase,
+    /// including when it is a top-level root. Callers remain responsible for
+    /// admitting only intended interaction targets. The packet revision,
+    /// hierarchy, and every prepared entity ID must agree with `scene`; any
+    /// inconsistency fails this advisory metadata closed without affecting the
+    /// already prepared pixel frame.
     #[must_use]
     pub fn interaction_clip_bounds_by_entity(
         &self,
@@ -508,11 +508,10 @@ impl PreparedFrameV1 {
 
         let mut output = HashMap::new();
         for (entity_index, entity) in scene.entities.iter().enumerate() {
-            let nested_group =
-                entity.parent_id.is_some() && matches!(entity.geometry, SceneGeometryV1::Group {});
+            let logical_group = matches!(entity.geometry, SceneGeometryV1::Group {});
             let bounds = if direct_bounds[entity_index].is_some() {
                 direct_bounds[entity_index]
-            } else if nested_group {
+            } else if logical_group {
                 aggregate_bounds[entity_index]
             } else {
                 None

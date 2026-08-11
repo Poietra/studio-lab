@@ -799,9 +799,8 @@ describe("StudioCanvas retained preview layer", () => {
           },
           phase: "presented",
         },
-        // Runtime interaction metadata intentionally omits top-level logical
-        // groups. The verified candidate endpoint must still expose its one
-        // bounded hit target.
+        // Before the first prepared frame, the verified candidate endpoint is
+        // the bootstrap geometry for its one bounded hit target.
         new Map(),
         new Map([["square", { bindingId: candidate.bindingId, entityId: runtimeId, sourceName: "square" }]]),
         boundedAuthority,
@@ -825,6 +824,37 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
     expect(markup).toContain(`data-studio-resize-handle="${squareId}"`);
     expect(markup.match(/data-resize-direction="se"/g)).toHaveLength(1);
+
+    const movedMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...props}
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:generic-v3-initial-moved",
+              revision: "b".repeat(64),
+              sampleTime: 0,
+              viewport: { heightPx: 360, widthPx: 640 },
+            },
+            phase: "presented",
+          },
+          new Map([[runtimeId, { dimensions: { height: 2, width: 2 }, position: { x: 384, y: 144 } }]]),
+          new Map([["square", { bindingId: candidate.bindingId, entityId: runtimeId, sourceName: "square" }]]),
+          boundedAuthority,
+          null,
+          null,
+          null,
+          false,
+          [],
+          [candidate],
+        )}
+      />,
+    );
+    // A freshly prepared runtime projection is authoritative after the edit;
+    // the candidate's pre-edit baseCenter is only a bootstrap fallback.
+    expect(movedMarkup).toContain("left:60%;top:40%");
+    expect(movedMarkup).toContain(`data-studio-runtime-entity="${runtimeId}"`);
+    expect(movedMarkup).not.toContain("left:50%;top:50%");
   });
 
   it("opens only the Updaters Square at t=5 and labels its target-only validation ghost", () => {
