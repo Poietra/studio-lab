@@ -15,7 +15,7 @@ import {
 } from "./canvas-worker-client";
 import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
-import { applySceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
+import { createSceneIrDeltaV1 } from "./scene-delta";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 /**
@@ -90,7 +90,6 @@ export type InstallPreviewSnapshotInputV1 = Readonly<{
 
 export type UpdatePreviewSnapshotInputV1 = Readonly<{
   assetPayloads?: readonly CanvasPngAssetTransferV1[];
-  delta: SceneIrDeltaV1 | null;
   interactionEntityIds?: readonly string[];
   revision: string;
   snapshot: SceneIrBundleV1;
@@ -219,11 +218,7 @@ export class StudioPreviewRendererHost {
       );
     }
     const baseRevision = this.queuedRevision ?? this.revision;
-    if (
-      input.revision === baseRevision ||
-      (input.delta !== null &&
-        (input.delta.baseRevision !== baseRevision || input.delta.nextRevision !== input.revision))
-    ) {
+    if (input.revision === baseRevision) {
       return Promise.reject(
         new CanvasWorkerClientError("invalid-input", "The preview Scene update revisions are not sequential."),
       );
@@ -356,17 +351,12 @@ export class StudioPreviewRendererHost {
           "The preview Scene update snapshot revisions do not match the retained host.",
         );
       }
-      if (input.delta !== null) {
-        const applied = await applySceneIrDeltaV1(base, input.delta);
-        if (JSON.stringify(applied) !== JSON.stringify(next)) {
-          throw new CanvasWorkerClientError(
-            "invalid-input",
-            "The preview Scene delta does not exactly reconstruct its fallback snapshot.",
-          );
-        }
-      }
+      // Derive the transport optimization from the retained authority and the
+      // verified next snapshot. Callers cannot pair an unrelated delta with
+      // the snapshot that advances host authority.
+      const delta = await createSceneIrDeltaV1(base, next);
       if (this.isDisposed() || this.renderer !== renderer) return;
-      if (input.delta === null) {
+      if (delta === null) {
         await renderer.replaceScene({
           assetPayloads: input.assetPayloads,
           baseRevision,
@@ -377,7 +367,7 @@ export class StudioPreviewRendererHost {
         await renderer.updateScene({
           assetPayloads: input.assetPayloads,
           baseRevision,
-          delta: input.delta,
+          delta,
           revision: input.revision,
           snapshot: next,
         });

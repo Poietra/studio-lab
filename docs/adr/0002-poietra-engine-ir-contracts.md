@@ -459,6 +459,9 @@ candidate. The candidate replaces the installed snapshot only after the complete
 `SceneIrBundleV1` and asset-manifest integrity checks succeed; any stale revision,
 operation conflict, unknown field/version, size violation, or final invariant
 failure requests a full-snapshot fallback and leaves the base unchanged.
+Atomic application belongs to the native/WASM-shared `poietra-eval`
+`EngineSessionV1`; TypeScript only produces and bounds the transport delta and
+does not carry a second mutation implementation.
 
 Imported Manim snapshots deliberately do not use this delta. Their revision is a
 server-sealed content digest whose integrity cannot be established from a client

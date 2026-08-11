@@ -13,7 +13,6 @@ import {
 } from "./canvas-worker-client";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import { type PreviewRendererHostStateV1, type PreviewRendererV1, StudioPreviewRendererHost } from "./preview-renderer";
-import { createSceneIrDeltaV1 } from "./scene-delta";
 
 const REVISION = "a".repeat(64);
 const OTHER_REVISION = "b".repeat(64);
@@ -187,7 +186,6 @@ async function updateInput(
   revision: string,
   duration: number,
   interactionEntityIds: readonly string[],
-  withDelta = true,
 ) {
   const snapshot: SceneIrBundleV1 = {
     ...base,
@@ -197,10 +195,8 @@ async function updateInput(
       source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: revision },
     },
   };
-  const delta = withDelta ? await createSceneIrDeltaV1(base, snapshot) : null;
-  if (withDelta && !delta) throw new Error("expected a test delta");
   return {
-    input: { delta, interactionEntityIds, revision, snapshot },
+    input: { interactionEntityIds, revision, snapshot },
     snapshot,
   };
 }
@@ -500,7 +496,7 @@ describe("StudioPreviewRendererHost", () => {
     const installing = replacementFixture.host.install({ canvas: CANVAS, revision: REVISION, snapshot });
     replacementFixture.install.resolve();
     await installing;
-    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, [], false);
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, snapshot.scene.duration, []);
     const replacing = replacementFixture.host.update({ ...revisionB.input, assetPayloads: [ASSET_PAYLOAD] });
     await vi.waitFor(() => expect(replacementFixture.replacements).toHaveLength(1));
     expect(replacementFixture.replacements[0]?.input.assetPayloads).toEqual([ASSET_PAYLOAD]);
@@ -579,7 +575,7 @@ describe("StudioPreviewRendererHost", () => {
   it("uses a direct full replacement when the bounded producer returns null", async () => {
     const { fixture, snapshot } = await readyUpdateFixture();
     fixture.host.requestFrame({ sampleTime: 1, viewport: VIEWPORT });
-    const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, [], false);
+    const revisionB = await updateInput(snapshot, OTHER_REVISION, snapshot.scene.duration, []);
     const updating = fixture.host.update(revisionB.input);
     await vi.waitFor(() => expect(fixture.replacements).toHaveLength(1));
     expect(fixture.updates).toHaveLength(0);
@@ -592,14 +588,17 @@ describe("StudioPreviewRendererHost", () => {
     expect(fixture.renders[1]?.input.revision).toBe(OTHER_REVISION);
   });
 
-  it("rejects a delta whose fallback snapshot would split host and worker authority", async () => {
+  it("rejects a fallback snapshot whose revision is not correlated to the update", async () => {
     const { fixture, snapshot } = await readyUpdateFixture();
     const revisionB = await updateInput(snapshot, OTHER_REVISION, 3, []);
     const updating = fixture.host.update({
       ...revisionB.input,
       snapshot: {
         ...revisionB.snapshot,
-        scene: { ...revisionB.snapshot.scene, duration: 4 },
+        scene: {
+          ...revisionB.snapshot.scene,
+          source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: THIRD_REVISION },
+        },
       },
     });
     await expect(updating).rejects.toMatchObject({ code: "invalid-input" });

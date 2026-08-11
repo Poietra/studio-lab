@@ -14,8 +14,6 @@ mod canvas_protocol;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod canvas_telemetry;
 mod protocol;
-#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-mod scene_delta;
 
 use wasm_bindgen::prelude::*;
 

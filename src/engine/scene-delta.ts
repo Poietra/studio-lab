@@ -1,13 +1,12 @@
 import { z } from "zod";
 
-import { type AssetManifestV1, assetManifestV1Schema } from "./asset-manifest";
+import { assetManifestV1Schema } from "./asset-manifest";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import { finiteNumberV1Schema, sha256V1Schema, sourceIdentityV1Schema } from "./primitives";
 import {
   animationChannelV1Schema,
   fidelityV1Schema,
   provenanceRecordV1Schema,
-  type SceneIrV1,
   sceneCameraV1Schema,
   sceneCapabilityV1Schema,
   sceneEntityV1Schema,
@@ -113,17 +112,34 @@ function byId<T extends Readonly<{ id: string }>>(values: readonly T[]) {
   return new Map(values.map((value) => [value.id, value]));
 }
 
+function deltaOperationsPreserveOrder<T extends Readonly<{ id: string }>>(base: readonly T[], next: readonly T[]) {
+  const baseIds = new Set(base.map(({ id }) => id));
+  const nextIds = new Set(next.map(({ id }) => id));
+  const appliedIds = [
+    ...base.filter(({ id }) => nextIds.has(id)).map(({ id }) => id),
+    ...next
+      .filter(({ id }) => !baseIds.has(id))
+      .map(({ id }) => id)
+      .sort(),
+  ];
+  return sameJsonValue(
+    appliedIds,
+    next.map(({ id }) => id),
+  );
+}
+
 /**
  * Produces the bounded v1 transport delta between two complete, verified
  * Studio-owned bundles. `null` deliberately means "use the complete next
  * snapshot": it covers source-only/no-op revisions, unsupported structural
- * changes, operation/byte overflow, and any candidate whose exact application
- * would not reproduce the requested bundle.
+ * changes, operation/byte overflow, and ordering the operation vocabulary
+ * cannot preserve.
  *
  * Operations are ordered by kind and stable source identity rather than input
- * iteration order. The final apply-and-compare guard is important because the
- * v1 operation vocabulary cannot express arbitrary entity/channel array
- * reordering; those revisions must use the existing full replacement path.
+ * iteration order. Existing records keep their slots and additions append in
+ * sorted order, so the producer checks that exact resulting ID order before
+ * sending the delta. The retained Rust EngineSession is the sole applier and
+ * verifies the complete result atomically.
  */
 export async function createSceneIrDeltaV1(
   baseValue: SceneIrBundleV1,
@@ -160,6 +176,12 @@ export async function createSceneIrDeltaV1(
   const nextEntities = byId(next.scene.entities);
   const baseChannels = byId(base.scene.animationChannels);
   const nextChannels = byId(next.scene.animationChannels);
+  if (
+    !deltaOperationsPreserveOrder(base.scene.entities, next.scene.entities) ||
+    !deltaOperationsPreserveOrder(base.scene.animationChannels, next.scene.animationChannels)
+  ) {
+    return null;
+  }
 
   for (const channelId of [...baseChannels.keys()].filter((id) => !nextChannels.has(id)).sort()) {
     operations.push({ channelId, kind: "remove-animation-channel" });
@@ -202,27 +224,14 @@ export async function createSceneIrDeltaV1(
     schema: "poietra.scene-delta",
     version: POIETRA_SCENE_DELTA_VERSION,
   } as const;
-  let delta: SceneIrDeltaV1;
   try {
-    delta = parseSceneIrDeltaV1(candidate);
-    const applied = await applySceneIrDeltaV1(base, delta);
-    if (!sameJsonValue(applied, next)) return null;
+    return parseSceneIrDeltaV1(candidate);
   } catch {
     return null;
   }
-  return delta;
 }
 
-export type SceneIrDeltaErrorCodeV1 =
-  | "base-invalid"
-  | "delta-too-large"
-  | "invalid-delta"
-  | "next-revision-mismatch"
-  | "operation-conflict"
-  | "result-invalid"
-  | "scene-mismatch"
-  | "source-unsupported"
-  | "stale-base-revision";
+export type SceneIrDeltaErrorCodeV1 = "delta-too-large" | "invalid-delta";
 
 export class SceneIrDeltaError extends Error {
   readonly code: SceneIrDeltaErrorCodeV1;
@@ -261,130 +270,4 @@ export function parseSceneIrDeltaV1(value: unknown) {
     throw deltaError("invalid-delta", "The Scene delta does not match the v1 contract.", parsed.error);
   }
   return parsed.data;
-}
-
-function operationConflict(message: string): never {
-  throw deltaError("operation-conflict", message);
-}
-
-function putById<T extends Readonly<{ id: string }>>(
-  values: readonly T[],
-  value: T,
-  expected: "absent" | "present",
-  label: string,
-) {
-  const index = values.findIndex(({ id }) => id === value.id);
-  if (expected === "absent") {
-    if (index !== -1) operationConflict(`${label} ${value.id} already exists.`);
-    return [...values, value];
-  }
-  if (index === -1) operationConflict(`${label} ${value.id} does not exist.`);
-  return values.map((current, currentIndex) => (currentIndex === index ? value : current));
-}
-
-function removeById<T extends Readonly<{ id: string }>>(values: readonly T[], id: string, label: string) {
-  const index = values.findIndex((value) => value.id === id);
-  if (index === -1) operationConflict(`${label} ${id} does not exist.`);
-  return values.filter((_, currentIndex) => currentIndex !== index);
-}
-
-function applyOperation(
-  bundle: Readonly<{ assets: AssetManifestV1; scene: SceneIrV1 }>,
-  operation: SceneDeltaOperationV1,
-): SceneIrBundleV1 {
-  if (operation.kind === "put-entity") {
-    return {
-      ...bundle,
-      scene: {
-        ...bundle.scene,
-        entities: putById(bundle.scene.entities, operation.entity, operation.expected, "Entity"),
-      },
-    };
-  }
-  if (operation.kind === "remove-entity") {
-    return {
-      ...bundle,
-      scene: { ...bundle.scene, entities: removeById(bundle.scene.entities, operation.entityId, "Entity") },
-    };
-  }
-  if (operation.kind === "put-animation-channel") {
-    return {
-      ...bundle,
-      scene: {
-        ...bundle.scene,
-        animationChannels: putById(
-          bundle.scene.animationChannels,
-          operation.channel,
-          operation.expected,
-          "Animation channel",
-        ),
-      },
-    };
-  }
-  if (operation.kind === "remove-animation-channel") {
-    return {
-      ...bundle,
-      scene: {
-        ...bundle.scene,
-        animationChannels: removeById(bundle.scene.animationChannels, operation.channelId, "Animation channel"),
-      },
-    };
-  }
-
-  const assets = operation.assets ?? bundle.assets;
-  return {
-    assets,
-    scene: {
-      ...bundle.scene,
-      ...(operation.camera === undefined ? {} : { camera: operation.camera }),
-      ...(operation.duration === undefined ? {} : { duration: operation.duration }),
-      ...(operation.fidelity === undefined ? {} : { fidelity: operation.fidelity }),
-      ...(operation.provenance === undefined ? {} : { provenance: operation.provenance }),
-      ...(operation.requiredCapabilities === undefined ? {} : { requiredCapabilities: operation.requiredCapabilities }),
-      ...(operation.assets === undefined
-        ? {}
-        : {
-            assetManifest: {
-              manifestDigest: operation.assets.manifestDigest,
-              manifestId: operation.assets.manifestId,
-            },
-          }),
-    },
-  };
-}
-
-export async function applySceneIrDeltaV1(currentValue: unknown, deltaValue: unknown) {
-  const delta = parseSceneIrDeltaV1(deltaValue);
-  let current: SceneIrBundleV1;
-  try {
-    current = await parseVerifiedSceneIrBundleV1(currentValue);
-  } catch (cause) {
-    throw deltaError("base-invalid", "The installed Scene snapshot is invalid.", cause);
-  }
-
-  if (current.scene.sceneId !== delta.sceneId) {
-    throw deltaError("scene-mismatch", "The Scene delta targets a different Scene ID.");
-  }
-  if (sceneIrSourceRevisionHash(current.scene) !== delta.baseRevision) {
-    throw deltaError("stale-base-revision", "The Scene delta base revision is not installed.");
-  }
-  if (current.scene.source.kind !== "studio-edit-program" || delta.nextSource.kind !== "studio-edit-program") {
-    throw deltaError(
-      "source-unsupported",
-      "Scene delta v1 accepts Studio Edit Program revisions only; imported snapshots require full replacement.",
-    );
-  }
-  if (sceneIrSourceRevisionHash({ ...current.scene, source: delta.nextSource }) !== delta.nextRevision) {
-    throw deltaError("next-revision-mismatch", "The Scene delta next revision does not match its source evidence.");
-  }
-
-  let candidate: SceneIrBundleV1 = current;
-  for (const operation of delta.operations) candidate = applyOperation(candidate, operation);
-  candidate = { ...candidate, scene: { ...candidate.scene, source: delta.nextSource } };
-
-  try {
-    return await parseVerifiedSceneIrBundleV1(candidate);
-  } catch (cause) {
-    throw deltaError("result-invalid", "The Scene delta result failed whole-bundle verification.", cause);
-  }
 }

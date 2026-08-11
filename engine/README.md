@@ -250,7 +250,7 @@ Canvas ABI v4 additionally accepts transferable, manifest-verified PNG assets
 during atomic install/replacement. It retains the Studio-only `SceneDeltaV1`
 transport from v3 (256 KiB and 256 operations maximum) as one transferred
 `ArrayBuffer`. Rust checks the
-transport base/next revisions, constructs and indexes the complete candidate,
+transport base/next revisions in the shared `EngineSessionV1` core, constructs and indexes the complete candidate,
 and pre-serializes a 128 KiB-bounded entity/channel/camera/asset dirty-set ACK
 before the atomic swap. The page client advances its revision only after that
 ACK; malformed, unsupported, or stale deltas retain the base revision and may

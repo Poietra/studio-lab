@@ -13,7 +13,7 @@ import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixture
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
-import { applySceneIrDeltaV1, createSceneIrDeltaV1 } from "../engine/scene-delta";
+import { createSceneIrDeltaV1 } from "../engine/scene-delta";
 import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "./authoring-commands";
@@ -45,7 +45,6 @@ import {
 import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
-  createStudioPreviewDeltaOrReplacementV1,
   digestStudioPreviewSceneRevisionV1,
   projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1,
   projectStudioPreviewRuntimeTraceTerminalEntityV1,
@@ -1933,7 +1932,15 @@ describe("compileStudioPreviewSceneV1", () => {
     const delta = await createSceneIrDeltaV1(edited.scene.bundle, editedAgain.scene.bundle);
     expect(delta).not.toBeNull();
     if (!delta) throw new Error("second Studio revision did not fit the bounded delta contract");
-    expect(await applySceneIrDeltaV1(edited.scene.bundle, delta)).toEqual(editedAgain.scene.bundle);
+    expect(delta.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity: expect.objectContaining({ id: "tx:create-rectangle/entity:rectangle" }),
+          expected: "present",
+          kind: "put-entity",
+        }),
+      ]),
+    );
   });
 
   it("compiles the real authoring create path after its fade extends the evaluated duration", async () => {
@@ -2517,14 +2524,6 @@ describe("compileStudioPreviewSceneV1", () => {
       error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
       kind: "unsupported",
     });
-  });
-
-  it("downgrades an unexpected delta producer rejection to the correlated full snapshot path", async () => {
-    const { snapshot } = await compilablePreviewInput();
-    const result = await createStudioPreviewDeltaOrReplacementV1(snapshot.snapshot, snapshot.snapshot, async () => {
-      throw new Error("synthetic delta producer failure");
-    });
-    expect(result).toBeNull();
   });
 
   it("correlates the canonical Studio state to verified imported runtime evidence", async () => {

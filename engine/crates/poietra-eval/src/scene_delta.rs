@@ -1,20 +1,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use poietra_eval::{EngineSessionV1, EvaluationError};
+use crate::{EngineSessionV1, EvaluationError};
 use poietra_scene_ir::{
     AnimationChannelV1, AssetManifestV1, FidelityV1, ProvenanceRecordV1, SceneCameraV1,
     SceneCapabilityV1, SceneEntityV1, SceneIrBundleV1, SceneIrV1, SceneSourceV1,
 };
 use serde::{Deserialize, Serialize};
 
-pub(crate) const MAX_SCENE_DELTA_JSON_BYTES_V1: usize = 256 * 1024;
-pub(crate) const MAX_SCENE_DELTA_ACK_JSON_BYTES_V1: usize = 128 * 1024;
+pub const MAX_SCENE_DELTA_JSON_BYTES_V1: usize = 256 * 1024;
+pub const MAX_SCENE_DELTA_ACK_JSON_BYTES_V1: usize = 128 * 1024;
 const MAX_SCENE_DELTA_OPERATIONS_V1: usize = 256;
 const MAX_SCENE_DELTA_DIRTY_IDS_V1: usize = 256;
 const MAX_SCENE_PROVENANCE_RECORDS_V1: usize = 20_000;
 
 #[derive(Debug, thiserror::Error)]
-pub(crate) enum SceneDeltaErrorV1 {
+pub enum SceneDeltaErrorV1 {
     #[error(
         "Scene delta contains {actual_bytes} bytes; maximum is {MAX_SCENE_DELTA_JSON_BYTES_V1}"
     )]
@@ -324,7 +324,12 @@ fn parse_scene_delta(json: &[u8]) -> Result<SceneDeltaV1, SceneDeltaErrorV1> {
     Ok(delta)
 }
 
-pub(crate) fn scene_delta_updates_assets(json: &[u8]) -> Result<bool, SceneDeltaErrorV1> {
+/// Reports whether a bounded Scene delta requests an asset-manifest replacement.
+///
+/// # Errors
+///
+/// Returns a contract error when `json` is not a valid bounded Scene delta.
+pub fn scene_delta_updates_assets_v1(json: &[u8]) -> Result<bool, SceneDeltaErrorV1> {
     Ok(parse_scene_delta(json)?.operations.iter().any(|operation| {
         matches!(
             operation,
@@ -542,7 +547,7 @@ fn extend_entity_dependency_closure(
     extend_descendants(candidate, &roots, dirty)
 }
 
-pub(crate) fn apply_scene_delta_json(
+fn apply_scene_delta_json(
     session: &mut EngineSessionV1,
     delta_json: &[u8],
     expected_base_revision: &str,
@@ -600,6 +605,28 @@ pub(crate) fn apply_scene_delta_json(
     // leaves the installed Scene and index untouched.
     session.replace_snapshot(candidate)?;
     Ok(dirty_json)
+}
+
+impl EngineSessionV1 {
+    /// Atomically applies one bounded Studio Scene delta to this retained session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a contract, correlation, operation, or final Scene validation error. Every
+    /// failure preserves the previously installed Scene and retained index.
+    pub fn apply_scene_delta_json_v1(
+        &mut self,
+        delta_json: &[u8],
+        expected_base_revision: &str,
+        expected_next_revision: &str,
+    ) -> Result<Vec<u8>, SceneDeltaErrorV1> {
+        apply_scene_delta_json(
+            self,
+            delta_json,
+            expected_base_revision,
+            expected_next_revision,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -680,13 +707,13 @@ mod tests {
         assert!(delta_json.len() <= MAX_SCENE_DELTA_JSON_BYTES_V1);
 
         let mut session = EngineSessionV1::new(base_bundle()).unwrap();
-        let dirty_json = apply_scene_delta_json(
-            &mut session,
-            &delta_json,
-            shared["delta"]["baseRevision"].as_str().unwrap(),
-            shared["delta"]["nextRevision"].as_str().unwrap(),
-        )
-        .unwrap();
+        let dirty_json = session
+            .apply_scene_delta_json_v1(
+                &delta_json,
+                shared["delta"]["baseRevision"].as_str().unwrap(),
+                shared["delta"]["nextRevision"].as_str().unwrap(),
+            )
+            .unwrap();
         assert!(dirty_json.len() <= MAX_SCENE_DELTA_ACK_JSON_BYTES_V1);
         let dirty: SceneDeltaDirtySetV1 = serde_json::from_slice(&dirty_json).unwrap();
 
@@ -720,7 +747,7 @@ mod tests {
             "kind": "update-scene",
         }));
         let delta_json = serde_json::to_vec(&shared).unwrap();
-        assert!(scene_delta_updates_assets(&delta_json).unwrap());
+        assert!(scene_delta_updates_assets_v1(&delta_json).unwrap());
     }
 
     #[test]
