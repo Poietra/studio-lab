@@ -1,10 +1,12 @@
 import {
-  compileMoveSceneEntityV1,
-  compileRotateSceneEntityV1,
-  compileUniformScaleSceneEntityV1,
-  type MoveSceneEntityCompilerV1,
-  type RotateSceneEntityCompilerV1,
-  type UniformScaleSceneEntityCompilerV1,
+  compileMoveSceneEntity,
+  compileRotateSceneEntity,
+  compileSetSubtreeVectorPaintAlpha,
+  compileUniformScaleSceneEntity,
+  type MoveSceneEntityCompiler,
+  type RotateSceneEntityCompiler,
+  type SetSubtreeVectorPaintAlphaCompiler,
+  type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
@@ -113,7 +115,7 @@ export type StudioPreviewInitialEditRuntimeAuthorityV1 =
  * deliberately not part of `StudioPreviewInitialEditRuntimeAuthorityV1`, so
  * merely receiving this candidate cannot enable an interactive gesture.
  */
-export type StudioPreviewGenericInitialEditAuthorityCandidateV1 = Readonly<{
+export type StudioPreviewGenericInitialEditCandidate = Readonly<{
   baseCenter: Point;
   /** Runtime endpoint dimensions in Scene units; never an assumed scale=1. */
   baseDimensions: Readonly<{ height: number; width: number }>;
@@ -131,21 +133,21 @@ export type StudioPreviewGenericInitialEditAuthorityCandidateV1 = Readonly<{
   studioSceneId: string;
 }>;
 
-export type StudioPreviewInitialEditProjectionAuthorityV1 =
-  | StudioPreviewGenericInitialEditAuthorityCandidateV1
+export type StudioPreviewInitialEditProjectionAuthority =
+  | StudioPreviewGenericInitialEditCandidate
   | StudioPreviewInitialEditRuntimeAuthorityV1;
 
-export type StudioPreviewGenericInitialEditV1 =
+export type StudioPreviewGenericInitialEdit =
   | Readonly<{ kind: "move"; position: Point }>
   | Readonly<{ kind: "opacity"; opacity: number }>
   | Readonly<{ kind: "resize"; scaleFactor: number }>
   | Readonly<{ angleRadians: number; kind: "rotation" }>;
 
-export type StudioPreviewGenericInitialEditProgramSetV1 =
+export type StudioPreviewGenericInitialEditProgramSet =
   | Readonly<{ kind: "none" }>
   | Readonly<{
-      candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1;
-      edit: StudioPreviewGenericInitialEditV1;
+      candidate: StudioPreviewGenericInitialEditCandidate;
+      edit: StudioPreviewGenericInitialEdit;
       kind: "authorized";
     }>
   | Readonly<{ kind: "unauthorized" }>;
@@ -392,7 +394,7 @@ function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifie
   );
 }
 
-function genericRuntimeTraceSubtreePaintEvidenceV1(scene: SceneIrV1, rootId: string) {
+function genericRuntimeTraceSubtreePaintEvidence(scene: SceneIrV1, rootId: string) {
   const entityById = new Map(scene.entities.map((entity) => [entity.id, entity] as const));
   const childrenByParent = new Map<string, SceneEntityV1[]>();
   for (const entity of scene.entities) {
@@ -453,9 +455,9 @@ function genericRuntimeTraceSubtreePaintEvidenceV1(scene: SceneIrV1, rootId: str
  * generic lowerer. Updater-conflicted or degenerate mappings simply mint no
  * candidate, so their roots stay selection-only.
  */
-export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
+export function studioPreviewGenericInitialEditCandidates(
   snapshot: StudioVerifiedPreviewSnapshotV1,
-): readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[] {
+): readonly StudioPreviewGenericInitialEditCandidate[] {
   if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return [];
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size === 0) return [];
@@ -473,7 +475,7 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
   // that aliases one runtime root under two names is never edit evidence.
   const mappedEntityIds = [...identity.values()].map(({ entityId }) => entityId);
   if (new Set(mappedEntityIds).size !== mappedEntityIds.length) return [];
-  const candidates: StudioPreviewGenericInitialEditAuthorityCandidateV1[] = [];
+  const candidates: StudioPreviewGenericInitialEditCandidate[] = [];
   for (const [sourceName, mapping] of identity) {
     const evidence = mapping.runtimeTraceEvidence;
     if (mapping.sourceName !== sourceName || !evidence || evidence.updaterStatus !== "none") continue;
@@ -521,7 +523,7 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
     // constructed placement, observed by the terminal endpoint. An entrance
     // animation's partial frame-zero box is evidence-gated above but never
     // the manipulation anchor.
-    const paintEvidence = genericRuntimeTraceSubtreePaintEvidenceV1(snapshot.snapshot.scene, mapping.entityId);
+    const paintEvidence = genericRuntimeTraceSubtreePaintEvidence(snapshot.snapshot.scene, mapping.entityId);
     candidates.push({
       baseCenter: scenePointToStudioPoint(
         terminal.center,
@@ -544,10 +546,10 @@ export function studioPreviewGenericInitialEditAuthorityCandidatesV1(
   return candidates;
 }
 
-function genericInitialEditProgramV1(
+function genericInitialEditProgram(
   record: ProgramRecord,
-  candidate: StudioPreviewGenericInitialEditAuthorityCandidateV1,
-): StudioPreviewGenericInitialEditV1 | null {
+  candidate: StudioPreviewGenericInitialEditCandidate,
+): StudioPreviewGenericInitialEdit | null {
   const program = record.program;
   const operation = program.operations[0];
   if (
@@ -637,10 +639,10 @@ function genericInitialEditProgramV1(
  * it does not verify Python source authority; the fresh-source V3 lowerer
  * owns that decision and must reject independently.
  */
-export function studioPreviewGenericInitialEditProgramSetV1(
+export function studioPreviewGenericInitialEditProgramSet(
   records: readonly ProgramRecord[],
-  candidates: readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[],
-): StudioPreviewGenericInitialEditProgramSetV1 {
+  candidates: readonly StudioPreviewGenericInitialEditCandidate[],
+): StudioPreviewGenericInitialEditProgramSet {
   if (records.length === 0) return { kind: "none" };
   if (records.length !== 1 || candidates.length === 0) return { kind: "unauthorized" };
   const record = records[0]!;
@@ -649,7 +651,7 @@ export function studioPreviewGenericInitialEditProgramSetV1(
   const matching = candidates.filter(({ studioEntityId }) => studioEntityId === targetEntityId);
   const candidate = matching[0];
   if (matching.length !== 1 || !candidate) return { kind: "unauthorized" };
-  const edit = genericInitialEditProgramV1(record, candidate);
+  const edit = genericInitialEditProgram(record, candidate);
   return edit ? { candidate, edit, kind: "authorized" } : { kind: "unauthorized" };
 }
 
@@ -828,7 +830,7 @@ export function studioPreviewInitialEditRuntimeAuthorityV1(
 
 function studioInitialEditTargetMatches(
   entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
-  authority: StudioPreviewInitialEditProjectionAuthorityV1,
+  authority: StudioPreviewInitialEditProjectionAuthority,
 ) {
   if (authority.profile === "generic-runtime-trace-v3") {
     return (
@@ -858,7 +860,7 @@ function studioInitialEditTargetMatches(
 /** Projects only the exact runtime-backed edit target into Studio's interaction UI. */
 export function projectStudioPreviewInitialEntityPresenceV1(
   entities: readonly ProjectedEntity[],
-  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthority | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
   sampleTime: number,
 ) {
@@ -928,7 +930,7 @@ export function projectStudioPreviewInitialEntityPresenceV1(
  */
 export function projectStudioPreviewInitialValidationSceneV1(
   scene: RuntimeSceneState,
-  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthority | null,
 ) {
   if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
   const entities = Object.values(scene.objectGraph.entities);
@@ -1034,7 +1036,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
   scene: RuntimeSceneState,
   entityId: string,
   sourceTime: number,
-  authority: StudioPreviewInitialEditProjectionAuthorityV1 | null,
+  authority: StudioPreviewInitialEditProjectionAuthority | null,
 ) {
   const projected = sourceTime === 0 ? projectStudioPreviewInitialValidationSceneV1(scene, authority) : scene;
   return (
@@ -1051,7 +1053,7 @@ export function studioPreviewInitialEditTargetIsPresentV1(
  */
 export function studioPreviewSyntheticInitialEditAnchorV1(snapshot: StudioVerifiedPreviewSnapshotV1) {
   if (studioPreviewInitialEditRuntimeAuthorityV1(snapshot)) return 0;
-  if (studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot).length > 0) return 0;
+  if (studioPreviewGenericInitialEditCandidates(snapshot).length > 0) return 0;
   if (!snapshotCorrelationIsExact(snapshot)) return null;
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size !== 1) return null;
@@ -1506,18 +1508,19 @@ function planInitialTransformEdit(
  * verified generic V3 hierarchy. Transform edits stay on the root group;
  * opacity edits preserve every descendant paint style except color alpha.
  */
-export async function compileStudioPreviewGenericInitialEditV1(
+export async function compileStudioPreviewGenericInitialEdit(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
-    moveCompiler?: MoveSceneEntityCompilerV1;
+    moveCompiler?: MoveSceneEntityCompiler;
     proposedState: ProposedState;
-    rotationCompiler?: RotateSceneEntityCompilerV1;
+    rotationCompiler?: RotateSceneEntityCompiler;
+    subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
-    uniformScaleCompiler?: UniformScaleSceneEntityCompilerV1;
+    uniformScaleCompiler?: UniformScaleSceneEntityCompiler;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResultV1> {
-  const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(input.snapshot);
+  const candidates = studioPreviewGenericInitialEditCandidates(input.snapshot);
   if (candidates.length === 0) {
     return unsupported("source-correlation-invalid", "Generic Runtime Trace initial-edit evidence is unavailable.");
   }
@@ -1541,7 +1544,7 @@ export async function compileStudioPreviewGenericInitialEditV1(
       "Studio state is not correlated with the generic Runtime Trace initial-edit evidence.",
     );
   }
-  const programSet = studioPreviewGenericInitialEditProgramSetV1(input.proposedState.programs, candidates);
+  const programSet = studioPreviewGenericInitialEditProgramSet(input.proposedState.programs, candidates);
   if (programSet.kind !== "authorized") {
     return unsupported(
       "target-edit-unsupported",
@@ -1574,120 +1577,101 @@ export async function compileStudioPreviewGenericInitialEditV1(
     id: provenanceId,
     origin: "studio-edit-program" as const,
   };
-  let entities: SceneEntityV1[];
   if (edit.kind === "opacity") {
-    const paintEvidence = genericRuntimeTraceSubtreePaintEvidenceV1(scene, target.id);
+    const paintEvidence = genericRuntimeTraceSubtreePaintEvidence(scene, target.id);
     if (!paintEvidence.opacityEditable || !candidate.opacityEditable) {
       return unsupported(
         "target-edit-unsupported",
         "Generic Runtime Trace opacity edits require static vector paint throughout the selected subtree.",
       );
     }
-    let changedPaints = 0;
-    entities = scene.entities.map((entity) => {
-      if (!paintEvidence.entityIds.has(entity.id) || entity.appearance.kind !== "vector") return entity;
-      const fillChanged = entity.appearance.fill !== null && entity.appearance.fill.color.alpha !== edit.opacity;
-      const strokeChanged = entity.appearance.stroke !== null && entity.appearance.stroke.color.alpha !== edit.opacity;
-      if (!fillChanged && !strokeChanged) return entity;
-      const fill = entity.appearance.fill
-        ? {
-            ...entity.appearance.fill,
-            color: { ...entity.appearance.fill.color, alpha: edit.opacity },
-          }
-        : null;
-      const stroke = entity.appearance.stroke
-        ? {
-            ...entity.appearance.stroke,
-            color: { ...entity.appearance.stroke.color, alpha: edit.opacity },
-          }
-        : null;
-      changedPaints += Number(fillChanged) + Number(strokeChanged);
-      return { ...entity, appearance: { ...entity.appearance, fill, stroke }, provenanceId };
-    });
-    if (changedPaints === 0) {
-      return unsupported("target-edit-unsupported", "The generic Runtime Trace opacity edit is a no-op.");
-    }
-  } else {
-    const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
-    if (edit.kind === "move") {
-      const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
-      const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
-      try {
-        const rebased = await (input.moveCompiler ?? compileMoveSceneEntityV1)(input.snapshot.snapshot, {
-          delta,
-          entityId: target.id,
-          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-          nextRevision: input.sourceRevisionHash,
-          provenance,
-          schema: "poietra.move-scene-entity",
-          version: 1,
-        });
-        return { kind: "rebased", scene: rebased.scene };
-      } catch (error) {
-        return unsupported(
-          "geometry-edit-unsupported",
-          `Rust core rejected the generic Runtime Trace move: ${
-            error instanceof Error ? error.message : "unknown error"
-          }`,
-        );
-      }
-    }
-    if (edit.kind === "rotation") {
-      try {
-        const rebased = await (input.rotationCompiler ?? compileRotateSceneEntityV1)(input.snapshot.snapshot, {
-          angleRadians: edit.angleRadians,
-          entityId: target.id,
-          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-          nextRevision: input.sourceRevisionHash,
-          pivot: baseCenter,
-          provenance,
-          schema: "poietra.rotate-scene-entity",
-          version: 1,
-        });
-        return { kind: "rebased", scene: rebased.scene };
-      } catch (error) {
-        return unsupported(
-          "geometry-edit-unsupported",
-          `Rust core rejected the generic Runtime Trace rotation: ${
-            error instanceof Error ? error.message : "unknown error"
-          }`,
-        );
-      }
-    }
     try {
-      const rebased = await (input.uniformScaleCompiler ?? compileUniformScaleSceneEntityV1)(input.snapshot.snapshot, {
+      const rebased = await (input.subtreePaintAlphaCompiler ?? compileSetSubtreeVectorPaintAlpha)(
+        input.snapshot.snapshot,
+        {
+          alpha: edit.opacity,
+          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+          nextRevision: input.sourceRevisionHash,
+          provenance,
+          rootEntityId: target.id,
+          schema: "poietra.set-subtree-vector-paint-alpha",
+          version: 1,
+        },
+      );
+      return { kind: "rebased", scene: rebased.scene };
+    } catch (error) {
+      return unsupported(
+        "target-edit-unsupported",
+        `Rust core rejected the generic Runtime Trace paint opacity: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
+    }
+  }
+  const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
+  if (edit.kind === "move") {
+    const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
+    const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+    try {
+      const rebased = await (input.moveCompiler ?? compileMoveSceneEntity)(input.snapshot.snapshot, {
+        delta,
         entityId: target.id,
         expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-        factor: edit.scaleFactor,
         nextRevision: input.sourceRevisionHash,
-        pivot: baseCenter,
         provenance,
-        schema: "poietra.uniform-scale-scene-entity",
+        schema: "poietra.move-scene-entity",
         version: 1,
       });
       return { kind: "rebased", scene: rebased.scene };
     } catch (error) {
       return unsupported(
         "geometry-edit-unsupported",
-        `Rust core rejected the generic Runtime Trace uniform resize: ${
+        `Rust core rejected the generic Runtime Trace move: ${error instanceof Error ? error.message : "unknown error"}`,
+      );
+    }
+  }
+  if (edit.kind === "rotation") {
+    try {
+      const rebased = await (input.rotationCompiler ?? compileRotateSceneEntity)(input.snapshot.snapshot, {
+        angleRadians: edit.angleRadians,
+        entityId: target.id,
+        expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+        nextRevision: input.sourceRevisionHash,
+        pivot: baseCenter,
+        provenance,
+        schema: "poietra.rotate-scene-entity",
+        version: 1,
+      });
+      return { kind: "rebased", scene: rebased.scene };
+    } catch (error) {
+      return unsupported(
+        "geometry-edit-unsupported",
+        `Rust core rejected the generic Runtime Trace rotation: ${
           error instanceof Error ? error.message : "unknown error"
         }`,
       );
     }
   }
-  const rebased: SceneIrV1 = {
-    ...scene,
-    entities,
-    provenance: [...scene.provenance, provenance],
-    source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: input.sourceRevisionHash },
-  };
-  const parsed = sceneIrV1Schema.safeParse(rebased);
-  return parsed.success
-    ? { kind: "rebased", scene: parsed.data }
-    : unsupported(
-        "conflicting-edit-unsupported",
-        `The generic initial edit is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
-      );
+  try {
+    const rebased = await (input.uniformScaleCompiler ?? compileUniformScaleSceneEntity)(input.snapshot.snapshot, {
+      entityId: target.id,
+      expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+      factor: edit.scaleFactor,
+      nextRevision: input.sourceRevisionHash,
+      pivot: baseCenter,
+      provenance,
+      schema: "poietra.uniform-scale-scene-entity",
+      version: 1,
+    });
+    return { kind: "rebased", scene: rebased.scene };
+  } catch (error) {
+    return unsupported(
+      "geometry-edit-unsupported",
+      `Rust core rejected the generic Runtime Trace uniform resize: ${
+        error instanceof Error ? error.message : "unknown error"
+      }`,
+    );
+  }
 }
 
 /**

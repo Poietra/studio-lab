@@ -403,6 +403,13 @@ upgrade an older document. There is no coercion, passthrough mode, schema defaul
 or best-effort reading. Producers and consumers without a shared version use the
 existing preview/server fallback.
 
+A version suffix belongs only to a serialized or externally consumed contract,
+or to an adapter that must implement two such versions at the same time. Internal
+domain commands, errors, services, and use cases use semantic names without
+`V1`/`V2`/`V3`; replacing their implementation does not create a second product
+meaning. An external profile version may appear in integration code only where
+the code actually dispatches on that profile. Fixture history is not a domain API.
+
 ## Repository boundary
 
 The TypeScript contracts, Studio adapter, and Rust implementation stay in

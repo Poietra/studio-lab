@@ -18,7 +18,10 @@ mod protocol;
 
 use wasm_bindgen::prelude::*;
 
-pub use authoring::{move_scene_entity_v1, rotate_scene_entity_v1, uniform_scale_scene_entity_v1};
+pub use authoring::{
+    move_scene_entity_v1, rotate_scene_entity_v1, set_subtree_vector_paint_alpha_v1,
+    uniform_scale_scene_entity_v1,
+};
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
 pub use canvas_telemetry::{

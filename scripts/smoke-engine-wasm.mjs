@@ -13,6 +13,7 @@ assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.moveSceneEntityV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
+assert.equal(typeof engine.setSubtreeVectorPaintAlphaV1, "function");
 assert.equal(typeof engine.uniformScaleSceneEntityV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
@@ -141,6 +142,35 @@ assert.equal(scaledEntity.transform.tx, -0.5);
 assert.equal(scaledEntity.transform.ty, 0.25);
 assert.equal(scaledEntity.provenanceId, "wasm-smoke-uniform-scale");
 assert.equal(scaledBundle.scene.source.revisionHash, "d".repeat(64));
+
+const paintAlphaBundle = JSON.parse(
+  new TextDecoder("utf-8", { fatal: true }).decode(
+    engine.setSubtreeVectorPaintAlphaV1(
+      snapshot,
+      encoder.encode(
+        JSON.stringify({
+          alpha: 0.25,
+          expectedBaseRevision: "a".repeat(64),
+          nextRevision: "e".repeat(64),
+          provenance: {
+            evidence: ["engine WASM smoke subtree vector paint alpha"],
+            id: "wasm-smoke-subtree-vector-paint-alpha",
+            origin: "studio-edit-program",
+          },
+          rootEntityId: "stroke",
+          schema: "poietra.set-subtree-vector-paint-alpha",
+          version: 1,
+        }),
+      ),
+    ),
+  ),
+);
+const paintAlphaEntity = paintAlphaBundle.scene.entities.find(({ id }) => id === "stroke");
+assert.ok(paintAlphaEntity, "subtree paint-alpha response lost its target");
+assert.equal(paintAlphaEntity.appearance.fill, null);
+assert.equal(paintAlphaEntity.appearance.stroke.color.alpha, 0.25);
+assert.equal(paintAlphaEntity.provenanceId, "wasm-smoke-subtree-vector-paint-alpha");
+assert.equal(paintAlphaBundle.scene.source.revisionHash, "e".repeat(64));
 
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 assert.ok(gzipBytes <= 3 * 1024 * 1024, "compressed engine payload exceeds the adoption budget");

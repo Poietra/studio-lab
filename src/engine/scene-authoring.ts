@@ -4,7 +4,7 @@ const POIETRA_ENGINE_ABI_VERSION = 1;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-export type RotateSceneEntityCommandV1 = Readonly<{
+export type RotateSceneEntityWireCommandV1 = Readonly<{
   angleRadians: number;
   entityId: string;
   expectedBaseRevision: string;
@@ -19,12 +19,12 @@ export type RotateSceneEntityCommandV1 = Readonly<{
   version: 1;
 }>;
 
-export type RotateSceneEntityCompilerV1 = (
+export type RotateSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: RotateSceneEntityCommandV1,
+  command: RotateSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type MoveSceneEntityCommandV1 = Readonly<{
+export type MoveSceneEntityWireCommandV1 = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
   entityId: string;
   expectedBaseRevision: string;
@@ -38,12 +38,12 @@ export type MoveSceneEntityCommandV1 = Readonly<{
   version: 1;
 }>;
 
-export type MoveSceneEntityCompilerV1 = (
+export type MoveSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: MoveSceneEntityCommandV1,
+  command: MoveSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type UniformScaleSceneEntityCommandV1 = Readonly<{
+export type UniformScaleSceneEntityWireCommandV1 = Readonly<{
   entityId: string;
   expectedBaseRevision: string;
   factor: number;
@@ -58,9 +58,28 @@ export type UniformScaleSceneEntityCommandV1 = Readonly<{
   version: 1;
 }>;
 
-export type UniformScaleSceneEntityCompilerV1 = (
+export type UniformScaleSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: UniformScaleSceneEntityCommandV1,
+  command: UniformScaleSceneEntityWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
+export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
+  alpha: number;
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  rootEntityId: string;
+  schema: "poietra.set-subtree-vector-paint-alpha";
+  version: 1;
+}>;
+
+export type SetSubtreeVectorPaintAlphaCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: SetSubtreeVectorPaintAlphaWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 type RotateSceneAuthoringBindingsV1 = Readonly<{
@@ -75,9 +94,14 @@ type UniformScaleSceneAuthoringBindingsV1 = Readonly<{
   uniformScaleSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
+  setSubtreeVectorPaintAlphaV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type SceneAuthoringBindingsV1 = MoveSceneAuthoringBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
-  UniformScaleSceneAuthoringBindingsV1;
+  UniformScaleSceneAuthoringBindingsV1 &
+  SetSubtreeVectorPaintAlphaBindingsV1;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null;
@@ -102,6 +126,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
       typeof candidate.moveSceneEntityV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
+      typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
       typeof candidate.uniformScaleSceneEntityV1 !== "function"
     ) {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
@@ -109,6 +134,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     return {
       moveSceneEntityV1: candidate.moveSceneEntityV1 as SceneAuthoringBindingsV1["moveSceneEntityV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
+      setSubtreeVectorPaintAlphaV1:
+        candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
       uniformScaleSceneEntityV1:
         candidate.uniformScaleSceneEntityV1 as SceneAuthoringBindingsV1["uniformScaleSceneEntityV1"],
     };
@@ -117,7 +144,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   return pending;
 }
 
-async function invokeSceneAuthoringCommandV1(
+async function invokeSceneAuthoringCommand(
   snapshot: SceneIrBundleV1,
   command: unknown,
   invoke: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array,
@@ -127,35 +154,46 @@ async function invokeSceneAuthoringCommandV1(
 }
 
 /** Creates the browser adapter around one concrete, profile-free Rust command. */
-export function createRotateSceneEntityCompilerV1(
+export function createRotateSceneEntityCompiler(
   getBindings: () => Promise<RotateSceneAuthoringBindingsV1>,
-): RotateSceneEntityCompilerV1 {
+): RotateSceneEntityCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.rotateSceneEntityV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.rotateSceneEntityV1);
   };
 }
 
 /** Creates the browser adapter around one concrete, profile-free Rust command. */
-export function createMoveSceneEntityCompilerV1(
+export function createMoveSceneEntityCompiler(
   getBindings: () => Promise<MoveSceneAuthoringBindingsV1>,
-): MoveSceneEntityCompilerV1 {
+): MoveSceneEntityCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.moveSceneEntityV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.moveSceneEntityV1);
   };
 }
 
 /** Creates the browser adapter around one concrete, profile-free Rust command. */
-export function createUniformScaleSceneEntityCompilerV1(
+export function createUniformScaleSceneEntityCompiler(
   getBindings: () => Promise<UniformScaleSceneAuthoringBindingsV1>,
-): UniformScaleSceneEntityCompilerV1 {
+): UniformScaleSceneEntityCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.uniformScaleSceneEntityV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.uniformScaleSceneEntityV1);
   };
 }
 
-export const compileRotateSceneEntityV1 = createRotateSceneEntityCompilerV1(loadBindings);
-export const compileMoveSceneEntityV1 = createMoveSceneEntityCompilerV1(loadBindings);
-export const compileUniformScaleSceneEntityV1 = createUniformScaleSceneEntityCompilerV1(loadBindings);
+/** Creates the browser adapter for the canonical subtree vector-paint command. */
+export function createSetSubtreeVectorPaintAlphaCompiler(
+  getBindings: () => Promise<SetSubtreeVectorPaintAlphaBindingsV1>,
+): SetSubtreeVectorPaintAlphaCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.setSubtreeVectorPaintAlphaV1);
+  };
+}
+
+export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
+export const compileMoveSceneEntity = createMoveSceneEntityCompiler(loadBindings);
+export const compileUniformScaleSceneEntity = createUniformScaleSceneEntityCompiler(loadBindings);
+export const compileSetSubtreeVectorPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(loadBindings);
