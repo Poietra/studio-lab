@@ -16,11 +16,12 @@ import {
   StudioPreviewRendererHost,
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
-import type {
-  MoveSceneEntityCompiler,
-  RotateSceneEntityCompiler,
-  SetSubtreeVectorPaintAlphaCompiler,
-  UniformScaleSceneEntityCompiler,
+import {
+  compileMoveSceneEntity,
+  type MoveSceneEntityCompiler,
+  type RotateSceneEntityCompiler,
+  type SetSubtreeVectorPaintAlphaCompiler,
+  type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
@@ -65,11 +66,17 @@ import {
   studioPreviewInitialEditProjection,
   studioPreviewSyntheticInitialEditAnchor,
 } from "./preview-temporal-rebase";
-import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
+import {
+  isPointValue,
+  normalizeDimensionsSamples,
+  normalizePositionSamples,
+  normalizeScaleSamples,
+} from "./property-sampling";
 import {
   buildStudioSceneIrAdapterEvidenceV1,
   collectStudioMathTexOutlineInputsV1,
   compileStudioSceneIrV1,
+  studioPointToScenePointV1,
 } from "./scene-ir-adapter";
 
 export type StudioPreviewRendererView = Readonly<{
@@ -299,14 +306,14 @@ type StudioPreviewRuntimeTraceOpeningSelectionProfileV2 = Readonly<{
   studioSceneId: string;
 }>;
 
-function runtimeTraceSnapshotCorrelationIsExact(
+function importedSnapshotCorrelationIsExact(
   snapshot: StudioVerifiedPreviewSnapshotV1,
   requirePristineWorkingRevision: boolean,
 ) {
   const { correlation, snapshot: bundle } = snapshot;
   const source = bundle.scene.source;
   return (
-    source.kind === "imported-manim-runtime-trace" &&
+    (source.kind === "imported-manim-runtime-trace" || source.kind === "imported-manim-server-snapshot") &&
     sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
     source.sourceHash === correlation.context.sourceHash &&
     bundle.assets.manifestDigest === correlation.assetsManifestDigest &&
@@ -316,6 +323,16 @@ function runtimeTraceSnapshotCorrelationIsExact(
     snapshot.duration === correlation.sceneDuration &&
     correlation.sceneDuration === correlation.context.sourceDuration &&
     (!requirePristineWorkingRevision || correlation.context.workingRevision === PRISTINE_WORKING_REVISION)
+  );
+}
+
+function runtimeTraceSnapshotCorrelationIsExact(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  requirePristineWorkingRevision: boolean,
+) {
+  return (
+    snapshot.snapshot.scene.source.kind === "imported-manim-runtime-trace" &&
+    importedSnapshotCorrelationIsExact(snapshot, requirePristineWorkingRevision)
   );
 }
 
@@ -1344,6 +1361,138 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+type StaticImportedRootMovePlan =
+  | Readonly<{ kind: "not-applicable" }>
+  | Readonly<{ kind: "unsupported"; message: string }>
+  | Readonly<{
+      delta: Point;
+      kind: "authorized";
+      operationId: string;
+      runtimeEntityId: string;
+    }>;
+
+function isFinitePoint(value: unknown): value is Point {
+  return isPointValue(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
+}
+
+function planStaticImportedRootMove(
+  input: Readonly<{
+    frame: Readonly<{ height: number; width: number }>;
+    proposedState: ProposedState;
+    snapshot: StudioVerifiedPreviewSnapshotV1;
+  }>,
+): StaticImportedRootMovePlan {
+  const base = input.proposedState.base;
+  const baseEntities = base.runtimeSceneState.objectGraph.entities;
+  const operations = input.proposedState.programs.flatMap(({ program }) => program.operations);
+  const existingPositionOperations = operations.filter(
+    (operation) =>
+      operation.kind === "SetProperty" &&
+      operation.key === "position" &&
+      baseEntities[operation.entityId] !== undefined,
+  );
+  if (existingPositionOperations.length === 0) return { kind: "not-applicable" };
+  const scene = input.snapshot.snapshot.scene;
+  if (scene.source.kind !== "imported-manim-server-snapshot") return { kind: "not-applicable" };
+  if (existingPositionOperations.length > 1) {
+    return { kind: "unsupported", message: "A static Rust move must target exactly one imported entity." };
+  }
+  if (operations.length > 1) {
+    // Compound transforms remain on the existing adapter until Rust has an
+    // equivalent atomic command; this slice claims only a standalone move.
+    return { kind: "not-applicable" };
+  }
+
+  const [record] = input.proposedState.programs;
+  const [operation] = record?.program.operations ?? [];
+  if (
+    input.proposedState.programs.length !== 1 ||
+    !record ||
+    record.validation.status !== "valid" ||
+    record.program.operations.length !== 1 ||
+    !operation ||
+    operation.kind !== "SetProperty" ||
+    operation.key !== "position" ||
+    !isFinitePoint(operation.value)
+  ) {
+    return { kind: "unsupported", message: "The edit must contain one valid position operation." };
+  }
+
+  const program = record.program;
+  const origin = program.provenance.origin;
+  if (
+    program.anchor.resolvedSeconds !== 0 ||
+    operation.interval.start !== 0 ||
+    operation.interval.end !== 0 ||
+    program.loweringStatus !== "supported" ||
+    (origin !== "direct-manipulation" && origin !== "studio-default") ||
+    operation.provenance.origin !== origin
+  ) {
+    return { kind: "unsupported", message: "Only one exact t=0 pointer, keyboard, or Inspector move is supported." };
+  }
+
+  const correlation = input.snapshot.correlation;
+  if (
+    scene.animationChannels.length !== 0 ||
+    input.frame.width !== scene.camera.view.frameWidth ||
+    input.frame.height !== scene.camera.view.frameHeight ||
+    !importedSnapshotCorrelationIsExact(input.snapshot, true)
+  ) {
+    return { kind: "unsupported", message: "The verified source snapshot is not one exact static Scene." };
+  }
+
+  if (
+    base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
+    base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
+    input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
+    base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
+    base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
+  ) {
+    return { kind: "unsupported", message: "Studio state is not correlated with the verified static Scene." };
+  }
+
+  const baseEntity = baseEntities[operation.entityId];
+  if (
+    !baseEntity ||
+    baseEntity.sourceIdentity.kind !== "known" ||
+    baseEntity.geometry?.position.kind !== "known" ||
+    !isFinitePoint(baseEntity.geometry.position.value)
+  ) {
+    return { kind: "unsupported", message: "The moved Studio entity has no stable imported position identity." };
+  }
+
+  const identity = input.snapshot.sourceRuntimeIdentity;
+  const sourceName = baseEntity.sourceIdentity.value;
+  const mapping = identity?.get(sourceName);
+  const runtimeEntity = mapping ? scene.entities.find(({ id }) => id === mapping.entityId) : null;
+  if (
+    !identity ||
+    !mapping ||
+    [...identity.values()].filter(({ entityId }) => entityId === mapping.entityId).length !== 1 ||
+    !runtimeEntity ||
+    runtimeEntity.parentId !== null
+  ) {
+    return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
+  }
+
+  const baseCenter = studioPointToScenePointV1(
+    baseEntity.geometry.position.value,
+    input.frame,
+    scene.camera.view.center,
+  );
+  const targetCenter = studioPointToScenePointV1(operation.value, input.frame, scene.camera.view.center);
+  const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
+  if (!isFinitePoint(delta) || (delta.x === 0 && delta.y === 0)) {
+    return { kind: "unsupported", message: "The static root move must have one finite non-zero displacement." };
+  }
+  return {
+    delta,
+    kind: "authorized",
+    operationId: operation.id,
+    runtimeEntityId: runtimeEntity.id,
+  };
+}
+
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -1371,20 +1520,7 @@ export async function compileStudioPreviewSceneV1(
   }
   if (input.proposedState.programs.length === 0) {
     const { correlation, snapshot } = input.snapshot;
-    const importedSource = snapshot.scene.source;
-    if (
-      (importedSource.kind !== "imported-manim-server-snapshot" &&
-        importedSource.kind !== "imported-manim-runtime-trace") ||
-      sceneIrSourceRevisionHash(snapshot.scene) !== correlation.engineRevisionHash ||
-      importedSource.sourceHash !== correlation.context.sourceHash ||
-      snapshot.assets.manifestDigest !== correlation.assetsManifestDigest ||
-      snapshot.scene.sceneId !== correlation.sceneId ||
-      input.snapshot.sceneId !== correlation.sceneId ||
-      snapshot.scene.duration !== correlation.sceneDuration ||
-      input.snapshot.duration !== correlation.sceneDuration ||
-      correlation.sceneDuration !== correlation.context.sourceDuration ||
-      correlation.context.workingRevision !== PRISTINE_WORKING_REVISION
-    ) {
+    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
     }
     return {
@@ -1500,6 +1636,60 @@ export async function compileStudioPreviewSceneV1(
         workspaceKey: input.workspaceKey,
       },
     };
+  }
+  const staticRootMove = planStaticImportedRootMove(input);
+  if (staticRootMove.kind === "unsupported") {
+    return { error: `Static imported root move is unsupported: ${staticRootMove.message}`, kind: "unsupported" };
+  }
+  if (staticRootMove.kind === "authorized") {
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    try {
+      const bundle = await (input.moveCompiler ?? compileMoveSceneEntity)(input.snapshot.snapshot, {
+        delta: staticRootMove.delta,
+        entityId: staticRootMove.runtimeEntityId,
+        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+        nextRevision: engineRevisionHash,
+        provenance: {
+          evidence: [
+            "Studio t=0 position request projected onto one verified static imported root",
+            `authorized operation ${staticRootMove.operationId}`,
+          ],
+          id: `studio-static-move:${engineRevisionHash}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.move-scene-entity",
+        version: 1,
+      });
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+            input.snapshot.sourceRuntimeIdentity,
+            studioPreviewInteractionAuthority(input.snapshot),
+            bundle.scene.entities,
+          ),
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected the static imported root move: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+        kind: "unsupported",
+      };
+    }
   }
   const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
   if (outlineInputs.kind === "unsupported") {
