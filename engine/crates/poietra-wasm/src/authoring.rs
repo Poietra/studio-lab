@@ -1,7 +1,8 @@
 use poietra_eval::{
     EngineSessionV1, EvaluationError, MoveSceneEntityCommand, MoveSceneEntityError,
     RotateSceneEntityCommand, RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, UniformScaleSceneEntityCommand, UniformScaleSceneEntityError,
+    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
+    UniformScaleAboutPivot, UniformScaleSceneEntityCommand, UniformScaleSceneEntityError,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
@@ -22,6 +23,12 @@ enum MoveSceneEntitySchemaV1 {
 enum UniformScaleSceneEntitySchemaV1 {
     #[serde(rename = "poietra.uniform-scale-scene-entity")]
     UniformScaleSceneEntity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum TransformSceneEntitySchemaV1 {
+    #[serde(rename = "poietra.transform-scene-entity")]
+    TransformSceneEntity,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -86,6 +93,50 @@ impl From<UniformScaleSceneEntityCommandJsonV1> for UniformScaleSceneEntityComma
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct UniformScaleAboutPivotJsonV1 {
+    factor: f64,
+    pivot: PointV1,
+}
+
+impl From<UniformScaleAboutPivotJsonV1> for UniformScaleAboutPivot {
+    fn from(value: UniformScaleAboutPivotJsonV1) -> Self {
+        Self {
+            factor: value.factor,
+            pivot: value.pivot,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransformSceneEntityCommandJsonV1 {
+    delta: PointV1,
+    entity_id: String,
+    expected_base_revision: String,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    #[serde(rename = "schema")]
+    _schema: TransformSceneEntitySchemaV1,
+    uniform_scale: Option<UniformScaleAboutPivotJsonV1>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
+    fn from(value: TransformSceneEntityCommandJsonV1) -> Self {
+        Self {
+            delta: value.delta,
+            entity_id: value.entity_id,
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            provenance: value.provenance,
+            uniform_scale: value.uniform_scale.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MoveSceneEntityCommandJsonV1 {
     delta: PointV1,
     entity_id: String,
@@ -134,6 +185,8 @@ enum SceneAuthoringAdapterError {
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
     UniformScaleCommand(#[from] UniformScaleSceneEntityError),
+    #[error(transparent)]
+    TransformCommand(#[from] TransformSceneEntityError),
     #[error(transparent)]
     SetSubtreeVectorPaintAlphaCommand(#[from] SetSubtreeVectorPaintAlphaError),
     #[error("the authored Scene bundle could not be serialized: {0}")]
@@ -222,6 +275,31 @@ pub fn uniform_scale_scene_entity_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     uniform_scale_scene_entity_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn transform_scene_entity_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: TransformSceneEntityCommandJsonV1 =
+        parse_scene_authoring_command("transform", command_json)?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.transform_scene_entity(command.into())?;
+    scene_authoring_response(&result)
+}
+
+/// Applies one atomic translation and optional uniform scale through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or transformed result.
+#[wasm_bindgen(js_name = transformSceneEntityV1)]
+pub fn transform_scene_entity_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    transform_scene_entity_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 

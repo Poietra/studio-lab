@@ -63,6 +63,29 @@ export type UniformScaleSceneEntityCompiler = (
   command: UniformScaleSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+export type TransformSceneEntityWireCommandV1 = Readonly<{
+  delta: Readonly<{ x: number; y: number }>;
+  entityId: string;
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.transform-scene-entity";
+  uniformScale?: Readonly<{
+    factor: number;
+    pivot: Readonly<{ x: number; y: number }>;
+  }>;
+  version: 1;
+}>;
+
+export type TransformSceneEntityCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: TransformSceneEntityWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
   alpha: number;
   expectedBaseRevision: string;
@@ -94,12 +117,17 @@ type UniformScaleSceneAuthoringBindingsV1 = Readonly<{
   uniformScaleSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type TransformSceneAuthoringBindingsV1 = Readonly<{
+  transformSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
   setSubtreeVectorPaintAlphaV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type SceneAuthoringBindingsV1 = MoveSceneAuthoringBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
+  TransformSceneAuthoringBindingsV1 &
   UniformScaleSceneAuthoringBindingsV1 &
   SetSubtreeVectorPaintAlphaBindingsV1;
 
@@ -127,6 +155,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.moveSceneEntityV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
+      typeof candidate.transformSceneEntityV1 !== "function" ||
       typeof candidate.uniformScaleSceneEntityV1 !== "function"
     ) {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
@@ -136,6 +165,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
+      transformSceneEntityV1: candidate.transformSceneEntityV1 as SceneAuthoringBindingsV1["transformSceneEntityV1"],
       uniformScaleSceneEntityV1:
         candidate.uniformScaleSceneEntityV1 as SceneAuthoringBindingsV1["uniformScaleSceneEntityV1"],
     };
@@ -183,6 +213,16 @@ export function createUniformScaleSceneEntityCompiler(
   };
 }
 
+/** Creates the browser adapter around one atomic, profile-free entity transform. */
+export function createTransformSceneEntityCompiler(
+  getBindings: () => Promise<TransformSceneAuthoringBindingsV1>,
+): TransformSceneEntityCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.transformSceneEntityV1);
+  };
+}
+
 /** Creates the browser adapter for the canonical subtree vector-paint command. */
 export function createSetSubtreeVectorPaintAlphaCompiler(
   getBindings: () => Promise<SetSubtreeVectorPaintAlphaBindingsV1>,
@@ -195,5 +235,6 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileMoveSceneEntity = createMoveSceneEntityCompiler(loadBindings);
+export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
 export const compileUniformScaleSceneEntity = createUniformScaleSceneEntityCompiler(loadBindings);
 export const compileSetSubtreeVectorPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(loadBindings);
