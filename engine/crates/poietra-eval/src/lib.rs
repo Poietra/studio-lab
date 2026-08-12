@@ -11,10 +11,9 @@ mod retained_index;
 mod scene_delta;
 
 pub use authoring::{
-    MoveSceneEntityCommand, MoveSceneEntityError, RotateSceneEntityCommand, RotateSceneEntityError,
-    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
-    UniformScaleSceneEntityCommand, UniformScaleSceneEntityError,
+    RotateSceneEntityCommand, RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand,
+    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
+    UniformScaleAboutPivot,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,

@@ -1,14 +1,10 @@
 import {
-  compileMoveSceneEntity,
   compileRotateSceneEntity,
   compileSetSubtreeVectorPaintAlpha,
   compileTransformSceneEntity,
-  compileUniformScaleSceneEntity,
-  type MoveSceneEntityCompiler,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityCompiler,
-  type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
@@ -1665,13 +1661,12 @@ function planInitialTransformEdit(
 export async function compileStudioPreviewGenericInitialEdit(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
-    moveCompiler?: MoveSceneEntityCompiler;
     proposedState: ProposedState;
     rotationCompiler?: RotateSceneEntityCompiler;
     subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
-    uniformScaleCompiler?: UniformScaleSceneEntityCompiler;
+    transformCompiler?: TransformSceneEntityCompiler;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
   const candidates = studioPreviewGenericInitialEditCandidates(input.snapshot);
@@ -1767,13 +1762,13 @@ export async function compileStudioPreviewGenericInitialEdit(
     const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
     const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
     try {
-      const rebased = await (input.moveCompiler ?? compileMoveSceneEntity)(input.snapshot.snapshot, {
+      const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
         delta,
         entityId: target.id,
         expectedBaseRevision: sceneIrSourceRevisionHash(scene),
         nextRevision: input.sourceRevisionHash,
         provenance,
-        schema: "poietra.move-scene-entity",
+        schema: "poietra.transform-scene-entity",
         version: 1,
       });
       return { kind: "rebased", scene: rebased.scene };
@@ -1807,14 +1802,14 @@ export async function compileStudioPreviewGenericInitialEdit(
     }
   }
   try {
-    const rebased = await (input.uniformScaleCompiler ?? compileUniformScaleSceneEntity)(input.snapshot.snapshot, {
+    const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
+      delta: { x: 0, y: 0 },
       entityId: target.id,
       expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-      factor: edit.scaleFactor,
       nextRevision: input.sourceRevisionHash,
-      pivot: baseCenter,
       provenance,
-      schema: "poietra.uniform-scale-scene-entity",
+      schema: "poietra.transform-scene-entity",
+      uniformScale: { factor: edit.scaleFactor, pivot: baseCenter },
       version: 1,
     });
     return { kind: "rebased", scene: rebased.scene };
