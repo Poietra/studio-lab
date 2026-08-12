@@ -66,7 +66,7 @@ const transformCommand: TransformSceneEntityWireCommandV1 = {
     origin: "studio-edit-program",
   },
   schema: "poietra.transform-scene-entity",
-  uniformScale: { factor: 1.5, pivot: { x: 1.25, y: -0.5 } },
+  scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
   version: 1,
 };
 

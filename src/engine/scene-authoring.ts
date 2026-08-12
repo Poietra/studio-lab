@@ -34,11 +34,12 @@ export type TransformSceneEntityWireCommandV1 = Readonly<{
     id: string;
     origin: "studio-edit-program";
   }>;
-  schema: "poietra.transform-scene-entity";
-  uniformScale?: Readonly<{
-    factor: number;
+  scale?: Readonly<{
     pivot: Readonly<{ x: number; y: number }>;
+    xFactor: number;
+    yFactor: number;
   }>;
+  schema: "poietra.transform-scene-entity";
   version: 1;
 }>;
 

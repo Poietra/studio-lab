@@ -2,8 +2,8 @@ use poietra_eval::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
     CreateSceneTimelineInsertion, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
-    RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
+    RotateSceneEntityError, ScaleAboutPivot, SetSubtreeVectorPaintAlphaCommand,
+    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
@@ -187,16 +187,18 @@ impl From<SetSubtreeVectorPaintAlphaCommandJsonV1> for SetSubtreeVectorPaintAlph
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UniformScaleAboutPivotJsonV1 {
-    factor: f64,
+struct ScaleAboutPivotJsonV1 {
     pivot: PointV1,
+    x_factor: f64,
+    y_factor: f64,
 }
 
-impl From<UniformScaleAboutPivotJsonV1> for UniformScaleAboutPivot {
-    fn from(value: UniformScaleAboutPivotJsonV1) -> Self {
+impl From<ScaleAboutPivotJsonV1> for ScaleAboutPivot {
+    fn from(value: ScaleAboutPivotJsonV1) -> Self {
         Self {
-            factor: value.factor,
             pivot: value.pivot,
+            x_factor: value.x_factor,
+            y_factor: value.y_factor,
         }
     }
 }
@@ -211,7 +213,7 @@ struct TransformSceneEntityCommandJsonV1 {
     provenance: ProvenanceRecordV1,
     #[serde(rename = "schema")]
     _schema: TransformSceneEntitySchemaV1,
-    uniform_scale: Option<UniformScaleAboutPivotJsonV1>,
+    scale: Option<ScaleAboutPivotJsonV1>,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
 }
@@ -224,7 +226,7 @@ impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
             expected_base_revision: value.expected_base_revision,
             next_revision: value.next_revision,
             provenance: value.provenance,
-            uniform_scale: value.uniform_scale.map(Into::into),
+            scale: value.scale.map(Into::into),
         }
     }
 }
@@ -348,7 +350,7 @@ pub fn create_scene_entities_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Applies one atomic translation and optional uniform scale through the shared core.
+/// Applies one atomic translation and optional positive axis scale through the shared core.
 ///
 /// # Errors
 ///
@@ -621,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn scaled_real_top_level_group_changes_its_prepared_aggregate_bounds() {
+    fn axis_scaled_real_top_level_group_changes_its_prepared_aggregate_bounds() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
         let fixture: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
@@ -646,12 +648,16 @@ mod tests {
             "expectedBaseRevision": bundle.scene.source.revision_hash(),
             "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "provenance": {
-                "evidence": ["WASM adapter real top-level group uniform scale test"],
-                "id": "wasm-real-group-uniform-scale",
+                "evidence": ["WASM adapter real top-level group axis scale test"],
+                "id": "wasm-real-group-axis-scale",
                 "origin": "studio-edit-program"
             },
             "schema": "poietra.transform-scene-entity",
-            "uniformScale": { "factor": 0.5, "pivot": { "x": 1.0, "y": -0.5 } },
+            "scale": {
+                "pivot": { "x": 1.0, "y": -0.5 },
+                "xFactor": 0.5,
+                "yFactor": 0.75
+            },
             "version": 1
         }))
         .unwrap();
@@ -682,10 +688,10 @@ mod tests {
             .find(|entity| entity.id == root_id)
             .unwrap();
         assert!((scaled_root.transform.m11 - 0.5).abs() < 1e-12);
-        assert!((scaled_root.transform.m22 - 0.5).abs() < 1e-12);
+        assert!((scaled_root.transform.m22 - 0.75).abs() < 1e-12);
         assert!((scaled_root.transform.tx - 0.5).abs() < 1e-12);
-        assert!((scaled_root.transform.ty + 0.25).abs() < 1e-12);
-        assert_eq!(scaled_root.provenance_id, "wasm-real-group-uniform-scale");
+        assert!((scaled_root.transform.ty + 0.125).abs() < 1e-12);
+        assert_eq!(scaled_root.provenance_id, "wasm-real-group-axis-scale");
         assert!(matches!(
             scaled.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }

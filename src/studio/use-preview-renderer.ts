@@ -70,6 +70,7 @@ import {
 } from "./preview-temporal-rebase";
 import { insertedProgramDuration } from "./program-composition";
 import {
+  isEntityDimensionsValue,
   isPointValue,
   normalizeDimensionsSamples,
   normalizePositionSamples,
@@ -79,6 +80,7 @@ import {
   buildStudioSceneIrAdapterEvidenceV1,
   collectStudioMathTexOutlineInputsV1,
   compileStudioSceneIrV1,
+  sceneEntityLocalBounds,
   sceneEntityUniformPositiveScale,
   sceneEntityWorldCenter,
   studioPointToScenePointV1,
@@ -1374,14 +1376,18 @@ type StaticImportedRootTransformPlan =
       kind: "authorized";
       operationIds: readonly string[];
       runtimeEntityId: string;
-      uniformScale?: Readonly<{ factor: number; pivot: Point }>;
+      scale?: Readonly<{ pivot: Point; xFactor: number; yFactor: number }>;
     }>;
 
 type StaticImportedPositionOperation = Extract<CanonicalEditOperation, { kind: "SetProperty" }> &
   Readonly<{ key: "position" }>;
 type StaticImportedScaleOperation = Extract<CanonicalEditOperation, { kind: "AnimateProperty" }> &
   Readonly<{ key: "scale" }>;
-type StaticImportedTransformOperation = StaticImportedPositionOperation | StaticImportedScaleOperation;
+type StaticImportedResizeOperation = Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>;
+type StaticImportedTransformOperation =
+  | StaticImportedPositionOperation
+  | StaticImportedResizeOperation
+  | StaticImportedScaleOperation;
 
 type StaticImportedTransformEntry = Readonly<{
   operation: StaticImportedTransformOperation;
@@ -1669,6 +1675,58 @@ function sameStaticTransformPoint(left: Point, right: Point) {
   return closeStaticTransformValue(left.x, right.x) && closeStaticTransformValue(left.y, right.y);
 }
 
+function positiveShapeDimensions(type: "Circle" | "Rectangle", value: unknown): value is EntityDimensions {
+  if (!isEntityDimensionsValue(value)) return false;
+  return type === "Circle"
+    ? value.radius !== undefined && value.radius > 0 && value.width === undefined && value.height === undefined
+    : value.width !== undefined &&
+        value.width > 0 &&
+        value.height !== undefined &&
+        value.height > 0 &&
+        value.radius === undefined;
+}
+
+function sameShapeDimensions(type: "Circle" | "Rectangle", left: EntityDimensions, right: EntityDimensions) {
+  return type === "Circle"
+    ? closeStaticTransformValue(left.radius!, right.radius!)
+    : closeStaticTransformValue(left.width!, right.width!) && closeStaticTransformValue(left.height!, right.height!);
+}
+
+function verifiedPrimitiveBaseline(
+  runtimeEntity: SceneIrBundleV1["scene"]["entities"][number],
+  type: "Circle" | "Rectangle",
+  dimensions: EntityDimensions,
+  semanticScale: number,
+) {
+  const transform = runtimeEntity.transform;
+  const bounds = sceneEntityLocalBounds(runtimeEntity);
+  if (
+    !bounds ||
+    transform.m12 !== 0 ||
+    transform.m21 !== 0 ||
+    !Number.isFinite(transform.m11) ||
+    transform.m11 <= 0 ||
+    !Number.isFinite(transform.m22) ||
+    transform.m22 <= 0
+  ) {
+    return false;
+  }
+  const width = (bounds.right - bounds.left) * transform.m11;
+  const height = (bounds.top - bounds.bottom) * transform.m22;
+  if (type === "Circle") {
+    return (
+      (runtimeEntity.geometry.kind === "circle" || runtimeEntity.geometry.kind === "cubic-path") &&
+      closeStaticTransformValue(width, height) &&
+      closeStaticTransformValue(width, dimensions.radius! * semanticScale * 2)
+    );
+  }
+  return (
+    (runtimeEntity.geometry.kind === "rectangle" || runtimeEntity.geometry.kind === "cubic-path") &&
+    closeStaticTransformValue(width, dimensions.width! * semanticScale) &&
+    closeStaticTransformValue(height, dimensions.height! * semanticScale)
+  );
+}
+
 function planStaticImportedRootTransform(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -1685,12 +1743,16 @@ function planStaticImportedRootTransform(
     const { operation } = entry;
     if (!("entityId" in operation)) return false;
     const entity = baseEntities[operation.entityId];
+    const scalable =
+      entity?.type === "Circle" ||
+      entity?.type === "Rectangle" ||
+      entity?.type === "ImageMobject" ||
+      entity?.type === "MathTex";
     return (
       entity !== undefined &&
       ((operation.kind === "SetProperty" && operation.key === "position") ||
-        ((entity.type === "ImageMobject" || entity.type === "MathTex") &&
-          operation.kind === "AnimateProperty" &&
-          operation.key === "scale"))
+        (scalable && operation.kind === "AnimateProperty" && operation.key === "scale") ||
+        ((entity.type === "Circle" || entity.type === "Rectangle") && operation.kind === "ResizeEntity"))
     );
   });
   if (transformEntries.length === 0) return { kind: "not-applicable" };
@@ -1706,21 +1768,29 @@ function planStaticImportedRootTransform(
     (operation): operation is StaticImportedScaleOperation =>
       operation.kind === "AnimateProperty" && operation.key === "scale",
   );
+  const resizeOperations = operations.filter(
+    (operation): operation is StaticImportedResizeOperation => operation.kind === "ResizeEntity",
+  );
   const targetId = operations[0]?.entityId;
   const target = targetId ? baseEntities[targetId] : undefined;
   const imageOrMathTex = target?.type === "ImageMobject" || target?.type === "MathTex";
-  if (entityIds.size !== 1 || positionOperations.length > 1 || scaleOperations.length > 1) {
+  const primitiveType = target?.type === "Circle" || target?.type === "Rectangle" ? target.type : null;
+  if (
+    entityIds.size !== 1 ||
+    positionOperations.length > 1 ||
+    scaleOperations.length > 1 ||
+    resizeOperations.length > 1
+  ) {
     return { kind: "unsupported", message: "The static transform must identify one target." };
   }
-  if (!imageOrMathTex && entries.length !== 1) return { kind: "not-applicable" };
-  if (imageOrMathTex && (entries.length !== transformEntries.length || entries.length > 2)) {
+  if (
+    entries.length !== transformEntries.length ||
+    (resizeOperations.length === 1 ? operations.length !== 1 : operations.length > 2)
+  ) {
     return {
       kind: "unsupported",
-      message: "One imported Image or MathTex transform may contain only one position and one uniform scale edit.",
+      message: "One static imported transform may contain one resize or one position plus one uniform scale edit.",
     };
-  }
-  if (!imageOrMathTex && (operations.length !== 1 || scaleOperations.length !== 0)) {
-    return { kind: "not-applicable" };
   }
   for (const { operation, record } of transformEntries) {
     const program = record.program;
@@ -1736,7 +1806,20 @@ function planStaticImportedRootTransform(
       origin === "direct-manipulation" &&
       operation.control === undefined &&
       typeof operation.relativeFactor === "number" &&
+      Number.isFinite(operation.relativeFactor) &&
+      operation.relativeFactor > 0 &&
       operation.relativeFactor !== 1;
+    const resizeIsAuthorized =
+      operation.kind === "ResizeEntity" &&
+      primitiveType !== null &&
+      operation.shape === (primitiveType === "Circle" ? "circle" : "rectangle") &&
+      (origin === "direct-manipulation" || origin === "studio-default") &&
+      Number.isFinite(operation.scale) &&
+      operation.scale > 0 &&
+      positiveShapeDimensions(primitiveType, operation.from.dimensions) &&
+      positiveShapeDimensions(primitiveType, operation.to.dimensions) &&
+      isFinitePoint(operation.from.position) &&
+      isFinitePoint(operation.to.position);
     if (
       record.validation.status !== "valid" ||
       program.anchor.resolvedSeconds !== 0 ||
@@ -1744,7 +1827,7 @@ function planStaticImportedRootTransform(
       operation.interval.start !== 0 ||
       operation.interval.end !== 0 ||
       operation.provenance.origin !== origin ||
-      (!positionIsAuthorized && !scaleIsAuthorized)
+      (!positionIsAuthorized && !scaleIsAuthorized && !resizeIsAuthorized)
     ) {
       return {
         kind: "unsupported",
@@ -1775,8 +1858,10 @@ function planStaticImportedRootTransform(
   const baseEntity = target;
   const basePosition = baseEntity?.geometry?.position;
   const baseScale = baseEntity?.geometry?.scale;
+  const baseDimensions = baseEntity?.geometry?.dimensions;
   const semanticScale =
     baseScale?.kind === "known" && Number.isFinite(baseScale.value) && baseScale.value > 0 ? baseScale.value : null;
+  const primitiveTransform = primitiveType !== null && (scaleOperations.length === 1 || resizeOperations.length === 1);
   if (
     !baseEntity ||
     baseEntity.provisional ||
@@ -1784,7 +1869,9 @@ function planStaticImportedRootTransform(
     baseEntity.sourceIdentity.kind !== "known" ||
     basePosition?.kind !== "known" ||
     !isFinitePoint(basePosition.value) ||
-    (scaleOperations.length === 1 && baseEntity.type === "MathTex" && semanticScale === null)
+    ((scaleOperations.length === 1 || resizeOperations.length === 1) && semanticScale === null) ||
+    (primitiveTransform &&
+      (baseDimensions?.kind !== "known" || !positiveShapeDimensions(primitiveType, baseDimensions.value)))
   ) {
     return { kind: "unsupported", message: "The imported transform has no stable semantic identity and baseline." };
   }
@@ -1796,7 +1883,13 @@ function planStaticImportedRootTransform(
       ).length
     : 0;
   const runtimeTypeMatches =
-    !imageOrMathTex ||
+    (primitiveType === "Circle" &&
+      (runtimeEntity?.geometry.kind === "circle" || runtimeEntity?.geometry.kind === "cubic-path") &&
+      runtimeEntity.appearance.kind === "vector") ||
+    (primitiveType === "Rectangle" &&
+      (runtimeEntity?.geometry.kind === "rectangle" || runtimeEntity?.geometry.kind === "cubic-path") &&
+      runtimeEntity.appearance.kind === "vector") ||
+    (!imageOrMathTex && primitiveType === null) ||
     (baseEntity.type === "ImageMobject" &&
       runtimeEntity?.geometry.kind === "image" &&
       runtimeEntity.appearance.kind === "image") ||
@@ -1814,12 +1907,28 @@ function planStaticImportedRootTransform(
     return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
   }
   const semanticCenter = studioPointToScenePointV1(basePosition.value, input.frame, scene.camera.view.center);
-  const runtimeCenter = imageOrMathTex ? sceneEntityWorldCenter(runtimeEntity) : semanticCenter;
+  const runtimeCenter = imageOrMathTex || primitiveTransform ? sceneEntityWorldCenter(runtimeEntity) : semanticCenter;
   const mathTexScale = baseEntity.type === "MathTex" ? sceneEntityUniformPositiveScale(runtimeEntity.transform) : null;
+  const resize = resizeOperations[0];
+  const primitiveBaselineMatches =
+    !primitiveTransform ||
+    (primitiveType !== null && baseDimensions?.kind === "known" && semanticScale !== null
+      ? verifiedPrimitiveBaseline(runtimeEntity, primitiveType, baseDimensions.value, semanticScale)
+      : false);
+  const resizeBaselineMatches =
+    !resize ||
+    (primitiveType !== null &&
+      baseDimensions?.kind === "known" &&
+      semanticScale !== null &&
+      sameShapeDimensions(primitiveType, resize.from.dimensions, baseDimensions.value) &&
+      sameStaticTransformPoint(resize.from.position, basePosition.value) &&
+      closeStaticTransformValue(resize.scale, semanticScale));
   if (
     !runtimeCenter ||
     !isFinitePoint(runtimeCenter) ||
-    (imageOrMathTex && !sameStaticTransformPoint(runtimeCenter, semanticCenter)) ||
+    ((imageOrMathTex || primitiveTransform) && !sameStaticTransformPoint(runtimeCenter, semanticCenter)) ||
+    !primitiveBaselineMatches ||
+    !resizeBaselineMatches ||
     (scaleOperations.length === 1 &&
       baseEntity.type === "MathTex" &&
       (mathTexScale === null || !closeStaticTransformValue(mathTexScale, semanticScale!)))
@@ -1828,13 +1937,29 @@ function planStaticImportedRootTransform(
   }
 
   const position = positionOperations[0];
-  const targetCenter =
-    position && isFinitePoint(position.value)
-      ? studioPointToScenePointV1(position.value, input.frame, scene.camera.view.center)
-      : runtimeCenter;
+  const targetPosition = resize?.to.position ?? (position && isFinitePoint(position.value) ? position.value : null);
+  const targetCenter = targetPosition
+    ? studioPointToScenePointV1(targetPosition, input.frame, scene.camera.view.center)
+    : runtimeCenter;
   const delta = { x: targetCenter.x - runtimeCenter.x, y: targetCenter.y - runtimeCenter.y };
   const scaleFactor = scaleOperations[0]?.relativeFactor;
-  if (!isFinitePoint(delta) || (scaleFactor === undefined && delta.x === 0 && delta.y === 0)) {
+  const xFactor = resize
+    ? primitiveType === "Circle"
+      ? resize.to.dimensions.radius! / resize.from.dimensions.radius!
+      : resize.to.dimensions.width! / resize.from.dimensions.width!
+    : scaleFactor;
+  const yFactor = resize
+    ? primitiveType === "Circle"
+      ? resize.to.dimensions.radius! / resize.from.dimensions.radius!
+      : resize.to.dimensions.height! / resize.from.dimensions.height!
+    : scaleFactor;
+  const hasScale = xFactor !== undefined && yFactor !== undefined && (xFactor !== 1 || yFactor !== 1);
+  if (
+    !isFinitePoint(delta) ||
+    (xFactor !== undefined && (!Number.isFinite(xFactor) || xFactor <= 0)) ||
+    (yFactor !== undefined && (!Number.isFinite(yFactor) || yFactor <= 0)) ||
+    (!hasScale && delta.x === 0 && delta.y === 0)
+  ) {
     return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
   }
   return {
@@ -1842,7 +1967,7 @@ function planStaticImportedRootTransform(
     kind: "authorized",
     operationIds: operations.map(({ id }) => id),
     runtimeEntityId: runtimeEntity.id,
-    ...(scaleFactor === undefined ? {} : { uniformScale: { factor: scaleFactor, pivot: runtimeCenter } }),
+    ...(!hasScale ? {} : { scale: { pivot: runtimeCenter, xFactor: xFactor!, yFactor: yFactor! } }),
   };
 }
 
@@ -2141,7 +2266,7 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const includesScale = staticRootTransform.uniformScale !== undefined;
+      const includesScale = staticRootTransform.scale !== undefined;
       const bundle = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
         delta: staticRootTransform.delta,
         entityId: staticRootTransform.runtimeEntityId,
@@ -2158,7 +2283,7 @@ export async function compileStudioPreviewSceneV1(
           origin: "studio-edit-program",
         },
         schema: "poietra.transform-scene-entity",
-        ...(staticRootTransform.uniformScale ? { uniformScale: staticRootTransform.uniformScale } : {}),
+        ...(staticRootTransform.scale ? { scale: staticRootTransform.scale } : {}),
         version: 1,
       });
       return {

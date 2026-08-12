@@ -1809,7 +1809,7 @@ export async function compileStudioPreviewGenericInitialEdit(
       nextRevision: input.sourceRevisionHash,
       provenance,
       schema: "poietra.transform-scene-entity",
-      uniformScale: { factor: edit.scaleFactor, pivot: baseCenter },
+      scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
       version: 1,
     });
     return { kind: "rebased", scene: rebased.scene };
@@ -1909,7 +1909,15 @@ export async function compileStudioPreviewTemporalRebase(
         origin: "studio-edit-program",
       },
       schema: "poietra.transform-scene-entity",
-      ...(scaleFactor === null ? {} : { uniformScale: { factor: scaleFactor, pivot: sourceTransform.worldCenter } }),
+      ...(scaleFactor === null
+        ? {}
+        : {
+            scale: {
+              pivot: sourceTransform.worldCenter,
+              xFactor: scaleFactor,
+              yFactor: scaleFactor,
+            },
+          }),
       version: 1,
     });
     return { kind: "rebased", scene: rebased.scene };

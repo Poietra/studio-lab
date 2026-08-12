@@ -631,7 +631,7 @@ function officialSquareToCircleSnapshot(
 function testTransformCompiler(calls: TransformSceneEntityWireCommandV1[] = []): TransformSceneEntityCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    const scale = command.uniformScale;
+    const scale = command.scale;
     return await parseVerifiedSceneIrBundleV1({
       ...bundle,
       scene: {
@@ -640,12 +640,12 @@ function testTransformCompiler(calls: TransformSceneEntityWireCommandV1[] = []):
           if (entity.id !== command.entityId) return entity;
           const transform = { ...entity.transform };
           if (scale) {
-            transform.m11 *= scale.factor;
-            transform.m12 *= scale.factor;
-            transform.m21 *= scale.factor;
-            transform.m22 *= scale.factor;
-            transform.tx = scale.pivot.x + scale.factor * (transform.tx - scale.pivot.x);
-            transform.ty = scale.pivot.y + scale.factor * (transform.ty - scale.pivot.y);
+            transform.m11 *= scale.xFactor;
+            transform.m12 *= scale.xFactor;
+            transform.m21 *= scale.yFactor;
+            transform.m22 *= scale.yFactor;
+            transform.tx = scale.pivot.x + scale.xFactor * (transform.tx - scale.pivot.x);
+            transform.ty = scale.pivot.y + scale.yFactor * (transform.ty - scale.pivot.y);
           }
           transform.tx += command.delta.x;
           transform.ty += command.delta.y;
@@ -1682,7 +1682,7 @@ describe("generic Runtime Trace V3 initial move", () => {
           origin: "studio-edit-program",
         },
         schema: "poietra.transform-scene-entity",
-        uniformScale: { factor: 1.5, pivot: { x: 0, y: 0 } },
+        scale: { pivot: { x: 0, y: 0 }, xFactor: 1.5, yFactor: 1.5 },
         version: 1,
       },
     ]);
@@ -1913,7 +1913,8 @@ describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
     });
     expect(commands[0]?.delta.x).toBeCloseTo(tx, 12);
     expect(commands[0]?.delta.y).toBeCloseTo(ty, 12);
-    expect(commands[0]?.uniformScale?.factor ?? null).toBe(kind === "position" ? null : 1.5);
+    expect(commands[0]?.scale?.xFactor ?? null).toBe(kind === "position" ? null : 1.5);
+    expect(commands[0]?.scale?.yFactor ?? null).toBe(kind === "position" ? null : 1.5);
   });
 
   it("preserves every imported channel byte and deterministic forward/A-B-A samples after the combined edit", async () => {
