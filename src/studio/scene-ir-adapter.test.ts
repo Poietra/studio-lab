@@ -510,7 +510,7 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
     expect(missing.kind).toBe("unsupported");
   });
 
-  it("preserves verified image evidence and applies Studio move/scale exactly once", async () => {
+  it("preserves verified image evidence and rejects imported transform mutation", async () => {
     const fixture = await imageAdapterFixture();
     expect(fixture.evidence).toMatchObject({
       appearances: { [IMAGE_ID]: { kind: "image", opacity: 0.8 } },
@@ -594,11 +594,7 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       proposedState,
       sourceRevisionHash: REVISION_HASH,
     });
-    if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
-    expect(result.scene.entities[0]).toMatchObject({
-      geometry: fixture.snapshot.scene.entities[0]?.geometry,
-      transform: { m11: 1.5, m12: 0, m21: 0, m22: 1.5, tx: 2, ty: 1 },
-    });
+    expectIssue(result, "property-unsupported");
   });
 
   it("fails closed when verified image asset evidence is not in the manifest", async () => {
@@ -625,7 +621,7 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
     );
   });
 
-  it("preserves imported MathTex geometry and applies Studio move/scale exactly once", async () => {
+  it("preserves imported MathTex geometry and rejects imported transform mutation", async () => {
     const fixture = await mathTexAdapterFixture();
     expect(fixture.evidence).toMatchObject({
       appearances: { [MATHTEX_ID]: { kind: "vector", opacity: 1, stroke: null } },
@@ -699,11 +695,7 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       proposedState,
       sourceRevisionHash: REVISION_HASH,
     });
-    if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
-    expect(result.scene.entities[0]).toMatchObject({
-      geometry: fixture.geometry,
-      transform: { m11: 3, m12: 0, m21: 0, m22: 3, tx: 1, ty: -0.5 },
-    });
+    expectIssue(result, "property-unsupported");
   });
 
   it("fails closed for imported MathTex content edits and mismatched semantic baselines", async () => {
