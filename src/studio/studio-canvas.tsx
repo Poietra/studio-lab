@@ -31,7 +31,7 @@ import {
   STUDIO_VIEWPORT,
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
-import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
+import type { StudioPreviewRendererView } from "./use-preview-renderer";
 import { isTransitionOverlay } from "./workspace-projection";
 
 export type StudioCanvasProps = Readonly<{
@@ -71,7 +71,7 @@ export type StudioCanvasProps = Readonly<{
   onPresenceCursorChange?: (cursor: Readonly<{ x: number; y: number }> | null) => void;
   onSelectEntity: (entityId: string) => void;
   presenceParticipants?: readonly StudioPresenceParticipantV1[];
-  preview?: StudioPreviewRendererViewV1 | null;
+  preview?: StudioPreviewRendererView | null;
   readOnly: boolean;
   sampleId: string;
   scalePreview: EntityScalePreview | null;
@@ -140,7 +140,7 @@ export function compensatePreviewGeometryForSemanticScalesV1(
  * break the tie.
  */
 export function verifiedPreviewGeometryForStudioEntityV1(
-  preview: StudioPreviewRendererViewV1,
+  preview: StudioPreviewRendererView,
   studioEntityIdByUniqueSourceName: ReadonlyMap<string, string | null>,
   entity: ProjectedEntity,
 ) {
@@ -351,8 +351,10 @@ export function StudioCanvas({
   const genericInitialEditCandidatesByStudioEntityId = new Map(
     genericInitialEditCandidates.map((candidate) => [candidate.studioEntityId, candidate]),
   );
-  const pinnedRuntimeEditAuthority =
-    preview?.initialEditRuntimeAuthority ?? preview?.runtimeTraceTerminalEditAuthority ?? null;
+  const pinnedRuntimeEditAuthority = preview?.initialEditAuthority ?? preview?.runtimeTraceTerminalEdit ?? null;
+  const initialEditCapabilities = preview?.initialEditAuthority?.capabilities ?? null;
+  const terminalEditCapabilities = preview?.runtimeTraceTerminalEdit?.capabilities ?? null;
+  const terminalPendingPresentation = preview?.runtimeTracePendingPresentation ?? null;
   const boundedRuntimeEditTargetIds = new Set([
     ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
     ...(pinnedRuntimeEditAuthority ? [pinnedRuntimeEditAuthority.studioEntityId] : []),
@@ -454,7 +456,7 @@ export function StudioCanvas({
             onMotionControlChange={onMotionControlChange}
           />
           {entities.map((entity) => {
-            const pendingRuntimeTraceTargetId = preview?.runtimeTraceValidationPending?.studioEntityId ?? null;
+            const pendingRuntimeTraceTargetId = preview?.runtimeTracePendingPresentation?.studioEntityId ?? null;
             if (
               pendingRuntimeTraceTargetId !== null &&
               !retainingRuntimeTraceBasePixels &&
@@ -514,8 +516,8 @@ export function StudioCanvas({
               (preview?.state.phase === "presented" && preview.state.frame.sampleTime === 0) ||
               dragPreview?.entityIds.includes(entity.id) === true;
             const sealedPositionOnlyTarget =
-              preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
-              preview.initialEditRuntimeAuthority.studioEntityId === entity.id &&
+              initialEditCapabilities?.semanticHitTargetWhenRuntimeBoundsMissing === true &&
+              preview?.initialEditAuthority?.studioEntityId === entity.id &&
               geometrylessInitialTargetIsRetained &&
               !positionUnknown &&
               !dimensionsUnknown &&
@@ -552,10 +554,12 @@ export function StudioCanvas({
             // not the retained base pixels. Keep the runtime AABB only as local
             // paint geometry so unknown Tex dimensions never collapse the ghost;
             // it is deliberately not written back into the projected entity.
-            const runtimeTracePositionOnlyGhost =
-              runtimeTraceTargetGhost &&
-              (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" ||
-                preview?.runtimeTraceValidationPending?.profile === "opening-grid-title-terminal-v2");
+            const terminalPositionOnly =
+              (preview?.runtimeTraceTerminalEdit?.studioEntityId === entity.id &&
+                terminalEditCapabilities?.uniformScale === false) ||
+              (terminalPendingPresentation?.studioEntityId === entity.id &&
+                terminalPendingPresentation.draftGhost === "position-only");
+            const runtimeTracePositionOnlyGhost = runtimeTraceTargetGhost && terminalPositionOnly;
             const runtimeTraceGhostGeometry =
               runtimeTracePositionOnlyGhost && compensatedRuntimeGeometry?.dimensions
                 ? { ...semanticPreviewGeometry, dimensions: compensatedRuntimeGeometry.dimensions }
@@ -571,10 +575,9 @@ export function StudioCanvas({
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditTargetIds.has(entity.id);
             const runtimePositionOnly =
-              (preview?.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2" &&
-                preview.runtimeTraceTerminalEditAuthority.studioEntityId === entity.id) ||
-              (preview?.initialEditRuntimeAuthority?.profile === "square-to-circle-v8" &&
-                preview.initialEditRuntimeAuthority.studioEntityId === entity.id);
+              terminalPositionOnly ||
+              (preview?.initialEditAuthority?.studioEntityId === entity.id &&
+                initialEditCapabilities?.uniformScale === false);
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
@@ -709,10 +712,8 @@ export function StudioCanvas({
             data-studio-preview-status={preview.state.phase}
             title={preview.state.phase === "fallback" ? (preview.state.detail ?? undefined) : undefined}
           >
-            {preview.runtimeTraceValidationPending
-              ? preview.runtimeTraceValidationPending.profile === "updaters-terminal-v1"
-                ? "Draft ghost · dependent updater validation pending"
-                : "Draft ghost · OpeningManim validation pending"
+            {preview.runtimeTracePendingPresentation
+              ? terminalPendingPresentation?.validationStatusLabel
               : preview.state.phase === "presented"
                 ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
                     displayOnlyPreview
@@ -722,9 +723,7 @@ export function StudioCanvas({
                         : preview.interactionAuthority.kind === "bounded-interactive"
                           ? preview.interactionAuthority.reason === "runtime-trace-initial-edit"
                             ? "Runtime Trace initial move / uniform resize"
-                            : preview.runtimeTraceTerminalEditAuthority?.profile === "opening-grid-title-terminal-v2"
-                              ? "Grid title terminal edit at 14.00s"
-                              : "Square terminal edit at 5.00s"
+                            : preview.runtimeTraceTerminalEdit?.controlLabel
                           : "editing preview only"
                   }`
                 : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}

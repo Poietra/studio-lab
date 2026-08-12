@@ -7,7 +7,7 @@ import {
   type StudioPreviewEditingContextV1,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
-import { type StudioPreviewRendererViewV1, useStudioPreviewRenderer } from "./use-preview-renderer";
+import { type StudioPreviewRendererView, useStudioPreviewRenderer } from "./use-preview-renderer";
 
 export type StudioPreviewAuthorityStateV1 =
   | Readonly<{
@@ -57,7 +57,7 @@ export type StudioPreviewAuthorityControllerViewV1 = Readonly<{
   activated: boolean;
   providerPending: boolean;
   requestServer: () => boolean;
-  renderer: StudioPreviewRendererViewV1 | null;
+  renderer: StudioPreviewRendererView | null;
   retry: () => boolean;
 }>;
 

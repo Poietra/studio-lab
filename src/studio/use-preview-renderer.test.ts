@@ -46,21 +46,20 @@ import {
   claimStudioPreviewCanvasV1,
   compileStudioPreviewSceneV1,
   digestStudioPreviewSceneRevisionV1,
-  projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1,
-  projectStudioPreviewRuntimeTraceTerminalEntityV1,
-  projectStudioPreviewRuntimeTraceTerminalValidationSceneV1,
-  resolveStudioPreviewRuntimeTraceTerminalUiStateV1,
+  projectStudioPreviewRuntimeTraceOpaqueSelectionEntities,
+  projectStudioPreviewRuntimeTraceTerminalEntity,
+  projectStudioPreviewRuntimeTraceTerminalValidationScene,
+  resolveStudioPreviewRuntimeTraceTerminalUiState,
   type StudioPreviewSnapshotMetadataStateV1,
   studioPreviewEditedV9SampleFallbackV1,
   studioPreviewHostReadyForSceneUpdateV1,
-  studioPreviewInteractionAuthorityV1,
+  studioPreviewInteractionAuthority,
   studioPreviewInteractionEntityIdsV1,
   studioPreviewRuntimeTraceOpeningSelectionProfileV2,
-  studioPreviewRuntimeTraceOpeningTerminalEditSeedV2,
-  studioPreviewRuntimeTraceTerminalAnchorIsExactV1,
-  studioPreviewRuntimeTraceTerminalEditSeedV1,
-  studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1,
-  studioPreviewRuntimeTraceTerminalProgramSetV1,
+  studioPreviewRuntimeTraceTerminalAnchorIsExact,
+  studioPreviewRuntimeTraceTerminalEditSeed,
+  studioPreviewRuntimeTraceTerminalProgramIsAuthorized,
+  studioPreviewRuntimeTraceTerminalProgramSet,
   studioPreviewRuntimeTraceUpdatersSelectionProfileV1,
   studioPreviewSnapshotMetadataForWorkspaceV1,
 } from "./use-preview-renderer";
@@ -717,7 +716,7 @@ describe("claimStudioPreviewCanvasV1", () => {
   });
 });
 
-describe("studioPreviewInteractionAuthorityV1", () => {
+describe("studioPreviewInteractionAuthority", () => {
   it("keeps Runtime Trace preview-only and selects only its two source roots", async () => {
     const { snapshot } = await linePreviewInput();
     const leaf = snapshot.snapshot.scene.entities[0];
@@ -764,7 +763,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       sourceRuntimeIdentity: new Map([...identity].filter(([name]) => name === "square" || name === "decimal")),
     } as StudioVerifiedPreviewSnapshotV1;
 
-    const authority = studioPreviewInteractionAuthorityV1(runtimeTrace);
+    const authority = studioPreviewInteractionAuthority(runtimeTrace);
     expect(authority).toEqual({
       kind: "selection-only",
       reason: "runtime-trace-preview-only",
@@ -830,7 +829,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       },
       sourceRuntimeIdentity: genericV3Identity,
     } as StudioVerifiedPreviewSnapshotV1;
-    const genericAuthority = studioPreviewInteractionAuthorityV1(genericV3);
+    const genericAuthority = studioPreviewInteractionAuthority(genericV3);
     expect(genericAuthority).toEqual({
       kind: "selection-only",
       reason: "runtime-trace-preview-only",
@@ -850,7 +849,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
         scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 5 } },
       },
     } as StudioVerifiedPreviewSnapshotV1;
-    const authority = studioPreviewInteractionAuthorityV1(v5);
+    const authority = studioPreviewInteractionAuthority(v5);
     expect(authority).toEqual({ kind: "display-only", reason: "aggregate-mathtex-morph-lineage" });
     expect(
       studioPreviewInteractionEntityIdsV1(
@@ -875,7 +874,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       },
       sourceRuntimeIdentity: identity,
     } as StudioVerifiedPreviewSnapshotV1;
-    const authority = studioPreviewInteractionAuthorityV1(v9);
+    const authority = studioPreviewInteractionAuthority(v9);
     expect(authority).toEqual({ kind: "display-only", reason: "temporal-rebase-unavailable" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
   });
@@ -885,10 +884,10 @@ describe("studioPreviewInteractionAuthorityV1", () => {
     const runtimeEntityId = snapshot.snapshot.scene.entities[0]?.id;
     if (!runtimeEntityId) throw new Error("WarpSquare V9 has no runtime entity.");
 
-    const authority = studioPreviewInteractionAuthorityV1(snapshot);
+    const authority = studioPreviewInteractionAuthority(snapshot);
     expect(authority).toEqual({ kind: "interactive" });
     expect(studioPreviewInteractionEntityIdsV1(snapshot.sourceRuntimeIdentity, authority)).toEqual([runtimeEntityId]);
-    expect(studioPreviewInteractionAuthorityV1({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
+    expect(studioPreviewInteractionAuthority({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
       kind: "display-only",
       reason: "temporal-rebase-unavailable",
     });
@@ -945,12 +944,12 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       sourceRuntimeIdentity: identity,
     } as StudioVerifiedPreviewSnapshotV1;
 
-    const authority = studioPreviewInteractionAuthorityV1(v10);
+    const authority = studioPreviewInteractionAuthority(v10);
     expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
     expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual(leafIds);
     expect(
-      studioPreviewInteractionAuthorityV1({
+      studioPreviewInteractionAuthority({
         ...v10,
         sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== "grp")),
       }),
@@ -1011,12 +1010,12 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       sourceRuntimeIdentity: identity,
     } as StudioVerifiedPreviewSnapshotV1;
 
-    const authority = studioPreviewInteractionAuthorityV1(v11);
+    const authority = studioPreviewInteractionAuthority(v11);
     expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual(leafIds);
     for (const missingName of ["shapes", ...sourceNames]) {
       expect(
-        studioPreviewInteractionAuthorityV1({
+        studioPreviewInteractionAuthority({
           ...v11,
           sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== missingName)),
         }),
@@ -1086,12 +1085,12 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       sourceRuntimeIdentity: identity,
     } as StudioVerifiedPreviewSnapshotV1;
 
-    const authority = studioPreviewInteractionAuthorityV1(v12);
+    const authority = studioPreviewInteractionAuthority(v12);
     expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
     expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([textRootId, texRootId]);
     for (const missingName of ["group", "example_text", "example_tex"]) {
       expect(
-        studioPreviewInteractionAuthorityV1({
+        studioPreviewInteractionAuthority({
           ...v12,
           sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== missingName)),
         }),
@@ -1122,7 +1121,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
       ["polygon", { bindingId: "binding:polygon", entityId: "runtime-polygon", sourceName: "polygon" }],
     ]);
     const displayOnly = { kind: "display-only", reason: "source-runtime-identity-unverified" } as const;
-    expect(studioPreviewInteractionAuthorityV1({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
+    expect(studioPreviewInteractionAuthority({ ...snapshot, sourceRuntimeIdentity: null })).toEqual({
       kind: "interactive",
     });
     for (const { expectedAuthority, expectedEntityIds, identity } of [
@@ -1147,7 +1146,7 @@ describe("studioPreviewInteractionAuthorityV1", () => {
         },
         sourceRuntimeIdentity: identity,
       } as StudioVerifiedPreviewSnapshotV1;
-      const authority = studioPreviewInteractionAuthorityV1(v6);
+      const authority = studioPreviewInteractionAuthority(v6);
       expect(authority).toEqual(expectedAuthority);
       expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
     }
@@ -1162,12 +1161,12 @@ describe("studioPreviewInteractionAuthorityV1", () => {
           },
           sourceRuntimeIdentity: identity,
         }) as StudioVerifiedPreviewSnapshotV1;
-      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(null))).toEqual(displayOnly);
-      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(new Map()))).toEqual(displayOnly);
-      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(partialIdentity))).toEqual({
+      expect(studioPreviewInteractionAuthority(identityBoundSnapshot(null))).toEqual(displayOnly);
+      expect(studioPreviewInteractionAuthority(identityBoundSnapshot(new Map()))).toEqual(displayOnly);
+      expect(studioPreviewInteractionAuthority(identityBoundSnapshot(partialIdentity))).toEqual({
         kind: "interactive",
       });
-      expect(studioPreviewInteractionAuthorityV1(identityBoundSnapshot(fullIdentity))).toEqual(displayOnly);
+      expect(studioPreviewInteractionAuthority(identityBoundSnapshot(fullIdentity))).toEqual(displayOnly);
     }
   });
 });
@@ -1235,27 +1234,29 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.bundle).toBe(bundle);
     expect(result.scene.interactionEntityIds).toEqual(trace.roots.map(({ id }) => id));
-    expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
+    expect(studioPreviewInteractionAuthority(snapshot)).toEqual({
       editableRuntimeEntityId: trace.roots[0]?.id,
       kind: "bounded-interactive",
       reason: "runtime-trace-terminal-edit",
       sourceAnchor: 5,
       verifiedRuntimeEntityIds: trace.roots.map(({ id }) => id),
     });
-    const seed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
-    expect(seed).toEqual({
+    const seed = studioPreviewRuntimeTraceTerminalEditSeed(snapshot);
+    expect(seed).toMatchObject({
+      capabilities: { uniformScale: true },
+      controlLabel: "Square terminal edit at 5.00s",
       duration: 6,
-      profile: "updaters-terminal-v1",
-      relativeScale: 1,
+      renderProof: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
       runtimeEntityId: trace.roots[0]?.id,
       sourceAnchor: 5,
-      sourceDimensions: { height: 2, width: 2 },
       studioEntityId: "source:example_scenes/basic.py#UpdatersExample:square",
       studioSceneId: "example_scenes/basic.py#UpdatersExample",
+      uniformScaleBasis: { relativeScale: 1, sourceDimensions: { height: 2, width: 2 } },
     });
+    expect(seed).not.toHaveProperty("profile");
 
     expect(
-      studioPreviewRuntimeTraceTerminalEditSeedV1({
+      studioPreviewRuntimeTraceTerminalEditSeed({
         ...snapshot,
         correlation: {
           ...snapshot.correlation,
@@ -1264,7 +1265,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewRuntimeTraceTerminalEditSeedV1({
+      studioPreviewRuntimeTraceTerminalEditSeed({
         ...snapshot,
         sourceRuntimeIdentity: new Map(
           [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName === "decimal"),
@@ -1280,14 +1281,19 @@ describe("compileStudioPreviewSceneV1", () => {
       height: 8,
       width: 14.222222222222221,
     });
-    if (!seed || seed.profile !== "updaters-terminal-v1" || !imported) {
+    if (!seed || !seed.capabilities.uniformScale || !seed.uniformScaleBasis || !imported) {
       throw new Error("Expected exact UpdatersExample Studio authority.");
     }
     expect(Object.values(imported.sourceVariables)).toEqual(["square"]);
     const authority = { ...seed, baseCenter: { x: 320, y: 67.5 } } as const;
+    expect(authority).toMatchObject({
+      capabilities: { uniformScale: true },
+      controlLabel: "Square terminal edit at 5.00s",
+      renderProof: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
+    });
     const square = imported.runtimeSceneState.objectGraph.entities[authority.studioEntityId];
     if (!square?.geometry) throw new Error("Expected the source-bound Square.");
-    const projected = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+    const projected = projectStudioPreviewRuntimeTraceTerminalEntity(
       [
         {
           ...square,
@@ -1307,7 +1313,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     );
     const draftPosition = { x: 356, y: 86 };
-    const pendingProjection = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+    const pendingProjection = projectStudioPreviewRuntimeTraceTerminalEntity(
       [
         {
           ...square,
@@ -1324,11 +1330,14 @@ describe("compileStudioPreviewSceneV1", () => {
       authority,
       {
         baseFrameRetained: true,
-        dimensions: authority.sourceDimensions,
+        dimensions: authority.uniformScaleBasis.sourceDimensions,
+        draftGhost: "position-and-dimensions",
         position: draftPosition,
-        profile: "updaters-terminal-v1",
+        renderProof: authority.renderProof,
         sourceAnchor: 5,
         studioEntityId: authority.studioEntityId,
+        target: authority.target,
+        validationStatusLabel: "Draft ghost · dependent updater validation pending",
       },
     );
     expect(pendingProjection[0]).toEqual(
@@ -1337,7 +1346,7 @@ describe("compileStudioPreviewSceneV1", () => {
         position: draftPosition,
       }),
     );
-    const completedBatchProjection = projectStudioPreviewRuntimeTraceTerminalEntityV1(
+    const completedBatchProjection = projectStudioPreviewRuntimeTraceTerminalEntity(
       [
         {
           ...pendingProjection[0]!,
@@ -1353,10 +1362,13 @@ describe("compileStudioPreviewSceneV1", () => {
       {
         baseFrameRetained: true,
         dimensions: { height: 3, width: 3 },
+        draftGhost: "position-and-dimensions",
         position: draftPosition,
-        profile: "updaters-terminal-v1",
+        renderProof: authority.renderProof,
         sourceAnchor: 5,
         studioEntityId: authority.studioEntityId,
+        target: authority.target,
+        validationStatusLabel: "Draft ghost · dependent updater validation pending",
       },
     );
     expect(completedBatchProjection[0]).toEqual(
@@ -1369,7 +1381,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     );
     expect(
-      projectStudioPreviewRuntimeTraceTerminalEntityV1(
+      projectStudioPreviewRuntimeTraceTerminalEntity(
         [
           {
             ...pendingProjection[0]!,
@@ -1378,11 +1390,14 @@ describe("compileStudioPreviewSceneV1", () => {
         authority,
         {
           baseFrameRetained: true,
-          dimensions: authority.sourceDimensions,
+          dimensions: authority.uniformScaleBasis.sourceDimensions,
+          draftGhost: "position-and-dimensions",
           position: draftPosition,
-          profile: "updaters-terminal-v1",
+          renderProof: authority.renderProof,
           sourceAnchor: 5,
           studioEntityId: "another-entity",
+          target: authority.target,
+          validationStatusLabel: "Draft ghost · dependent updater validation pending",
         },
       )[0],
     ).toEqual(
@@ -1395,7 +1410,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (!decimalRuntimeId) throw new Error("Expected the verified runtime Decimal root.");
     const selectionProfile = studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot);
     expect(selectionProfile).not.toBeNull();
-    const opaqueSelection = projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+    const opaqueSelection = projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
       authority: selectionProfile,
       interactionGeometry: new Map([
         [decimalRuntimeId, { dimensions: { height: 0.8, width: 2.1 }, position: { x: 440, y: 67.5 } }],
@@ -1433,16 +1448,16 @@ describe("compileStudioPreviewSceneV1", () => {
         },
       },
     };
-    expect(studioPreviewRuntimeTraceTerminalEditSeedV1(candidateSnapshot)).toBeNull();
+    expect(studioPreviewRuntimeTraceTerminalEditSeed(candidateSnapshot)).toBeNull();
     expect(studioPreviewRuntimeTraceUpdatersSelectionProfileV1(candidateSnapshot)).toEqual(selectionProfile);
-    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationScene(
       imported.runtimeSceneState,
       authority,
     );
     const resize = createDirectManipulationResizeProgram({
       capturedPlayhead: 5,
       entityId: authority.studioEntityId,
-      from: { dimensions: authority.sourceDimensions, position: authority.baseCenter },
+      from: { dimensions: authority.uniformScaleBasis.sourceDimensions, position: authority.baseCenter },
       interval: { end: 5, start: 5 },
       scale: 1,
       scene: validationScene,
@@ -1459,7 +1474,7 @@ describe("compileStudioPreviewSceneV1", () => {
         shape: "rectangle",
       }),
     ]);
-    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(resize.program, authority)).toBe(true);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorized(resize.program, authority)).toBe(true);
     const position = createDirectManipulationPositionProgram({
       capturedPlayhead: 5,
       delta: { x: 24, y: 12 },
@@ -1470,7 +1485,7 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "runtime-trace-terminal-square-position",
     });
     expect(position.kind).toBe("valid");
-    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(position.program, authority)).toBe(true);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorized(position.program, authority)).toBe(true);
     const resizeRecord = programRecord(resize.program, resize);
     const positionRecord = programRecord(position.program, position);
     const movedCenter = { x: authority.baseCenter.x + 24, y: authority.baseCenter.y + 12 };
@@ -1483,10 +1498,10 @@ describe("compileStudioPreviewSceneV1", () => {
     const movedResize = createDirectManipulationResizeProgram({
       capturedPlayhead: 5,
       entityId: authority.studioEntityId,
-      from: { dimensions: authority.sourceDimensions, position: movedCenter },
+      from: { dimensions: authority.uniformScaleBasis.sourceDimensions, position: movedCenter },
       interval: { end: 5, start: 5 },
       scale: 1,
-      scene: projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+      scene: projectStudioPreviewRuntimeTraceTerminalValidationScene(
         projectRuntimeSceneToSourceTimeline(movedState.evaluatedScene, [position.program]),
         authority,
       ),
@@ -1495,7 +1510,7 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "runtime-trace-terminal-square-moved-resize",
     });
     expect(movedResize.kind, JSON.stringify(movedResize.issues)).toBe("valid");
-    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(movedResize.program, authority)).toBe(false);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorized(movedResize.program, authority)).toBe(false);
     const movedResizeRecord = programRecord(movedResize.program, movedResize);
     const movedAndResized = evaluateWorkingState({
       ...base.proposedState.base,
@@ -1504,10 +1519,11 @@ describe("compileStudioPreviewSceneV1", () => {
       stagedPrograms: [],
     });
     expect(movedAndResized.programs.map(({ validation }) => validation.status)).toEqual(["valid", "valid"]);
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord, movedResizeRecord], authority)).toMatchObject(
-      { kind: "authorized", remainingOperations: [] },
-    );
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([movedResizeRecord], authority)).toEqual({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([positionRecord, movedResizeRecord], authority)).toMatchObject({
+      kind: "authorized",
+      remainingOperations: [],
+    });
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([movedResizeRecord], authority)).toEqual({
       kind: "unauthorized",
     });
     expect(sampleProposedState(movedAndResized, 5).find(({ id }) => id === authority.studioEntityId)).toMatchObject({
@@ -1517,12 +1533,12 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       position: movedCenter,
     });
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord], authority)).toMatchObject({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([positionRecord], authority)).toMatchObject({
       kind: "authorized",
       operationKinds: ["position"],
       remainingOperations: ["resize"],
     });
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([resizeRecord], authority)).toMatchObject({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([resizeRecord], authority)).toMatchObject({
       kind: "authorized",
       operationKinds: ["resize"],
       remainingOperations: ["position"],
@@ -1531,15 +1547,15 @@ describe("compileStudioPreviewSceneV1", () => {
       [positionRecord, resizeRecord],
       [resizeRecord, positionRecord],
     ]) {
-      expect(studioPreviewRuntimeTraceTerminalProgramSetV1(records, authority)).toMatchObject({
+      expect(studioPreviewRuntimeTraceTerminalProgramSet(records, authority)).toMatchObject({
         kind: "authorized",
         remainingOperations: [],
       });
     }
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([positionRecord, positionRecord], authority)).toEqual({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([positionRecord, positionRecord], authority)).toEqual({
       kind: "unauthorized",
     });
-    const exactPending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+    const exactPending = resolveStudioPreviewRuntimeTraceTerminalUiState({
       atExactAnchor: true,
       contextMatches: true,
       presentedAuthority: null,
@@ -1549,16 +1565,30 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevisionPristine: false,
     });
     expect(exactPending).toMatchObject({
-      authority,
       baseFrameRetained: true,
-      pending: {
+      editAuthority: authority,
+      pendingPresentation: {
         baseFrameRetained: true,
-        dimensions: authority.sourceDimensions,
+        dimensions: authority.uniformScaleBasis.sourceDimensions,
         studioEntityId: authority.studioEntityId,
       },
       programSet: { kind: "authorized", remainingOperations: ["resize"] },
     });
-    const scrubbedPending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+    expect(exactPending.editAuthority?.capabilities.uniformScale).toBe(true);
+    expect(exactPending.pendingPresentation && "capabilities" in exactPending.pendingPresentation).toBe(false);
+    const mismatchedPendingProjection = projectStudioPreviewRuntimeTraceTerminalEntity(projected, authority, {
+      baseFrameRetained: true,
+      dimensions: null,
+      draftGhost: "position-only",
+      position: { x: 1, y: 2 },
+      renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
+      sourceAnchor: 14,
+      studioEntityId: authority.studioEntityId,
+      target: { sourceName: "grid_title", type: "Tex" },
+      validationStatusLabel: "Draft ghost · OpeningManim validation pending",
+    });
+    expect(mismatchedPendingProjection[0]?.position).toEqual(authority.baseCenter);
+    const scrubbedPending = resolveStudioPreviewRuntimeTraceTerminalUiState({
       atExactAnchor: false,
       contextMatches: true,
       presentedAuthority: null,
@@ -1568,15 +1598,15 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevisionPristine: false,
     });
     expect(scrubbedPending).toMatchObject({
-      authority: null,
       baseFrameRetained: false,
-      pending: {
+      editAuthority: null,
+      pendingPresentation: {
         baseFrameRetained: false,
-        dimensions: authority.sourceDimensions,
+        dimensions: authority.uniformScaleBasis.sourceDimensions,
         studioEntityId: authority.studioEntityId,
       },
     });
-    const completePending = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+    const completePending = resolveStudioPreviewRuntimeTraceTerminalUiState({
       atExactAnchor: true,
       contextMatches: true,
       presentedAuthority: null,
@@ -1586,9 +1616,9 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevisionPristine: false,
     });
     expect(completePending).toMatchObject({
-      authority: null,
       baseFrameRetained: true,
-      pending: {
+      editAuthority: null,
+      pendingPresentation: {
         baseFrameRetained: true,
         dimensions: { height: 3, width: 3 },
         studioEntityId: authority.studioEntityId,
@@ -1596,7 +1626,7 @@ describe("compileStudioPreviewSceneV1", () => {
       programSet: { kind: "authorized", remainingOperations: [] },
     });
     expect(
-      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      resolveStudioPreviewRuntimeTraceTerminalUiState({
         atExactAnchor: true,
         contextMatches: true,
         presentedAuthority: null,
@@ -1605,9 +1635,9 @@ describe("compileStudioPreviewSceneV1", () => {
         transientEdit: false,
         workingRevisionPristine: false,
       }),
-    ).toMatchObject({ authority: null, pending: null, programSet: { kind: "unauthorized" } });
+    ).toMatchObject({ editAuthority: null, pendingPresentation: null, programSet: { kind: "unauthorized" } });
     expect(
-      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      resolveStudioPreviewRuntimeTraceTerminalUiState({
         atExactAnchor: true,
         contextMatches: true,
         presentedAuthority: null,
@@ -1616,14 +1646,14 @@ describe("compileStudioPreviewSceneV1", () => {
         transientEdit: true,
         workingRevisionPristine: true,
       }),
-    ).toMatchObject({ authority, baseFrameRetained: true, pending: null });
-    expect(
-      [4.9996, 5, 5.0004].map((sampleTime) => studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime)),
-    ).toEqual([false, true, false]);
+    ).toMatchObject({ baseFrameRetained: true, editAuthority: authority, pendingPresentation: null });
+    expect([4.9996, 5, 5.0004].map((sampleTime) => studioPreviewRuntimeTraceTerminalAnchorIsExact(sampleTime))).toEqual(
+      [false, true, false],
+    );
     const nonUniform = createDirectManipulationResizeProgram({
       capturedPlayhead: 5,
       entityId: authority.studioEntityId,
-      from: { dimensions: authority.sourceDimensions, position: authority.baseCenter },
+      from: { dimensions: authority.uniformScaleBasis.sourceDimensions, position: authority.baseCenter },
       interval: { end: 5, start: 5 },
       scale: 1,
       scene: validationScene,
@@ -1635,9 +1665,9 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(nonUniform.issues).toContainEqual(
       expect.objectContaining({ message: expect.stringMatching(/positive uniform factor/i) }),
     );
-    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(nonUniform.program, authority)).toBe(false);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorized(nonUniform.program, authority)).toBe(false);
     expect(
-      studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
+      studioPreviewRuntimeTraceTerminalProgramIsAuthorized(
         {
           ...position.program,
           anchor: { ...position.program.anchor, capturedPlayhead: 4.999 },
@@ -1687,17 +1717,18 @@ describe("compileStudioPreviewSceneV1", () => {
       runtimeEntityId: trace.roots[3]?.id,
       studioSceneId: "example_scenes/basic.py#OpeningManim",
     });
-    const seed = studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(snapshot);
-    expect(seed).toEqual({
+    const seed = studioPreviewRuntimeTraceTerminalEditSeed(snapshot);
+    expect(seed).toMatchObject({
+      capabilities: { uniformScale: false },
       duration: 15,
-      profile: "opening-grid-title-terminal-v2",
+      renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
       runtimeEntityId: trace.roots[3]?.id,
       sourceAnchor: 14,
       studioEntityId: "source:example_scenes/basic.py#OpeningManim:grid_title",
       studioSceneId: "example_scenes/basic.py#OpeningManim",
     });
-    expect(studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot)).toEqual(seed);
-    expect(studioPreviewInteractionAuthorityV1(snapshot)).toEqual({
+    expect(studioPreviewRuntimeTraceTerminalEditSeed(snapshot)).toEqual(seed);
+    expect(studioPreviewInteractionAuthority(snapshot)).toEqual({
       editableRuntimeEntityId: trace.roots[3]?.id,
       kind: "bounded-interactive",
       reason: "runtime-trace-terminal-edit",
@@ -1707,7 +1738,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const gridRuntimeId = trace.roots[2]?.id;
     if (!seed || !gridRuntimeId) throw new Error("Expected the verified OpeningManim grid root.");
     expect(
-      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
         authority: selectionProfile,
         interactionGeometry: new Map([
           [gridRuntimeId, { dimensions: { height: 310, width: 620 }, position: { x: 320, y: 180 } }],
@@ -1723,7 +1754,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ]);
     expect(
-      projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+      projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
         authority: selectionProfile,
         interactionGeometry: new Map(),
         sourceRuntimeIdentity: snapshot.sourceRuntimeIdentity,
@@ -1745,7 +1776,7 @@ describe("compileStudioPreviewSceneV1", () => {
       },
     };
     expect(studioPreviewRuntimeTraceOpeningSelectionProfileV2(candidateSnapshot)).toEqual(selectionProfile);
-    expect(studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(candidateSnapshot)).toBeNull();
+    expect(studioPreviewRuntimeTraceTerminalEditSeed(candidateSnapshot)).toBeNull();
     expect(
       studioPreviewRuntimeTraceOpeningSelectionProfileV2({
         ...snapshot,
@@ -1755,7 +1786,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+      studioPreviewRuntimeTraceTerminalEditSeed({
         ...snapshot,
         correlation: {
           ...snapshot.correlation,
@@ -1764,7 +1795,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+      studioPreviewRuntimeTraceTerminalEditSeed({
         ...snapshot,
         sourceRuntimeIdentity: new Map(
           [...snapshot.sourceRuntimeIdentity!.entries()].filter(([sourceName]) => sourceName !== "grid_title"),
@@ -1772,7 +1803,7 @@ describe("compileStudioPreviewSceneV1", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewRuntimeTraceOpeningTerminalEditSeedV2({
+      studioPreviewRuntimeTraceTerminalEditSeed({
         ...snapshot,
         sourceRuntimeIdentity: new Map(
           [...snapshot.sourceRuntimeIdentity!.entries()].map(([sourceName, mapping]) => [
@@ -1791,12 +1822,17 @@ describe("compileStudioPreviewSceneV1", () => {
       height: 8,
       width: 128 / 9,
     });
-    if (!seed || seed.profile !== "opening-grid-title-terminal-v2" || !imported) {
+    if (!seed || seed.capabilities.uniformScale || seed.uniformScaleBasis || !imported) {
       throw new Error("Expected exact OpeningManim Studio authority.");
     }
     const baseCenter = { x: 105, y: 52 };
     const authority = { ...seed, baseCenter } as const;
-    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+    expect(authority).toMatchObject({
+      capabilities: { uniformScale: false },
+      controlLabel: "Grid title terminal edit at 14.00s",
+      renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
+    });
+    const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationScene(
       { ...imported.runtimeSceneState, duration: bundle.scene.duration },
       authority,
     );
@@ -1810,18 +1846,18 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "runtime-trace-opening-grid-title-position",
     });
     expect(position.kind, JSON.stringify(position.issues)).toBe("valid");
-    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(position.program, authority)).toBe(true);
+    expect(studioPreviewRuntimeTraceTerminalProgramIsAuthorized(position.program, authority)).toBe(true);
     const record = programRecord(position.program, position);
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([record], authority)).toEqual({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([record], authority)).toEqual({
       kind: "authorized",
       operationKinds: ["position"],
       remainingOperations: [],
     });
-    expect(studioPreviewRuntimeTraceTerminalProgramSetV1([record, record], authority)).toEqual({
+    expect(studioPreviewRuntimeTraceTerminalProgramSet([record, record], authority)).toEqual({
       kind: "unauthorized",
     });
     expect(
-      studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
+      studioPreviewRuntimeTraceTerminalProgramIsAuthorized(
         {
           ...position.program,
           anchor: {
@@ -1836,11 +1872,11 @@ describe("compileStudioPreviewSceneV1", () => {
     ).toBe(false);
     expect(
       [13.9999, 14, 14.0001].map((sampleTime) =>
-        studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime, authority.sourceAnchor),
+        studioPreviewRuntimeTraceTerminalAnchorIsExact(sampleTime, authority.sourceAnchor),
       ),
     ).toEqual([false, true, false]);
     expect(
-      resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+      resolveStudioPreviewRuntimeTraceTerminalUiState({
         atExactAnchor: true,
         contextMatches: true,
         presentedAuthority: authority,
@@ -1850,11 +1886,11 @@ describe("compileStudioPreviewSceneV1", () => {
         workingRevisionPristine: true,
       }),
     ).toMatchObject({
-      authority: null,
+      editAuthority: null,
       baseFrameRetained: true,
-      pending: {
+      pendingPresentation: {
         position: { x: 129, y: 40 },
-        profile: "opening-grid-title-terminal-v2",
+        renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
         sourceAnchor: 14,
         studioEntityId: authority.studioEntityId,
       },

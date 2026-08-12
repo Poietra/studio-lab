@@ -6,21 +6,21 @@ import {
   StudioPreviewControl,
   type StudioPreviewControlPropsV1,
 } from "./studio-preview-control";
-import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
+import type { StudioPreviewRendererView } from "./use-preview-renderer";
 
-function renderer(state: StudioPreviewRendererViewV1["state"]): StudioPreviewRendererViewV1 {
+function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRendererView {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
     genericInitialEditCandidates: [],
-    initialEditRuntimeAuthority: null,
+    initialEditAuthority: null,
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,
     runtimeTraceBaseFrameRetained: false,
     runtimeTraceOpaqueSelectionEntities: [],
-    runtimeTraceTerminalEditAuthority: null,
-    runtimeTraceValidationPending: null,
+    runtimeTraceTerminalEdit: null,
+    runtimeTracePendingPresentation: null,
     sourceLabel: "verified server snapshot r7",
     sourceMetadataFailureKind: null,
     sourceMetadataPhase: "ready",

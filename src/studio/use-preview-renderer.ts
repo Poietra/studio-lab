@@ -57,12 +57,13 @@ import {
 } from "./preview-snapshot-provider";
 import {
   compileStudioPreviewGenericInitialEdit,
-  compileStudioPreviewTemporalRebaseV1,
+  compileStudioPreviewTemporalRebase,
   type StudioPreviewGenericInitialEditCandidate,
-  type StudioPreviewInitialEditRuntimeAuthorityV1,
+  type StudioPreviewInitialEditProjectionAuthority,
   studioPreviewGenericInitialEditCandidates,
-  studioPreviewInitialEditRuntimeAuthorityV1,
-  studioPreviewSyntheticInitialEditAnchorV1,
+  studioPreviewInitialEditIntegrationAuthority,
+  studioPreviewInitialEditProjection,
+  studioPreviewSyntheticInitialEditAnchor,
 } from "./preview-temporal-rebase";
 import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
 import {
@@ -71,7 +72,7 @@ import {
   compileStudioSceneIrV1,
 } from "./scene-ir-adapter";
 
-export type StudioPreviewRendererViewV1 = Readonly<{
+export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
   /** Verified world-space center used to project Studio viewport positions. */
   cameraCenter: Readonly<{ x: number; y: number }> | null;
@@ -81,19 +82,19 @@ export type StudioPreviewRendererViewV1 = Readonly<{
    * keyed by verified runtime entity ID; non-null only while correlated.
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
-  interactionAuthority: StudioPreviewInteractionAuthorityV1;
+  interactionAuthority: StudioPreviewInteractionAuthority;
   /** Verified generic V3 candidates that may request one server-authorized t=0 edit. */
   genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditCandidate[];
   /** Exact runtime authority for one bounded initial imported-Scene edit. */
-  initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
-  /** Exact authority for one reviewed Runtime Trace terminal edit profile. */
-  runtimeTraceTerminalEditAuthority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null;
+  initialEditAuthority: StudioPreviewInitialEditProjectionAuthority | null;
+  /** Profile-free edit authority for one reviewed Runtime Trace terminal target. */
+  runtimeTraceTerminalEdit: StudioPreviewRuntimeTraceTerminalEditProjection | null;
   /** A retained exact source-anchor frame is visible behind a target-only ghost. */
   runtimeTraceBaseFrameRetained: boolean;
   /** Runtime roots with no static Studio entity; selectors only, never authoring evidence. */
   runtimeTraceOpaqueSelectionEntities: readonly ProjectedEntity[];
-  /** A base Runtime Trace plus target-only ghost is awaiting real-Manim validation. */
-  runtimeTraceValidationPending: StudioPreviewRuntimeTraceValidationPendingV1 | null;
+  /** Presentation for a target-only ghost awaiting real-Manim validation. */
+  runtimeTracePendingPresentation: StudioPreviewRuntimeTracePendingPresentation | null;
   sourceLabel: string | null;
   /** Typed provider outcome; never inferred from diagnostic text. */
   sourceMetadataFailureKind: StudioPreviewSnapshotFailureKindV1 | null;
@@ -108,7 +109,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   verifiedSourceDuration: number | null;
 }>;
 
-export type StudioPreviewInteractionAuthorityV1 =
+export type StudioPreviewInteractionAuthority =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
   | Readonly<{
       editableRuntimeEntityIds: readonly string[];
@@ -135,7 +136,7 @@ export type StudioPreviewInteractionAuthorityV1 =
       reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
     }>;
 
-type StudioPreviewRuntimeTraceUpdatersTerminalEditAuthorityV1 = Readonly<{
+type UpdatersTerminalEditAuthority = Readonly<{
   baseCenter: Point;
   duration: 6;
   profile: "updaters-terminal-v1";
@@ -147,7 +148,7 @@ type StudioPreviewRuntimeTraceUpdatersTerminalEditAuthorityV1 = Readonly<{
   studioSceneId: string;
 }>;
 
-type StudioPreviewRuntimeTraceOpeningTerminalEditAuthorityV2 = Readonly<{
+type OpeningTerminalEditAuthority = Readonly<{
   baseCenter: Point;
   duration: 15;
   profile: "opening-grid-title-terminal-v2";
@@ -157,32 +158,66 @@ type StudioPreviewRuntimeTraceOpeningTerminalEditAuthorityV2 = Readonly<{
   studioSceneId: string;
 }>;
 
-export type StudioPreviewRuntimeTraceTerminalEditAuthorityV1 =
-  | StudioPreviewRuntimeTraceOpeningTerminalEditAuthorityV2
-  | StudioPreviewRuntimeTraceUpdatersTerminalEditAuthorityV1;
+type RuntimeTraceTerminalEditAuthority = UpdatersTerminalEditAuthority | OpeningTerminalEditAuthority;
 
-type StudioPreviewRuntimeTraceUpdatersValidationPendingV1 = Readonly<{
-  baseFrameRetained: boolean;
-  dimensions: Readonly<{ height: number; width: number }>;
-  position: Point;
-  profile: "updaters-terminal-v1";
-  sourceAnchor: 5;
+type RuntimeTraceTerminalEditProjectionCommon = Readonly<{
+  baseCenter: Point;
+  controlLabel: string;
+  restrictionMessage: string;
+  runtimeEntityId: string;
   studioEntityId: string;
+  studioSceneId: string;
 }>;
 
-type StudioPreviewRuntimeTraceOpeningValidationPendingV2 = Readonly<{
-  baseFrameRetained: boolean;
-  position: Point;
-  profile: "opening-grid-title-terminal-v2";
-  sourceAnchor: 14;
-  studioEntityId: string;
-}>;
+/** Studio-facing edit authority. Profile identity is isolated in renderProof. */
+export type StudioPreviewRuntimeTraceTerminalEditProjection =
+  | (RuntimeTraceTerminalEditProjectionCommon &
+      Readonly<{
+        capabilities: Readonly<{ uniformScale: true }>;
+        duration: 6;
+        renderProof: Readonly<{ profile: "updaters-terminal-v1"; sourceAnchor: 5 }>;
+        sourceAnchor: 5;
+        target: Readonly<{ sourceName: "square"; type: "Square" }>;
+        uniformScaleBasis: Readonly<{
+          relativeScale: 1;
+          sourceDimensions: Readonly<{ height: 2; width: 2 }>;
+        }>;
+      }>)
+  | (RuntimeTraceTerminalEditProjectionCommon &
+      Readonly<{
+        capabilities: Readonly<{ uniformScale: false }>;
+        duration: 15;
+        renderProof: Readonly<{ profile: "opening-grid-title-terminal-v2"; sourceAnchor: 14 }>;
+        sourceAnchor: 14;
+        target: Readonly<{ sourceName: "grid_title"; type: "Tex" }>;
+        uniformScaleBasis: null;
+      }>);
 
-export type StudioPreviewRuntimeTraceValidationPendingV1 =
-  | StudioPreviewRuntimeTraceOpeningValidationPendingV2
-  | StudioPreviewRuntimeTraceUpdatersValidationPendingV1;
+export type StudioPreviewRuntimeTracePendingPresentation =
+  | Readonly<{
+      baseFrameRetained: boolean;
+      dimensions: Readonly<{ height: number; width: number }>;
+      draftGhost: "position-and-dimensions";
+      position: Point;
+      renderProof: Readonly<{ profile: "updaters-terminal-v1"; sourceAnchor: 5 }>;
+      sourceAnchor: 5;
+      studioEntityId: string;
+      target: Readonly<{ sourceName: "square"; type: "Square" }>;
+      validationStatusLabel: string;
+    }>
+  | Readonly<{
+      baseFrameRetained: boolean;
+      dimensions: null;
+      draftGhost: "position-only";
+      position: Point;
+      renderProof: Readonly<{ profile: "opening-grid-title-terminal-v2"; sourceAnchor: 14 }>;
+      sourceAnchor: 14;
+      studioEntityId: string;
+      target: Readonly<{ sourceName: "grid_title"; type: "Tex" }>;
+      validationStatusLabel: string;
+    }>;
 
-export type UseStudioPreviewRendererInputV1 = Readonly<{
+export type UseStudioPreviewRendererInput = Readonly<{
   committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
   draftProposedState: ProposedState | null;
@@ -250,7 +285,9 @@ const OPENING_TERMINAL_RUNTIME_CONFIG_HASH_V2 = "0b5d2eae4a3709627a7ccae44ce5a97
 const OPENING_TERMINAL_SOURCE_ANCHOR_V2 = 14 as const;
 
 type WithoutBaseCenter<T> = T extends Readonly<{ baseCenter: Point }> ? Omit<T, "baseCenter"> : never;
-type StudioPreviewRuntimeTraceTerminalEditSeedV1 = WithoutBaseCenter<StudioPreviewRuntimeTraceTerminalEditAuthorityV1>;
+type RuntimeTraceTerminalEditSeed = WithoutBaseCenter<RuntimeTraceTerminalEditAuthority>;
+export type StudioPreviewRuntimeTraceTerminalEditSeed =
+  WithoutBaseCenter<StudioPreviewRuntimeTraceTerminalEditProjection>;
 type StudioPreviewRuntimeTraceUpdatersSelectionProfileV1 = Readonly<{
   profile: "updaters-terminal-v1";
   studioSceneId: string;
@@ -331,7 +368,7 @@ export function studioPreviewRuntimeTraceUpdatersSelectionProfileV1(
 
 function studioPreviewRuntimeTraceUpdatersTerminalEditSeedV1(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
-): StudioPreviewRuntimeTraceTerminalEditSeedV1 | null {
+): RuntimeTraceTerminalEditSeed | null {
   const selectionProfile = studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot);
   if (!snapshot || !selectionProfile) return null;
   const source = snapshot.snapshot.scene.source;
@@ -363,9 +400,9 @@ function studioPreviewRuntimeTraceUpdatersTerminalEditSeedV1(
  * runtime hierarchy supplies correlated presentation evidence; static source
  * analysis remains responsible for whether `grid_title` may be rewritten.
  */
-export function studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(
+function studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
-): StudioPreviewRuntimeTraceTerminalEditSeedV1 | null {
+): RuntimeTraceTerminalEditSeed | null {
   const selectionProfile = studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
   if (!snapshot || !selectionProfile) return null;
   const source = snapshot.snapshot.scene.source;
@@ -450,53 +487,105 @@ export function studioPreviewRuntimeTraceOpeningSelectionProfileV2(
  * Runtime identity alone never opens mutation: exact source, configuration,
  * correlation, hierarchy, and the profile-specific source roots must agree.
  */
-export function studioPreviewRuntimeTraceTerminalEditSeedV1(
+function projectRuntimeTraceTerminalEditSeed(
+  authority: RuntimeTraceTerminalEditSeed,
+): StudioPreviewRuntimeTraceTerminalEditSeed {
+  if (authority.profile === "updaters-terminal-v1") {
+    return {
+      capabilities: { uniformScale: true },
+      controlLabel: `Square terminal edit at ${authority.sourceAnchor.toFixed(2)}s`,
+      duration: authority.duration,
+      renderProof: { profile: authority.profile, sourceAnchor: authority.sourceAnchor },
+      restrictionMessage: "This updater-backed Square supports terminal position and positive uniform resize only.",
+      runtimeEntityId: authority.runtimeEntityId,
+      sourceAnchor: authority.sourceAnchor,
+      studioEntityId: authority.studioEntityId,
+      studioSceneId: authority.studioSceneId,
+      target: { sourceName: "square", type: "Square" },
+      uniformScaleBasis: {
+        relativeScale: authority.relativeScale,
+        sourceDimensions: authority.sourceDimensions,
+      },
+    };
+  }
+  return {
+    capabilities: { uniformScale: false },
+    controlLabel: `Grid title terminal edit at ${authority.sourceAnchor.toFixed(2)}s`,
+    duration: authority.duration,
+    renderProof: { profile: authority.profile, sourceAnchor: authority.sourceAnchor },
+    restrictionMessage: "This source-bound grid title supports terminal position only.",
+    runtimeEntityId: authority.runtimeEntityId,
+    sourceAnchor: authority.sourceAnchor,
+    studioEntityId: authority.studioEntityId,
+    studioSceneId: authority.studioSceneId,
+    target: { sourceName: "grid_title", type: "Tex" },
+    uniformScaleBasis: null,
+  };
+}
+
+/**
+ * Public snapshot projection for tests and interaction policy. Exact profile
+ * verification stays private to this integration module.
+ */
+export function studioPreviewRuntimeTraceTerminalEditSeed(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
-): StudioPreviewRuntimeTraceTerminalEditSeedV1 | null {
-  return (
+): StudioPreviewRuntimeTraceTerminalEditSeed | null {
+  const authority =
     studioPreviewRuntimeTraceUpdatersTerminalEditSeedV1(snapshot) ??
-    studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(snapshot)
-  );
+    studioPreviewRuntimeTraceOpeningTerminalEditSeedV2(snapshot);
+  return authority ? projectRuntimeTraceTerminalEditSeed(authority) : null;
 }
 
 function studioRuntimeTraceTerminalTargetMatches(
   entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection,
 ) {
-  if (authority.profile === "opening-grid-title-terminal-v2") {
-    return (
-      entity?.id === authority.studioEntityId &&
-      entity.type === "Tex" &&
-      !entity.provisional &&
-      entity.transactionId === undefined &&
-      entity.sourceIdentity.kind === "known" &&
-      entity.sourceIdentity.value === "grid_title"
-    );
+  if (
+    entity?.id !== authority.studioEntityId ||
+    entity.type !== authority.target.type ||
+    entity.provisional ||
+    entity.transactionId !== undefined ||
+    entity.sourceIdentity.kind !== "known" ||
+    entity.sourceIdentity.value !== authority.target.sourceName
+  ) {
+    return false;
   }
+  if (!authority.uniformScaleBasis) return true;
   const dimensions = entity?.geometry?.dimensions;
   const scale = entity?.geometry?.scale;
   return (
-    entity?.id === authority.studioEntityId &&
-    entity.type === "Square" &&
-    !entity.provisional &&
-    entity.transactionId === undefined &&
-    entity.sourceIdentity.kind === "known" &&
-    entity.sourceIdentity.value === "square" &&
     dimensions?.kind === "known" &&
-    dimensions.value.height === authority.sourceDimensions.height &&
-    dimensions.value.width === authority.sourceDimensions.width &&
+    dimensions.value.height === authority.uniformScaleBasis.sourceDimensions.height &&
+    dimensions.value.width === authority.uniformScaleBasis.sourceDimensions.width &&
     dimensions.value.radius === undefined &&
     scale?.kind === "known" &&
-    scale.value === authority.relativeScale
+    scale.value === authority.uniformScaleBasis.relativeScale
   );
 }
 
-/** Runtime evidence supplies the terminal center; only the Updaters profile may also project source dimensions. */
-export function projectStudioPreviewRuntimeTraceTerminalEntityV1(
-  entities: readonly ProjectedEntity[],
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null,
-  pending: StudioPreviewRuntimeTraceValidationPendingV1 | null = null,
+function runtimeTracePendingMatchesEdit(
+  pending: StudioPreviewRuntimeTracePendingPresentation,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection,
 ) {
+  return (
+    pending.studioEntityId === authority.studioEntityId &&
+    pending.sourceAnchor === authority.sourceAnchor &&
+    pending.renderProof.profile === authority.renderProof.profile &&
+    pending.target.sourceName === authority.target.sourceName &&
+    pending.target.type === authority.target.type
+  );
+}
+
+/** Runtime evidence supplies the terminal center; pending dimensions are presentation-only. */
+export function projectStudioPreviewRuntimeTraceTerminalEntity(
+  entities: readonly ProjectedEntity[],
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection | null,
+  pendingPresentation: StudioPreviewRuntimeTracePendingPresentation | null = null,
+) {
+  const pending =
+    pendingPresentation && (!authority || runtimeTracePendingMatchesEdit(pendingPresentation, authority))
+      ? pendingPresentation
+      : null;
   if (!authority && !pending) return entities;
   const targetId = authority?.studioEntityId ?? pending?.studioEntityId;
   const target = entities.find(({ id }) => id === targetId);
@@ -506,9 +595,8 @@ export function projectStudioPreviewRuntimeTraceTerminalEntityV1(
     !target.provisional &&
     target.transactionId === undefined &&
     target.sourceIdentity.kind === "known" &&
-    (pending.profile === "updaters-terminal-v1"
-      ? target.type === "Square" && target.sourceIdentity.value === "square"
-      : target.type === "Tex" && target.sourceIdentity.value === "grid_title");
+    target.type === pending.target.type &&
+    target.sourceIdentity.value === pending.target.sourceName;
   const targetMatchesAuthority = authority !== null && studioRuntimeTraceTerminalTargetMatches(target, authority);
   if (!target || (!targetMatchesAuthority && !targetMatchesPending)) {
     return entities;
@@ -516,15 +604,14 @@ export function projectStudioPreviewRuntimeTraceTerminalEntityV1(
   const projectedPosition =
     pending !== null &&
     pending.studioEntityId === target.id &&
-    pending.sourceAnchor === (pending.profile === "updaters-terminal-v1" ? 5 : 14) &&
+    pending.sourceAnchor === pending.renderProof.sourceAnchor &&
     Number.isFinite(pending.position.x) &&
     Number.isFinite(pending.position.y)
       ? pending.position
       : authority?.baseCenter;
   if (!projectedPosition) return entities;
   const projectedDimensions =
-    pending &&
-    "dimensions" in pending &&
+    pending?.dimensions &&
     Number.isFinite(pending.dimensions.height) &&
     pending.dimensions.height > 0 &&
     Number.isFinite(pending.dimensions.width) &&
@@ -552,9 +639,9 @@ export function projectStudioPreviewRuntimeTraceTerminalEntityV1(
  * imported source model remains conservative, and runtime-only geometry is
  * never synthesized as editable semantic state.
  */
-export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
+export function projectStudioPreviewRuntimeTraceTerminalValidationScene(
   scene: RuntimeSceneState,
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection | null,
 ): RuntimeSceneState {
   if (
     !authority ||
@@ -566,14 +653,14 @@ export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
   }
   const target = scene.objectGraph.entities[authority.studioEntityId];
   if (!target?.geometry) return scene;
-  const terminalValues: Readonly<Record<string, EntityDimensions | Point | number>> =
-    authority.profile === "updaters-terminal-v1"
-      ? {
-          dimensions: authority.sourceDimensions,
-          position: authority.baseCenter,
-          scale: authority.relativeScale,
-        }
-      : { position: authority.baseCenter };
+  const scaleBasis = authority.uniformScaleBasis;
+  const terminalValues: Readonly<Record<string, EntityDimensions | Point | number>> = scaleBasis
+    ? {
+        dimensions: scaleBasis.sourceDimensions,
+        position: authority.baseCenter,
+        scale: scaleBasis.relativeScale,
+      }
+    : { position: authority.baseCenter };
   const propertyChannels = { ...scene.propertyChannels };
   for (const key of Object.keys(terminalValues) as ("dimensions" | "position" | "scale")[]) {
     const channelId = `${target.id}/${key}`;
@@ -612,17 +699,17 @@ export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
           geometry: {
             ...target.geometry,
             position: { kind: "known" as const, value: authority.baseCenter },
-            ...(authority.profile === "updaters-terminal-v1"
+            ...(scaleBasis
               ? {
-                  dimensions: { kind: "known" as const, value: authority.sourceDimensions },
-                  scale: { kind: "known" as const, value: authority.relativeScale },
+                  dimensions: { kind: "known" as const, value: scaleBasis.sourceDimensions },
+                  scale: { kind: "known" as const, value: scaleBasis.relativeScale },
                 }
               : {}),
           },
           lifetime: [
             {
               end: authority.duration,
-              start: authority.profile === "updaters-terminal-v1" ? 0 : authority.sourceAnchor,
+              start: scaleBasis ? 0 : authority.sourceAnchor,
             },
           ],
         },
@@ -633,9 +720,9 @@ export function projectStudioPreviewRuntimeTraceTerminalValidationSceneV1(
 }
 
 /** Common UI boundary: no other Program family may escape the bounded trace editor. */
-export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
+export function studioPreviewRuntimeTraceTerminalProgramIsAuthorized(
   program: CanonicalEditProgram,
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection,
   authorizedResizeCenters: readonly Point[] = [authority.baseCenter],
 ) {
   const [operation] = program.operations;
@@ -675,8 +762,10 @@ export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
       Number.isFinite(operation.value.y)
     );
   }
+  const scaleBasis = authority.uniformScaleBasis;
   if (
-    authority.profile !== "updaters-terminal-v1" ||
+    !authority.capabilities.uniformScale ||
+    !scaleBasis ||
     operation.kind !== "ResizeEntity" ||
     operation.shape !== "rectangle"
   ) {
@@ -694,10 +783,10 @@ export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
     program.schedule.edges.length === 0 &&
     program.schedule.order.length === 1 &&
     program.schedule.order[0] === operation.id &&
-    operation.scale === authority.relativeScale &&
+    operation.scale === scaleBasis.relativeScale &&
     from.radius === undefined &&
-    from.height === authority.sourceDimensions.height &&
-    from.width === authority.sourceDimensions.width &&
+    from.height === scaleBasis.sourceDimensions.height &&
+    from.width === scaleBasis.sourceDimensions.width &&
     to.radius === undefined &&
     typeof to.height === "number" &&
     typeof to.width === "number" &&
@@ -705,7 +794,7 @@ export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
     Number.isFinite(to.width) &&
     Number.isFinite(factor) &&
     factor > 0 &&
-    Math.abs(to.height / authority.sourceDimensions.height - factor) < 0.000001 &&
+    Math.abs(to.height / scaleBasis.sourceDimensions.height - factor) < 0.000001 &&
     Number.isFinite(operation.from.position.x) &&
     Number.isFinite(operation.from.position.y) &&
     Number.isFinite(operation.to.position.x) &&
@@ -720,23 +809,23 @@ export function studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(
   );
 }
 
-export type StudioPreviewRuntimeTraceTerminalOperationKindV1 = "position" | "resize";
+export type StudioPreviewRuntimeTraceTerminalOperationKind = "position" | "resize";
 
-export type StudioPreviewRuntimeTraceTerminalProgramSetV1 =
+export type StudioPreviewRuntimeTraceTerminalProgramSet =
   | Readonly<{
       kind: "none";
-      remainingOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKindV1[];
+      remainingOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKind[];
     }>
   | Readonly<{
       kind: "authorized";
-      operationKinds: readonly StudioPreviewRuntimeTraceTerminalOperationKindV1[];
-      remainingOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKindV1[];
+      operationKinds: readonly StudioPreviewRuntimeTraceTerminalOperationKind[];
+      remainingOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKind[];
     }>
   | Readonly<{ kind: "unauthorized" }>;
 
-function runtimeTraceTerminalOperationKindV1(
+function runtimeTraceTerminalOperationKind(
   program: CanonicalEditProgram,
-): StudioPreviewRuntimeTraceTerminalOperationKindV1 | null {
+): StudioPreviewRuntimeTraceTerminalOperationKind | null {
   const operation = program.operations[0];
   if (operation?.kind === "SetProperty" && operation.key === "position") return "position";
   return operation?.kind === "ResizeEntity" ? "resize" : null;
@@ -747,23 +836,24 @@ function runtimeTraceTerminalOperationKindV1(
  * resize, so the UI must validate the whole pending/applied set rather than
  * independently blessing whichever Program was staged last.
  */
-export function studioPreviewRuntimeTraceTerminalProgramSetV1(
+export function studioPreviewRuntimeTraceTerminalProgramSet(
   records: readonly ProgramRecord[],
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
-): StudioPreviewRuntimeTraceTerminalProgramSetV1 {
-  const allOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKindV1[] =
-    authority.profile === "updaters-terminal-v1" ? ["position", "resize"] : ["position"];
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection,
+): StudioPreviewRuntimeTraceTerminalProgramSet {
+  const allOperations: readonly StudioPreviewRuntimeTraceTerminalOperationKind[] = authority.capabilities.uniformScale
+    ? ["position", "resize"]
+    : ["position"];
   if (records.length === 0) return { kind: "none", remainingOperations: allOperations };
   if (records.length > 2) return { kind: "unauthorized" };
-  const authorizedResizeCenters = [authority.baseCenter, runtimeTraceTerminalPendingPositionV1(records, authority)];
-  const operationKinds: StudioPreviewRuntimeTraceTerminalOperationKindV1[] = [];
+  const authorizedResizeCenters = [authority.baseCenter, runtimeTraceTerminalPendingPosition(records, authority)];
+  const operationKinds: StudioPreviewRuntimeTraceTerminalOperationKind[] = [];
   for (const record of records) {
-    const operationKind = runtimeTraceTerminalOperationKindV1(record.program);
+    const operationKind = runtimeTraceTerminalOperationKind(record.program);
     if (
       record.validation.status !== "valid" ||
       operationKind === null ||
       operationKinds.includes(operationKind) ||
-      !studioPreviewRuntimeTraceTerminalProgramIsAuthorizedV1(record.program, authority, authorizedResizeCenters)
+      !studioPreviewRuntimeTraceTerminalProgramIsAuthorized(record.program, authority, authorizedResizeCenters)
     ) {
       return { kind: "unauthorized" };
     }
@@ -776,21 +866,21 @@ export function studioPreviewRuntimeTraceTerminalProgramSetV1(
   };
 }
 
-/** No epsilon is valid here: the retained AABB must be the exact source-time-five frame. */
-export function studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime: number, sourceAnchor: 5 | 14 = 5) {
+/** No epsilon is valid here: the retained AABB must be the exact source-anchor frame. */
+export function studioPreviewRuntimeTraceTerminalAnchorIsExact(sampleTime: number, sourceAnchor: 5 | 14 = 5) {
   return sampleTime === sourceAnchor;
 }
 
-export type StudioPreviewRuntimeTraceTerminalUiStateV1 = Readonly<{
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null;
+export type StudioPreviewRuntimeTraceTerminalUiState = Readonly<{
   baseFrameRetained: boolean;
-  pending: StudioPreviewRuntimeTraceValidationPendingV1 | null;
-  programSet: StudioPreviewRuntimeTraceTerminalProgramSetV1;
+  editAuthority: StudioPreviewRuntimeTraceTerminalEditProjection | null;
+  pendingPresentation: StudioPreviewRuntimeTracePendingPresentation | null;
+  programSet: StudioPreviewRuntimeTraceTerminalProgramSet;
 }>;
 
-function runtimeTraceTerminalPendingPositionV1(
+function runtimeTraceTerminalPendingPosition(
   records: readonly ProgramRecord[],
-  authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection,
 ) {
   for (const record of records) {
     const operation = record.program.operations[0];
@@ -813,9 +903,10 @@ function runtimeTraceTerminalPendingPositionV1(
   return authority.baseCenter;
 }
 
-function runtimeTraceTerminalPendingDimensionsV1(
+function runtimeTraceTerminalPendingDimensions(
   records: readonly ProgramRecord[],
-  authority: StudioPreviewRuntimeTraceUpdatersTerminalEditAuthorityV1,
+  authority: StudioPreviewRuntimeTraceTerminalEditProjection &
+    Readonly<{ uniformScaleBasis: NonNullable<StudioPreviewRuntimeTraceTerminalEditProjection["uniformScaleBasis"]> }>,
 ) {
   for (const record of records) {
     const operation = record.program.operations[0];
@@ -828,7 +919,7 @@ function runtimeTraceTerminalPendingDimensionsV1(
       return { height: operation.to.dimensions.height, width: operation.to.dimensions.width };
     }
   }
-  return authority.sourceDimensions;
+  return authority.uniformScaleBasis.sourceDimensions;
 }
 
 /**
@@ -836,43 +927,50 @@ function runtimeTraceTerminalPendingDimensionsV1(
  * families. An authorized edit remains pending across scrub and Apply; only
  * operations explicitly listed by that profile remain available.
  */
-export function resolveStudioPreviewRuntimeTraceTerminalUiStateV1(
+export function resolveStudioPreviewRuntimeTraceTerminalUiState(
   input: Readonly<{
     atExactAnchor: boolean;
     contextMatches: boolean;
-    presentedAuthority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null;
+    presentedAuthority: StudioPreviewRuntimeTraceTerminalEditProjection | null;
     programRecords: readonly ProgramRecord[];
-    retainedAuthority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1 | null;
+    retainedAuthority: StudioPreviewRuntimeTraceTerminalEditProjection | null;
     transientEdit: boolean;
     workingRevisionPristine: boolean;
   }>,
-): StudioPreviewRuntimeTraceTerminalUiStateV1 {
+): StudioPreviewRuntimeTraceTerminalUiState {
   const evidenceAuthority = input.presentedAuthority ?? input.retainedAuthority;
   const programSet = evidenceAuthority
-    ? studioPreviewRuntimeTraceTerminalProgramSetV1(input.programRecords, evidenceAuthority)
+    ? studioPreviewRuntimeTraceTerminalProgramSet(input.programRecords, evidenceAuthority)
     : input.programRecords.length === 0
       ? ({ kind: "none", remainingOperations: ["position", "resize"] } as const)
       : ({ kind: "unauthorized" } as const);
   const authorizedEdit = programSet.kind === "authorized" && input.contextMatches && evidenceAuthority !== null;
-  const pending = authorizedEdit
-    ? evidenceAuthority.profile === "updaters-terminal-v1"
+  const pendingPresentation: StudioPreviewRuntimeTracePendingPresentation | null = authorizedEdit
+    ? evidenceAuthority.uniformScaleBasis
       ? {
           baseFrameRetained: input.atExactAnchor && input.retainedAuthority !== null,
-          dimensions: runtimeTraceTerminalPendingDimensionsV1(input.programRecords, evidenceAuthority),
-          position: runtimeTraceTerminalPendingPositionV1(input.programRecords, evidenceAuthority),
-          profile: "updaters-terminal-v1" as const,
+          dimensions: runtimeTraceTerminalPendingDimensions(input.programRecords, evidenceAuthority),
+          draftGhost: "position-and-dimensions",
+          position: runtimeTraceTerminalPendingPosition(input.programRecords, evidenceAuthority),
+          renderProof: evidenceAuthority.renderProof,
           sourceAnchor: evidenceAuthority.sourceAnchor,
           studioEntityId: evidenceAuthority.studioEntityId,
+          target: evidenceAuthority.target,
+          validationStatusLabel: "Draft ghost · dependent updater validation pending",
         }
       : {
           baseFrameRetained: input.atExactAnchor && input.retainedAuthority !== null,
-          position: runtimeTraceTerminalPendingPositionV1(input.programRecords, evidenceAuthority),
-          profile: "opening-grid-title-terminal-v2" as const,
+          dimensions: null,
+          draftGhost: "position-only",
+          position: runtimeTraceTerminalPendingPosition(input.programRecords, evidenceAuthority),
+          renderProof: evidenceAuthority.renderProof,
           sourceAnchor: evidenceAuthority.sourceAnchor,
           studioEntityId: evidenceAuthority.studioEntityId,
+          target: evidenceAuthority.target,
+          validationStatusLabel: "Draft ghost · OpeningManim validation pending",
         }
     : null;
-  const authority =
+  const editAuthority =
     input.contextMatches && input.atExactAnchor
       ? programSet.kind === "authorized"
         ? programSet.remainingOperations.length > 0
@@ -887,8 +985,8 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiStateV1(
     input.contextMatches &&
     input.atExactAnchor &&
     input.retainedAuthority !== null &&
-    (input.transientEdit || pending !== null);
-  return { authority, baseFrameRetained, pending, programSet };
+    (input.transientEdit || pendingPresentation !== null);
+  return { baseFrameRetained, editAuthority, pendingPresentation, programSet };
 }
 
 /**
@@ -898,9 +996,12 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiStateV1(
  * selector. Every semantic geometry field remains unknown and it is never
  * added to App's editable entity collection.
  */
-export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1(
+export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntities(
   input: Readonly<{
-    authority: Pick<StudioPreviewRuntimeTraceTerminalEditAuthorityV1, "profile" | "studioSceneId"> | null;
+    authority:
+      | Pick<StudioPreviewRuntimeTraceUpdatersSelectionProfileV1, "profile" | "studioSceneId">
+      | Pick<StudioPreviewRuntimeTraceOpeningSelectionProfileV2, "profile" | "studioSceneId">
+      | null;
     interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
     sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   }>,
@@ -953,9 +1054,9 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1(
  * profiles retain their semantic interaction fallback; no gesture guesses
  * from Scene order.
  */
-export function studioPreviewInteractionAuthorityV1(
+export function studioPreviewInteractionAuthority(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
-): StudioPreviewInteractionAuthorityV1 {
+): StudioPreviewInteractionAuthority {
   const source = snapshot?.snapshot.scene.source;
   if (source?.kind === "imported-manim-runtime-trace") {
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
@@ -986,7 +1087,7 @@ export function studioPreviewInteractionAuthorityV1(
         verifiedRuntimeEntityIds,
       };
     }
-    const terminalEdit = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
+    const terminalEdit = studioPreviewRuntimeTraceTerminalEditSeed(snapshot);
     if (terminalEdit) {
       return {
         editableRuntimeEntityId: terminalEdit.runtimeEntityId,
@@ -1007,7 +1108,7 @@ export function studioPreviewInteractionAuthorityV1(
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
   if (Number(source.snapshotVersion) === 9) {
-    return snapshot && studioPreviewSyntheticInitialEditAnchorV1(snapshot) === 0
+    return snapshot && studioPreviewSyntheticInitialEditAnchor(snapshot) === 0
       ? { kind: "interactive" }
       : { kind: "display-only", reason: "temporal-rebase-unavailable" };
   }
@@ -1079,7 +1180,7 @@ export function studioPreviewInteractionAuthorityV1(
     if (Number(source.snapshotVersion) === 11) {
       return { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
     }
-    const initialEditAuthority = snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null;
+    const initialEditAuthority = snapshot ? studioPreviewInitialEditIntegrationAuthority(snapshot) : null;
     if (Number(source.snapshotVersion) === 12) {
       const exampleText = identity?.get("example_text");
       const exampleTex = identity?.get("example_tex");
@@ -1122,7 +1223,7 @@ export function studioPreviewEditedV9SampleFallbackV1(
 /** Selects only IDs admitted by the server-verified source/runtime map. */
 export function studioPreviewInteractionEntityIdsV1(
   identity: StudioPreviewSourceRuntimeIdentityV1 | null,
-  authority: StudioPreviewInteractionAuthorityV1 = { kind: "interactive" },
+  authority: StudioPreviewInteractionAuthority = { kind: "interactive" },
   entities: SceneIrBundleV1["scene"]["entities"] | null = null,
 ) {
   if (authority.kind === "display-only") return [];
@@ -1176,16 +1277,16 @@ export function studioPreviewInteractionEntityIdsV1(
   return entityIds;
 }
 
-export function studioPreviewPresentedSyntheticInitialEditAnchorV1(
+export function studioPreviewPresentedSyntheticInitialEditAnchor(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
   state: PreviewRendererHostStateV1,
-  authority: StudioPreviewInteractionAuthorityV1,
+  authority: StudioPreviewInteractionAuthority,
 ) {
   const admitsInitialEdit =
     authority.kind === "interactive" ||
     (authority.kind === "bounded-interactive" && authority.reason === "runtime-trace-initial-edit");
   return snapshot && state.phase === "presented" && admitsInitialEdit
-    ? studioPreviewSyntheticInitialEditAnchorV1(snapshot)
+    ? studioPreviewSyntheticInitialEditAnchor(snapshot)
     : null;
 }
 
@@ -1294,7 +1395,7 @@ export async function compileStudioPreviewSceneV1(
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthorityV1(input.snapshot),
+          studioPreviewInteractionAuthority(input.snapshot),
           snapshot.scene.entities,
         ),
         snapshot: input.snapshot,
@@ -1337,7 +1438,7 @@ export async function compileStudioPreviewSceneV1(
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthorityV1(input.snapshot),
+          studioPreviewInteractionAuthority(input.snapshot),
           rebased.scene.entities,
         ),
         snapshot: input.snapshot,
@@ -1370,7 +1471,7 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = compileStudioPreviewTemporalRebaseV1({
+    const rebased = compileStudioPreviewTemporalRebase({
       frame: input.frame,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -1391,7 +1492,7 @@ export async function compileStudioPreviewSceneV1(
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthorityV1(input.snapshot),
+          studioPreviewInteractionAuthority(input.snapshot),
           rebased.scene.entities,
         ),
         snapshot: input.snapshot,
@@ -1511,7 +1612,7 @@ export function studioPreviewSnapshotMetadataForWorkspaceV1(
 
 const INSTALLING_STATE: PreviewRendererHostStateV1 = { detail: null, phase: "fallback", reason: "installing" };
 
-export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1): StudioPreviewRendererViewV1 | null {
+export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): StudioPreviewRendererView | null {
   const {
     committedProposedState,
     context,
@@ -1535,7 +1636,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const latestDraftProposedState = useRef(draftProposedState);
   latestDraftProposedState.current = draftProposedState;
   const retainedRuntimeTraceTerminalFrame = useRef<Readonly<{
-    authority: StudioPreviewRuntimeTraceTerminalEditAuthorityV1;
+    authority: StudioPreviewRuntimeTraceTerminalEditProjection;
     geometry: StudioPreviewInteractionGeometryV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     workspaceKey: string;
@@ -1565,12 +1666,12 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const runtimeTraceSelectionProfile =
     studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot) ??
     studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
-  const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
+  const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeed(snapshot);
   const genericInitialEditCandidates = snapshot ? studioPreviewGenericInitialEditCandidates(snapshot) : [];
 
   useEffect(() => {
     const proposedState =
-      snapshot && studioPreviewSyntheticInitialEditAnchorV1(snapshot) !== null
+      snapshot && studioPreviewSyntheticInitialEditAnchor(snapshot) !== null
         ? (latestDraftProposedState.current ?? latestCommittedProposedState.current)
         : latestCommittedProposedState.current;
     const workingRevision = context?.workingRevision;
@@ -1858,7 +1959,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     [frame, interactionEntityIds, state],
   );
   if (!provider) return null;
-  const snapshotInteractionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
+  const snapshotInteractionAuthority = studioPreviewInteractionAuthority(snapshot);
   const contextMatchesRuntimeTraceTerminalSeed =
     runtimeTraceTerminalSeed !== null &&
     context !== null &&
@@ -1866,7 +1967,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     studioPreviewSnapshotMatchesSourceV1(snapshot.correlation, context);
   const atRuntimeTraceTerminalAnchor =
     runtimeTraceTerminalSeed !== null &&
-    studioPreviewRuntimeTraceTerminalAnchorIsExactV1(sampleTime, runtimeTraceTerminalSeed.sourceAnchor);
+    studioPreviewRuntimeTraceTerminalAnchorIsExact(sampleTime, runtimeTraceTerminalSeed.sourceAnchor);
   const terminalGeometry =
     runtimeTraceTerminalSeed && interactionGeometry
       ? interactionGeometry.get(runtimeTraceTerminalSeed.runtimeEntityId)
@@ -1875,7 +1976,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     runtimeTraceTerminalSeed &&
     terminalGeometry &&
     state.phase === "presented" &&
-    studioPreviewRuntimeTraceTerminalAnchorIsExactV1(state.frame.sampleTime, runtimeTraceTerminalSeed.sourceAnchor) &&
+    studioPreviewRuntimeTraceTerminalAnchorIsExact(state.frame.sampleTime, runtimeTraceTerminalSeed.sourceAnchor) &&
     atRuntimeTraceTerminalAnchor &&
     contextMatchesRuntimeTraceTerminalSeed &&
     context?.workingRevision === PRISTINE_WORKING_REVISION
@@ -1897,7 +1998,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     contextMatchesRuntimeTraceTerminalSeed
       ? retainedTerminalFrame
       : null;
-  const runtimeTraceTerminalUiState = resolveStudioPreviewRuntimeTraceTerminalUiStateV1({
+  const runtimeTraceTerminalUiState = resolveStudioPreviewRuntimeTraceTerminalUiState({
     atExactAnchor: atRuntimeTraceTerminalAnchor,
     contextMatches: contextMatchesRuntimeTraceTerminalSeed,
     presentedAuthority: presentedRuntimeTraceTerminalAuthority,
@@ -1906,12 +2007,12 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     transientEdit,
     workingRevisionPristine: context?.workingRevision === PRISTINE_WORKING_REVISION,
   });
-  const runtimeTraceValidationPending = runtimeTraceTerminalUiState.pending;
-  const runtimeTraceTerminalEditAuthority = runtimeTraceTerminalUiState.authority;
-  const interactionAuthority: StudioPreviewInteractionAuthorityV1 =
+  const runtimeTracePendingPresentation = runtimeTraceTerminalUiState.pendingPresentation;
+  const runtimeTraceTerminalEdit = runtimeTraceTerminalUiState.editAuthority;
+  const interactionAuthority: StudioPreviewInteractionAuthority =
     snapshotInteractionAuthority.kind !== "bounded-interactive" ||
     snapshotInteractionAuthority.reason === "runtime-trace-initial-edit" ||
-    runtimeTraceTerminalEditAuthority
+    runtimeTraceTerminalEdit
       ? snapshotInteractionAuthority
       : {
           kind: "selection-only",
@@ -1921,7 +2022,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
   const presentedOrRetainedInteractionGeometry =
     interactionGeometry ??
     (runtimeTraceTerminalUiState.baseFrameRetained ? (retainedTerminalFrameContextCurrent?.geometry ?? null) : null);
-  const runtimeTraceOpaqueSelectionEntities = projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
+  const runtimeTraceOpaqueSelectionEntities = projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
     authority: runtimeTraceSelectionProfile,
     interactionGeometry: presentedOrRetainedInteractionGeometry,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
@@ -1931,23 +2032,23 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
     genericInitialEditCandidates,
-    initialEditRuntimeAuthority: snapshot ? studioPreviewInitialEditRuntimeAuthorityV1(snapshot) : null,
+    initialEditAuthority: snapshot
+      ? ((authority) => (authority ? studioPreviewInitialEditProjection(authority) : null))(
+          studioPreviewInitialEditIntegrationAuthority(snapshot),
+        )
+      : null,
     interactionGeometry: presentedOrRetainedInteractionGeometry,
     interactionAuthority,
     runtimeTraceBaseFrameRetained: runtimeTraceTerminalUiState.baseFrameRetained,
-    runtimeTraceTerminalEditAuthority,
+    runtimeTraceTerminalEdit,
     runtimeTraceOpaqueSelectionEntities,
-    runtimeTraceValidationPending,
+    runtimeTracePendingPresentation,
     sourceLabel: snapshot?.sourceLabel ?? null,
     sourceMetadataFailureKind: currentMetadata.phase === "failed" ? currentMetadata.failureKind : null,
     sourceMetadataPhase: currentMetadata.phase,
     sourceRuntimeIdentity: snapshot?.sourceRuntimeIdentity ?? null,
     state,
-    syntheticInitialEditAnchor: studioPreviewPresentedSyntheticInitialEditAnchorV1(
-      snapshot,
-      state,
-      interactionAuthority,
-    ),
+    syntheticInitialEditAnchor: studioPreviewPresentedSyntheticInitialEditAnchor(snapshot, state, interactionAuthority),
     verifiedSourceDuration,
   };
 }

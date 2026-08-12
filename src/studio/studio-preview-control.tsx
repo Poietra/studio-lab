@@ -1,7 +1,7 @@
 import type { PreviewFallbackReasonV1 } from "../engine/preview-renderer";
 import { cn } from "../lib/cn";
 import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
-import type { StudioPreviewRendererViewV1 } from "./use-preview-renderer";
+import type { StudioPreviewRendererView } from "./use-preview-renderer";
 
 export type StudioPreviewControlStateV1 = Readonly<{
   detail: string | null;
@@ -13,7 +13,7 @@ type ResolveStudioPreviewControlStateInputV1 = Readonly<{
   activationRequested: boolean;
   activated: boolean;
   providerPending: boolean;
-  renderer: StudioPreviewRendererViewV1 | null;
+  renderer: StudioPreviewRendererView | null;
 }>;
 
 const LOADING_FALLBACKS: ReadonlySet<PreviewFallbackReasonV1> = new Set([
