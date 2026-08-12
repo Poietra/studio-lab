@@ -4,12 +4,16 @@ import { describe, expect, it, vi } from "vitest";
 import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
+import {
+  studioPreviewInitialEditProjection,
+  type StudioPreviewGenericInitialEditCandidate,
+} from "./preview-temporal-rebase";
 import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
 import {
-  projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1,
-  type StudioPreviewRendererViewV1,
+  projectStudioPreviewRuntimeTraceOpaqueSelectionEntities,
+  type StudioPreviewRendererView,
 } from "./use-preview-renderer";
 
 const CIRCLE_ENTITY: ProjectedEntity = {
@@ -145,29 +149,29 @@ function renderSelectedInspector(
 }
 
 function previewView(
-  state: StudioPreviewRendererViewV1["state"],
-  interactionGeometry: StudioPreviewRendererViewV1["interactionGeometry"] = null,
-  sourceRuntimeIdentity: StudioPreviewRendererViewV1["sourceRuntimeIdentity"] = null,
-  interactionAuthority: StudioPreviewRendererViewV1["interactionAuthority"] = { kind: "interactive" },
-  initialEditRuntimeAuthority: StudioPreviewRendererViewV1["initialEditRuntimeAuthority"] = null,
-  runtimeTraceTerminalEditAuthority: StudioPreviewRendererViewV1["runtimeTraceTerminalEditAuthority"] = null,
-  runtimeTraceValidationPending: StudioPreviewRendererViewV1["runtimeTraceValidationPending"] = null,
-  runtimeTraceBaseFrameRetained = runtimeTraceValidationPending?.baseFrameRetained === true,
-  runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererViewV1["runtimeTraceOpaqueSelectionEntities"] = [],
-  genericInitialEditCandidates: StudioPreviewRendererViewV1["genericInitialEditCandidates"] = [],
-): StudioPreviewRendererViewV1 {
+  state: StudioPreviewRendererView["state"],
+  interactionGeometry: StudioPreviewRendererView["interactionGeometry"] = null,
+  sourceRuntimeIdentity: StudioPreviewRendererView["sourceRuntimeIdentity"] = null,
+  interactionAuthority: StudioPreviewRendererView["interactionAuthority"] = { kind: "interactive" },
+  initialEditAuthority: StudioPreviewRendererView["initialEditAuthority"] = null,
+  runtimeTraceTerminalEdit: StudioPreviewRendererView["runtimeTraceTerminalEdit"] = null,
+  runtimeTracePendingPresentation: StudioPreviewRendererView["runtimeTracePendingPresentation"] = null,
+  runtimeTraceBaseFrameRetained = runtimeTracePendingPresentation?.baseFrameRetained === true,
+  runtimeTraceOpaqueSelectionEntities: StudioPreviewRendererView["runtimeTraceOpaqueSelectionEntities"] = [],
+  genericInitialEditCandidates: StudioPreviewRendererView["genericInitialEditCandidates"] = [],
+): StudioPreviewRendererView {
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
     epoch: 0,
     genericInitialEditCandidates,
-    initialEditRuntimeAuthority,
+    initialEditAuthority,
     interactionGeometry,
     interactionAuthority,
     runtimeTraceBaseFrameRetained,
-    runtimeTraceTerminalEditAuthority,
+    runtimeTraceTerminalEdit,
     runtimeTraceOpaqueSelectionEntities,
-    runtimeTraceValidationPending,
+    runtimeTracePendingPresentation,
     sourceLabel: "verified fixture",
     sourceMetadataFailureKind: null,
     sourceMetadataPhase: "ready",
@@ -282,13 +286,13 @@ describe("StudioCanvas retained preview layer", () => {
             ],
           ]),
           { kind: "interactive" },
-          {
+          studioPreviewInitialEditProjection({
             duration: 4,
             profile: "warp-square-v9",
             runtimeEntityId,
             studioEntityId,
             studioSceneId: "example_scenes/basic.py#WarpSquare",
-          },
+          }),
         )}
         selectedIds={new Set([studioEntityId])}
       />,
@@ -647,7 +651,7 @@ describe("StudioCanvas retained preview layer", () => {
         interactionGeometry,
         sourceRuntimeIdentity,
         { kind: "interactive" },
-        {
+        studioPreviewInitialEditProjection({
           baseCenter: { x: 320, y: 180 },
           duration: 1,
           lifetime: { end: 1, start: 0 },
@@ -656,7 +660,7 @@ describe("StudioCanvas retained preview layer", () => {
           runtimeEntityId: leafRuntimeIds[1],
           studioEntityId: t2.id,
           studioSceneId: "example_scenes/basic.py#LineJoints",
-        },
+        }),
       ),
       selectedIds: new Set([t2.id]),
     };
@@ -690,7 +694,7 @@ describe("StudioCanvas retained preview layer", () => {
     const sourceRuntimeIdentity = new Map([
       ["square", { bindingId: "source-binding:square", entityId: runtimeId, sourceName: "square" }],
     ]);
-    const initialEditRuntimeAuthority = {
+    const initialEditAuthority = studioPreviewInitialEditProjection({
       baseCenter: { x: 320, y: 180 },
       duration: 3,
       lifetime: { end: 3, start: 0 },
@@ -699,7 +703,7 @@ describe("StudioCanvas retained preview layer", () => {
       runtimeEntityId: runtimeId,
       studioEntityId: squareId,
       studioSceneId: "example_scenes/basic.py#SquareToCircle",
-    } satisfies NonNullable<StudioPreviewRendererViewV1["initialEditRuntimeAuthority"]>;
+    });
     const props: StudioCanvasProps = {
       ...baseProps(),
       entities: [square],
@@ -716,7 +720,7 @@ describe("StudioCanvas retained preview layer", () => {
         new Map(),
         sourceRuntimeIdentity,
         { kind: "interactive" },
-        initialEditRuntimeAuthority,
+        initialEditAuthority,
       ),
       selectedIds: new Set([squareId]),
     };
@@ -742,7 +746,7 @@ describe("StudioCanvas retained preview layer", () => {
           new Map(),
           sourceRuntimeIdentity,
           { kind: "interactive" },
-          initialEditRuntimeAuthority,
+          initialEditAuthority,
         )}
       />,
     );
@@ -765,19 +769,32 @@ describe("StudioCanvas retained preview layer", () => {
       position: { x: 440, y: 180 },
       sourceIdentity: { kind: "known", value: "other" },
     };
-    const candidate = {
+    const candidate: StudioPreviewGenericInitialEditCandidate = {
       baseCenter: { x: 320, y: 180 },
       baseDimensions: { height: 2, width: 2 },
       baseOpacity: 1,
       bindingId: `source-binding:${"a".repeat(64)}`,
+      capabilities: {
+        allowOffPlayheadInitialEdit: false,
+        paintOpacity: true,
+        retainDuringGestureAwayFromAnchor: false,
+        rotation: true,
+        semanticHitTargetWhenRuntimeBoundsMissing: false,
+        uniformScale: true,
+      },
       duration: 0.1,
-      lifetime: { end: 0.1, start: 0 as const },
-      opacityEditable: true,
-      profile: "generic-runtime-trace-v3" as const,
+      initialEntityProjection: {
+        baseCenter: { x: 320, y: 180 },
+        kind: "source-position-and-lifetime",
+        lifetime: { end: 0.1, start: 0 },
+      },
+      restrictionMessage:
+        "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only.",
       runtimeEntityId: runtimeId,
-      sourceName: "square",
       studioEntityId: squareId,
       studioSceneId: "scenes/staticsquare.py#StaticSquare",
+      targetSourceName: "square",
+      targetType: null,
     };
     const boundedAuthority = {
       editableRuntimeEntityIds: [runtimeId],
@@ -882,17 +899,23 @@ describe("StudioCanvas retained preview layer", () => {
     ]);
     const terminalAuthority = {
       baseCenter: { x: 320, y: 67.5 },
+      capabilities: { uniformScale: true } as const,
+      controlLabel: "Square terminal edit at 5.00s",
       duration: 6 as const,
-      profile: "updaters-terminal-v1" as const,
-      relativeScale: 1 as const,
+      renderProof: { profile: "updaters-terminal-v1", sourceAnchor: 5 } as const,
+      restrictionMessage: "This updater-backed Square supports terminal position and positive uniform resize only.",
       runtimeEntityId: squareRuntimeId,
       sourceAnchor: 5 as const,
-      sourceDimensions: { height: 2 as const, width: 2 as const },
       studioEntityId: squareId,
       studioSceneId: "example_scenes/basic.py#UpdatersExample",
+      target: { sourceName: "square", type: "Square" } as const,
+      uniformScaleBasis: {
+        relativeScale: 1 as const,
+        sourceDimensions: { height: 2 as const, width: 2 as const },
+      },
     };
-    const [decimal] = projectStudioPreviewRuntimeTraceOpaqueSelectionEntitiesV1({
-      authority: terminalAuthority,
+    const [decimal] = projectStudioPreviewRuntimeTraceOpaqueSelectionEntities({
+      authority: { profile: terminalAuthority.renderProof.profile, studioSceneId: terminalAuthority.studioSceneId },
       interactionGeometry,
       sourceRuntimeIdentity,
     });
@@ -962,10 +985,13 @@ describe("StudioCanvas retained preview layer", () => {
           {
             baseFrameRetained: true,
             dimensions: { height: 3, width: 3 },
+            draftGhost: "position-and-dimensions",
             position: { x: 400, y: 90 },
-            profile: "updaters-terminal-v1",
+            renderProof: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
             sourceAnchor: 5,
             studioEntityId: squareId,
+            target: { sourceName: "square", type: "Square" },
+            validationStatusLabel: "Draft ghost · dependent updater validation pending",
           },
         )}
       />,
@@ -996,10 +1022,13 @@ describe("StudioCanvas retained preview layer", () => {
           {
             baseFrameRetained: false,
             dimensions: { height: 3, width: 3 },
+            draftGhost: "position-and-dimensions",
             position: { x: 400, y: 90 },
-            profile: "updaters-terminal-v1",
+            renderProof: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
             sourceAnchor: 5,
             studioEntityId: squareId,
+            target: { sourceName: "square", type: "Square" },
+            validationStatusLabel: "Draft ghost · dependent updater validation pending",
           },
         )}
       />,
@@ -1095,12 +1124,17 @@ describe("StudioCanvas retained preview layer", () => {
     ]);
     const terminalAuthority = {
       baseCenter: { x: 145, y: 42 },
+      capabilities: { uniformScale: false } as const,
+      controlLabel: "Grid title terminal edit at 14.00s",
       duration: 15 as const,
-      profile: "opening-grid-title-terminal-v2" as const,
+      renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 } as const,
+      restrictionMessage: "This source-bound grid title supports terminal position only.",
       runtimeEntityId: gridTitleRuntimeId,
       sourceAnchor: 14 as const,
       studioEntityId: gridTitleId,
       studioSceneId: "example_scenes/basic.py#OpeningManim",
+      target: { sourceName: "grid_title", type: "Tex" } as const,
+      uniformScaleBasis: null,
     };
     const boundedAuthority = {
       editableRuntimeEntityId: gridTitleRuntimeId,
@@ -1137,6 +1171,24 @@ describe("StudioCanvas retained preview layer", () => {
     const activeMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} />);
     expect(activeMarkup).toContain("Grid title terminal edit at 14.00s");
     expect(activeMarkup).not.toContain("data-studio-resize-handle");
+    const authorityOnlyDragMarkup = renderToStaticMarkup(
+      <StudioCanvas
+        {...activeProps}
+        dragPreview={{ delta: { x: 24, y: 12 }, entityIds: [gridTitleId] }}
+        preview={previewView(
+          activeProps.preview!.state,
+          interactionGeometry,
+          sourceRuntimeIdentity,
+          boundedAuthority,
+          null,
+          terminalAuthority,
+          null,
+          true,
+        )}
+      />,
+    );
+    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-height="54.0000"');
+    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-width="305.0000"');
     const selectedGridMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} selectedIds={new Set([gridId])} />);
     const gridWrapperMarker = `data-studio-entity-wrapper="${gridId}"`;
     const gridWrapperMarkerIndex = selectedGridMarkup.indexOf(gridWrapperMarker);
@@ -1172,10 +1224,14 @@ describe("StudioCanvas retained preview layer", () => {
           null,
           {
             baseFrameRetained: true,
+            dimensions: null,
+            draftGhost: "position-only",
             position: { x: 169, y: 30 },
-            profile: "opening-grid-title-terminal-v2",
+            renderProof: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
             sourceAnchor: 14,
             studioEntityId: gridTitleId,
+            target: { sourceName: "grid_title", type: "Tex" },
+            validationStatusLabel: "Draft ghost · OpeningManim validation pending",
           },
         )}
       />,

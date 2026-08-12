@@ -31,14 +31,17 @@ import {
 } from "./preview-snapshot-provider";
 import {
   compileStudioPreviewGenericInitialEdit,
-  compileStudioPreviewTemporalRebaseV1,
-  projectStudioPreviewInitialEntityPresenceV1,
-  projectStudioPreviewInitialValidationSceneV1,
+  compileStudioPreviewTemporalRebase,
+  projectStudioPreviewInitialEntityPresence,
+  projectStudioPreviewInitialValidationScene,
+  type StudioPreviewInitialEditProjectionAuthority,
   studioPreviewGenericInitialEditCandidates,
   studioPreviewGenericInitialEditProgramSet,
-  studioPreviewInitialEditRuntimeAuthorityV1,
-  studioPreviewInitialEditTargetIsPresentV1,
-  studioPreviewSyntheticInitialEditAnchorV1,
+  studioPreviewInitialEditBaseCenter,
+  studioPreviewInitialEditIntegrationAuthority,
+  studioPreviewInitialEditProjection,
+  studioPreviewInitialEditTargetIsPresent,
+  studioPreviewSyntheticInitialEditAnchor,
 } from "./preview-temporal-rebase";
 import {
   createDirectManipulationPositionProgram,
@@ -47,9 +50,9 @@ import {
 } from "./suggestion-program";
 import {
   compileStudioPreviewSceneV1,
-  studioPreviewInteractionAuthorityV1,
+  studioPreviewInteractionAuthority,
   studioPreviewInteractionEntityIdsV1,
-  studioPreviewPresentedSyntheticInitialEditAnchorV1,
+  studioPreviewPresentedSyntheticInitialEditAnchor,
 } from "./use-preview-renderer";
 
 const FRAME = { height: 8, width: 14.222222222222221 } as const;
@@ -366,16 +369,21 @@ async function lineJointsInput(kind: EditKind = "combined", targetSourceName: "t
     sourceLabel: `${WARP_SQUARE_SOURCE_PATH} · LineJoints`,
     sourceRuntimeIdentity,
   };
-  const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
-  if (authority?.profile !== "line-joints-v10") {
+  const integrationAuthority = studioPreviewInitialEditIntegrationAuthority(snapshot);
+  if (integrationAuthority?.profile !== "line-joints-v10") {
     throw new Error("The sealed LineJoints V10 fixture did not grant its bounded edit authority.");
   }
+  const authority = studioPreviewInitialEditProjection(integrationAuthority);
+  if (authority.initialEntityProjection.kind !== "missing-transform-and-lifetime") {
+    throw new Error("LineJoints projection lost its runtime-proven transform.");
+  }
+  const baseCenter = authority.initialEntityProjection.baseCenter;
   const targetEntityId = `source:${LINE_JOINTS_SCENE_ID}:${targetSourceName}`;
   const runtimeSceneState: RuntimeSceneState = {
     ...imported.runtimeSceneState,
     duration: 1,
   };
-  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, authority);
+  const validationScene = projectStudioPreviewInitialValidationScene(runtimeSceneState, authority);
   const inherited = workingState(runtimeSceneState);
   const base: WorkingState = {
     ...inherited,
@@ -395,7 +403,7 @@ async function lineJointsInput(kind: EditKind = "combined", targetSourceName: "t
         createDirectManipulationPositionProgram({
           capturedPlayhead: 0,
           delta: { x: 64, y: -36 },
-          positions: { [targetEntityId]: authority.baseCenter },
+          positions: { [targetEntityId]: baseCenter },
           scene: validationScene,
           start: 0,
           targetEntityIds: [targetEntityId],
@@ -420,6 +428,7 @@ async function lineJointsInput(kind: EditKind = "combined", targetSourceName: "t
   }
   return {
     authority,
+    integrationAuthority,
     proposedState: evaluateWorkingState({ ...base, appliedPrograms: records }),
     snapshot,
     targetEntityId,
@@ -478,13 +487,18 @@ async function writeStuffInput(
     sourceLabel: `${WARP_SQUARE_SOURCE_PATH} · WriteStuff`,
     sourceRuntimeIdentity,
   };
-  const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
-  if (authority?.profile !== "write-stuff-v12") {
+  const integrationAuthority = studioPreviewInitialEditIntegrationAuthority(snapshot);
+  if (integrationAuthority?.profile !== "write-stuff-v12") {
     throw new Error("The sealed WriteStuff V12 fixture did not grant its bounded edit authority.");
   }
+  const authority = studioPreviewInitialEditProjection(integrationAuthority);
+  if (authority.initialEntityProjection.kind !== "missing-transform-and-lifetime") {
+    throw new Error("WriteStuff projection lost its runtime-proven transform.");
+  }
+  const baseCenter = authority.initialEntityProjection.baseCenter;
   const targetEntityId = `source:${WRITE_STUFF_SCENE_ID}:${targetSourceName}`;
   const runtimeSceneState: RuntimeSceneState = { ...imported.runtimeSceneState, duration: 4 };
-  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, authority);
+  const validationScene = projectStudioPreviewInitialValidationScene(runtimeSceneState, authority);
   const inherited = workingState(runtimeSceneState);
   const base: WorkingState = {
     ...inherited,
@@ -508,10 +522,10 @@ async function writeStuffInput(
         createDirectManipulationPositionProgram({
           capturedPlayhead: 0,
           delta: {
-            x: targetPosition.x - authority.baseCenter.x,
-            y: targetPosition.y - authority.baseCenter.y,
+            x: targetPosition.x - baseCenter.x,
+            y: targetPosition.y - baseCenter.y,
           },
-          positions: { [targetEntityId]: authority.baseCenter },
+          positions: { [targetEntityId]: baseCenter },
           scene: validationScene,
           start: 0,
           targetEntityIds: [targetEntityId],
@@ -536,6 +550,7 @@ async function writeStuffInput(
   }
   return {
     authority,
+    integrationAuthority,
     proposedState: evaluateWorkingState({ ...base, appliedPrograms: records }),
     snapshot,
     targetEntityId,
@@ -614,7 +629,7 @@ function officialSquareToCircleSnapshot(
 }
 
 function compile(input: Awaited<ReturnType<typeof squareToCircleInput>>) {
-  return compileStudioPreviewTemporalRebaseV1({
+  return compileStudioPreviewTemporalRebase({
     frame: FRAME,
     proposedState: input.proposedState,
     snapshot: input.snapshot,
@@ -700,7 +715,7 @@ async function genericRuntimeTraceV3MoveInput() {
   const entity: RuntimeEntity = {
     ...importedSquareEntity(),
     id: candidate.studioEntityId,
-    lifetime: [candidate.lifetime],
+    lifetime: [candidate.initialEntityProjection.lifetime],
   };
   const runtimeSceneState: RuntimeSceneState = {
     ...baseRuntimeScene(candidate.studioSceneId),
@@ -722,7 +737,7 @@ async function genericRuntimeTraceV3MoveInput() {
       version: STUDIO_STATE_VERSION,
     },
   };
-  const validationScene = projectStudioPreviewInitialValidationSceneV1(runtimeSceneState, candidate);
+  const validationScene = projectStudioPreviewInitialValidationScene(runtimeSceneState, candidate);
   const validation = createDirectManipulationPositionProgram({
     capturedPlayhead: 0,
     delta: { x: 64, y: -36 },
@@ -821,6 +836,50 @@ function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
   return studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
 }
 
+type InitialEditCapability = keyof StudioPreviewInitialEditProjectionAuthority["capabilities"];
+
+function capabilities(...enabled: readonly InitialEditCapability[]) {
+  return {
+    allowOffPlayheadInitialEdit: enabled.includes("allowOffPlayheadInitialEdit"),
+    paintOpacity: enabled.includes("paintOpacity"),
+    retainDuringGestureAwayFromAnchor: enabled.includes("retainDuringGestureAwayFromAnchor"),
+    rotation: enabled.includes("rotation"),
+    semanticHitTargetWhenRuntimeBoundsMissing: enabled.includes("semanticHitTargetWhenRuntimeBoundsMissing"),
+    uniformScale: enabled.includes("uniformScale"),
+  };
+}
+
+describe("studioPreviewInitialEditProjection", () => {
+  it("removes producer profile identity and keeps semantic capabilities", async () => {
+    const squareInput = await squareToCircleInput("position");
+    const squareIntegration = studioPreviewInitialEditIntegrationAuthority(officialSquareToCircleSnapshot(squareInput));
+    const warpInput = await warpSquareInput("position");
+    const warpIntegration = studioPreviewInitialEditIntegrationAuthority(warpInput.snapshot);
+    const lineJoints = (await lineJointsInput("position")).authority;
+    const writeStuff = (await writeStuffInput("position")).authority;
+    if (!squareIntegration || squareIntegration.profile !== "square-to-circle-v8" || !warpIntegration)
+      throw new Error("Bounded projection fixtures lost integration authority.");
+    const square = studioPreviewInitialEditProjection(squareIntegration);
+    const warp = studioPreviewInitialEditProjection(warpIntegration);
+
+    expect(square).not.toHaveProperty("profile");
+    expect(warp).not.toHaveProperty("profile");
+    expect(lineJoints).not.toHaveProperty("profile");
+    expect(writeStuff).not.toHaveProperty("profile");
+    expect(square.capabilities).toEqual(capabilities("semanticHitTargetWhenRuntimeBoundsMissing"));
+    expect(square.restrictionMessage).toBe("This SquareToCircle proof currently supports position only.");
+    expect(warp.capabilities).toEqual(capabilities("uniformScale"));
+    expect(lineJoints.capabilities).toEqual(capabilities("uniformScale"));
+    expect(writeStuff.capabilities).toEqual(
+      capabilities("uniformScale", "retainDuringGestureAwayFromAnchor", "allowOffPlayheadInitialEdit"),
+    );
+    expect(studioPreviewInitialEditBaseCenter(square)).toEqual(squareIntegration.baseCenter);
+    expect(studioPreviewInitialEditBaseCenter(warp)).toBeNull();
+    expect(studioPreviewInitialEditBaseCenter(lineJoints)).not.toBeNull();
+    expect(studioPreviewInitialEditBaseCenter(writeStuff)).not.toBeNull();
+  });
+});
+
 describe("studioPreviewGenericInitialEditCandidates", () => {
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
@@ -831,18 +890,24 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
       baseDimensions: mapping.endpoints.initial.dimensions,
       baseOpacity: null,
       bindingId: mapping.binding.id,
+      capabilities: capabilities("uniformScale", "rotation", "paintOpacity"),
       duration: 1 / 60,
-      lifetime: { end: 1 / 60, start: 0 },
-      opacityEditable: true,
-      profile: "generic-runtime-trace-v3",
+      initialEntityProjection: {
+        baseCenter: { x: 320, y: 180 },
+        kind: "source-position-and-lifetime",
+        lifetime: { end: 1 / 60, start: 0 },
+      },
+      restrictionMessage:
+        "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only.",
       runtimeEntityId: mapping.rootId,
-      sourceName: "square",
       studioEntityId: `source:${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}:square`,
       studioSceneId: `${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}`,
+      targetSourceName: "square",
+      targetType: null,
     });
     expect(candidate).not.toHaveProperty("relativeScale");
-    expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
-    const interactionAuthority = studioPreviewInteractionAuthorityV1(snapshot);
+    expect(studioPreviewSyntheticInitialEditAnchor(snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthority(snapshot);
     expect(interactionAuthority).toEqual({
       editableRuntimeEntityIds: [mapping.rootId],
       kind: "bounded-interactive",
@@ -858,7 +923,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
       ),
     ).toEqual([mapping.rootId]);
     expect(
-      studioPreviewPresentedSyntheticInitialEditAnchorV1(
+      studioPreviewPresentedSyntheticInitialEditAnchor(
         snapshot,
         {
           frame: {
@@ -873,7 +938,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
       ),
     ).toBe(0);
     expect(
-      studioPreviewPresentedSyntheticInitialEditAnchorV1(
+      studioPreviewPresentedSyntheticInitialEditAnchor(
         snapshot,
         { detail: null, phase: "fallback", reason: "frame-pending" },
         interactionAuthority,
@@ -884,7 +949,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
   it("separates static-paint opacity editability from a uniform current alpha", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
     const mixed = candidateOf(snapshot);
-    expect(mixed).toMatchObject({ baseOpacity: null, opacityEditable: true });
+    expect(mixed).toMatchObject({ baseOpacity: null, capabilities: { paintOpacity: true } });
 
     const uniformScene: SceneIrV1 = {
       ...snapshot.snapshot.scene,
@@ -913,7 +978,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     };
     expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: uniformScene } })).toMatchObject({
       baseOpacity: 0.4,
-      opacityEditable: true,
+      capabilities: { paintOpacity: true },
     });
 
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === mapping.rootId);
@@ -934,7 +999,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     };
     expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: dynamicScene } })).toMatchObject({
       baseOpacity: null,
-      opacityEditable: false,
+      capabilities: { paintOpacity: false },
     });
 
     if (child.appearance.kind !== "vector") throw new Error("The generic V3 paint child changed appearance kind.");
@@ -955,7 +1020,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     };
     expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: dynamicPaintScene } })).toMatchObject({
       baseOpacity: null,
-      opacityEditable: false,
+      capabilities: { paintOpacity: false },
     });
 
     const paintlessScene: SceneIrV1 = {
@@ -964,7 +1029,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     };
     expect(candidateOf({ ...snapshot, snapshot: { ...snapshot.snapshot, scene: paintlessScene } })).toMatchObject({
       baseOpacity: null,
-      opacityEditable: false,
+      capabilities: { paintOpacity: false },
     });
   });
 
@@ -1139,7 +1204,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     expect(snapshot.sourceRuntimeIdentity?.size).toBe(4);
 
     const candidates = studioPreviewGenericInitialEditCandidates(snapshot);
-    expect(candidates.map(({ sourceName }) => sourceName)).toEqual(["square", "photon"]);
+    expect(candidates.map(({ targetSourceName }) => targetSourceName)).toEqual(["square", "photon"]);
     expect(candidates[0]!.runtimeEntityId).toBe(selected.rootId);
     expect(candidates[1]!.runtimeEntityId).toBe(`${selected.rootId.slice(0, -1)}3`);
     expect(new Set(candidates.map(({ studioEntityId }) => studioEntityId)).size).toBe(2);
@@ -1156,9 +1221,9 @@ describe("generic Runtime Trace V3 initial move", () => {
         position: { kind: "known", value: candidate.baseCenter },
         scale: { kind: "known", value: 1 },
       },
-      lifetime: [candidate.lifetime],
+      lifetime: [candidate.initialEntityProjection.lifetime],
     });
-    const projected = projectStudioPreviewInitialEntityPresenceV1(
+    const projected = projectStudioPreviewInitialEntityPresence(
       [
         {
           ...target!,
@@ -1178,9 +1243,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       position: candidate.baseCenter,
       present: true,
     });
-    expect(studioPreviewInitialEditTargetIsPresentV1(validationScene, candidate.studioEntityId, 0, candidate)).toBe(
-      true,
-    );
+    expect(studioPreviewInitialEditTargetIsPresent(validationScene, candidate.studioEntityId, 0, candidate)).toBe(true);
   });
 
   it("authorizes the one candidate the staged Program targets and rejects absent or ambiguous targets", async () => {
@@ -1299,13 +1362,13 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(studioPreviewGenericInitialEditProgramSet([withValue(1.01)], [candidate])).toEqual({
       kind: "unauthorized",
     });
-    expect(
-      studioPreviewGenericInitialEditProgramSet([record], [{ ...candidate, baseOpacity: 0.25, opacityEditable: true }]),
-    ).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewGenericInitialEditProgramSet([record], [{ ...candidate, baseOpacity: 0.25 }])).toEqual({
+      kind: "unauthorized",
+    });
     expect(
       studioPreviewGenericInitialEditProgramSet(
         [record],
-        [{ ...candidate, baseOpacity: null, opacityEditable: false }],
+        [{ ...candidate, baseOpacity: null, capabilities: { ...candidate.capabilities, paintOpacity: false } }],
       ),
     ).toEqual({ kind: "unauthorized" });
   });
@@ -1674,13 +1737,13 @@ describe("generic Runtime Trace V3 initial move", () => {
   });
 });
 
-describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
+describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
   it("exposes a preview-only zero anchor only for the exact correlated V8 identity", async () => {
     const input = await squareToCircleInput("position");
-    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
-    expect(studioPreviewSyntheticInitialEditAnchorV1({ ...input.snapshot, sourceRuntimeIdentity: null })).toBeNull();
+    expect(studioPreviewSyntheticInitialEditAnchor(input.snapshot)).toBe(0);
+    expect(studioPreviewSyntheticInitialEditAnchor({ ...input.snapshot, sourceRuntimeIdentity: null })).toBeNull();
     expect(
-      studioPreviewSyntheticInitialEditAnchorV1({
+      studioPreviewSyntheticInitialEditAnchor({
         ...input.snapshot,
         correlation: { ...input.snapshot.correlation, sceneDuration: 4 },
       }),
@@ -1690,7 +1753,7 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
   it("promotes only the exact official V8 source seal to producer-backed position authority", async () => {
     const input = await squareToCircleInput("position");
     const snapshot = officialSquareToCircleSnapshot(input);
-    expect(studioPreviewInitialEditRuntimeAuthorityV1(snapshot)).toMatchObject({
+    expect(studioPreviewInitialEditIntegrationAuthority(snapshot)).toMatchObject({
       baseCenter: { x: 320, y: 180 },
       duration: 3,
       lifetime: { end: 3, start: 0 },
@@ -1700,9 +1763,10 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       studioEntityId: "source:example_scenes/basic.py#SquareToCircle:square",
       studioSceneId: "example_scenes/basic.py#SquareToCircle",
     });
-    expect(studioPreviewSyntheticInitialEditAnchorV1(snapshot)).toBe(0);
-    const authority = studioPreviewInitialEditRuntimeAuthorityV1(snapshot);
-    if (!authority) throw new Error("The official SquareToCircle snapshot lost its edit authority.");
+    expect(studioPreviewSyntheticInitialEditAnchor(snapshot)).toBe(0);
+    const integrationAuthority = studioPreviewInitialEditIntegrationAuthority(snapshot);
+    if (!integrationAuthority) throw new Error("The official SquareToCircle snapshot lost its edit authority.");
+    const authority = studioPreviewInitialEditProjection(integrationAuthority);
     const [projected] = projectProposedState(input.proposedState, 0).canvas.entities;
     if (!projected) throw new Error("The SquareToCircle source projection lost its Square.");
     const hiddenSquare = {
@@ -1721,13 +1785,13 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       type: "Circle",
     };
     const hiddenEntities = [hiddenSquare, hiddenCircle];
-    expect(projectStudioPreviewInitialEntityPresenceV1(hiddenEntities, authority, null, 0)).toMatchObject([
+    expect(projectStudioPreviewInitialEntityPresence(hiddenEntities, authority, null, 0)).toMatchObject([
       { id: authority.studioEntityId, present: true },
       { id: hiddenCircle.id, present: false },
     ]);
-    expect(projectStudioPreviewInitialEntityPresenceV1(hiddenEntities, authority, null, 3)).toBe(hiddenEntities);
+    expect(projectStudioPreviewInitialEntityPresence(hiddenEntities, authority, null, 3)).toBe(hiddenEntities);
     expect(
-      studioPreviewInitialEditRuntimeAuthorityV1({
+      studioPreviewInitialEditIntegrationAuthority({
         ...snapshot,
         correlation: {
           ...snapshot.correlation,
@@ -1736,7 +1800,7 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewInitialEditRuntimeAuthorityV1({
+      studioPreviewInitialEditIntegrationAuthority({
         ...snapshot,
         sourceRuntimeIdentity: new Map([["circle", { ...input.mapping, sourceName: "circle" }]]),
       }),
@@ -1746,7 +1810,7 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       const mutatedSource = { ...snapshot.snapshot.scene.source, ...sourceMutation };
       if (mutatedSource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a snapshot source.");
       expect(
-        studioPreviewInitialEditRuntimeAuthorityV1({
+        studioPreviewInitialEditIntegrationAuthority({
           ...snapshot,
           correlation: {
             ...snapshot.correlation,
@@ -1761,7 +1825,7 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
     }
 
     expect(
-      studioPreviewInitialEditRuntimeAuthorityV1({
+      studioPreviewInitialEditIntegrationAuthority({
         ...snapshot,
         snapshot: {
           ...snapshot.snapshot,
@@ -1776,7 +1840,7 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
       }),
     ).toBeNull();
     expect(
-      studioPreviewInitialEditRuntimeAuthorityV1({
+      studioPreviewInitialEditIntegrationAuthority({
         ...snapshot,
         snapshot: {
           ...snapshot.snapshot,
@@ -2037,9 +2101,9 @@ describe("compileStudioPreviewTemporalRebaseV1 SquareToCircle V8", () => {
   });
 });
 
-describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
+describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
   function compileWarpSquare(input: Awaited<ReturnType<typeof warpSquareInput>>) {
-    return compileStudioPreviewTemporalRebaseV1({
+    return compileStudioPreviewTemporalRebase({
       frame: FRAME,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -2051,16 +2115,16 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
     const input = await warpSquareInput("position");
     const source = input.snapshot.snapshot.scene.source;
     if (source.kind !== "imported-manim-server-snapshot") throw new Error("WarpSquare V9 lost its source.");
-    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
-    expect(studioPreviewSyntheticInitialEditAnchorV1({ ...input.snapshot, sourceRuntimeIdentity: null })).toBeNull();
+    expect(studioPreviewSyntheticInitialEditAnchor(input.snapshot)).toBe(0);
+    expect(studioPreviewSyntheticInitialEditAnchor({ ...input.snapshot, sourceRuntimeIdentity: null })).toBeNull();
     expect(
-      studioPreviewSyntheticInitialEditAnchorV1({
+      studioPreviewSyntheticInitialEditAnchor({
         ...input.snapshot,
         sourceRuntimeIdentity: new Map([["other", { ...input.mapping, sourceName: "other" }]]),
       }),
     ).toBeNull();
     expect(
-      studioPreviewSyntheticInitialEditAnchorV1({
+      studioPreviewSyntheticInitialEditAnchor({
         ...input.snapshot,
         snapshot: {
           ...input.snapshot.snapshot,
@@ -2086,8 +2150,8 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
         },
       },
     };
-    expect(studioPreviewInitialEditRuntimeAuthorityV1(editedSnapshot)).toBeNull();
-    expect(studioPreviewSyntheticInitialEditAnchorV1(editedSnapshot)).toBeNull();
+    expect(studioPreviewInitialEditIntegrationAuthority(editedSnapshot)).toBeNull();
+    expect(studioPreviewSyntheticInitialEditAnchor(editedSnapshot)).toBeNull();
     expect(
       compileWarpSquare({
         ...input,
@@ -2105,8 +2169,9 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
 
   it("bridges only the exact runtime-backed Square into UI presence and validation", async () => {
     const input = await warpSquareInput("position");
-    const authority = studioPreviewInitialEditRuntimeAuthorityV1(input.snapshot);
-    if (!authority) throw new Error("WarpSquare V9 lost its initial edit authority.");
+    const integrationAuthority = studioPreviewInitialEditIntegrationAuthority(input.snapshot);
+    if (!integrationAuthority) throw new Error("WarpSquare V9 lost its initial edit authority.");
+    const authority = studioPreviewInitialEditProjection(integrationAuthority);
     const base = input.proposedState.base;
     const entity = base.runtimeSceneState.objectGraph.entities[WARP_SQUARE_ENTITY_ID];
     if (!entity) throw new Error("WarpSquare V9 lost its Studio Square.");
@@ -2124,18 +2189,18 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
     expect(absentProjection).toMatchObject([{ id: authority.studioEntityId, present: false }]);
 
     const geometry = new Map([[authority.runtimeEntityId, {}]]);
-    const presented = projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, geometry, 0);
+    const presented = projectStudioPreviewInitialEntityPresence(absentProjection, authority, geometry, 0);
     expect(presented).toMatchObject([{ id: authority.studioEntityId, present: true }]);
-    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, authority, null, 0)).toBe(absentProjection);
-    expect(projectStudioPreviewInitialEntityPresenceV1(absentProjection, null, geometry, 0)).toBe(absentProjection);
+    expect(projectStudioPreviewInitialEntityPresence(absentProjection, authority, null, 0)).toBe(absentProjection);
+    expect(projectStudioPreviewInitialEntityPresence(absentProjection, null, geometry, 0)).toBe(absentProjection);
 
-    const validationScene = projectStudioPreviewInitialValidationSceneV1(absentRuntimeScene, authority);
+    const validationScene = projectStudioPreviewInitialValidationScene(absentRuntimeScene, authority);
     expect(validationScene).not.toBe(absentRuntimeScene);
     expect(validationScene.objectGraph.entities[entity.id]?.lifetime).toEqual([{ end: 4, start: 0 }]);
     expect(absentRuntimeScene.objectGraph.entities[entity.id]?.lifetime).toEqual([]);
-    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 0, authority)).toBe(true);
-    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 0, null)).toBe(false);
-    expect(studioPreviewInitialEditTargetIsPresentV1(absentRuntimeScene, entity.id, 1, authority)).toBe(false);
+    expect(studioPreviewInitialEditTargetIsPresent(absentRuntimeScene, entity.id, 0, authority)).toBe(true);
+    expect(studioPreviewInitialEditTargetIsPresent(absentRuntimeScene, entity.id, 0, null)).toBe(false);
+    expect(studioPreviewInitialEditTargetIsPresent(absentRuntimeScene, entity.id, 1, authority)).toBe(false);
     expect(
       createDirectManipulationPositionProgram({
         capturedPlayhead: 0,
@@ -2157,7 +2222,7 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
         transactionId: "runtime-authorized-warp-square-scale",
       }).kind,
     ).toBe("valid");
-    expect(projectStudioPreviewInitialValidationSceneV1(absentRuntimeScene, null)).toBe(absentRuntimeScene);
+    expect(projectStudioPreviewInitialValidationScene(absentRuntimeScene, null)).toBe(absentRuntimeScene);
     const ambiguousScene: RuntimeSceneState = {
       ...absentRuntimeScene,
       objectGraph: {
@@ -2168,7 +2233,7 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
         },
       },
     };
-    expect(projectStudioPreviewInitialValidationSceneV1(ambiguousScene, authority)).toBe(ambiguousScene);
+    expect(projectStudioPreviewInitialValidationScene(ambiguousScene, authority)).toBe(ambiguousScene);
   });
 
   it("revalidates the real import's empty lifetime only under exact V9 producer authority", async () => {
@@ -2243,9 +2308,9 @@ describe("compileStudioPreviewTemporalRebaseV1 WarpSquare V9", () => {
   });
 });
 
-describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
+describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
   function compileLineJoints(input: Awaited<ReturnType<typeof lineJointsInput>>) {
-    return compileStudioPreviewTemporalRebaseV1({
+    return compileStudioPreviewTemporalRebase({
       frame: FRAME,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -2255,7 +2320,7 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
 
   it("grants runtime geometry and lifetime evidence only to the exact center t2 identity", async () => {
     const input = await lineJointsInput("position");
-    expect(input.authority).toEqual({
+    expect(input.integrationAuthority).toEqual({
       baseCenter: { x: 320, y: 180 },
       duration: 1,
       lifetime: { end: 1, start: 0 },
@@ -2265,8 +2330,8 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
       studioEntityId: input.targetEntityId,
       studioSceneId: LINE_JOINTS_SCENE_ID,
     });
-    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
-    const interactionAuthority = studioPreviewInteractionAuthorityV1(input.snapshot);
+    expect(studioPreviewSyntheticInitialEditAnchor(input.snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthority(input.snapshot);
     expect(interactionAuthority).toEqual({ kind: "interactive" });
     expect(
       studioPreviewInteractionEntityIdsV1(
@@ -2286,7 +2351,7 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
       present: true,
       scale: 1,
     };
-    const projected = projectStudioPreviewInitialEntityPresenceV1(
+    const projected = projectStudioPreviewInitialEntityPresence(
       [projectedT2],
       input.authority,
       new Map([[input.authority.runtimeEntityId, {}]]),
@@ -2347,7 +2412,7 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
     identity.set("t2", { ...t2, entityId: t3.entityId });
     identity.set("t3", { ...t3, entityId: t2.entityId });
     const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
-    expect(studioPreviewInitialEditRuntimeAuthorityV1(drifted)).toBeNull();
+    expect(studioPreviewInitialEditIntegrationAuthority(drifted)).toBeNull();
     expect(compileLineJoints({ ...input, snapshot: drifted })).toMatchObject({
       issue: { code: "target-edit-unsupported" },
       kind: "unsupported",
@@ -2355,9 +2420,9 @@ describe("compileStudioPreviewTemporalRebaseV1 LineJoints V10", () => {
   });
 });
 
-describe("compileStudioPreviewTemporalRebaseV1 WriteStuff V12", () => {
+describe("compileStudioPreviewTemporalRebase WriteStuff V12", () => {
   function compileWriteStuff(input: Awaited<ReturnType<typeof writeStuffInput>>) {
-    return compileStudioPreviewTemporalRebaseV1({
+    return compileStudioPreviewTemporalRebase({
       frame: FRAME,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -2367,19 +2432,24 @@ describe("compileStudioPreviewTemporalRebaseV1 WriteStuff V12", () => {
 
   it("grants one synthetic source anchor only to the exact example_tex root", async () => {
     const input = await writeStuffInput("position");
-    expect(input.authority.profile).toBe("write-stuff-v12");
-    expect(input.authority.baseCenter.x).toBeCloseTo(320, 10);
-    expect(input.authority.baseCenter.y).toBeCloseTo(220.05966224170555, 10);
+    expect(input.integrationAuthority.profile).toBe("write-stuff-v12");
+    if (input.authority.initialEntityProjection.kind !== "missing-transform-and-lifetime") {
+      throw new Error("WriteStuff projection lost its runtime-proven transform.");
+    }
+    expect(input.authority.initialEntityProjection.baseCenter.x).toBeCloseTo(320, 10);
+    expect(input.authority.initialEntityProjection.baseCenter.y).toBeCloseTo(220.05966224170555, 10);
     expect(input.authority).toMatchObject({
       duration: 4,
-      lifetime: { end: 4, start: 0 },
-      relativeScale: 1,
+      initialEntityProjection: {
+        lifetime: { end: 4, start: 0 },
+        relativeScale: 1,
+      },
       runtimeEntityId: input.snapshot.snapshot.scene.entities[32]?.id,
       studioEntityId: input.targetEntityId,
       studioSceneId: WRITE_STUFF_SCENE_ID,
     });
-    expect(studioPreviewSyntheticInitialEditAnchorV1(input.snapshot)).toBe(0);
-    const interactionAuthority = studioPreviewInteractionAuthorityV1(input.snapshot);
+    expect(studioPreviewSyntheticInitialEditAnchor(input.snapshot)).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthority(input.snapshot);
     expect(interactionAuthority).toEqual({
       kind: "interactive",
       nestedGroupEntityIds: [
@@ -2434,7 +2504,7 @@ describe("compileStudioPreviewTemporalRebaseV1 WriteStuff V12", () => {
     if (!exampleText || !exampleTex) throw new Error("WriteStuff V12 identity fixture is incomplete.");
     identity.set("example_tex", { ...exampleTex, entityId: exampleText.entityId });
     const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
-    expect(studioPreviewInitialEditRuntimeAuthorityV1(drifted)).toBeNull();
+    expect(studioPreviewInitialEditIntegrationAuthority(drifted)).toBeNull();
     expect(compileWriteStuff({ ...input, snapshot: drifted })).toMatchObject({
       issue: { code: "identity-unverified" },
       kind: "unsupported",
