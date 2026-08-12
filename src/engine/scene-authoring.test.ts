@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
+  type CreateSceneEntitiesWireCommandV1,
+  createCreateSceneEntitiesCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
   createTransformSceneEntityCompiler,
@@ -10,6 +12,32 @@ import {
   type SetSubtreeVectorPaintAlphaWireCommandV1,
   type TransformSceneEntityWireCommandV1,
 } from "./scene-authoring";
+
+const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
+  entities: [
+    {
+      fadeIn: { end: 0.9 },
+      geometry: { height: 2, kind: "rectangle", width: 4 },
+      id: "tx:create/entity:rectangle",
+      lifetime: { end: 2.4, start: 0.5 },
+      position: { x: 2, y: 0 },
+      scale: 1,
+    },
+  ],
+  expectedBaseRevision: "a".repeat(64),
+  nextRevision: "d".repeat(64),
+  provenance: {
+    evidence: ["Studio entity creation"],
+    id: "studio-edit:create-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.create-scene-entities",
+  timelineInsertions: [
+    { at: 0.5, duration: 0.2 },
+    { at: 0.7, duration: 0.2 },
+  ],
+  version: 1,
+};
 
 const command: RotateSceneEntityWireCommandV1 = {
   angleRadians: Math.PI / 6,
@@ -63,6 +91,24 @@ async function fixtureBundle() {
 }
 
 describe("Scene authoring WASM adapter", () => {
+  it("forwards one exact entity-creation command and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createCreateSceneEntitiesCompiler(async () => ({
+      createSceneEntitiesV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, createEntitiesCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(createEntitiesCommand);
+  });
+
   it("forwards one profile-free command and accepts only a verified complete bundle", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
@@ -119,6 +165,9 @@ describe("Scene authoring WASM adapter", () => {
 
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
+    const compileCreation = createCreateSceneEntitiesCompiler(async () => ({
+      createSceneEntitiesV1: () => new TextEncoder().encode("null"),
+    }));
     const compileRotation = createRotateSceneEntityCompiler(async () => ({
       rotateSceneEntityV1: () => new TextEncoder().encode('{"scene":{}}'),
     }));
@@ -129,6 +178,7 @@ describe("Scene authoring WASM adapter", () => {
       transformSceneEntityV1: () => new TextEncoder().encode("{}"),
     }));
 
+    await expect(compileCreation(bundle, createEntitiesCommand)).rejects.toThrow();
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
     await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();

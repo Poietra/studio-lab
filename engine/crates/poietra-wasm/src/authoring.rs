@@ -1,11 +1,13 @@
 use poietra_eval::{
+    CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
+    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneTimelineInsertion,
     EngineSessionV1, EvaluationError, RotateSceneEntityCommand, RotateSceneEntityError,
     SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
     TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
 };
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
-    parse_scene_ir_bundle_json_v1,
+    ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
+    SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
@@ -16,6 +18,117 @@ const MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1: usize = 64 * 1024;
 enum TransformSceneEntitySchemaV1 {
     #[serde(rename = "poietra.transform-scene-entity")]
     TransformSceneEntity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum CreateSceneEntitiesSchemaV1 {
+    #[serde(rename = "poietra.create-scene-entities")]
+    CreateSceneEntities,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum CreateSceneEntityGeometryJsonV1 {
+    #[serde(rename = "circle")]
+    Circle { radius: f64 },
+    #[serde(rename = "rectangle")]
+    Rectangle { height: f64, width: f64 },
+    #[serde(rename = "mathtex")]
+    MathTex { path: CubicPathV1 },
+}
+
+impl From<CreateSceneEntityGeometryJsonV1> for CreateSceneEntityGeometry {
+    fn from(value: CreateSceneEntityGeometryJsonV1) -> Self {
+        match value {
+            CreateSceneEntityGeometryJsonV1::Circle { radius } => Self::Circle { radius },
+            CreateSceneEntityGeometryJsonV1::Rectangle { height, width } => {
+                Self::Rectangle { height, width }
+            }
+            CreateSceneEntityGeometryJsonV1::MathTex { path } => Self::MathTex { path },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneEntityFadeInJsonV1 {
+    end: f64,
+}
+
+impl From<CreateSceneEntityFadeInJsonV1> for CreateSceneEntityFadeIn {
+    fn from(value: CreateSceneEntityFadeInJsonV1) -> Self {
+        Self { end: value.end }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneEntityJsonV1 {
+    fade_in: Option<CreateSceneEntityFadeInJsonV1>,
+    geometry: CreateSceneEntityGeometryJsonV1,
+    id: String,
+    lifetime: IntervalV1,
+    position: PointV1,
+    scale: f64,
+}
+
+impl From<CreateSceneEntityJsonV1> for CreateSceneEntity {
+    fn from(value: CreateSceneEntityJsonV1) -> Self {
+        Self {
+            fade_in: value.fade_in.map(Into::into),
+            geometry: value.geometry.into(),
+            id: value.id,
+            lifetime: value.lifetime,
+            position: value.position,
+            scale: value.scale,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneTimelineInsertionJsonV1 {
+    at: f64,
+    duration: f64,
+}
+
+impl From<CreateSceneTimelineInsertionJsonV1> for CreateSceneTimelineInsertion {
+    fn from(value: CreateSceneTimelineInsertionJsonV1) -> Self {
+        Self {
+            at: value.at,
+            duration: value.duration,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneEntitiesCommandJsonV1 {
+    entities: Vec<CreateSceneEntityJsonV1>,
+    expected_base_revision: String,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    #[serde(rename = "schema")]
+    _schema: CreateSceneEntitiesSchemaV1,
+    timeline_insertions: Vec<CreateSceneTimelineInsertionJsonV1>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<CreateSceneEntitiesCommandJsonV1> for CreateSceneEntitiesCommand {
+    fn from(value: CreateSceneEntitiesCommandJsonV1) -> Self {
+        Self {
+            entities: value.entities.into_iter().map(Into::into).collect(),
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            provenance: value.provenance,
+            timeline_insertions: value
+                .timeline_insertions
+                .into_iter()
+                .map(Into::into)
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -96,12 +209,11 @@ impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
 
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
-    #[error(
-        "{command} command contains {actual_bytes} bytes; maximum is {MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1}"
-    )]
+    #[error("{command} command contains {actual_bytes} bytes; maximum is {maximum_bytes}")]
     CommandTooLarge {
         command: &'static str,
         actual_bytes: usize,
+        maximum_bytes: usize,
     },
     #[error("invalid {command} command JSON: {source}")]
     CommandJson {
@@ -112,6 +224,8 @@ enum SceneAuthoringAdapterError {
     Snapshot(#[from] ContractJsonError),
     #[error("the Scene authoring snapshot could not create an Engine session: {0}")]
     Session(#[from] EvaluationError),
+    #[error(transparent)]
+    CreateCommand(#[from] CreateSceneEntitiesError),
     #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
@@ -131,10 +245,23 @@ fn parse_scene_authoring_command<T: DeserializeOwned>(
     command: &'static str,
     command_json: &[u8],
 ) -> Result<T, SceneAuthoringAdapterError> {
-    if command_json.len() > MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 {
+    parse_scene_authoring_command_with_limit(
+        command,
+        command_json,
+        MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
+    )
+}
+
+fn parse_scene_authoring_command_with_limit<T: DeserializeOwned>(
+    command: &'static str,
+    command_json: &[u8],
+    maximum_bytes: usize,
+) -> Result<T, SceneAuthoringAdapterError> {
+    if command_json.len() > maximum_bytes {
         return Err(SceneAuthoringAdapterError::CommandTooLarge {
             command,
             actual_bytes: command_json.len(),
+            maximum_bytes,
         });
     }
     serde_json::from_slice(command_json)
@@ -169,6 +296,34 @@ fn transform_scene_entity_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.transform_scene_entity(command.into())?;
     scene_authoring_response(&result)
+}
+
+fn create_scene_entities_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: CreateSceneEntitiesCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "create entities",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.create_scene_entities(command.into())?;
+    scene_authoring_response(&result)
+}
+
+/// Creates supported Studio entities through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or created result.
+#[wasm_bindgen(js_name = createSceneEntitiesV1)]
+pub fn create_scene_entities_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    create_scene_entities_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Applies one atomic translation and optional uniform scale through the shared core.
@@ -306,6 +461,33 @@ mod tests {
                 "origin": "studio-edit-program"
             },
             "schema": "poietra.rotate-scene-entity",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn create_entities_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "entities": [{
+                "fadeIn": { "end": 0.9 },
+                "geometry": { "height": 2.0, "kind": "rectangle", "width": 4.0 },
+                "id": "studio-created-rectangle",
+                "lifetime": { "end": 2.4, "start": 0.5 },
+                "position": { "x": 2.0, "y": 0.0 },
+                "scale": 1.0
+            }],
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "provenance": {
+                "evidence": ["WASM adapter entity creation test"],
+                "id": "wasm-create-entities",
+                "origin": "studio-edit-program"
+            },
+            "schema": "poietra.create-scene-entities",
+            "timelineInsertions": [
+                { "at": 0.5, "duration": 0.2 },
+                { "at": 0.7, "duration": 0.2 }
+            ],
             "version": 1
         }))
         .unwrap()
@@ -583,7 +765,8 @@ mod tests {
             error,
             SceneAuthoringAdapterError::CommandTooLarge {
                 command: "set subtree vector paint alpha",
-                actual_bytes
+                actual_bytes,
+                maximum_bytes: MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
             } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
         ));
     }
@@ -608,6 +791,71 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+    }
+
+    #[test]
+    fn create_entities_adapter_forwards_the_strict_command_to_the_core() {
+        let snapshot = fixture_json();
+        let before = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
+        let response =
+            create_scene_entities_json(&snapshot, &create_entities_command_json()).unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let created = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "studio-created-rectangle")
+            .unwrap();
+
+        assert_eq!(bundle.assets, before.assets);
+        assert!((bundle.scene.duration - 2.4).abs() < 1e-12);
+        assert_eq!(created.provenance_id, "wasm-create-entities");
+        assert!(matches!(
+            created.geometry,
+            SceneGeometryV1::Rectangle {
+                height: 2.0,
+                width: 4.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ));
+    }
+
+    #[test]
+    fn create_entities_adapter_rejects_malformed_bounded_json_and_core_errors() {
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(&create_entities_command_json()).unwrap();
+        unknown["duration"] = json!(2.4);
+        let error =
+            create_scene_entities_json(&fixture_json(), &serde_json::to_vec(&unknown).unwrap())
+                .unwrap_err();
+        assert!(error.to_string().contains("unknown field `duration`"));
+
+        let mut stale: serde_json::Value =
+            serde_json::from_slice(&create_entities_command_json()).unwrap();
+        stale["expectedBaseRevision"] = json!("f".repeat(64));
+        let error =
+            create_scene_entities_json(&fixture_json(), &serde_json::to_vec(&stale).unwrap())
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::CreateCommand(CreateSceneEntitiesError::StaleBaseRevision)
+        ));
+
+        let oversized = vec![b' '; poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 + 1];
+        let error = create_scene_entities_json(&fixture_json(), &oversized).unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::CommandTooLarge {
+                command: "create entities",
+                actual_bytes,
+                maximum_bytes: poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+            } if actual_bytes == poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 + 1
         ));
     }
 
@@ -641,7 +889,8 @@ mod tests {
             error,
             SceneAuthoringAdapterError::CommandTooLarge {
                 command: "transform",
-                actual_bytes
+                actual_bytes,
+                maximum_bytes: MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
             } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
         ));
     }

@@ -1,11 +1,58 @@
+use std::collections::BTreeSet;
+
 use poietra_scene_ir::{
-    AnimationChannelV1, ContractVersionV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1,
-    SceneAppearanceV1, SceneGeometryV1, SceneIrBundleV1, SceneSourceV1,
+    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, EasingV1, FidelityV1,
+    FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1,
+    ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1,
+    SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
 };
 
 use crate::{EngineSessionV1, EvaluationError};
 
 const ROTATION_NOOP_EPSILON: f64 = 1e-12;
+const TIMELINE_ANCHOR_EPSILON: f64 = 0.0005;
+
+/// Geometry accepted by the atomic Studio entity-creation command.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CreateSceneEntityGeometry {
+    Circle { radius: f64 },
+    Rectangle { height: f64, width: f64 },
+    MathTex { path: CubicPathV1 },
+}
+
+/// Optional fade-in attached to one newly created entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneEntityFadeIn {
+    pub end: f64,
+}
+
+/// One entity within an atomic Studio creation batch.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneEntity {
+    pub fade_in: Option<CreateSceneEntityFadeIn>,
+    pub geometry: CreateSceneEntityGeometry,
+    pub id: String,
+    pub lifetime: IntervalV1,
+    pub position: PointV1,
+    pub scale: f64,
+}
+
+/// One insertion into the existing Scene timeline before created entities are appended.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneTimelineInsertion {
+    pub at: f64,
+    pub duration: f64,
+}
+
+/// One profile-free Studio command that atomically creates supported entities.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneEntitiesCommand {
+    pub entities: Vec<CreateSceneEntity>,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
+    pub timeline_insertions: Vec<CreateSceneTimelineInsertion>,
+}
 
 /// One profile-free Studio command that rotates a root entity in world space.
 #[derive(Clone, Debug, PartialEq)]
@@ -44,6 +91,24 @@ pub struct SetSubtreeVectorPaintAlphaCommand {
     pub next_revision: String,
     pub provenance: ProvenanceRecordV1,
     pub root_entity_id: String,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateSceneEntitiesError {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("entity creation must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the timeline insertion must be finite, non-negative, and start inside the base Scene")]
+    InvalidTimelineInsertion,
+    #[error("an entity creation command must contain at least one entity")]
+    EmptyBatch,
+    #[error("the entity creation provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("created entity fade-in must end inside its lifetime")]
+    InvalidFade,
+    #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -149,7 +214,311 @@ fn apply_world_uniform_scale(
     };
 }
 
+fn studio_white() -> RgbaColorV1 {
+    RgbaColorV1 {
+        alpha: 1.0,
+        blue: 1.0,
+        green: 1.0,
+        red: 1.0,
+    }
+}
+
+fn studio_shape_appearance() -> SceneAppearanceV1 {
+    SceneAppearanceV1::Vector {
+        fill: None,
+        opacity: 1.0,
+        stroke: Some(StrokeStyleV1 {
+            cap: StrokeCapV1::Butt,
+            color: studio_white(),
+            join: StrokeJoinV1::Miter,
+            miter_limit: 10.0,
+            width_world: 0.04,
+        }),
+    }
+}
+
+fn studio_math_tex_appearance() -> SceneAppearanceV1 {
+    SceneAppearanceV1::Vector {
+        fill: Some(FillStyleV1 {
+            color: studio_white(),
+            rule: FillRuleV1::NonZero,
+        }),
+        opacity: 1.0,
+        stroke: None,
+    }
+}
+
+fn created_geometry_and_appearance(
+    geometry: CreateSceneEntityGeometry,
+) -> (SceneGeometryV1, SceneAppearanceV1, SceneCapabilityV1) {
+    match geometry {
+        CreateSceneEntityGeometry::Circle { radius } => (
+            SceneGeometryV1::Circle {
+                center: PointV1 { x: 0.0, y: 0.0 },
+                radius,
+            },
+            studio_shape_appearance(),
+            SceneCapabilityV1::ShapePrimitives,
+        ),
+        CreateSceneEntityGeometry::Rectangle { height, width } => (
+            SceneGeometryV1::Rectangle {
+                center: PointV1 { x: 0.0, y: 0.0 },
+                corner_radius: 0.0,
+                height,
+                width,
+            },
+            studio_shape_appearance(),
+            SceneCapabilityV1::ShapePrimitives,
+        ),
+        CreateSceneEntityGeometry::MathTex { path } => (
+            SceneGeometryV1::CubicPath { path },
+            studio_math_tex_appearance(),
+            SceneCapabilityV1::CubicPathGeometry,
+        ),
+    }
+}
+
+fn shift_interval_for_insertion(
+    interval: &mut IntervalV1,
+    insertion: &CreateSceneTimelineInsertion,
+) {
+    if interval.start >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+        interval.start += insertion.duration;
+        interval.end += insertion.duration;
+    } else if interval.end > insertion.at {
+        interval.end += insertion.duration;
+    }
+}
+
+fn shift_keyframes_for_insertion<T>(
+    keyframes: &mut [KeyframeV1<T>],
+    insertion: &CreateSceneTimelineInsertion,
+) {
+    for keyframe in keyframes {
+        if keyframe.at >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+            keyframe.at += insertion.duration;
+        }
+    }
+}
+
+fn insert_scene_time(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    insertion: &CreateSceneTimelineInsertion,
+) {
+    for entity in &mut scene.entities {
+        for lifetime in &mut entity.lifetimes {
+            shift_interval_for_insertion(lifetime, insertion);
+        }
+    }
+    for channel in &mut scene.animation_channels {
+        match channel {
+            AnimationChannelV1::AffineTransform { keyframes, .. } => {
+                shift_keyframes_for_insertion(keyframes, insertion);
+            }
+            AnimationChannelV1::Opacity { keyframes, .. }
+            | AnimationChannelV1::PathTrim { keyframes, .. }
+            | AnimationChannelV1::MotionPath { keyframes, .. } => {
+                shift_keyframes_for_insertion(keyframes, insertion);
+            }
+            AnimationChannelV1::PathMorph { keyframes, .. } => {
+                shift_keyframes_for_insertion(keyframes, insertion);
+            }
+            AnimationChannelV1::VectorAppearance { keyframes, .. } => {
+                shift_keyframes_for_insertion(keyframes, insertion);
+            }
+            AnimationChannelV1::Camera { keyframes, .. } => {
+                shift_keyframes_for_insertion(keyframes, insertion);
+            }
+        }
+    }
+    scene.duration += insertion.duration;
+}
+
+fn validate_create_scene_entities_command(
+    session: &EngineSessionV1,
+    command: &CreateSceneEntitiesCommand,
+) -> Result<(), CreateSceneEntitiesError> {
+    if session.scene().source.revision_hash() != command.expected_base_revision {
+        return Err(CreateSceneEntitiesError::StaleBaseRevision);
+    }
+    if command.next_revision == command.expected_base_revision {
+        return Err(CreateSceneEntitiesError::RevisionDidNotAdvance);
+    }
+    let mut duration = session.scene().duration;
+    for insertion in &command.timeline_insertions {
+        if !insertion.at.is_finite()
+            || insertion.at < 0.0
+            || insertion.at > duration
+            || !insertion.duration.is_finite()
+            || insertion.duration < 0.0
+            || !(duration + insertion.duration).is_finite()
+        {
+            return Err(CreateSceneEntitiesError::InvalidTimelineInsertion);
+        }
+        duration += insertion.duration;
+    }
+    if command.entities.is_empty() {
+        return Err(CreateSceneEntitiesError::EmptyBatch);
+    }
+    if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+        return Err(CreateSceneEntitiesError::InvalidProvenanceOrigin);
+    }
+    for entity in &command.entities {
+        if let Some(fade) = &entity.fade_in
+            && (!fade.end.is_finite()
+                || fade.end <= entity.lifetime.start
+                || fade.end > entity.lifetime.end)
+        {
+            return Err(CreateSceneEntitiesError::InvalidFade);
+        }
+    }
+    Ok(())
+}
+
+fn append_created_entity(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    entity: CreateSceneEntity,
+    provenance_id: &str,
+    scene_order: u32,
+    source_z_index: f64,
+    capabilities: &mut BTreeSet<SceneCapabilityV1>,
+) {
+    let (geometry, appearance, capability) = created_geometry_and_appearance(entity.geometry);
+    capabilities.insert(capability);
+    let created_id = entity.id;
+    let lifetime = entity.lifetime;
+    scene.entities.push(SceneEntityV1 {
+        appearance,
+        geometry,
+        id: created_id.clone(),
+        lifetimes: vec![lifetime.clone()],
+        parent_id: None,
+        provenance_id: provenance_id.to_owned(),
+        scene_order,
+        source_z_index,
+        transform: AffineTransformV1 {
+            m11: entity.scale,
+            m12: 0.0,
+            m21: 0.0,
+            m22: entity.scale,
+            tx: entity.position.x,
+            ty: entity.position.y,
+        },
+    });
+    if let Some(fade) = entity.fade_in {
+        capabilities.insert(SceneCapabilityV1::OpacityAnimation);
+        let channel_id_prefix = format!("studio-opacity-{scene_order}");
+        let mut channel_id = channel_id_prefix.clone();
+        let mut suffix = 1_u32;
+        while scene
+            .animation_channels
+            .iter()
+            .any(|channel| channel.id() == channel_id)
+        {
+            channel_id = format!("{channel_id_prefix}-{suffix}");
+            suffix += 1;
+        }
+        scene.animation_channels.push(AnimationChannelV1::Opacity {
+            entity_id: created_id,
+            id: channel_id,
+            keyframes: vec![
+                KeyframeV1 {
+                    at: lifetime.start,
+                    easing_to_next: Some(EasingV1::Smooth {}),
+                    value: 0.0,
+                },
+                KeyframeV1 {
+                    at: fade.end,
+                    easing_to_next: None,
+                    value: 1.0,
+                },
+            ],
+            provenance_id: provenance_id.to_owned(),
+        });
+    }
+}
+
 impl EngineSessionV1 {
+    /// Atomically appends one batch of Studio-created vector entities.
+    ///
+    /// Geometry inputs are local-space authoring facts. This method owns their default Manim
+    /// paint, world transform, paint order, optional fade channel, capabilities, provenance,
+    /// Scene duration, and revision replacement.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene, assets, and retained index.
+    pub fn create_scene_entities(
+        &mut self,
+        command: CreateSceneEntitiesCommand,
+    ) -> Result<SceneIrBundleV1, CreateSceneEntitiesError> {
+        validate_create_scene_entities_command(self, &command)?;
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        let creates_math_tex = command
+            .entities
+            .iter()
+            .any(|entity| matches!(&entity.geometry, CreateSceneEntityGeometry::MathTex { .. }));
+        for insertion in &command.timeline_insertions {
+            insert_scene_time(&mut candidate.scene, insertion);
+        }
+        if creates_math_tex && matches!(candidate.scene.fidelity, FidelityV1::Exact {}) {
+            candidate.scene.fidelity = FidelityV1::Approximate {
+                evidence: vec![
+                    "Studio MathTex uses a browser-compiled outline without exact Manim parity evidence."
+                        .to_owned(),
+                ],
+            };
+        }
+        candidate.scene.provenance.push(command.provenance.clone());
+
+        let first_scene_order = candidate
+            .scene
+            .entities
+            .iter()
+            .map(|entity| entity.scene_order)
+            .max()
+            .map_or(0, |maximum| maximum + 1);
+        let mut source_z_index = candidate
+            .scene
+            .entities
+            .iter()
+            .map(|entity| entity.source_z_index)
+            .fold(-1.0_f64, f64::max)
+            + 1.0;
+        let mut capabilities = candidate
+            .scene
+            .required_capabilities
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+
+        for (scene_order, entity) in (first_scene_order..).zip(command.entities) {
+            append_created_entity(
+                &mut candidate.scene,
+                entity,
+                &command.provenance.id,
+                scene_order,
+                source_z_index,
+                &mut capabilities,
+            );
+            source_z_index += 1.0;
+        }
+        candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
     /// Atomically rotates one root entity about a world-space pivot.
     ///
     /// The command is deliberately independent of source profiles, viewport coordinates, and
@@ -617,6 +986,75 @@ mod tests {
         }
     }
 
+    fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
+        let SceneGeometryV1::CubicPath { path } =
+            fixture_bundle("mathtex-nested-radical-fraction.json")
+                .scene
+                .entities
+                .remove(0)
+                .geometry
+        else {
+            panic!("MathTex fixture must contain cubic-path geometry");
+        };
+        CreateSceneEntitiesCommand {
+            entities: vec![
+                CreateSceneEntity {
+                    fade_in: None,
+                    geometry: CreateSceneEntityGeometry::Circle { radius: 0.75 },
+                    id: "tx:create/entity:circle".to_owned(),
+                    lifetime: IntervalV1 {
+                        end: 2.5,
+                        start: 0.5,
+                    },
+                    position: PointV1 { x: 2.0, y: -1.0 },
+                    scale: 1.25,
+                },
+                CreateSceneEntity {
+                    fade_in: Some(CreateSceneEntityFadeIn { end: 0.9 }),
+                    geometry: CreateSceneEntityGeometry::Rectangle {
+                        height: 2.0,
+                        width: 3.0,
+                    },
+                    id: "tx:create/entity:rectangle".to_owned(),
+                    lifetime: IntervalV1 {
+                        end: 2.5,
+                        start: 0.5,
+                    },
+                    position: PointV1 { x: -2.0, y: 1.0 },
+                    scale: 0.5,
+                },
+                CreateSceneEntity {
+                    fade_in: None,
+                    geometry: CreateSceneEntityGeometry::MathTex { path },
+                    id: "tx:create/entity:mathtex".to_owned(),
+                    lifetime: IntervalV1 {
+                        end: 2.5,
+                        start: 0.5,
+                    },
+                    position: PointV1 { x: 0.0, y: 1.5 },
+                    scale: 2.0,
+                },
+            ],
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio creation batch".to_owned()],
+                id: "studio-create".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+            timeline_insertions: vec![
+                CreateSceneTimelineInsertion {
+                    at: 0.5,
+                    duration: 0.25,
+                },
+                CreateSceneTimelineInsertion {
+                    at: 0.75,
+                    duration: 0.25,
+                },
+            ],
+        }
+    }
+
     fn rejected_transform(
         bundle: SceneIrBundleV1,
         command: TransformSceneEntityCommand,
@@ -760,6 +1198,178 @@ mod tests {
             assert_eq!(session.scene(), &result.scene);
             assert_eq!(session.retained_index_stats().build_count, 2);
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "the command produces exact stored authoring values; one end-to-end assertion covers the atomic batch"
+    )]
+    fn creates_entities_after_applying_timeline_insertions_in_order() {
+        let mut bundle = imported_bundle();
+        let AnimationChannelV1::Opacity { id, .. } = &mut bundle.scene.animation_channels[0] else {
+            panic!("imported fixture must contain an opacity channel");
+        };
+        *id = "studio-opacity-4".to_owned();
+        let original_entities = bundle.scene.entities.clone();
+        let original_assets = bundle.assets.clone();
+        let command = create_command(&bundle);
+        let first_scene_order = bundle
+            .scene
+            .entities
+            .iter()
+            .map(|entity| entity.scene_order)
+            .max()
+            .unwrap()
+            + 1;
+        let first_source_z = bundle
+            .scene
+            .entities
+            .iter()
+            .map(|entity| entity.source_z_index)
+            .fold(-1.0_f64, f64::max)
+            + 1.0;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.create_scene_entities(command.clone()).unwrap();
+
+        assert_eq!(result.assets, original_assets);
+        for (actual, original) in result.scene.entities[..original_entities.len()]
+            .iter()
+            .zip(&original_entities)
+        {
+            let mut expected = original.clone();
+            expected.lifetimes = vec![IntervalV1 {
+                end: 2.5,
+                start: 0.0,
+            }];
+            assert_eq!(actual, &expected);
+        }
+        assert_eq!(result.scene.duration, 2.5);
+        assert!(matches!(
+            &result.scene.fidelity,
+            FidelityV1::Approximate { evidence } if !evidence.is_empty()
+        ));
+        assert!(matches!(
+            &result.scene.animation_channels[0],
+            AnimationChannelV1::Opacity { keyframes, .. }
+                if keyframes[0].at == 0.0 && keyframes[1].at == 2.5
+        ));
+        let created = &result.scene.entities[original_entities.len()..];
+        assert_eq!(created.len(), 3);
+        assert_eq!(
+            created[0].lifetimes,
+            vec![command.entities[0].lifetime.clone()]
+        );
+        assert!(matches!(
+            created[0].geometry,
+            SceneGeometryV1::Circle { radius: 0.75, .. }
+        ));
+        assert!(matches!(
+            created[1].geometry,
+            SceneGeometryV1::Rectangle {
+                height: 2.0,
+                width: 3.0,
+                corner_radius: 0.0,
+                ..
+            }
+        ));
+        assert!(matches!(
+            created[2].geometry,
+            SceneGeometryV1::CubicPath { .. }
+        ));
+        for (entity, (expected_order, expected_z)) in created.iter().zip([
+            (first_scene_order, first_source_z),
+            (first_scene_order + 1, first_source_z + 1.0),
+            (first_scene_order + 2, first_source_z + 2.0),
+        ]) {
+            assert_eq!(entity.parent_id, None);
+            assert_eq!(entity.provenance_id, command.provenance.id);
+            assert_eq!(entity.scene_order, expected_order);
+            assert_eq!(entity.source_z_index, expected_z);
+        }
+        assert_eq!(created[0].transform.m11, 1.25);
+        assert_eq!(created[0].transform.tx, 2.0);
+        assert_eq!(created[0].transform.ty, -1.0);
+        assert!(matches!(
+            created[0].appearance,
+            SceneAppearanceV1::Vector {
+                fill: None,
+                stroke: Some(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            created[2].appearance,
+            SceneAppearanceV1::Vector {
+                fill: Some(_),
+                stroke: None,
+                ..
+            }
+        ));
+        assert!(
+            result
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::Opacity {
+                        entity_id,
+                        id,
+                        keyframes,
+                        provenance_id,
+                        ..
+                    } if entity_id == "tx:create/entity:rectangle"
+                        && id == "studio-opacity-4-1"
+                        && keyframes[0].at == 0.5
+                        && keyframes[0].value == 0.0
+                        && keyframes[1].at == 0.9
+                        && keyframes[1].value == 1.0
+                        && provenance_id == "studio-create"
+                ))
+        );
+        assert!(
+            result
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::CubicPathGeometry)
+        );
+        assert!(
+            result
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::OpacityAnimation)
+        );
+        assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
+        assert_eq!(
+            result.scene.source,
+            SceneSourceV1::StudioEditProgram {
+                edit_program_version: ContractVersionV1,
+                revision_hash: NEXT_REVISION.to_owned(),
+            }
+        );
+        assert_eq!(session.scene(), &result.scene);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn invalid_timeline_insertion_preserves_the_retained_scene() {
+        let bundle = imported_bundle();
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut command = create_command(&bundle);
+        command.timeline_insertions[0].duration = f64::INFINITY;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.create_scene_entities(command),
+            Err(CreateSceneEntitiesError::InvalidTimelineInsertion)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]
