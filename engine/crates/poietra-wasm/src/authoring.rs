@@ -25,27 +25,27 @@ enum UniformScaleSceneEntitySchemaV1 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum SetSubtreeVectorPaintAlphaSchema {
+enum SetSubtreeVectorPaintAlphaSchemaV1 {
     #[serde(rename = "poietra.set-subtree-vector-paint-alpha")]
     SetSubtreeVectorPaintAlpha,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetSubtreeVectorPaintAlphaCommandJson {
+struct SetSubtreeVectorPaintAlphaCommandJsonV1 {
     alpha: f64,
     expected_base_revision: String,
     next_revision: String,
     provenance: ProvenanceRecordV1,
     root_entity_id: String,
     #[serde(rename = "schema")]
-    _schema: SetSubtreeVectorPaintAlphaSchema,
+    _schema: SetSubtreeVectorPaintAlphaSchemaV1,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
 }
 
-impl From<SetSubtreeVectorPaintAlphaCommandJson> for SetSubtreeVectorPaintAlphaCommand {
-    fn from(value: SetSubtreeVectorPaintAlphaCommandJson) -> Self {
+impl From<SetSubtreeVectorPaintAlphaCommandJsonV1> for SetSubtreeVectorPaintAlphaCommand {
+    fn from(value: SetSubtreeVectorPaintAlphaCommandJsonV1) -> Self {
         Self {
             alpha: value.alpha,
             expected_base_revision: value.expected_base_revision,
@@ -229,7 +229,7 @@ fn set_subtree_vector_paint_alpha_json(
     snapshot_json: &[u8],
     command_json: &[u8],
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: SetSubtreeVectorPaintAlphaCommandJson =
+    let command: SetSubtreeVectorPaintAlphaCommandJsonV1 =
         parse_scene_authoring_command("set subtree vector paint alpha", command_json)?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.set_subtree_vector_paint_alpha(command.into())?;

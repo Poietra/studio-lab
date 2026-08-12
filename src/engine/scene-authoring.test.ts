@@ -7,13 +7,13 @@ import {
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
   createUniformScaleSceneEntityCompiler,
-  type MoveSceneEntityCommand,
-  type RotateSceneEntityCommand,
-  type SetSubtreeVectorPaintAlphaCommand,
-  type UniformScaleSceneEntityCommand,
+  type MoveSceneEntityWireCommandV1,
+  type RotateSceneEntityWireCommandV1,
+  type SetSubtreeVectorPaintAlphaWireCommandV1,
+  type UniformScaleSceneEntityWireCommandV1,
 } from "./scene-authoring";
 
-const command: RotateSceneEntityCommand = {
+const command: RotateSceneEntityWireCommandV1 = {
   angleRadians: Math.PI / 6,
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
@@ -28,7 +28,7 @@ const command: RotateSceneEntityCommand = {
   version: 1,
 };
 
-const moveCommand: MoveSceneEntityCommand = {
+const moveCommand: MoveSceneEntityWireCommandV1 = {
   delta: { x: 2.5, y: -1.5 },
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
@@ -42,7 +42,7 @@ const moveCommand: MoveSceneEntityCommand = {
   version: 1,
 };
 
-const uniformScaleCommand: UniformScaleSceneEntityCommand = {
+const uniformScaleCommand: UniformScaleSceneEntityWireCommandV1 = {
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
   factor: 1.5,
@@ -57,7 +57,7 @@ const uniformScaleCommand: UniformScaleSceneEntityCommand = {
   version: 1,
 };
 
-const setSubtreeVectorPaintAlphaCommand: SetSubtreeVectorPaintAlphaCommand = {
+const setSubtreeVectorPaintAlphaCommand: SetSubtreeVectorPaintAlphaWireCommandV1 = {
   alpha: 0.25,
   expectedBaseRevision: "a".repeat(64),
   nextRevision: "e".repeat(64),

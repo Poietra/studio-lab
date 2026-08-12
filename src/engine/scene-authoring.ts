@@ -4,7 +4,7 @@ const POIETRA_ENGINE_ABI_VERSION = 1;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
-export type RotateSceneEntityCommand = Readonly<{
+export type RotateSceneEntityWireCommandV1 = Readonly<{
   angleRadians: number;
   entityId: string;
   expectedBaseRevision: string;
@@ -21,10 +21,10 @@ export type RotateSceneEntityCommand = Readonly<{
 
 export type RotateSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: RotateSceneEntityCommand,
+  command: RotateSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type MoveSceneEntityCommand = Readonly<{
+export type MoveSceneEntityWireCommandV1 = Readonly<{
   delta: Readonly<{ x: number; y: number }>;
   entityId: string;
   expectedBaseRevision: string;
@@ -40,10 +40,10 @@ export type MoveSceneEntityCommand = Readonly<{
 
 export type MoveSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: MoveSceneEntityCommand,
+  command: MoveSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type UniformScaleSceneEntityCommand = Readonly<{
+export type UniformScaleSceneEntityWireCommandV1 = Readonly<{
   entityId: string;
   expectedBaseRevision: string;
   factor: number;
@@ -60,10 +60,10 @@ export type UniformScaleSceneEntityCommand = Readonly<{
 
 export type UniformScaleSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
-  command: UniformScaleSceneEntityCommand,
+  command: UniformScaleSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type SetSubtreeVectorPaintAlphaCommand = Readonly<{
+export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
   alpha: number;
   expectedBaseRevision: string;
   nextRevision: string;
@@ -79,7 +79,7 @@ export type SetSubtreeVectorPaintAlphaCommand = Readonly<{
 
 export type SetSubtreeVectorPaintAlphaCompiler = (
   snapshot: SceneIrBundleV1,
-  command: SetSubtreeVectorPaintAlphaCommand,
+  command: SetSubtreeVectorPaintAlphaWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 type RotateSceneAuthoringBindingsV1 = Readonly<{
