@@ -13,6 +13,7 @@ import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixture
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
+import type { MoveSceneEntityCompiler, MoveSceneEntityWireCommandV1 } from "../engine/scene-authoring";
 import { createSceneIrDeltaV1 } from "../engine/scene-delta";
 import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -356,6 +357,88 @@ async function linePreviewInput() {
         ["line", { bindingId: "binding:line", entityId: "runtime-line", sourceName: "line" }],
       ]),
     },
+  };
+}
+
+async function editedStaticRootPreviewInput(
+  input: Readonly<{
+    capturedPlayhead?: number;
+    origin?: "direct-manipulation" | "studio-default";
+    target?: Readonly<{ x: number; y: number }>;
+  }> = {},
+) {
+  const base = await compilablePreviewInput();
+  const capturedPlayhead = input.capturedPlayhead ?? 0;
+  const origin = input.origin ?? "direct-manipulation";
+  const target = input.target ?? { x: 384, y: 144 };
+  const context = base.snapshot.correlation.context;
+  const sceneId = `${context.sourcePath}#${context.sceneName}`;
+  const workingBase: WorkingState = {
+    ...base.proposedState.base,
+    editorContext: {
+      ...base.proposedState.base.editorContext,
+      activeSceneId: sceneId,
+      playhead: capturedPlayhead,
+    },
+    runtimeSceneState: { ...base.proposedState.base.runtimeSceneState, sceneId },
+  };
+  const validation =
+    origin === "studio-default"
+      ? createInspectorEntityEditProgram({
+          capturedPlayhead,
+          edits: { position: target },
+          entityId: "source:circle",
+          from: { position: { x: 320, y: 180 }, scale: 1 },
+          scene: workingBase.runtimeSceneState,
+          transactionId: "inspector-move-imported-root",
+        })
+      : createDirectManipulationPositionProgram({
+          capturedPlayhead,
+          delta: { x: target.x - 320, y: target.y - 180 },
+          positions: { "source:circle": { x: 320, y: 180 } },
+          scene: workingBase.runtimeSceneState,
+          start: capturedPlayhead,
+          targetEntityIds: ["source:circle"],
+          transactionId: "move-imported-root",
+        });
+  if (validation.kind !== "valid") {
+    throw new Error(`Imported root move fixture is invalid: ${JSON.stringify(validation.issues)}`);
+  }
+  const record = programRecord(validation.program, validation);
+  return {
+    ...base,
+    operationId: validation.program.operations[0]?.id,
+    programRecord: record,
+    proposedState: evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [record],
+    }),
+    workingRevision: canonicalEditorWorkingRevision({
+      appliedPrograms: [record],
+      draftProgram: null,
+      editingAppliedProgram: null,
+      redoPrograms: [],
+    }),
+    workspaceKey: studioPreviewWorkspaceKeyV1(context),
+  };
+}
+
+function recordingMoveCompiler(calls: MoveSceneEntityWireCommandV1[]): MoveSceneEntityCompiler {
+  return async (bundle, command) => {
+    calls.push(command);
+    const unmappedEntity = bundle.scene.entities[0];
+    return await parseVerifiedSceneIrBundleV1({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        entities: [
+          ...bundle.scene.entities,
+          ...(unmappedEntity
+            ? [{ ...unmappedEntity, id: "runtime-unmapped", sceneOrder: unmappedEntity.sceneOrder + 1 }]
+            : []),
+        ],
+      },
+    });
   };
 }
 
@@ -1912,6 +1995,192 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.engineRevisionHash).toBe(snapshot.correlation.engineRevisionHash);
     expect(result.scene.bundle.scene.entities[0]?.geometry.kind).toBe("line");
     expect(result.scene.interactionEntityIds).toEqual(["runtime-line"]);
+  });
+
+  it.each(["direct-manipulation", "studio-default"] as const)(
+    "routes one imported static root move from %s through the canonical Rust command",
+    async (origin) => {
+      const frame = { height: 9, width: 16 } as const;
+      const { operationId, proposedState, snapshot, workingRevision, workspaceKey } =
+        await editedStaticRootPreviewInput({ origin });
+      if (!operationId) throw new Error("Imported root move lost its operation identity.");
+      const commands: MoveSceneEntityWireCommandV1[] = [];
+      const result = await compileStudioPreviewSceneV1({
+        frame,
+        moveCompiler: recordingMoveCompiler(commands),
+        proposedState,
+        snapshot,
+        workingRevision,
+        workspaceKey,
+      });
+
+      if (result.kind !== "compiled") throw new Error(result.error);
+      expect(commands).toHaveLength(1);
+      const command = commands[0];
+      if (!command) throw new Error("Imported root move did not reach the Rust compiler boundary.");
+      expect(command).toMatchObject({
+        entityId: "earlier",
+        expectedBaseRevision: snapshot.correlation.engineRevisionHash,
+        nextRevision: result.scene.engineRevisionHash,
+        provenance: {
+          evidence: [
+            "Studio t=0 position request projected onto one verified static imported root",
+            `authorized operation ${operationId}`,
+          ],
+          id: `studio-static-move:${result.scene.engineRevisionHash}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.move-scene-entity",
+        version: 1,
+      });
+      expect(command.delta.x).toBeCloseTo(1.6, 12);
+      expect(command.delta.y).toBeCloseTo(0.9, 12);
+      expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toEqual(["earlier", "runtime-unmapped"]);
+      expect(result.scene.interactionEntityIds).toEqual(["earlier"]);
+    },
+  );
+
+  it("fails closed before Rust compilation when a static imported move loses exact authority", async () => {
+    const direct = await editedStaticRootPreviewInput();
+    const nonzeroTime = await editedStaticRootPreviewInput({ capturedPlayhead: 0.5 });
+    const zeroMove = await editedStaticRootPreviewInput({ target: { x: 320, y: 180 } });
+    const baseRuntimeState = direct.proposedState.base.runtimeSceneState;
+    const baseCircle = baseRuntimeState.objectGraph.entities["source:circle"];
+    if (!baseCircle?.geometry) throw new Error("Imported root base geometry is missing.");
+    const cases: readonly Readonly<{
+      name: string;
+      proposedState: ProposedState;
+      snapshot: StudioVerifiedPreviewSnapshotV1;
+      workingRevision: string;
+      workspaceKey: string;
+    }>[] = [
+      {
+        name: "nonzero source time",
+        proposedState: nonzeroTime.proposedState,
+        snapshot: nonzeroTime.snapshot,
+        workingRevision: nonzeroTime.workingRevision,
+        workspaceKey: nonzeroTime.workspaceKey,
+      },
+      {
+        name: "multiple Programs",
+        proposedState: {
+          ...direct.proposedState,
+          programs: [...direct.proposedState.programs, direct.programRecord],
+        },
+        snapshot: direct.snapshot,
+        workingRevision: canonicalEditorWorkingRevision({
+          appliedPrograms: [direct.programRecord, direct.programRecord],
+          draftProgram: null,
+          editingAppliedProgram: null,
+          redoPrograms: [],
+        }),
+        workspaceKey: direct.workspaceKey,
+      },
+      {
+        name: "missing source/runtime identity",
+        proposedState: direct.proposedState,
+        snapshot: { ...direct.snapshot, sourceRuntimeIdentity: null },
+        workingRevision: direct.workingRevision,
+        workspaceKey: direct.workspaceKey,
+      },
+      {
+        name: "child runtime entity",
+        proposedState: direct.proposedState,
+        snapshot: {
+          ...direct.snapshot,
+          snapshot: {
+            ...direct.snapshot.snapshot,
+            scene: {
+              ...direct.snapshot.snapshot.scene,
+              entities: direct.snapshot.snapshot.scene.entities.map((entity) =>
+                entity.id === "earlier" ? { ...entity, parentId: "runtime-parent" } : entity,
+              ),
+            },
+          },
+        },
+        workingRevision: direct.workingRevision,
+        workspaceKey: direct.workspaceKey,
+      },
+      {
+        name: "verified animation channel",
+        proposedState: direct.proposedState,
+        snapshot: {
+          ...direct.snapshot,
+          snapshot: {
+            ...direct.snapshot.snapshot,
+            scene: {
+              ...direct.snapshot.snapshot.scene,
+              animationChannels: [
+                {
+                  entityId: "earlier",
+                  id: "opacity:earlier",
+                  keyframes: [
+                    { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
+                    { at: 2, easingToNext: null, value: 1 },
+                  ],
+                  kind: "opacity",
+                  provenanceId: "verified-source-fade",
+                },
+              ],
+            },
+          },
+        },
+        workingRevision: direct.workingRevision,
+        workspaceKey: direct.workspaceKey,
+      },
+      {
+        name: "unknown base position",
+        proposedState: {
+          ...direct.proposedState,
+          base: {
+            ...direct.proposedState.base,
+            runtimeSceneState: {
+              ...baseRuntimeState,
+              objectGraph: {
+                ...baseRuntimeState.objectGraph,
+                entities: {
+                  ...baseRuntimeState.objectGraph.entities,
+                  "source:circle": {
+                    ...baseCircle,
+                    geometry: {
+                      ...baseCircle.geometry,
+                      position: { kind: "unknown", reason: "Position depends on runtime Python." },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        snapshot: direct.snapshot,
+        workingRevision: direct.workingRevision,
+        workspaceKey: direct.workspaceKey,
+      },
+      {
+        name: "zero displacement",
+        proposedState: zeroMove.proposedState,
+        snapshot: zeroMove.snapshot,
+        workingRevision: zeroMove.workingRevision,
+        workspaceKey: zeroMove.workspaceKey,
+      },
+    ];
+
+    for (const testCase of cases) {
+      let compilerCalls = 0;
+      const result = await compileStudioPreviewSceneV1({
+        frame: { height: 9, width: 16 },
+        moveCompiler: async () => {
+          compilerCalls += 1;
+          throw new Error(`Rust compiler must not run for ${testCase.name}.`);
+        },
+        proposedState: testCase.proposedState,
+        snapshot: testCase.snapshot,
+        workingRevision: testCase.workingRevision,
+        workspaceKey: testCase.workspaceKey,
+      });
+      expect(result, testCase.name).toMatchObject({ kind: "unsupported" });
+      expect(compilerCalls, testCase.name).toBe(0);
+    }
   });
 
   it("restores the exact verified snapshot after undo returns to zero applied Programs", async () => {
