@@ -6,7 +6,11 @@ import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-t
 import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import type { MoveSceneEntityCompilerV1, RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
+import type {
+  MoveSceneEntityCompilerV1,
+  RotateSceneEntityCompilerV1,
+  UniformScaleSceneEntityCompilerV1,
+} from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
@@ -27,7 +31,6 @@ import {
 import {
   compileStudioPreviewGenericInitialEditV1,
   compileStudioPreviewTemporalRebaseV1,
-  conjugateUniformScaleAboutCenterV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
   studioPreviewGenericInitialEditAuthorityCandidatesV1,
@@ -1461,31 +1464,70 @@ describe("generic Runtime Trace V3 initial move", () => {
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || !child) throw new Error("Generic V3 fixture lost its root hierarchy.");
+    const operationId = proposedState.programs[0]?.program.operations[0]?.id;
+    if (!operationId) throw new Error("Generic V3 resize fixture lost its authorized operation.");
+    const coreTransform = { ...root.transform, m22: root.transform.m22 + 0.25 };
+    const commands: Parameters<UniformScaleSceneEntityCompilerV1>[1][] = [];
+    const uniformScaleCompiler: UniformScaleSceneEntityCompilerV1 = async (bundle, command) => {
+      commands.push(command);
+      return await parseVerifiedSceneIrBundleV1({
+        ...bundle,
+        scene: {
+          ...bundle.scene,
+          entities: bundle.scene.entities.map((entity) =>
+            entity.id === command.entityId
+              ? { ...entity, provenanceId: command.provenance.id, transform: coreTransform }
+              : entity,
+          ),
+          provenance: [...bundle.scene.provenance, command.provenance],
+          source: {
+            editProgramVersion: 1,
+            kind: "studio-edit-program",
+            revisionHash: command.nextRevision,
+          },
+        },
+      });
+    };
     const result = await compileStudioPreviewGenericInitialEditV1({
       frame: FRAME,
       proposedState,
       snapshot,
       sourceRevisionHash: "8".repeat(64),
+      uniformScaleCompiler,
     });
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
     const scaledRoot = result.scene.entities.find(({ id }) => id === root.id);
     const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
-    // The fixture's initial center is the Scene origin, so the conjugated
-    // scale multiplies the whole transform without moving the placement.
-    expect(scaledRoot?.transform.m11).toBeCloseTo(root.transform.m11 * 1.5, 12);
-    expect(scaledRoot?.transform.m12).toBeCloseTo(root.transform.m12 * 1.5, 12);
-    expect(scaledRoot?.transform.m21).toBeCloseTo(root.transform.m21 * 1.5, 12);
-    expect(scaledRoot?.transform.m22).toBeCloseTo(root.transform.m22 * 1.5, 12);
-    expect(scaledRoot?.transform.tx).toBeCloseTo(root.transform.tx * 1.5, 12);
-    expect(scaledRoot?.transform.ty).toBeCloseTo(root.transform.ty * 1.5, 12);
+    expect(scaledRoot?.transform).toEqual(coreTransform);
     expect(retainedChild).toEqual(child);
     expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-resize:${"8".repeat(64)}`);
+    expect(commands).toEqual([
+      {
+        entityId: root.id,
+        expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+        factor: 1.5,
+        nextRevision: "8".repeat(64),
+        pivot: { x: 0, y: 0 },
+        provenance: {
+          evidence: [
+            "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root",
+            `source binding ${candidate.bindingId}`,
+            `authorized operation ${operationId}`,
+          ],
+          id: `studio-generic-v3-initial-resize:${"8".repeat(64)}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.uniform-scale-scene-entity",
+        version: 1,
+      },
+    ]);
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: FRAME,
       proposedState,
       snapshot,
+      uniformScaleCompiler,
       workingRevision: "generic-v3-initial-resize-revision",
       workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
     });
@@ -1562,25 +1604,6 @@ describe("generic Runtime Trace V3 initial move", () => {
         version: 1,
       },
     ]);
-  });
-});
-
-describe("conjugateUniformScaleAboutCenterV1", () => {
-  it("keeps the center's image invariant while scaling the linear part", () => {
-    const transform = { m11: 2, m12: 0.5, m21: -0.25, m22: 1.5, tx: 3, ty: -2 };
-
-    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 1, y: -0.5 }, 1.5)).toEqual({
-      m11: 3,
-      m12: 0.75,
-      m21: -0.375,
-      m22: 2.25,
-      tx: 4,
-      ty: -2.75,
-    });
-    // Scaling about the placement itself leaves the translation fixed.
-    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 3, y: -2 }, 2)).toMatchObject({ tx: 3, ty: -2 });
-    // Shrinking pulls an offset placement toward the center.
-    expect(conjugateUniformScaleAboutCenterV1(transform, { x: 0, y: 0 }, 0.5)).toMatchObject({ tx: 1.5, ty: -1 });
   });
 });
 

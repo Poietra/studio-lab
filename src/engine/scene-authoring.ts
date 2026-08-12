@@ -43,6 +43,26 @@ export type MoveSceneEntityCompilerV1 = (
   command: MoveSceneEntityCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+export type UniformScaleSceneEntityCommandV1 = Readonly<{
+  entityId: string;
+  expectedBaseRevision: string;
+  factor: number;
+  nextRevision: string;
+  pivot: Readonly<{ x: number; y: number }>;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.uniform-scale-scene-entity";
+  version: 1;
+}>;
+
+export type UniformScaleSceneEntityCompilerV1 = (
+  snapshot: SceneIrBundleV1,
+  command: UniformScaleSceneEntityCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 type RotateSceneAuthoringBindingsV1 = Readonly<{
   rotateSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -51,7 +71,13 @@ type MoveSceneAuthoringBindingsV1 = Readonly<{
   moveSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type SceneAuthoringBindingsV1 = MoveSceneAuthoringBindingsV1 & RotateSceneAuthoringBindingsV1;
+type UniformScaleSceneAuthoringBindingsV1 = Readonly<{
+  uniformScaleSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
+type SceneAuthoringBindingsV1 = MoveSceneAuthoringBindingsV1 &
+  RotateSceneAuthoringBindingsV1 &
+  UniformScaleSceneAuthoringBindingsV1;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null;
@@ -75,13 +101,16 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.poietraEngineAbiVersion !== "function" ||
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
       typeof candidate.moveSceneEntityV1 !== "function" ||
-      typeof candidate.rotateSceneEntityV1 !== "function"
+      typeof candidate.rotateSceneEntityV1 !== "function" ||
+      typeof candidate.uniformScaleSceneEntityV1 !== "function"
     ) {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
     }
     return {
       moveSceneEntityV1: candidate.moveSceneEntityV1 as SceneAuthoringBindingsV1["moveSceneEntityV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
+      uniformScaleSceneEntityV1:
+        candidate.uniformScaleSceneEntityV1 as SceneAuthoringBindingsV1["uniformScaleSceneEntityV1"],
     };
   })();
   bindingsPromise = pending;
@@ -117,5 +146,16 @@ export function createMoveSceneEntityCompilerV1(
   };
 }
 
+/** Creates the browser adapter around one concrete, profile-free Rust command. */
+export function createUniformScaleSceneEntityCompilerV1(
+  getBindings: () => Promise<UniformScaleSceneAuthoringBindingsV1>,
+): UniformScaleSceneEntityCompilerV1 {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommandV1(snapshot, command, bindings.uniformScaleSceneEntityV1);
+  };
+}
+
 export const compileRotateSceneEntityV1 = createRotateSceneEntityCompilerV1(loadBindings);
 export const compileMoveSceneEntityV1 = createMoveSceneEntityCompilerV1(loadBindings);
+export const compileUniformScaleSceneEntityV1 = createUniformScaleSceneEntityCompilerV1(loadBindings);

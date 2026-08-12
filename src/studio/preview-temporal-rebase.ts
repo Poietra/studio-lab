@@ -1,8 +1,10 @@
 import {
   compileMoveSceneEntityV1,
   compileRotateSceneEntityV1,
+  compileUniformScaleSceneEntityV1,
   type MoveSceneEntityCompilerV1,
   type RotateSceneEntityCompilerV1,
+  type UniformScaleSceneEntityCompilerV1,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
@@ -1500,26 +1502,6 @@ function planInitialTransformEdit(
 }
 
 /**
- * Composes a uniform scale about a fixed center with an existing entity
- * transform, keeping the center's image invariant while every descendant
- * scales with the linear part.
- */
-export function conjugateUniformScaleAboutCenterV1(
-  transform: SceneEntityV1["transform"],
-  center: Point,
-  factor: number,
-): SceneEntityV1["transform"] {
-  return {
-    m11: transform.m11 * factor,
-    m12: transform.m12 * factor,
-    m21: transform.m21 * factor,
-    m22: transform.m22 * factor,
-    tx: center.x + (transform.tx - center.x) * factor,
-    ty: center.y + (transform.ty - center.y) * factor,
-  };
-}
-
-/**
  * Reprojects one authorized t=0 transform or absolute paint opacity onto the
  * verified generic V3 hierarchy. Transform edits stay on the root group;
  * opacity edits preserve every descendant paint style except color alpha.
@@ -1532,6 +1514,7 @@ export async function compileStudioPreviewGenericInitialEditV1(
     rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
+    uniformScaleCompiler?: UniformScaleSceneEntityCompilerV1;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResultV1> {
   const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(input.snapshot);
@@ -1671,27 +1654,26 @@ export async function compileStudioPreviewGenericInitialEditV1(
         );
       }
     }
-    // Conjugate the uniform scale about the verified initial center so the
-    // root keeps its placement while every descendant scales with it.
-    const editedTransform: SceneEntityV1["transform"] = conjugateUniformScaleAboutCenterV1(
-      target.transform,
-      baseCenter,
-      edit.scaleFactor,
-    );
-    if (
-      ![
-        editedTransform.m11,
-        editedTransform.m12,
-        editedTransform.m21,
-        editedTransform.m22,
-        editedTransform.tx,
-        editedTransform.ty,
-      ].every(Number.isFinite)
-    ) {
-      return unsupported("geometry-edit-unsupported", "The generic Runtime Trace root transform is not finite.");
+    try {
+      const rebased = await (input.uniformScaleCompiler ?? compileUniformScaleSceneEntityV1)(input.snapshot.snapshot, {
+        entityId: target.id,
+        expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+        factor: edit.scaleFactor,
+        nextRevision: input.sourceRevisionHash,
+        pivot: baseCenter,
+        provenance,
+        schema: "poietra.uniform-scale-scene-entity",
+        version: 1,
+      });
+      return { kind: "rebased", scene: rebased.scene };
+    } catch (error) {
+      return unsupported(
+        "geometry-edit-unsupported",
+        `Rust core rejected the generic Runtime Trace uniform resize: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+      );
     }
-    const editedEntity: SceneEntityV1 = { ...target, provenanceId, transform: editedTransform };
-    entities = scene.entities.map((entity, index) => (index === targetIndex ? editedEntity : entity));
   }
   const rebased: SceneIrV1 = {
     ...scene,

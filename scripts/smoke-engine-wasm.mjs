@@ -13,6 +13,7 @@ assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.moveSceneEntityV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
+assert.equal(typeof engine.uniformScaleSceneEntityV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.applySceneDelta, "function");
@@ -108,6 +109,38 @@ assert.equal(movedEntity.transform.tx, 1.25);
 assert.equal(movedEntity.transform.ty, -0.5);
 assert.equal(movedEntity.provenanceId, "wasm-smoke-move");
 assert.equal(movedBundle.scene.source.revisionHash, "c".repeat(64));
+
+const scaledBundle = JSON.parse(
+  new TextDecoder("utf-8", { fatal: true }).decode(
+    engine.uniformScaleSceneEntityV1(
+      snapshot,
+      encoder.encode(
+        JSON.stringify({
+          entityId: "later",
+          expectedBaseRevision: "a".repeat(64),
+          factor: 1.5,
+          nextRevision: "d".repeat(64),
+          pivot: { x: 1, y: -0.5 },
+          provenance: {
+            evidence: ["engine WASM smoke uniform scale"],
+            id: "wasm-smoke-uniform-scale",
+            origin: "studio-edit-program",
+          },
+          schema: "poietra.uniform-scale-scene-entity",
+          version: 1,
+        }),
+      ),
+    ),
+  ),
+);
+const scaledEntity = scaledBundle.scene.entities.find(({ id }) => id === "later");
+assert.ok(scaledEntity, "uniform-scale response lost its target");
+assert.equal(scaledEntity.transform.m11, 1.5);
+assert.equal(scaledEntity.transform.m22, 1.5);
+assert.equal(scaledEntity.transform.tx, -0.5);
+assert.equal(scaledEntity.transform.ty, 0.25);
+assert.equal(scaledEntity.provenanceId, "wasm-smoke-uniform-scale");
+assert.equal(scaledBundle.scene.source.revisionHash, "d".repeat(64));
 
 const gzipBytes = gzipSync(Buffer.concat([glueBytes, wasmBytes])).byteLength;
 assert.ok(gzipBytes <= 3 * 1024 * 1024, "compressed engine payload exceeds the adoption budget");
