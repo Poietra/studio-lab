@@ -62,6 +62,12 @@ export type CreateSceneEntitiesWireCommandV1 = Readonly<{
     }>;
     geometry: CreateSceneEntityGeometryV1;
     id: string;
+    instantTransform?: Readonly<{
+      at: number;
+      position: Readonly<{ x: number; y: number }>;
+      scaleX: number;
+      scaleY: number;
+    }>;
     lifetime: Readonly<{ end: number; start: number }>;
     position: Readonly<{ x: number; y: number }>;
     scale: number;

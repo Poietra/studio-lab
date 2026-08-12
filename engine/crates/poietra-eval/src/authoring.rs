@@ -26,6 +26,15 @@ pub struct CreateSceneEntityFadeIn {
     pub end: f64,
 }
 
+/// One absolute Studio transform that becomes active at an exact Scene time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneEntityInstantTransform {
+    pub at: f64,
+    pub position: PointV1,
+    pub scale_x: f64,
+    pub scale_y: f64,
+}
+
 /// One entity within an atomic Studio creation batch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CreateSceneEntity {
@@ -35,6 +44,7 @@ pub struct CreateSceneEntity {
     pub lifetime: IntervalV1,
     pub position: PointV1,
     pub scale: f64,
+    pub instant_transform: Option<CreateSceneEntityInstantTransform>,
 }
 
 /// One insertion into the existing Scene timeline before created entities are appended.
@@ -107,6 +117,8 @@ pub enum CreateSceneEntitiesError {
     InvalidProvenanceOrigin,
     #[error("created entity fade-in must end inside its lifetime")]
     InvalidFade,
+    #[error("a created entity instant transform must be finite, positive, and inside its lifetime")]
+    InvalidInstantTransform,
     #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
 }
@@ -371,8 +383,35 @@ fn validate_create_scene_entities_command(
         {
             return Err(CreateSceneEntitiesError::InvalidFade);
         }
+        if let Some(step) = &entity.instant_transform
+            && (!step.at.is_finite()
+                || step.at <= entity.lifetime.start
+                || step.at >= entity.lifetime.end
+                || !step.position.x.is_finite()
+                || !step.position.y.is_finite()
+                || !step.scale_x.is_finite()
+                || step.scale_x <= 0.0
+                || !step.scale_y.is_finite()
+                || step.scale_y <= 0.0)
+        {
+            return Err(CreateSceneEntitiesError::InvalidInstantTransform);
+        }
     }
     Ok(())
+}
+
+fn unused_channel_id(scene: &poietra_scene_ir::SceneIrV1, prefix: &str) -> String {
+    let mut candidate = prefix.to_owned();
+    let mut suffix = 1_u32;
+    while scene
+        .animation_channels
+        .iter()
+        .any(|channel| channel.id() == candidate)
+    {
+        candidate = format!("{prefix}-{suffix}");
+        suffix += 1;
+    }
+    candidate
 }
 
 fn append_created_entity(
@@ -387,6 +426,14 @@ fn append_created_entity(
     capabilities.insert(capability);
     let created_id = entity.id;
     let lifetime = entity.lifetime;
+    let base_transform = AffineTransformV1 {
+        m11: entity.scale,
+        m12: 0.0,
+        m21: 0.0,
+        m22: entity.scale,
+        tx: entity.position.x,
+        ty: entity.position.y,
+    };
     scene.entities.push(SceneEntityV1 {
         appearance,
         geometry,
@@ -396,30 +443,14 @@ fn append_created_entity(
         provenance_id: provenance_id.to_owned(),
         scene_order,
         source_z_index,
-        transform: AffineTransformV1 {
-            m11: entity.scale,
-            m12: 0.0,
-            m21: 0.0,
-            m22: entity.scale,
-            tx: entity.position.x,
-            ty: entity.position.y,
-        },
+        transform: base_transform,
     });
     if let Some(fade) = entity.fade_in {
         capabilities.insert(SceneCapabilityV1::OpacityAnimation);
         let channel_id_prefix = format!("studio-opacity-{scene_order}");
-        let mut channel_id = channel_id_prefix.clone();
-        let mut suffix = 1_u32;
-        while scene
-            .animation_channels
-            .iter()
-            .any(|channel| channel.id() == channel_id)
-        {
-            channel_id = format!("{channel_id_prefix}-{suffix}");
-            suffix += 1;
-        }
+        let channel_id = unused_channel_id(scene, &channel_id_prefix);
         scene.animation_channels.push(AnimationChannelV1::Opacity {
-            entity_id: created_id,
+            entity_id: created_id.clone(),
             id: channel_id,
             keyframes: vec![
                 KeyframeV1 {
@@ -435,6 +466,38 @@ fn append_created_entity(
             ],
             provenance_id: provenance_id.to_owned(),
         });
+    }
+    if let Some(step) = entity.instant_transform {
+        capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
+        let value = AffineTransformV1 {
+            m11: step.scale_x,
+            m12: 0.0,
+            m21: 0.0,
+            m22: step.scale_y,
+            tx: step.position.x,
+            ty: step.position.y,
+        };
+        let keyframes = vec![
+            KeyframeV1 {
+                at: step.at,
+                easing_to_next: Some(EasingV1::Linear {}),
+                value: value.clone(),
+            },
+            KeyframeV1 {
+                at: lifetime.end,
+                easing_to_next: None,
+                value,
+            },
+        ];
+        let channel_id = unused_channel_id(scene, &format!("studio-transform-{scene_order}"));
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: created_id,
+                id: channel_id,
+                keyframes,
+                provenance_id: provenance_id.to_owned(),
+            });
     }
 }
 
@@ -1008,6 +1071,7 @@ mod tests {
                     },
                     position: PointV1 { x: 2.0, y: -1.0 },
                     scale: 1.25,
+                    instant_transform: None,
                 },
                 CreateSceneEntity {
                     fade_in: Some(CreateSceneEntityFadeIn { end: 0.9 }),
@@ -1022,6 +1086,12 @@ mod tests {
                     },
                     position: PointV1 { x: -2.0, y: 1.0 },
                     scale: 0.5,
+                    instant_transform: Some(CreateSceneEntityInstantTransform {
+                        at: 1.25,
+                        position: PointV1 { x: -1.0, y: 0.5 },
+                        scale_x: 0.75,
+                        scale_y: 1.0,
+                    }),
                 },
                 CreateSceneEntity {
                     fade_in: None,
@@ -1033,6 +1103,7 @@ mod tests {
                     },
                     position: PointV1 { x: 0.0, y: 1.5 },
                     scale: 2.0,
+                    instant_transform: None,
                 },
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
@@ -1333,6 +1404,26 @@ mod tests {
         assert!(
             result
                 .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::AffineTransform {
+                        entity_id,
+                        keyframes,
+                        ..
+                    } if entity_id == "tx:create/entity:rectangle"
+                        && keyframes[0].at == 1.25
+                        && keyframes[0].value.tx == -1.0
+                        && keyframes[0].value.m11 == 0.75
+                        && keyframes[0].value.m22 == 1.0
+                        && keyframes[1].at == 2.5
+                        && keyframes[1].value == keyframes[0].value
+                ))
+        );
+        assert!(
+            result
+                .scene
                 .required_capabilities
                 .contains(&SceneCapabilityV1::CubicPathGeometry)
         );
@@ -1341,6 +1432,12 @@ mod tests {
                 .scene
                 .required_capabilities
                 .contains(&SceneCapabilityV1::OpacityAnimation)
+        );
+        assert!(
+            result
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::AffineTransformAnimation)
         );
         assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
         assert_eq!(
@@ -1352,6 +1449,37 @@ mod tests {
         );
         assert_eq!(session.scene(), &result.scene);
         assert_eq!(session.retained_index_stats().build_count, 2);
+
+        let sample_transform = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "instant-transform-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            let draw = packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "tx:create/entity:rectangle")
+                .unwrap();
+            match draw {
+                poietra_scene_ir::RenderDrawV1::Path { transform, .. } => transform.clone(),
+                _ => panic!("created rectangle must remain a path draw"),
+            }
+        };
+        let before = sample_transform(1.249_999);
+        assert_eq!(
+            (before.m11, before.m22, before.tx, before.ty),
+            (0.5, 0.5, -2.0, 1.0)
+        );
+        let at = sample_transform(1.25);
+        assert_eq!((at.m11, at.m22, at.tx, at.ty), (0.75, 1.0, -1.0, 0.5));
+        assert_eq!(sample_transform(2.0), at);
     }
 
     #[test]
@@ -1369,6 +1497,23 @@ mod tests {
         ));
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    fn invalid_instant_transform_preserves_the_retained_scene() {
+        let bundle = imported_bundle();
+        let expected_scene = bundle.scene.clone();
+        let mut command = create_command(&bundle);
+        let lifetime_start = command.entities[1].lifetime.start;
+        command.entities[1].instant_transform.as_mut().unwrap().at = lifetime_start;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.create_scene_entities(command),
+            Err(CreateSceneEntitiesError::InvalidInstantTransform)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.retained_index_stats().build_count, 1);
     }
 

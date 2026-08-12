@@ -1392,8 +1392,23 @@ type StudioCreatedEntityEntry = Readonly<{
   create: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>;
   entity: RuntimeSceneState["objectGraph"]["entities"][string];
   fadeIn?: Extract<CanonicalEditOperation, { kind: "ChangePresence" }>;
+  instantTransform?: Readonly<{
+    at: number;
+    position: Point;
+    scaleX: number;
+    scaleY: number;
+  }>;
   position: Extract<CanonicalEditOperation, { kind: "SetProperty" }> & Readonly<{ key: "position"; value: Point }>;
 }>;
+
+type StudioCreatedEntityAuthoringState = {
+  dimensions?: EntityDimensions;
+  initialDimensions?: EntityDimensions;
+  instantAt?: number;
+  position: Point;
+  scale: number;
+  type: "Circle" | "MathTex" | "Rectangle";
+};
 
 type StudioCreatedEntityPlan =
   | Readonly<{ kind: "not-applicable" }>
@@ -1406,10 +1421,26 @@ type StudioCreatedEntityPlan =
       timelineInsertions: readonly Readonly<{ at: number; duration: number }>[];
     }>;
 
+function evaluatedOperationStart(scene: RuntimeSceneState, operationId: string) {
+  const events = scene.eventTrack.events.filter((event) => event.operationId === operationId);
+  const interval = events.length === 1 ? events[0]?.interval : undefined;
+  return interval && interval.start === interval.end && Number.isFinite(interval.start) ? interval.start : null;
+}
+
 function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedEntityPlan {
   const createPrograms = proposedState.programs
     .map((record, index) => ({ index, record }))
     .filter(({ record }) => record.program.operations.some(({ kind }) => kind === "CreateEntity"))
+    .sort(
+      (left, right) =>
+        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
+        left.index - right.index,
+    )
+    .map(({ record }) => record);
+  const createProgramSet = new Set(createPrograms);
+  const followupPrograms = proposedState.programs
+    .map((record, index) => ({ index, record }))
+    .filter(({ record }) => !createProgramSet.has(record))
     .sort(
       (left, right) =>
         left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
@@ -1423,13 +1454,6 @@ function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedE
   if (proposedState.programs.some(({ validation }) => validation.status !== "valid")) {
     return { kind: "unsupported", message: "Studio creation requires only validated edit Programs." };
   }
-  if (createPrograms.length !== proposedState.programs.length) {
-    return {
-      kind: "unsupported",
-      message: "Studio creation cannot yet be combined with a later move, resize, or other edit Program.",
-    };
-  }
-
   const createdIds = new Set(createRecords.map(({ create }) => create.entity.id));
   if (createdIds.size !== createRecords.length) {
     return { kind: "unsupported", message: "Studio creation contains duplicate entity identities." };
@@ -1478,6 +1502,7 @@ function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedE
       (evaluatedOrder.get(right.create.entity.id) ?? Infinity),
   );
   const entities: StudioCreatedEntityEntry[] = [];
+  const authoringState = new Map<string, StudioCreatedEntityAuthoringState>();
   for (const { create, record } of orderedCreates) {
     const entity = proposedState.evaluatedScene.objectGraph.entities[create.entity.id];
     const positions = record.program.operations.filter(
@@ -1529,6 +1554,54 @@ function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedE
       return { kind: "unsupported", message: `Studio-created entity ${create.entity.id} has invalid dimensions.` };
     }
     entities.push({ create, entity, ...(fades[0] ? { fadeIn: fades[0] } : {}), position: positions[0] });
+    authoringState.set(create.entity.id, {
+      dimensions: create.entity.dimensions,
+      initialDimensions: create.entity.dimensions,
+      position: positions[0].value,
+      scale: 1,
+      type: create.entity.type as StudioCreatedEntityAuthoringState["type"],
+    });
+  }
+  for (const { program } of followupPrograms) {
+    const operationById = new Map(program.operations.map((operation) => [operation.id, operation]));
+    for (const operationId of program.schedule.order) {
+      const operation = operationById.get(operationId);
+      if (!operation || !("entityId" in operation) || !createdIds.has(operation.entityId)) {
+        return { kind: "unsupported", message: "Studio creation contains an unrelated follow-up operation." };
+      }
+      const state = authoringState.get(operation.entityId);
+      const instantAt = evaluatedOperationStart(proposedState.evaluatedScene, operation.id);
+      const supportedPosition =
+        operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value);
+      const supportedScale =
+        operation.kind === "AnimateProperty" &&
+        operation.key === "scale" &&
+        Number.isFinite(operation.relativeFactor) &&
+        (operation.relativeFactor ?? 0) > 0;
+      const supportedResize =
+        operation.kind === "ResizeEntity" &&
+        ((state?.type === "Circle" && operation.shape === "circle") ||
+          (state?.type === "Rectangle" && operation.shape === "rectangle"));
+      if (!state || instantAt === null || (!supportedPosition && !supportedScale && !supportedResize)) {
+        return {
+          kind: "unsupported",
+          message: "Studio creation supports one instant move, uniform scale, or shape resize anchor per entity.",
+        };
+      }
+      if (state.instantAt !== undefined && Math.abs(state.instantAt - instantAt) > 1e-9) {
+        return {
+          kind: "unsupported",
+          message: `Studio-created entity ${operation.entityId} has edits at more than one instant anchor.`,
+        };
+      }
+      state.instantAt = instantAt;
+      if (supportedPosition) state.position = operation.value;
+      if (supportedScale) state.scale *= operation.relativeFactor!;
+      if (supportedResize && operation.kind === "ResizeEntity") {
+        state.dimensions = operation.to.dimensions;
+        state.position = operation.to.position;
+      }
+    }
   }
   const timelineInsertions = createPrograms.map(({ program }) => ({
     at: program.anchor.resolvedSeconds,
@@ -1545,11 +1618,41 @@ function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedE
       message: "Studio creation does not resolve to canonical timeline insertions.",
     };
   }
+  const authorizedEntities: StudioCreatedEntityEntry[] = [];
+  for (const entry of entities) {
+    const state = authoringState.get(entry.entity.id)!;
+    if (state.instantAt === undefined) {
+      authorizedEntities.push(entry);
+      continue;
+    }
+    const initial = state.initialDimensions;
+    const current = state.dimensions;
+    const ratios =
+      state.type === "Circle" && initial?.radius && current?.radius
+        ? { x: current.radius / initial.radius, y: current.radius / initial.radius }
+        : state.type === "Rectangle" && initial?.width && initial.height && current?.width && current.height
+          ? { x: current.width / initial.width, y: current.height / initial.height }
+          : state.type === "MathTex"
+            ? { x: 1, y: 1 }
+            : null;
+    if (!ratios || ratios.x <= 0 || ratios.y <= 0 || !Number.isFinite(ratios.x) || !Number.isFinite(ratios.y)) {
+      return { kind: "unsupported", message: `Studio-created entity ${entry.entity.id} has invalid resize facts.` };
+    }
+    authorizedEntities.push({
+      ...entry,
+      instantTransform: {
+        at: state.instantAt,
+        position: state.position,
+        scaleX: state.scale * ratios.x,
+        scaleY: state.scale * ratios.y,
+      },
+    });
+  }
   return {
-    entities,
+    entities: authorizedEntities,
     kind: "authorized",
-    operationCount: createPrograms.reduce((count, { program }) => count + program.operations.length, 0),
-    programCount: createPrograms.length,
+    operationCount: proposedState.programs.reduce((count, { program }) => count + program.operations.length, 0),
+    programCount: proposedState.programs.length,
     timelineInsertions,
   };
 }
@@ -1835,7 +1938,7 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     const entities: CreateSceneEntitiesWireCommandV1["entities"] = createdEntityPlan.entities.map(
-      ({ create, entity, fadeIn, position }) => {
+      ({ create, entity, fadeIn, instantTransform, position }) => {
         const dimensions = create.entity.dimensions;
         const outline = mathTexOutlines[entity.id];
         const geometry =
@@ -1851,6 +1954,20 @@ export async function compileStudioPreviewSceneV1(
           ...(fadeIn ? { fadeIn: { end: fadeIn.interval.end } } : {}),
           geometry,
           id: entity.id,
+          ...(instantTransform
+            ? {
+                instantTransform: {
+                  at: instantTransform.at,
+                  position: studioPointToScenePointV1(
+                    instantTransform.position,
+                    input.frame,
+                    input.snapshot.snapshot.scene.camera.view.center,
+                  ),
+                  scaleX: instantTransform.scaleX,
+                  scaleY: instantTransform.scaleY,
+                },
+              }
+            : {}),
           lifetime: entity.lifetime[0]!,
           position: studioPointToScenePointV1(
             position.value,
@@ -1868,7 +1985,7 @@ export async function compileStudioPreviewSceneV1(
         nextRevision: engineRevisionHash,
         provenance: {
           evidence: [
-            `${createdEntityPlan.programCount} validated Studio creation Program(s) with ${createdEntityPlan.operationCount} operation(s) lowered as one atomic core command`,
+            `${createdEntityPlan.programCount} validated Studio Program(s) with ${createdEntityPlan.operationCount} operation(s) lowered as one atomic creation/transform core command`,
           ],
           id: `studio-create:${engineRevisionHash}`,
           origin: "studio-edit-program",
