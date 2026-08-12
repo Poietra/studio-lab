@@ -13,11 +13,7 @@ import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixture
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
-import type {
-  MoveSceneEntityCompiler,
-  MoveSceneEntityWireCommandV1,
-  TransformSceneEntityCompiler,
-} from "../engine/scene-authoring";
+import type { TransformSceneEntityCompiler, TransformSceneEntityWireCommandV1 } from "../engine/scene-authoring";
 import { createSceneIrDeltaV1 } from "../engine/scene-delta";
 import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -427,7 +423,7 @@ async function editedStaticRootPreviewInput(
   };
 }
 
-function recordingMoveCompiler(calls: MoveSceneEntityWireCommandV1[]): MoveSceneEntityCompiler {
+function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]): TransformSceneEntityCompiler {
   return async (bundle, command) => {
     calls.push(command);
     const unmappedEntity = bundle.scene.entities[0];
@@ -2035,12 +2031,12 @@ describe("compileStudioPreviewSceneV1", () => {
       const { operationId, proposedState, snapshot, workingRevision, workspaceKey } =
         await editedStaticRootPreviewInput({ origin });
       if (!operationId) throw new Error("Imported root move lost its operation identity.");
-      const commands: MoveSceneEntityWireCommandV1[] = [];
+      const commands: TransformSceneEntityWireCommandV1[] = [];
       const result = await compileStudioPreviewSceneV1({
         frame,
-        moveCompiler: recordingMoveCompiler(commands),
         proposedState,
         snapshot,
+        transformCompiler: recordingTransformCompiler(commands),
         workingRevision,
         workspaceKey,
       });
@@ -2061,7 +2057,7 @@ describe("compileStudioPreviewSceneV1", () => {
           id: `studio-static-move:${result.scene.engineRevisionHash}`,
           origin: "studio-edit-program",
         },
-        schema: "poietra.move-scene-entity",
+        schema: "poietra.transform-scene-entity",
         version: 1,
       });
       expect(command.delta.x).toBeCloseTo(1.6, 12);
@@ -2200,7 +2196,7 @@ describe("compileStudioPreviewSceneV1", () => {
       let compilerCalls = 0;
       const result = await compileStudioPreviewSceneV1({
         frame: { height: 9, width: 16 },
-        moveCompiler: async () => {
+        transformCompiler: async () => {
           compilerCalls += 1;
           throw new Error(`Rust compiler must not run for ${testCase.name}.`);
         },

@@ -17,12 +17,10 @@ import {
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
-  compileMoveSceneEntity,
-  type MoveSceneEntityCompiler,
+  compileTransformSceneEntity,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityCompiler,
-  type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
@@ -1399,8 +1397,8 @@ function planStaticImportedRootMove(
     return { kind: "unsupported", message: "A static Rust move must target exactly one imported entity." };
   }
   if (operations.length > 1) {
-    // Compound transforms remain on the existing adapter until Rust has an
-    // equivalent atomic command; this slice claims only a standalone move.
+    // This authorization path deliberately claims only a standalone move;
+    // broader static edits still use the complete Studio adapter below.
     return { kind: "not-applicable" };
   }
 
@@ -1498,13 +1496,11 @@ export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
-    moveCompiler?: MoveSceneEntityCompiler;
     proposedState: ProposedState;
     rotationCompiler?: RotateSceneEntityCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
     transformCompiler?: TransformSceneEntityCompiler;
-    uniformScaleCompiler?: UniformScaleSceneEntityCompiler;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -1553,13 +1549,12 @@ export async function compileStudioPreviewSceneV1(
     });
     const rebased = await compileStudioPreviewGenericInitialEdit({
       frame: input.frame,
-      moveCompiler: input.moveCompiler,
       proposedState: input.proposedState,
       rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
       subtreePaintAlphaCompiler: input.subtreePaintAlphaCompiler,
-      uniformScaleCompiler: input.uniformScaleCompiler,
+      transformCompiler: input.transformCompiler,
     });
     if (rebased.kind === "unsupported") {
       return {
@@ -1653,7 +1648,7 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const bundle = await (input.moveCompiler ?? compileMoveSceneEntity)(input.snapshot.snapshot, {
+      const bundle = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
         delta: staticRootMove.delta,
         entityId: staticRootMove.runtimeEntityId,
         expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
@@ -1666,7 +1661,7 @@ export async function compileStudioPreviewSceneV1(
           id: `studio-static-move:${engineRevisionHash}`,
           origin: "studio-edit-program",
         },
-        schema: "poietra.move-scene-entity",
+        schema: "poietra.transform-scene-entity",
         version: 1,
       });
       return {

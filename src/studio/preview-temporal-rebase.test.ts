@@ -7,12 +7,10 @@ import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-ru
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import type {
-  MoveSceneEntityCompiler,
   RotateSceneEntityCompiler,
   SetSubtreeVectorPaintAlphaCompiler,
   TransformSceneEntityCompiler,
   TransformSceneEntityWireCommandV1,
-  UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -1548,8 +1546,8 @@ describe("generic Runtime Trace V3 initial move", () => {
     const operationId = proposedState.programs[0]?.program.operations[0]?.id;
     if (!operationId) throw new Error("Generic V3 move fixture lost its authorized operation.");
     const coreTransform = { ...root.transform, tx: root.transform.tx + 9, ty: root.transform.ty - 4 };
-    const commands: Parameters<MoveSceneEntityCompiler>[1][] = [];
-    const moveCompiler: MoveSceneEntityCompiler = async (bundle, command) => {
+    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const transformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
       commands.push(command);
       return await parseVerifiedSceneIrBundleV1({
         ...bundle,
@@ -1571,10 +1569,10 @@ describe("generic Runtime Trace V3 initial move", () => {
     };
     const result = await compileStudioPreviewGenericInitialEdit({
       frame: FRAME,
-      moveCompiler,
       proposedState,
       snapshot,
       sourceRevisionHash: "7".repeat(64),
+      transformCompiler,
     });
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
@@ -1602,7 +1600,7 @@ describe("generic Runtime Trace V3 initial move", () => {
         id: `studio-generic-v3-initial-move:${"7".repeat(64)}`,
         origin: "studio-edit-program",
       },
-      schema: "poietra.move-scene-entity",
+      schema: "poietra.transform-scene-entity",
       version: 1,
     });
     expect(directCommand.delta.x).toBeCloseTo(64 / 45, 12);
@@ -1610,9 +1608,9 @@ describe("generic Runtime Trace V3 initial move", () => {
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: FRAME,
-      moveCompiler,
       proposedState,
       snapshot,
+      transformCompiler,
       workingRevision: "generic-v3-initial-move-revision",
       workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
     });
@@ -1633,8 +1631,8 @@ describe("generic Runtime Trace V3 initial move", () => {
     const operationId = proposedState.programs[0]?.program.operations[0]?.id;
     if (!operationId) throw new Error("Generic V3 resize fixture lost its authorized operation.");
     const coreTransform = { ...root.transform, m22: root.transform.m22 + 0.25 };
-    const commands: Parameters<UniformScaleSceneEntityCompiler>[1][] = [];
-    const uniformScaleCompiler: UniformScaleSceneEntityCompiler = async (bundle, command) => {
+    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const transformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
       commands.push(command);
       return await parseVerifiedSceneIrBundleV1({
         ...bundle,
@@ -1659,7 +1657,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       proposedState,
       snapshot,
       sourceRevisionHash: "8".repeat(64),
-      uniformScaleCompiler,
+      transformCompiler,
     });
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
@@ -1670,11 +1668,10 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-resize:${"8".repeat(64)}`);
     expect(commands).toEqual([
       {
+        delta: { x: 0, y: 0 },
         entityId: root.id,
         expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
-        factor: 1.5,
         nextRevision: "8".repeat(64),
-        pivot: { x: 0, y: 0 },
         provenance: {
           evidence: [
             "Studio t=0 uniform resize request projected onto one verified generic Runtime Trace V3 root",
@@ -1684,7 +1681,8 @@ describe("generic Runtime Trace V3 initial move", () => {
           id: `studio-generic-v3-initial-resize:${"8".repeat(64)}`,
           origin: "studio-edit-program",
         },
-        schema: "poietra.uniform-scale-scene-entity",
+        schema: "poietra.transform-scene-entity",
+        uniformScale: { factor: 1.5, pivot: { x: 0, y: 0 } },
         version: 1,
       },
     ]);
@@ -1693,7 +1691,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       frame: FRAME,
       proposedState,
       snapshot,
-      uniformScaleCompiler,
+      transformCompiler,
       workingRevision: "generic-v3-initial-resize-revision",
       workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
     });

@@ -11,11 +11,9 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 1);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
-assert.equal(typeof engine.moveSceneEntityV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
 assert.equal(typeof engine.setSubtreeVectorPaintAlphaV1, "function");
 assert.equal(typeof engine.transformSceneEntityV1, "function");
-assert.equal(typeof engine.uniformScaleSceneEntityV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.create, "function");
 assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.applySceneDelta, "function");
@@ -83,98 +81,44 @@ assert.ok(Math.abs(rotatedEntity.transform.m22) < 1e-12);
 assert.equal(rotatedEntity.provenanceId, "wasm-smoke-rotation");
 assert.equal(rotatedBundle.scene.source.revisionHash, "b".repeat(64));
 
-const movedBundle = JSON.parse(
-  new TextDecoder("utf-8", { fatal: true }).decode(
-    engine.moveSceneEntityV1(
-      snapshot,
-      encoder.encode(
-        JSON.stringify({
-          delta: { x: 1.25, y: -0.5 },
-          entityId: "later",
-          expectedBaseRevision: "a".repeat(64),
-          nextRevision: "c".repeat(64),
-          provenance: {
-            evidence: ["engine WASM smoke move"],
-            id: "wasm-smoke-move",
-            origin: "studio-edit-program",
-          },
-          schema: "poietra.move-scene-entity",
-          version: 1,
-        }),
+for (const [name, delta, uniformScale, expected] of [
+  ["move", { x: 1.25, y: -0.5 }, undefined, [1, 1, 1.25, -0.5]],
+  ["scale", { x: 0, y: 0 }, { factor: 1.5, pivot: { x: 1, y: -0.5 } }, [1.5, 1.5, -0.5, 0.25]],
+  ["combined", { x: 1.25, y: -0.5 }, { factor: 1.5, pivot: { x: 1, y: -0.5 } }, [1.5, 1.5, 0.75, -0.25]],
+]) {
+  const revision = name === "move" ? "c" : name === "scale" ? "d" : "f";
+  const transformedBundle = JSON.parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(
+      engine.transformSceneEntityV1(
+        snapshot,
+        encoder.encode(
+          JSON.stringify({
+            delta,
+            entityId: "later",
+            expectedBaseRevision: "a".repeat(64),
+            nextRevision: revision.repeat(64),
+            provenance: {
+              evidence: [`engine WASM smoke atomic ${name}`],
+              id: `wasm-smoke-atomic-${name}`,
+              origin: "studio-edit-program",
+            },
+            schema: "poietra.transform-scene-entity",
+            ...(uniformScale ? { uniformScale } : {}),
+            version: 1,
+          }),
+        ),
       ),
     ),
-  ),
-);
-const movedEntity = movedBundle.scene.entities.find(({ id }) => id === "later");
-assert.ok(movedEntity, "move response lost its target");
-assert.equal(movedEntity.transform.tx, 1.25);
-assert.equal(movedEntity.transform.ty, -0.5);
-assert.equal(movedEntity.provenanceId, "wasm-smoke-move");
-assert.equal(movedBundle.scene.source.revisionHash, "c".repeat(64));
-
-const scaledBundle = JSON.parse(
-  new TextDecoder("utf-8", { fatal: true }).decode(
-    engine.uniformScaleSceneEntityV1(
-      snapshot,
-      encoder.encode(
-        JSON.stringify({
-          entityId: "later",
-          expectedBaseRevision: "a".repeat(64),
-          factor: 1.5,
-          nextRevision: "d".repeat(64),
-          pivot: { x: 1, y: -0.5 },
-          provenance: {
-            evidence: ["engine WASM smoke uniform scale"],
-            id: "wasm-smoke-uniform-scale",
-            origin: "studio-edit-program",
-          },
-          schema: "poietra.uniform-scale-scene-entity",
-          version: 1,
-        }),
-      ),
-    ),
-  ),
-);
-const scaledEntity = scaledBundle.scene.entities.find(({ id }) => id === "later");
-assert.ok(scaledEntity, "uniform-scale response lost its target");
-assert.equal(scaledEntity.transform.m11, 1.5);
-assert.equal(scaledEntity.transform.m22, 1.5);
-assert.equal(scaledEntity.transform.tx, -0.5);
-assert.equal(scaledEntity.transform.ty, 0.25);
-assert.equal(scaledEntity.provenanceId, "wasm-smoke-uniform-scale");
-assert.equal(scaledBundle.scene.source.revisionHash, "d".repeat(64));
-
-const transformedBundle = JSON.parse(
-  new TextDecoder("utf-8", { fatal: true }).decode(
-    engine.transformSceneEntityV1(
-      snapshot,
-      encoder.encode(
-        JSON.stringify({
-          delta: { x: 1.25, y: -0.5 },
-          entityId: "later",
-          expectedBaseRevision: "a".repeat(64),
-          nextRevision: "f".repeat(64),
-          provenance: {
-            evidence: ["engine WASM smoke atomic transform"],
-            id: "wasm-smoke-atomic-transform",
-            origin: "studio-edit-program",
-          },
-          schema: "poietra.transform-scene-entity",
-          uniformScale: { factor: 1.5, pivot: { x: 1, y: -0.5 } },
-          version: 1,
-        }),
-      ),
-    ),
-  ),
-);
-const transformedEntity = transformedBundle.scene.entities.find(({ id }) => id === "later");
-assert.ok(transformedEntity, "atomic-transform response lost its target");
-assert.equal(transformedEntity.transform.m11, 1.5);
-assert.equal(transformedEntity.transform.m22, 1.5);
-assert.equal(transformedEntity.transform.tx, 0.75);
-assert.equal(transformedEntity.transform.ty, -0.25);
-assert.equal(transformedEntity.provenanceId, "wasm-smoke-atomic-transform");
-assert.equal(transformedBundle.scene.source.revisionHash, "f".repeat(64));
+  );
+  const transformed = transformedBundle.scene.entities.find(({ id }) => id === "later");
+  assert.ok(transformed, `atomic ${name} response lost its target`);
+  assert.deepEqual(
+    [transformed.transform.m11, transformed.transform.m22, transformed.transform.tx, transformed.transform.ty],
+    expected,
+  );
+  assert.equal(transformed.provenanceId, `wasm-smoke-atomic-${name}`);
+  assert.equal(transformedBundle.scene.source.revisionHash, revision.repeat(64));
+}
 
 const paintAlphaBundle = JSON.parse(
   new TextDecoder("utf-8", { fatal: true }).decode(

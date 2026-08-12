@@ -1,8 +1,7 @@
 use poietra_eval::{
-    EngineSessionV1, EvaluationError, MoveSceneEntityCommand, MoveSceneEntityError,
-    RotateSceneEntityCommand, RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
-    UniformScaleAboutPivot, UniformScaleSceneEntityCommand, UniformScaleSceneEntityError,
+    EngineSessionV1, EvaluationError, RotateSceneEntityCommand, RotateSceneEntityError,
+    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
@@ -12,18 +11,6 @@ use serde::{Deserialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
 
 const MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1: usize = 64 * 1024;
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum MoveSceneEntitySchemaV1 {
-    #[serde(rename = "poietra.move-scene-entity")]
-    MoveSceneEntity,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum UniformScaleSceneEntitySchemaV1 {
-    #[serde(rename = "poietra.uniform-scale-scene-entity")]
-    UniformScaleSceneEntity,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum TransformSceneEntitySchemaV1 {
@@ -59,34 +46,6 @@ impl From<SetSubtreeVectorPaintAlphaCommandJsonV1> for SetSubtreeVectorPaintAlph
             next_revision: value.next_revision,
             provenance: value.provenance,
             root_entity_id: value.root_entity_id,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct UniformScaleSceneEntityCommandJsonV1 {
-    entity_id: String,
-    expected_base_revision: String,
-    factor: f64,
-    next_revision: String,
-    pivot: PointV1,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: UniformScaleSceneEntitySchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<UniformScaleSceneEntityCommandJsonV1> for UniformScaleSceneEntityCommand {
-    fn from(value: UniformScaleSceneEntityCommandJsonV1) -> Self {
-        Self {
-            entity_id: value.entity_id,
-            expected_base_revision: value.expected_base_revision,
-            factor: value.factor,
-            next_revision: value.next_revision,
-            pivot: value.pivot,
-            provenance: value.provenance,
         }
     }
 }
@@ -135,32 +94,6 @@ impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
     }
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct MoveSceneEntityCommandJsonV1 {
-    delta: PointV1,
-    entity_id: String,
-    expected_base_revision: String,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: MoveSceneEntitySchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<MoveSceneEntityCommandJsonV1> for MoveSceneEntityCommand {
-    fn from(value: MoveSceneEntityCommandJsonV1) -> Self {
-        Self {
-            delta: value.delta,
-            entity_id: value.entity_id,
-            expected_base_revision: value.expected_base_revision,
-            next_revision: value.next_revision,
-            provenance: value.provenance,
-        }
-    }
-}
-
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
     #[error(
@@ -180,11 +113,7 @@ enum SceneAuthoringAdapterError {
     #[error("the Scene authoring snapshot could not create an Engine session: {0}")]
     Session(#[from] EvaluationError),
     #[error(transparent)]
-    MoveCommand(#[from] MoveSceneEntityError),
-    #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
-    #[error(transparent)]
-    UniformScaleCommand(#[from] UniformScaleSceneEntityError),
     #[error(transparent)]
     TransformCommand(#[from] TransformSceneEntityError),
     #[error(transparent)]
@@ -229,53 +158,6 @@ fn scene_authoring_response(
         });
     }
     Ok(response)
-}
-
-fn move_scene_entity_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: MoveSceneEntityCommandJsonV1 =
-        parse_scene_authoring_command("move", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.move_scene_entity(command.into())?;
-    scene_authoring_response(&result)
-}
-
-/// Applies one concrete Scene translation through the shared native/WASM core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or moved result.
-#[wasm_bindgen(js_name = moveSceneEntityV1)]
-pub fn move_scene_entity_v1(snapshot_json: &[u8], command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
-    move_scene_entity_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
-fn uniform_scale_scene_entity_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: UniformScaleSceneEntityCommandJsonV1 =
-        parse_scene_authoring_command("uniform scale", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.uniform_scale_scene_entity(command.into())?;
-    scene_authoring_response(&result)
-}
-
-/// Applies one concrete uniform Scene scale through the shared native/WASM core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or scaled result.
-#[wasm_bindgen(js_name = uniformScaleSceneEntityV1)]
-pub fn uniform_scale_scene_entity_v1(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, JsValue> {
-    uniform_scale_scene_entity_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 fn transform_scene_entity_json(
@@ -429,41 +311,6 @@ mod tests {
         .unwrap()
     }
 
-    fn move_command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "delta": { "x": 2.5, "y": -1.5 },
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "provenance": {
-                "evidence": ["WASM adapter move test"],
-                "id": "wasm-move",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.move-scene-entity",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn uniform_scale_command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "factor": 1.5,
-            "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "pivot": { "x": 1.0, "y": -0.5 },
-            "provenance": {
-                "evidence": ["WASM adapter uniform scale test"],
-                "id": "wasm-uniform-scale",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.uniform-scale-scene-entity",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
     fn set_subtree_vector_paint_alpha_command_json(root_entity_id: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "alpha": 0.25,
@@ -512,27 +359,6 @@ mod tests {
     }
 
     #[test]
-    fn move_adapter_returns_the_complete_core_bundle() {
-        let response = move_scene_entity_json(&fixture_json(), &move_command_json()).unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let moved = bundle
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == "later")
-            .unwrap();
-
-        assert!((moved.transform.tx - 2.5).abs() < 1e-12);
-        assert!((moved.transform.ty + 1.5).abs() < 1e-12);
-        assert_eq!(moved.provenance_id, "wasm-move");
-        assert!(matches!(
-            bundle.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
-        ));
-    }
-
-    #[test]
     fn moved_real_top_level_group_shifts_its_prepared_descendant_bounds() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
@@ -562,13 +388,13 @@ mod tests {
                 "id": "wasm-real-group-move",
                 "origin": "studio-edit-program"
             },
-            "schema": "poietra.move-scene-entity",
+            "schema": "poietra.transform-scene-entity",
             "version": 1
         }))
         .unwrap();
         let (before, camera_width, camera_height) =
             interaction_clip_bounds(&snapshot, &root_id, 0.5);
-        let moved_snapshot = move_scene_entity_json(&snapshot, &command).unwrap();
+        let moved_snapshot = transform_scene_entity_json(&snapshot, &command).unwrap();
         let (after, moved_camera_width, moved_camera_height) =
             interaction_clip_bounds(&moved_snapshot, &root_id, 0.5);
 
@@ -605,23 +431,23 @@ mod tests {
             .expect("the real LineJoints fixture must retain its top-level VGroup");
         let root_id = root.id.clone();
         let command = serde_json::to_vec(&json!({
+            "delta": { "x": 0.0, "y": 0.0 },
             "entityId": root_id,
             "expectedBaseRevision": bundle.scene.source.revision_hash(),
-            "factor": 0.5,
             "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "pivot": { "x": 1.0, "y": -0.5 },
             "provenance": {
                 "evidence": ["WASM adapter real top-level group uniform scale test"],
                 "id": "wasm-real-group-uniform-scale",
                 "origin": "studio-edit-program"
             },
-            "schema": "poietra.uniform-scale-scene-entity",
+            "schema": "poietra.transform-scene-entity",
+            "uniformScale": { "factor": 0.5, "pivot": { "x": 1.0, "y": -0.5 } },
             "version": 1
         }))
         .unwrap();
         let (before, camera_width, camera_height) =
             interaction_clip_bounds(&snapshot, &root_id, 0.5);
-        let scaled_snapshot = uniform_scale_scene_entity_json(&snapshot, &command).unwrap();
+        let scaled_snapshot = transform_scene_entity_json(&snapshot, &command).unwrap();
         let (after, scaled_camera_width, scaled_camera_height) =
             interaction_clip_bounds(&scaled_snapshot, &root_id, 0.5);
 
@@ -654,29 +480,6 @@ mod tests {
             scaled.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-        ));
-    }
-
-    #[test]
-    fn uniform_scale_adapter_rejects_unknown_and_oversized_commands() {
-        let mut command: serde_json::Value =
-            serde_json::from_slice(&uniform_scale_command_json()).unwrap();
-        command["profile"] = json!("generic-runtime-trace-v3");
-        let error = uniform_scale_scene_entity_json(
-            &fixture_json(),
-            &serde_json::to_vec(&command).unwrap(),
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("unknown field `profile`"));
-
-        let oversized = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
-        let error = uniform_scale_scene_entity_json(&fixture_json(), &oversized).unwrap_err();
-        assert!(matches!(
-            error,
-            SceneAuthoringAdapterError::CommandTooLarge {
-                command: "uniform scale",
-                actual_bytes
-            } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
         ));
     }
 
@@ -786,31 +589,6 @@ mod tests {
     }
 
     #[test]
-    fn move_adapter_rejects_unknown_command_fields() {
-        let mut command: serde_json::Value = serde_json::from_slice(&move_command_json()).unwrap();
-        command["profile"] = json!("generic-runtime-trace-v3");
-
-        let error = move_scene_entity_json(&fixture_json(), &serde_json::to_vec(&command).unwrap())
-            .unwrap_err();
-
-        assert!(error.to_string().contains("unknown field `profile`"));
-    }
-
-    #[test]
-    fn move_adapter_rejects_oversized_commands_before_parsing() {
-        let command = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
-        let error = move_scene_entity_json(&fixture_json(), &command).unwrap_err();
-
-        assert!(matches!(
-            error,
-            SceneAuthoringAdapterError::CommandTooLarge {
-                command: "move",
-                actual_bytes
-            } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
-        ));
-    }
-
-    #[test]
     fn adapter_parses_the_wire_command_and_returns_the_complete_bundle() {
         let response = rotate_scene_entity_json(&fixture_json(), &command_json()).unwrap();
         let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
@@ -834,26 +612,35 @@ mod tests {
     }
 
     #[test]
-    fn adapter_rejects_unknown_command_fields() {
-        let mut command: serde_json::Value = serde_json::from_slice(&command_json()).unwrap();
+    fn transform_adapter_rejects_unknown_and_oversized_commands() {
+        let mut command = json!({
+            "delta": { "x": 1.0, "y": 0.0 },
+            "entityId": "later",
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "provenance": {
+                "evidence": ["WASM adapter transform validation"],
+                "id": "wasm-transform-validation",
+                "origin": "studio-edit-program"
+            },
+            "schema": "poietra.transform-scene-entity",
+            "version": 1
+        });
         command["profile"] = json!("generic-runtime-trace-v3");
 
         let error =
-            rotate_scene_entity_json(&fixture_json(), &serde_json::to_vec(&command).unwrap())
+            transform_scene_entity_json(&fixture_json(), &serde_json::to_vec(&command).unwrap())
                 .unwrap_err();
 
         assert!(error.to_string().contains("unknown field `profile`"));
-    }
 
-    #[test]
-    fn rotation_adapter_rejects_oversized_commands_before_parsing() {
-        let command = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
-        let error = rotate_scene_entity_json(&fixture_json(), &command).unwrap_err();
+        let oversized = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
+        let error = transform_scene_entity_json(&fixture_json(), &oversized).unwrap_err();
 
         assert!(matches!(
             error,
             SceneAuthoringAdapterError::CommandTooLarge {
-                command: "rotation",
+                command: "transform",
                 actual_bytes
             } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
         ));
