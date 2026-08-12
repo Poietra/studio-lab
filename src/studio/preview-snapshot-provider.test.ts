@@ -6,7 +6,7 @@ import {
   createUnavailableStudioPreviewSnapshotProviderV1,
   loadStudioPreviewSnapshotMetadataV1,
   PRISTINE_WORKING_REVISION,
-  resolveStudioPreviewSnapshotProviderV1,
+  resolveStudioPreviewSnapshotProvider,
   type StudioPreviewSceneIdentityV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
@@ -18,22 +18,17 @@ import {
 const HARNESS_IDENTITY: StudioPreviewSceneIdentityV1 = harnessManifest.expectedIdentity;
 const MATHTEX_HARNESS_IDENTITY: StudioPreviewSceneIdentityV1 = mathTexHarnessManifest.expectedIdentity;
 
-describe("resolveStudioPreviewSnapshotProviderV1", () => {
-  it("keeps the existing semantic preview as the default", async () => {
-    await expect(resolveStudioPreviewSnapshotProviderV1("")).resolves.toBeNull();
-    await expect(resolveStudioPreviewSnapshotProviderV1("?other=1")).resolves.toBeNull();
-  });
-
-  it("resolves the production server provider only on explicit opt-in", async () => {
-    const provider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=server");
+describe("resolveStudioPreviewSnapshotProvider", () => {
+  it("resolves the controller-selected canonical server provider", async () => {
+    const provider = await resolveStudioPreviewSnapshotProvider("server");
     expect(provider?.id).toBe("server-scene-snapshot");
     expect(provider?.evidence).toBeUndefined();
   });
 
   it("resolves the fixture provider only on explicit opt-in in a dev/test build", async () => {
     expect(import.meta.env.DEV).toBe(true);
-    const provider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=fixture");
-    const mathTexProvider = await resolveStudioPreviewSnapshotProviderV1("?previewRenderer=mathtex-fixture");
+    const provider = await resolveStudioPreviewSnapshotProvider("fixture");
+    const mathTexProvider = await resolveStudioPreviewSnapshotProvider("mathtex-fixture");
     expect(provider?.id).toBe("checked-in-fixture");
     expect(mathTexProvider?.id).toBe("checked-in-mathtex-fixture");
     // The dev evidence client extension is wired explicitly by the harness

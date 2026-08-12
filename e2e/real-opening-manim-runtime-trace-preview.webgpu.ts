@@ -98,13 +98,13 @@ async function verifiedOpeningRuntimeTrace(page: Page) {
     });
   });
 
-  await page.goto("/?previewRenderer=server");
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByLabel("Active imported Scene").selectOption({ label: SCENE_LABEL });
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   const responsePromise = runtimeTraceResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   const response = await responsePromise;
@@ -617,20 +617,16 @@ test("renders the official OpeningManim 0-15s Scene through Runtime Trace V2 and
   if (!gridTitleBefore) throw new Error("The OpeningManim grid_title has no interaction bounds at fourteen seconds.");
   await dragBy(page, gridTitleTarget, { x: 32, y: 18 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    "Draft ghost · OpeningManim validation pending",
-  );
+  await expect(page.locator("[data-studio-preview-status]")).toContainText("Edit validation pending · OpeningManim");
   await expect(page.getByRole("button", { name: /Resize grid title/u })).toHaveCount(0);
   const gridTitleDraft = await gridTitleTarget.boundingBox();
-  if (!gridTitleDraft) throw new Error("The OpeningManim grid_title draft ghost disappeared.");
+  if (!gridTitleDraft) throw new Error("The OpeningManim grid_title edit outline disappeared.");
   expect(gridTitleDraft.x - gridTitleBefore.x).toBeCloseTo(32, 0);
   expect(gridTitleDraft.y - gridTitleBefore.y).toBeCloseTo(18, 0);
 
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
-  await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    "Draft ghost · OpeningManim validation pending",
-  );
+  await expect(page.locator("[data-studio-preview-status]")).toContainText("Edit validation pending · OpeningManim");
   const exportedCandidate = await exportedCandidateSource(page);
   const requestedPrograms = exportedCandidate.request.programs;
   expect(Array.isArray(requestedPrograms)).toBe(true);

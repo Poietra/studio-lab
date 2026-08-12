@@ -107,7 +107,7 @@ supports the bounded variable frozen-wait snapshot contract.
 The exact official `UpdatersExample` Runtime Trace uses a separate local-only
 producer command and opt-in. Give the demo its own temporary workspace catalog
 and seed the checked-in real preview harness under a stable project ID, then open
-Studio with `?previewRenderer=server` and explicitly request the Scene preview:
+Studio and explicitly confirm execution when the canonical Scene preview prompts:
 
 ```sh
 demo_data_root="$(mktemp -d)"

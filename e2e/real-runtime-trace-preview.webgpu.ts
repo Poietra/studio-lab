@@ -127,15 +127,15 @@ async function openOfficialRuntimeTrace(page: Page, sceneLabel = SCENE_LABEL) {
       writable: true,
     });
   });
-  await page.goto("/?previewRenderer=server");
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByRole("button", { name: "Hide Magic Edit" }).click();
   await page.getByLabel("Active imported Scene").selectOption({ label: sceneLabel });
 
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   const response = runtimeTraceResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   return response;
@@ -708,24 +708,24 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   await dragBy(page, squareTarget, { x: 48, y: 24 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    "Draft ghost · dependent updater validation pending",
+    "Edit validation pending · dependent updater",
   );
   await expect(page.locator("[data-studio-preview-canvas]")).not.toHaveClass(/invisible/u);
   await expect(canvas).toHaveAttribute("data-preview-interaction", "bounded-interactive");
   const squareAfter = await squareTarget.boundingBox();
-  if (!squareAfter) throw new Error("The updater-backed Square draft ghost disappeared.");
+  if (!squareAfter) throw new Error("The updater-backed Square edit outline disappeared.");
   const squareAfterCenter = boxCenter(squareAfter);
-  const draftDomShift = {
+  const draftOutlineShift = {
     x: squareAfterCenter.x - squareBeforeCenter.x,
     y: squareAfterCenter.y - squareBeforeCenter.y,
   };
-  expect(draftDomShift.x).toBeCloseTo(48, 0);
-  expect(draftDomShift.y).toBeCloseTo(24, 0);
+  expect(draftOutlineShift.x).toBeCloseTo(48, 0);
+  expect(draftOutlineShift.y).toBeCloseTo(24, 0);
 
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    "Draft ghost · dependent updater validation pending",
+    "Edit validation pending · dependent updater",
   );
   await expect(page.locator("[data-studio-preview-canvas]")).not.toHaveClass(/invisible/u);
 
@@ -736,11 +736,11 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   await dragBy(page, resizeHandle, { x: 36, y: 36 });
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    "Draft ghost · dependent updater validation pending",
+    "Edit validation pending · dependent updater",
   );
   await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
   const squareAfterResize = await squareTarget.boundingBox();
-  if (!squareAfterResize) throw new Error("The updater-backed Square resize ghost disappeared.");
+  if (!squareAfterResize) throw new Error("The updater-backed Square resize outline disappeared.");
   expect(squareAfterResize.width).toBeGreaterThan(squareAfterMove.width * 1.1);
   expect(squareAfterResize.height).toBeGreaterThan(squareAfterMove.height * 1.1);
   expect(boxCenter(squareAfterResize).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);
@@ -750,7 +750,7 @@ test("renders official UpdatersExample through an unpublished Runtime Trace and 
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   const squareAfterResizeApply = await squareTarget.boundingBox();
-  if (!squareAfterResizeApply) throw new Error("The applied terminal Square resize ghost disappeared.");
+  if (!squareAfterResizeApply) throw new Error("The applied terminal Square resize outline disappeared.");
   expect(squareAfterResizeApply.width).toBeCloseTo(squareAfterResize.width, 0);
   expect(squareAfterResizeApply.height).toBeCloseTo(squareAfterResize.height, 0);
   expect(boxCenter(squareAfterResizeApply).x).toBeCloseTo(boxCenter(squareAfterMove).x, 0);

@@ -3,8 +3,7 @@ import type { KeyboardEvent, PointerEvent } from "react";
 import { cn } from "../lib/cn";
 import type { EntityDimensions, Point, ProjectedEntity } from "./model";
 import type { StudioMotionPath } from "./motion-paths";
-import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
-import { EquationContent } from "./prototype-rendering";
+import { describeStudioPreviewFallback } from "./preview-renderer-policy";
 import {
   hasShapeDimensions,
   inverseResizeHandleScale,
@@ -32,13 +31,11 @@ import {
   viewportPositionStyle,
 } from "./studio-viewport-geometry";
 import type { StudioPreviewRendererView } from "./use-preview-renderer";
-import { isTransitionOverlay } from "./workspace-projection";
 
 export type StudioCanvasProps = Readonly<{
   appliedTransactionIds: ReadonlySet<string>;
   boundaryActive: boolean;
   cameraScale: number;
-  draftTransactionId: string | null;
   dragPreview: EntityDragPreview | null;
   editableMotionIds: ReadonlySet<string>;
   entities: readonly ProjectedEntity[];
@@ -109,9 +106,9 @@ function entityDimensionStyle(dimensions: EntityDimensions | null, frame: Readon
   };
 }
 
-/** Cancels the semantic camera/entity CSS scales surrounding the DOM overlay
- * so an engine-projected visual AABB lands at its sampled pixel box once. */
-export function compensatePreviewGeometryForSemanticScalesV1(
+/** Cancels the camera/entity CSS scales surrounding the interaction overlay so
+ * an engine-projected visual AABB lands at its sampled pixel box once. */
+export function compensatePreparedGeometryForOverlayScales(
   geometry: Readonly<{ dimensions: EntityDimensions | null; position: Point }>,
   cameraScale: number,
   entityScale: number,
@@ -133,96 +130,28 @@ export function compensatePreviewGeometryForSemanticScalesV1(
   };
 }
 
-/**
- * Resolves runtime hit geometry only through the server-verified identity map.
- * A source name that currently identifies zero or several Studio objects is
- * intentionally unusable: paint order, Scene order, type, and geometry never
- * break the tie.
- */
-export function verifiedPreviewGeometryForStudioEntityV1(
+/** Resolves hit geometry only from the exact prepared WebGPU frame. Imported
+ * entities require the server-verified source/runtime map. Studio-created
+ * entities use their canonical core ID, which the compiler explicitly admits
+ * to the worker interaction list. */
+export function verifiedPreviewGeometryForStudioEntity(
   preview: StudioPreviewRendererView,
   studioEntityIdByUniqueSourceName: ReadonlyMap<string, string | null>,
   entity: ProjectedEntity,
 ) {
-  if (entity.sourceIdentity.kind !== "known" || !preview.sourceRuntimeIdentity || !preview.interactionGeometry) {
-    return null;
+  if (!preview.interactionGeometry) return null;
+  if (entity.sourceIdentity.kind !== "known") {
+    if (!entity.transactionId || !entity.id.startsWith(`tx:${entity.transactionId}/entity:`)) return null;
+    const geometry = preview.interactionGeometry.get(entity.id);
+    return geometry ? { bindingId: null, geometry, runtimeEntityId: entity.id } : null;
   }
+  if (!preview.sourceRuntimeIdentity) return null;
   const sourceName = entity.sourceIdentity.value;
   if (studioEntityIdByUniqueSourceName.get(sourceName) !== entity.id) return null;
   const mapping = preview.sourceRuntimeIdentity.get(sourceName);
   if (!mapping) return null;
   const geometry = preview.interactionGeometry.get(mapping.entityId);
   return geometry ? { bindingId: mapping.bindingId, geometry, runtimeEntityId: mapping.entityId } : null;
-}
-
-function transitionStyle(entity: ProjectedEntity) {
-  const [, shape, color] = entity.type.split(":");
-  return {
-    className: cn(
-      "pointer-events-none absolute left-1/2 top-1/2 z-20 size-20 -translate-x-1/2 -translate-y-1/2",
-      shape === "circle" && "rounded-full",
-      shape === "diamond" && "rotate-45",
-      shape === "hexagon" && "[clip-path:polygon(25%_6.7%,75%_6.7%,100%_50%,75%_93.3%,25%_93.3%,0%_50%)]",
-      color === "black" && "bg-black",
-      color === "sky" && "bg-sky-500",
-      color === "white" && "bg-white",
-    ),
-    style: { opacity: entity.opacity, scale: 0.05 + entity.opacity * 14 },
-  };
-}
-
-function ObjectVisual({
-  dimensions,
-  entity,
-  frame,
-}: Readonly<{
-  dimensions: EntityDimensions | null;
-  entity: ProjectedEntity;
-  frame: Readonly<{ height: number; width: number }>;
-}>) {
-  const dimensionStyle = entityDimensionStyle(dimensions, frame);
-  if (entity.type === "MathTex") {
-    return (
-      <EquationContent
-        lines={entity.content?.displayLines ?? [entityLabel(entity)]}
-        texParts={entity.content?.texParts}
-      />
-    );
-  }
-  if (entity.type === "Text") {
-    return (
-      <span className="block max-w-56 text-pretty text-center text-sm leading-5">
-        {entity.content?.text ?? entityLabel(entity)}
-      </span>
-    );
-  }
-  if (entity.type === "Arrow") {
-    return (
-      <svg aria-hidden="true" className="h-5 w-24" viewBox="0 0 96 20">
-        <path d="M 2 10 H 88 M 80 3 L 89 10 L 80 17" fill="none" stroke="currentColor" strokeWidth="2" />
-      </svg>
-    );
-  }
-  if (entity.type === "Line") {
-    return <span aria-hidden="true" className="block h-px w-24 bg-zinc-400" />;
-  }
-  if (entity.type === "Rectangle" || entity.type === "SurroundingRectangle" || entity.type === "Square") {
-    return <span aria-hidden="true" className="block h-14 w-32 border border-zinc-500" style={dimensionStyle} />;
-  }
-  if (entity.type === "Circle" || entity.type === "Dot") {
-    return (
-      <span aria-hidden="true" className="block size-16 rounded-full border border-zinc-500" style={dimensionStyle} />
-    );
-  }
-  if (entity.type === "RegularPolygon") {
-    return (
-      <span
-        aria-hidden="true"
-        className="block size-16 border border-zinc-500 [clip-path:polygon(50%_0%,93%_25%,93%_75%,50%_100%,7%_75%,7%_25%)]"
-      />
-    );
-  }
-  return <span className="block border border-zinc-600 px-3 py-2 text-xs text-zinc-300">{entityLabel(entity)}</span>;
 }
 
 const RESIZE_HANDLES: readonly Readonly<{
@@ -303,7 +232,6 @@ export function StudioCanvas({
   appliedTransactionIds,
   boundaryActive,
   cameraScale,
-  draftTransactionId,
   dragPreview,
   editableMotionIds,
   entities,
@@ -335,13 +263,10 @@ export function StudioCanvas({
   selectedIds,
 }: StudioCanvasProps) {
   markStudioRenderBoundary("canvas");
-  // Only a fully correlated, presented WebGPU frame may replace the duplicate
-  // DOM fill/stroke paint: `preview.state` is resolved synchronously against
-  // the current playhead, viewport, snapshot correlation, and host, so hiding
-  // the paint here never trusts a stale emission. Hit targets, focus,
-  // selection, resize handles, and the object/timeline/Inspector DOM stay
-  // fully interactive as a paint-free overlay, and any fallback restores the
-  // semantic paint in the same render.
+  // Scene pixels have one authority: an exactly correlated WebGPU frame.
+  // React keeps only prepared hit targets, focus, selection and gesture
+  // overlays. A renderer failure or unsupported Scene is explicit and never
+  // resurrects a second DOM renderer.
   const presentingCanvasPixels = preview?.state.phase === "presented";
   const retainingRuntimeTraceBasePixels = preview?.runtimeTraceBaseFrameRetained === true;
   const showingCanvasPixels = presentingCanvasPixels || retainingRuntimeTraceBasePixels;
@@ -411,6 +336,7 @@ export function StudioCanvas({
         }}
         onPointerDown={(event) => {
           if (
+            !showingCanvasPixels ||
             displayOnlyPreview ||
             insertTool === "select" ||
             boundaryActive ||
@@ -445,24 +371,21 @@ export function StudioCanvas({
               ))}
             </g>
           </svg>
-          <StudioMotionOverlay
-            dragPreview={dragPreview}
-            editableMotionIds={editableMotionIds}
-            entities={entities}
-            interactionMode={interactionMode}
-            motionPaths={motionPaths}
-            onMotionControlChange={onMotionControlChange}
-          />
+          {showingCanvasPixels ? (
+            <StudioMotionOverlay
+              dragPreview={dragPreview}
+              editableMotionIds={editableMotionIds}
+              entities={entities}
+              interactionMode={interactionMode}
+              motionPaths={motionPaths}
+              onMotionControlChange={onMotionControlChange}
+            />
+          ) : null}
           {entities.map((entity) => {
             const pendingRuntimeTraceTargetId = preview?.runtimeTracePendingPresentation?.studioEntityId ?? null;
-            if (
-              pendingRuntimeTraceTargetId !== null &&
-              !retainingRuntimeTraceBasePixels &&
-              entity.id !== pendingRuntimeTraceTargetId
-            )
-              return null;
+            if (pendingRuntimeTraceTargetId !== null && !retainingRuntimeTraceBasePixels) return null;
             const genericInitialEditCandidate = genericInitialEditCandidatesByStudioEntityId.get(entity.id);
-            const genericInitialEditIdentity: ReturnType<typeof verifiedPreviewGeometryForStudioEntityV1> =
+            const genericInitialEditIdentity: ReturnType<typeof verifiedPreviewGeometryForStudioEntity> =
               preview?.interactionAuthority.kind === "bounded-interactive" &&
               preview.interactionAuthority.reason === "runtime-trace-initial-edit" &&
               genericInitialEditCandidate
@@ -475,11 +398,25 @@ export function StudioCanvas({
                     runtimeEntityId: genericInitialEditCandidate.runtimeEntityId,
                   }
                 : null;
-            const presentedIdentity =
+            const verifiedIdentity =
               showingCanvasPixels && preview
-                ? (verifiedPreviewGeometryForStudioEntityV1(preview, studioEntityIdByUniqueSourceName, entity) ??
+                ? (verifiedPreviewGeometryForStudioEntity(preview, studioEntityIdByUniqueSourceName, entity) ??
                   genericInitialEditIdentity)
                 : null;
+            const pendingIdentity =
+              terminalPendingPresentation?.studioEntityId === entity.id &&
+              (terminalPendingPresentation.dimensions !== null || verifiedIdentity?.geometry.dimensions != null)
+                ? {
+                    bindingId: verifiedIdentity?.bindingId ?? null,
+                    geometry: {
+                      dimensions:
+                        terminalPendingPresentation.dimensions ?? verifiedIdentity?.geometry.dimensions ?? null,
+                      position: terminalPendingPresentation.position,
+                    },
+                    runtimeEntityId: verifiedIdentity?.runtimeEntityId ?? null,
+                  }
+                : null;
+            const preparedIdentity = pendingIdentity ?? verifiedIdentity;
             // Source projection does not expand a directly-added VGroup into
             // present child rows. A correlated selection-only frame does: its
             // runtime identity plus prepared bounds are sufficient to expose
@@ -487,17 +424,14 @@ export function StudioCanvas({
             const runtimePresentSelectionEntity =
               (selectionOnlyPreview || preview?.interactionAuthority.kind === "bounded-interactive") &&
               showingCanvasPixels &&
-              presentedIdentity !== null;
+              preparedIdentity !== null;
             if (!entity.present && !runtimePresentSelectionEntity) return null;
             // Aggregate morph identity is intentionally ambiguous. Once its
             // verified pixels are presented, retaining source-projected hit
             // targets would both obscure the frame and suggest unsupported
             // per-entity editing authority.
             if (displayOnlyPreview && presentingCanvasPixels) return null;
-            if (isTransitionOverlay(entity)) {
-              const transition = transitionStyle(entity);
-              return <div className={transition.className} key={entity.id} style={transition.style} />;
-            }
+            if (preparedIdentity === null) return null;
             const selected = selectedIds.has(entity.id);
             const selectionLocked =
               readOnly ||
@@ -511,55 +445,44 @@ export function StudioCanvas({
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
             // A logical source group with no requested prepared bounds must
-            // not mint a semantic hit target beside the WebGPU frame. The
+            // not mint a source-derived hit target beside the WebGPU frame. The
             // bounded edit targets are admitted only by verified runtime
             // identity or a Runtime Trace candidate.
-            if ((selectionOnlyPreview || boundedRuntimeEditActive) && showingCanvasPixels && presentedIdentity === null)
-              return null;
-            const runtimeTraceTargetGhost =
-              pendingRuntimeTraceTargetId === entity.id ||
-              (retainingRuntimeTraceBasePixels &&
-                boundedRuntimeEditTargetIds.has(entity.id) &&
-                (dragPreview?.entityIds.includes(entity.id) === true ||
-                  scalePreview?.entityId === entity.id ||
-                  geometryPreview?.entityId === entity.id));
-            const runtimeGeometry = presentedIdentity?.geometry ?? null;
-            const presentedGeometry = runtimeTraceTargetGhost ? null : runtimeGeometry;
-            const moveLocked = selectionLocked || (positionUnknown && presentedGeometry === null);
+            const runtimeGeometry = preparedIdentity.geometry;
+            const moveLocked = selectionLocked;
             const localDelta = entityDragDelta(dragPreview, entity.id);
             const displayedScale = entityPreviewScale(scalePreview, entity);
-            const semanticPreviewGeometry = entityPreviewGeometry(geometryPreview, entity);
             const compensatedRuntimeGeometry = runtimeGeometry
-              ? compensatePreviewGeometryForSemanticScalesV1(runtimeGeometry, cameraScale, displayedScale)
+              ? compensatePreparedGeometryForOverlayScales(runtimeGeometry, cameraScale, entity.scale)
               : null;
-            // A pending Runtime Trace edit must move the semantic draft ghost,
-            // not the retained base pixels. Keep the runtime AABB only as local
-            // paint geometry so unknown Tex dimensions never collapse the ghost;
-            // it is deliberately not written back into the projected entity.
+            // A pending Runtime Trace edit moves only this paint-free outline,
+            // while the retained base pixels stay fixed until validation.
             const terminalPositionOnly =
               (preview?.runtimeTraceTerminalEdit?.studioEntityId === entity.id &&
                 terminalEditCapabilities?.uniformScale === false) ||
               (terminalPendingPresentation?.studioEntityId === entity.id &&
                 terminalPendingPresentation.draftGhost === "position-only");
-            const runtimeTracePositionOnlyGhost = runtimeTraceTargetGhost && terminalPositionOnly;
-            const runtimeTraceGhostGeometry =
-              runtimeTracePositionOnlyGhost && compensatedRuntimeGeometry?.dimensions
-                ? { ...semanticPreviewGeometry, dimensions: compensatedRuntimeGeometry.dimensions }
-                : null;
-            const previewGeometry = presentedGeometry
-              ? (compensatedRuntimeGeometry ?? semanticPreviewGeometry)
-              : (runtimeTraceGhostGeometry ?? semanticPreviewGeometry);
+            const gestureGeometry = entityPreviewGeometry(geometryPreview, entity);
+            const previewGeometry =
+              geometryPreview?.entityId === entity.id
+                ? {
+                    dimensions: terminalPositionOnly
+                      ? (compensatedRuntimeGeometry?.dimensions ?? null)
+                      : gestureGeometry.dimensions,
+                    position: gestureGeometry.position,
+                  }
+                : compensatedRuntimeGeometry;
+            if (!previewGeometry) return null;
             const position = {
               x: previewGeometry.position.x + localDelta.x,
               y: previewGeometry.position.y + localDelta.y,
             };
-            const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditTargetIds.has(entity.id);
             const runtimePositionOnly = terminalPositionOnly;
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
-            // Shape resizing remains gated by the semantic source projection.
+            // Shape resizing remains gated by the source projection.
             const shapeResizeAvailable =
               !runtimeUniformScaleOnly &&
               shape !== null &&
@@ -578,15 +501,15 @@ export function StudioCanvas({
                   remoteSelectorOrdinals.length > 0 && "outline outline-1 outline-offset-2 outline-sky-800",
                 )}
                 data-studio-geometry={approximate ? "approximate" : "known"}
-                data-studio-entity-height={(presentedGeometry ?? previewGeometry).dimensions?.height?.toFixed(4)}
-                data-studio-entity-radius={(presentedGeometry ?? previewGeometry).dimensions?.radius?.toFixed(4)}
+                data-studio-entity-height={previewGeometry.dimensions?.height?.toFixed(4)}
+                data-studio-entity-radius={previewGeometry.dimensions?.radius?.toFixed(4)}
                 data-studio-entity-scale={displayedScale.toFixed(4)}
-                data-studio-entity-width={(presentedGeometry ?? previewGeometry).dimensions?.width?.toFixed(4)}
+                data-studio-entity-width={previewGeometry.dimensions?.width?.toFixed(4)}
                 data-studio-entity-wrapper={entity.id}
-                data-studio-runtime-binding={presentedIdentity?.bindingId}
-                data-studio-runtime-entity={presentedIdentity?.runtimeEntityId}
+                data-studio-runtime-binding={preparedIdentity.bindingId}
+                data-studio-runtime-entity={preparedIdentity.runtimeEntityId}
                 key={entity.id}
-                style={{ ...viewportPositionStyle(position), opacity, touchAction: "none" }}
+                style={{ ...viewportPositionStyle(position), touchAction: "none" }}
               >
                 <div className="relative origin-center" style={{ scale: displayedScale }}>
                   <button
@@ -594,14 +517,14 @@ export function StudioCanvas({
                     aria-pressed={selected}
                     className={cn(
                       "block border outline-none",
-                      presentedGeometry ? "box-border p-0" : shape ? "p-0" : "px-3 py-2",
+                      "box-border p-0",
                       moveLocked
-                        ? "pointer-events-none border-dashed border-sky-800 bg-zinc-950/70"
+                        ? "pointer-events-none border-dashed border-sky-800"
                         : selectionOnlyEntity
                           ? "cursor-pointer"
                           : "cursor-grab active:cursor-grabbing",
                       selected
-                        ? "border-sky-400 bg-sky-950/60 focus-visible:ring-2 focus-visible:ring-sky-400"
+                        ? "border-sky-400 focus-visible:ring-2 focus-visible:ring-sky-400"
                         : "border-transparent hover:border-zinc-600",
                     )}
                     data-studio-entity={entity.id}
@@ -627,11 +550,7 @@ export function StudioCanvas({
                     }}
                     onPointerMove={selectionOnlyEntity ? undefined : onEntityPointerMove}
                     onPointerUp={selectionOnlyEntity ? undefined : onEntityPointerUp}
-                    style={
-                      presentedGeometry || runtimeTraceTargetGhost
-                        ? entityDimensionStyle(previewGeometry.dimensions, frame)
-                        : undefined
-                    }
+                    style={entityDimensionStyle(previewGeometry.dimensions, frame)}
                     title={
                       selectionOnlyEntity
                         ? "This verified object can be selected, but source rewriting is unavailable."
@@ -641,18 +560,6 @@ export function StudioCanvas({
                     }
                     type="button"
                   >
-                    <span
-                      className={cn(
-                        "block",
-                        showingCanvasPixels && !runtimeTraceTargetGhost && "pointer-events-none opacity-0",
-                        runtimeTraceTargetGhost && "opacity-60",
-                      )}
-                      data-studio-semantic-paint={
-                        showingCanvasPixels && !runtimeTraceTargetGhost ? "deferred-to-canvas" : "painted"
-                      }
-                    >
-                      <ObjectVisual dimensions={previewGeometry.dimensions} entity={entity} frame={frame} />
-                    </span>
                     {selected ? (
                       <span className="pointer-events-none absolute -top-6 left-0 max-w-56 truncate bg-sky-400 px-1.5 py-0.5 text-[10px] font-medium text-sky-950">
                         {entityLabel(entity)}
@@ -694,7 +601,7 @@ export function StudioCanvas({
             {preview.runtimeTracePendingPresentation
               ? terminalPendingPresentation?.validationStatusLabel
               : preview.state.phase === "presented"
-                ? `Canvas preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
+                ? `WebGPU preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
                     displayOnlyPreview
                       ? "display only"
                       : selectionOnlyPreview
@@ -705,7 +612,7 @@ export function StudioCanvas({
                             : preview.runtimeTraceTerminalEdit?.controlLabel
                           : "editing preview only"
                   }`
-                : `Canvas preview fallback · ${describeStudioPreviewFallbackV1(preview.state.reason)}`}
+                : `WebGPU preview unavailable · ${describeStudioPreviewFallback(preview.state.reason)}`}
           </div>
         ) : null}
         <StudioPresenceOverlay participants={presenceParticipants} />

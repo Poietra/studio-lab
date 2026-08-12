@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import sceneBundleFixture from "../../fixtures/engine-v1/shared-circle-opacity.json";
 import type { SceneIrBundleV1 } from "../engine/contracts";
 import {
-  describeStudioPreviewFallbackV1,
-  evaluateStudioPreviewEligibilityV1,
-  projectStudioPreviewInteractionGeometryV1,
-  resolveStudioPreviewViewStateV1,
-  type StudioPreviewEligibilityInputV1,
-  type StudioPreviewHostBindingV1,
-  type StudioPreviewViewStateInputV1,
-  snapStudioPreviewViewportV1,
-  studioPreviewHostBindingCurrentV1,
+  describeStudioPreviewFallback,
+  evaluateStudioPreviewEligibility,
+  projectStudioPreviewInteractionGeometry,
+  resolveStudioPreviewViewState,
+  type StudioPreviewCapabilities,
+  type StudioPreviewHostBinding,
+  type StudioPreviewViewStateInput,
+  snapStudioPreviewViewport,
+  studioPreviewHostBindingCurrent,
   studioPreviewSnapshotCorrelatesV1,
   studioPreviewSnapshotMatchesSourceV1,
   studioPreviewVerifiedSourceDurationV1,
@@ -22,21 +22,15 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 
-const CAPABLE: StudioPreviewEligibilityInputV1 = {
+const CAPABLE: StudioPreviewCapabilities = {
   moduleWorkerSupported: true,
   offscreenCanvasTransferSupported: true,
-  providerAvailable: true,
   webgpuAvailable: true,
 };
 
-describe("evaluateStudioPreviewEligibilityV1", () => {
-  it("stays disabled without a verified snapshot provider even in a capable browser", () => {
-    const result = evaluateStudioPreviewEligibilityV1({ ...CAPABLE, providerAvailable: false });
-    expect(result).toMatchObject({ eligible: false, reason: "disabled" });
-  });
-
-  it("is eligible only when every capability and the provider are available", () => {
-    expect(evaluateStudioPreviewEligibilityV1(CAPABLE)).toEqual({ eligible: true });
+describe("evaluateStudioPreviewEligibility", () => {
+  it("is eligible only when every browser capability is available", () => {
+    expect(evaluateStudioPreviewEligibility(CAPABLE)).toEqual({ eligible: true });
   });
 
   it.each([
@@ -44,7 +38,7 @@ describe("evaluateStudioPreviewEligibilityV1", () => {
     ["offscreenCanvasTransferSupported", "OffscreenCanvas"],
     ["webgpuAvailable", "WebGPU"],
   ] as const)("reports capability-unsupported when %s is missing", (capability, detailFragment) => {
-    const result = evaluateStudioPreviewEligibilityV1({ ...CAPABLE, [capability]: false });
+    const result = evaluateStudioPreviewEligibility({ ...CAPABLE, [capability]: false });
     expect(result).toMatchObject({ eligible: false, reason: "capability-unsupported" });
     if (result.eligible) throw new Error("Expected an ineligible result.");
     expect(result.detail).toContain(detailFragment);
@@ -53,7 +47,6 @@ describe("evaluateStudioPreviewEligibilityV1", () => {
   it("never claims render, source, export, or final-render success in its labels", () => {
     for (const reason of [
       "capability-unsupported",
-      "disabled",
       "disposed",
       "frame-pending",
       "frame-stale",
@@ -62,12 +55,12 @@ describe("evaluateStudioPreviewEligibilityV1", () => {
       "render-error",
       "renderer-failed",
       "sample-out-of-range",
+      "scene-unsupported",
       "snapshot-unavailable",
       "snapshot-uncorrelated",
-      "transient-edit",
       "viewport-unavailable",
     ] as const) {
-      const label = describeStudioPreviewFallbackV1(reason);
+      const label = describeStudioPreviewFallback(reason);
       expect(label.length).toBeGreaterThan(0);
       expect(label).not.toMatch(/export|final|source of truth|authoritative|success/i);
     }
@@ -141,19 +134,19 @@ describe("studioPreviewSnapshotCorrelatesV1", () => {
   });
 });
 
-describe("snapStudioPreviewViewportV1", () => {
+describe("snapStudioPreviewViewport", () => {
   it("returns the largest integer viewport matching the camera aspect exactly", () => {
-    expect(snapStudioPreviewViewportV1({ height: 476.2, width: 846.4 }, 16 / 9)).toEqual({
+    expect(snapStudioPreviewViewport({ height: 476.2, width: 846.4 }, 16 / 9)).toEqual({
       heightPx: 468,
       widthPx: 832,
     });
-    expect(snapStudioPreviewViewportV1({ height: 90, width: 160 }, 16 / 9)).toEqual({ heightPx: 90, widthPx: 160 });
+    expect(snapStudioPreviewViewport({ height: 90, width: 160 }, 16 / 9)).toEqual({ heightPx: 90, widthPx: 160 });
   });
 
   it("refuses boxes and aspects that cannot produce a matching viewport", () => {
-    expect(snapStudioPreviewViewportV1({ height: 0.4, width: 100 }, 16 / 9)).toBeNull();
-    expect(snapStudioPreviewViewportV1({ height: 100, width: 100 }, Number.NaN)).toBeNull();
-    expect(snapStudioPreviewViewportV1({ height: 100, width: 100 }, 0)).toBeNull();
+    expect(snapStudioPreviewViewport({ height: 0.4, width: 100 }, 16 / 9)).toBeNull();
+    expect(snapStudioPreviewViewport({ height: 100, width: 100 }, Number.NaN)).toBeNull();
+    expect(snapStudioPreviewViewport({ height: 100, width: 100 }, 0)).toBeNull();
   });
 });
 
@@ -212,7 +205,7 @@ describe("studioPreviewVerifiedSourceDurationV1", () => {
   });
 });
 
-const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
+const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInput = {
   context: CONTEXT,
   eligibility: { eligible: true },
   hostActive: true,
@@ -226,18 +219,18 @@ const PRESENTED_VIEW_INPUT: StudioPreviewViewStateInputV1 = {
     phase: "presented",
   },
   sampleTime: 1,
+  sceneBoundaryActive: false,
   snapshot: VIEW_SNAPSHOT,
   snapshotError: null,
-  transientEdit: false,
   viewport: { heightPx: 90, widthPx: 160 },
 };
 
-describe("resolveStudioPreviewViewStateV1", () => {
+describe("resolveStudioPreviewViewState", () => {
   it("presents a correlated Studio-owned revision while retaining the imported snapshot as source evidence", () => {
     const workingRevision = "programs:tx-1";
     const engineRevisionHash = "f".repeat(64);
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         context: { ...CONTEXT, workingRevision },
         hostState: {
@@ -256,7 +249,7 @@ describe("resolveStudioPreviewViewStateV1", () => {
 
   it("rejects a stale Studio-owned frame even while its imported source evidence still matches", () => {
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         context: { ...CONTEXT, workingRevision: "programs:tx-2" },
         workingScene: { engineRevisionHash: CORRELATION.engineRevisionHash, workingRevision: "programs:tx-1" },
@@ -264,17 +257,17 @@ describe("resolveStudioPreviewViewStateV1", () => {
     ).toMatchObject({ phase: "fallback", reason: "snapshot-uncorrelated" });
   });
 
-  it("loads verified source time while an ineligible renderer stays on semantic fallback", async () => {
+  it("loads verified source time while renderer capability stays unsupported", async () => {
     const editedContext = { ...CONTEXT, sourceDuration: 0.1, workingRevision: "programs:tx-1" };
     const loaded = await loadStudioPreviewSnapshotMetadataV1({
       context: editedContext,
       provider: { id: "metadata-only", loadVerifiedSnapshot: async () => VIEW_SNAPSHOT },
     });
-    const eligibility = evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false });
+    const eligibility = evaluateStudioPreviewEligibility({ ...CAPABLE, webgpuAvailable: false });
 
     expect(studioPreviewVerifiedSourceDurationV1(loaded, editedContext)).toBe(2);
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         context: editedContext,
         eligibility,
@@ -285,7 +278,7 @@ describe("resolveStudioPreviewViewStateV1", () => {
 
   it("fails closed when snapshot metadata loading reports a provider error", () => {
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         snapshot: null,
         snapshotError: "snapshot producer unavailable",
@@ -295,9 +288,9 @@ describe("resolveStudioPreviewViewStateV1", () => {
 
   it("reports a metadata failure even when WebGPU is unavailable", () => {
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
-        eligibility: evaluateStudioPreviewEligibilityV1({ ...CAPABLE, webgpuAvailable: false }),
+        eligibility: evaluateStudioPreviewEligibility({ ...CAPABLE, webgpuAvailable: false }),
         snapshot: null,
         snapshotError: "snapshot producer unavailable",
       }),
@@ -309,7 +302,7 @@ describe("resolveStudioPreviewViewStateV1", () => {
   });
 
   it("presents only when the host frame matches this render exactly", () => {
-    expect(resolveStudioPreviewViewStateV1(PRESENTED_VIEW_INPUT)).toBe(PRESENTED_VIEW_INPUT.hostState);
+    expect(resolveStudioPreviewViewState(PRESENTED_VIEW_INPUT)).toBe(PRESENTED_VIEW_INPUT.hostState);
   });
 
   it.each([
@@ -318,22 +311,22 @@ describe("resolveStudioPreviewViewStateV1", () => {
     ["the viewport disappeared", { viewport: null }],
     ["the host was disposed or replaced", { hostActive: false }],
   ] as const)("falls back synchronously when %s", (_case, change) => {
-    expect(resolveStudioPreviewViewStateV1({ ...PRESENTED_VIEW_INPUT, ...change })).toMatchObject({
+    expect(resolveStudioPreviewViewState({ ...PRESENTED_VIEW_INPUT, ...change })).toMatchObject({
       phase: "fallback",
       reason: "frame-stale",
     });
   });
 
-  it("gates transient edits synchronously in the render that starts the drag", () => {
-    expect(resolveStudioPreviewViewStateV1({ ...PRESENTED_VIEW_INPUT, transientEdit: true })).toMatchObject({
+  it("reports Scene-boundary composition as explicitly unsupported", () => {
+    expect(resolveStudioPreviewViewState({ ...PRESENTED_VIEW_INPUT, sceneBoundaryActive: true })).toMatchObject({
       phase: "fallback",
-      reason: "transient-edit",
+      reason: "scene-unsupported",
     });
   });
 
   it("never presents a frame whose engine revision differs from the snapshot correlation", () => {
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         hostState: {
           frame: {
@@ -350,7 +343,7 @@ describe("resolveStudioPreviewViewStateV1", () => {
 
   it("reports uncorrelated snapshots ahead of frame staleness", () => {
     expect(
-      resolveStudioPreviewViewStateV1({
+      resolveStudioPreviewViewState({
         ...PRESENTED_VIEW_INPUT,
         context: { ...CONTEXT, workingRevision: "programs:tx-1" },
         sampleTime: 1.25,
@@ -359,15 +352,15 @@ describe("resolveStudioPreviewViewStateV1", () => {
   });
 });
 
-describe("studioPreviewHostBindingCurrentV1", () => {
+describe("studioPreviewHostBindingCurrent", () => {
   const canvas = {};
   const provider = {};
   const snapshot = {};
-  const binding: StudioPreviewHostBindingV1 = { canvas, provider, snapshot, workspaceKey: "key-1" };
-  const current: StudioPreviewHostBindingV1 = { canvas, provider, snapshot, workspaceKey: "key-1" };
+  const binding: StudioPreviewHostBinding = { canvas, provider, snapshot, workspaceKey: "key-1" };
+  const current: StudioPreviewHostBinding = { canvas, provider, snapshot, workspaceKey: "key-1" };
 
   it("matches only the exact same canvas, provider, snapshot, and workspace", () => {
-    expect(studioPreviewHostBindingCurrentV1(binding, current)).toBe(true);
+    expect(studioPreviewHostBindingCurrent(binding, current)).toBe(true);
   });
 
   it.each([
@@ -377,15 +370,15 @@ describe("studioPreviewHostBindingCurrentV1", () => {
     ["snapshot reload", { ...current, snapshot: {} }],
     ["workspace switch", { ...current, workspaceKey: "key-2" }],
   ] as const)("invalidates on %s", (_case, candidate) => {
-    expect(studioPreviewHostBindingCurrentV1(candidate === null ? null : binding, candidate ?? current)).toBe(false);
+    expect(studioPreviewHostBindingCurrent(candidate === null ? null : binding, candidate ?? current)).toBe(false);
   });
 });
 
-describe("projectStudioPreviewInteractionGeometryV1", () => {
+describe("projectStudioPreviewInteractionGeometry", () => {
   const FRAME = { height: 8, width: 16 } as const;
 
   it("maps clip-space centers and extents into Studio overlay and frame units", () => {
-    const geometry = projectStudioPreviewInteractionGeometryV1(
+    const geometry = projectStudioPreviewInteractionGeometry(
       ["runtime:circle"],
       {
         entries: [{ bounds: [-0.5, 0, 0.5, 1], status: "present" }],
@@ -400,7 +393,7 @@ describe("projectStudioPreviewInteractionGeometryV1", () => {
   });
 
   it("reports visual AABB dimensions without inferring an editable radius", () => {
-    const geometry = projectStudioPreviewInteractionGeometryV1(
+    const geometry = projectStudioPreviewInteractionGeometry(
       ["runtime:circle"],
       {
         entries: [{ bounds: [-0.25, -0.5, 0.25, 0.5], status: "present" }],
@@ -416,9 +409,9 @@ describe("projectStudioPreviewInteractionGeometryV1", () => {
   });
 
   it.each(["inactive", "empty", "unavailable"] as const)(
-    "retains semantic fallback for a %s runtime entry",
+    "returns no prepared target for a %s runtime entry",
     (status) => {
-      const geometry = projectStudioPreviewInteractionGeometryV1(
+      const geometry = projectStudioPreviewInteractionGeometry(
         ["runtime:entity"],
         { entries: [{ status }], space: "clip-v1", status: "available" },
         FRAME,
@@ -432,12 +425,12 @@ describe("projectStudioPreviewInteractionGeometryV1", () => {
     ["missing metadata", undefined],
     ["null metadata", null],
     ["unavailable metadata", { status: "unavailable" }],
-  ] as const)("retains semantic fallback for %s", (_case, interaction) => {
-    expect(projectStudioPreviewInteractionGeometryV1(["runtime:entity"], interaction, FRAME).size).toBe(0);
+  ] as const)("returns no prepared target for %s", (_case, interaction) => {
+    expect(projectStudioPreviewInteractionGeometry(["runtime:entity"], interaction, FRAME).size).toBe(0);
   });
 
   it("rejects metadata whose ordered entry count does not match the requested IDs", () => {
-    const geometry = projectStudioPreviewInteractionGeometryV1(
+    const geometry = projectStudioPreviewInteractionGeometry(
       ["runtime:first", "runtime:second"],
       {
         entries: [{ bounds: [-1, -1, 0, 0], status: "present" }],

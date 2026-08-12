@@ -1,96 +1,98 @@
-import { useCallback, useEffect, useLayoutEffect, useReducer, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
 import type { ProgramRecord, ProposedState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
-  resolveStudioPreviewSnapshotProviderV1,
-  STUDIO_PREVIEW_RENDERER_QUERY_PARAM,
+  resolveStudioPreviewSnapshotProvider,
   type StudioPreviewEditingContextV1,
+  type StudioPreviewProviderKind,
   type StudioPreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider";
 import { type StudioPreviewRendererView, useStudioPreviewRenderer } from "./use-preview-renderer";
 
-export type StudioPreviewAuthorityStateV1 =
-  | Readonly<{
-      generation: number;
-      phase: "disabled";
-      provider: null;
-      requestSearch: null;
-    }>
+export type StudioPreviewAuthorityState =
   | Readonly<{
       generation: number;
       phase: "awaiting-consent" | "resolving";
       provider: null;
-      requestSearch: string;
+      providerKind: StudioPreviewProviderKind;
+      projectId: string | null;
     }>
   | Readonly<{
       generation: number;
       phase: "active";
-      provider: StudioPreviewSnapshotProviderV1 | null;
-      requestSearch: string;
+      provider: StudioPreviewSnapshotProviderV1;
+      providerKind: StudioPreviewProviderKind;
+      projectId: string | null;
     }>;
 
-export type StudioPreviewAuthorityActionV1 =
-  | Readonly<{ requestSearch: string | null; type: "configure" }>
+export type StudioPreviewAuthorityAction =
+  | Readonly<{ projectId: string | null; providerKind: StudioPreviewProviderKind; type: "configure" }>
   | Readonly<{ allowed: boolean; type: "activate" }>
   | Readonly<{ allowed: boolean; type: "retry" }>
   | Readonly<{
       generation: number;
-      provider: StudioPreviewSnapshotProviderV1 | null;
+      provider: StudioPreviewSnapshotProviderV1;
       type: "provider-resolved";
     }>;
 
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
-  committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
-  draftProposedState: ProposedState | null;
   frame: Readonly<{ height: number; width: number }>;
+  gestureActive: boolean;
+  proposedState: ProposedState | null;
   retainedSourceDuration: number | null;
   runtimeTraceTerminalProgramRecords: readonly ProgramRecord[];
   sampleTime: number;
-  transientEdit: boolean;
+  sceneBoundaryActive: boolean;
 }>;
 
-export type StudioPreviewAuthorityControllerViewV1 = Readonly<{
+export type StudioPreviewAuthorityControllerView = Readonly<{
   activate: () => boolean;
   activationAllowed: boolean;
-  activationRequested: boolean;
-  activated: boolean;
+  awaitingConsent: boolean;
   providerPending: boolean;
-  requestServer: () => boolean;
   renderer: StudioPreviewRendererView | null;
   retry: () => boolean;
 }>;
 
-export const STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1 = `?${STUDIO_PREVIEW_RENDERER_QUERY_PARAM}=server`;
+const STUDIO_PREVIEW_RENDERER_QUERY_PARAM = "previewRenderer";
 
-function authorityStateForRequest(
-  state: StudioPreviewAuthorityStateV1,
-  requestSearch: string | null,
-): StudioPreviewAuthorityStateV1 {
-  if (state.requestSearch === requestSearch) return state;
-  const generation = state.generation + 1;
-  return requestSearch === null
-    ? { generation, phase: "disabled", provider: null, requestSearch: null }
-    : { generation, phase: "awaiting-consent", provider: null, requestSearch };
+function authorityStateForProvider(
+  state: StudioPreviewAuthorityState,
+  providerKind: StudioPreviewProviderKind,
+  projectId: string | null,
+): StudioPreviewAuthorityState {
+  // Closing a workspace temporarily clears context; retain that scope so
+  // reopening the same project in this tab does not prompt again. A different
+  // non-null project always revokes the previous execution consent.
+  const nextProjectId = projectId ?? state.projectId;
+  if (state.providerKind === providerKind && state.projectId === nextProjectId) return state;
+  return {
+    generation: state.generation + 1,
+    phase: "awaiting-consent",
+    provider: null,
+    providerKind,
+    projectId: nextProjectId,
+  };
 }
 
-export function createStudioPreviewAuthorityStateV1(requestSearch: string | null): StudioPreviewAuthorityStateV1 {
-  return requestSearch === null
-    ? { generation: 0, phase: "disabled", provider: null, requestSearch: null }
-    : { generation: 0, phase: "awaiting-consent", provider: null, requestSearch };
+export function createStudioPreviewAuthorityState(
+  providerKind: StudioPreviewProviderKind,
+): StudioPreviewAuthorityState {
+  return { generation: 0, phase: "awaiting-consent", provider: null, providerKind, projectId: null };
 }
 
 /**
- * Owns the explicit-consent boundary and the monotonic provider authority
- * generation. A provider resolution can become active only for the exact
- * request generation that the user consented to; reconfiguration resets to
- * semantic preview synchronously and permanently rejects stale completions.
+ * Owns the execution-consent boundary and monotonic provider generation. A
+ * resolution can become active only for the exact request the user approved,
+ * so URL fixture changes can never install a stale provider over the canonical
+ * server provider.
  */
-export function reduceStudioPreviewAuthorityV1(
-  state: StudioPreviewAuthorityStateV1,
-  action: StudioPreviewAuthorityActionV1,
-): StudioPreviewAuthorityStateV1 {
-  if (action.type === "configure") return authorityStateForRequest(state, action.requestSearch);
+export function reduceStudioPreviewAuthority(
+  state: StudioPreviewAuthorityState,
+  action: StudioPreviewAuthorityAction,
+): StudioPreviewAuthorityState {
+  if (action.type === "configure") return authorityStateForProvider(state, action.providerKind, action.projectId);
   if (action.type === "activate") {
     if (!action.allowed || state.phase !== "awaiting-consent") return state;
     return { ...state, generation: state.generation + 1, phase: "resolving" };
@@ -103,46 +105,33 @@ export function reduceStudioPreviewAuthorityV1(
   return { ...state, phase: "active", provider: action.provider };
 }
 
-/** Keeps semantic preview as default and admits only the production provider,
- * plus the checked-in fixtures in development/test builds. */
-export function requestedStudioPreviewRendererSearchV1(search: string | null, fixtureAllowed: boolean) {
-  if (search === null) return null;
-  const requested = new URLSearchParams(search).get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
-  return requested === "server" || (fixtureAllowed && (requested === "fixture" || requested === "mathtex-fixture"))
-    ? search
-    : null;
-}
-
 /**
- * URL requests remain an independent developer/fixture entry point. The
- * standard UI contributes only a tab-local server request, so it neither
- * rewrites the address bar nor accidentally grants fixture authority.
+ * The production server provider is the standard authority. A recognized
+ * DEV-only fixture query replaces it without making unknown query values an
+ * opt-out from canonical rendering.
  */
-export function effectiveStudioPreviewRendererSearchV1(
+export function selectStudioPreviewProvider(
   browserSearch: string | null,
   fixtureAllowed: boolean,
-  manualServerRequested: boolean,
-) {
-  return (
-    requestedStudioPreviewRendererSearchV1(browserSearch, fixtureAllowed) ??
-    (manualServerRequested ? STUDIO_PREVIEW_SERVER_REQUEST_SEARCH_V1 : null)
-  );
+): StudioPreviewProviderKind {
+  const requested = new URLSearchParams(browserSearch ?? "").get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
+  return fixtureAllowed && (requested === "fixture" || requested === "mathtex-fixture") ? requested : "server";
 }
 
-type StudioPreviewLocationSearchSourcesV1 = Readonly<{
+type StudioPreviewLocationSearchSources = Readonly<{
   navigationTarget: EventTarget | null;
   traversalTarget: EventTarget | null;
 }>;
 
-export function studioPreviewLocationSearchSnapshotV1(locationValue: Readonly<{ search: string }> | null) {
+export function studioPreviewLocationSearchSnapshot(locationValue: Readonly<{ search: string }> | null) {
   return locationValue?.search ?? null;
 }
 
 /** Browser traversal is universally observable through popstate. The
  * Navigation API additionally reports same-document pushState/replaceState
  * without patching the shared History methods. */
-export function subscribeStudioPreviewLocationSearchChangesV1(
-  sources: StudioPreviewLocationSearchSourcesV1,
+export function subscribeStudioPreviewLocationSearchChanges(
+  sources: StudioPreviewLocationSearchSources,
   onStoreChange: () => void,
 ) {
   sources.traversalTarget?.addEventListener("popstate", onStoreChange);
@@ -165,7 +154,7 @@ function eventTargetOrNull(value: unknown): EventTarget | null {
 }
 
 function currentBrowserSearch() {
-  return studioPreviewLocationSearchSnapshotV1(typeof location === "undefined" ? null : location);
+  return studioPreviewLocationSearchSnapshot(typeof location === "undefined" ? null : location);
 }
 
 function serverBrowserSearch() {
@@ -174,13 +163,13 @@ function serverBrowserSearch() {
 
 function subscribeBrowserSearch(onStoreChange: () => void) {
   if (typeof window === "undefined") {
-    return subscribeStudioPreviewLocationSearchChangesV1(
+    return subscribeStudioPreviewLocationSearchChanges(
       { navigationTarget: null, traversalTarget: null },
       onStoreChange,
     );
   }
   const navigationTarget = eventTargetOrNull((window as Window & { navigation?: unknown }).navigation);
-  return subscribeStudioPreviewLocationSearchChangesV1({ navigationTarget, traversalTarget: window }, onStoreChange);
+  return subscribeStudioPreviewLocationSearchChanges({ navigationTarget, traversalTarget: window }, onStoreChange);
 }
 
 function activationIsAllowed() {
@@ -188,45 +177,41 @@ function activationIsAllowed() {
 }
 
 /**
- * Composes App's preview request, consent, provider and renderer authority.
- * The editor revision controller supplies its already fail-closed context.
- * The lower renderer hook continues to own snapshot/worker/canvas resources;
- * this controller decides whether it may receive any provider authority.
+ * Composes the canonical provider and renderer authority. Selecting the server
+ * provider is automatic, but executing workspace Python still requires a
+ * top-level-tab confirmation. The lower hook owns snapshot, worker and canvas
+ * resources only after that boundary.
  */
 export function useStudioPreviewAuthorityController({
-  committedProposedState,
   context,
-  draftProposedState,
   frame,
+  gestureActive,
+  proposedState,
   retainedSourceDuration,
   runtimeTraceTerminalProgramRecords,
   sampleTime,
-  transientEdit,
-}: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerViewV1 {
+  sceneBoundaryActive,
+}: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerView {
   const browserSearch = useSyncExternalStore(subscribeBrowserSearch, currentBrowserSearch, serverBrowserSearch);
-  const [manualServerRequested, setManualServerRequested] = useState(false);
-  const requestSearch = effectiveStudioPreviewRendererSearchV1(
-    browserSearch,
-    import.meta.env.DEV,
-    manualServerRequested,
-  );
+  const providerKind = selectStudioPreviewProvider(browserSearch, import.meta.env.DEV);
   const [authority, dispatch] = useReducer(
-    reduceStudioPreviewAuthorityV1,
-    requestSearch,
-    createStudioPreviewAuthorityStateV1,
+    reduceStudioPreviewAuthority,
+    providerKind,
+    createStudioPreviewAuthorityState,
   );
   // Never expose a provider retained for a changed URL request during the
   // render before the layout effect commits the new generation.
-  const currentAuthority = authorityStateForRequest(authority, requestSearch);
+  const projectId = context?.projectId ?? null;
+  const currentAuthority = authorityStateForProvider(authority, providerKind, projectId);
   useLayoutEffect(() => {
-    dispatch({ requestSearch, type: "configure" });
-  }, [requestSearch]);
+    dispatch({ projectId, providerKind, type: "configure" });
+  }, [projectId, providerKind]);
 
   useEffect(() => {
     if (currentAuthority.phase !== "resolving") return;
-    const { generation, requestSearch: resolvingSearch } = currentAuthority;
+    const { generation, providerKind: resolvingProviderKind } = currentAuthority;
     let cancelled = false;
-    void resolveStudioPreviewSnapshotProviderV1(resolvingSearch)
+    void resolveStudioPreviewSnapshotProvider(resolvingProviderKind)
       .then((provider) => {
         if (!cancelled) dispatch({ generation, provider, type: "provider-resolved" });
       })
@@ -246,15 +231,15 @@ export function useStudioPreviewAuthorityController({
 
   const provider = currentAuthority.phase === "active" ? currentAuthority.provider : null;
   const renderer = useStudioPreviewRenderer({
-    committedProposedState,
     context,
-    draftProposedState,
     frame,
+    gestureActive,
+    proposedState,
     provider,
     retainedSourceDuration,
     runtimeTraceTerminalProgramRecords,
     sampleTime,
-    transientEdit,
+    sceneBoundaryActive,
   });
   const allowed = activationIsAllowed();
   const activate = useCallback(() => {
@@ -262,11 +247,6 @@ export function useStudioPreviewAuthorityController({
     dispatch({ allowed, type: "activate" });
     return true;
   }, [allowed, currentAuthority.phase]);
-  const requestServer = useCallback(() => {
-    if (!allowed) return false;
-    setManualServerRequested(true);
-    return true;
-  }, [allowed]);
   const retry = useCallback(() => {
     if (!allowed || currentAuthority.phase !== "active") return false;
     dispatch({ allowed, type: "retry" });
@@ -276,10 +256,8 @@ export function useStudioPreviewAuthorityController({
   return {
     activate,
     activationAllowed: allowed,
-    activationRequested: currentAuthority.phase !== "disabled",
-    activated: currentAuthority.phase === "resolving" || currentAuthority.phase === "active",
+    awaitingConsent: currentAuthority.phase === "awaiting-consent",
     providerPending: currentAuthority.phase === "resolving",
-    requestServer,
     renderer,
     retry,
   };

@@ -1044,6 +1044,40 @@ describe("studioPreviewInteractionAuthority", () => {
     ).toEqual([]);
   });
 
+  it("does not advertise mutations for an animated server snapshot the canonical compiler cannot edit", async () => {
+    const { snapshot } = await compilablePreviewInput();
+    const animated = {
+      ...snapshot,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          animationChannels: [
+            {
+              entityId: "earlier",
+              id: "opacity:earlier",
+              keyframes: [
+                { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
+                { at: 2, easingToNext: null, value: 1 },
+              ],
+              kind: "opacity",
+              provenanceId: "test",
+            },
+          ],
+        },
+      },
+    } as StudioVerifiedPreviewSnapshotV1;
+
+    expect(studioPreviewInteractionAuthority(animated)).toEqual({
+      kind: "selection-only",
+      reason: "source-edit-unsupported",
+    });
+    expect(studioPreviewInteractionAuthority({ ...animated, sourceRuntimeIdentity: null })).toEqual({
+      kind: "display-only",
+      reason: "source-runtime-identity-unverified",
+    });
+  });
+
   it("keeps legacy runtime snapshots selection-only with verified identity", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;
@@ -1504,7 +1538,7 @@ describe("compileStudioPreviewSceneV1", () => {
         sourceAnchor: 5,
         studioEntityId: authority.studioEntityId,
         target: authority.target,
-        validationStatusLabel: "Draft ghost · dependent updater validation pending",
+        validationStatusLabel: "Edit validation pending · dependent updater",
       },
     );
     expect(pendingProjection[0]).toEqual(
@@ -1535,7 +1569,7 @@ describe("compileStudioPreviewSceneV1", () => {
         sourceAnchor: 5,
         studioEntityId: authority.studioEntityId,
         target: authority.target,
-        validationStatusLabel: "Draft ghost · dependent updater validation pending",
+        validationStatusLabel: "Edit validation pending · dependent updater",
       },
     );
     expect(completedBatchProjection[0]).toEqual(
@@ -1564,7 +1598,7 @@ describe("compileStudioPreviewSceneV1", () => {
           sourceAnchor: 5,
           studioEntityId: "another-entity",
           target: authority.target,
-          validationStatusLabel: "Draft ghost · dependent updater validation pending",
+          validationStatusLabel: "Edit validation pending · dependent updater",
         },
       )[0],
     ).toEqual(
@@ -1752,7 +1786,7 @@ describe("compileStudioPreviewSceneV1", () => {
       sourceAnchor: 14,
       studioEntityId: authority.studioEntityId,
       target: { sourceName: "grid_title", type: "Tex" },
-      validationStatusLabel: "Draft ghost · OpeningManim validation pending",
+      validationStatusLabel: "Edit validation pending · OpeningManim",
     });
     expect(mismatchedPendingProjection[0]?.position).toEqual(authority.baseCenter);
     const scrubbedPending = resolveStudioPreviewRuntimeTraceTerminalUiState({

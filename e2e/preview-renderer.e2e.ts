@@ -1,4 +1,4 @@
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type TestInfo, test } from "@playwright/test";
 
 import {
   type ProgramRenderRequest,
@@ -9,11 +9,18 @@ import {
 import { openWorkspace } from "./workspace";
 
 const FIXTURE_QUERY = "?previewRenderer=fixture";
-const SERVER_QUERY = "?previewRenderer=server";
+
+function requireChromiumAuthorityLane(testInfo: TestInfo) {
+  test.skip(testInfo.project.name !== "preview-chromium", "This assertion belongs to the non-WebGPU authority lane.");
+}
+
+function requireWebGpuDraftLane(testInfo: TestInfo) {
+  test.skip(testInfo.project.name !== "preview-webgpu", "Visual draft creation requires the canonical WebGPU lane.");
+}
 
 async function activateRequestedPreview(page: Page) {
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   await page.getByRole("button", { name: "Run Scene preview" }).click();
 }
 
@@ -74,229 +81,91 @@ function readyRenderSession(request: ProgramRenderRequest, id: string): RenderSe
   };
 }
 
-async function openPreviewHarnessDraft(page: Page) {
-  await page.goto(`/${FIXTURE_QUERY}`);
+async function openActivatedPreviewHarnessDraft(page: Page) {
+  await page.goto("/?previewRenderer=mathtex-fixture");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  const scene = page.getByLabel("Active imported Scene");
+  await scene.selectOption({ label: "studio_mathtex.py · StudioMathTexPreview" });
   const canvasRoot = page.locator("[data-studio-canvas]");
   await expect(canvasRoot).toBeVisible();
+  await activateRequestedPreview(page);
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "presented", { timeout: 30_000 });
   await page.getByRole("button", { name: "Hide Magic Edit" }).click();
   await page.getByRole("button", { name: /Insert circle/ }).click();
   await canvasRoot.click({ position: { x: 180, y: 120 } });
   return canvasRoot;
 }
 
-test("the retained canvas preview stays off unless explicitly requested", async ({ page }) => {
+test("the canonical preview is selected by default but waits for execution consent", async ({ page }, testInfo) => {
+  requireChromiumAuthorityLane(testInfo);
   await openWorkspace(page);
   await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-renderer", "off");
   await expect(page.locator("[data-studio-preview-canvas]")).toHaveCount(0);
   await expect(page.locator("[data-studio-preview-status]")).toHaveCount(0);
+  await expect(page.locator('[data-studio-manim-preview-state="awaiting-consent"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: /Insert circle/ })).toBeDisabled();
+  await expect(page.getByRole("textbox", { name: "Describe an edit" })).toBeDisabled();
 });
 
-test("a server preview URL requires explicit confirmation before Scene execution", async ({ page }) => {
-  let snapshotPosts = 0;
+test("a legacy server query cannot bypass explicit Scene execution consent", async ({ page }, testInfo) => {
+  requireChromiumAuthorityLane(testInfo);
+  let executionPosts = 0;
   page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/scene-snapshots")) snapshotPosts += 1;
+    if (request.method() === "POST" && /\/(runtime-traces|scene-snapshots)$/u.test(new URL(request.url()).pathname))
+      executionPosts += 1;
   });
-  await page.goto(`/${SERVER_QUERY}`, { referer: "https://attacker.example/" });
+  await page.goto("/?previewRenderer=server", { referer: "https://attacker.example/" });
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Enable preview…" })).toBeVisible();
-  expect(snapshotPosts).toBe(0);
+  await expect(page.getByRole("button", { name: "Start preview…" })).toBeVisible();
+  expect(executionPosts).toBe(0);
 
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
-  expect(snapshotPosts).toBe(0);
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
+  expect(executionPosts).toBe(0);
 
-  const snapshotRequest = page.waitForRequest(
-    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/scene-snapshots"),
+  const executionRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && /\/(runtime-traces|scene-snapshots)$/u.test(new URL(request.url()).pathname),
   );
   await page.getByRole("button", { name: "Run Scene preview" }).click();
-  await snapshotRequest;
-  expect(snapshotPosts).toBe(1);
+  await executionRequest;
+  await expect.poll(() => executionPosts).toBeGreaterThan(0);
+  await expect
+    .poll(async () => page.locator("[data-studio-manim-preview-state]").getAttribute("data-studio-manim-preview-state"))
+    .toMatch(/^(failed|presented|unsupported)$/);
+  const confirmedExecutionPosts = executionPosts;
 
   await page.reload();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
-  await expect(page.getByRole("button", { name: "Enable preview…" })).toBeVisible();
-  expect(snapshotPosts).toBe(1);
+  await expect(page.getByRole("button", { name: "Start preview…" })).toBeVisible();
+  expect(executionPosts).toBe(confirmedExecutionPosts);
 });
 
-test("same-document preview query changes revoke authority and require fresh consent", async ({ page }) => {
-  let snapshotPosts = 0;
-  page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/scene-snapshots")) snapshotPosts += 1;
-  });
-  await page.goto(`/${SERVER_QUERY}`);
-  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  await expect(canvasRoot).toBeVisible();
-  await activateRequestedPreview(page);
-  await expect.poll(() => snapshotPosts).toBe(1);
-  await expect(canvasRoot).not.toHaveAttribute("data-preview-renderer", "off");
-
-  await page.evaluate(() => history.pushState(null, "", "/"));
-  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
-  await expect(page.locator("[data-studio-preview-status]")).toHaveCount(0);
-  expect(snapshotPosts).toBe(1);
-
-  await page.goBack({ waitUntil: "commit" });
-  await expect(page).toHaveURL(new RegExp(`${SERVER_QUERY.replace("?", "\\?")}$`));
-  await expect(page.getByRole("button", { name: "Enable preview…" })).toBeVisible();
-  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
-  expect(snapshotPosts).toBe(1);
-
-  await activateRequestedPreview(page);
-  await expect.poll(() => snapshotPosts).toBe(2);
-});
-
-test("an embedded server preview URL cannot grant Scene execution", async ({ baseURL, page }) => {
+test("an embedded Studio cannot grant Scene execution", async ({ baseURL, page }, testInfo) => {
+  requireChromiumAuthorityLane(testInfo);
   if (!baseURL) throw new Error("The preview E2E base URL is unavailable.");
   let snapshotPosts = 0;
   page.on("request", (request) => {
-    if (request.method() === "POST" && new URL(request.url()).pathname.endsWith("/scene-snapshots")) snapshotPosts += 1;
+    if (request.method() === "POST" && /\/(runtime-traces|scene-snapshots)$/u.test(new URL(request.url()).pathname))
+      snapshotPosts += 1;
   });
-  await page.setContent(`<iframe title="Embedded Studio" src="${baseURL}/${SERVER_QUERY}"></iframe>`);
+  await page.setContent(`<iframe title="Embedded Studio" src="${baseURL}/?previewRenderer=server"></iframe>`);
   const studio = page.frameLocator('iframe[title="Embedded Studio"]');
   await expect(studio.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await studio.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(studio.locator("[data-studio-canvas]")).toBeVisible();
-  await expect(studio.getByText("Open Studio in a top-level tab to enable it.")).toBeVisible();
-  await expect(studio.getByRole("button", { name: "Enable preview…" })).toHaveCount(0);
+  await expect(studio.getByText("Open Studio in a top-level tab to start it.")).toBeVisible();
+  await expect(studio.getByRole("button", { name: "Start preview…" })).toHaveCount(0);
   expect(snapshotPosts).toBe(0);
 });
 
-test("enabling verified timing while Apply preflight is pending cannot apply a stale draft", async ({ page }) => {
-  let releaseExport = () => {};
-  const exportRelease = new Promise<void>((resolve) => {
-    releaseExport = resolve;
-  });
-  await page.route("**/api/manim/projects/preview-harness/export", async (route) => {
-    await exportRelease;
-    await route.continue();
-  });
-  await makePreviewHarnessCommandAvailable(page);
-  await page.goto(`/${FIXTURE_QUERY}`);
-  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  await expect(canvasRoot).toBeVisible();
-  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
-  await page.getByRole("button", { name: /Insert circle/ }).click();
-  await canvasRoot.click({ position: { x: 180, y: 120 } });
-  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Render program" })).toBeEnabled();
-  await expect(page.getByRole("button", { name: "Export .py" })).toBeEnabled();
-
-  const exportStarted = page.waitForRequest(
-    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/export"),
-  );
-  await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(page.getByRole("button", { name: "Checking source…" })).toBeVisible();
-  await exportStarted;
-  try {
-    await page.getByRole("button", { name: "Enable preview…" }).click();
-    await page.getByRole("button", { name: "Run Scene preview" }).click();
-    await expect(page.getByRole("heading", { name: "Scene timing needs resolution" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Render program" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Export .py" })).toBeDisabled();
-  } finally {
-    releaseExport();
-  }
-
-  await expect(page.getByRole("button", { name: "Apply program" })).toBeEnabled();
-  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(page.getByText(/Waiting will not resolve this conflict/).first()).toBeVisible();
-});
-
-test("a timing conflict aborts an in-flight modified source Export before download", async ({ page }) => {
-  let releaseExport = () => {};
-  const exportRelease = new Promise<void>((resolve) => {
-    releaseExport = resolve;
-  });
-  let downloads = 0;
-  page.on("download", () => {
-    downloads += 1;
-  });
-  await page.route("**/api/manim/projects/preview-harness/export", async (route) => {
-    await exportRelease;
-    await route
-      .fulfill({
-        body: "from manim import *\n",
-        headers: {
-          "content-disposition": 'attachment; filename="stale.poietra.py"',
-          "content-type": "text/x-python; charset=utf-8",
-          "x-poietra-project-id": "preview-harness",
-        },
-      })
-      .catch(() => undefined);
-  });
-  await makePreviewHarnessCommandAvailable(page);
-  await page.goto(`/${FIXTURE_QUERY}`);
-  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  await expect(canvasRoot).toBeVisible();
-  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
-  await page.getByRole("button", { name: /Insert circle/ }).click();
-  await canvasRoot.click({ position: { x: 180, y: 120 } });
-
-  const exportStarted = page.waitForRequest(
-    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/export"),
-  );
-  await page.getByRole("button", { name: "Export .py" }).click();
-  await expect(page.getByRole("button", { name: "Exporting…" })).toBeVisible();
-  await exportStarted;
-  try {
-    await activateRequestedPreview(page);
-    await expect(page.getByRole("heading", { name: "Scene timing needs resolution" })).toBeVisible();
-  } finally {
-    releaseExport();
-  }
-
-  await expect(page.getByRole("button", { name: "Export .py" })).toBeDisabled();
-  expect(downloads).toBe(0);
-});
-
-test("a stale Render response is atomically abandoned after timing changes", async ({ page }) => {
-  const renderId = "11111111-1111-4111-8111-111111111121";
-  let releaseRender = () => {};
-  const renderRelease = new Promise<void>((resolve) => {
-    releaseRender = resolve;
-  });
-  let startedSession: RenderSessionView | null = null;
-  let abandonPosts = 0;
-  await makePreviewHarnessCommandAvailable(page);
-  await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
-    const request = route.request().postDataJSON() as ProgramRenderRequest;
-    startedSession = readyRenderSession(request, renderId);
-    await renderRelease;
-    await route.fulfill({ json: startedSession, status: 202 });
-  });
-  await page.route(`**/api/manim/renders/${renderId}/abandon`, async (route) => {
-    abandonPosts += 1;
-    expect(route.request().postDataJSON()).toEqual({ renderRequestId: startedSession?.renderRequestId });
-    await route.fulfill({ json: { abandoned: true } });
-  });
-  await openPreviewHarnessDraft(page);
-
-  const renderStarted = page.waitForRequest(
-    (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/renders"),
-  );
-  await page.getByRole("button", { name: "Render program" }).click();
-  await renderStarted;
-  await activateRequestedPreview(page);
-  await expect(page.getByRole("heading", { name: "Scene timing needs resolution" })).toBeVisible();
-  releaseRender();
-
-  await expect.poll(() => abandonPosts).toBe(1);
-  await expect(page.getByRole("button", { name: "Commit to source" })).toHaveCount(0);
-});
-
-test("a ready render exposes an explicit MP4 download on the authenticated video route", async ({ page }) => {
+test("a ready render exposes an explicit MP4 download on the authenticated video route", async ({ page }, testInfo) => {
+  requireWebGpuDraftLane(testInfo);
   const renderId = "11111111-1111-4111-8111-111111111129";
   await makePreviewHarnessCommandAvailable(page);
   await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
@@ -312,7 +181,7 @@ test("a ready render exposes an explicit MP4 download on the authenticated video
   await page.route(`**/api/manim/renders/${renderId}/video*`, (route) =>
     route.fulfill({ body: "", contentType: "video/mp4", status: 200 }),
   );
-  await openPreviewHarnessDraft(page);
+  await openActivatedPreviewHarnessDraft(page);
 
   await page.getByRole("button", { name: "Render program" }).click();
 
@@ -327,7 +196,8 @@ test("a ready render exposes an explicit MP4 download on the authenticated video
   await download.cancel();
 });
 
-test("a terminal source action keeps polling until its exact outcome is known", async ({ page }) => {
+test("a terminal source action keeps polling until its exact outcome is known", async ({ page }, testInfo) => {
+  requireWebGpuDraftLane(testInfo);
   const renderId = "11111111-1111-4111-8111-111111111122";
   const actionId = "00000000-0000-4000-8000-000000000031";
   let renderSession: RenderSessionView | null = null;
@@ -363,7 +233,7 @@ test("a terminal source action keeps polling until its exact outcome is known", 
     }
     await route.fulfill({ json: renderSession });
   });
-  await openPreviewHarnessDraft(page);
+  await openActivatedPreviewHarnessDraft(page);
   const workspaceBaseline = workspaceGets;
 
   await page.getByRole("button", { name: "Render program" }).click();
@@ -377,7 +247,8 @@ test("a terminal source action keeps polling until its exact outcome is known", 
   expect(renderGets).toBeLessThanOrEqual(3);
 });
 
-test("source reimport locks Studio editing until the committed revision is loaded", async ({ page }) => {
+test("source reimport locks Studio editing until the committed revision is loaded", async ({ page }, testInfo) => {
+  requireWebGpuDraftLane(testInfo);
   const renderId = "11111111-1111-4111-8111-111111111126";
   const patchedSourceHash = "b".repeat(64);
   let renderSession: RenderSessionView | null = null;
@@ -406,7 +277,7 @@ test("source reimport locks Studio editing until the committed revision is loade
     const sources = workspace.sources.map((source) => ({
       ...source,
       scenes: source.scenes.map((scene) =>
-        workspaceGets >= 3 && source.path === "shared_circle_opacity.py" && scene.name === "SharedCircleOpacity"
+        workspaceGets >= 3 && source.path === "studio_mathtex.py" && scene.name === "StudioMathTexPreview"
           ? { ...scene, sourceHash: patchedSourceHash }
           : scene,
       ),
@@ -444,7 +315,7 @@ test("source reimport locks Studio editing until the committed revision is loade
     if (!renderSession) throw new Error("The fake render session has not started.");
     await route.fulfill({ json: renderSession });
   });
-  await openPreviewHarnessDraft(page);
+  await openActivatedPreviewHarnessDraft(page);
   await page.getByRole("button", { name: "Render program" }).click();
   await page.getByRole("button", { name: "Commit to source" }).click();
   await page.getByRole("button", { name: "Commit source" }).click();
@@ -465,7 +336,8 @@ test("source reimport locks Studio editing until the committed revision is loade
   await expect(page.getByRole("button", { name: "Undo source" })).toBeEnabled();
 });
 
-test("an unknown Commit response stays locked until the source-action ledger resolves", async ({ page }) => {
+test("an unknown Commit response stays locked until the source-action ledger resolves", async ({ page }, testInfo) => {
+  requireWebGpuDraftLane(testInfo);
   const renderId = "11111111-1111-4111-8111-111111111127";
   let renderSession: RenderSessionView | null = null;
   let renderGets = 0;
@@ -510,7 +382,7 @@ test("an unknown Commit response stays locked until the source-action ledger res
     }
     await route.fulfill({ json: renderSession });
   });
-  await openPreviewHarnessDraft(page);
+  await openActivatedPreviewHarnessDraft(page);
   await page.getByRole("button", { name: "Render program" }).click();
   await page.getByRole("button", { name: "Commit to source" }).click();
   const workspaceBaseline = workspaceGets;
@@ -525,193 +397,10 @@ test("an unknown Commit response stays locked until the source-action ledger res
   await expect(page.getByRole("button", { name: "Undo source" })).toBeEnabled();
 });
 
-for (const sourceOutcome of ["cancelled", "committed", "concurrent-commit"] as const) {
-  test(`a timing conflict reconciles a pending Commit when cancellation finishes ${sourceOutcome}`, async ({
-    page,
-  }) => {
-    const renderId = {
-      cancelled: "11111111-1111-4111-8111-111111111123",
-      committed: "11111111-1111-4111-8111-111111111124",
-      "concurrent-commit": "11111111-1111-4111-8111-111111111125",
-    }[sourceOutcome];
-    let renderSession: RenderSessionView | null = null;
-    let sourceActionId: string | null = null;
-    let releaseCommit = () => {};
-    const commitRelease = new Promise<void>((resolve) => {
-      releaseCommit = resolve;
-    });
-    let cancelPosts = 0;
-    let workspaceGets = 0;
-    page.on("request", (request) => {
-      if (request.method() === "GET" && new URL(request.url()).pathname.endsWith("/workspace")) workspaceGets += 1;
-    });
-    await makePreviewHarnessCommandAvailable(page);
-    await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
-      const request = route.request().postDataJSON() as ProgramRenderRequest;
-      renderSession = readyRenderSession(request, renderId);
-      await route.fulfill({ json: renderSession, status: 202 });
-    });
-    await page.route(`**/api/manim/renders/${renderId}/commit`, async (route) => {
-      const body = route.request().postDataJSON() as { actionId: string };
-      sourceActionId = body.actionId;
-      renderSession = {
-        ...renderSession!,
-        actionInProgress: true,
-        canCommit: false,
-        canDiscard: false,
-        sourceAction: { id: body.actionId, kind: "commit", outcome: null, state: "running" },
-      };
-      await commitRelease;
-      await route.fulfill({ json: { error: "Commit request was cancelled." }, status: 409 }).catch(() => undefined);
-    });
-    await page.route(`**/api/manim/renders/${renderId}/cancel-source-action`, async (route) => {
-      const body = route.request().postDataJSON() as { actionId: string; kind: "commit" };
-      expect(body).toEqual({ actionId: sourceActionId, kind: "commit" });
-      cancelPosts += 1;
-      const sourceChanged = sourceOutcome !== "cancelled";
-      const action =
-        sourceOutcome === "committed"
-          ? ({ id: body.actionId, kind: "commit", outcome: "committed", state: "succeeded" } as const)
-          : ({ id: body.actionId, kind: "commit", outcome: null, state: "cancelled" } as const);
-      renderSession = {
-        ...renderSession!,
-        actionInProgress: false,
-        canCommit: !sourceChanged,
-        canDiscard: !sourceChanged,
-        canUndo: sourceChanged,
-        sourceAction:
-          sourceOutcome === "concurrent-commit"
-            ? {
-                id: "00000000-0000-4000-8000-000000000032",
-                kind: "commit",
-                outcome: "committed",
-                state: "succeeded",
-              }
-            : action,
-        status: sourceChanged ? "committed" : "ready",
-        updatedAt: "2026-07-27T00:00:02.000Z",
-      };
-      releaseCommit();
-      await route.fulfill({ json: { action, session: renderSession } });
-    });
-    await page.route(`**/api/manim/renders/${renderId}`, async (route) => {
-      if (!renderSession) throw new Error("The fake render session has not started.");
-      await route.fulfill({ json: renderSession });
-    });
-    await openPreviewHarnessDraft(page);
-    await page.getByRole("button", { name: "Render program" }).click();
-    await expect(page.getByRole("button", { name: "Commit to source" })).toBeEnabled();
-    const workspaceBaseline = workspaceGets;
-
-    await page.getByRole("button", { name: "Commit to source" }).click();
-    const commitStarted = page.waitForRequest(
-      (request) => request.method() === "POST" && new URL(request.url()).pathname.endsWith("/commit"),
-    );
-    await page.getByRole("button", { name: "Commit source" }).click();
-    await commitStarted;
-    await page.locator('dialog[aria-labelledby="commit-render-title"]').evaluate((dialog: HTMLDialogElement) => {
-      dialog.close();
-    });
-    await activateRequestedPreview(page);
-    await expect.poll(() => cancelPosts).toBe(1);
-    if (sourceOutcome !== "cancelled") {
-      await expect.poll(() => workspaceGets).toBeGreaterThan(workspaceBaseline);
-      await expect(page.getByRole("button", { name: "Undo source" })).toBeEnabled();
-    } else {
-      await expect(page.getByRole("heading", { name: "Scene timing needs resolution" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Commit to source" })).toBeDisabled();
-    }
-  });
-}
-
-test("a stale rendered session cannot Commit across timing resolution", async ({ page }) => {
-  const renderId = "11111111-1111-4111-8111-111111111111";
-  let commitPosts = 0;
-  let discardPosts = 0;
-  let readySession: RenderSessionView | null = null;
-  await makePreviewHarnessCommandAvailable(page);
-  await page.route("**/api/manim/projects/preview-harness/renders", async (route) => {
-    const request = route.request().postDataJSON() as ProgramRenderRequest;
-    const programs = request.programs ?? [request.program];
-    readySession = {
-      actionInProgress: false,
-      canCancel: false,
-      canCommit: true,
-      canDiscard: true,
-      canUndo: false,
-      createdAt: "2026-07-27T00:00:00.000Z",
-      error: null,
-      id: renderId,
-      logTail: "fixture render complete",
-      patch: {
-        anchorLine: 5,
-        anchorLines: [5],
-        insertedCode: "self.play(FadeIn(circle))",
-        patchedSourceHash: request.sourceHash,
-        sourceHash: request.sourceHash,
-      },
-      programBatchId: renderProgramBatchId(programs),
-      programTransactionId: request.program.transactionId,
-      progress: 1,
-      projectId: request.projectId,
-      renderRequestId: renderRequestId(request),
-      sceneName: request.sceneName,
-      sourceAction: null,
-      sourcePath: request.sourcePath,
-      status: "ready",
-      updatedAt: "2026-07-27T00:00:01.000Z",
-      videoUrl: null,
-    };
-    await route.fulfill({ json: readySession, status: 202 });
-  });
-  await page.route("**/api/manim/renders/**", async (route) => {
-    if (!readySession) throw new Error("The fake render session has not started.");
-    const url = new URL(route.request().url());
-    if (!url.pathname.includes(renderId)) return route.fallback();
-    if (url.pathname.endsWith("/commit")) commitPosts += 1;
-    if (url.pathname.endsWith("/discard")) {
-      discardPosts += 1;
-      readySession = {
-        ...readySession,
-        canCommit: false,
-        canDiscard: false,
-        status: "discarded",
-        updatedAt: "2026-07-27T00:00:02.000Z",
-      };
-    }
-    await route.fulfill({ json: readySession });
-  });
-
-  await page.goto(`/${FIXTURE_QUERY}`);
-  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
-  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
-  const canvasRoot = page.locator("[data-studio-canvas]");
-  await expect(canvasRoot).toBeVisible();
-  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
-  await page.getByRole("button", { name: /Insert circle/ }).click();
-  await canvasRoot.click({ position: { x: 180, y: 120 } });
-  await page.getByRole("button", { name: "Render program" }).click();
-  await expect(page.getByRole("button", { name: "Commit to source" })).toBeEnabled();
-
-  await activateRequestedPreview(page);
-  await expect(page.getByRole("heading", { name: "Scene timing needs resolution" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Commit to source" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Discard preview" })).toBeEnabled();
-
-  await page.getByRole("button", { name: "Resolve timing" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Discard Studio edit history?" })).toBeVisible();
-  await page.getByRole("button", { name: "Discard and resolve" }).click();
-  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Commit to source" })).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Discard preview" })).toBeEnabled();
-
-  await page.getByRole("button", { name: "Discard preview" }).click();
-  await expect(page.getByRole("button", { name: "Commit to source" })).toHaveCount(0);
-  await expect.poll(() => discardPosts).toBe(1);
-  expect(commitPosts).toBe(0);
-});
-
-test("the fixture never correlates with a workspace outside its checked-in harness Scene", async ({ page }) => {
+test("the fixture never correlates with a workspace outside its checked-in harness Scene", async ({
+  page,
+}, testInfo) => {
+  requireChromiumAuthorityLane(testInfo);
   await openWorkspaceWithQuery(page, FIXTURE_QUERY, "Studio Lab");
   const canvasRoot = page.locator("[data-studio-canvas]");
   await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
@@ -719,42 +408,23 @@ test("the fixture never correlates with a workspace outside its checked-in harne
     "data-preview-fallback-reason",
     /snapshot-unavailable|capability-unsupported/,
   );
-  await expect(page.locator("[data-studio-preview-status]")).toContainText("Canvas preview fallback");
-  await expect(page.locator("[data-studio-semantic-paint='deferred-to-canvas']")).toHaveCount(0);
+  await expect(page.locator('[data-studio-preview-status="fallback"]')).toBeVisible();
+  await expect(page.locator("[data-studio-preview-canvas]")).toBeHidden();
+  await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+  await expect(page.locator("[data-studio-entity]")).toHaveCount(0);
 });
 
-test("the harness opt-in reports a truthful phase and preserves the semantic editor", async ({ page }) => {
+test("an unavailable WebGPU host is explicit and never restores DOM Scene paint", async ({ page }, testInfo) => {
+  requireChromiumAuthorityLane(testInfo);
   await openWorkspaceWithQuery(page, FIXTURE_QUERY, "Preview Harness");
   const canvasRoot = page.locator("[data-studio-canvas]");
   await expect(page.locator("[data-studio-preview-canvas]")).toHaveCount(1);
-
-  // The host must settle on a truthful phase: a presented, exactly
-  // correlated frame, or a whole-Scene fallback that names its reason.
-  await expect
-    .poll(async () => {
-      const phase = await canvasRoot.getAttribute("data-preview-renderer");
-      return phase === "presented" || phase === "fallback" ? phase : null;
-    })
-    .not.toBeNull();
-  const status = page.locator("[data-studio-preview-status]");
-  await expect(status).toBeVisible();
-  await expect(status).toContainText("Canvas preview");
-  if ((await canvasRoot.getAttribute("data-preview-renderer")) === "fallback") {
-    const reason = await canvasRoot.getAttribute("data-preview-fallback-reason");
-    expect(reason).toBeTruthy();
-    await expect(status).toContainText("fallback");
-  }
-
-  // Semantic DOM and editing operations remain intact under the opt-in, and
-  // any Studio edit makes the fixture snapshot uncorrelated by definition.
-  await page.getByRole("button", { name: /Insert circle/ }).click();
-  await canvasRoot.click({ position: { x: 180, y: 120 } });
-  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
-  await expect(page.locator("[data-studio-semantic-paint='painted']").first()).toBeVisible();
-  await page.getByRole("button", { name: "Apply program" }).click();
-  const inserted = page.getByRole("button", { name: "Move Circle", exact: true });
-  await inserted.click();
-  await expect(inserted).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("slider", { name: "Timeline playhead" })).toBeVisible();
+  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", /capability-unsupported|install-failed/);
+  await expect(page.locator('[data-studio-preview-status="fallback"]')).toBeVisible();
+  await expect(page.locator("[data-studio-preview-canvas]")).toBeHidden();
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+  await expect(page.locator("[data-studio-entity]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Insert circle/ })).toBeDisabled();
 });

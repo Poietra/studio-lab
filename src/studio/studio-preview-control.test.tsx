@@ -2,9 +2,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  resolveStudioPreviewControlStateV1,
+  resolveStudioPreviewControlState,
   StudioPreviewControl,
-  type StudioPreviewControlPropsV1,
+  type StudioPreviewControlProps,
 } from "./studio-preview-control";
 import type { StudioPreviewRendererView } from "./use-preview-renderer";
 
@@ -30,12 +30,8 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
   };
 }
 
-function props(overrides: Partial<StudioPreviewControlPropsV1> = {}): StudioPreviewControlPropsV1 {
+function props(overrides: Partial<StudioPreviewControlProps> = {}): StudioPreviewControlProps {
   return {
-    activated: false,
-    activationAllowed: true,
-    activationRequested: false,
-    onRequest: vi.fn(),
     onRetry: vi.fn(),
     providerPending: false,
     renderer: null,
@@ -44,24 +40,20 @@ function props(overrides: Partial<StudioPreviewControlPropsV1> = {}): StudioPrev
 }
 
 describe("StudioPreviewControl", () => {
-  it("offers an explicit standard-UI request without claiming that Manim already ran", () => {
-    const markup = renderToStaticMarkup(<StudioPreviewControl {...props()} />);
+  it("reports canonical provider resolution without an activation control", () => {
+    const markup = renderToStaticMarkup(<StudioPreviewControl {...props({ providerPending: true })} />);
 
-    expect(markup).toContain('data-studio-manim-preview-state="idle"');
-    expect(markup).toContain("Manim Preview");
-    expect(markup).toContain('aria-haspopup="dialog"');
+    expect(markup).toContain('data-studio-manim-preview-state="loading"');
+    expect(markup).toContain("WebGPU Preview · Loading…");
+    expect(markup).not.toContain('aria-haspopup="dialog"');
     expect(markup).not.toContain("Verified");
   });
 
   it("distinguishes loading from an exactly presented verified frame", () => {
-    const loading = renderToStaticMarkup(
-      <StudioPreviewControl {...props({ activated: true, activationRequested: true, providerPending: true })} />,
-    );
+    const loading = renderToStaticMarkup(<StudioPreviewControl {...props({ providerPending: true })} />);
     const presented = renderToStaticMarkup(
       <StudioPreviewControl
         {...props({
-          activated: true,
-          activationRequested: true,
           renderer: renderer({
             frame: {
               packetId: "canvas:1",
@@ -78,15 +70,13 @@ describe("StudioPreviewControl", () => {
     expect(loading).toContain('data-studio-manim-preview-state="loading"');
     expect(loading).not.toContain("Verified");
     expect(presented).toContain('data-studio-manim-preview-state="presented"');
-    expect(presented).toContain("Manim Preview · Verified");
+    expect(presented).toContain("WebGPU Preview · Verified");
   });
 
   it("separates terminal unsupported outcomes from retryable failures", () => {
     const unsupported = renderToStaticMarkup(
       <StudioPreviewControl
         {...props({
-          activated: true,
-          activationRequested: true,
           renderer: {
             ...renderer({
               detail: "The Scene snapshot endpoint did not verify this Scene (unsupported).",
@@ -101,26 +91,22 @@ describe("StudioPreviewControl", () => {
     const failed = renderToStaticMarkup(
       <StudioPreviewControl
         {...props({
-          activated: true,
-          activationRequested: true,
           renderer: renderer({ detail: "producer failed", phase: "fallback", reason: "snapshot-unavailable" }),
         })}
       />,
     );
 
     expect(unsupported).toContain('data-studio-manim-preview-state="unsupported"');
-    expect(unsupported).toContain("Manim Preview · Unsupported");
+    expect(unsupported).toContain("WebGPU Preview · Unsupported");
     expect(unsupported).not.toContain("Retry");
     expect(failed).toContain('data-studio-manim-preview-state="failed"');
-    expect(failed).toContain("Manim Preview · Failed");
+    expect(failed).toContain("WebGPU Preview · Failed");
     expect(failed).toContain("Retry");
   });
 
   it("does not offer retry when the browser capability or disposed lifecycle is terminal", () => {
     for (const reason of ["capability-unsupported", "disposed"] as const) {
-      const state = resolveStudioPreviewControlStateV1({
-        activated: true,
-        activationRequested: true,
+      const state = resolveStudioPreviewControlState({
         providerPending: false,
         renderer: renderer({ detail: null, phase: "fallback", reason }),
       });
@@ -128,15 +114,25 @@ describe("StudioPreviewControl", () => {
     }
   });
 
-  it("reports transient and correlation fallbacks as semantic without a verified claim", () => {
-    for (const reason of ["snapshot-uncorrelated", "transient-edit"] as const) {
-      const state = resolveStudioPreviewControlStateV1({
-        activated: true,
-        activationRequested: true,
+  it("reports correlation gaps as paused without claiming fallback paint", () => {
+    for (const reason of ["snapshot-uncorrelated"] as const) {
+      const state = resolveStudioPreviewControlState({
         providerPending: false,
         renderer: renderer({ detail: null, phase: "fallback", reason }),
       });
-      expect(state).toMatchObject({ kind: "semantic-fallback", retryable: false });
+      expect(state).toMatchObject({ kind: "paused", retryable: false });
     }
+  });
+
+  it("reports unsupported core compilation explicitly", () => {
+    const state = resolveStudioPreviewControlState({
+      providerPending: false,
+      renderer: renderer({
+        detail: "No canonical command supports this edit.",
+        phase: "fallback",
+        reason: "scene-unsupported",
+      }),
+    });
+    expect(state).toMatchObject({ kind: "unsupported", retryable: false });
   });
 });

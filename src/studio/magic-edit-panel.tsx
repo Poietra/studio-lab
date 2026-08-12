@@ -1,5 +1,5 @@
-import type { RefObject } from "react";
 import { m, useDragControls } from "motion/react";
+import type { RefObject } from "react";
 
 import type { PendingClarification } from "../ai/clarification";
 import { ClarificationPanel } from "../ai/clarification-panel";
@@ -11,6 +11,7 @@ export type SuggestionStatus = "clarification" | "error" | "idle" | "loading" | 
 
 export function MagicEditPanel({
   aiEndpointConfigured,
+  authoringAvailable,
   clarificationIsStale,
   currentTime,
   instruction,
@@ -27,6 +28,7 @@ export function MagicEditPanel({
   workspaceBounds,
 }: Readonly<{
   aiEndpointConfigured: boolean;
+  authoringAvailable: boolean;
   clarificationIsStale: boolean;
   currentTime: number;
   instruction: string;
@@ -46,9 +48,7 @@ export function MagicEditPanel({
   const panelResize = usePanelResize(workspaceBounds);
   const isLoading = status === "loading";
   return (
-    <div
-      className="pointer-events-none fixed inset-0 z-30"
-    >
+    <div className="pointer-events-none fixed inset-0 z-30">
       <m.section
         className="pointer-events-auto absolute flex min-h-44 min-w-72 max-w-[calc(100vw-2rem)] max-h-[calc(100dvh-7rem)] flex-col overflow-hidden border border-zinc-700 bg-zinc-950 shadow-xl"
         drag
@@ -75,7 +75,9 @@ export function MagicEditPanel({
             type="button"
           >
             <span className="block text-balance text-xs font-medium text-zinc-200">Magic Edit</span>
-            <span className="block truncate text-[10px] text-zinc-600">{sceneName ?? "No Scene"} · {currentTime.toFixed(2)}s</span>
+            <span className="block truncate text-[10px] text-zinc-600">
+              {sceneName ?? "No Scene"} · {currentTime.toFixed(2)}s
+            </span>
           </button>
           <button
             aria-label="Hide Magic Edit"
@@ -102,11 +104,13 @@ export function MagicEditPanel({
               pending={pendingClarification}
             />
           ) : null}
-          <label className="sr-only" htmlFor="magic-edit-instruction">Describe an edit</label>
+          <label className="sr-only" htmlFor="magic-edit-instruction">
+            Describe an edit
+          </label>
           <textarea
             aria-describedby={pendingClarification ? "magic-edit-clarification-question" : undefined}
             className="min-h-20 w-full flex-1 resize-none border border-zinc-700 bg-zinc-900 p-2 text-sm leading-5 text-zinc-100 outline-none placeholder:text-zinc-600 focus:border-sky-500 disabled:text-zinc-600"
-            disabled={!aiEndpointConfigured || isLoading || clarificationIsStale}
+            disabled={!aiEndpointConfigured || !authoringAvailable || isLoading || clarificationIsStale}
             id="magic-edit-instruction"
             maxLength={2_000}
             onChange={(event) => onInstructionChange(event.currentTarget.value)}
@@ -114,15 +118,24 @@ export function MagicEditPanel({
             value={instruction}
           />
           {message ? (
-            <p className={cn(
-              "mt-2 text-pretty text-[10px] leading-4",
-              status === "error" ? "text-red-300" : "text-zinc-500",
-            )} role={status === "error" ? "alert" : undefined}>
+            <p
+              className={cn(
+                "mt-2 text-pretty text-[10px] leading-4",
+                status === "error" ? "text-red-300" : "text-zinc-500",
+              )}
+              role={status === "error" ? "alert" : undefined}
+            >
               {message}
             </p>
           ) : null}
           {!aiEndpointConfigured ? (
-            <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300">Configure VITE_POIETRA_AI_ENDPOINT to enable remote inference.</p>
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300">
+              Configure VITE_POIETRA_AI_ENDPOINT to enable remote inference.
+            </p>
+          ) : !authoringAvailable ? (
+            <p className="mt-2 text-pretty text-[10px] leading-4 text-amber-300">
+              The canonical preview must authorize editing before a request can be sent.
+            </p>
           ) : null}
           <div className="mt-2 flex items-center justify-between gap-3">
             <span className="truncate text-[10px] text-zinc-600">
@@ -130,7 +143,9 @@ export function MagicEditPanel({
             </span>
             <button
               className="bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500"
-              disabled={!aiEndpointConfigured || !instruction.trim() || isLoading || clarificationIsStale}
+              disabled={
+                !aiEndpointConfigured || !authoringAvailable || !instruction.trim() || isLoading || clarificationIsStale
+              }
               type="submit"
             >
               {isLoading ? "Thinking…" : pendingClarification ? "Answer" : "Preview"}

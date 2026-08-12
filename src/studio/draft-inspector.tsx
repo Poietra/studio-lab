@@ -1,10 +1,10 @@
-import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import {
   changeSuggestionExecution,
+  type EditableSuggestionStep,
   editableSuggestionSteps,
   replaceSuggestionStep,
-  type EditableSuggestionStep,
 } from "../ai/draft-operation";
+import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { cn } from "../lib/cn";
 import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
@@ -12,6 +12,7 @@ import { EquationContent } from "./prototype-rendering";
 
 type DraftInspectorProps = Readonly<{
   applyLabel?: "Apply program" | "Replace program";
+  editingDisabled?: boolean;
   error: string | null;
   isApplying: boolean;
   onApply: () => void;
@@ -349,6 +350,7 @@ function StepEditor({
 
 export function DraftInspector({
   applyLabel = "Apply program",
+  editingDisabled = false,
   error,
   isApplying,
   onApply,
@@ -380,42 +382,44 @@ export function DraftInspector({
         </span>
       </div>
 
-      {operation?.kind === "edit-program" ? (
-        <label className="mt-3 block text-[10px] text-zinc-500">
-          Execution
-          <select
-            className={inputClass}
-            onChange={(event) =>
-              onOperationChange(
-                changeSuggestionExecution(operation, event.currentTarget.value as "parallel" | "sequence"),
-              )
-            }
-            value={operation.execution}
-          >
-            <option value="sequence">Sequence</option>
-            <option value="parallel">Parallel</option>
-          </select>
-        </label>
-      ) : null}
+      <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={editingDisabled}>
+        {operation?.kind === "edit-program" ? (
+          <label className="mt-3 block text-[10px] text-zinc-500">
+            Execution
+            <select
+              className={inputClass}
+              onChange={(event) =>
+                onOperationChange(
+                  changeSuggestionExecution(operation, event.currentTarget.value as "parallel" | "sequence"),
+                )
+              }
+              value={operation.execution}
+            >
+              <option value="sequence">Sequence</option>
+              <option value="parallel">Parallel</option>
+            </select>
+          </label>
+        ) : null}
 
-      {steps.length > 0 ? (
-        <div className="mt-3 space-y-2">
-          {steps.map((step, index) => (
-            <StepEditor
-              index={index}
-              key={`${step.kind}-${index}`}
-              onChange={(nextStep) => {
-                if (operation) onOperationChange(replaceSuggestionStep(operation, index, nextStep));
-              }}
-              step={step}
-            />
-          ))}
-        </div>
-      ) : (
-        <p className="mt-3 border border-dashed border-zinc-700 p-3 text-pretty text-xs leading-5 text-zinc-500">
-          This direct manipulation is already represented by its Canonical operations.
-        </p>
-      )}
+        {steps.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {steps.map((step, index) => (
+              <StepEditor
+                index={index}
+                key={`${step.kind}-${index}`}
+                onChange={(nextStep) => {
+                  if (operation) onOperationChange(replaceSuggestionStep(operation, index, nextStep));
+                }}
+                step={step}
+              />
+            ))}
+          </div>
+        ) : (
+          <p className="mt-3 border border-dashed border-zinc-700 p-3 text-pretty text-xs leading-5 text-zinc-500">
+            This direct manipulation is already represented by its Canonical operations.
+          </p>
+        )}
+      </fieldset>
 
       <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
         <div>
@@ -470,7 +474,7 @@ export function DraftInspector({
             "bg-sky-500 px-3 py-1.5 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:bg-zinc-700 disabled:text-zinc-500",
             isApplying ? "disabled:cursor-wait" : "disabled:cursor-not-allowed",
           )}
-          disabled={isApplying || applyStatus !== "supported"}
+          disabled={editingDisabled || isApplying || applyStatus !== "supported"}
           onClick={onApply}
           title={execution.applyBlocker ?? undefined}
           type="button"

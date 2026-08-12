@@ -81,13 +81,13 @@ async function waitForNewPresentedFrame(page: Page, previousRevision: string, pr
 }
 
 async function openImageWorkspace(page: Page) {
-  await page.goto("/?previewRenderer=server");
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByLabel("Active imported Scene").selectOption({ label: "scene_image.py · RealImageScene" });
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   const snapshot = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -282,19 +282,16 @@ test("renders a real ImageMobject through verified PNG delivery and WebGPU readb
   await expect(page.getByRole("button", { name: "Set position" })).toHaveAttribute("aria-pressed", "true");
   await resizeHandle.press("ArrowRight");
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
-  await expect(page.locator("[data-studio-semantic-paint]")).toHaveAttribute("data-studio-semantic-paint", "painted");
-  await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
   const scaledFrame = await waitForNewPresentedFrame(page, pristineRevision, pristinePacket);
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
   await expect(wrapper).toHaveAttribute("data-studio-entity-width", (imageBounds.width * 1.05).toFixed(4));
   await expect(wrapper).toHaveAttribute("data-studio-entity-height", (imageBounds.height * 1.05).toFixed(4));
-  await expect(page.locator("[data-studio-semantic-paint]")).toHaveAttribute(
-    "data-studio-semantic-paint",
-    "deferred-to-canvas",
-  );
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "presented");
+  await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
   const scaledBox = await image.boundingBox();
   if (!scaledBox) throw new Error("The resized ImageMobject hit target is not visible.");
   expect(Math.abs(scaledBox.width / imageBox.width - 1.05)).toBeLessThan(0.01);
@@ -302,10 +299,12 @@ test("renders a real ImageMobject through verified PNG delivery and WebGPU readb
 
   await resizeHandle.press("ArrowRight");
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
+  const rescaledFrame = await waitForNewPresentedFrame(page, scaledFrame.revision, scaledFrame.packet);
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+  await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.1025");
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
-  const rescaledFrame = await waitForNewPresentedFrame(page, scaledFrame.revision, scaledFrame.packet);
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "presented");
   await expect(wrapper).toHaveAttribute("data-studio-entity-scale", "1.1025");
   const rescaledBox = await image.boundingBox();
   if (!rescaledBox) throw new Error("The repeatedly resized ImageMobject hit target is not visible.");
@@ -314,11 +313,13 @@ test("renders a real ImageMobject through verified PNG delivery and WebGPU readb
 
   await image.press("Shift+ArrowRight");
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
-  await expect(page.locator("[data-studio-semantic-paint]")).toHaveAttribute("data-studio-semantic-paint", "painted");
+  const editedFrame = await waitForNewPresentedFrame(page, rescaledFrame.revision, rescaledFrame.packet);
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+  await expect(wrapper).toHaveAttribute("data-studio-runtime-binding", mapping.binding.id);
+  await expect(wrapper).toHaveAttribute("data-studio-runtime-entity", mapping.entityId);
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0, { timeout: 30_000 });
-  const editedFrame = await waitForNewPresentedFrame(page, rescaledFrame.revision, rescaledFrame.packet);
+  await expect(canvasRoot).toHaveAttribute("data-preview-revision", editedFrame.revision);
   await expect(wrapper).toHaveAttribute("data-studio-runtime-binding", mapping.binding.id);
   await expect(wrapper).toHaveAttribute("data-studio-runtime-entity", mapping.entityId);
   const movedBox = await image.boundingBox();

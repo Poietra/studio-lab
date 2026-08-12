@@ -34,8 +34,8 @@ async function openHarnessWorkspace(page: Page) {
   await scene.selectOption({ label: "shared_circle_opacity.py · SharedCircleOpacity" });
   await expect(scene.locator("option:checked")).toHaveText("shared_circle_opacity.py · SharedCircleOpacity");
   await expect(page.locator("[data-studio-canvas]")).toBeVisible();
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   await page.getByRole("button", { name: "Run Scene preview" }).click();
 }
 
@@ -44,19 +44,46 @@ async function expectPresented(page: Page) {
     timeout: 30_000,
   });
   await expect(page.locator("[data-studio-preview-canvas]")).toBeVisible();
-  await expect(page.locator("[data-studio-preview-status]")).toContainText("editing preview only");
+  await expect(page.locator("[data-studio-preview-status]")).toBeVisible();
 }
 
-async function expectSemanticPaintDeferred(page: Page) {
-  const paint = page.locator("[data-studio-semantic-paint]").first();
-  await expect(paint).toHaveAttribute("data-studio-semantic-paint", "deferred-to-canvas");
-  await expect.poll(async () => paint.evaluate((element) => getComputedStyle(element).opacity)).toBe("0");
+async function expectPaintFreeInteractionOverlay(page: Page) {
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
 }
 
-async function expectSemanticPaintRestored(page: Page) {
-  const paint = page.locator("[data-studio-semantic-paint]").first();
-  await expect(paint).toHaveAttribute("data-studio-semantic-paint", "painted");
-  await expect.poll(async () => paint.evaluate((element) => getComputedStyle(element).opacity)).not.toBe("0");
+async function retainedFrameIdentity(page: Page) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const [packet, revision] = await Promise.all([
+    canvasRoot.getAttribute("data-preview-packet-id"),
+    canvasRoot.getAttribute("data-preview-revision"),
+  ]);
+  if (!packet || !revision) throw new Error("The retained WebGPU frame has no exact identity.");
+  return { packet, revision };
+}
+
+async function waitForNewPresentedFrame(page: Page, previous: Readonly<{ packet: string; revision: string }>) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(
+      async () => {
+        const [phase, packet, revision] = await Promise.all([
+          canvasRoot.getAttribute("data-preview-renderer"),
+          canvasRoot.getAttribute("data-preview-packet-id"),
+          canvasRoot.getAttribute("data-preview-revision"),
+        ]);
+        return phase === "presented" &&
+          packet &&
+          packet !== previous.packet &&
+          revision &&
+          revision !== previous.revision
+          ? "presented"
+          : JSON.stringify({ packet, phase, revision });
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("presented");
+  await expectPaintFreeInteractionOverlay(page);
+  return retainedFrameIdentity(page);
 }
 
 async function captureHostEvidence(
@@ -76,15 +103,13 @@ async function captureHostEvidence(
   }, points)) as HostFrameEvidence | null;
 }
 
-async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: number) {
+async function expectMathTexCanvasInk(page: Page, revision: string, sampleTime: number, label: string) {
   const canvasRoot = page.locator("[data-studio-canvas]");
-  const mathTexEntities = page.locator("button[data-studio-entity]").filter({
-    has: page.locator("[data-rendered-math]"),
-  });
-  await expect(mathTexEntities).toHaveCount(1);
+  const mathTexEntity = page.getByRole("button", { name: `Move ${label}`, exact: true });
+  await expect(mathTexEntity).toBeVisible();
   const [canvasBox, mathTexBox, packetId] = await Promise.all([
     canvasRoot.boundingBox(),
-    mathTexEntities.first().boundingBox(),
+    mathTexEntity.boundingBox(),
     canvasRoot.getAttribute("data-preview-packet-id"),
   ]);
   if (!canvasBox || !mathTexBox || !packetId) {
@@ -126,7 +151,7 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
   const scene = page.getByLabel("Active imported Scene");
   await scene.selectOption({ label: "studio_mathtex.py · StudioMathTexPreview" });
   await expect(scene.locator("option:checked")).toHaveText("studio_mathtex.py · StudioMathTexPreview");
-  await page.getByRole("button", { name: "Enable preview…" }).click();
+  await page.getByRole("button", { name: "Start preview…" }).click();
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
 
@@ -145,11 +170,11 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
 
   await playhead.fill("0.5");
   await expectPresented(page);
-  await expectSemanticPaintDeferred(page);
+  await expectPaintFreeInteractionOverlay(page);
   const firstRevision = await canvasRoot.getAttribute("data-preview-revision");
   expect(firstRevision).toMatch(/^[0-9a-f]{64}$/);
   expect(firstRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
-  await expectMathTexCanvasInk(page, firstRevision ?? "", 0.5);
+  await expectMathTexCanvasInk(page, firstRevision ?? "", 0.5, "E = mc^2");
 
   await page.getByRole("button", { name: "Undo" }).click();
   await expect(page.getByRole("button", { name: "Move E = mc^2", exact: true })).toHaveCount(0);
@@ -164,19 +189,19 @@ test("presents Studio-created MathTex across undo and LaTeX commands", async ({ 
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   await playhead.fill("0.5");
   await expectPresented(page);
-  await expectSemanticPaintDeferred(page);
+  await expectPaintFreeInteractionOverlay(page);
   const fractionRevision = await canvasRoot.getAttribute("data-preview-revision");
   expect(fractionRevision).toMatch(/^[0-9a-f]{64}$/);
   expect(fractionRevision).not.toBe(MATHTEX_FIXTURE_ENGINE_REVISION);
-  await expectMathTexCanvasInk(page, fractionRevision ?? "", 0.5);
+  await expectMathTexCanvasInk(page, fractionRevision ?? "", 0.5, String.raw`\frac{1}{2}`);
 });
 
-test("presents exactly correlated retained WebGPU frames while the semantic editor stays live", async ({ page }) => {
+test("presents exactly correlated WebGPU frames with a paint-free interaction overlay", async ({ page }) => {
   await openHarnessWorkspace(page);
   await expectPresented(page);
   await page.getByRole("slider", { name: "Scene playhead" }).fill("1");
   await expectPresented(page);
-  await expectSemanticPaintDeferred(page);
+  await expectPaintFreeInteractionOverlay(page);
 
   for (const name of ["earlier", "later", "stroke"]) {
     await expect(page.getByRole("checkbox", { name: `Select ${name}` })).toBeVisible();
@@ -236,16 +261,17 @@ test("presents exactly correlated retained WebGPU frames while the semantic edit
 
   await earlier.click();
   await expect(earlier).toHaveAttribute("aria-pressed", "true");
-  await expect(page.locator("[data-studio-resize-handle]").first()).toBeVisible();
+  await expect(canvasRoot).toHaveAttribute("data-preview-interaction", "selection-only");
+  await expect(page.locator("[data-studio-resize-handle]")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Insert circle/ })).toBeDisabled();
   await expect(page.getByRole("slider", { name: "Timeline playhead" })).toBeVisible();
   await expectPresented(page);
-  await expectSemanticPaintDeferred(page);
+  await expectPaintFreeInteractionOverlay(page);
 
-  await earlier.press("ArrowRight");
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
-  await expectSemanticPaintRestored(page);
-  await page.getByRole("button", { name: "Discard" }).click();
-  await expectPresented(page);
+  // This sealed snapshot predates generic Runtime Trace authoring. Its
+  // imported entities are truthful selectors only; editable imported slices
+  // are covered by the real Runtime Trace suites.
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 });
 
 test("reinstalls a fresh worker and canvas across workspace close and reopen", async ({ page }) => {
@@ -273,7 +299,7 @@ test("reinstalls a fresh worker and canvas across workspace close and reopen", a
   expect(evidence.packetId).toBe(packetIdAttribute);
 });
 
-test("a workspace switch away from the harness and back never carries preview authority across", async ({ page }) => {
+test("a workspace switch requires fresh execution consent for each project", async ({ page }) => {
   await openHarnessWorkspace(page);
   await expectPresented(page);
   const canvasRoot = page.locator("[data-studio-canvas]");
@@ -281,25 +307,27 @@ test("a workspace switch away from the harness and back never carries preview au
   const harnessEvidence = (await captureHostEvidence(page, [{ fractionX: 5 / 160, fractionY: 5 / 90 }])) ?? null;
   if (!harnessEvidence) throw new Error("The harness workspace did not expose frame evidence.");
   expect(harnessEvidence.packetId).toBe(await canvasRoot.getAttribute("data-preview-packet-id"));
-  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(3);
+  await expect(page.locator('[data-studio-runtime-entity="later"]')).toHaveCount(1);
+  await expect(page.locator('[data-studio-runtime-entity="stroke"]')).toHaveCount(1);
+  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(2);
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Studio Lab workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Studio Lab");
-  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "fallback");
-  await expect(canvasRoot).toHaveAttribute(
-    "data-preview-fallback-reason",
-    /snapshot-unavailable|capability-unsupported/,
-  );
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
+  await expect(page.getByRole("button", { name: "Start preview…" })).toBeVisible();
   await expect(canvasRoot).not.toHaveAttribute("data-preview-packet-id", /.+/);
-  await expect(page.locator("[data-studio-semantic-paint='deferred-to-canvas']")).toHaveCount(0);
+  await expectPaintFreeInteractionOverlay(page);
   await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(0);
   expect(await captureHostEvidence(page, [{ fractionX: 0.5, fractionY: 0.5 }])).toBeNull();
 
   await page.getByRole("button", { name: "Back to workspaces" }).click();
   await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Preview Harness");
+  await expect(canvasRoot).toHaveAttribute("data-preview-renderer", "off");
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
   await expect(canvasRoot).toHaveAttribute("data-preview-packet-id", /^canvas:\d+$/);
   const returnedPacketId = await canvasRoot.getAttribute("data-preview-packet-id");
@@ -309,7 +337,9 @@ test("a workspace switch away from the harness and back never carries preview au
   expect(returnedEvidence.revision).toBe(FIXTURE_ENGINE_REVISION);
   expect(returnedEvidence.packetId).toBe(returnedPacketId);
   expectPixelNear(returnedEvidence.samples[0], [0, 0, 0, 255]);
-  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(3);
+  await expect(page.locator('[data-studio-runtime-entity="later"]')).toHaveCount(1);
+  await expect(page.locator('[data-studio-runtime-entity="stroke"]')).toHaveCount(1);
+  await expect(page.locator("[data-studio-runtime-entity]")).toHaveCount(2);
 });
 
 test("keeps presenting only matching frames across rapid scrubs", async ({ page }) => {
@@ -324,53 +354,74 @@ test("keeps presenting only matching frames across rapid scrubs", async ({ page 
   await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-sample-time", "1");
 });
 
-test("falls back to the whole Scene during a transient drag and after the resulting draft", async ({ page }) => {
-  await openHarnessWorkspace(page);
+test("retains the exact WebGPU frame during gestures and presents the compiled draft", async ({ page }) => {
+  await page.goto(`/${MATHTEX_FIXTURE_QUERY}`);
+  await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
+  await page.getByRole("button", { name: "Open Preview Harness workspace" }).click();
+  const scene = page.getByLabel("Active imported Scene");
+  await scene.selectOption({ label: "studio_mathtex.py · StudioMathTexPreview" });
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expectPresented(page);
+  await page.getByRole("button", { name: "Hide Magic Edit" }).click();
   const playhead = page.getByRole("slider", { name: "Scene playhead" });
-  await playhead.fill("1");
-  await expect(playhead).toHaveValue("1");
-  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-sample-time", "1", {
-    timeout: 30_000,
-  });
+  await playhead.fill("0");
   await expectPresented(page);
 
-  const earlier = page.getByRole("button", { name: "Move earlier", exact: true });
-  const studioEntityId = await earlier.getAttribute("data-studio-entity");
-  expect(studioEntityId).toBeTruthy();
-  await earlier.click();
-  await expect(earlier).toHaveAttribute("aria-pressed", "true");
-  const wrapper = page.locator(`[data-studio-entity-wrapper="${studioEntityId}"]`);
-  await expect(wrapper).toHaveAttribute("data-studio-runtime-entity", "earlier");
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  const pristineFrame = await retainedFrameIdentity(page);
+  await page.getByRole("button", { name: /Insert circle/ }).click();
+  await canvasRoot.click({ position: { x: 400, y: 250 } });
+  await waitForNewPresentedFrame(page, pristineFrame);
+  await page.getByRole("button", { name: "Apply program" }).click();
+  await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
   await expectPresented(page);
-  const box = await earlier.boundingBox();
-  if (!box) throw new Error("The earlier circle is not visible in the Studio canvas.");
+  await page.getByRole("button", { name: "Set position" }).click();
+
+  const circle = page.getByRole("button", { name: "Move Circle", exact: true });
+  const studioEntityId = await circle.getAttribute("data-studio-entity");
+  expect(studioEntityId).toBeTruthy();
+  await circle.click();
+  await expect(circle).toHaveAttribute("aria-pressed", "true");
+  const wrapper = page.locator(`[data-studio-entity-wrapper="${studioEntityId}"]`);
+  await expect(wrapper).toHaveAttribute("data-studio-runtime-entity", studioEntityId ?? "");
+  await expectPresented(page);
+  const dragBaseFrame = await retainedFrameIdentity(page);
+  const box = await circle.boundingBox();
+  if (!box) throw new Error("The Studio-created circle is not visible in the Studio canvas.");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 20, { steps: 4 });
-  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-fallback-reason", "transient-edit");
-  await expectSemanticPaintRestored(page);
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-renderer", "presented");
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-revision", dragBaseFrame.revision);
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-packet-id", dragBaseFrame.packet);
+  await expectPaintFreeInteractionOverlay(page);
   await page.mouse.up();
-  await expect(page.getByRole("checkbox", { name: "Select earlier" })).toBeChecked();
-  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute(
-    "data-preview-fallback-reason",
-    "snapshot-uncorrelated",
-  );
+  await expect(page.getByRole("checkbox", { name: "Select Circle" })).toBeChecked();
+  const dragDraftFrame = await waitForNewPresentedFrame(page, dragBaseFrame);
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
   await page.getByRole("button", { name: "Discard" }).click();
   await expectPresented(page);
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-revision", dragBaseFrame.revision);
 
-  const restoredEarlier = page.locator(`[data-studio-entity="${studioEntityId}"]`);
-  await expect(restoredEarlier).toHaveAttribute("aria-pressed", "true");
-  const resize = page.getByRole("button", { name: "Resize earlier from bottom-right corner" });
+  const restoredCircle = page.locator(`[data-studio-entity="${studioEntityId}"]`);
+  await expect(restoredCircle).toHaveAttribute("aria-pressed", "true");
+  const resize = page.getByRole("button", { name: "Resize Circle from bottom-right corner" });
   await expect(resize).toHaveAttribute("data-studio-resize-handle", studioEntityId ?? "");
   const resizeBox = await resize.boundingBox();
   if (!resizeBox) throw new Error("The earlier Circle resize handle is not visible.");
   const resizeOrigin = { x: resizeBox.x + resizeBox.width / 2, y: resizeBox.y + resizeBox.height / 2 };
+  const resizeBaseFrame = await retainedFrameIdentity(page);
+  expect(resizeBaseFrame.revision).not.toBe(dragDraftFrame.revision);
   await page.mouse.move(resizeOrigin.x, resizeOrigin.y);
   await page.mouse.down();
   await page.mouse.move(resizeOrigin.x + 30, resizeOrigin.y + 20, { steps: 4 });
-  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-fallback-reason", "transient-edit");
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-renderer", "presented");
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-revision", resizeBaseFrame.revision);
+  await expect(page.locator("[data-studio-canvas]")).toHaveAttribute("data-preview-packet-id", resizeBaseFrame.packet);
+  await expectPaintFreeInteractionOverlay(page);
   await page.mouse.up();
-  await expect(page.getByRole("checkbox", { name: "Select earlier" })).toBeChecked();
+  await expect(page.getByRole("checkbox", { name: "Select Circle" })).toBeChecked();
+  await waitForNewPresentedFrame(page, resizeBaseFrame);
   await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
 });

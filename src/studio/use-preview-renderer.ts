@@ -40,14 +40,14 @@ import type {
 } from "./model";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "./operations";
 import {
-  detectStudioPreviewCapabilitiesV1,
-  evaluateStudioPreviewEligibilityV1,
-  projectStudioPreviewInteractionGeometryV1,
-  resolveStudioPreviewViewStateV1,
-  type StudioPreviewHostBindingV1,
-  type StudioPreviewInteractionGeometryV1,
-  snapStudioPreviewViewportV1,
-  studioPreviewHostBindingCurrentV1,
+  detectStudioPreviewCapabilities,
+  evaluateStudioPreviewEligibility,
+  projectStudioPreviewInteractionGeometry,
+  resolveStudioPreviewViewState,
+  type StudioPreviewHostBinding,
+  type StudioPreviewInteractionGeometry,
+  snapStudioPreviewViewport,
+  studioPreviewHostBindingCurrent,
   studioPreviewSnapshotMatchesSourceV1,
   studioPreviewVerifiedSourceDurationV1,
 } from "./preview-renderer-policy";
@@ -93,7 +93,7 @@ export type StudioPreviewRendererView = Readonly<{
    * Hit-target geometry derived from that frame's prepared GPU vertices,
    * keyed by verified runtime entity ID; non-null only while correlated.
    */
-  interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
+  interactionGeometry: StudioPreviewInteractionGeometry | null;
   interactionAuthority: StudioPreviewInteractionAuthority;
   /** Verified Runtime Trace candidates that may request one server-authorized t=0 edit. */
   genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditCandidate[];
@@ -140,7 +140,10 @@ export type StudioPreviewInteractionAuthority =
       reason: "runtime-trace-preview-only";
       verifiedRuntimeEntityIds: readonly string[];
     }>
-  | Readonly<{ kind: "selection-only"; reason: "source-edit-anchor-unavailable" }>
+  | Readonly<{
+      kind: "selection-only";
+      reason: "source-edit-anchor-unavailable" | "source-edit-unsupported";
+    }>
   | Readonly<{
       kind: "display-only";
       reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
@@ -228,15 +231,15 @@ export type StudioPreviewRuntimeTracePendingPresentation =
     }>;
 
 export type UseStudioPreviewRendererInput = Readonly<{
-  committedProposedState: ProposedState | null;
   context: StudioPreviewEditingContextV1 | null;
-  draftProposedState: ProposedState | null;
   frame: Readonly<{ height: number; width: number }>;
+  proposedState: ProposedState | null;
   provider: StudioPreviewSnapshotProviderV1 | null;
   retainedSourceDuration: number | null;
   runtimeTraceTerminalProgramRecords: readonly ProgramRecord[];
   sampleTime: number;
-  transientEdit: boolean;
+  gestureActive: boolean;
+  sceneBoundaryActive: boolean;
 }>;
 
 // transferControlToOffscreen is irreversible per element, so a canvas that
@@ -255,7 +258,7 @@ export function claimStudioPreviewCanvasV1(canvas: object): boolean {
 }
 
 type BoundHostStateV1 = Readonly<{
-  binding: StudioPreviewHostBindingV1;
+  binding: StudioPreviewHostBinding;
   host: StudioPreviewRendererHost;
   state: PreviewRendererHostStateV1;
 }>;
@@ -976,7 +979,7 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiState(
           sourceAnchor: evidenceAuthority.sourceAnchor,
           studioEntityId: evidenceAuthority.studioEntityId,
           target: evidenceAuthority.target,
-          validationStatusLabel: "Draft ghost · dependent updater validation pending",
+          validationStatusLabel: "Edit validation pending · dependent updater",
         }
       : {
           baseFrameRetained: input.atExactAnchor && input.retainedAuthority !== null,
@@ -987,7 +990,7 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiState(
           sourceAnchor: evidenceAuthority.sourceAnchor,
           studioEntityId: evidenceAuthority.studioEntityId,
           target: evidenceAuthority.target,
-          validationStatusLabel: "Draft ghost · OpeningManim validation pending",
+          validationStatusLabel: "Edit validation pending · OpeningManim",
         }
     : null;
   const editAuthority =
@@ -1013,7 +1016,7 @@ export function resolveStudioPreviewRuntimeTraceTerminalUiState(
  * The static importer intentionally does not model runtime-only roots such as
  * UpdatersExample's DecimalNumber or OpeningManim's generated NumberPlane.
  * For the sealed profiles only, expose the exact verified root as an opaque
- * selector. Every semantic geometry field remains unknown and it is never
+ * selector. Every source-derived geometry field remains unknown and it is never
  * added to App's editable entity collection.
  */
 export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntities(
@@ -1022,7 +1025,7 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntities(
       | Pick<StudioPreviewRuntimeTraceUpdatersSelectionProfileV1, "profile" | "studioSceneId">
       | Pick<StudioPreviewRuntimeTraceOpeningSelectionProfileV2, "profile" | "studioSceneId">
       | null;
-    interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
+    interactionGeometry: StudioPreviewInteractionGeometry | null;
     sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   }>,
 ): readonly ProjectedEntity[] {
@@ -1064,9 +1067,10 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntities(
 export function studioPreviewInteractionAuthority(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
 ): StudioPreviewInteractionAuthority {
-  const source = snapshot?.snapshot.scene.source;
+  if (!snapshot) return { kind: "interactive" };
+  const source = snapshot.snapshot.scene.source;
   if (source?.kind === "imported-manim-runtime-trace") {
-    const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
+    const verifiedRuntimeEntityIds = snapshot.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
     // A Runtime Trace stays selection-only unless at least one exact initial-edit
@@ -1110,17 +1114,25 @@ export function studioPreviewInteractionAuthority(
       verifiedRuntimeEntityIds,
     };
   }
-  if (source?.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
+  if (source.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
-  const legacyRuntimeProfile = Number(source.snapshotVersion);
-  if (legacyRuntimeProfile === 6) {
+  const snapshotVersion = Number(source.snapshotVersion);
+  // The canonical compiler can rebase animated server snapshots only for the
+  // one legacy profile that carries exact animation-edit evidence. Do not
+  // advertise gestures that the Rust command boundary will reject.
+  if (snapshot.snapshot.scene.animationChannels.length > 0 && snapshotVersion !== 7) {
+    return (snapshot.sourceRuntimeIdentity?.size ?? 0) > 0
+      ? { kind: "selection-only", reason: "source-edit-unsupported" }
+      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+  }
+  if (snapshotVersion === 6) {
     return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
       ? { kind: "interactive" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  if (legacyRuntimeProfile === 7) {
+  if (snapshotVersion === 7) {
     const identity = snapshot?.sourceRuntimeIdentity;
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
@@ -1131,7 +1143,7 @@ export function studioPreviewInteractionAuthority(
       ? { kind: "interactive" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  if (legacyRuntimeProfile >= 8 && legacyRuntimeProfile <= 12) {
+  if (snapshotVersion >= 8 && snapshotVersion <= 12) {
     return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
       ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
@@ -2476,15 +2488,15 @@ const INSTALLING_STATE: PreviewRendererHostStateV1 = { detail: null, phase: "fal
 
 export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): StudioPreviewRendererView | null {
   const {
-    committedProposedState,
     context,
-    draftProposedState,
     frame,
+    proposedState,
     provider,
     retainedSourceDuration,
     runtimeTraceTerminalProgramRecords,
     sampleTime,
-    transientEdit,
+    gestureActive,
+    sceneBoundaryActive,
   } = input;
   const [bound, setBound] = useState<BoundHostStateV1 | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
@@ -2493,29 +2505,20 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const [compilation, setCompilation] = useState<StudioPreviewCompilationStateV1>(INACTIVE_COMPILATION);
   const [installation, setInstallation] = useState<StudioPreviewHostInstallationV1 | null>(null);
   const [viewport, setViewport] = useState<PreviewViewportV1 | null>(null);
-  const latestCommittedProposedState = useRef(committedProposedState);
-  latestCommittedProposedState.current = committedProposedState;
-  const latestDraftProposedState = useRef(draftProposedState);
-  latestDraftProposedState.current = draftProposedState;
+  const latestProposedState = useRef(proposedState);
+  latestProposedState.current = proposedState;
   const retainedRuntimeTraceTerminalFrame = useRef<Readonly<{
     authority: StudioPreviewRuntimeTraceTerminalEditProjection;
-    geometry: StudioPreviewInteractionGeometryV1;
+    geometry: StudioPreviewInteractionGeometry;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     workspaceKey: string;
   }> | null>(null);
   const queuedScene = useRef<Readonly<{
-    binding: StudioPreviewHostBindingV1;
+    binding: StudioPreviewHostBinding;
     scene: CompiledStudioPreviewSceneV1;
   }> | null>(null);
 
-  const eligibility = useMemo(
-    () =>
-      evaluateStudioPreviewEligibilityV1({
-        ...detectStudioPreviewCapabilitiesV1(),
-        providerAvailable: provider !== null,
-      }),
-    [provider],
-  );
+  const eligibility = useMemo(() => evaluateStudioPreviewEligibility(detectStudioPreviewCapabilities()), []);
 
   // The Scene identity that owns the installed worker; the working revision
   // gates presentation instead of tearing the retained worker down. A project
@@ -2532,10 +2535,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const genericInitialEditCandidates = snapshot ? studioPreviewGenericInitialEditCandidates(snapshot) : [];
 
   useEffect(() => {
-    const proposedState =
-      snapshot && studioPreviewSyntheticInitialEditAnchor(snapshot) !== null
-        ? (latestDraftProposedState.current ?? latestCommittedProposedState.current)
-        : latestCommittedProposedState.current;
+    const proposedState = latestProposedState.current;
     const workingRevision = context?.workingRevision;
     if (
       !snapshot ||
@@ -2644,7 +2644,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     if (!canvasEl || cameraAspect === null || typeof ResizeObserver === "undefined") return;
     const measure = () => {
       const rect = canvasEl.getBoundingClientRect();
-      setViewport(snapStudioPreviewViewportV1({ height: rect.height, width: rect.width }, cameraAspect));
+      setViewport(snapStudioPreviewViewport({ height: rect.height, width: rect.width }, cameraAspect));
     };
     measure();
     const observer = new ResizeObserver(measure);
@@ -2667,7 +2667,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       setEpoch((current) => current + 1);
       return;
     }
-    const binding: StudioPreviewHostBindingV1 = { canvas: canvasEl, provider, snapshot, workspaceKey };
+    const binding: StudioPreviewHostBinding = { canvas: canvasEl, provider, snapshot, workspaceKey };
     const installedScene = currentInstallation.scene;
     const nextHost = new StudioPreviewRendererHost({
       createRenderer: () => createCanvasPreviewRendererV1(evidenceAdapter ? { evidence: evidenceAdapter } : {}),
@@ -2722,10 +2722,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     host?.requestFrame({ sampleTime, viewport });
   }, [host, sampleTime, viewport]);
 
-  useEffect(() => {
-    host?.setTransientEdit(transientEdit);
-  }, [host, transientEdit]);
-
   // Dev/test-only: expose the host-bound frame evidence channel so E2E can
   // prove the retained worker's own pixels. Requires the provider capability;
   // never present in production.
@@ -2747,7 +2743,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     snapshot !== null &&
     canvasEl !== null &&
     workspaceKey !== null &&
-    studioPreviewHostBindingCurrentV1(bound.binding, { canvas: canvasEl, provider, snapshot, workspaceKey });
+    studioPreviewHostBindingCurrent(bound.binding, { canvas: canvasEl, provider, snapshot, workspaceKey });
 
   // Every gate — transient edit, snapshot correlation, host binding, and exact
   // frame match against this render's own playhead and viewport — is applied
@@ -2770,10 +2766,10 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       return {
         detail: compilationError,
         phase: "fallback",
-        reason: "snapshot-uncorrelated",
+        reason: "scene-unsupported",
       };
     }
-    return resolveStudioPreviewViewStateV1({
+    return resolveStudioPreviewViewState({
       context,
       eligibility,
       hostActive: bindingCurrent,
@@ -2781,7 +2777,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       sampleTime,
       snapshot,
       snapshotError,
-      transientEdit,
+      sceneBoundaryActive,
       viewport,
       workingScene: currentCompiledScene
         ? {
@@ -2801,16 +2797,16 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     snapshot,
     snapshotError,
     sourceDurationMismatch,
-    transientEdit,
+    sceneBoundaryActive,
     viewport,
   ]);
 
   // Geometry comes from the exact prepared vertices of this correlated frame.
-  // Non-present or unavailable entries retain the semantic DOM hit targets.
+  // Non-present or unavailable entries do not mint interaction targets.
   const interactionGeometry = useMemo(
     () =>
       state.phase === "presented"
-        ? projectStudioPreviewInteractionGeometryV1(interactionEntityIds, state.frame.interaction, frame)
+        ? projectStudioPreviewInteractionGeometry(interactionEntityIds, state.frame.interaction, frame)
         : null,
     [frame, interactionEntityIds, state],
   );
@@ -2860,7 +2856,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     presentedAuthority: presentedRuntimeTraceTerminalAuthority,
     programRecords: runtimeTraceTerminalProgramRecords,
     retainedAuthority: retainedTerminalFrameContextCurrent?.authority ?? null,
-    transientEdit,
+    transientEdit: gestureActive,
     workingRevisionPristine: context?.workingRevision === PRISTINE_WORKING_REVISION,
   });
   const runtimeTracePendingPresentation = runtimeTraceTerminalUiState.pendingPresentation;

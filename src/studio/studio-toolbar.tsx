@@ -20,12 +20,14 @@ const TOOL_COMMANDS: readonly Readonly<{
 ] as const;
 
 export function StudioToolbar({
+  authoringAvailable,
   insertValue,
   onInsertAtCenter,
   onInsertValueChange,
   onToolChange,
   tool,
 }: Readonly<{
+  authoringAvailable: boolean;
   insertValue: string;
   onInsertAtCenter: () => void;
   onInsertValueChange: (value: string) => void;
@@ -55,6 +57,7 @@ export function StudioToolbar({
                   : "border-zinc-700 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100",
               )}
               key={item.tool}
+              disabled={!authoringAvailable && item.tool !== "select"}
               onClick={() => onToolChange(item.tool)}
               title={`${command.label} · ${shortcut}`}
               type="button"
@@ -83,9 +86,14 @@ export function StudioToolbar({
               onChange={(event) => onInsertValueChange(event.currentTarget.value)}
               placeholder={tool === "Text" ? "Type text" : String.raw`e.g. E = mc^2`}
               value={insertValue}
+              disabled={!authoringAvailable}
             />
           </label>
-          <button className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400" type="submit">
+          <button
+            className="h-8 bg-sky-500 px-3 text-xs font-medium text-sky-950 hover:bg-sky-400 disabled:cursor-not-allowed disabled:bg-zinc-800 disabled:text-zinc-500"
+            disabled={!authoringAvailable}
+            type="submit"
+          >
             Insert at center
           </button>
         </form>
