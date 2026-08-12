@@ -31,7 +31,7 @@ import type {
   ProposedState,
   RuntimeSceneState,
 } from "./model";
-import type { CanonicalEditProgram } from "./operations";
+import type { CanonicalEditOperation, CanonicalEditProgram } from "./operations";
 import {
   detectStudioPreviewCapabilitiesV1,
   evaluateStudioPreviewEligibilityV1,
@@ -75,6 +75,8 @@ import {
   buildStudioSceneIrAdapterEvidenceV1,
   collectStudioMathTexOutlineInputsV1,
   compileStudioSceneIrV1,
+  sceneEntityUniformPositiveScale,
+  sceneEntityWorldCenter,
   studioPointToScenePointV1,
 } from "./scene-ir-adapter";
 
@@ -1360,74 +1362,122 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-type StaticImportedRootMovePlan =
+type StaticImportedRootTransformPlan =
   | Readonly<{ kind: "not-applicable" }>
   | Readonly<{ kind: "unsupported"; message: string }>
   | Readonly<{
       delta: Point;
       kind: "authorized";
-      operationId: string;
+      operationIds: readonly string[];
       runtimeEntityId: string;
+      uniformScale?: Readonly<{ factor: number; pivot: Point }>;
     }>;
+
+type StaticImportedPositionOperation = Extract<CanonicalEditOperation, { kind: "SetProperty" }> &
+  Readonly<{ key: "position" }>;
+type StaticImportedScaleOperation = Extract<CanonicalEditOperation, { kind: "AnimateProperty" }> &
+  Readonly<{ key: "scale" }>;
+type StaticImportedTransformOperation = StaticImportedPositionOperation | StaticImportedScaleOperation;
+
+type StaticImportedTransformEntry = Readonly<{
+  operation: StaticImportedTransformOperation;
+  record: ProgramRecord;
+}>;
 
 function isFinitePoint(value: unknown): value is Point {
   return isPointValue(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
 }
 
-function planStaticImportedRootMove(
+function closeStaticTransformValue(left: number, right: number) {
+  return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
+}
+
+function sameStaticTransformPoint(left: Point, right: Point) {
+  return closeStaticTransformValue(left.x, right.x) && closeStaticTransformValue(left.y, right.y);
+}
+
+function planStaticImportedRootTransform(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
   }>,
-): StaticImportedRootMovePlan {
+): StaticImportedRootTransformPlan {
   const base = input.proposedState.base;
   const baseEntities = base.runtimeSceneState.objectGraph.entities;
-  const operations = input.proposedState.programs.flatMap(({ program }) => program.operations);
-  const existingPositionOperations = operations.filter(
-    (operation) =>
-      operation.kind === "SetProperty" &&
-      operation.key === "position" &&
-      baseEntities[operation.entityId] !== undefined,
+  const entries = input.proposedState.programs.flatMap((record) =>
+    record.program.operations.map((operation) => ({ operation, record })),
   );
-  if (existingPositionOperations.length === 0) return { kind: "not-applicable" };
+  const transformEntries = entries.filter((entry): entry is StaticImportedTransformEntry => {
+    const { operation } = entry;
+    if (!("entityId" in operation)) return false;
+    const entity = baseEntities[operation.entityId];
+    return (
+      entity !== undefined &&
+      ((operation.kind === "SetProperty" && operation.key === "position") ||
+        ((entity.type === "ImageMobject" || entity.type === "MathTex") &&
+          operation.kind === "AnimateProperty" &&
+          operation.key === "scale"))
+    );
+  });
+  if (transformEntries.length === 0) return { kind: "not-applicable" };
   const scene = input.snapshot.snapshot.scene;
   if (scene.source.kind !== "imported-manim-server-snapshot") return { kind: "not-applicable" };
-  if (existingPositionOperations.length > 1) {
-    return { kind: "unsupported", message: "A static Rust move must target exactly one imported entity." };
+  const operations = transformEntries.map(({ operation }) => operation);
+  const entityIds = new Set(operations.map(({ entityId }) => entityId));
+  const positionOperations = operations.filter(
+    (operation): operation is StaticImportedPositionOperation =>
+      operation.kind === "SetProperty" && operation.key === "position",
+  );
+  const scaleOperations = operations.filter(
+    (operation): operation is StaticImportedScaleOperation =>
+      operation.kind === "AnimateProperty" && operation.key === "scale",
+  );
+  const targetId = operations[0]?.entityId;
+  const target = targetId ? baseEntities[targetId] : undefined;
+  const imageOrMathTex = target?.type === "ImageMobject" || target?.type === "MathTex";
+  if (entityIds.size !== 1 || positionOperations.length > 1 || scaleOperations.length > 1) {
+    return { kind: "unsupported", message: "The static transform must identify one target." };
   }
-  if (operations.length > 1) {
-    // This authorization path deliberately claims only a standalone move;
-    // broader static edits still use the complete Studio adapter below.
+  if (!imageOrMathTex && entries.length !== 1) return { kind: "not-applicable" };
+  if (imageOrMathTex && (entries.length !== transformEntries.length || entries.length > 2)) {
+    return {
+      kind: "unsupported",
+      message: "One imported Image or MathTex transform may contain only one position and one uniform scale edit.",
+    };
+  }
+  if (!imageOrMathTex && (operations.length !== 1 || scaleOperations.length !== 0)) {
     return { kind: "not-applicable" };
   }
-
-  const [record] = input.proposedState.programs;
-  const [operation] = record?.program.operations ?? [];
-  if (
-    input.proposedState.programs.length !== 1 ||
-    !record ||
-    record.validation.status !== "valid" ||
-    record.program.operations.length !== 1 ||
-    !operation ||
-    operation.kind !== "SetProperty" ||
-    operation.key !== "position" ||
-    !isFinitePoint(operation.value)
-  ) {
-    return { kind: "unsupported", message: "The edit must contain one valid position operation." };
-  }
-
-  const program = record.program;
-  const origin = program.provenance.origin;
-  if (
-    program.anchor.resolvedSeconds !== 0 ||
-    operation.interval.start !== 0 ||
-    operation.interval.end !== 0 ||
-    program.loweringStatus !== "supported" ||
-    (origin !== "direct-manipulation" && origin !== "studio-default") ||
-    operation.provenance.origin !== origin
-  ) {
-    return { kind: "unsupported", message: "Only one exact t=0 pointer, keyboard, or Inspector move is supported." };
+  for (const { operation, record } of transformEntries) {
+    const program = record.program;
+    const origin = program.provenance.origin;
+    const positionIsAuthorized =
+      operation.kind === "SetProperty" &&
+      operation.key === "position" &&
+      isFinitePoint(operation.value) &&
+      (origin === "direct-manipulation" || origin === "studio-default");
+    const scaleIsAuthorized =
+      operation.kind === "AnimateProperty" &&
+      operation.key === "scale" &&
+      origin === "direct-manipulation" &&
+      operation.control === undefined &&
+      typeof operation.relativeFactor === "number" &&
+      operation.relativeFactor !== 1;
+    if (
+      record.validation.status !== "valid" ||
+      program.anchor.resolvedSeconds !== 0 ||
+      program.loweringStatus !== "supported" ||
+      operation.interval.start !== 0 ||
+      operation.interval.end !== 0 ||
+      operation.provenance.origin !== origin ||
+      (!positionIsAuthorized && !scaleIsAuthorized)
+    ) {
+      return {
+        kind: "unsupported",
+        message: "Only exact t=0 pointer, keyboard, or Inspector transforms are supported.",
+      };
+    }
   }
 
   const correlation = input.snapshot.correlation;
@@ -1439,7 +1489,6 @@ function planStaticImportedRootMove(
   ) {
     return { kind: "unsupported", message: "The verified source snapshot is not one exact static Scene." };
   }
-
   if (
     base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
     base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
@@ -1450,45 +1499,77 @@ function planStaticImportedRootMove(
     return { kind: "unsupported", message: "Studio state is not correlated with the verified static Scene." };
   }
 
-  const baseEntity = baseEntities[operation.entityId];
+  const baseEntity = target;
+  const basePosition = baseEntity?.geometry?.position;
+  const baseScale = baseEntity?.geometry?.scale;
+  const semanticScale =
+    baseScale?.kind === "known" && Number.isFinite(baseScale.value) && baseScale.value > 0 ? baseScale.value : null;
   if (
     !baseEntity ||
+    baseEntity.provisional ||
+    baseEntity.transactionId !== undefined ||
     baseEntity.sourceIdentity.kind !== "known" ||
-    baseEntity.geometry?.position.kind !== "known" ||
-    !isFinitePoint(baseEntity.geometry.position.value)
+    basePosition?.kind !== "known" ||
+    !isFinitePoint(basePosition.value) ||
+    (scaleOperations.length === 1 && baseEntity.type === "MathTex" && semanticScale === null)
   ) {
-    return { kind: "unsupported", message: "The moved Studio entity has no stable imported position identity." };
+    return { kind: "unsupported", message: "The imported transform has no stable semantic identity and baseline." };
   }
-
-  const identity = input.snapshot.sourceRuntimeIdentity;
-  const sourceName = baseEntity.sourceIdentity.value;
-  const mapping = identity?.get(sourceName);
-  const runtimeEntity = mapping ? scene.entities.find(({ id }) => id === mapping.entityId) : null;
+  const mapping = input.snapshot.sourceRuntimeIdentity?.get(baseEntity.sourceIdentity.value);
+  const runtimeEntity = mapping ? scene.entities.find(({ id }) => id === mapping.entityId) : undefined;
+  const reverseMappingCount = mapping
+    ? [...(input.snapshot.sourceRuntimeIdentity?.values() ?? [])].filter(
+        ({ entityId }) => entityId === mapping.entityId,
+      ).length
+    : 0;
+  const runtimeTypeMatches =
+    !imageOrMathTex ||
+    (baseEntity.type === "ImageMobject" &&
+      runtimeEntity?.geometry.kind === "image" &&
+      runtimeEntity.appearance.kind === "image") ||
+    (baseEntity.type === "MathTex" &&
+      runtimeEntity?.geometry.kind === "cubic-path" &&
+      runtimeEntity.appearance.kind === "vector");
   if (
-    !identity ||
     !mapping ||
-    [...identity.values()].filter(({ entityId }) => entityId === mapping.entityId).length !== 1 ||
+    mapping.sourceName !== baseEntity.sourceIdentity.value ||
+    reverseMappingCount !== 1 ||
     !runtimeEntity ||
-    runtimeEntity.parentId !== null
+    runtimeEntity.parentId !== null ||
+    !runtimeTypeMatches
   ) {
     return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
   }
+  const semanticCenter = studioPointToScenePointV1(basePosition.value, input.frame, scene.camera.view.center);
+  const runtimeCenter = imageOrMathTex ? sceneEntityWorldCenter(runtimeEntity) : semanticCenter;
+  const mathTexScale = baseEntity.type === "MathTex" ? sceneEntityUniformPositiveScale(runtimeEntity.transform) : null;
+  if (
+    !runtimeCenter ||
+    !isFinitePoint(runtimeCenter) ||
+    (imageOrMathTex && !sameStaticTransformPoint(runtimeCenter, semanticCenter)) ||
+    (scaleOperations.length === 1 &&
+      baseEntity.type === "MathTex" &&
+      (mathTexScale === null || !closeStaticTransformValue(mathTexScale, semanticScale!)))
+  ) {
+    return { kind: "unsupported", message: "The semantic transform baseline does not match verified geometry." };
+  }
 
-  const baseCenter = studioPointToScenePointV1(
-    baseEntity.geometry.position.value,
-    input.frame,
-    scene.camera.view.center,
-  );
-  const targetCenter = studioPointToScenePointV1(operation.value, input.frame, scene.camera.view.center);
-  const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
-  if (!isFinitePoint(delta) || (delta.x === 0 && delta.y === 0)) {
-    return { kind: "unsupported", message: "The static root move must have one finite non-zero displacement." };
+  const position = positionOperations[0];
+  const targetCenter =
+    position && isFinitePoint(position.value)
+      ? studioPointToScenePointV1(position.value, input.frame, scene.camera.view.center)
+      : runtimeCenter;
+  const delta = { x: targetCenter.x - runtimeCenter.x, y: targetCenter.y - runtimeCenter.y };
+  const scaleFactor = scaleOperations[0]?.relativeFactor;
+  if (!isFinitePoint(delta) || (scaleFactor === undefined && delta.x === 0 && delta.y === 0)) {
+    return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
   }
   return {
     delta,
     kind: "authorized",
-    operationId: operation.id,
+    operationIds: operations.map(({ id }) => id),
     runtimeEntityId: runtimeEntity.id,
+    ...(scaleFactor === undefined ? {} : { uniformScale: { factor: scaleFactor, pivot: runtimeCenter } }),
   };
 }
 
@@ -1635,11 +1716,14 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
-  const staticRootMove = planStaticImportedRootMove(input);
-  if (staticRootMove.kind === "unsupported") {
-    return { error: `Static imported root move is unsupported: ${staticRootMove.message}`, kind: "unsupported" };
+  const staticRootTransform = planStaticImportedRootTransform(input);
+  if (staticRootTransform.kind === "unsupported") {
+    return {
+      error: `Static imported root transform is unsupported: ${staticRootTransform.message}`,
+      kind: "unsupported",
+    };
   }
-  if (staticRootMove.kind === "authorized") {
+  if (staticRootTransform.kind === "authorized") {
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
@@ -1648,20 +1732,24 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
+      const includesScale = staticRootTransform.uniformScale !== undefined;
       const bundle = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-        delta: staticRootMove.delta,
-        entityId: staticRootMove.runtimeEntityId,
+        delta: staticRootTransform.delta,
+        entityId: staticRootTransform.runtimeEntityId,
         expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
         nextRevision: engineRevisionHash,
         provenance: {
           evidence: [
-            "Studio t=0 position request projected onto one verified static imported root",
-            `authorized operation ${staticRootMove.operationId}`,
+            includesScale
+              ? "Studio t=0 transform projected onto one verified static imported root"
+              : "Studio t=0 position request projected onto one verified static imported root",
+            ...staticRootTransform.operationIds.map((operationId) => `authorized operation ${operationId}`),
           ],
-          id: `studio-static-move:${engineRevisionHash}`,
+          id: `studio-static-${includesScale ? "transform" : "move"}:${engineRevisionHash}`,
           origin: "studio-edit-program",
         },
         schema: "poietra.transform-scene-entity",
+        ...(staticRootTransform.uniformScale ? { uniformScale: staticRootTransform.uniformScale } : {}),
         version: 1,
       });
       return {
@@ -1682,7 +1770,7 @@ export async function compileStudioPreviewSceneV1(
       };
     } catch (error) {
       return {
-        error: `Rust core rejected the static imported root move: ${
+        error: `Rust core rejected the static imported root transform: ${
           error instanceof Error ? error.message : "unknown error"
         }`,
         kind: "unsupported",

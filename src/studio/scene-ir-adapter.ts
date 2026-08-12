@@ -504,33 +504,30 @@ export function studioPointToScenePointV1(
   };
 }
 
-function imageWorldCenter(image: ImageSnapshotEvidenceV1): EnginePointV1 {
-  const x = (image.geometry.localRect.left + image.geometry.localRect.right) / 2;
-  const y = (image.geometry.localRect.bottom + image.geometry.localRect.top) / 2;
+export function sceneEntityWorldCenter(entity: Pick<SceneEntityV1, "geometry" | "transform">): EnginePointV1 | null {
+  const center =
+    entity.geometry.kind === "image"
+      ? {
+          x: (entity.geometry.localRect.left + entity.geometry.localRect.right) / 2,
+          y: (entity.geometry.localRect.bottom + entity.geometry.localRect.top) / 2,
+        }
+      : entity.geometry.kind === "cubic-path"
+        ? (() => {
+            const points = entity.geometry.path.subpaths.flatMap((subpath) => [
+              subpath.start,
+              ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+            ]);
+            if (points.length === 0) return null;
+            return {
+              x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
+              y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
+            };
+          })()
+        : null;
+  if (!center) return null;
   return {
-    x: image.transform.m11 * x + image.transform.m12 * y + image.transform.tx,
-    y: image.transform.m21 * x + image.transform.m22 * y + image.transform.ty,
-  };
-}
-
-function mathTexLocalCenter(mathTex: MathTexSnapshotEvidenceV1): EnginePointV1 {
-  const points = mathTex.geometry.path.subpaths.flatMap((subpath) => [
-    subpath.start,
-    ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
-  ]);
-  const xCoordinates = points.map(({ x }) => x);
-  const yCoordinates = points.map(({ y }) => y);
-  return {
-    x: (Math.min(...xCoordinates) + Math.max(...xCoordinates)) / 2,
-    y: (Math.min(...yCoordinates) + Math.max(...yCoordinates)) / 2,
-  };
-}
-
-function mathTexWorldCenter(mathTex: MathTexSnapshotEvidenceV1): EnginePointV1 {
-  const center = mathTexLocalCenter(mathTex);
-  return {
-    x: mathTex.transform.m11 * center.x + mathTex.transform.m12 * center.y + mathTex.transform.tx,
-    y: mathTex.transform.m21 * center.x + mathTex.transform.m22 * center.y + mathTex.transform.ty,
+    x: entity.transform.m11 * center.x + entity.transform.m12 * center.y + entity.transform.tx,
+    y: entity.transform.m21 * center.x + entity.transform.m22 * center.y + entity.transform.ty,
   };
 }
 
@@ -539,40 +536,7 @@ function sameScenePoint(left: EnginePointV1, right: EnginePointV1) {
   return Math.abs(left.x - right.x) <= tolerance && Math.abs(left.y - right.y) <= tolerance;
 }
 
-function transformedImageTransform(
-  image: ImageSnapshotEvidenceV1,
-  target: EnginePointV1,
-  relativeScale: number,
-): SceneEntityV1["transform"] {
-  const center = imageWorldCenter(image);
-  return {
-    m11: relativeScale * image.transform.m11,
-    m12: relativeScale * image.transform.m12,
-    m21: relativeScale * image.transform.m21,
-    m22: relativeScale * image.transform.m22,
-    tx: target.x + relativeScale * (image.transform.tx - center.x),
-    ty: target.y + relativeScale * (image.transform.ty - center.y),
-  };
-}
-
-function transformedMathTexTransform(
-  mathTex: MathTexSnapshotEvidenceV1,
-  target: EnginePointV1,
-  relativeScale: number,
-): SceneEntityV1["transform"] {
-  const center = mathTexWorldCenter(mathTex);
-  if (relativeScale === 1 && sameScenePoint(target, center)) return mathTex.transform;
-  return {
-    m11: relativeScale * mathTex.transform.m11,
-    m12: relativeScale * mathTex.transform.m12,
-    m21: relativeScale * mathTex.transform.m21,
-    m22: relativeScale * mathTex.transform.m22,
-    tx: target.x + relativeScale * (mathTex.transform.tx - center.x),
-    ty: target.y + relativeScale * (mathTex.transform.ty - center.y),
-  };
-}
-
-function uniformPositiveScale(transform: SceneEntityV1["transform"]): number | null {
+export function sceneEntityUniformPositiveScale(transform: SceneEntityV1["transform"]): number | null {
   const tolerance = Number.EPSILON * Math.max(1, Math.abs(transform.m11), Math.abs(transform.m22)) * 32;
   return transform.m11 > 0 &&
     transform.m12 === 0 &&
@@ -845,8 +809,8 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
             "dimensions",
             issues,
           );
-    const snapshotImageCenter = image ? imageWorldCenter(image) : undefined;
-    const snapshotMathTexCenter = mathTexSnapshot ? mathTexWorldCenter(mathTexSnapshot) : undefined;
+    const snapshotImageCenter = image ? sceneEntityWorldCenter(image) : undefined;
+    const snapshotMathTexCenter = mathTexSnapshot ? sceneEntityWorldCenter(mathTexSnapshot) : undefined;
     const baseImagePosition =
       image && entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null;
     const baseImageScale = image && entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null;
@@ -890,7 +854,6 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
     }
     validatePresence(entity, channelFor(scene, entity.id, "presence"), issues);
     if ((!isMathTex && !isImage && !dimensions) || !position || scale === undefined) return [];
-    let imageRelativeScale: number | undefined;
     if (image && snapshotImageCenter) {
       const baseCenter = baseImagePosition
         ? studioPointToScenePointV1(baseImagePosition, input.frame, input.evidence.camera.view.center)
@@ -905,14 +868,12 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
         );
         return [];
       }
-      imageRelativeScale = scale / baseImageScale;
     }
-    let mathTexRelativeScale: number | undefined;
     if (mathTexSnapshot && snapshotMathTexCenter) {
       const baseCenter = baseMathTexPosition
         ? studioPointToScenePointV1(baseMathTexPosition, input.frame, input.evidence.camera.view.center)
         : null;
-      const snapshotScale = uniformPositiveScale(mathTexSnapshot.transform);
+      const snapshotScale = sceneEntityUniformPositiveScale(mathTexSnapshot.transform);
       if (
         !baseCenter ||
         !sameScenePoint(baseCenter, snapshotMathTexCenter) ||
@@ -931,7 +892,25 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
         );
         return [];
       }
-      mathTexRelativeScale = scale / baseMathTexScale;
+    }
+    if (
+      (image &&
+        baseImagePosition &&
+        baseImageScale !== null &&
+        (!samePoint(position, baseImagePosition) || scale !== baseImageScale)) ||
+      (mathTexSnapshot &&
+        baseMathTexPosition &&
+        baseMathTexScale !== null &&
+        (!samePoint(position, baseMathTexPosition) || scale !== baseMathTexScale))
+    ) {
+      issues.push(
+        issue(
+          "property-unsupported",
+          `Imported ${entity.type} transforms must be applied by the canonical core command.`,
+          { entityId: entity.id },
+        ),
+      );
+      return [];
     }
 
     const geometry =
@@ -961,12 +940,8 @@ function compileEntities(input: StudioSceneIrAdapterInputV1, issues: StudioScene
       return [];
     }
     const translation = studioPointToScenePointV1(position, input.frame, input.evidence.camera.view.center);
-    const transform =
-      image && imageRelativeScale !== undefined
-        ? transformedImageTransform(image, translation, imageRelativeScale)
-        : mathTexSnapshot && mathTexRelativeScale !== undefined
-          ? transformedMathTexTransform(mathTexSnapshot, translation, mathTexRelativeScale)
-          : { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y };
+    const transform = image?.transform ??
+      mathTexSnapshot?.transform ?? { m11: scale, m12: 0, m21: 0, m22: scale, tx: translation.x, ty: translation.y };
     return [
       {
         appearance,
