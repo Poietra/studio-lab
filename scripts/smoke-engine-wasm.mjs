@@ -11,6 +11,7 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 1);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
+assert.equal(typeof engine.editSceneTimelineV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
 assert.equal(typeof engine.setSubtreeVectorPaintAlphaV1, "function");
 assert.equal(typeof engine.transformSceneEntityV1, "function");

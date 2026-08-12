@@ -5,9 +5,11 @@ import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type CreateSceneEntitiesWireCommandV1,
   createCreateSceneEntitiesCompiler,
+  createEditSceneTimelineCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
   createTransformSceneEntityCompiler,
+  type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityWireCommandV1,
   type SetSubtreeVectorPaintAlphaWireCommandV1,
   type TransformSceneEntityWireCommandV1,
@@ -67,6 +69,22 @@ const transformCommand: TransformSceneEntityWireCommandV1 = {
   },
   schema: "poietra.transform-scene-entity",
   scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
+  version: 1,
+};
+
+const editTimelineCommand: EditSceneTimelineWireCommandV1 = {
+  edits: [
+    { at: 2, duration: 1.5, kind: "insert-wait" },
+    { kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 3 },
+  ],
+  expectedBaseRevision: "a".repeat(64),
+  nextRevision: "c".repeat(64),
+  provenance: {
+    evidence: ["Studio Scene duration control"],
+    id: "studio-edit:timeline-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.edit-scene-timeline",
   version: 1,
 };
 
@@ -146,6 +164,24 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(transformCommand);
   });
 
+  it("forwards one ordered atomic Scene timeline command and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createEditSceneTimelineCompiler(async () => ({
+      editSceneTimelineV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, editTimelineCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(editTimelineCommand);
+  });
+
   it("forwards the exact subtree vector-paint command and complete base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
@@ -178,10 +214,14 @@ describe("Scene authoring WASM adapter", () => {
     const compileTransform = createTransformSceneEntityCompiler(async () => ({
       transformSceneEntityV1: () => new TextEncoder().encode("{}"),
     }));
+    const compileTimeline = createEditSceneTimelineCompiler(async () => ({
+      editSceneTimelineV1: () => new TextEncoder().encode("false"),
+    }));
 
     await expect(compileCreation(bundle, createEntitiesCommand)).rejects.toThrow();
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
     await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();
+    await expect(compileTimeline(bundle, editTimelineCommand)).rejects.toThrow();
   });
 });

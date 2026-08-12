@@ -47,11 +47,30 @@ pub struct CreateSceneEntity {
     pub instant_transform: Option<CreateSceneEntityInstantTransform>,
 }
 
-/// One insertion into the existing Scene timeline before created entities are appended.
+/// One insertion into an existing Scene timeline.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CreateSceneTimelineInsertion {
+pub struct SceneTimelineInsertion {
     pub at: f64,
     pub duration: f64,
+}
+
+/// One ordered mutation in an atomic Scene timeline edit.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SceneTimelineEdit {
+    InsertWait(SceneTimelineInsertion),
+    TrimSceneDuration {
+        removed_duration: f64,
+        target_duration: f64,
+    },
+}
+
+/// One profile-free Studio command that atomically edits Scene time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditSceneTimelineCommand {
+    pub edits: Vec<SceneTimelineEdit>,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
 }
 
 /// One profile-free Studio command that atomically creates supported entities.
@@ -61,7 +80,7 @@ pub struct CreateSceneEntitiesCommand {
     pub expected_base_revision: String,
     pub next_revision: String,
     pub provenance: ProvenanceRecordV1,
-    pub timeline_insertions: Vec<CreateSceneTimelineInsertion>,
+    pub timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
 /// One profile-free Studio command that rotates a root entity in world space.
@@ -121,6 +140,30 @@ pub enum CreateSceneEntitiesError {
     #[error("a created entity instant transform must be finite, positive, and inside its lifetime")]
     InvalidInstantTransform,
     #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum EditSceneTimelineError {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the timeline edit must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("a timeline command must contain at least one edit")]
+    EmptyEdits,
+    #[error(
+        "a wait insertion must have a finite positive duration and start inside the current Scene"
+    )]
+    InvalidInsertion,
+    #[error(
+        "a trim must consume waits inserted earlier in the same command and resolve to targetDuration"
+    )]
+    InvalidTrim,
+    #[error("the timeline edit provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("the timeline edit provenance ID already exists: {0}")]
+    ProvenanceConflict(String),
+    #[error("the edited Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
 }
 
@@ -303,10 +346,7 @@ fn created_geometry_and_appearance(
     }
 }
 
-fn shift_interval_for_insertion(
-    interval: &mut IntervalV1,
-    insertion: &CreateSceneTimelineInsertion,
-) {
+fn shift_interval_for_insertion(interval: &mut IntervalV1, insertion: &SceneTimelineInsertion) {
     if interval.start >= insertion.at - TIMELINE_ANCHOR_EPSILON {
         interval.start += insertion.duration;
         interval.end += insertion.duration;
@@ -317,7 +357,7 @@ fn shift_interval_for_insertion(
 
 fn shift_keyframes_for_insertion<T>(
     keyframes: &mut [KeyframeV1<T>],
-    insertion: &CreateSceneTimelineInsertion,
+    insertion: &SceneTimelineInsertion,
 ) {
     for keyframe in keyframes {
         if keyframe.at >= insertion.at - TIMELINE_ANCHOR_EPSILON {
@@ -326,10 +366,7 @@ fn shift_keyframes_for_insertion<T>(
     }
 }
 
-fn insert_scene_time(
-    scene: &mut poietra_scene_ir::SceneIrV1,
-    insertion: &CreateSceneTimelineInsertion,
-) {
+fn insert_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, insertion: &SceneTimelineInsertion) {
     for entity in &mut scene.entities {
         for lifetime in &mut entity.lifetimes {
             shift_interval_for_insertion(lifetime, insertion);
@@ -357,6 +394,109 @@ fn insert_scene_time(
         }
     }
     scene.duration += insertion.duration;
+}
+
+fn time_after_removal(time: f64, start: f64, end: f64) -> f64 {
+    if time <= start + TIMELINE_ANCHOR_EPSILON {
+        time.min(start)
+    } else if time >= end - TIMELINE_ANCHOR_EPSILON {
+        time - (end - start)
+    } else {
+        start
+    }
+}
+
+fn remove_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, start: f64, end: f64) {
+    for entity in &mut scene.entities {
+        for lifetime in &mut entity.lifetimes {
+            lifetime.start = time_after_removal(lifetime.start, start, end);
+            lifetime.end = time_after_removal(lifetime.end, start, end);
+        }
+    }
+    for channel in &mut scene.animation_channels {
+        match channel {
+            AnimationChannelV1::AffineTransform { keyframes, .. } => {
+                for keyframe in keyframes {
+                    keyframe.at = time_after_removal(keyframe.at, start, end);
+                }
+            }
+            AnimationChannelV1::Opacity { keyframes, .. }
+            | AnimationChannelV1::PathTrim { keyframes, .. }
+            | AnimationChannelV1::MotionPath { keyframes, .. } => {
+                for keyframe in keyframes {
+                    keyframe.at = time_after_removal(keyframe.at, start, end);
+                }
+            }
+            AnimationChannelV1::PathMorph { keyframes, .. } => {
+                for keyframe in keyframes {
+                    keyframe.at = time_after_removal(keyframe.at, start, end);
+                }
+            }
+            AnimationChannelV1::VectorAppearance { keyframes, .. } => {
+                for keyframe in keyframes {
+                    keyframe.at = time_after_removal(keyframe.at, start, end);
+                }
+            }
+            AnimationChannelV1::Camera { keyframes, .. } => {
+                for keyframe in keyframes {
+                    keyframe.at = time_after_removal(keyframe.at, start, end);
+                }
+            }
+        }
+    }
+    scene.duration -= end - start;
+}
+
+fn trim_inserted_waits(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    inserted_waits: &mut Vec<IntervalV1>,
+    removed_duration: f64,
+    target_duration: f64,
+) -> Result<(), EditSceneTimelineError> {
+    let resolved_duration = scene.duration - removed_duration;
+    if !removed_duration.is_finite()
+        || removed_duration <= 0.0
+        || !target_duration.is_finite()
+        || target_duration <= 0.0
+        || !resolved_duration.is_finite()
+        || (resolved_duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON
+    {
+        return Err(EditSceneTimelineError::InvalidTrim);
+    }
+    let mut remaining = removed_duration;
+    let mut removal_cursor = inserted_waits
+        .last()
+        .map(|wait| wait.end)
+        .ok_or(EditSceneTimelineError::InvalidTrim)?;
+    while remaining > TIMELINE_ANCHOR_EPSILON {
+        let Some(wait) = inserted_waits.last() else {
+            return Err(EditSceneTimelineError::InvalidTrim);
+        };
+        let available = wait.end - wait.start;
+        if available <= 0.0 {
+            inserted_waits.pop();
+            continue;
+        }
+        if (wait.end - removal_cursor).abs() >= TIMELINE_ANCHOR_EPSILON {
+            return Err(EditSceneTimelineError::InvalidTrim);
+        }
+        let removed = available.min(remaining);
+        let removal_end = wait.end;
+        let removal_start = removal_end - removed;
+        remove_scene_time(scene, removal_start, removal_end);
+        for wait in inserted_waits.iter_mut() {
+            wait.start = time_after_removal(wait.start, removal_start, removal_end);
+            wait.end = time_after_removal(wait.end, removal_start, removal_end);
+        }
+        inserted_waits.retain(|wait| wait.end > wait.start);
+        removal_cursor = removal_start;
+        remaining = (remaining - removed).max(0.0);
+    }
+    if (scene.duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON {
+        return Err(EditSceneTimelineError::InvalidTrim);
+    }
+    scene.duration = target_duration;
+    Ok(())
 }
 
 fn validate_create_scene_entities_command(
@@ -515,6 +655,94 @@ fn append_created_entity(
 }
 
 impl EngineSessionV1 {
+    /// Atomically applies ordered wait insertions and duration trims.
+    ///
+    /// A trim can consume only the suffix of waits inserted earlier in this command. Removing
+    /// that inserted interval maps later lifetimes and keyframes back toward their source times.
+    /// If this would violate a Scene invariant, whole-bundle validation rejects the command
+    /// without changing the installed session.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene, assets, and retained index.
+    pub fn edit_scene_timeline(
+        &mut self,
+        command: EditSceneTimelineCommand,
+    ) -> Result<SceneIrBundleV1, EditSceneTimelineError> {
+        if self.scene().source.revision_hash() != command.expected_base_revision {
+            return Err(EditSceneTimelineError::StaleBaseRevision);
+        }
+        if command.next_revision == command.expected_base_revision {
+            return Err(EditSceneTimelineError::RevisionDidNotAdvance);
+        }
+        if command.edits.is_empty() {
+            return Err(EditSceneTimelineError::EmptyEdits);
+        }
+        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+            return Err(EditSceneTimelineError::InvalidProvenanceOrigin);
+        }
+        if self
+            .scene()
+            .provenance
+            .iter()
+            .any(|record| record.id == command.provenance.id)
+        {
+            return Err(EditSceneTimelineError::ProvenanceConflict(
+                command.provenance.id,
+            ));
+        }
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        let mut inserted_waits: Vec<IntervalV1> = Vec::new();
+        for edit in &command.edits {
+            match edit {
+                SceneTimelineEdit::InsertWait(insertion) => {
+                    if !insertion.at.is_finite()
+                        || insertion.at < 0.0
+                        || insertion.at > candidate.scene.duration
+                        || !insertion.duration.is_finite()
+                        || insertion.duration <= 0.0
+                        || !(candidate.scene.duration + insertion.duration).is_finite()
+                        || inserted_waits.iter().any(|wait| {
+                            insertion.at < wait.end - TIMELINE_ANCHOR_EPSILON
+                                && insertion.at + insertion.duration
+                                    > wait.start + TIMELINE_ANCHOR_EPSILON
+                        })
+                    {
+                        return Err(EditSceneTimelineError::InvalidInsertion);
+                    }
+                    insert_scene_time(&mut candidate.scene, insertion);
+                    inserted_waits.push(IntervalV1 {
+                        end: insertion.at + insertion.duration,
+                        start: insertion.at,
+                    });
+                }
+                SceneTimelineEdit::TrimSceneDuration {
+                    removed_duration,
+                    target_duration,
+                } => trim_inserted_waits(
+                    &mut candidate.scene,
+                    &mut inserted_waits,
+                    *removed_duration,
+                    *target_duration,
+                )?,
+            }
+        }
+
+        candidate.scene.provenance.push(command.provenance);
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
     /// Atomically appends one batch of Studio-created vector entities.
     ///
     /// Geometry inputs are local-space authoring facts. This method owns their default Manim
@@ -1117,15 +1345,53 @@ mod tests {
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
             timeline_insertions: vec![
-                CreateSceneTimelineInsertion {
+                SceneTimelineInsertion {
                     at: 0.5,
                     duration: 0.25,
                 },
-                CreateSceneTimelineInsertion {
+                SceneTimelineInsertion {
                     at: 0.75,
                     duration: 0.25,
                 },
             ],
+        }
+    }
+
+    fn timeline_bundle() -> SceneIrBundleV1 {
+        let mut bundle = imported_bundle();
+        bundle.scene.duration = 12.0;
+        for entity in &mut bundle.scene.entities {
+            entity.lifetimes = vec![IntervalV1 {
+                end: 12.0,
+                start: 0.0,
+            }];
+        }
+        bundle.scene.entities[0].lifetimes[0].end = 8.0;
+        let AnimationChannelV1::Opacity { keyframes, .. } = &mut bundle.scene.animation_channels[0]
+        else {
+            panic!("shared fixture must contain an opacity channel");
+        };
+        let mut final_keyframe = keyframes.pop().unwrap();
+        final_keyframe.at = 12.0;
+        keyframes.push(KeyframeV1 {
+            at: 8.0,
+            easing_to_next: Some(EasingV1::Smooth {}),
+            value: 0.5,
+        });
+        keyframes.push(final_keyframe);
+        bundle
+    }
+
+    fn timeline_command(edits: Vec<SceneTimelineEdit>) -> EditSceneTimelineCommand {
+        EditSceneTimelineCommand {
+            edits,
+            expected_base_revision: BASE_REVISION.to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio timeline edit".to_owned()],
+                id: "studio-timeline-edit".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
         }
     }
 
@@ -1489,6 +1755,184 @@ mod tests {
         let at = sample_transform(1.25);
         assert_eq!((at.m11, at.m22, at.tx, at.ty), (0.75, 1.0, -1.0, 0.5));
         assert_eq!(sample_transform(2.0), at);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "timeline edits produce exact stored authoring times"
+    )]
+    fn inserts_a_wait_and_trims_only_its_suffix_from_the_same_command() {
+        let bundle = timeline_bundle();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.0,
+                duration: 3.0,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                removed_duration: 1.0,
+                target_duration: 14.0,
+            },
+        ]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.edit_scene_timeline(command.clone()).unwrap();
+
+        assert_eq!(result.scene.duration, 14.0);
+        assert_eq!(
+            result.scene.entities[0].lifetimes,
+            vec![IntervalV1 {
+                start: 0.0,
+                end: 10.0,
+            }]
+        );
+        assert!(
+            result.scene.entities[1..]
+                .iter()
+                .all(|entity| entity.lifetimes
+                    == vec![IntervalV1 {
+                        start: 0.0,
+                        end: 14.0
+                    }])
+        );
+        assert!(matches!(
+            &result.scene.animation_channels[0],
+            AnimationChannelV1::Opacity { keyframes, .. }
+                if keyframes[0].at == 0.0
+                    && keyframes[1].at == 10.0
+                    && keyframes[2].at == 14.0
+        ));
+        assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
+        assert_eq!(session.scene(), &result.scene);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn timeline_wait_insertion_shifts_lifetimes_and_every_channel_time() {
+        let bundle = timeline_bundle();
+        let command = timeline_command(vec![SceneTimelineEdit::InsertWait(
+            SceneTimelineInsertion {
+                at: 7.0,
+                duration: 3.0,
+            },
+        )]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.edit_scene_timeline(command).unwrap();
+
+        assert!((result.scene.duration - 15.0).abs() < f64::EPSILON);
+        assert!((result.scene.entities[0].lifetimes[0].end - 11.0).abs() < f64::EPSILON);
+        assert!(
+            result.scene.entities[1..]
+                .iter()
+                .all(|entity| { (entity.lifetimes[0].end - 15.0).abs() < f64::EPSILON })
+        );
+        assert!(matches!(
+            &result.scene.animation_channels[0],
+            AnimationChannelV1::Opacity { keyframes, .. }
+                if (keyframes[1].at - 11.0).abs() < f64::EPSILON
+                    && (keyframes[2].at - 15.0).abs() < f64::EPSILON
+        ));
+    }
+
+    #[test]
+    fn trim_beyond_waits_in_the_same_command_is_rejected_atomically() {
+        let bundle = timeline_bundle();
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.0,
+                duration: 3.0,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                removed_duration: 4.0,
+                target_duration: 11.0,
+            },
+        ]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.edit_scene_timeline(command),
+            Err(EditSceneTimelineError::InvalidTrim)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    fn trim_across_disjoint_waits_is_rejected_atomically() {
+        let bundle = timeline_bundle();
+        let expected_scene = bundle.scene.clone();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 2.0,
+                duration: 1.0,
+            }),
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 8.0,
+                duration: 1.0,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                removed_duration: 2.0,
+                target_duration: 12.0,
+            },
+        ]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.edit_scene_timeline(command),
+            Err(EditSceneTimelineError::InvalidTrim)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    fn decimal_waits_can_be_trimmed_without_floating_point_residue() {
+        let mut session = EngineSessionV1::new(timeline_bundle()).unwrap();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.0,
+                duration: 0.1,
+            }),
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.1,
+                duration: 0.1,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                removed_duration: 0.2,
+                target_duration: 12.0,
+            },
+        ]);
+
+        let result = session.edit_scene_timeline(command).unwrap();
+        assert!((result.scene.duration - 12.0).abs() < TIMELINE_ANCHOR_EPSILON);
+    }
+
+    #[test]
+    fn overlapping_wait_insertion_is_rejected_atomically() {
+        let mut session = EngineSessionV1::new(timeline_bundle()).unwrap();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.0,
+                duration: 1.0,
+            }),
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.5,
+                duration: 1.0,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                removed_duration: 1.5,
+                target_duration: 12.5,
+            },
+        ]);
+
+        assert!(matches!(
+            session.edit_scene_timeline(command),
+            Err(EditSceneTimelineError::InvalidInsertion)
+        ));
     }
 
     #[test]

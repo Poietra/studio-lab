@@ -13,8 +13,9 @@ mod scene_delta;
 pub use authoring::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
-    CreateSceneTimelineInsertion, RotateSceneEntityCommand, RotateSceneEntityError,
-    ScaleAboutPivot, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    EditSceneTimelineCommand, EditSceneTimelineError, RotateSceneEntityCommand,
+    RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit, SceneTimelineInsertion,
+    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
     TransformSceneEntityCommand, TransformSceneEntityError,
 };
 pub use evaluator::{

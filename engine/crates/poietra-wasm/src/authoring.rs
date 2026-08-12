@@ -1,9 +1,10 @@
 use poietra_eval::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
-    CreateSceneTimelineInsertion, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
-    RotateSceneEntityError, ScaleAboutPivot, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
+    EditSceneTimelineCommand, EditSceneTimelineError, EngineSessionV1, EvaluationError,
+    RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit,
+    SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    TransformSceneEntityCommand, TransformSceneEntityError,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
@@ -24,6 +25,12 @@ enum TransformSceneEntitySchemaV1 {
 enum CreateSceneEntitiesSchemaV1 {
     #[serde(rename = "poietra.create-scene-entities")]
     CreateSceneEntities,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum EditSceneTimelineSchemaV1 {
+    #[serde(rename = "poietra.edit-scene-timeline")]
+    EditSceneTimeline,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,13 +116,13 @@ impl From<CreateSceneEntityJsonV1> for CreateSceneEntity {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateSceneTimelineInsertionJsonV1 {
+struct SceneTimelineInsertionJsonV1 {
     at: f64,
     duration: f64,
 }
 
-impl From<CreateSceneTimelineInsertionJsonV1> for CreateSceneTimelineInsertion {
-    fn from(value: CreateSceneTimelineInsertionJsonV1) -> Self {
+impl From<SceneTimelineInsertionJsonV1> for SceneTimelineInsertion {
+    fn from(value: SceneTimelineInsertionJsonV1) -> Self {
         Self {
             at: value.at,
             duration: value.duration,
@@ -132,9 +139,64 @@ struct CreateSceneEntitiesCommandJsonV1 {
     provenance: ProvenanceRecordV1,
     #[serde(rename = "schema")]
     _schema: CreateSceneEntitiesSchemaV1,
-    timeline_insertions: Vec<CreateSceneTimelineInsertionJsonV1>,
+    timeline_insertions: Vec<SceneTimelineInsertionJsonV1>,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+enum SceneTimelineEditJsonV1 {
+    #[serde(rename = "insert-wait")]
+    InsertWait { at: f64, duration: f64 },
+    #[serde(rename = "trim-scene-duration")]
+    TrimSceneDuration {
+        #[serde(rename = "removedDuration")]
+        removed_duration: f64,
+        #[serde(rename = "targetDuration")]
+        target_duration: f64,
+    },
+}
+
+impl From<SceneTimelineEditJsonV1> for SceneTimelineEdit {
+    fn from(value: SceneTimelineEditJsonV1) -> Self {
+        match value {
+            SceneTimelineEditJsonV1::InsertWait { at, duration } => {
+                Self::InsertWait(SceneTimelineInsertion { at, duration })
+            }
+            SceneTimelineEditJsonV1::TrimSceneDuration {
+                removed_duration,
+                target_duration,
+            } => Self::TrimSceneDuration {
+                removed_duration,
+                target_duration,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct EditSceneTimelineCommandJsonV1 {
+    edits: Vec<SceneTimelineEditJsonV1>,
+    expected_base_revision: String,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    #[serde(rename = "schema")]
+    _schema: EditSceneTimelineSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<EditSceneTimelineCommandJsonV1> for EditSceneTimelineCommand {
+    fn from(value: EditSceneTimelineCommandJsonV1) -> Self {
+        Self {
+            edits: value.edits.into_iter().map(Into::into).collect(),
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            provenance: value.provenance,
+        }
+    }
 }
 
 impl From<CreateSceneEntitiesCommandJsonV1> for CreateSceneEntitiesCommand {
@@ -251,6 +313,8 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     CreateCommand(#[from] CreateSceneEntitiesError),
     #[error(transparent)]
+    TimelineCommand(#[from] EditSceneTimelineError),
+    #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
     TransformCommand(#[from] TransformSceneEntityError),
@@ -334,6 +398,31 @@ fn create_scene_entities_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.create_scene_entities(command.into())?;
     scene_authoring_response(&result)
+}
+
+fn edit_scene_timeline_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: EditSceneTimelineCommandJsonV1 =
+        parse_scene_authoring_command("edit timeline", command_json)?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.edit_scene_timeline(command.into())?;
+    scene_authoring_response(&result)
+}
+
+/// Applies ordered wait insertions and trailing duration trims through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or edited result.
+#[wasm_bindgen(js_name = editSceneTimelineV1)]
+pub fn edit_scene_timeline_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    edit_scene_timeline_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Creates supported Studio entities through the shared core.
@@ -518,6 +607,25 @@ mod tests {
                 { "at": 0.5, "duration": 0.2 },
                 { "at": 0.7, "duration": 0.2 }
             ],
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn edit_timeline_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "edits": [
+                { "at": 0.5, "duration": 0.5, "kind": "insert-wait" },
+                { "kind": "trim-scene-duration", "removedDuration": 0.2, "targetDuration": 2.3 }
+            ],
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "provenance": {
+                "evidence": ["WASM adapter timeline edit test"],
+                "id": "wasm-timeline-edit",
+                "origin": "studio-edit-program"
+            },
+            "schema": "poietra.edit-scene-timeline",
             "version": 1
         }))
         .unwrap()
@@ -875,6 +983,36 @@ mod tests {
                         && (keyframes[0].value.m22 - 0.75).abs() < f64::EPSILON
                 ))
         );
+    }
+
+    #[test]
+    fn timeline_adapter_forwards_wait_and_trim_to_the_core() {
+        let response =
+            edit_scene_timeline_json(&fixture_json(), &edit_timeline_command_json()).unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+
+        assert!((bundle.scene.duration - 2.3).abs() < 1e-12);
+        assert!(
+            bundle
+                .scene
+                .entities
+                .iter()
+                .all(|entity| { (entity.lifetimes[0].end - 2.3).abs() < 1e-12 })
+        );
+        assert!(matches!(
+            &bundle.scene.animation_channels[0],
+            AnimationChannelV1::Opacity { keyframes, .. }
+                if (keyframes[1].at - 2.3).abs() < 1e-12
+        ));
+        assert_eq!(
+            bundle.scene.provenance.last().unwrap().id,
+            "wasm-timeline-edit"
+        );
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ));
     }
 
     #[test]
