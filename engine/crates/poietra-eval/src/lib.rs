@@ -12,7 +12,7 @@ mod scene_delta;
 
 pub use authoring::{
     MoveSceneEntityCommandV1, MoveSceneEntityErrorV1, RotateSceneEntityCommandV1,
-    RotateSceneEntityErrorV1,
+    RotateSceneEntityErrorV1, UniformScaleSceneEntityCommandV1, UniformScaleSceneEntityErrorV1,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,

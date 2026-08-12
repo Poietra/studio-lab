@@ -28,6 +28,17 @@ pub struct MoveSceneEntityCommandV1 {
     pub provenance: ProvenanceRecordV1,
 }
 
+/// One profile-free Studio command that uniformly scales a root entity in world space.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UniformScaleSceneEntityCommandV1 {
+    pub entity_id: String,
+    pub expected_base_revision: String,
+    pub factor: f64,
+    pub next_revision: String,
+    pub pivot: PointV1,
+    pub provenance: ProvenanceRecordV1,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum RotateSceneEntityErrorV1 {
     #[error("the installed Scene revision does not match expectedBaseRevision")]
@@ -71,6 +82,30 @@ pub enum MoveSceneEntityErrorV1 {
     #[error("the move provenance ID already exists: {0}")]
     ProvenanceConflict(String),
     #[error("the moved Scene failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum UniformScaleSceneEntityErrorV1 {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the uniform scale must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the uniform scale factor must be finite, positive, and non-identity")]
+    InvalidFactor,
+    #[error("the world-space uniform scale pivot must be finite")]
+    InvalidPivot,
+    #[error("the uniform scale target does not exist: {0}")]
+    TargetMissing(String),
+    #[error("world-space uniform scale currently requires a root entity: {0}")]
+    TargetIsNotRoot(String),
+    #[error("world-space uniform scale does not yet support an animated transform target: {0}")]
+    AnimatedTransformUnsupported(String),
+    #[error("the uniform scale provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("the uniform scale provenance ID already exists: {0}")]
+    ProvenanceConflict(String),
+    #[error("the uniformly scaled Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
 }
 
@@ -250,6 +285,100 @@ impl EngineSessionV1 {
         self.replace_snapshot(candidate)?;
         Ok(result)
     }
+
+    /// Atomically scales one root entity uniformly about a world-space pivot.
+    ///
+    /// The command is deliberately independent of source profiles, viewport coordinates, and
+    /// Manim bindings. Integration code must authorize and lower those concerns before calling
+    /// this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene and retained index.
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact identity is the profile-free command boundary"
+    )]
+    pub fn uniform_scale_scene_entity_v1(
+        &mut self,
+        command: UniformScaleSceneEntityCommandV1,
+    ) -> Result<SceneIrBundleV1, UniformScaleSceneEntityErrorV1> {
+        if self.scene().source.revision_hash() != command.expected_base_revision {
+            return Err(UniformScaleSceneEntityErrorV1::StaleBaseRevision);
+        }
+        if command.next_revision == command.expected_base_revision {
+            return Err(UniformScaleSceneEntityErrorV1::RevisionDidNotAdvance);
+        }
+        if !command.factor.is_finite() || command.factor <= 0.0 || command.factor == 1.0 {
+            return Err(UniformScaleSceneEntityErrorV1::InvalidFactor);
+        }
+        if !command.pivot.x.is_finite() || !command.pivot.y.is_finite() {
+            return Err(UniformScaleSceneEntityErrorV1::InvalidPivot);
+        }
+        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+            return Err(UniformScaleSceneEntityErrorV1::InvalidProvenanceOrigin);
+        }
+        if self
+            .scene()
+            .provenance
+            .iter()
+            .any(|record| record.id == command.provenance.id)
+        {
+            return Err(UniformScaleSceneEntityErrorV1::ProvenanceConflict(
+                command.provenance.id,
+            ));
+        }
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        if candidate.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::AffineTransform { entity_id, .. }
+                    | AnimationChannelV1::MotionPath { entity_id, .. }
+                    if entity_id == &command.entity_id
+            )
+        }) {
+            return Err(
+                UniformScaleSceneEntityErrorV1::AnimatedTransformUnsupported(command.entity_id),
+            );
+        }
+        let target = candidate
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == command.entity_id)
+            .ok_or_else(|| {
+                UniformScaleSceneEntityErrorV1::TargetMissing(command.entity_id.clone())
+            })?;
+        if target.parent_id.is_some() {
+            return Err(UniformScaleSceneEntityErrorV1::TargetIsNotRoot(
+                command.entity_id,
+            ));
+        }
+        let transform = &target.transform;
+        target.transform = poietra_scene_ir::AffineTransformV1 {
+            m11: command.factor * transform.m11,
+            m12: command.factor * transform.m12,
+            m21: command.factor * transform.m21,
+            m22: command.factor * transform.m22,
+            tx: command.pivot.x + command.factor * (transform.tx - command.pivot.x),
+            ty: command.pivot.y + command.factor * (transform.ty - command.pivot.y),
+        };
+        target.provenance_id.clone_from(&command.provenance.id);
+        candidate.scene.provenance.push(command.provenance);
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
 }
 
 #[cfg(test)]
@@ -359,6 +488,63 @@ mod tests {
         error
     }
 
+    fn real_line_joints_bundle() -> SceneIrBundleV1 {
+        let mut bundle = fixture_bundle("real-line-joints-v10.json");
+        let root = bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap();
+        root.transform = poietra_scene_ir::AffineTransformV1 {
+            m11: 1.25,
+            m12: 0.5,
+            m21: -0.25,
+            m22: 0.75,
+            tx: 3.0,
+            ty: -2.0,
+        };
+        bundle
+    }
+
+    fn uniform_scale_command_for(
+        bundle: &SceneIrBundleV1,
+        entity_id: &str,
+    ) -> UniformScaleSceneEntityCommandV1 {
+        let expected_base_revision = bundle.scene.source.revision_hash().to_owned();
+        let next_revision = if expected_base_revision == NEXT_REVISION {
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned()
+        } else {
+            NEXT_REVISION.to_owned()
+        };
+        UniformScaleSceneEntityCommandV1 {
+            entity_id: entity_id.to_owned(),
+            expected_base_revision,
+            factor: 1.5,
+            next_revision,
+            pivot: PointV1 { x: 1.0, y: -0.5 },
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio uniform scale".to_owned()],
+                id: "studio-uniform-scale".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+        }
+    }
+
+    fn rejected_uniform_scale(
+        bundle: SceneIrBundleV1,
+        command: UniformScaleSceneEntityCommandV1,
+    ) -> UniformScaleSceneEntityErrorV1 {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.uniform_scale_scene_entity_v1(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
     #[test]
     fn rotates_an_imported_root_and_returns_the_installed_bundle() {
         let bundle = imported_bundle();
@@ -439,6 +625,155 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
         assert_eq!(session.assets(), &result.assets);
         assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn uniformly_scales_a_real_top_level_group_about_a_world_pivot() {
+        let bundle = real_line_joints_bundle();
+        let root = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap()
+            .clone();
+        let children = bundle
+            .scene
+            .entities
+            .iter()
+            .filter(|entity| entity.parent_id.as_deref() == Some(root.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let command = uniform_scale_command_for(&bundle, &root.id);
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session
+            .uniform_scale_scene_entity_v1(command.clone())
+            .unwrap();
+        let scaled = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == root.id)
+            .unwrap();
+
+        assert_eq!(
+            scaled.transform,
+            poietra_scene_ir::AffineTransformV1 {
+                m11: 1.875,
+                m12: 0.75,
+                m21: -0.375,
+                m22: 1.125,
+                tx: 4.0,
+                ty: -2.75,
+            }
+        );
+        assert_eq!(scaled.provenance_id, "studio-uniform-scale");
+        assert_eq!(
+            result
+                .scene
+                .entities
+                .iter()
+                .filter(|entity| entity.parent_id.as_deref() == Some(root.id.as_str()))
+                .cloned()
+                .collect::<Vec<_>>(),
+            children
+        );
+        assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
+        assert_eq!(
+            result.scene.source,
+            SceneSourceV1::StudioEditProgram {
+                edit_program_version: ContractVersionV1,
+                revision_hash: command.next_revision,
+            }
+        );
+        assert_eq!(session.scene(), &result.scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn every_rejected_uniform_scale_preserves_the_real_retained_scene() {
+        let bundle = real_line_joints_bundle();
+        let root_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap()
+            .id
+            .clone();
+        let child_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.as_deref() == Some(root_id.as_str()))
+            .unwrap()
+            .id
+            .clone();
+        let command = uniform_scale_command_for(&bundle, &root_id);
+        let mut rejected = Vec::new();
+
+        let mut stale = command.clone();
+        stale.expected_base_revision =
+            "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff".to_owned();
+        rejected.push(stale);
+
+        let mut invalid_revision = command.clone();
+        invalid_revision.next_revision = "not-a-revision".to_owned();
+        rejected.push(invalid_revision);
+
+        let mut unchanged_revision = command.clone();
+        unchanged_revision.next_revision = unchanged_revision.expected_base_revision.clone();
+        rejected.push(unchanged_revision);
+
+        let mut missing = command.clone();
+        missing.entity_id = "missing".to_owned();
+        rejected.push(missing);
+
+        for factor in [f64::NAN, f64::INFINITY, -1.0, 0.0, 1.0] {
+            let mut invalid_factor = command.clone();
+            invalid_factor.factor = factor;
+            rejected.push(invalid_factor);
+        }
+
+        let mut invalid_pivot = command.clone();
+        invalid_pivot.pivot.x = f64::NAN;
+        rejected.push(invalid_pivot);
+
+        let mut wrong_origin = command.clone();
+        wrong_origin.provenance.origin = ProvenanceOriginV1::Fixture;
+        rejected.push(wrong_origin);
+
+        let mut duplicate_provenance = command.clone();
+        duplicate_provenance.provenance.id = bundle.scene.provenance[0].id.clone();
+        rejected.push(duplicate_provenance);
+
+        let mut child_target = command.clone();
+        child_target.entity_id = child_id;
+        rejected.push(child_target);
+
+        let mut overflowing = command;
+        overflowing.factor = f64::MAX;
+        rejected.push(overflowing);
+
+        for command in rejected {
+            let _error = rejected_uniform_scale(real_line_joints_bundle(), command);
+        }
+
+        for (fixture, entity_id) in [
+            ("dynamic-affine-camera.json", "dynamic-parent"),
+            ("manim-motion-path.json", "mover"),
+        ] {
+            let animated_bundle = fixture_bundle(fixture);
+            let command = uniform_scale_command_for(&animated_bundle, entity_id);
+            assert!(matches!(
+                rejected_uniform_scale(animated_bundle, command),
+                UniformScaleSceneEntityErrorV1::AnimatedTransformUnsupported(id)
+                    if id == entity_id
+            ));
+        }
     }
 
     #[test]

@@ -5,8 +5,10 @@ import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   createMoveSceneEntityCompilerV1,
   createRotateSceneEntityCompilerV1,
+  createUniformScaleSceneEntityCompilerV1,
   type MoveSceneEntityCommandV1,
   type RotateSceneEntityCommandV1,
+  type UniformScaleSceneEntityCommandV1,
 } from "./scene-authoring";
 
 const command: RotateSceneEntityCommandV1 = {
@@ -35,6 +37,21 @@ const moveCommand: MoveSceneEntityCommandV1 = {
     origin: "studio-edit-program",
   },
   schema: "poietra.move-scene-entity",
+  version: 1,
+};
+
+const uniformScaleCommand: UniformScaleSceneEntityCommandV1 = {
+  entityId: "later",
+  expectedBaseRevision: "a".repeat(64),
+  factor: 1.5,
+  nextRevision: "d".repeat(64),
+  pivot: { x: 1.25, y: -0.5 },
+  provenance: {
+    evidence: ["Studio uniform resize"],
+    id: "studio-edit:uniform-scale-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.uniform-scale-scene-entity",
   version: 1,
 };
 
@@ -82,6 +99,24 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(moveCommand);
   });
 
+  it("forwards the exact profile-free uniform-scale command and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createUniformScaleSceneEntityCompilerV1(async () => ({
+      uniformScaleSceneEntityV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, uniformScaleCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(uniformScaleCommand);
+  });
+
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
     const compileRotation = createRotateSceneEntityCompilerV1(async () => ({
@@ -90,8 +125,12 @@ describe("Scene authoring WASM adapter", () => {
     const compileMove = createMoveSceneEntityCompilerV1(async () => ({
       moveSceneEntityV1: () => new TextEncoder().encode("not JSON"),
     }));
+    const compileUniformScale = createUniformScaleSceneEntityCompilerV1(async () => ({
+      uniformScaleSceneEntityV1: () => new TextEncoder().encode("null"),
+    }));
 
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileMove(bundle, moveCommand)).rejects.toThrow();
+    await expect(compileUniformScale(bundle, uniformScaleCommand)).rejects.toThrow();
   });
 });

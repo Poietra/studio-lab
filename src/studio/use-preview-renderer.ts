@@ -16,7 +16,11 @@ import {
   StudioPreviewRendererHost,
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
-import type { MoveSceneEntityCompilerV1, RotateSceneEntityCompilerV1 } from "../engine/scene-authoring";
+import type {
+  MoveSceneEntityCompilerV1,
+  RotateSceneEntityCompilerV1,
+  UniformScaleSceneEntityCompilerV1,
+} from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
   EntityDimensions,
@@ -1246,6 +1250,7 @@ export async function compileStudioPreviewSceneV1(
     proposedState: ProposedState;
     rotationCompiler?: RotateSceneEntityCompilerV1;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    uniformScaleCompiler?: UniformScaleSceneEntityCompilerV1;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -1312,6 +1317,7 @@ export async function compileStudioPreviewSceneV1(
       rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
+      uniformScaleCompiler: input.uniformScaleCompiler,
     });
     if (rebased.kind === "unsupported") {
       return {
