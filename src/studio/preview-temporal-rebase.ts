@@ -2,13 +2,15 @@ import {
   compileMoveSceneEntity,
   compileRotateSceneEntity,
   compileSetSubtreeVectorPaintAlpha,
+  compileTransformSceneEntity,
   compileUniformScaleSceneEntity,
   type MoveSceneEntityCompiler,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
+  type TransformSceneEntityCompiler,
   type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
-import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash, sceneIrV1Schema } from "../engine/scene-ir";
+import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
 import {
   canonicalFastManimRuntimeTraceSampleTimeV3,
@@ -1827,20 +1829,21 @@ export async function compileStudioPreviewGenericInitialEdit(
 }
 
 /**
- * Rebase one bounded t=0 Studio transform directly onto a verified temporal
- * snapshot. The static Studio adapter is deliberately bypassed: untouched
- * dynamic semantic state is not reconstructed or flattened. For V9 this
- * affine result is a t=0 draft only; the renderer hook rejects later samples
- * until producer-backed reimport supplies the edited path-morph endpoint.
+ * Authorize and lower one bounded t=0 Studio transform onto the shared Rust
+ * core. The static Studio adapter is deliberately bypassed: untouched dynamic
+ * semantic state is not reconstructed or flattened. For V9 this affine result
+ * is a t=0 draft only; the renderer hook rejects later samples until
+ * producer-backed reimport supplies the edited path-morph endpoint.
  */
-export function compileStudioPreviewTemporalRebase(
+export async function compileStudioPreviewTemporalRebase(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
+    transformCompiler?: TransformSceneEntityCompiler;
   }>,
-): StudioPreviewTemporalRebaseResult {
+): Promise<StudioPreviewTemporalRebaseResult> {
   const scene = input.snapshot.snapshot.scene;
   if (
     !Number.isFinite(input.frame.width) ||
@@ -1868,8 +1871,7 @@ export function compileStudioPreviewTemporalRebase(
   const planned = planInitialTransformEdit({ proposedState, snapshot: input.snapshot });
   if (planned.kind !== "supported") return planned;
   const { edit, profile } = planned;
-  const targetIndex = scene.entities.findIndex(({ id }) => id === edit.runtimeEntityId);
-  const target = scene.entities[targetIndex];
+  const target = scene.entities.find(({ id }) => id === edit.runtimeEntityId);
   const center = target ? localBoundaryCenter(scene, target) : null;
   if (!target || !center) {
     return unsupported("geometry-edit-unsupported", "The authorized temporal target has no bounded cubic geometry.");
@@ -1881,38 +1883,29 @@ export function compileStudioPreviewTemporalRebase(
       "Verified temporal base entities must retain a finite positive uniform transform without rotation or shear.",
     );
   }
-  const scale = sourceTransform.scale * (edit.scaleFactor ?? 1);
   const targetCenter = edit.position
     ? studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center)
     : sourceTransform.worldCenter;
-  if (!Number.isFinite(scale) || scale <= 0 || !Number.isFinite(targetCenter.x) || !Number.isFinite(targetCenter.y)) {
+  const delta = {
+    x: targetCenter.x - sourceTransform.worldCenter.x,
+    y: targetCenter.y - sourceTransform.worldCenter.y,
+  };
+  const scaleFactor = edit.scaleFactor === null || edit.scaleFactor === 1 ? null : edit.scaleFactor;
+  if (
+    !Number.isFinite(delta.x) ||
+    !Number.isFinite(delta.y) ||
+    (scaleFactor === null && delta.x === 0 && delta.y === 0)
+  ) {
     return unsupported("profile-unsupported", "The composed temporal transform is not finite and positive.");
   }
   const provenanceId = `studio-temporal-rebase:${input.sourceRevisionHash}`;
-  if (scene.provenance.some(({ id }) => id === provenanceId)) {
-    return unsupported(
-      "conflicting-edit-unsupported",
-      "The Studio temporal rebase provenance identity already exists.",
-    );
-  }
-  const editedEntity: SceneEntityV1 = {
-    ...target,
-    provenanceId,
-    transform: {
-      m11: scale,
-      m12: 0,
-      m21: 0,
-      m22: scale,
-      tx: targetCenter.x - scale * center.x,
-      ty: targetCenter.y - scale * center.y,
-    },
-  };
-  const candidate: SceneIrV1 = {
-    ...scene,
-    entities: scene.entities.map((entity, index) => (index === targetIndex ? editedEntity : entity)),
-    provenance: [
-      ...scene.provenance,
-      {
+  try {
+    const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
+      delta,
+      entityId: edit.runtimeEntityId,
+      expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+      nextRevision: input.sourceRevisionHash,
+      provenance: {
         evidence: [
           `Studio t=0 transform rebased onto verified snapshot V${profile} geometry`,
           ...edit.operationIds.map((operationId) => `authorized operation ${operationId}`),
@@ -1920,15 +1913,15 @@ export function compileStudioPreviewTemporalRebase(
         id: provenanceId,
         origin: "studio-edit-program",
       },
-    ],
-    source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: input.sourceRevisionHash },
-  };
-  const parsed = sceneIrV1Schema.safeParse(candidate);
-  if (!parsed.success) {
+      schema: "poietra.transform-scene-entity",
+      ...(scaleFactor === null ? {} : { uniformScale: { factor: scaleFactor, pivot: sourceTransform.worldCenter } }),
+      version: 1,
+    });
+    return { kind: "rebased", scene: rebased.scene };
+  } catch (error) {
     return unsupported(
-      "conflicting-edit-unsupported",
-      `The temporal rebase is not valid Scene IR: ${parsed.error.issues[0]?.message ?? "unknown error"}`,
+      "geometry-edit-unsupported",
+      `Rust core rejected the temporal transform: ${error instanceof Error ? error.message : "unknown error"}`,
     );
   }
-  return { kind: "rebased", scene: candidate };
 }

@@ -13,7 +13,11 @@ import { mixedDynamic2dSnapshotBundleFixtureV7 } from "../../server/test-fixture
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
-import type { MoveSceneEntityCompiler, MoveSceneEntityWireCommandV1 } from "../engine/scene-authoring";
+import type {
+  MoveSceneEntityCompiler,
+  MoveSceneEntityWireCommandV1,
+  TransformSceneEntityCompiler,
+} from "../engine/scene-authoring";
 import { createSceneIrDeltaV1 } from "../engine/scene-delta";
 import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -441,6 +445,33 @@ function recordingMoveCompiler(calls: MoveSceneEntityWireCommandV1[]): MoveScene
     });
   };
 }
+
+const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
+  const scale = command.uniformScale;
+  return await parseVerifiedSceneIrBundleV1({
+    ...bundle,
+    scene: {
+      ...bundle.scene,
+      entities: bundle.scene.entities.map((entity) => {
+        if (entity.id !== command.entityId) return entity;
+        const transform = { ...entity.transform };
+        if (scale) {
+          transform.m11 *= scale.factor;
+          transform.m12 *= scale.factor;
+          transform.m21 *= scale.factor;
+          transform.m22 *= scale.factor;
+          transform.tx = scale.pivot.x + scale.factor * (transform.tx - scale.pivot.x);
+          transform.ty = scale.pivot.y + scale.factor * (transform.ty - scale.pivot.y);
+        }
+        transform.tx += command.delta.x;
+        transform.ty += command.delta.y;
+        return { ...entity, provenanceId: command.provenance.id, transform };
+      }),
+      provenance: [...bundle.scene.provenance, command.provenance],
+      source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: command.nextRevision },
+    },
+  });
+};
 
 async function importedMathTexPreviewInput() {
   const base = await compilablePreviewInput();
@@ -2414,6 +2445,7 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      transformCompiler: testTransformCompiler,
       workingRevision: "studio-working-v1:mixed-v7-mathtex-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2421,12 +2453,12 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     const scene = result.scene.bundle.scene;
     expect(scene.sceneId).toBe(baseScene.sceneId);
-    expect(scene.camera).toBe(baseScene.camera);
+    expect(scene.camera).toEqual(baseScene.camera);
     expect(scene.duration).toBe(baseScene.duration);
-    expect(scene.animationChannels).toBe(baseScene.animationChannels);
+    expect(scene.animationChannels).toEqual(baseScene.animationChannels);
     expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
-    expect(scene.entities[1]).toBe(baseScene.entities[1]);
-    expect(scene.entities[2]).toBe(baseScene.entities[2]);
+    expect(scene.entities[1]).toEqual(baseScene.entities[1]);
+    expect(scene.entities[2]).toEqual(baseScene.entities[2]);
     expect(scene.entities[0]).toMatchObject({
       geometry: baseScene.entities[0]?.geometry,
       id: fixture.runtimeEntityId,
@@ -2449,15 +2481,16 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: MIXED_V7_FRAME,
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      transformCompiler: testTransformCompiler,
       workingRevision: "studio-working-v1:warp-square-v9-transform",
       workspaceKey: "project-a/example_scenes/basic.py/WarpSquare",
     });
     if (result.kind !== "compiled") throw new Error(result.error);
     const scene = result.scene.bundle.scene;
 
-    expect(scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(scene.animationChannels).toEqual(importedScene.animationChannels);
     expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(importedScene.animationChannels));
-    expect(scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
+    expect(scene.entities[0]?.geometry).toEqual(importedScene.entities[0]?.geometry);
     expect(scene.entities[0]?.transform).toMatchObject({ m11: 1.5, m12: 0, m21: 0, m22: 1.5 });
     expect(scene.entities[0]?.transform.tx).toBeCloseTo(1.4222222222222223, 12);
     expect(scene.entities[0]?.transform.ty).toBeCloseTo(0.8, 12);
@@ -2506,6 +2539,7 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: MIXED_V7_FRAME,
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      transformCompiler: testTransformCompiler,
       workingRevision: "studio-working-v1:second-mixed-v7-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2517,7 +2551,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(edited.transform.m22).toBeCloseTo(3, 12);
     expect(edited.transform.tx).toBeCloseTo(3.5555555555555554, 12);
     expect(edited.transform.ty).toBeCloseTo(0.8888888888888888, 12);
-    expect(scene.animationChannels).toBe(fixture.snapshot.snapshot.scene.animationChannels);
+    expect(scene.animationChannels).toEqual(fixture.snapshot.snapshot.scene.animationChannels);
     expect(scene.entities.slice(1)).toEqual(fixture.snapshot.snapshot.scene.entities.slice(1));
   });
 
@@ -2528,6 +2562,7 @@ describe("compileStudioPreviewSceneV1", () => {
       frame: MIXED_V7_FRAME,
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      transformCompiler: testTransformCompiler,
       workingRevision: "studio-working-v1:panned-camera-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2586,16 +2621,17 @@ describe("compileStudioPreviewSceneV1", () => {
         appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
       }),
       snapshot: fixture.snapshot,
+      transformCompiler: testTransformCompiler,
       workingRevision: "studio-working-v1:mixed-v7-create-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
     if (result.kind !== "compiled") throw new Error(result.error);
     const scene = result.scene.bundle.scene;
-    expect(scene.animationChannels).toBe(baseScene.animationChannels);
+    expect(scene.animationChannels).toEqual(baseScene.animationChannels);
     expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
     expect(scene.animationChannels[0]).toMatchObject({ entityId: baseScene.entities[1]?.id, kind: "path-trim" });
-    expect(scene.entities[0]).toBe(baseScene.entities[0]);
-    expect(scene.entities[2]).toBe(baseScene.entities[2]);
+    expect(scene.entities[0]).toEqual(baseScene.entities[0]);
+    expect(scene.entities[2]).toEqual(baseScene.entities[2]);
     expect(scene.entities[1]).toMatchObject({
       geometry: baseScene.entities[1]?.geometry,
       id: baseScene.entities[1]?.id,

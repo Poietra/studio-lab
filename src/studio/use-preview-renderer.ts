@@ -21,6 +21,7 @@ import {
   type MoveSceneEntityCompiler,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
+  type TransformSceneEntityCompiler,
   type UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
@@ -1502,6 +1503,7 @@ export async function compileStudioPreviewSceneV1(
     rotationCompiler?: RotateSceneEntityCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
+    transformCompiler?: TransformSceneEntityCompiler;
     uniformScaleCompiler?: UniformScaleSceneEntityCompiler;
     workingRevision: string;
     workspaceKey: string;
@@ -1607,11 +1609,12 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = compileStudioPreviewTemporalRebase({
+    const rebased = await compileStudioPreviewTemporalRebase({
       frame: input.frame,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
+      transformCompiler: input.transformCompiler,
     });
     if (rebased.kind === "unsupported") {
       return {

@@ -10,6 +10,8 @@ import type {
   MoveSceneEntityCompiler,
   RotateSceneEntityCompiler,
   SetSubtreeVectorPaintAlphaCompiler,
+  TransformSceneEntityCompiler,
+  TransformSceneEntityWireCommandV1,
   UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
@@ -628,12 +630,46 @@ function officialSquareToCircleSnapshot(
   };
 }
 
-function compile(input: Awaited<ReturnType<typeof squareToCircleInput>>) {
+function testTransformCompiler(calls: TransformSceneEntityWireCommandV1[] = []): TransformSceneEntityCompiler {
+  return async (bundle, command) => {
+    calls.push(command);
+    const scale = command.uniformScale;
+    return await parseVerifiedSceneIrBundleV1({
+      ...bundle,
+      scene: {
+        ...bundle.scene,
+        entities: bundle.scene.entities.map((entity) => {
+          if (entity.id !== command.entityId) return entity;
+          const transform = { ...entity.transform };
+          if (scale) {
+            transform.m11 *= scale.factor;
+            transform.m12 *= scale.factor;
+            transform.m21 *= scale.factor;
+            transform.m22 *= scale.factor;
+            transform.tx = scale.pivot.x + scale.factor * (transform.tx - scale.pivot.x);
+            transform.ty = scale.pivot.y + scale.factor * (transform.ty - scale.pivot.y);
+          }
+          transform.tx += command.delta.x;
+          transform.ty += command.delta.y;
+          return { ...entity, provenanceId: command.provenance.id, transform };
+        }),
+        provenance: [...bundle.scene.provenance, command.provenance],
+        source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: command.nextRevision },
+      },
+    });
+  };
+}
+
+function compile(
+  input: Awaited<ReturnType<typeof squareToCircleInput>>,
+  calls: TransformSceneEntityWireCommandV1[] = [],
+) {
   return compileStudioPreviewTemporalRebase({
     frame: FRAME,
     proposedState: input.proposedState,
     snapshot: input.snapshot,
     sourceRevisionHash: WORKING_REVISION,
+    transformCompiler: testTransformCompiler(calls),
   });
 }
 
@@ -1859,7 +1895,8 @@ describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
     ["combined", 1.5, 1.5, 1.4222222222222223, 0.7999999999999998],
   ] as const)("rebases a t=0 %s edit onto the base transform", async (kind, m11, m22, tx, ty) => {
     const input = await squareToCircleInput(kind);
-    const result = compile(input);
+    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const result = await compile(input, commands);
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
     expect(result.scene.entities[0]?.transform.m11).toBeCloseTo(m11, 12);
@@ -1868,16 +1905,27 @@ describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
     expect(result.scene.entities[0]?.transform.m21).toBe(0);
     expect(result.scene.entities[0]?.transform.tx).toBeCloseTo(tx, 12);
     expect(result.scene.entities[0]?.transform.ty).toBeCloseTo(ty, 12);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      entityId: input.mapping.entityId,
+      expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+      nextRevision: WORKING_REVISION,
+      schema: "poietra.transform-scene-entity",
+      version: 1,
+    });
+    expect(commands[0]?.delta.x).toBeCloseTo(tx, 12);
+    expect(commands[0]?.delta.y).toBeCloseTo(ty, 12);
+    expect(commands[0]?.uniformScale?.factor ?? null).toBe(kind === "position" ? null : 1.5);
   });
 
   it("preserves every imported channel byte and deterministic forward/A-B-A samples after the combined edit", async () => {
     const input = await squareToCircleInput();
     const importedScene = input.snapshot.snapshot.scene;
     const importedChannelBytes = canonicalJsonV1(importedScene.animationChannels);
-    const result = compile(input);
+    const result = await compile(input);
     if (result.kind !== "rebased") throw new Error(result.issue.message);
 
-    expect(result.scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(result.scene.animationChannels).toEqual(importedScene.animationChannels);
     expect(canonicalJsonV1(result.scene.animationChannels)).toBe(importedChannelBytes);
     expect(result.scene.animationChannels.map(({ kind }) => kind)).toEqual([
       "opacity",
@@ -1885,7 +1933,24 @@ describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
       "vector-appearance",
       "path-trim",
     ]);
-    expect(result.scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
+    expect(result.scene.entities[0]?.geometry).toEqual(importedScene.entities[0]?.geometry);
+  });
+
+  it("keeps the verified snapshot unchanged when the Rust transform rejects the command", async () => {
+    const input = await squareToCircleInput();
+    const before = canonicalJsonV1(input.snapshot.snapshot);
+    const result = await compileStudioPreviewTemporalRebase({
+      frame: FRAME,
+      proposedState: input.proposedState,
+      snapshot: input.snapshot,
+      sourceRevisionHash: WORKING_REVISION,
+      transformCompiler: async () => {
+        throw new Error("rejected fixture command");
+      },
+    });
+
+    expect(result).toMatchObject({ issue: { code: "geometry-edit-unsupported" }, kind: "unsupported" });
+    expect(canonicalJsonV1(input.snapshot.snapshot)).toBe(before);
   });
 
   it.each([
@@ -2096,7 +2161,7 @@ describe("compileStudioPreviewTemporalRebase SquareToCircle V8", () => {
       },
     ],
   ] as const)("fails closed on %s", async (_name, code, makeInput) => {
-    const result = compile(await makeInput());
+    const result = await compile(await makeInput());
     expect(result).toMatchObject({ issue: { code }, kind: "unsupported" });
   });
 });
@@ -2108,6 +2173,7 @@ describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
       proposedState: input.proposedState,
       snapshot: input.snapshot,
       sourceRevisionHash: WORKING_REVISION,
+      transformCompiler: testTransformCompiler(),
     });
   }
 
@@ -2153,7 +2219,7 @@ describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
     expect(studioPreviewInitialEditIntegrationAuthority(editedSnapshot)).toBeNull();
     expect(studioPreviewSyntheticInitialEditAnchor(editedSnapshot)).toBeNull();
     expect(
-      compileWarpSquare({
+      await compileWarpSquare({
         ...input,
         proposedState: {
           ...input.proposedState,
@@ -2251,9 +2317,9 @@ describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
     const proposedState = evaluateWorkingState({ ...base, runtimeSceneState });
     expect(proposedState.programs).toMatchObject([{ validation: { status: "invalid" } }]);
 
-    expect(compileWarpSquare({ ...input, proposedState }).kind).toBe("rebased");
+    expect((await compileWarpSquare({ ...input, proposedState })).kind).toBe("rebased");
     expect(
-      compileWarpSquare({
+      await compileWarpSquare({
         ...input,
         proposedState,
         snapshot: { ...input.snapshot, sourceRuntimeIdentity: null },
@@ -2269,14 +2335,14 @@ describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
     const input = await warpSquareInput(kind);
     const importedScene = input.snapshot.snapshot.scene;
     const importedChannelBytes = canonicalJsonV1(importedScene.animationChannels);
-    const result = compileWarpSquare(input);
+    const result = await compileWarpSquare(input);
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
 
-    expect(result.scene.animationChannels).toBe(importedScene.animationChannels);
+    expect(result.scene.animationChannels).toEqual(importedScene.animationChannels);
     expect(canonicalJsonV1(result.scene.animationChannels)).toBe(importedChannelBytes);
     expect(result.scene.animationChannels.map(({ kind: channelKind }) => channelKind)).toEqual(["path-morph"]);
-    expect(result.scene.entities[0]?.geometry).toBe(importedScene.entities[0]?.geometry);
+    expect(result.scene.entities[0]?.geometry).toEqual(importedScene.entities[0]?.geometry);
     expect(result.scene.entities[0]?.transform).toMatchObject({ m11, m12: 0, m21: 0, m22 });
     expect(result.scene.entities[0]?.transform.tx).toBeCloseTo(tx, 12);
     expect(result.scene.entities[0]?.transform.ty).toBeCloseTo(ty, 12);
@@ -2286,7 +2352,7 @@ describe("compileStudioPreviewTemporalRebase WarpSquare V9", () => {
     const input = await warpSquareInput("position");
     const [channel] = input.snapshot.snapshot.scene.animationChannels;
     if (!channel || channel.kind !== "path-morph") throw new Error("WarpSquare V9 lost its path morph.");
-    const result = compileWarpSquare({
+    const result = await compileWarpSquare({
       ...input,
       snapshot: {
         ...input.snapshot,
@@ -2315,6 +2381,7 @@ describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
       proposedState: input.proposedState,
       snapshot: input.snapshot,
       sourceRevisionHash: WORKING_REVISION,
+      transformCompiler: testTransformCompiler(),
     });
   }
 
@@ -2371,6 +2438,7 @@ describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
       frame: FRAME,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
+      transformCompiler: testTransformCompiler(),
       workingRevision: WORKING_REVISION,
       workspaceKey: "demo/example_scenes/basic.py/LineJoints",
     });
@@ -2378,12 +2446,12 @@ describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     const scene = result.scene.bundle.scene;
 
-    expect(scene.animationChannels).toBe(importedScene.animationChannels);
-    expect(scene.entities[0]).toBe(importedScene.entities[0]);
-    expect(scene.entities[1]).toBe(importedScene.entities[1]);
-    expect(scene.entities[3]).toBe(importedScene.entities[3]);
-    expect(scene.entities[2]?.geometry).toBe(importedScene.entities[2]?.geometry);
-    expect(scene.entities[2]?.appearance).toBe(importedScene.entities[2]?.appearance);
+    expect(scene.animationChannels).toEqual(importedScene.animationChannels);
+    expect(scene.entities[0]).toEqual(importedScene.entities[0]);
+    expect(scene.entities[1]).toEqual(importedScene.entities[1]);
+    expect(scene.entities[3]).toEqual(importedScene.entities[3]);
+    expect(scene.entities[2]?.geometry).toEqual(importedScene.entities[2]?.geometry);
+    expect(scene.entities[2]?.appearance).toEqual(importedScene.entities[2]?.appearance);
     expect(scene.entities[2]?.transform).toMatchObject({ m11: 1.5, m12: 0, m21: 0, m22: 1.5 });
     expect(scene.entities[2]?.transform.tx).toBeCloseTo(1.4222222222222223, 12);
     expect(scene.entities[2]?.transform.ty).toBeCloseTo(0.7999999999999998, 12);
@@ -2399,7 +2467,7 @@ describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
 
   it("fails closed for sibling mutation or any identity drift", async () => {
     const siblingEdit = await lineJointsInput("position", "t1");
-    expect(compileLineJoints(siblingEdit)).toMatchObject({
+    expect(await compileLineJoints(siblingEdit)).toMatchObject({
       issue: { code: "target-edit-unsupported" },
       kind: "unsupported",
     });
@@ -2413,7 +2481,7 @@ describe("compileStudioPreviewTemporalRebase LineJoints V10", () => {
     identity.set("t3", { ...t3, entityId: t2.entityId });
     const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
     expect(studioPreviewInitialEditIntegrationAuthority(drifted)).toBeNull();
-    expect(compileLineJoints({ ...input, snapshot: drifted })).toMatchObject({
+    expect(await compileLineJoints({ ...input, snapshot: drifted })).toMatchObject({
       issue: { code: "target-edit-unsupported" },
       kind: "unsupported",
     });
@@ -2427,6 +2495,7 @@ describe("compileStudioPreviewTemporalRebase WriteStuff V12", () => {
       proposedState: input.proposedState,
       snapshot: input.snapshot,
       sourceRevisionHash: WORKING_REVISION,
+      transformCompiler: testTransformCompiler(),
     });
   }
 
@@ -2473,18 +2542,19 @@ describe("compileStudioPreviewTemporalRebase WriteStuff V12", () => {
       frame: FRAME,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
+      transformCompiler: testTransformCompiler(),
       workingRevision: WORKING_REVISION,
       workspaceKey: "demo/example_scenes/basic.py/WriteStuff",
     });
     expect(result.kind).toBe("compiled");
     if (result.kind !== "compiled") throw new Error(result.error);
     const scene = result.scene.bundle.scene;
-    expect(scene.animationChannels).toBe(importedScene.animationChannels);
-    expect(scene.entities[0]).toBe(importedScene.entities[0]);
-    expect(scene.entities[1]).toBe(importedScene.entities[1]);
-    expect(scene.entities[31]).toBe(importedScene.entities[31]);
-    expect(scene.entities[33]).toBe(importedScene.entities[33]);
-    expect(scene.entities[32]?.geometry).toBe(importedScene.entities[32]?.geometry);
+    expect(scene.animationChannels).toEqual(importedScene.animationChannels);
+    expect(scene.entities[0]).toEqual(importedScene.entities[0]);
+    expect(scene.entities[1]).toEqual(importedScene.entities[1]);
+    expect(scene.entities[31]).toEqual(importedScene.entities[31]);
+    expect(scene.entities[33]).toEqual(importedScene.entities[33]);
+    expect(scene.entities[32]?.geometry).toEqual(importedScene.entities[32]?.geometry);
     expect(scene.entities[32]?.transform).toMatchObject({ m11: 0.5, m12: 0, m21: 0, m22: 0.5, tx: 1.25 });
     expect(scene.entities[32]?.transform.ty).toBeCloseTo(-0.0548926417588273, 12);
     expect(result.scene.interactionEntityIds).toEqual([importedScene.entities[1]?.id, importedScene.entities[32]?.id]);
@@ -2492,7 +2562,7 @@ describe("compileStudioPreviewTemporalRebase WriteStuff V12", () => {
 
   it("keeps example_text and any identity/source drift fail closed", async () => {
     const siblingEdit = await writeStuffInput("position", "example_text");
-    expect(compileWriteStuff(siblingEdit)).toMatchObject({
+    expect(await compileWriteStuff(siblingEdit)).toMatchObject({
       issue: { code: "target-edit-unsupported" },
       kind: "unsupported",
     });
@@ -2505,7 +2575,7 @@ describe("compileStudioPreviewTemporalRebase WriteStuff V12", () => {
     identity.set("example_tex", { ...exampleTex, entityId: exampleText.entityId });
     const drifted = { ...input.snapshot, sourceRuntimeIdentity: identity };
     expect(studioPreviewInitialEditIntegrationAuthority(drifted)).toBeNull();
-    expect(compileWriteStuff({ ...input, snapshot: drifted })).toMatchObject({
+    expect(await compileWriteStuff({ ...input, snapshot: drifted })).toMatchObject({
       issue: { code: "identity-unverified" },
       kind: "unsupported",
     });

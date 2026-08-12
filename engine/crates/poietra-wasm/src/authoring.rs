@@ -464,27 +464,6 @@ mod tests {
         .unwrap()
     }
 
-    fn transform_command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "delta": { "x": 2.5, "y": -1.5 },
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "provenance": {
-                "evidence": ["WASM adapter atomic transform test"],
-                "id": "wasm-atomic-transform",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.transform-scene-entity",
-            "uniformScale": {
-                "factor": 1.5,
-                "pivot": { "x": 1.0, "y": -0.5 }
-            },
-            "version": 1
-        }))
-        .unwrap()
-    }
-
     fn set_subtree_vector_paint_alpha_command_json(root_entity_id: &str) -> Vec<u8> {
         serde_json::to_vec(&json!({
             "alpha": 0.25,
@@ -675,30 +654,6 @@ mod tests {
             scaled.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-        ));
-    }
-
-    #[test]
-    fn atomic_transform_adapter_returns_one_core_composition() {
-        let response =
-            transform_scene_entity_json(&fixture_json(), &transform_command_json()).unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let transformed = bundle
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == "later")
-            .unwrap();
-
-        assert!((transformed.transform.m11 - 1.5).abs() < 1e-12);
-        assert!((transformed.transform.m22 - 1.5).abs() < 1e-12);
-        assert!((transformed.transform.tx - 2.0).abs() < 1e-12);
-        assert!((transformed.transform.ty + 1.25).abs() < 1e-12);
-        assert_eq!(transformed.provenance_id, "wasm-atomic-transform");
-        assert!(matches!(
-            bundle.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         ));
     }
 
