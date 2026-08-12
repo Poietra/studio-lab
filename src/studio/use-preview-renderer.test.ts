@@ -350,6 +350,120 @@ async function editedStaticRootPreviewInput(
   };
 }
 
+async function verifiedStaticPrimitivePreviewInput(type: "Circle" | "Rectangle") {
+  const base = await compilablePreviewInput();
+  const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
+  const studioEntity = base.proposedState.base.runtimeSceneState.objectGraph.entities["source:circle"];
+  if (!runtimeEntity || !studioEntity?.geometry) {
+    throw new Error("Static primitive preview fixture is incomplete.");
+  }
+  const producerFixtureUrl = new URL("../../server/test-fixtures/fast-manim-static-bundle.json", import.meta.url);
+  const producerFixture = JSON.parse(await readFile(producerFixtureUrl, "utf8")) as Readonly<{
+    assets: unknown;
+    scene: unknown;
+  }>;
+  const producerBundle = await parseVerifiedSceneIrBundleV1(producerFixture);
+  const producerEntity = producerBundle.scene.entities[type === "Circle" ? 0 : 1];
+  if (producerEntity?.geometry.kind !== "cubic-path") {
+    throw new Error("FastManim static primitive fixture lost its producer-shaped cubic path.");
+  }
+  const dimensions = type === "Circle" ? ({ radius: 1 } as const) : ({ height: 1, width: 2 } as const);
+  const position = type === "Circle" ? ({ x: 280, y: 180 } as const) : ({ x: 400, y: 180 } as const);
+  const snapshotBundle = await parseVerifiedSceneIrBundleV1({
+    ...base.snapshot.snapshot,
+    scene: {
+      ...base.snapshot.snapshot.scene,
+      entities: [{ ...runtimeEntity, geometry: producerEntity.geometry }],
+      requiredCapabilities: ["cubic-path-geometry"],
+    },
+  });
+  const context = base.snapshot.correlation.context;
+  const sceneId = `${context.sourcePath}#${context.sceneName}`;
+  const workingBase: WorkingState = {
+    ...base.proposedState.base,
+    editorContext: {
+      ...base.proposedState.base.editorContext,
+      activeSceneId: sceneId,
+      playhead: 0,
+    },
+    runtimeSceneState: {
+      ...base.proposedState.base.runtimeSceneState,
+      objectGraph: {
+        ...base.proposedState.base.runtimeSceneState.objectGraph,
+        entities: {
+          "source:circle": {
+            ...studioEntity,
+            geometry: {
+              ...studioEntity.geometry,
+              dimensions: { kind: "known", value: dimensions },
+              position: { kind: "known", value: position },
+              scale: { kind: "known", value: 1 },
+            },
+            type,
+          },
+        },
+      },
+      propertyChannels: {
+        "source:circle/dimensions": {
+          entityId: "source:circle",
+          key: "dimensions",
+          samples: [
+            {
+              interval: { end: 2, start: 0 },
+              kind: "exact",
+              knowledge: { kind: "known", value: dimensions },
+              provenanceId: "verified-static-primitive:dimensions",
+              value: dimensions,
+            },
+          ],
+        },
+        "source:circle/position": {
+          entityId: "source:circle",
+          key: "position",
+          samples: [
+            {
+              interval: { end: 2, start: 0 },
+              kind: "exact",
+              knowledge: { kind: "known", value: position },
+              provenanceId: "verified-static-primitive:position",
+              value: position,
+            },
+          ],
+        },
+        "source:circle/scale": {
+          entityId: "source:circle",
+          key: "scale",
+          samples: [
+            {
+              interval: { end: 2, start: 0 },
+              kind: "exact",
+              knowledge: { kind: "known", value: 1 },
+              provenanceId: "verified-static-primitive:scale",
+              value: 1,
+            },
+          ],
+        },
+      },
+      sceneId,
+    },
+    staticSemanticState: {
+      ...base.proposedState.base.staticSemanticState,
+      entities: base.proposedState.base.staticSemanticState.entities.map((entity) => ({
+        ...entity,
+        type: { kind: "known", value: type },
+      })),
+    },
+  };
+  return {
+    dimensions,
+    entityId: "source:circle",
+    position,
+    snapshot: { ...base.snapshot, snapshot: snapshotBundle },
+    workingBase,
+    workspaceKey: studioPreviewWorkspaceKeyV1(context),
+  };
+}
+
 function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]): TransformSceneEntityCompiler {
   return async (bundle, command) => {
     calls.push(command);
@@ -370,7 +484,7 @@ function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]):
 }
 
 const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
-  const scale = command.uniformScale;
+  const scale = command.scale;
   return await parseVerifiedSceneIrBundleV1({
     ...bundle,
     scene: {
@@ -379,12 +493,12 @@ const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, comma
         if (entity.id !== command.entityId) return entity;
         const transform = { ...entity.transform };
         if (scale) {
-          transform.m11 *= scale.factor;
-          transform.m12 *= scale.factor;
-          transform.m21 *= scale.factor;
-          transform.m22 *= scale.factor;
-          transform.tx = scale.pivot.x + scale.factor * (transform.tx - scale.pivot.x);
-          transform.ty = scale.pivot.y + scale.factor * (transform.ty - scale.pivot.y);
+          transform.m11 *= scale.xFactor;
+          transform.m12 *= scale.xFactor;
+          transform.m21 *= scale.yFactor;
+          transform.m22 *= scale.yFactor;
+          transform.tx = scale.pivot.x + scale.xFactor * (transform.tx - scale.pivot.x);
+          transform.ty = scale.pivot.y + scale.yFactor * (transform.ty - scale.pivot.y);
         }
         transform.tx += command.delta.x;
         transform.ty += command.delta.y;
@@ -2109,6 +2223,124 @@ describe("compileStudioPreviewSceneV1", () => {
     },
   );
 
+  it.each([
+    {
+      expectedScale: { xFactor: 1.5, yFactor: 1.5 },
+      shape: "circle",
+      toDimensions: { radius: 1.5 },
+      type: "Circle",
+    },
+    {
+      expectedScale: { xFactor: 2, yFactor: 1.5 },
+      shape: "rectangle",
+      toDimensions: { height: 1.5, width: 4 },
+      type: "Rectangle",
+    },
+  ] as const)("routes an imported static $type ResizeEntity through the canonical Rust command", async (input) => {
+    const fixture = await verifiedStaticPrimitivePreviewInput(input.type);
+    const validation = createDirectManipulationResizeProgram({
+      capturedPlayhead: 0,
+      entityId: fixture.entityId,
+      from: { dimensions: fixture.dimensions, position: fixture.position },
+      interval: { end: 0, start: 0 },
+      scale: 1,
+      scene: fixture.workingBase.runtimeSceneState,
+      shape: input.shape,
+      to: {
+        dimensions: input.toDimensions,
+        position: { x: fixture.position.x + 20, y: fixture.position.y + 10 },
+      },
+      transactionId: `resize-imported-${input.shape}`,
+    });
+    if (validation.kind !== "valid") {
+      throw new Error(`Imported ${input.type} resize fixture is invalid: ${JSON.stringify(validation.issues)}`);
+    }
+    const record = programRecord(validation.program, validation);
+    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      proposedState: evaluateWorkingState({ ...fixture.workingBase, appliedPrograms: [record] }),
+      snapshot: fixture.snapshot,
+      transformCompiler: async (bundle, command) => {
+        commands.push(command);
+        return testTransformCompiler(bundle, command);
+      },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedPrograms: [record],
+        draftProgram: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    const command = commands[0];
+    if (!command) throw new Error(`Imported ${input.type} resize did not reach the Rust compiler boundary.`);
+    expect(command).toMatchObject({
+      entityId: "earlier",
+      expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
+      scale: { pivot: { x: input.type === "Circle" ? -1 : 2, y: 0 }, ...input.expectedScale },
+      schema: "poietra.transform-scene-entity",
+      version: 1,
+    });
+    expect(command.delta.x).toBeCloseTo(0.5, 12);
+    expect(command.delta.y).toBeCloseTo(-0.25, 12);
+    expect(command.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
+    expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
+      fixture.snapshot.snapshot.scene.entities[0]?.geometry,
+    );
+  });
+
+  it("routes an imported static Circle AnimateProperty(scale) through the canonical Rust command", async () => {
+    const fixture = await verifiedStaticPrimitivePreviewInput("Circle");
+    const validation = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [fixture.entityId]: { from: 1, to: 1.25 } },
+      scene: fixture.workingBase.runtimeSceneState,
+      targetEntityIds: [fixture.entityId],
+      transactionId: "scale-imported-circle",
+    });
+    if (validation.kind !== "valid") {
+      throw new Error(`Imported Circle scale fixture is invalid: ${JSON.stringify(validation.issues)}`);
+    }
+    const record = programRecord(validation.program, validation);
+    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const result = await compileStudioPreviewSceneV1({
+      frame: { height: 9, width: 16 },
+      proposedState: evaluateWorkingState({ ...fixture.workingBase, appliedPrograms: [record] }),
+      snapshot: fixture.snapshot,
+      transformCompiler: async (bundle, command) => {
+        commands.push(command);
+        return testTransformCompiler(bundle, command);
+      },
+      workingRevision: canonicalEditorWorkingRevision({
+        appliedPrograms: [record],
+        draftProgram: null,
+        editingAppliedProgram: null,
+        redoPrograms: [],
+      }),
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      delta: { x: 0, y: 0 },
+      entityId: "earlier",
+      expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
+      scale: { pivot: { x: -1, y: 0 }, xFactor: 1.25, yFactor: 1.25 },
+      schema: "poietra.transform-scene-entity",
+      version: 1,
+    });
+    expect(commands[0]?.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
+    expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
+      fixture.snapshot.snapshot.scene.entities[0]?.geometry,
+    );
+  });
+
   it("fails closed before Rust compilation when a static imported move loses exact authority", async () => {
     const direct = await editedStaticRootPreviewInput();
     const nonzeroTime = await editedStaticRootPreviewInput({ capturedPlayhead: 0.5 });
@@ -2837,7 +3069,11 @@ describe("compileStudioPreviewSceneV1", () => {
       });
       expect(command.delta.x).toBeCloseTo(delta.x, 12);
       expect(command.delta.y).toBeCloseTo(delta.y, 12);
-      expect(command.uniformScale).toEqual(uniformScale);
+      expect(command.scale).toEqual(
+        uniformScale
+          ? { pivot: uniformScale.pivot, xFactor: uniformScale.factor, yFactor: uniformScale.factor }
+          : undefined,
+      );
       for (const operation of fixture.edited.programs.flatMap(({ program }) => program.operations)) {
         expect(command.provenance.evidence).toContain(`authorized operation ${operation.id}`);
       }
@@ -2874,7 +3110,7 @@ describe("compileStudioPreviewSceneV1", () => {
       expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
       nextRevision: result.scene.engineRevisionHash,
       schema: "poietra.transform-scene-entity",
-      uniformScale: { factor: 2, pivot: { x: 2, y: -1 } },
+      scale: { pivot: { x: 2, y: -1 }, xFactor: 2, yFactor: 2 },
       version: 1,
     });
     expect(command.provenance.evidence.filter((entry) => entry.startsWith("authorized operation "))).toHaveLength(2);

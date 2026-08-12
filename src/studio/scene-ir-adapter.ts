@@ -453,27 +453,45 @@ export function studioPointToScenePointV1(
   };
 }
 
+export type SceneEntityLocalBounds = Readonly<{ bottom: number; left: number; right: number; top: number }>;
+
+export function sceneEntityLocalBounds(entity: Pick<SceneEntityV1, "geometry">): SceneEntityLocalBounds | null {
+  const geometry = entity.geometry;
+  if (geometry.kind === "circle") {
+    return {
+      bottom: geometry.center.y - geometry.radius,
+      left: geometry.center.x - geometry.radius,
+      right: geometry.center.x + geometry.radius,
+      top: geometry.center.y + geometry.radius,
+    };
+  }
+  if (geometry.kind === "rectangle") {
+    return {
+      bottom: geometry.center.y - geometry.height / 2,
+      left: geometry.center.x - geometry.width / 2,
+      right: geometry.center.x + geometry.width / 2,
+      top: geometry.center.y + geometry.height / 2,
+    };
+  }
+  if (geometry.kind === "image") return geometry.localRect;
+  if (geometry.kind !== "cubic-path") return null;
+  const points = geometry.path.subpaths.flatMap((subpath) => [
+    subpath.start,
+    ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+  ]);
+  if (points.length === 0) return null;
+  return {
+    bottom: Math.min(...points.map(({ y }) => y)),
+    left: Math.min(...points.map(({ x }) => x)),
+    right: Math.max(...points.map(({ x }) => x)),
+    top: Math.max(...points.map(({ y }) => y)),
+  };
+}
+
 export function sceneEntityWorldCenter(entity: Pick<SceneEntityV1, "geometry" | "transform">): EnginePointV1 | null {
-  const center =
-    entity.geometry.kind === "image"
-      ? {
-          x: (entity.geometry.localRect.left + entity.geometry.localRect.right) / 2,
-          y: (entity.geometry.localRect.bottom + entity.geometry.localRect.top) / 2,
-        }
-      : entity.geometry.kind === "cubic-path"
-        ? (() => {
-            const points = entity.geometry.path.subpaths.flatMap((subpath) => [
-              subpath.start,
-              ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
-            ]);
-            if (points.length === 0) return null;
-            return {
-              x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
-              y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
-            };
-          })()
-        : null;
-  if (!center) return null;
+  const bounds = sceneEntityLocalBounds(entity);
+  if (!bounds) return null;
+  const center = { x: (bounds.left + bounds.right) / 2, y: (bounds.bottom + bounds.top) / 2 };
   return {
     x: entity.transform.m11 * center.x + entity.transform.m12 * center.y + entity.transform.tx,
     y: entity.transform.m21 * center.x + entity.transform.m22 * center.y + entity.transform.ty,

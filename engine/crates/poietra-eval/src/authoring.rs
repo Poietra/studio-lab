@@ -75,11 +75,12 @@ pub struct RotateSceneEntityCommand {
     pub provenance: ProvenanceRecordV1,
 }
 
-/// One optional uniform scale within an atomic world-space transform.
+/// One optional positive axis scale within an atomic world-space transform.
 #[derive(Clone, Debug, PartialEq)]
-pub struct UniformScaleAboutPivot {
-    pub factor: f64,
+pub struct ScaleAboutPivot {
     pub pivot: PointV1,
+    pub x_factor: f64,
+    pub y_factor: f64,
 }
 
 /// One profile-free Studio command that atomically transforms an authorized entity.
@@ -90,7 +91,7 @@ pub struct TransformSceneEntityCommand {
     pub expected_base_revision: String,
     pub next_revision: String,
     pub provenance: ProvenanceRecordV1,
-    pub uniform_scale: Option<UniformScaleAboutPivot>,
+    pub scale: Option<ScaleAboutPivot>,
 }
 
 /// One profile-free Studio command that sets vector-paint alpha in one root subtree.
@@ -155,11 +156,11 @@ pub enum TransformSceneEntityError {
     RevisionDidNotAdvance,
     #[error("the world-space translation delta must be finite")]
     InvalidDelta,
-    #[error("the optional uniform scale factor must be finite, positive, and non-identity")]
+    #[error("the optional axis scale factors must be finite, positive, and not both identity")]
     InvalidFactor,
-    #[error("the optional world-space uniform scale pivot must be finite")]
+    #[error("the optional world-space scale pivot must be finite")]
     InvalidPivot,
-    #[error("the transform must contain a non-zero translation or a uniform scale")]
+    #[error("the transform must contain a non-zero translation or an axis scale")]
     NoOp,
     #[error("the transform target does not exist: {0}")]
     TargetMissing(String),
@@ -211,19 +212,31 @@ fn apply_world_translation(transform: &mut poietra_scene_ir::AffineTransformV1, 
     transform.ty += delta.y;
 }
 
-fn apply_world_uniform_scale(
+fn apply_world_axis_scale(
     transform: &mut poietra_scene_ir::AffineTransformV1,
-    factor: f64,
+    x_factor: f64,
+    y_factor: f64,
     pivot: &PointV1,
 ) {
     *transform = poietra_scene_ir::AffineTransformV1 {
-        m11: factor * transform.m11,
-        m12: factor * transform.m12,
-        m21: factor * transform.m21,
-        m22: factor * transform.m22,
-        tx: pivot.x + factor * (transform.tx - pivot.x),
-        ty: pivot.y + factor * (transform.ty - pivot.y),
+        m11: x_factor * transform.m11,
+        m12: x_factor * transform.m12,
+        m21: y_factor * transform.m21,
+        m22: y_factor * transform.m22,
+        tx: pivot.x + x_factor * (transform.tx - pivot.x),
+        ty: pivot.y + y_factor * (transform.ty - pivot.y),
     };
+}
+
+fn has_animated_transform(scene: &poietra_scene_ir::SceneIrV1, entity_id: &str) -> bool {
+    scene.animation_channels.iter().any(|channel| {
+        matches!(
+            channel,
+            AnimationChannelV1::AffineTransform { entity_id: animated_id, .. }
+                | AnimationChannelV1::MotionPath { entity_id: animated_id, .. }
+                if animated_id == entity_id
+        )
+    })
 }
 
 fn studio_white() -> RgbaColorV1 {
@@ -626,14 +639,7 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        if candidate.scene.animation_channels.iter().any(|channel| {
-            matches!(
-                channel,
-                AnimationChannelV1::AffineTransform { entity_id, .. }
-                    | AnimationChannelV1::MotionPath { entity_id, .. }
-                    if entity_id == &command.entity_id
-            )
-        }) {
+        if has_animated_transform(&candidate.scene, &command.entity_id) {
             return Err(RotateSceneEntityError::AnimatedTransformUnsupported(
                 command.entity_id,
             ));
@@ -674,9 +680,9 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Atomically applies a world-space translation and optional uniform scale to one entity.
+    /// Atomically applies a world-space translation and optional axis scale to one entity.
     ///
-    /// Uniform scale is applied about its pivot before the world-space translation. The command
+    /// Axis scale is applied about its pivot before the world-space translation. The command
     /// is independent of source profiles, viewport coordinates, and Manim bindings.
     ///
     /// # Errors
@@ -700,8 +706,13 @@ impl EngineSessionV1 {
         if !command.delta.x.is_finite() || !command.delta.y.is_finite() {
             return Err(TransformSceneEntityError::InvalidDelta);
         }
-        if let Some(scale) = &command.uniform_scale {
-            if !scale.factor.is_finite() || scale.factor <= 0.0 || scale.factor == 1.0 {
+        if let Some(scale) = &command.scale {
+            if !scale.x_factor.is_finite()
+                || scale.x_factor <= 0.0
+                || !scale.y_factor.is_finite()
+                || scale.y_factor <= 0.0
+                || (scale.x_factor == 1.0 && scale.y_factor == 1.0)
+            {
                 return Err(TransformSceneEntityError::InvalidFactor);
             }
             if !scale.pivot.x.is_finite() || !scale.pivot.y.is_finite() {
@@ -728,14 +739,7 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        if candidate.scene.animation_channels.iter().any(|channel| {
-            matches!(
-                channel,
-                AnimationChannelV1::AffineTransform { entity_id, .. }
-                    | AnimationChannelV1::MotionPath { entity_id, .. }
-                    if entity_id == &command.entity_id
-            )
-        }) {
+        if has_animated_transform(&candidate.scene, &command.entity_id) {
             return Err(TransformSceneEntityError::AnimatedTransformUnsupported(
                 command.entity_id,
             ));
@@ -760,14 +764,7 @@ impl EngineSessionV1 {
                 ));
             };
             if parent.transform != poietra_scene_ir::AffineTransformV1::identity()
-                || candidate.scene.animation_channels.iter().any(|channel| {
-                    matches!(
-                        channel,
-                        AnimationChannelV1::AffineTransform { entity_id, .. }
-                            | AnimationChannelV1::MotionPath { entity_id, .. }
-                            if entity_id == id
-                    )
-                })
+                || has_animated_transform(&candidate.scene, id)
             {
                 return Err(TransformSceneEntityError::TransformedAncestorUnsupported(
                     id.to_owned(),
@@ -776,8 +773,13 @@ impl EngineSessionV1 {
             parent_id = parent.parent_id.as_deref();
         }
         let target = &mut candidate.scene.entities[target_index];
-        if let Some(scale) = &command.uniform_scale {
-            apply_world_uniform_scale(&mut target.transform, scale.factor, &scale.pivot);
+        if let Some(scale) = &command.scale {
+            apply_world_axis_scale(
+                &mut target.transform,
+                scale.x_factor,
+                scale.y_factor,
+                &scale.pivot,
+            );
         }
         apply_world_translation(&mut target.transform, &command.delta);
         target.provenance_id.clone_from(&command.provenance.id);
@@ -1042,9 +1044,10 @@ mod tests {
                 id: "studio-atomic-transform".to_owned(),
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
-            uniform_scale: Some(UniformScaleAboutPivot {
-                factor: 1.5,
+            scale: Some(ScaleAboutPivot {
                 pivot: PointV1 { x: 1.0, y: -0.5 },
+                x_factor: 1.5,
+                y_factor: 1.5,
             }),
         }
     }
@@ -1220,7 +1223,7 @@ mod tests {
     fn atomic_transform_supports_move_scale_and_their_composition() {
         let bundle = real_line_joints_bundle();
         let root_id = bundle.scene.entities[0].id.clone();
-        for (delta, factor, expected) in [
+        for (delta, factors, expected) in [
             (
                 PointV1 { x: 2.0, y: -1.0 },
                 None,
@@ -1228,20 +1231,26 @@ mod tests {
             ),
             (
                 PointV1 { x: 0.0, y: 0.0 },
-                Some(1.5),
+                Some((1.5, 1.5)),
                 [1.875, 0.75, -0.375, 1.125, 4.0, -2.75],
             ),
             (
+                PointV1 { x: 0.0, y: 0.0 },
+                Some((2.0, 0.5)),
+                [2.5, 1.0, -0.125, 0.375, 5.0, -1.25],
+            ),
+            (
                 PointV1 { x: 2.0, y: -1.0 },
-                Some(1.5),
+                Some((1.5, 1.5)),
                 [1.875, 0.75, -0.375, 1.125, 6.0, -3.75],
             ),
         ] {
             let mut command = transform_command_for(&bundle, &root_id);
             command.delta = delta;
-            command.uniform_scale = factor.map(|factor| UniformScaleAboutPivot {
-                factor,
+            command.scale = factors.map(|(x_factor, y_factor)| ScaleAboutPivot {
                 pivot: PointV1 { x: 1.0, y: -0.5 },
+                x_factor,
+                y_factor,
             });
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
 
@@ -1528,7 +1537,7 @@ mod tests {
             .unwrap()
             .clone();
         let mut command = transform_command_for(&bundle, &target.id);
-        command.uniform_scale = None;
+        command.scale = None;
         let mut expected = target.clone();
         expected.transform.tx += command.delta.x;
         expected.transform.ty += command.delta.y;
@@ -1729,7 +1738,7 @@ mod tests {
 
         let mut no_op = command.clone();
         no_op.delta = PointV1 { x: 0.0, y: 0.0 };
-        no_op.uniform_scale = None;
+        no_op.scale = None;
         assert!(matches!(
             rejected_transform(bundle.clone(), no_op),
             TransformSceneEntityError::NoOp
@@ -1743,7 +1752,9 @@ mod tests {
         ));
 
         let mut identity_scale = command.clone();
-        identity_scale.uniform_scale.as_mut().unwrap().factor = 1.0;
+        let identity = identity_scale.scale.as_mut().unwrap();
+        identity.x_factor = 1.0;
+        identity.y_factor = 1.0;
         assert!(matches!(
             rejected_transform(bundle.clone(), identity_scale),
             TransformSceneEntityError::InvalidFactor

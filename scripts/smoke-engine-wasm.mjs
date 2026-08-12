@@ -81,12 +81,12 @@ assert.ok(Math.abs(rotatedEntity.transform.m22) < 1e-12);
 assert.equal(rotatedEntity.provenanceId, "wasm-smoke-rotation");
 assert.equal(rotatedBundle.scene.source.revisionHash, "b".repeat(64));
 
-for (const [name, delta, uniformScale, expected] of [
+for (const [name, delta, scale, expected] of [
   ["move", { x: 1.25, y: -0.5 }, undefined, [1, 1, 1.25, -0.5]],
-  ["scale", { x: 0, y: 0 }, { factor: 1.5, pivot: { x: 1, y: -0.5 } }, [1.5, 1.5, -0.5, 0.25]],
-  ["combined", { x: 1.25, y: -0.5 }, { factor: 1.5, pivot: { x: 1, y: -0.5 } }, [1.5, 1.5, 0.75, -0.25]],
+  ["axis-scale", { x: 0, y: 0 }, { pivot: { x: 1, y: -0.5 }, xFactor: 1.5, yFactor: 0.75 }, [1.5, 0.75, -0.5, -0.125]],
+  ["combined", { x: 1.25, y: -0.5 }, { pivot: { x: 1, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 }, [1.5, 1.5, 0.75, -0.25]],
 ]) {
-  const revision = name === "move" ? "c" : name === "scale" ? "d" : "f";
+  const revision = name === "move" ? "c" : name === "axis-scale" ? "d" : "f";
   const transformedBundle = JSON.parse(
     new TextDecoder("utf-8", { fatal: true }).decode(
       engine.transformSceneEntityV1(
@@ -103,7 +103,7 @@ for (const [name, delta, uniformScale, expected] of [
               origin: "studio-edit-program",
             },
             schema: "poietra.transform-scene-entity",
-            ...(uniformScale ? { uniformScale } : {}),
+            ...(scale ? { scale } : {}),
             version: 1,
           }),
         ),
