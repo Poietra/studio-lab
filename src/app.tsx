@@ -87,8 +87,8 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  type StudioPreviewInitialEditProjectionAuthorityV1,
-  studioPreviewGenericInitialEditProgramSetV1,
+  type StudioPreviewInitialEditProjectionAuthority,
+  studioPreviewGenericInitialEditProgramSet,
   studioPreviewInitialEditTargetIsPresentV1,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -874,7 +874,7 @@ export function App({
     const genericCandidates = previewRenderer?.genericInitialEditCandidates ?? [];
     if (
       genericCandidates.length > 0 &&
-      studioPreviewGenericInitialEditProgramSetV1(records, genericCandidates).kind !== "authorized"
+      studioPreviewGenericInitialEditProgramSet(records, genericCandidates).kind !== "authorized"
     ) {
       return "This generic Runtime Trace permits exactly one initial position move, uniform resize, rotation, or opacity edit on one verified binding.";
     }
@@ -1068,7 +1068,7 @@ export function App({
       : {};
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
-  const initialEditProjectionAuthorities: readonly StudioPreviewInitialEditProjectionAuthorityV1[] =
+  const initialEditProjectionAuthorities: readonly StudioPreviewInitialEditProjectionAuthority[] =
     previewRenderer?.initialEditRuntimeAuthority
       ? [previewRenderer.initialEditRuntimeAuthority]
       : genericInitialEditCandidates;
@@ -2051,7 +2051,7 @@ export function App({
     const replacesGenericInitialEdit =
       previousDraft !== null &&
       genericInitialEditCandidates.length > 0 &&
-      studioPreviewGenericInitialEditProgramSetV1([previousDraft], genericInitialEditCandidates).kind === "authorized";
+      studioPreviewGenericInitialEditProgramSet([previousDraft], genericInitialEditCandidates).kind === "authorized";
     const sourcePrograms =
       previousDraft && !replacesGenericInitialEdit
         ? [...appliedCanonicalPrograms, previousDraft.program]
@@ -3275,7 +3275,7 @@ export function App({
   const renderProgram = renderPrograms[0] ?? null;
   const genericInitialEditProgramSet =
     genericInitialEditCandidates.length > 0
-      ? studioPreviewGenericInitialEditProgramSetV1(previewProgramRecords, genericInitialEditCandidates)
+      ? studioPreviewGenericInitialEditProgramSet(previewProgramRecords, genericInitialEditCandidates)
       : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";

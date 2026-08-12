@@ -7,9 +7,10 @@ import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-ru
 import { parseVerifiedSceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import type {
-  MoveSceneEntityCompilerV1,
-  RotateSceneEntityCompilerV1,
-  UniformScaleSceneEntityCompilerV1,
+  MoveSceneEntityCompiler,
+  RotateSceneEntityCompiler,
+  SetSubtreeVectorPaintAlphaCompiler,
+  UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -29,12 +30,12 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewGenericInitialEditV1,
+  compileStudioPreviewGenericInitialEdit,
   compileStudioPreviewTemporalRebaseV1,
   projectStudioPreviewInitialEntityPresenceV1,
   projectStudioPreviewInitialValidationSceneV1,
-  studioPreviewGenericInitialEditAuthorityCandidatesV1,
-  studioPreviewGenericInitialEditProgramSetV1,
+  studioPreviewGenericInitialEditCandidates,
+  studioPreviewGenericInitialEditProgramSet,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewInitialEditTargetIsPresentV1,
   studioPreviewSyntheticInitialEditAnchorV1,
@@ -694,7 +695,7 @@ async function genericRuntimeTraceV3Snapshot(traceOverride?: ReturnType<typeof f
 
 async function genericRuntimeTraceV3MoveInput() {
   const { snapshot } = await genericRuntimeTraceV3Snapshot();
-  const candidate = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
+  const candidate = studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
   if (!candidate) throw new Error("The generic V3 fixture lost its initial-move candidate.");
   const entity: RuntimeEntity = {
     ...importedSquareEntity(),
@@ -817,13 +818,13 @@ async function genericRuntimeTraceV3OpacityInput(opacity: number) {
 }
 
 function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
-  return studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
+  return studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
 }
 
-describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
+describe("studioPreviewGenericInitialEditCandidates", () => {
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
-    const candidate = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot)[0] ?? null;
+    const candidate = studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
 
     expect(candidate).toEqual({
       baseCenter: { x: 320, y: 180 },
@@ -1041,7 +1042,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
     if (!mapping) throw new Error("Generic V3 test mapping lost endpoint evidence.");
     const extraRoot = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId !== null);
     if (!extraRoot) throw new Error("Generic V3 fixture needs one drawable child.");
-    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1({
+    const candidates = studioPreviewGenericInitialEditCandidates({
       ...snapshot,
       snapshot: {
         ...snapshot.snapshot,
@@ -1137,7 +1138,7 @@ describe("studioPreviewGenericInitialEditAuthorityCandidatesV1", () => {
     const { snapshot } = await genericRuntimeTraceV3Snapshot(trace);
     expect(snapshot.sourceRuntimeIdentity?.size).toBe(4);
 
-    const candidates = studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot);
+    const candidates = studioPreviewGenericInitialEditCandidates(snapshot);
     expect(candidates.map(({ sourceName }) => sourceName)).toEqual(["square", "photon"]);
     expect(candidates[0]!.runtimeEntityId).toBe(selected.rootId);
     expect(candidates[1]!.runtimeEntityId).toBe(`${selected.rootId.slice(0, -1)}3`);
@@ -1191,26 +1192,26 @@ describe("generic Runtime Trace V3 initial move", () => {
       sourceName: "circle",
       studioEntityId: candidate.studioEntityId.replace(/:square$/, ":circle"),
     };
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [sibling, candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record], [sibling, candidate])).toEqual({
       candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [sibling])).toEqual({ kind: "unauthorized" });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate, candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record], [sibling])).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate, candidate])).toEqual({
       kind: "unauthorized",
     });
   });
 
   it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
     const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
-    expect(studioPreviewGenericInitialEditProgramSetV1([], [candidate])).toEqual({ kind: "none" });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([], [candidate])).toEqual({ kind: "none" });
+    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, record], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record, record], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -1224,12 +1225,12 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (resize.kind !== "valid") throw new Error("Generic resize fixture did not validate.");
     const resizeRecord = programRecord(resize.program, resize);
-    expect(studioPreviewGenericInitialEditProgramSetV1([resizeRecord], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([resizeRecord], [candidate])).toEqual({
       candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record, resizeRecord], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record, resizeRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -1243,7 +1244,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (rebasedResize.kind !== "valid") throw new Error("Generic rebased resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
+      studioPreviewGenericInitialEditProgramSet([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
     ).toEqual({
       candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
@@ -1260,10 +1261,10 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (identityResize.kind !== "valid") throw new Error("Generic identity resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSetV1([programRecord(identityResize.program, identityResize)], [candidate]),
+      studioPreviewGenericInitialEditProgramSet([programRecord(identityResize.program, identityResize)], [candidate]),
     ).toEqual({ kind: "unauthorized" });
     expect(
-      studioPreviewGenericInitialEditProgramSetV1(
+      studioPreviewGenericInitialEditProgramSet(
         [
           {
             ...record,
@@ -1280,7 +1281,7 @@ describe("generic Runtime Trace V3 initial move", () => {
 
   it("authorizes one bounded absolute opacity on static paint and rejects unsafe or no-op values", async () => {
     const { candidate, record } = await genericRuntimeTraceV3OpacityInput(0.25);
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { kind: "opacity", opacity: 0.25 },
       kind: "authorized",
@@ -1292,37 +1293,70 @@ describe("generic Runtime Trace V3 initial move", () => {
       ...record,
       program: { ...record.program, operations: [{ ...operation, value }] },
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([withValue(Number.NaN)], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([withValue(Number.NaN)], [candidate])).toEqual({
       kind: "unauthorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([withValue(1.01)], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([withValue(1.01)], [candidate])).toEqual({
       kind: "unauthorized",
     });
     expect(
-      studioPreviewGenericInitialEditProgramSetV1(
-        [record],
-        [{ ...candidate, baseOpacity: 0.25, opacityEditable: true }],
-      ),
+      studioPreviewGenericInitialEditProgramSet([record], [{ ...candidate, baseOpacity: 0.25, opacityEditable: true }]),
     ).toEqual({ kind: "unauthorized" });
     expect(
-      studioPreviewGenericInitialEditProgramSetV1(
+      studioPreviewGenericInitialEditProgramSet(
         [record],
         [{ ...candidate, baseOpacity: null, opacityEditable: false }],
       ),
     ).toEqual({ kind: "unauthorized" });
   });
 
-  it("rewrites only selected static descendant paint alpha and preserves root/state opacity", async () => {
+  it("routes authorized static-paint opacity through the Rust core and adopts its bundle", async () => {
     const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3OpacityInput(0.25);
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
     const child = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId === candidate.runtimeEntityId);
     if (!root || child?.appearance.kind !== "vector") throw new Error("Generic V3 fixture lost its paint subtree.");
+    const operationId = proposedState.programs[0]?.program.operations[0]?.id;
+    if (!operationId) throw new Error("Generic V3 opacity fixture lost its authorized operation.");
+    const coreAlpha = 0.375;
+    const commands: Parameters<SetSubtreeVectorPaintAlphaCompiler>[1][] = [];
+    const subtreePaintAlphaCompiler: SetSubtreeVectorPaintAlphaCompiler = async (bundle, command) => {
+      commands.push(command);
+      return await parseVerifiedSceneIrBundleV1({
+        ...bundle,
+        scene: {
+          ...bundle.scene,
+          entities: bundle.scene.entities.map((entity) => {
+            if (entity.id !== child.id || entity.appearance.kind !== "vector") return entity;
+            return {
+              ...entity,
+              appearance: {
+                ...entity.appearance,
+                fill: entity.appearance.fill
+                  ? { ...entity.appearance.fill, color: { ...entity.appearance.fill.color, alpha: coreAlpha } }
+                  : null,
+                stroke: entity.appearance.stroke
+                  ? { ...entity.appearance.stroke, color: { ...entity.appearance.stroke.color, alpha: coreAlpha } }
+                  : null,
+              },
+              provenanceId: command.provenance.id,
+            };
+          }),
+          provenance: [...bundle.scene.provenance, command.provenance],
+          source: {
+            editProgramVersion: 1,
+            kind: "studio-edit-program",
+            revisionHash: command.nextRevision,
+          },
+        },
+      });
+    };
 
-    const result = await compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEdit({
       frame: FRAME,
       proposedState,
       snapshot,
       sourceRevisionHash: "b".repeat(64),
+      subtreePaintAlphaCompiler,
     });
     expect(result.kind).toBe("rebased");
     if (result.kind !== "rebased") throw new Error(result.issue.message);
@@ -1333,25 +1367,58 @@ describe("generic Runtime Trace V3 initial move", () => {
     expect(editedChild.appearance).toEqual({
       ...child.appearance,
       fill: child.appearance.fill
-        ? { ...child.appearance.fill, color: { ...child.appearance.fill.color, alpha: 0.25 } }
+        ? { ...child.appearance.fill, color: { ...child.appearance.fill.color, alpha: coreAlpha } }
         : null,
       stroke: child.appearance.stroke
-        ? { ...child.appearance.stroke, color: { ...child.appearance.stroke.color, alpha: 0.25 } }
+        ? { ...child.appearance.stroke, color: { ...child.appearance.stroke.color, alpha: coreAlpha } }
         : null,
     });
     expect(editedChild.appearance.opacity).toBe(child.appearance.opacity);
     expect(result.scene.animationChannels).toEqual(snapshot.snapshot.scene.animationChannels);
     expect(result.scene.provenance.at(-1)?.id).toBe(`studio-generic-v3-initial-opacity:${"b".repeat(64)}`);
+    expect(commands).toEqual([
+      {
+        alpha: 0.25,
+        expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+        nextRevision: "b".repeat(64),
+        provenance: {
+          evidence: [
+            "Studio t=0 absolute opacity request projected onto static vector paints in one verified generic Runtime Trace V3 root",
+            `source binding ${candidate.bindingId}`,
+            `authorized operation ${operationId}`,
+          ],
+          id: `studio-generic-v3-initial-opacity:${"b".repeat(64)}`,
+          origin: "studio-edit-program",
+        },
+        rootEntityId: root.id,
+        schema: "poietra.set-subtree-vector-paint-alpha",
+        version: 1,
+      },
+    ]);
+
+    const compiled = await compileStudioPreviewSceneV1({
+      frame: FRAME,
+      proposedState,
+      snapshot,
+      subtreePaintAlphaCompiler,
+      workingRevision: "generic-v3-initial-opacity-revision",
+      workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
+    });
+    expect(compiled.kind).toBe("compiled");
+    if (compiled.kind !== "compiled") throw new Error(compiled.error);
+    const compiledChild = compiled.scene.bundle.scene.entities.find(({ id }) => id === child.id);
+    if (compiledChild?.appearance.kind !== "vector") throw new Error("Compiled V3 paint child is missing.");
+    expect(compiledChild.appearance.fill?.color.alpha ?? compiledChild.appearance.stroke?.color.alpha).toBe(coreAlpha);
   });
 
   it("authorizes one finite t=0 rotation and rejects non-finite or mismatched authority", async () => {
     const { base, candidate, proposedState, record, snapshot } = await genericRuntimeTraceV3RotationInput(Math.PI / 4);
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { angleRadians: Math.PI / 4, kind: "rotation" },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSetV1([record], [])).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewGenericInitialEditProgramSet([record], [])).toEqual({ kind: "unauthorized" });
 
     const operation = record.program.operations[0];
     if (!operation || operation.kind !== "AnimateProperty") {
@@ -1361,11 +1428,11 @@ describe("generic Runtime Trace V3 initial move", () => {
       ...record,
       program: { ...record.program, operations: [{ ...operation, relativeDelta: Number.NaN, to: Number.NaN }] },
     };
-    expect(studioPreviewGenericInitialEditProgramSetV1([forgedRecord], [candidate])).toEqual({
+    expect(studioPreviewGenericInitialEditProgramSet([forgedRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
     expect(
-      await compileStudioPreviewGenericInitialEditV1({
+      await compileStudioPreviewGenericInitialEdit({
         frame: FRAME,
         proposedState: { ...proposedState, base, programs: [forgedRecord] },
         snapshot,
@@ -1382,8 +1449,8 @@ describe("generic Runtime Trace V3 initial move", () => {
     const operationId = proposedState.programs[0]?.program.operations[0]?.id;
     if (!operationId) throw new Error("Generic V3 move fixture lost its authorized operation.");
     const coreTransform = { ...root.transform, tx: root.transform.tx + 9, ty: root.transform.ty - 4 };
-    const commands: Parameters<MoveSceneEntityCompilerV1>[1][] = [];
-    const moveCompiler: MoveSceneEntityCompilerV1 = async (bundle, command) => {
+    const commands: Parameters<MoveSceneEntityCompiler>[1][] = [];
+    const moveCompiler: MoveSceneEntityCompiler = async (bundle, command) => {
       commands.push(command);
       return await parseVerifiedSceneIrBundleV1({
         ...bundle,
@@ -1403,7 +1470,7 @@ describe("generic Runtime Trace V3 initial move", () => {
         },
       });
     };
-    const result = await compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEdit({
       frame: FRAME,
       moveCompiler,
       proposedState,
@@ -1467,8 +1534,8 @@ describe("generic Runtime Trace V3 initial move", () => {
     const operationId = proposedState.programs[0]?.program.operations[0]?.id;
     if (!operationId) throw new Error("Generic V3 resize fixture lost its authorized operation.");
     const coreTransform = { ...root.transform, m22: root.transform.m22 + 0.25 };
-    const commands: Parameters<UniformScaleSceneEntityCompilerV1>[1][] = [];
-    const uniformScaleCompiler: UniformScaleSceneEntityCompilerV1 = async (bundle, command) => {
+    const commands: Parameters<UniformScaleSceneEntityCompiler>[1][] = [];
+    const uniformScaleCompiler: UniformScaleSceneEntityCompiler = async (bundle, command) => {
       commands.push(command);
       return await parseVerifiedSceneIrBundleV1({
         ...bundle,
@@ -1488,7 +1555,7 @@ describe("generic Runtime Trace V3 initial move", () => {
         },
       });
     };
-    const result = await compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEdit({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1548,8 +1615,8 @@ describe("generic Runtime Trace V3 initial move", () => {
     const operationId = proposedState.programs[0]?.program.operations[0]?.id;
     if (!operationId) throw new Error("Generic V3 rotation fixture lost its authorized operation.");
     const coreTransform = { ...root.transform, m11: root.transform.m11 + 0.125 };
-    const commands: Parameters<RotateSceneEntityCompilerV1>[1][] = [];
-    const rotationCompiler: RotateSceneEntityCompilerV1 = async (bundle, command) => {
+    const commands: Parameters<RotateSceneEntityCompiler>[1][] = [];
+    const rotationCompiler: RotateSceneEntityCompiler = async (bundle, command) => {
       commands.push(command);
       return await parseVerifiedSceneIrBundleV1({
         ...bundle,
@@ -1570,7 +1637,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       });
     };
 
-    const result = await compileStudioPreviewGenericInitialEditV1({
+    const result = await compileStudioPreviewGenericInitialEdit({
       frame: FRAME,
       proposedState,
       rotationCompiler,

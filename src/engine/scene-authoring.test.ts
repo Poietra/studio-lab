@@ -3,15 +3,17 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
-  createMoveSceneEntityCompilerV1,
-  createRotateSceneEntityCompilerV1,
-  createUniformScaleSceneEntityCompilerV1,
-  type MoveSceneEntityCommandV1,
-  type RotateSceneEntityCommandV1,
-  type UniformScaleSceneEntityCommandV1,
+  createMoveSceneEntityCompiler,
+  createRotateSceneEntityCompiler,
+  createSetSubtreeVectorPaintAlphaCompiler,
+  createUniformScaleSceneEntityCompiler,
+  type MoveSceneEntityCommand,
+  type RotateSceneEntityCommand,
+  type SetSubtreeVectorPaintAlphaCommand,
+  type UniformScaleSceneEntityCommand,
 } from "./scene-authoring";
 
-const command: RotateSceneEntityCommandV1 = {
+const command: RotateSceneEntityCommand = {
   angleRadians: Math.PI / 6,
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
@@ -26,7 +28,7 @@ const command: RotateSceneEntityCommandV1 = {
   version: 1,
 };
 
-const moveCommand: MoveSceneEntityCommandV1 = {
+const moveCommand: MoveSceneEntityCommand = {
   delta: { x: 2.5, y: -1.5 },
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
@@ -40,7 +42,7 @@ const moveCommand: MoveSceneEntityCommandV1 = {
   version: 1,
 };
 
-const uniformScaleCommand: UniformScaleSceneEntityCommandV1 = {
+const uniformScaleCommand: UniformScaleSceneEntityCommand = {
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
   factor: 1.5,
@@ -55,6 +57,20 @@ const uniformScaleCommand: UniformScaleSceneEntityCommandV1 = {
   version: 1,
 };
 
+const setSubtreeVectorPaintAlphaCommand: SetSubtreeVectorPaintAlphaCommand = {
+  alpha: 0.25,
+  expectedBaseRevision: "a".repeat(64),
+  nextRevision: "e".repeat(64),
+  provenance: {
+    evidence: ["Studio subtree vector paint alpha"],
+    id: "studio-edit:subtree-vector-paint-alpha-1",
+    origin: "studio-edit-program",
+  },
+  rootEntityId: "root",
+  schema: "poietra.set-subtree-vector-paint-alpha",
+  version: 1,
+};
+
 async function fixtureBundle() {
   const fixture = JSON.parse(
     await readFile(new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url), "utf8"),
@@ -66,7 +82,7 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards one profile-free command and accepts only a verified complete bundle", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createRotateSceneEntityCompilerV1(async () => ({
+    const compile = createRotateSceneEntityCompiler(async () => ({
       rotateSceneEntityV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
@@ -84,7 +100,7 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards the exact profile-free move command and complete base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createMoveSceneEntityCompilerV1(async () => ({
+    const compile = createMoveSceneEntityCompiler(async () => ({
       moveSceneEntityV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
@@ -102,7 +118,7 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards the exact profile-free uniform-scale command and complete base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createUniformScaleSceneEntityCompilerV1(async () => ({
+    const compile = createUniformScaleSceneEntityCompiler(async () => ({
       uniformScaleSceneEntityV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
@@ -117,20 +133,42 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(uniformScaleCommand);
   });
 
+  it("forwards the exact subtree vector-paint command and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createSetSubtreeVectorPaintAlphaCompiler(async () => ({
+      setSubtreeVectorPaintAlphaV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, setSubtreeVectorPaintAlphaCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(setSubtreeVectorPaintAlphaCommand);
+  });
+
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
-    const compileRotation = createRotateSceneEntityCompilerV1(async () => ({
+    const compileRotation = createRotateSceneEntityCompiler(async () => ({
       rotateSceneEntityV1: () => new TextEncoder().encode('{"scene":{}}'),
     }));
-    const compileMove = createMoveSceneEntityCompilerV1(async () => ({
+    const compileMove = createMoveSceneEntityCompiler(async () => ({
       moveSceneEntityV1: () => new TextEncoder().encode("not JSON"),
     }));
-    const compileUniformScale = createUniformScaleSceneEntityCompilerV1(async () => ({
+    const compileUniformScale = createUniformScaleSceneEntityCompiler(async () => ({
       uniformScaleSceneEntityV1: () => new TextEncoder().encode("null"),
+    }));
+    const compileSetPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(async () => ({
+      setSubtreeVectorPaintAlphaV1: () => new TextEncoder().encode("[]"),
     }));
 
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileMove(bundle, moveCommand)).rejects.toThrow();
     await expect(compileUniformScale(bundle, uniformScaleCommand)).rejects.toThrow();
+    await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
   });
 });

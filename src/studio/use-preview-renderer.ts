@@ -17,9 +17,10 @@ import {
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import type {
-  MoveSceneEntityCompilerV1,
-  RotateSceneEntityCompilerV1,
-  UniformScaleSceneEntityCompilerV1,
+  MoveSceneEntityCompiler,
+  RotateSceneEntityCompiler,
+  SetSubtreeVectorPaintAlphaCompiler,
+  UniformScaleSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type {
@@ -55,11 +56,11 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewGenericInitialEditV1,
+  compileStudioPreviewGenericInitialEdit,
   compileStudioPreviewTemporalRebaseV1,
-  type StudioPreviewGenericInitialEditAuthorityCandidateV1,
+  type StudioPreviewGenericInitialEditCandidate,
   type StudioPreviewInitialEditRuntimeAuthorityV1,
-  studioPreviewGenericInitialEditAuthorityCandidatesV1,
+  studioPreviewGenericInitialEditCandidates,
   studioPreviewInitialEditRuntimeAuthorityV1,
   studioPreviewSyntheticInitialEditAnchorV1,
 } from "./preview-temporal-rebase";
@@ -82,7 +83,7 @@ export type StudioPreviewRendererViewV1 = Readonly<{
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthorityV1;
   /** Verified generic V3 candidates that may request one server-authorized t=0 edit. */
-  genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditAuthorityCandidateV1[];
+  genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditCandidate[];
   /** Exact runtime authority for one bounded initial imported-Scene edit. */
   initialEditRuntimeAuthority: StudioPreviewInitialEditRuntimeAuthorityV1 | null;
   /** Exact authority for one reviewed Runtime Trace terminal edit profile. */
@@ -966,7 +967,7 @@ export function studioPreviewInteractionAuthorityV1(
     // bounded request per candidate; the fresh-source server lowerer remains
     // the mutation authority.
     if (source.traceVersion === 3) {
-      const candidates = snapshot ? studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot) : [];
+      const candidates = snapshot ? studioPreviewGenericInitialEditCandidates(snapshot) : [];
       if (
         candidates.length > 0 &&
         candidates.every(({ runtimeEntityId }) => verifiedRuntimeEntityIds.includes(runtimeEntityId))
@@ -1246,11 +1247,12 @@ export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
-    moveCompiler?: MoveSceneEntityCompilerV1;
+    moveCompiler?: MoveSceneEntityCompiler;
     proposedState: ProposedState;
-    rotationCompiler?: RotateSceneEntityCompilerV1;
+    rotationCompiler?: RotateSceneEntityCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
-    uniformScaleCompiler?: UniformScaleSceneEntityCompilerV1;
+    subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
+    uniformScaleCompiler?: UniformScaleSceneEntityCompiler;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -1310,13 +1312,14 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = await compileStudioPreviewGenericInitialEditV1({
+    const rebased = await compileStudioPreviewGenericInitialEdit({
       frame: input.frame,
       moveCompiler: input.moveCompiler,
       proposedState: input.proposedState,
       rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
+      subtreePaintAlphaCompiler: input.subtreePaintAlphaCompiler,
       uniformScaleCompiler: input.uniformScaleCompiler,
     });
     if (rebased.kind === "unsupported") {
@@ -1563,7 +1566,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInputV1)
     studioPreviewRuntimeTraceUpdatersSelectionProfileV1(snapshot) ??
     studioPreviewRuntimeTraceOpeningSelectionProfileV2(snapshot);
   const runtimeTraceTerminalSeed = studioPreviewRuntimeTraceTerminalEditSeedV1(snapshot);
-  const genericInitialEditCandidates = snapshot ? studioPreviewGenericInitialEditAuthorityCandidatesV1(snapshot) : [];
+  const genericInitialEditCandidates = snapshot ? studioPreviewGenericInitialEditCandidates(snapshot) : [];
 
   useEffect(() => {
     const proposedState =
