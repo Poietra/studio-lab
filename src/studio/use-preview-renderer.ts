@@ -20,12 +20,16 @@ import {
   type CreateSceneEntitiesCompiler,
   type CreateSceneEntitiesWireCommandV1,
   compileCreateSceneEntities,
+  compileEditSceneTimeline,
   compileTransformSceneEntity,
+  type EditSceneTimelineCompiler,
+  type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import { canonicalEditableContent } from "./editable-content";
 import type {
   EntityDimensions,
   Point,
@@ -77,14 +81,11 @@ import {
   normalizeScaleSamples,
 } from "./property-sampling";
 import {
-  buildStudioSceneIrAdapterEvidenceV1,
-  collectStudioMathTexOutlineInputsV1,
-  compileStudioSceneIrV1,
   sceneEntityLocalBounds,
   sceneEntityUniformPositiveScale,
   sceneEntityWorldCenter,
-  studioPointToScenePointV1,
-} from "./scene-ir-adapter";
+  studioPointToScenePoint,
+} from "./scene-authoring-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -1379,6 +1380,15 @@ type StaticImportedRootTransformPlan =
       scale?: Readonly<{ pivot: Point; xFactor: number; yFactor: number }>;
     }>;
 
+type ImportedTimelinePlan =
+  | Readonly<{ kind: "not-applicable" }>
+  | Readonly<{ kind: "unsupported"; message: string }>
+  | Readonly<{
+      edits: EditSceneTimelineWireCommandV1["edits"];
+      kind: "authorized";
+      operationIds: readonly string[];
+    }>;
+
 type StaticImportedPositionOperation = Extract<CanonicalEditOperation, { kind: "SetProperty" }> &
   Readonly<{ key: "position" }>;
 type StaticImportedScaleOperation = Extract<CanonicalEditOperation, { kind: "AnimateProperty" }> &
@@ -1906,7 +1916,7 @@ function planStaticImportedRootTransform(
   ) {
     return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
   }
-  const semanticCenter = studioPointToScenePointV1(basePosition.value, input.frame, scene.camera.view.center);
+  const semanticCenter = studioPointToScenePoint(basePosition.value, input.frame, scene.camera.view.center);
   const runtimeCenter = imageOrMathTex || primitiveTransform ? sceneEntityWorldCenter(runtimeEntity) : semanticCenter;
   const mathTexScale = baseEntity.type === "MathTex" ? sceneEntityUniformPositiveScale(runtimeEntity.transform) : null;
   const resize = resizeOperations[0];
@@ -1939,7 +1949,7 @@ function planStaticImportedRootTransform(
   const position = positionOperations[0];
   const targetPosition = resize?.to.position ?? (position && isFinitePoint(position.value) ? position.value : null);
   const targetCenter = targetPosition
-    ? studioPointToScenePointV1(targetPosition, input.frame, scene.camera.view.center)
+    ? studioPointToScenePoint(targetPosition, input.frame, scene.camera.view.center)
     : runtimeCenter;
   const delta = { x: targetCenter.x - runtimeCenter.x, y: targetCenter.y - runtimeCenter.y };
   const scaleFactor = scaleOperations[0]?.relativeFactor;
@@ -1971,9 +1981,156 @@ function planStaticImportedRootTransform(
   };
 }
 
+function planImportedTimeline(
+  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
+): ImportedTimelinePlan {
+  const orderedRecords = input.proposedState.programs
+    .map((record, inputIndex) => ({ inputIndex, record }))
+    .sort(
+      (left, right) =>
+        (left.record.program.anchor.source.kind === "absolute"
+          ? left.record.program.anchor.source.seconds
+          : left.record.program.anchor.resolvedSeconds) -
+          (right.record.program.anchor.source.kind === "absolute"
+            ? right.record.program.anchor.source.seconds
+            : right.record.program.anchor.resolvedSeconds) || left.inputIndex - right.inputIndex,
+    )
+    .map(({ record }) => record);
+  const timelineOperations = orderedRecords.flatMap(({ program }) =>
+    program.schedule.order.flatMap((operationId) => {
+      const operation = program.operations.find(({ id }) => id === operationId);
+      return operation?.kind === "InsertTimelineEvent" || operation?.kind === "TrimSceneDuration"
+        ? [{ operation, program }]
+        : [];
+    }),
+  );
+  if (timelineOperations.length === 0) return { kind: "not-applicable" };
+
+  const scene = input.snapshot.snapshot.scene;
+  const allOperationsAreTimelineEdits = orderedRecords.every(
+    ({ program, validation }) =>
+      validation.status === "valid" &&
+      program.loweringStatus === "supported" &&
+      program.operations.length === 1 &&
+      program.schedule.order.length === 1 &&
+      program.schedule.order[0] === program.operations[0]?.id &&
+      (program.operations[0]?.kind === "InsertTimelineEvent" || program.operations[0]?.kind === "TrimSceneDuration"),
+  );
+  if (!allOperationsAreTimelineEdits) {
+    return {
+      kind: "unsupported",
+      message: "A Scene timeline edit cannot be combined with another preview operation.",
+    };
+  }
+  if (
+    scene.source.kind !== "imported-manim-server-snapshot" ||
+    !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
+    Math.abs(input.proposedState.base.runtimeSceneState.duration - scene.duration) >= 0.0005 ||
+    input.proposedState.base.runtimeSceneState.sceneId !== input.proposedState.base.editorContext.activeSceneId ||
+    input.proposedState.base.runtimeSceneState.sceneId !==
+      `${input.snapshot.correlation.context.sourcePath}#${input.snapshot.correlation.context.sceneName}` ||
+    input.proposedState.base.sourceSnapshot.sourceId !== input.snapshot.correlation.context.sourcePath ||
+    input.proposedState.base.sourceSnapshot.hash !== `sha256:${input.snapshot.correlation.context.sourceHash}`
+  ) {
+    return { kind: "unsupported", message: "The verified source snapshot is not one exact imported Scene." };
+  }
+
+  let duration = scene.duration;
+  const waitHistory: Array<{ at: number; id: string; remaining: number }> = [];
+  const edits: EditSceneTimelineWireCommandV1["edits"][number][] = [];
+  const operationIds: string[] = [];
+  for (const { operation, program } of timelineOperations) {
+    const origin = program.provenance.origin;
+    if (
+      operation.provenance.origin !== origin ||
+      origin !== "studio-default" ||
+      program.anchor.source.kind !== "absolute" ||
+      !Number.isFinite(program.anchor.source.seconds) ||
+      !Number.isFinite(program.anchor.resolvedSeconds) ||
+      program.anchor.resolvedSeconds < 0 ||
+      program.anchor.resolvedSeconds > duration + 0.0005
+    ) {
+      return { kind: "unsupported", message: "The Scene timeline edit has no exact Studio duration authority." };
+    }
+    if (operation.kind === "InsertTimelineEvent") {
+      const waitDuration = operation.interval.end - operation.interval.start;
+      if (
+        operation.eventKind !== "wait" ||
+        operation.purpose !== "scene-duration" ||
+        !closeStaticTransformValue(operation.interval.start, program.anchor.resolvedSeconds) ||
+        !Number.isFinite(waitDuration) ||
+        waitDuration <= 0
+      ) {
+        return { kind: "unsupported", message: "Only an exact Studio Scene duration wait can be inserted." };
+      }
+      edits.push({ at: operation.interval.start, duration: waitDuration, kind: "insert-wait" });
+      duration += waitDuration;
+      waitHistory.push({ at: operation.interval.start, id: operation.id, remaining: waitDuration });
+      operationIds.push(operation.id);
+      continue;
+    }
+
+    const expectedWaitOperationIds = waitHistory.map(({ id }) => id).reverse();
+    let suffixEnd = -Infinity;
+    for (let index = waitHistory.length - 1; index >= 0; index -= 1) {
+      const wait = waitHistory[index]!;
+      if (wait.remaining > 0.0005) {
+        suffixEnd = wait.at + wait.remaining;
+        break;
+      }
+    }
+    if (
+      !closeStaticTransformValue(operation.interval.start, operation.interval.end) ||
+      operation.waitOperationIds.length !== expectedWaitOperationIds.length ||
+      operation.waitOperationIds.some((operationId, index) => operationId !== expectedWaitOperationIds[index]) ||
+      !Number.isFinite(operation.removedDuration) ||
+      operation.removedDuration <= 0 ||
+      !Number.isFinite(suffixEnd) ||
+      !closeStaticTransformValue(operation.interval.start, suffixEnd) ||
+      !Number.isFinite(operation.targetDuration) ||
+      Math.abs(duration - operation.removedDuration - operation.targetDuration) >= 0.0005
+    ) {
+      return { kind: "unsupported", message: "The Scene duration trim is not a suffix of this Studio wait history." };
+    }
+    edits.push({
+      kind: "trim-scene-duration",
+      removedDuration: operation.removedDuration,
+      targetDuration: operation.targetDuration,
+    });
+    let remainingRemoval = operation.removedDuration;
+    let removalCursor = suffixEnd;
+    for (let index = waitHistory.length - 1; index >= 0 && remainingRemoval > 0.0005; index -= 1) {
+      const wait = waitHistory[index]!;
+      if (wait.remaining <= 0.0005) continue;
+      if (!closeStaticTransformValue(wait.at + wait.remaining, removalCursor)) {
+        return { kind: "unsupported", message: "The Scene duration trim crosses a non-wait timeline segment." };
+      }
+      const removed = Math.min(wait.remaining, remainingRemoval);
+      wait.remaining -= removed;
+      remainingRemoval -= removed;
+      removalCursor -= removed;
+    }
+    if (remainingRemoval > 0.0005) {
+      return { kind: "unsupported", message: "The Scene duration trim exceeds its Studio wait history." };
+    }
+    duration = operation.targetDuration;
+    operationIds.push(operation.id);
+  }
+
+  if (
+    edits.length === 0 ||
+    Math.abs(duration - input.proposedState.evaluatedScene.duration) >= 0.0005 ||
+    input.proposedState.evaluatedScene.sceneId !== input.proposedState.base.runtimeSceneState.sceneId
+  ) {
+    return { kind: "unsupported", message: "The Scene timeline edit does not reproduce the evaluated duration." };
+  }
+  return { edits, kind: "authorized", operationIds };
+}
+
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     createSceneEntitiesCompiler?: CreateSceneEntitiesCompiler;
+    editSceneTimelineCompiler?: EditSceneTimelineCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
@@ -2023,15 +2180,40 @@ export async function compileStudioPreviewSceneV1(
     return { error: createdEntityPlan.message, kind: "unsupported" };
   }
   if (createdEntityPlan.kind === "authorized") {
-    const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
-    if (outlineInputs.kind === "unsupported") {
-      return { error: outlineInputs.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
+    const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
+    for (const { create, entity } of createdEntityPlan.entities) {
+      if (create.entity.type !== "MathTex") continue;
+      const sourceContent = canonicalEditableContent(create.entity.content, "MathTex");
+      const evaluatedContent = canonicalEditableContent(entity.content, "MathTex");
+      const contentSamples = input.proposedState.evaluatedScene.propertyChannels[`${entity.id}/content`]?.samples ?? [];
+      const contentChanges = contentSamples.some((sample) => {
+        const sampled = canonicalEditableContent(sample.value, "MathTex");
+        return (
+          !sampled?.texParts ||
+          !sourceContent?.texParts ||
+          sampled.texParts.length !== sourceContent.texParts.length ||
+          sampled.texParts.some((part, index) => part !== sourceContent.texParts?.[index])
+        );
+      });
+      if (
+        !sourceContent?.texParts ||
+        !evaluatedContent?.texParts ||
+        contentChanges ||
+        sourceContent.texParts.length !== evaluatedContent.texParts.length ||
+        sourceContent.texParts.some((part, index) => part !== evaluatedContent.texParts?.[index])
+      ) {
+        return {
+          error: `Studio-created MathTex entity ${entity.id} changes content or has no stable canonical content.`,
+          kind: "unsupported",
+        };
+      }
+      outlineInputs.push({ entityId: entity.id, texParts: sourceContent.texParts });
     }
     const mathTexOutlines: Record<string, MathTexOutlineArtifactV1> = {};
     try {
       const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
       const responses = await Promise.all(
-        outlineInputs.inputs.map(async ({ entityId, texParts }) => ({
+        outlineInputs.map(async ({ entityId, texParts }) => ({
           entityId,
           response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
         })),
@@ -2083,7 +2265,7 @@ export async function compileStudioPreviewSceneV1(
             ? {
                 instantTransform: {
                   at: instantTransform.at,
-                  position: studioPointToScenePointV1(
+                  position: studioPointToScenePoint(
                     instantTransform.position,
                     input.frame,
                     input.snapshot.snapshot.scene.camera.view.center,
@@ -2094,7 +2276,7 @@ export async function compileStudioPreviewSceneV1(
               }
             : {}),
           lifetime: entity.lifetime[0]!,
-          position: studioPointToScenePointV1(
+          position: studioPointToScenePoint(
             position.value,
             input.frame,
             input.snapshot.snapshot.scene.camera.view.center,
@@ -2149,6 +2331,56 @@ export async function compileStudioPreviewSceneV1(
     } catch (error) {
       return {
         error: `Rust core rejected Studio entity creation: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+  }
+  const importedTimeline = planImportedTimeline(input);
+  if (importedTimeline.kind === "unsupported") {
+    return { error: `Imported Scene timeline edit is unsupported: ${importedTimeline.message}`, kind: "unsupported" };
+  }
+  if (importedTimeline.kind === "authorized") {
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    try {
+      const bundle = await (input.editSceneTimelineCompiler ?? compileEditSceneTimeline)(input.snapshot.snapshot, {
+        edits: importedTimeline.edits,
+        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+        nextRevision: engineRevisionHash,
+        provenance: {
+          evidence: importedTimeline.operationIds.map((operationId) => `authorized operation ${operationId}`),
+          id: `studio-imported-timeline:${engineRevisionHash}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.edit-scene-timeline",
+        version: 1,
+      });
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+            input.snapshot.sourceRuntimeIdentity,
+            studioPreviewInteractionAuthority(input.snapshot),
+            bundle.scene.entities,
+          ),
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected the imported Scene timeline edit: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
         kind: "unsupported",
       };
     }
@@ -2311,43 +2543,9 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const evidence = buildStudioSceneIrAdapterEvidenceV1({
-    proposedState: input.proposedState,
-    snapshot: input.snapshot.snapshot,
-    sourceRuntimeIdentity: input.snapshot.sourceRuntimeIdentity,
-  });
-  if (evidence.kind === "unsupported") {
-    return { error: evidence.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
-  }
-  const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
-    frame: input.frame,
-    snapshot: input.snapshot,
-    studioScene: input.proposedState.evaluatedScene,
-    workingRevision: input.workingRevision,
-    workspaceKey: input.workspaceKey,
-  });
-  const compiled = await compileStudioSceneIrV1({
-    assets: input.snapshot.snapshot.assets,
-    evidence: evidence.evidence,
-    frame: input.frame,
-    proposedState: input.proposedState,
-    sourceRevisionHash: engineRevisionHash,
-  });
-  if (compiled.kind === "unsupported") {
-    return { error: compiled.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
-  }
-  const bundle = { assets: input.snapshot.snapshot.assets, scene: compiled.scene };
   return {
-    kind: "compiled",
-    scene: {
-      bundle,
-      engineRevisionHash,
-      frame: { ...input.frame },
-      interactionEntityIds: compiled.scene.entities.map(({ id }) => id).slice(0, MAX_CANVAS_INTERACTION_ENTITY_IDS),
-      snapshot: input.snapshot,
-      workingRevision: input.workingRevision,
-      workspaceKey: input.workspaceKey,
-    },
+    error: "No canonical Rust preview command supports this Studio edit.",
+    kind: "unsupported",
   };
 }
 

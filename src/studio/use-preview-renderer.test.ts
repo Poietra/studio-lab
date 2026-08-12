@@ -18,12 +18,18 @@ import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../en
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import type {
   CreateSceneEntitiesWireCommandV1,
+  EditSceneTimelineCompiler,
+  EditSceneTimelineWireCommandV1,
   TransformSceneEntityCompiler,
   TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
 import type { SceneEntityV1 } from "../engine/scene-ir";
 import { importManimScene } from "../render-pipeline/source-import";
-import { createInspectorEntityEditProgram, createStudioEntitiesProgram } from "./authoring-commands";
+import {
+  createInspectorEntityEditProgram,
+  createSceneDurationProgram,
+  createStudioEntitiesProgram,
+} from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord, sampleProposedState } from "./evaluator";
 import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
@@ -218,6 +224,23 @@ async function compilablePreviewInput() {
     ]),
   };
   return { context, proposedState, snapshot };
+}
+
+function exactImportedTimelineWorkingBase(base: Awaited<ReturnType<typeof compilablePreviewInput>>): WorkingState {
+  const context = base.snapshot.correlation.context;
+  const sceneId = `${context.sourcePath}#${context.sceneName}`;
+  return {
+    ...base.proposedState.base,
+    editorContext: { ...base.proposedState.base.editorContext, activeSceneId: sceneId },
+    runtimeSceneState: { ...base.proposedState.base.runtimeSceneState, sceneId },
+  };
+}
+
+function recordingTimelineCompiler(calls: EditSceneTimelineWireCommandV1[]): EditSceneTimelineCompiler {
+  return async (bundle, command) => {
+    calls.push(command);
+    return bundle;
+  };
 }
 
 async function linePreviewInput() {
@@ -2180,6 +2203,217 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.interactionEntityIds).toEqual(["runtime-line"]);
   });
 
+  it("routes one static imported Scene duration extension through the canonical Rust timeline command", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 1,
+      scene: workingBase.runtimeSceneState,
+      sourceAnchor: 1,
+      targetDuration: 3,
+      transactionId: "extend-imported-scene",
+    });
+    if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
+    const extensionRecord = programRecord(extension.program, extension);
+    const proposedState = evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] });
+    const commands: EditSceneTimelineWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: recordingTimelineCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:extend-imported-scene",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      edits: [{ at: 1, duration: 1, kind: "insert-wait" }],
+      expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
+      nextRevision: result.scene.engineRevisionHash,
+      provenance: {
+        evidence: [`authorized operation ${extension.program.operations[0]?.id}`],
+        id: `studio-imported-timeline:${result.scene.engineRevisionHash}`,
+        origin: "studio-edit-program",
+      },
+      schema: "poietra.edit-scene-timeline",
+      version: 1,
+    });
+  });
+
+  it("preserves an imported animation channel at the Rust timeline compiler boundary", async () => {
+    const base = await compilablePreviewInput();
+    const animationChannels: SceneIrBundleV1["scene"]["animationChannels"] = [
+      {
+        entityId: "earlier",
+        id: "opacity:earlier",
+        keyframes: [
+          { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
+          { at: 2, easingToNext: null, value: 1 },
+        ],
+        kind: "opacity",
+        provenanceId: "fixture",
+      },
+    ];
+    const animatedBundle = await parseVerifiedSceneIrBundleV1({
+      ...base.snapshot.snapshot,
+      scene: {
+        ...base.snapshot.snapshot.scene,
+        animationChannels,
+        requiredCapabilities: ["opacity-animation", "shape-primitives"],
+      },
+    });
+    const snapshot = { ...base.snapshot, snapshot: animatedBundle };
+    const workingBase = exactImportedTimelineWorkingBase({ ...base, snapshot });
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 1,
+      scene: workingBase.runtimeSceneState,
+      sourceAnchor: 1,
+      targetDuration: 3,
+      transactionId: "extend-animated-imported-scene",
+    });
+    if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: async (bundle) => {
+        compilerCalls += 1;
+        expect(bundle.scene.animationChannels).toEqual(animationChannels);
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      proposedState: evaluateWorkingState({
+        ...workingBase,
+        appliedPrograms: [programRecord(extension.program, extension)],
+      }),
+      snapshot,
+      workingRevision: "studio-working-v1:extend-animated-imported-scene",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    expect(result.kind).toBe("compiled");
+    expect(compilerCalls).toBe(1);
+    if (result.kind === "compiled") {
+      expect(result.scene.bundle.scene.animationChannels).toEqual(animationChannels);
+    }
+  });
+
+  it("preserves source order for extension, trim, and a later same-anchor extension", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 1,
+      scene: workingBase.runtimeSceneState,
+      sourceAnchor: 1,
+      targetDuration: 3,
+      transactionId: "extend-before-imported-trim",
+    });
+    if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
+    const extensionRecord = programRecord(extension.program, extension);
+    const extended = evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] });
+    const trim = createSceneDurationProgram({
+      appliedPrograms: [extensionRecord],
+      capturedPlayhead: 3,
+      scene: extended.evaluatedScene,
+      sourceAnchor: 1,
+      targetDuration: 2.5,
+      transactionId: "trim-imported-scene",
+    });
+    if (trim.kind !== "valid") throw new Error(JSON.stringify(trim.issues));
+    const trimRecord = programRecord(trim.program, trim);
+    const trimmed = evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [extensionRecord, trimRecord],
+    });
+    const laterExtension = createSceneDurationProgram({
+      capturedPlayhead: 2.5,
+      scene: trimmed.evaluatedScene,
+      sourceAnchor: 1,
+      targetDuration: 3.5,
+      transactionId: "extend-after-imported-trim",
+    });
+    if (laterExtension.kind !== "valid") throw new Error(JSON.stringify(laterExtension.issues));
+    const laterExtensionRecord = programRecord(laterExtension.program, laterExtension);
+    const proposedState = evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [extensionRecord, trimRecord, laterExtensionRecord],
+    });
+    const commands: EditSceneTimelineWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: recordingTimelineCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:extend-and-trim-imported-scene",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.edits).toEqual([
+      { at: 1, duration: 1, kind: "insert-wait" },
+      { kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 2.5 },
+      { at: 1.5, duration: 1, kind: "insert-wait" },
+    ]);
+    expect(commands[0]?.provenance.evidence).toEqual([
+      `authorized operation ${extension.program.operations[0]?.id}`,
+      `authorized operation ${trim.program.operations[0]?.id}`,
+      `authorized operation ${laterExtension.program.operations[0]?.id}`,
+    ]);
+  });
+
+  it("rejects an appearance operation combined with a Scene timeline edit before Rust compilation", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const extension = createSceneDurationProgram({
+      capturedPlayhead: 1,
+      scene: workingBase.runtimeSceneState,
+      sourceAnchor: 1,
+      targetDuration: 3,
+      transactionId: "timeline-with-appearance",
+    });
+    if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
+    const appearanceOperation = {
+      dependsOn: [],
+      entityId: "source:circle",
+      id: "tx:appearance/operation:set-opacity",
+      interval: { end: 0, start: 0 },
+      key: "appearance",
+      kind: "SetProperty",
+      provenance: { evidence: ["unsupported appearance regression"], origin: "studio-default" },
+      value: 0.5,
+    } as const;
+    const appearanceProgram = {
+      ...extension.program,
+      anchor: { ...extension.program.anchor, resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } as const },
+      operations: [appearanceOperation],
+      schedule: { edges: [], mode: "sequence", order: [appearanceOperation.id] } as const,
+      transactionId: "appearance-only",
+    };
+    const appearance = validateAndScheduleProgram(appearanceProgram, workingBase.runtimeSceneState);
+    if (appearance.kind !== "valid") throw new Error(JSON.stringify(appearance.issues));
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: async () => {
+        compilerCalls += 1;
+        throw new Error("The Rust timeline compiler must not run for a mixed appearance edit.");
+      },
+      frame: { height: 9, width: 16 },
+      proposedState: evaluateWorkingState({
+        ...workingBase,
+        appliedPrograms: [programRecord(extension.program, extension), programRecord(appearance.program, appearance)],
+      }),
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:timeline-with-appearance",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    expect(result).toMatchObject({ error: expect.stringContaining("cannot be combined"), kind: "unsupported" });
+    expect(compilerCalls).toBe(0);
+  });
+
   it.each(["direct-manipulation", "studio-default"] as const)(
     "routes one imported static root move from %s through the canonical Rust command",
     async (origin) => {
@@ -3430,7 +3664,7 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     expect(compilerCalls).toBe(0);
     expect(result).toMatchObject({
-      error: expect.stringContaining("cannot compile content channels"),
+      error: expect.stringContaining("No canonical Rust preview command"),
       kind: "unsupported",
     });
   });

@@ -48,6 +48,27 @@ export type TransformSceneEntityCompiler = (
   command: TransformSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+export type EditSceneTimelineWireCommandV1 = Readonly<{
+  edits: readonly (
+    | Readonly<{ at: number; duration: number; kind: "insert-wait" }>
+    | Readonly<{ kind: "trim-scene-duration"; removedDuration: number; targetDuration: number }>
+  )[];
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.edit-scene-timeline";
+  version: 1;
+}>;
+
+export type EditSceneTimelineCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: EditSceneTimelineWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 type CreateSceneEntityGeometryV1 =
   | Readonly<{ kind: "circle"; radius: number }>
   | Readonly<{ height: number; kind: "rectangle"; width: number }>
@@ -117,6 +138,10 @@ type TransformSceneAuthoringBindingsV1 = Readonly<{
   transformSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type EditSceneTimelineBindingsV1 = Readonly<{
+  editSceneTimelineV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type CreateSceneEntitiesBindingsV1 = Readonly<{
   createSceneEntitiesV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -126,6 +151,7 @@ type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
 }>;
 
 type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
+  EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
   SetSubtreeVectorPaintAlphaBindingsV1;
@@ -152,6 +178,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.poietraEngineAbiVersion !== "function" ||
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
       typeof candidate.createSceneEntitiesV1 !== "function" ||
+      typeof candidate.editSceneTimelineV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
       typeof candidate.transformSceneEntityV1 !== "function"
@@ -160,6 +187,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     }
     return {
       createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
+      editSceneTimelineV1: candidate.editSceneTimelineV1 as SceneAuthoringBindingsV1["editSceneTimelineV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
@@ -209,6 +237,16 @@ export function createTransformSceneEntityCompiler(
   };
 }
 
+/** Creates the browser adapter around one ordered, atomic Scene timeline edit. */
+export function createEditSceneTimelineCompiler(
+  getBindings: () => Promise<EditSceneTimelineBindingsV1>,
+): EditSceneTimelineCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.editSceneTimelineV1);
+  };
+}
+
 /** Creates the browser adapter for the canonical subtree vector-paint command. */
 export function createSetSubtreeVectorPaintAlphaCompiler(
   getBindings: () => Promise<SetSubtreeVectorPaintAlphaBindingsV1>,
@@ -220,6 +258,7 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 }
 
 export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(loadBindings);
+export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
 export const compileSetSubtreeVectorPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(loadBindings);
