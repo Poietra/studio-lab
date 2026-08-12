@@ -14,13 +14,13 @@ function snapshotResponse(page: Page) {
 }
 
 async function openMathTexWorkspace(page: Page, sceneLabel: string) {
-  await page.goto("/?previewRenderer=server");
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByLabel("Active imported Scene").selectOption({ label: sceneLabel });
-  await page.getByRole("button", { name: "Enable preview…" }).click();
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   const response = snapshotResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   return response;

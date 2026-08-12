@@ -100,7 +100,7 @@ pub struct MathTexOutlineArtifactV1 {
     pub font_digest: String,
 }
 
-/// Stable reason code for a v1 semantic-preview fallback.
+/// Stable reason code for a bounded outline request that cannot be rendered.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MathTexOutlineUnsupportedCodeV1 {
@@ -116,7 +116,7 @@ pub enum MathTexOutlineUnsupportedCodeV1 {
     InternalFailure,
 }
 
-/// Bounded unsupported result that keeps the Studio semantic preview authoritative.
+/// Bounded unsupported result that lets Studio report missing WebGPU capability.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MathTexOutlineUnsupportedV1 {

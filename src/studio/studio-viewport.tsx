@@ -39,6 +39,7 @@ export type StudioViewportProps = Readonly<
   > &
     Omit<StudioTimelineProps, "events" | "objectTracks" | "readOnly"> & {
       className?: string;
+      previewPaintAvailable: boolean;
       gesturePreviewStore: StudioGesturePreviewStore;
       insertValue: string;
       onInsertAtCenter: () => void;
@@ -56,7 +57,6 @@ export function StudioViewport({
   boundaryActive,
   className,
   currentTime,
-  draftTransactionId,
   duration,
   editableMotionIds,
   editingAppliedTransactionId,
@@ -99,6 +99,7 @@ export function StudioViewport({
   onTogglePlayback,
   preview = null,
   presenceParticipants,
+  previewPaintAvailable,
   projection,
   readOnly = false,
   selectedIds,
@@ -107,6 +108,7 @@ export function StudioViewport({
     <section className={cn("flex min-h-0 min-w-0 flex-col bg-zinc-900", className)}>
       <Profiler id="toolbar" onRender={recordStudioCommitProfile}>
         <StudioToolbar
+          authoringAvailable={previewPaintAvailable}
           insertValue={insertValue}
           onInsertAtCenter={onInsertAtCenter}
           onInsertValueChange={onInsertValueChange}
@@ -118,7 +120,6 @@ export function StudioViewport({
         appliedTransactionIds={appliedTransactionIds}
         boundaryActive={boundaryActive}
         cameraScale={projection.camera.scale}
-        draftTransactionId={draftTransactionId}
         editableMotionIds={editableMotionIds}
         entities={entities}
         frame={frame}

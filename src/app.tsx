@@ -162,7 +162,7 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
 type CanvasDragState = Readonly<{
   pointerId: number;
   scale: Readonly<{ x: number; y: number }>;
-  sourceAnchor: number;
+  sourceAnchor: number | null;
   start: Readonly<{ x: number; y: number }>;
   targetEntityIds: readonly string[];
 }>;
@@ -761,27 +761,22 @@ export function App({
           selectedObjectIds,
         })
       : null;
-  const committedPreviewState =
-    draftProgram === null && editingAppliedProgram === null ? (workspaceProjection?.proposedState ?? null) : null;
   const {
     activate: activatePreviewAuthority,
     activationAllowed: previewActivationAllowed,
-    activationRequested: previewRendererRequested,
-    activated: previewRendererActivated,
+    awaitingConsent: previewAwaitingConsent,
     providerPending: previewProviderPending,
-    requestServer: requestServerPreviewAuthority,
     renderer: previewRenderer,
     retry: retryPreviewAuthority,
   } = useStudioPreviewAuthorityController({
-    committedProposedState: committedPreviewState,
     context: editorDocumentPresentationReady ? editorRevision.previewContext : null,
-    draftProposedState:
-      draftProgram !== null && editingAppliedProgram === null ? (workspaceProjection?.proposedState ?? null) : null,
     frame: workspace?.frame ?? { height: 8, width: 14.222 },
+    gestureActive: gesturePreviewKind !== "idle",
+    proposedState: workspaceProjection?.proposedState ?? null,
     retainedSourceDuration: editorRevision.retainedSourceDuration,
     runtimeTraceTerminalProgramRecords: previewProgramRecords,
     sampleTime: currentTime,
-    transientEdit: gesturePreviewKind !== "idle" || importedSceneBoundaryActive,
+    sceneBoundaryActive: importedSceneBoundaryActive,
   });
   const previewSelectionOnly = previewRenderer?.interactionAuthority.kind === "selection-only";
   const genericInitialEditCandidates = previewRenderer?.genericInitialEditCandidates ?? [];
@@ -821,6 +816,11 @@ export function App({
     sessionTransitionPending ||
     sourceLifecycle.studioAuthoringLocked ||
     (editorRevision.selectionAligned && !editorRevision.sessionReady);
+  const previewPaintAvailable =
+    previewRenderer?.state.phase === "presented" || previewRenderer?.runtimeTraceBaseFrameRetained === true;
+  const previewMutationAvailable =
+    previewPaintAvailable && (!previewSelectionOnly || previewRenderer?.runtimeTracePendingPresentation !== null);
+  const canvasInteractionLocked = studioAuthoringLocked || !previewPaintAvailable;
   const sourceDurationSessionKey = editorRevision.sessionKey;
   function startPreviewRenderer(action: () => boolean) {
     if (!action()) return;
@@ -834,10 +834,6 @@ export function App({
   }
   function retryPreviewRenderer() {
     startPreviewRenderer(retryPreviewAuthority);
-  }
-  function requestPreviewRenderer() {
-    if (!requestServerPreviewAuthority()) return;
-    previewActivationDialog.current?.showModal();
   }
   useEffect(() => {
     const targetSessionKey = sourceTimingResolutionTarget.current;
@@ -884,6 +880,11 @@ export function App({
     // This is the common authoring boundary for pointer, Inspector, timeline,
     // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
     // presentation evidence and can never authorize a Program.
+    if (!previewPaintAvailable) {
+      setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
+      setIsPlaying(false);
+      return false;
+    }
     if (rejectSelectionOnlyPreviewMutation()) return false;
     const plannedRestrictedPrograms =
       previewRenderer?.runtimeTraceTerminalEdit || (previewRenderer?.genericInitialEditCandidates.length ?? 0) > 0
@@ -931,6 +932,10 @@ export function App({
   function redoProgram() {
     const entry = redoPrograms.at(-1);
     if (draftProgram || !entry) return false;
+    if (!previewPaintAvailable) {
+      setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
+      return false;
+    }
     if (rejectSelectionOnlyPreviewMutation()) return false;
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) return redoEditorProgram(lifecycleBlocker);
@@ -1084,7 +1089,7 @@ export function App({
     (retainedInitialEditDragAuthorities.length > 0
       ? new Map(retainedInitialEditDragAuthorities.map(({ runtimeEntityId }) => [runtimeEntityId, null]))
       : null);
-  const semanticVisibleEntities = projectStudioPreviewRuntimeTraceTerminalEntity(
+  const sourceProjectedVisibleEntities = projectStudioPreviewRuntimeTraceTerminalEntity(
     presentedInitialEditAuthorities.reduce<readonly ProjectedEntity[]>(
       (entities, authority) =>
         projectStudioPreviewInitialEntityPresence(entities, authority, initialEditInteractionGeometry, currentTime),
@@ -1093,16 +1098,16 @@ export function App({
     previewRenderer?.runtimeTraceTerminalEdit ?? null,
     previewRenderer?.runtimeTracePendingPresentation ?? null,
   );
-  const semanticVisibleEntityIds = new Set(semanticVisibleEntities.map(({ id }) => id));
+  const sourceProjectedVisibleEntityIds = new Set(sourceProjectedVisibleEntities.map(({ id }) => id));
   const runtimeTraceOpaqueSelectionEntities = (previewRenderer?.runtimeTraceOpaqueSelectionEntities ?? []).filter(
-    ({ id }) => !semanticVisibleEntityIds.has(id),
+    ({ id }) => !sourceProjectedVisibleEntityIds.has(id),
   );
   const visibleEntities = [
     // Runtime-only groups such as NumberPlane can span the full frame. Keep
-    // their selection-only hit targets below semantic edit targets so the
+    // their selection-only hit targets below source-backed edit targets so the
     // editable grid_title remains directly draggable at the same timestamp.
     ...runtimeTraceOpaqueSelectionEntities,
-    ...semanticVisibleEntities,
+    ...sourceProjectedVisibleEntities,
   ];
   const editableEntities = projectStudioPreviewRuntimeTraceTerminalEntity(
     presentedInitialEditAuthorities.reduce<readonly ProjectedEntity[]>(
@@ -1322,6 +1327,16 @@ export function App({
 
   async function requestEditSuggestion(selectedOption?: ClarificationOption) {
     if (!activeScene || !draftBaseState) return;
+    if (!previewPaintAvailable) {
+      setSuggestionMessage("Wait for the canonical WebGPU preview before requesting an edit.");
+      setSuggestionStatus("error");
+      return;
+    }
+    if (!previewMutationAvailable) {
+      setSuggestionMessage("This verified preview does not authorize Scene edits.");
+      setSuggestionStatus("error");
+      return;
+    }
     const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
       setSuggestionMessage(initialLifecycleBlocker);
@@ -1592,6 +1607,10 @@ export function App({
 
   async function applyDraft() {
     if (!draftProgram || draftApplyPending) return;
+    if (!previewPaintAvailable) {
+      setDraftError("Wait for the canonical WebGPU preview or discard this draft.");
+      return;
+    }
     // A draft may predate preview activation; keep the final source-export
     // boundary fail-closed as well as blocking new drafts in `stageDraft`.
     if (previewSelectionOnly && previewRenderer?.runtimeTracePendingPresentation === null) {
@@ -1712,6 +1731,10 @@ export function App({
 
   function insertEntitiesAt(point: Point, entities?: readonly StudioEntityInput[]) {
     if (!draftBaseState || !draftSourceScene) return false;
+    if (previewRenderer?.state.phase !== "presented" && previewRenderer?.runtimeTraceBaseFrameRetained !== true) {
+      setDraftError("Wait for the canonical WebGPU preview before inserting an object.");
+      return false;
+    }
     const previousInsertion = draftProgram && isStudioEntityInsertion(draftProgram) ? draftProgram : null;
     if (draftProgram && !previousInsertion) {
       setDraftError("Apply or discard the current draft before inserting another object.");
@@ -2192,24 +2215,6 @@ export function App({
       : selectedEditableIds.includes(entityId)
         ? selectedEditableIds
         : [entityId];
-    const gestureContext = directGestureContext();
-    if (!gestureContext.proposedState) return;
-    const sourceScene = projectRuntimeSceneToSourceTimeline(
-      gestureContext.proposedState.evaluatedScene,
-      gestureContext.sourcePrograms,
-    );
-    const anchor = manualAuthoringAnchor({
-      action: "object drag",
-      allowSyntheticPreviewAnchor: interactionMode === "position",
-      requireAlignedPlayhead: true,
-      scene: sourceScene,
-      sourcePrograms: gestureContext.sourcePrograms,
-      targetEntityIds,
-    });
-    if (!anchor) {
-      setSelectedObjectIds(targetEntityIds);
-      return;
-    }
     event.currentTarget.setPointerCapture(event.pointerId);
     const canvasBounds = event.currentTarget.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect();
     setSelectedObjectIds(targetEntityIds);
@@ -2219,19 +2224,46 @@ export function App({
         x: canvasBounds?.width ? STUDIO_VIEWPORT.width / canvasBounds.width : 1,
         y: canvasBounds?.height ? STUDIO_VIEWPORT.height / canvasBounds.height : 1,
       },
-      sourceAnchor: anchor.sourceTime,
+      sourceAnchor: null,
       start: { x: event.clientX, y: event.clientY },
       targetEntityIds,
     };
     setIsPlaying(false);
-    gesturePreviewStore.setDragPreview({ delta: { x: 0, y: 0 }, entityIds: targetEntityIds });
   }
 
   function moveEntityDrag(event: PointerEvent<HTMLButtonElement>) {
-    const drag = canvasDrag.current;
+    let drag = canvasDrag.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
+    const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
+    if (drag.sourceAnchor === null) {
+      if (Math.hypot(delta.x, delta.y) < 1) return;
+      const gestureContext = directGestureContext();
+      if (!gestureContext.proposedState) {
+        canvasDrag.current = null;
+        return;
+      }
+      const sourceScene = projectRuntimeSceneToSourceTimeline(
+        gestureContext.proposedState.evaluatedScene,
+        gestureContext.sourcePrograms,
+      );
+      const anchor = manualAuthoringAnchor({
+        action: "object drag",
+        allowSyntheticPreviewAnchor: interactionMode === "position",
+        requireAlignedPlayhead: true,
+        scene: sourceScene,
+        sourcePrograms: gestureContext.sourcePrograms,
+        targetEntityIds: drag.targetEntityIds,
+      });
+      if (!anchor) {
+        canvasDrag.current = null;
+        gesturePreviewStore.clear();
+        return;
+      }
+      drag = { ...drag, sourceAnchor: anchor.sourceTime };
+      canvasDrag.current = drag;
+    }
     gesturePreviewStore.setDragPreview({
-      delta: canvasPointerDelta(drag, { x: event.clientX, y: event.clientY }),
+      delta,
       entityIds: drag.targetEntityIds,
     });
   }
@@ -2241,6 +2273,7 @@ export function App({
     if (!drag || drag.pointerId !== event.pointerId) return;
     canvasDrag.current = null;
     gesturePreviewStore.clear();
+    if (drag.sourceAnchor === null) return;
     if (!activeScene || !draftBaseState || !draftSourceScene) return;
     const delta = canvasPointerDelta(drag, { x: event.clientX, y: event.clientY });
     if (Math.hypot(delta.x, delta.y) < 1) return;
@@ -3160,6 +3193,26 @@ export function App({
       setDraftError(readDurationBlocker() ?? EDITOR_SESSION_LOADING_BLOCKER);
       return false;
     }
+    if (command === "undo") {
+      if (!draftProgram && appliedPrograms.length === 0) return false;
+      undoProgramCommitFirst();
+      return true;
+    }
+    if (command === "escape") {
+      if (insertTool !== "select") {
+        setInsertTool("select");
+        return true;
+      }
+      if (draftProgram) {
+        discardDraft();
+        return true;
+      }
+      if (selectedObjectIds.length > 0) {
+        setSelectedObjectIds([]);
+        return true;
+      }
+      return false;
+    }
     const toolByCommand: Partial<Record<StudioCommandId, StudioTool>> = {
       "insert-arrow": "Arrow",
       "insert-circle": "Circle",
@@ -3170,13 +3223,16 @@ export function App({
       "select-tool": "select",
     };
     const tool = toolByCommand[command];
-    if (tool) {
+    if (tool === "select") {
       setInsertTool(tool);
       return true;
     }
-    if (command === "undo") {
-      if (!draftProgram && appliedPrograms.length === 0) return false;
-      undoProgramCommitFirst();
+    if (!previewPaintAvailable) {
+      setDraftError("Wait for the canonical WebGPU preview before editing the Scene.");
+      return false;
+    }
+    if (tool) {
+      setInsertTool(tool);
       return true;
     }
     if (command === "redo") return redoProgram();
@@ -3206,20 +3262,6 @@ export function App({
       if (currentTime >= activeDuration) setCurrentTime(0);
       setIsPlaying((playing) => !playing);
       return true;
-    }
-    if (command === "escape") {
-      if (insertTool !== "select") {
-        setInsertTool("select");
-        return true;
-      }
-      if (draftProgram) {
-        discardDraft();
-        return true;
-      }
-      if (selectedObjectIds.length > 0) {
-        setSelectedObjectIds([]);
-        return true;
-      }
     }
     return false;
   }
@@ -3404,16 +3446,14 @@ export function App({
                 session={accountSession}
               />
             ) : null}
-            <StudioPreviewControl
-              activated={previewRendererActivated}
-              activationAllowed={previewActivationAllowed}
-              activationRequested={previewRendererRequested}
-              disabled={!activeScene || sessionTransitionPending}
-              onRequest={requestPreviewRenderer}
-              onRetry={retryPreviewRenderer}
-              providerPending={previewProviderPending}
-              renderer={previewRenderer}
-            />
+            {activeScene && !previewAwaitingConsent ? (
+              <StudioPreviewControl
+                disabled={sessionTransitionPending}
+                onRetry={retryPreviewRenderer}
+                providerPending={previewProviderPending}
+                renderer={previewRenderer}
+              />
+            ) : null}
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={
@@ -3435,7 +3475,7 @@ export function App({
                     ? "border-sky-800 bg-sky-950 text-sky-300 hover:bg-sky-900"
                     : "border-zinc-700 text-zinc-300 hover:bg-zinc-800",
               )}
-              disabled={!activeScene || studioAuthoringLocked}
+              disabled={!activeScene || studioAuthoringLocked || !previewMutationAvailable}
               onClick={() => setIsMagicEditVisible((visible) => !visible)}
               type="button"
             >
@@ -3494,7 +3534,7 @@ export function App({
           </div>
         ) : null}
 
-        {previewRendererRequested && !previewRendererActivated ? (
+        {activeScene && previewAwaitingConsent ? (
           <section
             aria-labelledby="preview-activation-title"
             className="flex shrink-0 items-center justify-between gap-3 border-b border-sky-950 bg-sky-950/30 px-3 py-2"
@@ -3502,10 +3542,10 @@ export function App({
           >
             <div className="min-w-0">
               <h2 className="text-balance text-xs font-medium text-sky-200" id="preview-activation-title">
-                GPU Scene preview is off
+                WebGPU Scene preview is ready to start
               </h2>
               <p className="mt-0.5 text-pretty text-[10px] leading-4 text-sky-200/70">
-                Enabling preview runs selected Manim Scenes through the configured producer while this tab stays open.
+                Starting the canonical preview executes the selected workspace Scene through the configured producer.
               </p>
             </div>
             {previewActivationAllowed ? (
@@ -3515,11 +3555,11 @@ export function App({
                 onClick={() => previewActivationDialog.current?.showModal()}
                 type="button"
               >
-                Enable preview…
+                Start preview…
               </button>
             ) : (
               <p className="shrink-0 text-pretty text-xs text-sky-200" role="status">
-                Open Studio in a top-level tab to enable it.
+                Open Studio in a top-level tab to start it.
               </p>
             )}
           </section>
@@ -3631,6 +3671,7 @@ export function App({
               appliedProgramReadOnlyReasons={appliedProgramReadOnlyReasons}
               appliedPrograms={appliedPrograms}
               appliedTransactionIds={appliedTransactionIds}
+              authoringAvailable={previewMutationAvailable}
               className="order-2 min-h-64 md:order-1 md:col-start-1 md:row-start-1 md:min-h-0"
               draftActive={draftProgram !== null}
               duration={activeDuration}
@@ -3659,7 +3700,6 @@ export function App({
               boundaryActive={boundary !== null}
               className="order-1 min-h-[30rem] md:order-2 md:col-start-2 md:row-start-1 md:min-h-[32rem] xl:min-h-0"
               currentTime={currentTime}
-              draftTransactionId={draftProgram?.program.transactionId ?? null}
               duration={activeDuration}
               editableMotionIds={editableMotionIds}
               editingAppliedTransactionId={editingAppliedProgram?.original.program.transactionId ?? null}
@@ -3714,14 +3754,16 @@ export function App({
                 setIsPlaying((playing) => !playing);
               }}
               preview={previewRenderer}
+              previewPaintAvailable={previewMutationAvailable}
               presenceParticipants={editorDocumentAuthority.presenceParticipants}
               projection={projection}
-              readOnly={boundary !== null || studioAuthoringLocked}
+              readOnly={boundary !== null || canvasInteractionLocked}
               selectedIds={selectedSet}
             />
 
             <StudioInspector
               appliedProgramCount={appliedPrograms.length}
+              authoringAvailable={previewMutationAvailable}
               className="order-3 min-h-96 md:col-span-2 md:col-start-1 md:row-start-2 xl:col-span-1 xl:col-start-3 xl:row-start-1 xl:min-h-0"
               draftError={draftError}
               draftApplyPending={draftApplyPending}
@@ -3773,12 +3815,11 @@ export function App({
         >
           <form className="p-4" method="dialog">
             <h2 className="text-balance text-sm font-medium" id="enable-preview-title">
-              Run Manim Scenes for GPU preview?
+              Run workspace Scenes for WebGPU preview?
             </h2>
             <p className="mt-2 text-pretty text-xs leading-5 text-zinc-400" id="enable-preview-description">
               Studio will execute the selected Scene, and any Scene you switch to, through the configured fast-manim
-              producer. Enable this only for workspace source you trust. Permission ends when this tab reloads or
-              closes.
+              producer. Start this only for workspace source you trust. Permission ends when this tab reloads or closes.
             </p>
             <div className="mt-5 flex justify-end gap-2">
               <button
@@ -3843,6 +3884,7 @@ export function App({
         {isMagicEditVisible && activeScene ? (
           <MagicEditPanel
             aiEndpointConfigured={aiEndpointConfigured}
+            authoringAvailable={previewMutationAvailable}
             clarificationIsStale={clarificationIsStale}
             currentTime={currentTime}
             instruction={instruction}

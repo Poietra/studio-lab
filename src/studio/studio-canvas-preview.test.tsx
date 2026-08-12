@@ -5,7 +5,7 @@ import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
 import type { StudioPreviewGenericInitialEditCandidate } from "./preview-temporal-rebase";
-import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import { compensatePreparedGeometryForOverlayScales, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
 import {
@@ -72,7 +72,6 @@ function baseProps(): StudioCanvasProps {
     appliedTransactionIds: new Set<string>(),
     boundaryActive: false,
     cameraScale: 1,
-    draftTransactionId: null,
     dragPreview: null,
     editableMotionIds: new Set<string>(),
     entities: [CIRCLE_ENTITY],
@@ -178,9 +177,9 @@ function previewView(
 }
 
 describe("StudioCanvas retained preview layer", () => {
-  it("cancels semantic CSS scales so sampled runtime bounds are applied exactly once", () => {
+  it("cancels overlay CSS scales so sampled runtime bounds are applied exactly once", () => {
     expect(
-      compensatePreviewGeometryForSemanticScalesV1(
+      compensatePreparedGeometryForOverlayScales(
         { dimensions: { height: 2, width: 4 }, position: { x: 480, y: 90 } },
         2,
         0.5,
@@ -188,7 +187,7 @@ describe("StudioCanvas retained preview layer", () => {
     ).toEqual({ dimensions: { height: 2, width: 4 }, position: { x: 400, y: 135 } });
   });
 
-  it("renders no canvas layer by default so the semantic preview stays authoritative", () => {
+  it("renders no paint or interaction layer before the canonical provider is active", () => {
     const markup = renderToStaticMarkup(<StudioCanvas {...baseProps()} />);
     expect(markup).toContain('data-preview-renderer="off"');
     expect(markup).not.toContain("data-preview-revision");
@@ -196,7 +195,7 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).not.toContain("data-studio-preview-status");
   });
 
-  it("exposes the whole-Scene fallback reason without hiding the semantic DOM", () => {
+  it("exposes the whole-Scene failure without invoking a DOM renderer", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
@@ -206,27 +205,37 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-preview-renderer="fallback"');
     expect(markup).toContain('data-preview-fallback-reason="install-failed"');
     expect(markup).not.toContain("data-preview-revision");
-    expect(markup).toContain("Canvas preview fallback · snapshot install failed");
+    expect(markup).toContain("WebGPU preview unavailable · snapshot install failed");
     expect(markup).toMatch(/<canvas[^>]*invisible/);
     expect(markup).toContain("data-studio-transform-layer");
-    // Fallback restores the semantic paint in the same render.
-    expect(markup).toContain('data-studio-semantic-paint="painted"');
-    expect(markup).not.toContain("deferred-to-canvas");
+    expect(markup).not.toContain("data-studio-semantic-paint");
+    expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
   });
 
   it("labels a presented frame as an editing preview without claiming render authority", () => {
     const markup = renderToStaticMarkup(
       <StudioCanvas
         {...baseProps()}
-        preview={previewView({
-          frame: {
-            packetId: "canvas:2",
-            revision: "a".repeat(64),
-            sampleTime: 1,
-            viewport: { heightPx: 90, widthPx: 160 },
+        preview={previewView(
+          {
+            frame: {
+              packetId: "canvas:2",
+              revision: "a".repeat(64),
+              sampleTime: 1,
+              viewport: { heightPx: 90, widthPx: 160 },
+            },
+            phase: "presented",
           },
-          phase: "presented",
-        })}
+          new Map([
+            ["scene:runtime/entity:0", { dimensions: { height: 0.8, width: 1.4222 }, position: { x: 320, y: 180 } }],
+          ]),
+          new Map([
+            [
+              "circle_1",
+              { bindingId: "source-binding:circle", entityId: "scene:runtime/entity:0", sourceName: "circle_1" },
+            ],
+          ]),
+        )}
       />,
     );
     expect(markup).toContain('data-preview-renderer="presented"');
@@ -235,13 +244,13 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-preview-packet-id="canvas:2"');
     expect(markup).toContain(`data-preview-revision="${"a".repeat(64)}"`);
     expect(markup).not.toContain("data-preview-fallback-reason");
-    expect(markup).toContain("Canvas preview · verified fixture · editing preview only");
+    expect(markup).toContain("WebGPU preview · verified fixture · editing preview only");
     expect(markup).not.toMatch(/<canvas[^>]*invisible/);
     expect(markup).toContain("data-studio-transform-layer");
     // A fully correlated presented frame replaces only the duplicate object
     // paint; the semantic hit target (the move button) stays in the
     // accessibility tree as a paint-free interaction overlay.
-    expect(markup).toContain('data-studio-semantic-paint="deferred-to-canvas"');
+    expect(markup).not.toContain("data-studio-semantic-paint");
     expect(markup).toContain('data-studio-entity="entity:circle_1"');
     expect(markup).toContain("Move circle_1");
   });
@@ -267,7 +276,7 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     expect(markup).toContain('data-preview-interaction="display-only"');
-    expect(markup).toContain("Canvas preview · verified fixture · display only");
+    expect(markup).toContain("WebGPU preview · verified fixture · display only");
     expect(markup).not.toContain('data-studio-entity="entity:circle_1"');
     expect(markup).not.toContain("Move circle_1");
     expect(markup).not.toContain("data-studio-resize-handle");
@@ -282,7 +291,7 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     expect(fallbackMarkup).toContain('data-preview-interaction="display-only"');
-    expect(fallbackMarkup).toMatch(/aria-label="Move circle_1"[^>]*disabled=""/);
+    expect(fallbackMarkup).not.toContain('data-studio-entity="entity:circle_1"');
 
     const unverifiedMarkup = renderToStaticMarkup(
       <StudioCanvas
@@ -294,7 +303,7 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     expect(unverifiedMarkup).toContain('data-preview-interaction="display-only"');
-    expect(unverifiedMarkup).toContain("Canvas preview · verified fixture · display only");
+    expect(unverifiedMarkup).toContain("WebGPU preview · verified fixture · display only");
     expect(unverifiedMarkup).not.toContain('data-studio-entity="entity:circle_1"');
   });
 
@@ -366,9 +375,8 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     // An Edit Program makes snapshot pixels and their map uncorrelated in the
-    // same render; hit targets return to semantic geometry even if the stale
-    // map and runtime geometry are still retained in React state.
-    expect(fallbackMarkup).toContain("left:50%");
+    // same render; stale prepared geometry does not mint a fallback target.
+    expect(fallbackMarkup).not.toContain('data-studio-entity="entity:circle_1"');
     expect(fallbackMarkup).not.toContain("data-studio-runtime-entity");
   });
 
@@ -413,7 +421,7 @@ describe("StudioCanvas retained preview layer", () => {
       />,
     );
     expect(markup).toMatch(/<button[^>]*style="height:10cqh;width:10cqw"/);
-    expect(markup).toContain("pointer-events-none opacity-0");
+    expect(markup).not.toContain("data-studio-semantic-paint");
   });
 
   it("keeps a verified ImageMobject selectable and aspect-resizable without semantic dimensions", () => {
@@ -564,7 +572,7 @@ describe("StudioCanvas retained preview layer", () => {
 
     const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
     expect(markup).toContain('data-preview-interaction="selection-only"');
-    expect(markup).toContain("Canvas preview · verified fixture · selection only");
+    expect(markup).toContain("WebGPU preview · verified fixture · selection only");
     expect(markup).not.toContain(groupRuntimeId);
     expect(markup).not.toContain(`data-studio-entity="${group.id}"`);
     expect(markup).not.toContain("Move grp");
@@ -711,8 +719,8 @@ describe("StudioCanvas retained preview layer", () => {
       type: "Square",
     };
     const interactionGeometry = new Map([
-      [squareRuntimeId, { dimensions: { height: 90, width: 90 }, position: { x: 320, y: 67.5 } }],
-      [decimalRuntimeId, { dimensions: { height: 36, width: 130 }, position: { x: 440, y: 67.5 } }],
+      [squareRuntimeId, { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 67.5 } }],
+      [decimalRuntimeId, { dimensions: { height: 0.8, width: 2.8888 }, position: { x: 440, y: 67.5 } }],
     ]);
     const sourceRuntimeIdentity = new Map([
       ["square", { bindingId: "source-binding:square", entityId: squareRuntimeId, sourceName: "square" }],
@@ -810,15 +818,14 @@ describe("StudioCanvas retained preview layer", () => {
             sourceAnchor: 5,
             studioEntityId: squareId,
             target: { sourceName: "square", type: "Square" },
-            validationStatusLabel: "Draft ghost · dependent updater validation pending",
+            validationStatusLabel: "Edit validation pending · dependent updater",
           },
         )}
       />,
     );
-    expect(pendingMarkup).toContain("Draft ghost · dependent updater validation pending");
+    expect(pendingMarkup).toContain("Edit validation pending · dependent updater");
     expect(pendingMarkup).not.toContain('invisible" data-studio-preview-canvas');
-    expect(pendingMarkup).toContain('data-studio-semantic-paint="painted"');
-    expect(pendingMarkup.match(/data-studio-semantic-paint="deferred-to-canvas"/g)).toHaveLength(1);
+    expect(pendingMarkup).not.toContain("data-studio-semantic-paint");
     expect(pendingMarkup).toContain('data-studio-entity-width="3.0000"');
     expect(pendingMarkup).toContain("left:62.5%;top:25%");
     expect(pendingMarkup).not.toContain("data-studio-resize-handle");
@@ -846,52 +853,28 @@ describe("StudioCanvas retained preview layer", () => {
             sourceAnchor: 5,
             studioEntityId: squareId,
             target: { sourceName: "square", type: "Square" },
-            validationStatusLabel: "Draft ghost · dependent updater validation pending",
+            validationStatusLabel: "Edit validation pending · dependent updater",
           },
         )}
       />,
     );
-    expect(scrubbedPendingMarkup).toContain(`data-studio-entity="${squareId}"`);
+    expect(scrubbedPendingMarkup).not.toContain("data-studio-entity=");
     expect(scrubbedPendingMarkup).not.toContain(`data-studio-entity="${decimalId}"`);
-    expect(scrubbedPendingMarkup).toContain("dependent updater validation pending");
+    expect(scrubbedPendingMarkup).toContain("Edit validation pending · dependent updater");
 
     const transientMarkup = renderToStaticMarkup(
-      <StudioCanvas
-        {...activeProps}
-        dragPreview={{ delta: { x: 20, y: 10 }, entityIds: [squareId] }}
-        preview={previewView(
-          { detail: null, phase: "fallback", reason: "transient-edit" },
-          interactionGeometry,
-          sourceRuntimeIdentity,
-          boundedAuthority,
-          terminalAuthority,
-          null,
-          true,
-        )}
-      />,
+      <StudioCanvas {...activeProps} dragPreview={{ delta: { x: 20, y: 10 }, entityIds: [squareId] }} />,
     );
     expect(transientMarkup).not.toContain('invisible" data-studio-preview-canvas');
     expect(transientMarkup).toContain(`data-studio-entity="${decimalId}"`);
-    expect(transientMarkup).toContain('data-studio-semantic-paint="painted"');
+    expect(transientMarkup).not.toContain("data-studio-semantic-paint");
 
     const transientResizeMarkup = renderToStaticMarkup(
-      <StudioCanvas
-        {...activeProps}
-        preview={previewView(
-          { detail: null, phase: "fallback", reason: "transient-edit" },
-          interactionGeometry,
-          sourceRuntimeIdentity,
-          boundedAuthority,
-          terminalAuthority,
-          null,
-          true,
-        )}
-        scalePreview={{ entityId: squareId, scale: 1.5 }}
-      />,
+      <StudioCanvas {...activeProps} scalePreview={{ entityId: squareId, scale: 1.5 }} />,
     );
     expect(transientResizeMarkup).toContain('data-studio-entity-width="2.0000"');
     expect(transientResizeMarkup).toContain('style="scale:1.5"');
-    expect(transientResizeMarkup).toContain('data-studio-semantic-paint="painted"');
+    expect(transientResizeMarkup).not.toContain("data-studio-semantic-paint");
   });
 
   it("opens only the OpeningManim grid title move at t=14 without resize handles", () => {
@@ -926,9 +909,9 @@ describe("StudioCanvas retained preview layer", () => {
       type: "NumberPlane",
     };
     const interactionGeometry = new Map([
-      [gridRuntimeId, { dimensions: { height: 360, width: 640 }, position: { x: 320, y: 180 } }],
-      [gridTitleRuntimeId, { dimensions: { height: 54, width: 305 }, position: { x: 145, y: 42 } }],
-      [titleRuntimeId, { dimensions: { height: 48, width: 220 }, position: { x: 160, y: 55 } }],
+      [gridRuntimeId, { dimensions: { height: 8, width: 14.222 }, position: { x: 320, y: 180 } }],
+      [gridTitleRuntimeId, { dimensions: { height: 1.2, width: 6.7777 }, position: { x: 145, y: 42 } }],
+      [titleRuntimeId, { dimensions: { height: 1.0667, width: 4.8888 }, position: { x: 160, y: 55 } }],
     ]);
     const sourceRuntimeIdentity = new Map([
       ["grid", { bindingId: "source-binding:grid", entityId: gridRuntimeId, sourceName: "grid" }],
@@ -1001,8 +984,8 @@ describe("StudioCanvas retained preview layer", () => {
         )}
       />,
     );
-    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-height="54.0000"');
-    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-width="305.0000"');
+    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-height="1.2000"');
+    expect(authorityOnlyDragMarkup).toContain('data-studio-entity-width="6.7777"');
     const selectedGridMarkup = renderToStaticMarkup(<StudioCanvas {...activeProps} selectedIds={new Set([gridId])} />);
     const gridWrapperMarker = `data-studio-entity-wrapper="${gridId}"`;
     const gridWrapperMarkerIndex = selectedGridMarkup.indexOf(gridWrapperMarker);
@@ -1044,14 +1027,14 @@ describe("StudioCanvas retained preview layer", () => {
             sourceAnchor: 14,
             studioEntityId: gridTitleId,
             target: { sourceName: "grid_title", type: "Tex" },
-            validationStatusLabel: "Draft ghost · OpeningManim validation pending",
+            validationStatusLabel: "Edit validation pending · OpeningManim",
           },
         )}
       />,
     );
-    expect(pendingMarkup).toContain("Draft ghost · OpeningManim validation pending");
-    expect(pendingMarkup).toContain('data-studio-entity-height="54.0000"');
-    expect(pendingMarkup).toContain('data-studio-entity-width="305.0000"');
+    expect(pendingMarkup).toContain("Edit validation pending · OpeningManim");
+    expect(pendingMarkup).toContain('data-studio-entity-height="1.2000"');
+    expect(pendingMarkup).toContain('data-studio-entity-width="6.7777"');
     expect(pendingMarkup).toContain("left:26.406249999999996%");
     expect(pendingMarkup).toContain("top:8.333333333333332%");
     expect(pendingMarkup).not.toContain("data-studio-resize-handle");
@@ -1134,7 +1117,7 @@ describe("StudioCanvas retained preview layer", () => {
     const missingMap = renderToStaticMarkup(
       <StudioCanvas {...baseProps()} preview={previewView(state, runtimeGeometry)} />,
     );
-    expect(missingMap).toContain("left:50%");
+    expect(missingMap).not.toContain('data-studio-entity="entity:circle_1"');
     expect(missingMap).not.toContain("data-studio-runtime-entity");
 
     const duplicate = { ...CIRCLE_ENTITY, id: "entity:circle_2" };

@@ -1,17 +1,15 @@
 import type { PreviewFallbackReasonV1 } from "../engine/preview-renderer";
 import { cn } from "../lib/cn";
-import { describeStudioPreviewFallbackV1 } from "./preview-renderer-policy";
+import { describeStudioPreviewFallback } from "./preview-renderer-policy";
 import type { StudioPreviewRendererView } from "./use-preview-renderer";
 
-export type StudioPreviewControlStateV1 = Readonly<{
+export type StudioPreviewControlState = Readonly<{
   detail: string | null;
-  kind: "awaiting-consent" | "failed" | "idle" | "loading" | "presented" | "semantic-fallback" | "unsupported";
+  kind: "failed" | "loading" | "paused" | "presented" | "unsupported";
   retryable: boolean;
 }>;
 
-type ResolveStudioPreviewControlStateInputV1 = Readonly<{
-  activationRequested: boolean;
-  activated: boolean;
+type ResolveStudioPreviewControlStateInput = Readonly<{
   providerPending: boolean;
   renderer: StudioPreviewRendererView | null;
 }>;
@@ -28,14 +26,12 @@ const FAILED_FALLBACKS: ReadonlySet<PreviewFallbackReasonV1> = new Set([
   "renderer-failed",
 ]);
 
-/** Maps retained-renderer internals onto the small set of truthful states the
- * standard editor control exposes. Only an exactly correlated presented frame
- * receives the verified label; every fallback keeps semantic paint active. */
-export function resolveStudioPreviewControlStateV1(
-  input: ResolveStudioPreviewControlStateInputV1,
-): StudioPreviewControlStateV1 {
-  if (!input.activationRequested) return { detail: null, kind: "idle", retryable: false };
-  if (!input.activated) return { detail: null, kind: "awaiting-consent", retryable: false };
+/** Maps retained-renderer internals onto truthful canonical-preview states.
+ * Only an exactly correlated presented frame receives the verified label;
+ * every other state says that WebGPU paint is absent or temporarily paused. */
+export function resolveStudioPreviewControlState(
+  input: ResolveStudioPreviewControlStateInput,
+): StudioPreviewControlState {
   if (input.providerPending)
     return { detail: "Resolving the Manim preview provider.", kind: "loading", retryable: false };
   if (!input.renderer) {
@@ -45,8 +41,13 @@ export function resolveStudioPreviewControlStateV1(
     return { detail: input.renderer.sourceLabel, kind: "presented", retryable: false };
   }
   const { detail, reason } = input.renderer.state;
-  const fallbackDetail = detail ?? describeStudioPreviewFallbackV1(reason);
-  if (reason === "capability-unsupported") {
+  const fallbackDetail = detail ?? describeStudioPreviewFallback(reason);
+  if (
+    reason === "capability-unsupported" ||
+    reason === "disposed" ||
+    reason === "sample-out-of-range" ||
+    reason === "scene-unsupported"
+  ) {
     return { detail: fallbackDetail, kind: "unsupported", retryable: false };
   }
   if (reason === "snapshot-unavailable") {
@@ -56,71 +57,40 @@ export function resolveStudioPreviewControlStateV1(
   }
   if (FAILED_FALLBACKS.has(reason)) return { detail: fallbackDetail, kind: "failed", retryable: true };
   if (LOADING_FALLBACKS.has(reason)) return { detail: fallbackDetail, kind: "loading", retryable: false };
-  return { detail: fallbackDetail, kind: "semantic-fallback", retryable: false };
+  return { detail: fallbackDetail, kind: "paused", retryable: false };
 }
 
-export type StudioPreviewControlPropsV1 = ResolveStudioPreviewControlStateInputV1 &
+export type StudioPreviewControlProps = ResolveStudioPreviewControlStateInput &
   Readonly<{
-    activationAllowed: boolean;
     disabled?: boolean;
-    onRequest: () => void;
     onRetry: () => void;
   }>;
 
-const STATE_LABELS: Readonly<Record<StudioPreviewControlStateV1["kind"], string>> = {
-  "awaiting-consent": "Manim Preview · Off",
-  failed: "Manim Preview · Failed",
-  idle: "Manim Preview",
-  loading: "Manim Preview · Loading…",
-  presented: "Manim Preview · Verified",
-  "semantic-fallback": "Manim Preview · Semantic fallback",
-  unsupported: "Manim Preview · Unsupported",
+const STATE_LABELS: Readonly<Record<StudioPreviewControlState["kind"], string>> = {
+  failed: "WebGPU Preview · Failed",
+  loading: "WebGPU Preview · Loading…",
+  paused: "WebGPU Preview · Updating",
+  presented: "WebGPU Preview · Verified",
+  unsupported: "WebGPU Preview · Unsupported",
 };
 
 export function StudioPreviewControl({
-  activationAllowed,
-  activationRequested,
-  activated,
   disabled = false,
-  onRequest,
   onRetry,
   providerPending,
   renderer,
-}: StudioPreviewControlPropsV1) {
-  const state = resolveStudioPreviewControlStateV1({
-    activationRequested,
-    activated,
+}: StudioPreviewControlProps) {
+  const state = resolveStudioPreviewControlState({
     providerPending,
     renderer,
   });
-  if (state.kind === "awaiting-consent") return null;
-  if (state.kind === "idle") {
-    return (
-      <button
-        aria-controls="enable-preview-dialog"
-        aria-haspopup="dialog"
-        className="border border-sky-900 px-2 py-1 font-medium text-sky-300 hover:bg-sky-950 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:text-zinc-600"
-        data-studio-manim-preview-state="idle"
-        disabled={disabled || !activationAllowed}
-        onClick={onRequest}
-        title={
-          activationAllowed
-            ? "Run the selected trusted Manim Scene after confirmation."
-            : "Open Studio in a top-level tab to enable preview."
-        }
-        type="button"
-      >
-        Manim Preview
-      </button>
-    );
-  }
   return (
     <div
       className={cn(
         "flex items-center gap-1 border px-2 py-1",
         state.kind === "presented" && "border-emerald-900 text-emerald-300",
         state.kind === "loading" && "border-sky-900 text-sky-300",
-        state.kind === "semantic-fallback" && "border-amber-900 text-amber-300",
+        state.kind === "paused" && "border-amber-900 text-amber-300",
         (state.kind === "failed" || state.kind === "unsupported") && "border-red-900 text-red-300",
       )}
       data-studio-manim-preview-state={state.kind}
@@ -130,7 +100,8 @@ export function StudioPreviewControl({
       <span>{STATE_LABELS[state.kind]}</span>
       {state.retryable ? (
         <button
-          className="ml-1 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500"
+          className="ml-1 underline underline-offset-2 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-500 disabled:cursor-wait disabled:text-zinc-600"
+          disabled={disabled}
           onClick={onRetry}
           type="button"
         >

@@ -13,23 +13,21 @@ import {
 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
-export type StudioPreviewCapabilitiesV1 = Readonly<{
+export type StudioPreviewCapabilities = Readonly<{
   moduleWorkerSupported: boolean;
   offscreenCanvasTransferSupported: boolean;
   webgpuAvailable: boolean;
 }>;
 
-export type StudioPreviewEligibilityInputV1 = StudioPreviewCapabilitiesV1 & Readonly<{ providerAvailable: boolean }>;
-
-export type StudioPreviewEligibilityV1 =
+export type StudioPreviewEligibility =
   | Readonly<{
       detail: string;
       eligible: false;
-      reason: Extract<PreviewFallbackReasonV1, "capability-unsupported" | "disabled">;
+      reason: Extract<PreviewFallbackReasonV1, "capability-unsupported">;
     }>
   | Readonly<{ eligible: true }>;
 
-export function detectStudioPreviewCapabilitiesV1(): StudioPreviewCapabilitiesV1 {
+export function detectStudioPreviewCapabilities(): StudioPreviewCapabilities {
   return {
     moduleWorkerSupported: typeof Worker !== "undefined",
     offscreenCanvasTransferSupported:
@@ -44,16 +42,9 @@ export function detectStudioPreviewCapabilitiesV1(): StudioPreviewCapabilitiesV1
  * Truthful eligibility gate: it only decides whether the host may ATTEMPT the
  * retained WebGPU preview. Passing this gate proves nothing about rendering —
  * the canvas layer becomes visible only after an exactly correlated frame is
- * presented, and every failure past this point is a whole-Scene fallback.
+ * presented, and every failure past this point leaves Scene paint unavailable.
  */
-export function evaluateStudioPreviewEligibilityV1(input: StudioPreviewEligibilityInputV1): StudioPreviewEligibilityV1 {
-  if (!input.providerAvailable) {
-    return {
-      detail: "No verified snapshot provider is configured, so the semantic preview stays authoritative.",
-      eligible: false,
-      reason: "disabled",
-    };
-  }
+export function evaluateStudioPreviewEligibility(input: StudioPreviewCapabilities): StudioPreviewEligibility {
   if (!input.moduleWorkerSupported) {
     return {
       detail: "Module workers are unavailable in this environment.",
@@ -81,7 +72,7 @@ export function evaluateStudioPreviewEligibilityV1(input: StudioPreviewEligibili
  * internally self-correlated, but it need not equal Studio's conservative
  * static-import duration: for imported Python Scenes the verified fast-manim
  * execution is authoritative. Any identity/edit mismatch is a whole-Scene
- * fallback regardless of what the renderer has already presented.
+ * non-present regardless of what the renderer has already presented.
  */
 export function studioPreviewSnapshotCorrelatesV1(
   correlation: StudioPreviewSnapshotCorrelationV1,
@@ -138,7 +129,6 @@ export function studioPreviewVerifiedSourceDurationV1(
 
 const FALLBACK_LABELS: Readonly<Record<PreviewFallbackReasonV1, string>> = {
   "capability-unsupported": "browser capability unsupported",
-  disabled: "disabled",
   disposed: "disposed",
   "frame-pending": "no correlated frame yet",
   "frame-stale": "frame does not match the current preview target",
@@ -147,13 +137,13 @@ const FALLBACK_LABELS: Readonly<Record<PreviewFallbackReasonV1, string>> = {
   "render-error": "frame render failed",
   "renderer-failed": "renderer failed",
   "sample-out-of-range": "playhead outside installed Scene",
+  "scene-unsupported": "Scene edit unsupported by the canonical renderer",
   "snapshot-unavailable": "verified snapshot unavailable",
   "snapshot-uncorrelated": "snapshot does not match the editing context",
-  "transient-edit": "transient edit in progress",
   "viewport-unavailable": "viewport unavailable",
 };
 
-export function describeStudioPreviewFallbackV1(reason: PreviewFallbackReasonV1) {
+export function describeStudioPreviewFallback(reason: PreviewFallbackReasonV1) {
   return FALLBACK_LABELS[reason];
 }
 
@@ -163,7 +153,7 @@ export function describeStudioPreviewFallbackV1(reason: PreviewFallbackReasonV1)
  * 1e-6 acceptance, so a rounded measurement can never produce a frame the
  * engine rejects — or worse, a frame with a subtly wrong aspect.
  */
-export function snapStudioPreviewViewportV1(
+export function snapStudioPreviewViewport(
   measured: Readonly<{ height: number; width: number }>,
   cameraAspect: number,
 ): PreviewViewportV1 | null {
@@ -185,16 +175,16 @@ export function snapStudioPreviewViewportV1(
  * binding, so an old host's presented state can never authorize paint on a new
  * canvas — including across StrictMode double-invoked effects.
  */
-export type StudioPreviewHostBindingV1 = Readonly<{
+export type StudioPreviewHostBinding = Readonly<{
   canvas: object;
   provider: object;
   snapshot: object;
   workspaceKey: string;
 }>;
 
-export function studioPreviewHostBindingCurrentV1(
-  binding: StudioPreviewHostBindingV1 | null,
-  current: StudioPreviewHostBindingV1,
+export function studioPreviewHostBindingCurrent(
+  binding: StudioPreviewHostBinding | null,
+  current: StudioPreviewHostBinding,
 ): boolean {
   return (
     binding !== null &&
@@ -205,15 +195,15 @@ export function studioPreviewHostBindingCurrentV1(
   );
 }
 
-export type StudioPreviewViewStateInputV1 = Readonly<{
+export type StudioPreviewViewStateInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
-  eligibility: StudioPreviewEligibilityV1;
+  eligibility: StudioPreviewEligibility;
   hostActive: boolean;
   hostState: PreviewRendererHostStateV1;
   sampleTime: number;
+  sceneBoundaryActive: boolean;
   snapshot: StudioVerifiedPreviewSnapshotV1 | null;
   snapshotError: string | null;
-  transientEdit: boolean;
   viewport: PreviewViewportV1 | null;
   workingScene?: Readonly<{ engineRevisionHash: string; workingRevision: string }> | null;
 }>;
@@ -221,16 +211,16 @@ export type StudioPreviewViewStateInputV1 = Readonly<{
 /**
  * Resolves the state the editing surface may act on for the current render,
  * synchronously: the host's last emission is only trusted as "presented" when
- * it matches the render's own playhead, viewport, active host, transient-edit
- * flag, and snapshot correlation. Anything the passive effects have not caught
- * up with yet is a whole-Scene fallback in this very render — the first paint
- * after a scrub, resize, host teardown, or drag start never shows a stale
- * canvas frame.
+ * it matches the render's own playhead, viewport, active host, Scene-boundary
+ * flag, and snapshot correlation. Anything passive effects have
+ * not caught up with yet is non-present in this render, so the first paint
+ * after a scrub, resize, host teardown, or Scene change never claims stale
+ * canvas pixels.
  */
-export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInputV1): PreviewRendererHostStateV1 {
+export function resolveStudioPreviewViewState(input: StudioPreviewViewStateInput): PreviewRendererHostStateV1 {
   const { eligibility } = input;
   // Snapshot metadata is loaded independently from renderer capabilities
-  // because verified runtime duration also drives the semantic editor. Report
+  // because verified runtime duration also drives Studio timing. Report
   // that failure first even when this browser cannot create the WebGPU host;
   // otherwise a producer/runtime failure is silently misreported as only a
   // client capability limitation.
@@ -239,11 +229,11 @@ export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInp
   }
   if (!eligibility.eligible) return { detail: eligibility.detail, phase: "fallback", reason: eligibility.reason };
   if (!input.snapshot) return { detail: "Loading the verified snapshot.", phase: "fallback", reason: "installing" };
-  if (input.transientEdit) {
+  if (input.sceneBoundaryActive) {
     return {
-      detail: "A direct manipulation or Scene boundary edit is in progress.",
+      detail: "Scene transition preview is not supported by the canonical renderer.",
       phase: "fallback",
-      reason: "transient-edit",
+      reason: "scene-unsupported",
     };
   }
   if (input.hostState.phase !== "presented") return input.hostState;
@@ -274,7 +264,7 @@ export function resolveStudioPreviewViewStateV1(input: StudioPreviewViewStateInp
   return input.hostState;
 }
 
-export type StudioPreviewInteractionGeometryV1 = ReadonlyMap<
+export type StudioPreviewInteractionGeometry = ReadonlyMap<
   string,
   Readonly<{ dimensions: EntityDimensions | null; position: Point }>
 >;
@@ -285,11 +275,11 @@ export type StudioPreviewInteractionGeometryV1 = ReadonlyMap<
  * targets only: width/height never claim editable Circle radius or Rectangle
  * source dimensions.
  */
-export function projectStudioPreviewInteractionGeometryV1(
+export function projectStudioPreviewInteractionGeometry(
   entityIds: readonly string[],
   interaction: CanvasInteractionResultV1 | null | undefined,
   frame: Readonly<{ height: number; width: number }>,
-): StudioPreviewInteractionGeometryV1 {
+): StudioPreviewInteractionGeometry {
   const geometry = new Map<string, Readonly<{ dimensions: EntityDimensions | null; position: Point }>>();
   if (
     interaction?.status !== "available" ||

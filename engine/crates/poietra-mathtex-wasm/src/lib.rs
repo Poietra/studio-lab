@@ -129,7 +129,7 @@ pub fn poietra_segmented_tex_outline_abi_version() -> u32 {
 /// Compiles one bounded, versioned `MathTex` request into a bounded response.
 ///
 /// Malformed and oversized requests are represented as structured unsupported
-/// responses so JavaScript can keep the semantic preview authoritative.
+/// responses so JavaScript can report unsupported WebGPU content explicitly.
 #[must_use]
 #[wasm_bindgen(js_name = compileMathTexOutlineV1)]
 pub fn compile_mathtex_outline_json_v1(request_json: &[u8]) -> Vec<u8> {

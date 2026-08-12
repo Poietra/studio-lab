@@ -141,7 +141,7 @@ export function createUnavailableStudioPreviewSnapshotProviderV1(cause: unknown)
 /**
  * Loads source metadata whenever an explicit provider and Scene context exist.
  * Renderer capabilities deliberately are not an input: verified runtime time
- * remains useful to the semantic editor when WebGPU must fall back.
+ * remains useful to Studio even when WebGPU is unsupported.
  */
 export function loadStudioPreviewSnapshotMetadataV1(
   input: Readonly<{
@@ -162,8 +162,6 @@ export function loadStudioPreviewSnapshotMetadataV1(
   });
 }
 
-export const STUDIO_PREVIEW_RENDERER_QUERY_PARAM = "previewRenderer";
-
 /**
  * Stable key for the Scene identity that owns a retained preview worker. Any
  * identity axis change — the active project/workspace ID, source path, Scene
@@ -178,23 +176,22 @@ export function studioPreviewWorkspaceKeyV1(context: StudioPreviewEditingContext
 }
 
 /**
- * The retained WebGPU preview stays off unless explicitly requested. The
- * server provider ships in production behind `?previewRenderer=server`; the
- * checked-in fixtures remain behind DEV-only dynamic imports, so production
- * can never present fixture data or include their client evidence extension.
- * The existing semantic preview remains the default editing surface.
+ * Resolves the canonical production provider selected by the authority
+ * controller. Checked-in fixtures remain behind DEV-only dynamic imports, so
+ * production can never present fixture data or include their client evidence
+ * extension.
  */
-export async function resolveStudioPreviewSnapshotProviderV1(
-  search: string,
-): Promise<StudioPreviewSnapshotProviderV1 | null> {
-  const params = new URLSearchParams(search);
-  const requested = params.get(STUDIO_PREVIEW_RENDERER_QUERY_PARAM);
-  if (requested === "server") {
+export type StudioPreviewProviderKind = "fixture" | "mathtex-fixture" | "server";
+
+export async function resolveStudioPreviewSnapshotProvider(
+  providerKind: StudioPreviewProviderKind,
+): Promise<StudioPreviewSnapshotProviderV1> {
+  if (providerKind === "server") {
     const server = await import("./preview-snapshot-provider.server");
     return server.createServerPreviewSnapshotProviderV1();
   }
-  if (!import.meta.env.DEV || (requested !== "fixture" && requested !== "mathtex-fixture")) return null;
+  if (!import.meta.env.DEV) throw new Error("Fixture preview providers are unavailable in production.");
   const fixture = await import("./preview-snapshot-provider.fixture");
-  if (requested === "fixture") return fixture.createFixturePreviewSnapshotProviderV1();
+  if (providerKind === "fixture") return fixture.createFixturePreviewSnapshotProviderV1();
   return fixture.createMathTexFixturePreviewSnapshotProviderV1();
 }

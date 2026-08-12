@@ -94,12 +94,13 @@ The Rust evaluator is the only Scene IR evaluation implementation. Its native te
 consume the JSON fixtures under `fixtures/engine-v1`; categorical results are exact
 and floating-point results use each fixture's explicit tolerance. TypeScript owns
 Studio authoring and integration state, but no longer contains a second Scene IR
-frame evaluator. Studio still opts into the retained worker through
-`?previewRenderer=server`: it loads a same-origin, server-verified fast-manim snapshot
-and reveals the WebGPU canvas only after an exactly correlated frame is presented.
-The semantic editor remains mounted as the interaction overlay and whole-Scene
-fallback during that separate preview migration. Server-backed final video rendering
-and `.py` export remain authoritative workflows.
+frame evaluator. Studio selects the retained server-backed worker as its canonical
+preview authority. It executes workspace source only after explicit tab-local
+confirmation, then reveals the WebGPU canvas only after an exactly correlated frame
+is presented. React remains mounted as a paint-free interaction overlay; unsupported
+Scenes and failures are reported explicitly instead of invoking a second semantic
+renderer. Server-backed final video rendering and `.py` export remain authoritative
+workflows.
 
 `poietra-render-wgpu` is a deliberately narrow GPU slice. Its pure CPU
 stage validates the complete `RenderPacketV1`, maps each local cubic's controls to

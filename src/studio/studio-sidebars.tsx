@@ -121,6 +121,7 @@ export function WorkspaceSidebar({
   appliedProgramReadOnlyReasons,
   appliedPrograms,
   appliedTransactionIds,
+  authoringAvailable = true,
   className,
   draftActive,
   duration,
@@ -141,6 +142,7 @@ export function WorkspaceSidebar({
   appliedProgramReadOnlyReasons: Readonly<Record<string, string | null>>;
   appliedPrograms: readonly ProgramRecord[];
   appliedTransactionIds: ReadonlySet<string>;
+  authoringAvailable?: boolean;
   className?: string;
   draftActive: boolean;
   duration: number;
@@ -219,6 +221,7 @@ export function WorkspaceSidebar({
                 defaultValue={duration.toFixed(2)}
                 key={`${activeScene.sceneId}/${duration.toFixed(3)}`}
                 aria-describedby={durationError ? "scene-duration-error" : "scene-duration-hint"}
+                disabled={!authoringAvailable}
                 min="0.1"
                 name="duration"
                 step="0.1"
@@ -226,6 +229,7 @@ export function WorkspaceSidebar({
               />
               <button
                 className="h-7 border border-zinc-700 px-1.5 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"
+                disabled={!authoringAvailable}
                 type="submit"
               >
                 Update
@@ -265,6 +269,7 @@ export function WorkspaceSidebar({
               <button
                 aria-keyshortcuts="Control+Shift+Z Meta+Shift+Z"
                 className="text-[10px] text-zinc-500 underline underline-offset-2 hover:text-zinc-200"
+                disabled={!authoringAvailable}
                 onClick={onRedo}
                 type="button"
               >
@@ -297,7 +302,7 @@ export function WorkspaceSidebar({
                       <button
                         aria-label={`Edit applied program ${index + 1}`}
                         className="shrink-0 border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100 disabled:cursor-not-allowed disabled:text-zinc-600"
-                        disabled={draftActive}
+                        disabled={draftActive || !authoringAvailable}
                         onClick={() => onEditAppliedProgram(record, index)}
                         title={
                           editing
@@ -352,6 +357,7 @@ export function WorkspaceSidebar({
 
 export function StudioInspector({
   appliedProgramCount,
+  authoringAvailable = true,
   className,
   draftApplyPending,
   draftError,
@@ -383,6 +389,7 @@ export function StudioInspector({
   workspace,
 }: Readonly<{
   appliedProgramCount: number;
+  authoringAvailable?: boolean;
   className?: string;
   draftApplyPending: boolean;
   draftError: string | null;
@@ -431,6 +438,7 @@ export function StudioInspector({
         <>
           <DraftInspector
             applyLabel={replacingAppliedProgram ? "Replace program" : "Apply program"}
+            editingDisabled={!authoringAvailable}
             error={draftError}
             isApplying={draftApplyPending}
             onApply={onApplyDraft}
@@ -439,22 +447,24 @@ export function StudioInspector({
             operation={draftOperation}
             record={draftProgram}
           />
-          {draftPosition && selectedEntity ? (
-            <DraftPositionRefinement
-              entity={selectedEntity}
-              key={`${draftProgram.program.transactionId}/${draftPosition.x}/${draftPosition.y}`}
-              onSubmit={(position) => {
-                onEntityEdit(selectedEntity.id, { position }, "x");
-              }}
-              position={draftPosition}
-            />
-          ) : null}
+          <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={!authoringAvailable}>
+            {draftPosition && selectedEntity ? (
+              <DraftPositionRefinement
+                entity={selectedEntity}
+                key={`${draftProgram.program.transactionId}/${draftPosition.x}/${draftPosition.y}`}
+                onSubmit={(position) => {
+                  onEntityEdit(selectedEntity.id, { position }, "x");
+                }}
+                position={draftPosition}
+              />
+            ) : null}
+          </fieldset>
         </>
       ) : (
         <section>
           <h2 className="text-balance text-sm font-medium text-zinc-100">Inspector</h2>
           {selectedEntity ? (
-            <>
+            <fieldset className="m-0 min-w-0 border-0 p-0 disabled:opacity-60" disabled={!authoringAvailable}>
               <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-2 gap-y-2 text-xs">
                 <dt className="text-zinc-600">Object</dt>
                 <dd className="truncate text-zinc-300">{entityLabel(selectedEntity)}</dd>
@@ -575,7 +585,7 @@ export function StudioInspector({
                 onFocusRestored={onInspectorFocusRestored}
                 restoreFocus={inspectorReturnFocus}
               />
-            </>
+            </fieldset>
           ) : (
             <div className="mt-3 border border-dashed border-zinc-700 p-3">
               <p className="text-pretty text-xs leading-5 text-zinc-500">

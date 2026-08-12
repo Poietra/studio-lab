@@ -21,7 +21,7 @@ export default defineConfig({
     },
     {
       name: "preview-webgpu",
-      testMatch: "**/preview-renderer.webgpu.ts",
+      testMatch: ["**/preview-renderer.e2e.ts", "**/preview-renderer.webgpu.ts"],
       use: {
         browserName: "chromium",
         channel: "chromium",

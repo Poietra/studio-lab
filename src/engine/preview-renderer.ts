@@ -41,7 +41,6 @@ export function createCanvasPreviewRendererV1(options: CanvasWorkerClientOptions
 
 export type PreviewFallbackReasonV1 =
   | "capability-unsupported"
-  | "disabled"
   | "disposed"
   | "frame-pending"
   | "frame-stale"
@@ -50,9 +49,9 @@ export type PreviewFallbackReasonV1 =
   | "render-error"
   | "renderer-failed"
   | "sample-out-of-range"
+  | "scene-unsupported"
   | "snapshot-unavailable"
   | "snapshot-uncorrelated"
-  | "transient-edit"
   | "viewport-unavailable";
 
 export type PreviewViewportV1 = Readonly<{ heightPx: number; widthPx: number }>;
@@ -156,7 +155,6 @@ export class StudioPreviewRendererHost {
   private renderGeneration = 0;
   private renderer: PreviewRendererV1 | null = null;
   private revision: string | null = null;
-  private transientEdit = false;
   private updateGeneration = 0;
   private updateTail: Promise<void> = Promise.resolve();
   private queuedRevision: string | null = null;
@@ -256,12 +254,6 @@ export class StudioPreviewRendererHost {
     this.desired = request;
     this.renderGeneration += 1;
     if (this.phase === "ready") this.renderDesired(request, this.renderGeneration);
-    this.publish();
-  }
-
-  setTransientEdit(active: boolean) {
-    if (this.phase === "disposed" || this.transientEdit === active) return;
-    this.transientEdit = active;
     this.publish();
   }
 
@@ -552,13 +544,6 @@ export class StudioPreviewRendererHost {
     }
     if (this.phase !== "ready") {
       return { detail: null, phase: "fallback", reason: "installing" };
-    }
-    if (this.transientEdit) {
-      return {
-        detail: "A direct manipulation or Scene boundary edit is in progress.",
-        phase: "fallback",
-        reason: "transient-edit",
-      };
     }
     const desired = this.desired;
     if (!desired) return { detail: null, phase: "fallback", reason: "frame-pending" };

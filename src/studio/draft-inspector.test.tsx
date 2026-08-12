@@ -61,5 +61,20 @@ describe("DraftInspector execution capabilities", () => {
       />,
     );
     expect(applyingMarkup).toMatch(/<button[^>]*disabled=""[^>]*>Checking source…<\/button>/);
+
+    const unavailablePreviewMarkup = renderToStaticMarkup(
+      <DraftInspector
+        editingDisabled
+        error="Canonical preview is unavailable."
+        isApplying={false}
+        onApply={() => undefined}
+        onDiscard={() => undefined}
+        onOperationChange={() => undefined}
+        operation={null}
+        record={programRecord(validation.program, validation)}
+      />,
+    );
+    expect(unavailablePreviewMarkup).toMatch(/<fieldset[^>]*disabled=""/);
+    expect(unavailablePreviewMarkup).toMatch(/<button[^>]*>Discard<\/button>/);
   });
 });

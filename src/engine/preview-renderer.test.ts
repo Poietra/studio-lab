@@ -622,15 +622,6 @@ describe("StudioPreviewRendererHost", () => {
     expect(fixture.host.state).toEqual({ detail: null, phase: "fallback", reason: "disposed" });
   });
 
-  it("forces whole-Scene fallback during transient edits and restores afterwards", async () => {
-    const fixture = await readyFixture();
-    await requestAndPresent(fixture, 0, 1);
-    fixture.host.setTransientEdit(true);
-    expect(fixture.host.state).toMatchObject({ phase: "fallback", reason: "transient-edit" });
-    fixture.host.setTransientEdit(false);
-    expect(fixture.host.state.phase).toBe("presented");
-  });
-
   it("derives the playhead range from the installed snapshot so no caller can widen it", async () => {
     const fixture = await readyFixture();
     fixture.host.requestFrame({ sampleTime: 5, viewport: VIEWPORT });

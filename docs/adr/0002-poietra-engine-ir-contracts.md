@@ -7,10 +7,11 @@
 ## Context
 
 Studio needs low-latency browser preview without moving source authority, arbitrary
-Python execution, or final artifact production into an untrusted client. The
-current TypeScript core evaluates a Canonical Edit Program into a
-`RuntimeSceneState`; React then projects that state into a DOM/SVG/KaTeX preview.
-The server remains responsible for Python lowering and authoritative Manim renders.
+Python execution, or final artifact production into an untrusted client. When this
+ADR was adopted, the TypeScript core evaluated a Canonical Edit Program into a
+`RuntimeSceneState`, and React projected that state into a DOM/SVG/KaTeX preview.
+The implementation now uses the canonical Rust/WebGPU path described below; the
+server remains responsible for Python lowering and authoritative Manim renders.
 
 `fast-manim` is a Python-compatible runtime and reference renderer, not a portable
 geometry library. RenderTrace v0 provides runtime identity, event, bounding-box,
@@ -232,8 +233,9 @@ camera against golden results before either renderer consumes production frames.
 The broader architecture may later need clip and dedicated glyph primitives, but
 they are intentionally not promises of v1. Supported MathTex is compiled by the
 pinned RaTeX/KaTeX outline module and normalized into the existing closed cubic
-path primitive; imported V3/V5 MathTex uses separately verified snapshot geometry.
-Unsupported source syntax remains on the semantic/server fallback. Adding clip,
+path primitive; imported MathTex uses separately verified snapshot geometry.
+Unsupported source syntax is reported explicitly instead of invoking another
+renderer. Adding clip,
 SVG/JPEG/WebP, gradient, dash, filter, 3D, perspective, or material semantics
 beyond the compositing modes defined below requires a new contract version after
 fixture-backed design.
@@ -379,14 +381,13 @@ than copied into a different interpolation model. A failure for one entity rejec
 the complete Scene and never returns a partial Scene IR.
 
 In particular, fast-manim's default bicubic ImageMobject sampling is not silently
-downgraded to v1 linear sampling. It remains on the server fallback unless an
+downgraded to v1 linear sampling. It remains unsupported unless an
 adapter can prove a supported sampler or a later contract defines bicubic behavior.
 
 Schema, capability, integrity, resource, compiler, initialization, or device-loss
-failures return a structured error to the PreviewRenderer adapter. Studio then uses
-the existing DOM/SVG semantic preview or current server-rendered artifact, while
-visibly preserving the distinction between local preview and authoritative
-render/export. A renderer never guesses a default, drops a draw, or renders only
+failures return a structured error to the PreviewRenderer adapter. Studio reports
+the missing or failed capability and does not substitute DOM/SVG paint or a stale
+server artifact. A renderer never guesses a default, drops a draw, or renders only
 the valid subset of an invalid frame.
 
 ## Versioning and compatibility
@@ -639,7 +640,7 @@ The following evidence is reproducible in this repository:
 | initial shared snapshot | met for the fixture | 2,414 encoded bytes, below the 5 MiB budget |
 | fixture breadth and visual parity | met for the bounded corpus, static real-Scene slice, and exact `UpdatersExample` Runtime Trace slice | the catalog fixes 15 workload IDs; the corpus-driven full-RGBA lane covers affine/camera, PNG alpha, nested MathTex, generic stroke topology, and five bounded real MathTex morph samples. The V5 aggregate-path interpolation remains semantic evidence rather than exact Manim/Cairo animation parity. The independent static `RealPreviewScene` Cairo-to-visible-Edge compositor run passes at SSIM `0.9985658029` with `1,855 / 389,376` pixels (`0.47640327%`) above `8/255`, against gates of `0.995` and `0.5%`; expected, actual, diff, report, source, host, commit, producer, and served-WASM identities are checked in under [`docs/evidence/manim-compositor-parity-2026-07-31`](../evidence/manim-compositor-parity-2026-07-31/report.json). The local required Runtime Trace lane independently executes Cairo and compares seven full 640x360 RGBA frames after the real producer, server verification, lowering, and one retained WebGPU install. Its worst frame passes at SSIM `0.9993221454`; its largest over-`8/255` fraction is `1,007 / 230,400` pixels (`0.43706597%`), and a backward seek reproduces the bottom frame byte-for-byte. This is exact evidence only for the sealed official `UpdatersExample` profile, not arbitrary updater semantics. |
 | renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, general cubic strokes with v1 caps/joins/miter limits, ordered fill-then-stroke composition, transforms/camera/animation, verified PNG images, and four-sample coverage for Manim/Cairo vector frames work; the shared stroke fixture also samples nonzero trim, morph, and motion. Open fill paths, portable linear-light antialiasing, and clipping remain truthful fallbacks. |
-| Studio preview integration | met for bounded V1–V6 opt-in | `?previewRenderer=server` selects a real project source and Scene across the bounded V1–V6 profiles, installs its verified server snapshot once, and accepts only exactly correlated retained frame acknowledgements while the semantic editor stays mounted. Verified source/runtime identity drives imported hit geometry; exact GPU texture readback and the named-host visible browser-compositor path are both covered. Unsupported semantics still fail closed to the semantic/server fallback. |
+| Studio preview integration | met for bounded V1–V6 | The standard UI selects the server-backed WebGPU preview by default, preserves explicit tab-local consent before workspace Python executes, installs its verified snapshot once, and accepts only exactly correlated retained frame acknowledgements. Verified prepared geometry drives the paint-free React interaction overlay; unsupported semantics and failures are explicit rather than rendered by a second DOM implementation. Exact GPU texture readback and the named-host visible browser-compositor path are both covered. |
 | incremental edit transfer | met for Studio-owned Scenes | the first revision uses a verified full install; subsequent edits use the 256 KiB stale-revision-safe delta through Canvas Worker ABI v4 and WASM, with asset changes and rejected/stale deltas using a verified full replacement. Imported Manim snapshots remain server-sealed full installs. |
 | fast-manim bridge | met for bounded V1–V6; production arbitrary Python blocked | V1 covers the static Circle/Rectangle/Line slice; V2 adds variable duration and bounded affine, opacity, trim, morph, and motion channels; V3 adds hermetic MathTex; V4 adds verified PNG; V5 adds the bounded MathTex A/B/A morph; V6 adds generic planar VMobject paths. Studio hands canonical immutable request bytes to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, and then verifies and seals the result. Runner-owned lifecycle bounds quarantine invalid adapters, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. |
 | frame, scrub, and cold-start latency | met on the named host | native Edge/D3D12 on the pinned NVIDIA adapter records warm acknowledgement p95 0.7 ms, scrub p95 0.3 ms, and 20-process cold scene-ready p95 397.6 ms. Five stress workloads sustain about 60 fps; 1,000 animated cubics sustain 40.42 fps while remaining within the 33.3 ms acknowledgement budget. |

@@ -3,7 +3,6 @@ import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
 import { proveManimCompositorParityV1 } from "./manim-compositor-parity";
 
-const SERVER_QUERY = "?previewRenderer=server";
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
 const DYNAMIC_BINDING_ID = "source-binding:03b26136c2567ae10a842328e2aa564bf41847aadcb07fdc5d2942b3ac441398";
 const DYNAMIC_CLIP_BOUNDS = [-0.17578125, -0.3125, 0.17578125, 0.3125] as const;
@@ -79,19 +78,15 @@ function snapshotResponse(page: Page) {
   );
 }
 
-async function openRealWorkspace(page: Page, entry: "query" | "standard-ui" = "query") {
-  await page.goto(entry === "query" ? `/${SERVER_QUERY}` : "/");
+async function openRealWorkspace(page: Page) {
+  await page.goto("/");
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
   await page.getByRole("button", { name: "Open Real Preview Harness workspace" }).click();
   await expect(page.getByLabel("Current workspace")).toHaveText("Real Preview Harness");
   await page.getByLabel("Active imported Scene").selectOption({ label: "scene.py · RealPreviewScene" });
-  if (entry === "standard-ui") {
-    expect(new URL(page.url()).search).toBe("");
-    await page.getByRole("button", { name: "Manim Preview", exact: true }).click();
-  } else {
-    await page.getByRole("button", { name: "Enable preview…" }).click();
-  }
-  await expect(page.getByRole("alertdialog", { name: "Run Manim Scenes for GPU preview?" })).toBeVisible();
+  expect(new URL(page.url()).search).toBe("");
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
   const response = snapshotResponse(page);
   await page.getByRole("button", { name: "Run Scene preview" }).click();
   await expect(page.locator('[data-studio-manim-preview-state="loading"]')).toBeVisible();
@@ -190,7 +185,29 @@ async function expectPresented(page: Page, revision: number) {
   await expect(page.locator("[data-studio-preview-canvas]")).toBeVisible();
   await expect(page.locator("[data-studio-preview-status]")).toContainText(`verified server snapshot r${revision}`);
   await expect(page.locator("[data-studio-preview-status]")).toContainText("editing preview only");
-  await expect(page.locator('[data-studio-manim-preview-state="presented"]')).toContainText("Manim Preview · Verified");
+  await expect(page.locator('[data-studio-manim-preview-state="presented"]')).toContainText(
+    "WebGPU Preview · Verified",
+  );
+}
+
+async function waitForNewPresentedFrame(page: Page, previousRevision: string, previousPacket: string) {
+  const canvasRoot = page.locator("[data-studio-canvas]");
+  await expect
+    .poll(
+      async () => {
+        const [phase, revision, packet] = await Promise.all([
+          canvasRoot.getAttribute("data-preview-renderer"),
+          canvasRoot.getAttribute("data-preview-revision"),
+          canvasRoot.getAttribute("data-preview-packet-id"),
+        ]);
+        return phase === "presented" && revision !== previousRevision && packet !== previousPacket
+          ? "presented"
+          : JSON.stringify({ packet, phase, revision });
+      },
+      { timeout: 30_000 },
+    )
+    .toBe("presented");
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
 }
 
 /**
@@ -292,15 +309,14 @@ async function expectWholeSceneFallback(page: Page, status: "failed" | "unsuppor
   await expect(control).toBeVisible();
   if (status === "failed") await expect(control.getByRole("button", { name: "Retry" })).toBeVisible();
   else await expect(control.getByRole("button", { name: "Retry" })).toHaveCount(0);
-  const semanticPaint = page.locator("[data-studio-semantic-paint]");
-  await expect(semanticPaint).toHaveCount(1);
-  await expect(semanticPaint).toHaveAttribute("data-studio-semantic-paint", "painted");
-  await expect(semanticPaint).toBeVisible();
+  await expect(page.locator("[data-studio-semantic-paint]")).toHaveCount(0);
+  await expect(page.locator("[data-studio-preview-canvas]")).toBeHidden();
+  await expect(page.locator("[data-studio-entity]")).toHaveCount(0);
 }
 
 test("correlates a real fast-manim Scene with the retained host and verifies GPU texture output", async ({ page }) => {
   test.setTimeout(120_000);
-  const run = await expectVerifiedRun(await openRealWorkspace(page, "standard-ui"));
+  const run = await expectVerifiedRun(await openRealWorkspace(page));
   expect(run.snapshot?.bundle?.scene?.entities).toHaveLength(3);
   expect(run.snapshot?.bundle?.scene.duration).toBe(1);
   await expectPresented(page, run.revision);
@@ -342,12 +358,12 @@ test("correlates a real fast-manim Scene with the retained host and verifies GPU
   await expect(circleButton).toHaveAttribute("aria-pressed", "true");
   const resizeHandle = page.getByRole("button", { name: "Resize circle from bottom-right corner" });
   await expect(resizeHandle).toBeVisible();
+  const pristinePacket = await canvasRoot.getAttribute("data-preview-packet-id");
+  if (!pristinePacket) throw new Error("The pristine real Scene frame has no packet identity.");
   await resizeHandle.press("ArrowRight");
-  await expect(canvasRoot).toHaveAttribute("data-preview-fallback-reason", "snapshot-uncorrelated");
-  await expect(page.locator("[data-studio-semantic-paint]").first()).toHaveAttribute(
-    "data-studio-semantic-paint",
-    "painted",
-  );
+  await waitForNewPresentedFrame(page, snapshotHash, pristinePacket);
+  await expect(page.getByRole("heading", { name: "Draft program" })).toBeVisible();
+  await expect(circleButton).toBeVisible();
   await page.getByRole("button", { name: "Discard" }).click();
   await expectPresented(page, run.revision);
   await expect(canvasRoot).toHaveAttribute("data-preview-revision", snapshotHash);
