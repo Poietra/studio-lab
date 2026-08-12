@@ -1088,7 +1088,10 @@ mod integer_wire_tests {
             serde_json::from_str::<RuntimeTraceVersionV1>("2.0").unwrap(),
             RuntimeTraceVersionV1::V2
         );
-        assert!(serde_json::from_str::<RuntimeTraceVersionV1>("3").is_err());
+        assert_eq!(
+            serde_json::from_str::<RuntimeTraceVersionV1>("3.0").unwrap(),
+            RuntimeTraceVersionV1::V3
+        );
         assert_eq!(
             serde_json::from_str::<SnapshotProfileVersionV1>("3.0").unwrap(),
             SnapshotProfileVersionV1::V3
