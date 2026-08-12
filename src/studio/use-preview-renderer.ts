@@ -17,6 +17,9 @@ import {
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
+  type CreateSceneEntitiesCompiler,
+  type CreateSceneEntitiesWireCommandV1,
+  compileCreateSceneEntities,
   compileTransformSceneEntity,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
@@ -65,6 +68,7 @@ import {
   studioPreviewInitialEditProjection,
   studioPreviewSyntheticInitialEditAnchor,
 } from "./preview-temporal-rebase";
+import { insertedProgramDuration } from "./program-composition";
 import {
   isPointValue,
   normalizeDimensionsSamples,
@@ -1384,6 +1388,172 @@ type StaticImportedTransformEntry = Readonly<{
   record: ProgramRecord;
 }>;
 
+type StudioCreatedEntityEntry = Readonly<{
+  create: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>;
+  entity: RuntimeSceneState["objectGraph"]["entities"][string];
+  fadeIn?: Extract<CanonicalEditOperation, { kind: "ChangePresence" }>;
+  position: Extract<CanonicalEditOperation, { kind: "SetProperty" }> & Readonly<{ key: "position"; value: Point }>;
+}>;
+
+type StudioCreatedEntityPlan =
+  | Readonly<{ kind: "not-applicable" }>
+  | Readonly<{ kind: "unsupported"; message: string }>
+  | Readonly<{
+      entities: readonly StudioCreatedEntityEntry[];
+      kind: "authorized";
+      operationCount: number;
+      programCount: number;
+      timelineInsertions: readonly Readonly<{ at: number; duration: number }>[];
+    }>;
+
+function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedEntityPlan {
+  const createPrograms = proposedState.programs
+    .map((record, index) => ({ index, record }))
+    .filter(({ record }) => record.program.operations.some(({ kind }) => kind === "CreateEntity"))
+    .sort(
+      (left, right) =>
+        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
+        left.index - right.index,
+    )
+    .map(({ record }) => record);
+  const createRecords = createPrograms.flatMap((record) =>
+    record.program.operations.flatMap((create) => (create.kind === "CreateEntity" ? [{ create, record }] : [])),
+  );
+  if (createRecords.length === 0) return { kind: "not-applicable" };
+  if (proposedState.programs.some(({ validation }) => validation.status !== "valid")) {
+    return { kind: "unsupported", message: "Studio creation requires only validated edit Programs." };
+  }
+  if (createPrograms.length !== proposedState.programs.length) {
+    return {
+      kind: "unsupported",
+      message: "Studio creation cannot yet be combined with a later move, resize, or other edit Program.",
+    };
+  }
+
+  const createdIds = new Set(createRecords.map(({ create }) => create.entity.id));
+  if (createdIds.size !== createRecords.length) {
+    return { kind: "unsupported", message: "Studio creation contains duplicate entity identities." };
+  }
+  for (const { create } of createRecords) {
+    if (create.entity.type !== "Circle" && create.entity.type !== "Rectangle" && create.entity.type !== "MathTex") {
+      return {
+        kind: "unsupported",
+        message: `Studio-created ${create.entity.type} is not supported by the canonical core creation command.`,
+      };
+    }
+  }
+
+  const permitted = createPrograms.every((record) => {
+    const programCreatedIds = new Set(
+      record.program.operations.flatMap((operation) =>
+        operation.kind === "CreateEntity" ? [operation.entity.id] : [],
+      ),
+    );
+    return record.program.operations.every(
+      (operation) =>
+        operation.kind === "CreateEntity" ||
+        (operation.kind === "SetProperty" &&
+          operation.key === "position" &&
+          programCreatedIds.has(operation.entityId)) ||
+        (operation.kind === "ChangePresence" &&
+          operation.effect === "fade-in" &&
+          operation.persistent &&
+          programCreatedIds.has(operation.entityId)),
+    );
+  });
+  if (!permitted) {
+    return {
+      kind: "unsupported",
+      message:
+        "Studio creation cannot be combined with edits outside the canonical create/position/fade operation set.",
+    };
+  }
+
+  const evaluatedOrder = new Map(
+    Object.keys(proposedState.evaluatedScene.objectGraph.entities).map((entityId, index) => [entityId, index]),
+  );
+  const orderedCreates = [...createRecords].sort(
+    (left, right) =>
+      (evaluatedOrder.get(left.create.entity.id) ?? Infinity) -
+      (evaluatedOrder.get(right.create.entity.id) ?? Infinity),
+  );
+  const entities: StudioCreatedEntityEntry[] = [];
+  for (const { create, record } of orderedCreates) {
+    const entity = proposedState.evaluatedScene.objectGraph.entities[create.entity.id];
+    const positions = record.program.operations.filter(
+      (operation): operation is StudioCreatedEntityEntry["position"] =>
+        operation.kind === "SetProperty" &&
+        operation.key === "position" &&
+        operation.entityId === create.entity.id &&
+        isFinitePoint(operation.value),
+    );
+    const fades = record.program.operations.filter(
+      (operation): operation is NonNullable<StudioCreatedEntityEntry["fadeIn"]> =>
+        operation.kind === "ChangePresence" && operation.entityId === create.entity.id,
+    );
+    const lifetime = entity?.lifetime.length === 1 ? entity.lifetime[0] : undefined;
+    if (
+      !entity ||
+      entity.sourceIdentity.kind !== "unknown" ||
+      entity.transactionId === undefined ||
+      entity.transactionId !== record.program.transactionId ||
+      !entity.id.startsWith(`tx:${entity.transactionId}/entity:`) ||
+      entity.type !== create.entity.type ||
+      positions.length !== 1 ||
+      fades.length > 1 ||
+      !lifetime ||
+      !Number.isFinite(lifetime.start) ||
+      !Number.isFinite(lifetime.end) ||
+      lifetime.end <= lifetime.start ||
+      lifetime.start !== create.entity.lifetime.start ||
+      (fades[0] !== undefined &&
+        (fades[0].interval.start !== lifetime.start ||
+          !Number.isFinite(fades[0].interval.end) ||
+          fades[0].interval.end <= lifetime.start ||
+          fades[0].interval.end > lifetime.end))
+    ) {
+      return {
+        kind: "unsupported",
+        message: `Studio-created entity ${create.entity.id} has incomplete canonical creation evidence.`,
+      };
+    }
+    if (
+      (create.entity.type === "Circle" &&
+        (!Number.isFinite(create.entity.dimensions?.radius) || (create.entity.dimensions?.radius ?? 0) <= 0)) ||
+      (create.entity.type === "Rectangle" &&
+        (!Number.isFinite(create.entity.dimensions?.width) ||
+          !Number.isFinite(create.entity.dimensions?.height) ||
+          (create.entity.dimensions?.width ?? 0) <= 0 ||
+          (create.entity.dimensions?.height ?? 0) <= 0))
+    ) {
+      return { kind: "unsupported", message: `Studio-created entity ${create.entity.id} has invalid dimensions.` };
+    }
+    entities.push({ create, entity, ...(fades[0] ? { fadeIn: fades[0] } : {}), position: positions[0] });
+  }
+  const timelineInsertions = createPrograms.map(({ program }) => ({
+    at: program.anchor.resolvedSeconds,
+    duration: insertedProgramDuration(program),
+  }));
+  const insertedDuration = timelineInsertions.reduce((total, insertion) => total + insertion.duration, 0);
+  if (
+    timelineInsertions.some(({ at, duration }) => !Number.isFinite(at) || !Number.isFinite(duration) || duration < 0) ||
+    Math.abs(proposedState.base.runtimeSceneState.duration + insertedDuration - proposedState.evaluatedScene.duration) >
+      1e-9
+  ) {
+    return {
+      kind: "unsupported",
+      message: "Studio creation does not resolve to canonical timeline insertions.",
+    };
+  }
+  return {
+    entities,
+    kind: "authorized",
+    operationCount: createPrograms.reduce((count, { program }) => count + program.operations.length, 0),
+    programCount: createPrograms.length,
+    timelineInsertions,
+  };
+}
+
 function isFinitePoint(value: unknown): value is Point {
   return isPointValue(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
 }
@@ -1575,6 +1745,7 @@ function planStaticImportedRootTransform(
 
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
+    createSceneEntitiesCompiler?: CreateSceneEntitiesCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
@@ -1618,6 +1789,127 @@ export async function compileStudioPreviewSceneV1(
         workspaceKey: input.workspaceKey,
       },
     };
+  }
+  const createdEntityPlan = planStudioCreatedEntities(input.proposedState);
+  if (createdEntityPlan.kind === "unsupported") {
+    return { error: createdEntityPlan.message, kind: "unsupported" };
+  }
+  if (createdEntityPlan.kind === "authorized") {
+    const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
+    if (outlineInputs.kind === "unsupported") {
+      return { error: outlineInputs.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
+    }
+    const mathTexOutlines: Record<string, MathTexOutlineArtifactV1> = {};
+    try {
+      const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
+      const responses = await Promise.all(
+        outlineInputs.inputs.map(async ({ entityId, texParts }) => ({
+          entityId,
+          response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
+        })),
+      );
+      for (const { entityId, response } of responses) {
+        if (response.result.kind === "unsupported") {
+          return {
+            error: `MathTex entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+            kind: "unsupported",
+          };
+        }
+        mathTexOutlines[entityId] = response.result;
+      }
+    } catch (error) {
+      return {
+        error: `MathTex outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
+      return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
+    }
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      mathTexOutlines,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    const entities: CreateSceneEntitiesWireCommandV1["entities"] = createdEntityPlan.entities.map(
+      ({ create, entity, fadeIn, position }) => {
+        const dimensions = create.entity.dimensions;
+        const outline = mathTexOutlines[entity.id];
+        const geometry =
+          create.entity.type === "Circle" && dimensions?.radius !== undefined
+            ? ({ kind: "circle", radius: dimensions.radius } as const)
+            : create.entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
+              ? ({ height: dimensions.height, kind: "rectangle", width: dimensions.width } as const)
+              : outline
+                ? ({ kind: "mathtex", path: outline.path } as const)
+                : null;
+        if (!geometry) throw new Error(`Studio-created entity ${entity.id} has no compiled geometry.`);
+        return {
+          ...(fadeIn ? { fadeIn: { end: fadeIn.interval.end } } : {}),
+          geometry,
+          id: entity.id,
+          lifetime: entity.lifetime[0]!,
+          position: studioPointToScenePointV1(
+            position.value,
+            input.frame,
+            input.snapshot.snapshot.scene.camera.view.center,
+          ),
+          scale: 1,
+        };
+      },
+    );
+    try {
+      const bundle = await (input.createSceneEntitiesCompiler ?? compileCreateSceneEntities)(input.snapshot.snapshot, {
+        entities,
+        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+        nextRevision: engineRevisionHash,
+        provenance: {
+          evidence: [
+            `${createdEntityPlan.programCount} validated Studio creation Program(s) with ${createdEntityPlan.operationCount} operation(s) lowered as one atomic core command`,
+          ],
+          id: `studio-create:${engineRevisionHash}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.create-scene-entities",
+        timelineInsertions: createdEntityPlan.timelineInsertions,
+        version: 1,
+      });
+      const bundleEntityIds = new Set(bundle.scene.entities.map(({ id }) => id));
+      const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
+        input.snapshot.sourceRuntimeIdentity,
+        studioPreviewInteractionAuthority(input.snapshot),
+        bundle.scene.entities,
+      );
+      for (const { entity } of createdEntityPlan.entities) {
+        if (
+          bundleEntityIds.has(entity.id) &&
+          !interactionEntityIds.includes(entity.id) &&
+          interactionEntityIds.length < MAX_CANVAS_INTERACTION_ENTITY_IDS
+        ) {
+          interactionEntityIds.push(entity.id);
+        }
+      }
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds,
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected Studio entity creation: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
   }
   const importedSource = input.snapshot.snapshot.scene.source;
   if (importedSource.kind === "imported-manim-runtime-trace" && importedSource.traceVersion === 3) {
@@ -1777,36 +2069,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const outlineInputs = collectStudioMathTexOutlineInputsV1(input.proposedState);
-  if (outlineInputs.kind === "unsupported") {
-    return { error: outlineInputs.issues.map(({ message }) => message).join(" "), kind: "unsupported" };
-  }
-  const mathTexOutlines: Record<string, MathTexOutlineArtifactV1> = {};
-  try {
-    const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
-    const responses = await Promise.all(
-      outlineInputs.inputs.map(async ({ entityId, texParts }) => ({
-        entityId,
-        response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
-      })),
-    );
-    for (const { entityId, response } of responses) {
-      if (response.result.kind === "unsupported") {
-        return {
-          error: `MathTex entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
-          kind: "unsupported",
-        };
-      }
-      mathTexOutlines[entityId] = response.result;
-    }
-  } catch (error) {
-    return {
-      error: `MathTex outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
-      kind: "unsupported",
-    };
-  }
   const evidence = buildStudioSceneIrAdapterEvidenceV1({
-    mathTexOutlines,
     proposedState: input.proposedState,
     snapshot: input.snapshot.snapshot,
     sourceRuntimeIdentity: input.snapshot.sourceRuntimeIdentity,
@@ -1816,7 +2079,6 @@ export async function compileStudioPreviewSceneV1(
   }
   const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
     frame: input.frame,
-    mathTexOutlines,
     snapshot: input.snapshot,
     studioScene: input.proposedState.evaluatedScene,
     workingRevision: input.workingRevision,

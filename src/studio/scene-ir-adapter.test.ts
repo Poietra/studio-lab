@@ -631,8 +631,6 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
       },
       paintOrder: [{ entityId: MATHTEX_ID, sourceZIndex: -2 }],
     });
-    expect(fixture.evidence.mathTexOutlines).toBeUndefined();
-
     const pristine = await compileStudioSceneIrV1({
       assets: fixture.assets,
       evidence: fixture.evidence,
@@ -765,7 +763,7 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
     ["staged", true],
     ["applied", false],
   ] as const)(
-    "compiles a known %s Studio-created shape and its single opacity transition",
+    "rejects a known %s Studio-created shape because creation belongs to the core command",
     async (_phase, provisional) => {
       const adapterInput = await input();
       const importedOnly = await compileStudioSceneIrV1({
@@ -860,33 +858,16 @@ describe("Studio to SceneIrV1 truthful adapter", () => {
           ["circle", { bindingId: "binding:circle", entityId: CIRCLE_ID, sourceName: "circle" }],
         ]),
       });
-      expect(evidence.kind).toBe("resolved");
-      if (evidence.kind !== "resolved") throw new Error("created shape evidence did not resolve");
-      const result = await compileStudioSceneIrV1({
-        ...adapterInput,
-        evidence: evidence.evidence,
-        proposedState,
+      expect(evidence).toMatchObject({
+        issues: [
+          expect.objectContaining({
+            code: "geometry-unsupported",
+            entityId: CREATED_RECTANGLE_ID,
+            message: expect.stringContaining("canonical core creation command"),
+          }),
+        ],
+        kind: "unsupported",
       });
-      expect(result.kind).toBe("compiled");
-      if (result.kind !== "compiled") throw new Error(result.issues.map(({ message }) => message).join("\n"));
-      expect(result.scene.entities.find(({ id }) => id === CREATED_RECTANGLE_ID)?.appearance).toEqual(
-        expect.objectContaining({
-          fill: null,
-          opacity: 1,
-          stroke: expect.objectContaining({ cap: "butt", miterLimit: 10, widthWorld: 0.04 }),
-        }),
-      );
-      expect(result.scene.animationChannels).toEqual([
-        expect.objectContaining({
-          entityId: CREATED_RECTANGLE_ID,
-          keyframes: [
-            { at: 0.5, easingToNext: { kind: "smooth" }, value: 0 },
-            { at: 0.9, easingToNext: null, value: 1 },
-          ],
-          kind: "opacity",
-        }),
-      ]);
-      expect(result.scene.requiredCapabilities).toEqual(["opacity-animation", "shape-primitives"]);
     },
   );
 

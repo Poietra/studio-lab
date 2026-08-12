@@ -11,6 +11,8 @@ mod retained_index;
 mod scene_delta;
 
 pub use authoring::{
+    CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
+    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneTimelineInsertion,
     RotateSceneEntityCommand, RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand,
     SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
     UniformScaleAboutPivot,

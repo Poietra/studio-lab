@@ -47,6 +47,42 @@ export type TransformSceneEntityCompiler = (
   command: TransformSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+type CreateSceneEntityGeometryV1 =
+  | Readonly<{ kind: "circle"; radius: number }>
+  | Readonly<{ height: number; kind: "rectangle"; width: number }>
+  | Readonly<{
+      kind: "mathtex";
+      path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    }>;
+
+export type CreateSceneEntitiesWireCommandV1 = Readonly<{
+  entities: readonly Readonly<{
+    fadeIn?: Readonly<{
+      end: number;
+    }>;
+    geometry: CreateSceneEntityGeometryV1;
+    id: string;
+    lifetime: Readonly<{ end: number; start: number }>;
+    position: Readonly<{ x: number; y: number }>;
+    scale: number;
+  }>[];
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.create-scene-entities";
+  timelineInsertions: readonly Readonly<{ at: number; duration: number }>[];
+  version: 1;
+}>;
+
+export type CreateSceneEntitiesCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: CreateSceneEntitiesWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
   alpha: number;
   expectedBaseRevision: string;
@@ -74,11 +110,16 @@ type TransformSceneAuthoringBindingsV1 = Readonly<{
   transformSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type CreateSceneEntitiesBindingsV1 = Readonly<{
+  createSceneEntitiesV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
   setSubtreeVectorPaintAlphaV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type SceneAuthoringBindingsV1 = RotateSceneAuthoringBindingsV1 &
+type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
+  RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
   SetSubtreeVectorPaintAlphaBindingsV1;
 
@@ -103,6 +144,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     if (
       typeof candidate.poietraEngineAbiVersion !== "function" ||
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
+      typeof candidate.createSceneEntitiesV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
       typeof candidate.transformSceneEntityV1 !== "function"
@@ -110,6 +152,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
     }
     return {
+      createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
@@ -127,6 +170,16 @@ async function invokeSceneAuthoringCommand(
 ) {
   const response = invoke(encoder.encode(JSON.stringify(snapshot)), encoder.encode(JSON.stringify(command)));
   return parseVerifiedSceneIrBundleV1(JSON.parse(decoder.decode(response)) as unknown);
+}
+
+/** Creates supported Studio entities through one atomic core command. */
+export function createCreateSceneEntitiesCompiler(
+  getBindings: () => Promise<CreateSceneEntitiesBindingsV1>,
+): CreateSceneEntitiesCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.createSceneEntitiesV1);
+  };
 }
 
 /** Creates the browser adapter around one concrete, profile-free Rust command. */
@@ -159,6 +212,7 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
   };
 }
 
+export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
 export const compileSetSubtreeVectorPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(loadBindings);
