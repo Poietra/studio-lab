@@ -7,9 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { LocalProcessFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
-  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
-  deriveWarpSquareV9TransformPlan,
   digestFastManimSnapshotBundleV1,
   digestFastManimSnapshotRuntimeConfigV1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
@@ -27,7 +25,6 @@ import {
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   fastManimSnapshotSceneProvenanceIdV1,
-  parseVerifiedFastManimSnapshotResultV1,
   ZERO_SHA256,
 } from "./fast-manim-snapshot-contract";
 import {
@@ -136,26 +133,6 @@ const imagePngBytes = Buffer.from(
 );
 
 const REAL_FRAME = { height: 8, width: 14.222222222222221 } as const;
-const LINE_JOINTS_EDITED_FIXTURE_URL = new URL(
-  "../fixtures/engine-v1/real-line-joints-v10-edited.json",
-  import.meta.url,
-);
-const LINE_JOINTS_EDITED_FAST_MANIM_COMMIT = "cd0cb237606b240a3c795b1171d61eeb3cef5305";
-const LINE_JOINTS_EDITED_FAST_MANIM_TREE = "8007d53a31d2918e81116c675c352edc761a6ef2";
-// Hash of the producer's embedded snapshotJson for the exact project/request
-// correlation below. Snapshot envelopes carry those correlation fields, so a
-// different requestId or projectId intentionally produces a different digest.
-const LINE_JOINTS_EDITED_PRODUCER_SNAPSHOT_DIGEST = "6262b10ed9af78be6ad939987f043ed52d6500b392c4d0007070937bc1abaac8";
-
-function editedLineJointsSource(official: string) {
-  const source = official.replace(
-    "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)",
-    "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)",
-  );
-  if (source === official) throw new Error("The exact official LineJoints edit anchor is missing.");
-  return source;
-}
-
 const temporaryRoots: string[] = [];
 const realRunners: FastManimSnapshotRunner[] = [];
 
@@ -209,126 +186,6 @@ function createRealRunner(
 const realSeamEnabled = Boolean(producerCommand) && ManimSourceStore.supportsVerifiedRead;
 const officialV8ProjectRoot = process.env.POIETRA_FAST_MANIM_V8_PROJECT_ROOT?.trim();
 const officialV8SeamEnabled = realSeamEnabled && Boolean(officialV8ProjectRoot);
-
-describe.skipIf(!realSeamEnabled)("real fast-manim LineJoints V10 edited-source integration", () => {
-  it("reimports the committed central-leaf edit with the same hierarchical identity", {
-    timeout: 300_000,
-  }, async () => {
-    const sourcePath = "example_scenes/basic.py";
-    const official = await readFile(
-      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
-      "utf8",
-    );
-    const source = editedLineJointsSource(official);
-    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
-
-    const projectRoot = await mkdtemp(join(tmpdir(), "poietra-real-snapshot-"));
-    temporaryRoots.push(projectRoot);
-    await mkdir(join(projectRoot, "example_scenes"));
-    await writeFile(join(projectRoot, sourcePath), source, "utf8");
-    const publicationStore = new FastManimSnapshotPublicationStore();
-    const runner = createRealRunner(projectRoot, "auto", undefined, publicationStore);
-    const view = fastManimSnapshotRunViewV1Schema.parse(
-      await runner.run({
-        projectId: "default",
-        requestId: "real-snapshot-edited-line-joints-v10",
-        sceneName: "LineJoints",
-        sourcePath,
-      }),
-    );
-    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
-      throw new Error(`Expected a verified edited V10 snapshot, got ${JSON.stringify(view)}`);
-    }
-
-    const bundle = view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0];
-    expect(bundle.scene.source).toMatchObject({
-      snapshotVersion: 10,
-      sourceHash,
-    });
-    expect(
-      view.sourceRuntimeIdentity?.mappings.map(({ binding, familyPath }) => ({
-        familyPath,
-        name: binding.name,
-      })),
-    ).toEqual([
-      { familyPath: [], name: "grp" },
-      { familyPath: [0], name: "t1" },
-      { familyPath: [1], name: "t2" },
-      { familyPath: [2], name: "t3" },
-    ]);
-    const target = bundle.scene.entities[2];
-    if (!target || target.geometry.kind !== "cubic-path") throw new Error("Expected the edited central Triangle.");
-    const points = target.geometry.path.subpaths.flatMap((subpath) => [
-      subpath.start,
-      ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
-    ]);
-    expect((Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2).toBeCloseTo(1.25, 12);
-    expect((Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2).toBeCloseTo(-0.5, 12);
-    expect(publicationStore.entriesOf(1)[0]?.[1].expected.lineJointsV10Plan).toEqual(
-      deriveLineJointsV10TransformPlan(source, "LineJoints"),
-    );
-    const producerSnapshotDigest = view.sourceRuntimeIdentity?.snapshotDigest;
-    expect(producerSnapshotDigest).toBe(LINE_JOINTS_EDITED_PRODUCER_SNAPSHOT_DIGEST);
-    if (!producerSnapshotDigest) throw new Error("The edited producer snapshot digest is unavailable.");
-
-    const fetched = await runner.snapshot({ sceneName: "LineJoints", sourcePath });
-    expect(fetched).toMatchObject({
-      sourceRuntimeIdentity: view.sourceRuntimeIdentity,
-      status: "verified",
-    });
-
-    const candidate = await runner.runCandidateUnpublished(source, {
-      projectId: "default",
-      requestId: "real-snapshot-edited-line-joints-v10-candidate",
-      sceneName: "LineJoints",
-      sourcePath,
-    });
-    expect(candidate).toMatchObject({
-      sceneName: "LineJoints",
-      snapshot: {
-        kind: "compiled",
-        sourceHash,
-      },
-      sourcePath,
-      status: "verified",
-    });
-    if (candidate.status !== "verified" || candidate.snapshot.kind !== "compiled") {
-      throw new Error(`Expected a verified edited V10 candidate, got ${JSON.stringify(candidate)}`);
-    }
-    expect(
-      candidate.sourceRuntimeIdentity?.mappings.map(({ binding, familyPath }) => ({
-        familyPath,
-        name: binding.name,
-      })),
-    ).toEqual([
-      { familyPath: [], name: "grp" },
-      { familyPath: [0], name: "t1" },
-      { familyPath: [1], name: "t2" },
-      { familyPath: [2], name: "t3" },
-    ]);
-
-    const pinnedFixture = JSON.parse(await readFile(LINE_JOINTS_EDITED_FIXTURE_URL, "utf8")) as {
-      assets: typeof bundle.assets;
-      id: string;
-      producerReference: Record<string, unknown>;
-      scene: typeof bundle.scene;
-    };
-    expect(pinnedFixture).toMatchObject({
-      id: "eng-v1-real-line-joints-v10-edited",
-      producerReference: {
-        fastManimCommit: LINE_JOINTS_EDITED_FAST_MANIM_COMMIT,
-        fastManimTree: LINE_JOINTS_EDITED_FAST_MANIM_TREE,
-        kind: "server-sealed-real-fast-manim-profile-v10",
-        producerSnapshotDigest,
-        snapshotHash: view.snapshot.snapshotHash,
-        sourcePath,
-        sourceSha256: sourceHash,
-      },
-    });
-    expect(pinnedFixture.assets).toEqual(bundle.assets);
-    expect(pinnedFixture.scene).toEqual(bundle.scene);
-  });
-});
 
 describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", () => {
   it("seals and republishes the merged producer against the mirrored official example", {
@@ -391,85 +248,6 @@ describe.skipIf(!realSeamEnabled)("real fast-manim WarpSquare V9 integration", (
       expect(fetched.snapshot).toEqual(view.snapshot);
       expect(fetched.sourceRuntimeIdentity).toEqual(view.sourceRuntimeIdentity);
     }
-  });
-
-  it("preflights edited candidate bytes through the real producer without publishing project source", {
-    timeout: 300_000,
-  }, async () => {
-    const projectRoot = fileURLToPath(new URL("../fixtures/real-preview-harness/", import.meta.url));
-    const sourcePath = "example_scenes/basic.py";
-    const official = await readFile(join(projectRoot, sourcePath), "utf8");
-    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
-    const sourceText = official.replace(
-      anchor,
-      `${anchor}        square.move_to((1.25, -0.5, 0))\n        square.scale(1.5)\n`,
-    );
-    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
-    expect(sourceHash).not.toBe(FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9);
-
-    const runner = createRealRunner(projectRoot, "auto", undefined, new FastManimSnapshotPublicationStore(), {
-      beforeOpen: () => {
-        throw new Error("Candidate preflight must not read project source.");
-      },
-    });
-    const view = await runner.runCandidateUnpublished(sourceText, {
-      projectId: "default",
-      requestId: "real-snapshot-request-v9-edited-candidate",
-      sceneName: "WarpSquare",
-      sourcePath,
-    });
-    if (view.status !== "verified" || view.snapshot.kind !== "compiled") {
-      throw new Error(`Expected a verified edited V9 candidate, got ${JSON.stringify(view)}`);
-    }
-    expect(view.snapshot.sourceHash).toBe(sourceHash);
-    const scene = (view.snapshot.bundle as Parameters<typeof digestFastManimSnapshotBundleV1>[0]).scene;
-    const channel = scene.animationChannels[0];
-    if (channel?.kind !== "path-morph") throw new Error("Expected the edited candidate path morph.");
-    const start = channel.keyframes[0]!.value.subpaths[0]!.start;
-    const target = channel.keyframes[1]!.value.subpaths[0]!.start;
-    expect(start).toEqual({ x: 2.75, y: 1 });
-    const magnitude = Math.exp(start.x);
-    expect(target).toEqual({
-      x: expect.closeTo(magnitude * Math.cos(start.y), 12),
-      y: expect.closeTo(magnitude * Math.sin(start.y), 12),
-    });
-    expect(view.sourceRuntimeIdentity?.mappings).toEqual([
-      expect.objectContaining({ binding: expect.objectContaining({ name: "square", ordinal: 1 }), familyPath: [] }),
-    ]);
-    const expected = {
-      frame: REAL_FRAME,
-      projectId: "default",
-      requestId: "real-snapshot-request-v9-edited-candidate",
-      runtimeConfigHash: view.runtimeConfigHash,
-      sceneId: view.snapshot.sceneId,
-      sceneName: "WarpSquare",
-      snapshotVersion: 9,
-      sourceHash,
-      sourcePath,
-      warpSquareV9Plan: deriveWarpSquareV9TransformPlan(sourceText, "WarpSquare"),
-    } as const;
-    await expect(parseVerifiedFastManimSnapshotResultV1(view.snapshot, expected)).resolves.toEqual(view.snapshot);
-
-    const tampered = structuredClone(view.snapshot) as typeof view.snapshot & {
-      bundle: {
-        scene: {
-          animationChannels: Array<{
-            keyframes: Array<{ value: { subpaths: Array<{ start: { x: number } }> } }>;
-          }>;
-        };
-      };
-    };
-    tampered.bundle.scene.animationChannels[0]!.keyframes[1]!.value.subpaths[0]!.start.x += 0.001;
-    await expect(parseVerifiedFastManimSnapshotResultV1(tampered, expected)).rejects.toMatchObject({
-      code: "profile-violation",
-    });
-    await expect(
-      parseVerifiedFastManimSnapshotResultV1(view.snapshot, {
-        ...expected,
-        warpSquareV9Plan: { ...expected.warpSquareV9Plan, scale: 1.6 },
-      }),
-    ).rejects.toMatchObject({ code: "profile-violation" });
-    await expect(runner.snapshot({ sceneName: "WarpSquare", sourcePath })).rejects.toMatchObject({ status: 404 });
   });
 });
 

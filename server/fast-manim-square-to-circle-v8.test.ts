@@ -4,7 +4,6 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { digestAssetManifestV1 } from "../src/engine/asset-manifest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import type { CubicPathV1 } from "../src/engine/primitives";
 import {
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_PROVENANCE_EVIDENCE_V8,
@@ -21,20 +20,8 @@ import {
   assertFastManimSnapshotIdentityAuthorityV1,
   verifyFastManimSourceRuntimeIdentityV1,
 } from "./fast-manim-source-runtime-identity";
-import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 
 const SOURCE_PATH = "fixtures/real-preview-harness/scene_square_to_circle.py";
-
-function cubicPathBoundsCenter(path: CubicPathV1) {
-  const points = path.subpaths.flatMap((subpath) => [
-    subpath.start,
-    ...subpath.segments.flatMap((segment) => [segment.control1, segment.control2, segment.end]),
-  ]);
-  return {
-    x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
-    y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
-  };
-}
 
 async function loadProducerFixture() {
   const [wire, sourceText, manifestText] = await Promise.all([
@@ -74,54 +61,18 @@ async function loadProducerFixture() {
   return { combined, envelope, expected, manifest, producer, sourceText };
 }
 
-async function loadPositionCandidateProducerFixture() {
-  const [wire, officialSourceText, manifestText] = await Promise.all([
-    readFile(new URL("./test-fixtures/fast-manim-square-to-circle-v8-position-combined.json", import.meta.url), "utf8"),
-    readFile(new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url), "utf8"),
-    readFile(new URL("./test-fixtures/fast-manim-square-to-circle-v8-position-manifest.json", import.meta.url), "utf8"),
-  ]);
-  const wireSha256 = createHash("sha256").update(wire, "utf8").digest("hex");
-  const anchor = "        circle.set_fill(PINK, opacity=0.5)\n";
-  expect(officialSourceText.split(anchor)).toHaveLength(2);
-  const sourceText = officialSourceText.replace(
-    anchor,
-    `${anchor}        square.move_to((2, 1, 0))\n        circle.move_to((2, 1, 0))\n`,
-  );
-  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
-  const manifest = JSON.parse(manifestText) as Record<string, unknown>;
-  expect(manifest).toMatchObject({
-    combinedWireSha256: wireSha256,
-    fastManimCommit: "68c1c9a649abcc64b36e80f967aac262a7ba92ac",
-    fastManimTree: "4e647408991999f132b5d48a6705571e8a82906f",
-    fixtureKind: "actual-combined-producer-output-after-bounded-source-edit",
-    producerModule: "manim.renderer.source_runtime_identity",
-    runtimeConfigHash: "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
-    snapshotDigest: "337fb38f33354b7bada28d170e84ee144ee2bc366fb0e1b1ededc15920351443",
-    sourcePath: "example_scenes/basic.py",
-    sourceSha256: sourceHash,
-    version: 1,
+describe("fast-manim SquareToCircle snapshot profile V8", () => {
+  it("keeps legacy edit plans out of producer admission", async () => {
+    const { expected, producer, sourceText } = await loadProducerFixture();
+    await expect(
+      parseAndSealFastManimSnapshotProducerJsonV1(
+        producer.snapshotJson,
+        { ...expected, squareToCircleV8Plan: { moveTo: { x: 1.25, y: -0.5 } } },
+        sourceText,
+      ),
+    ).rejects.toMatchObject({ code: "profile-violation", message: "Legacy snapshot edit plans are playback-only." });
   });
 
-  const producer = parseFastManimProducerDocumentV1(wire);
-  if (!producer.combined) throw new Error("Expected one combined edited fast-manim V8 fixture.");
-  expect(producer.combined.snapshotDigest).toBe("337fb38f33354b7bada28d170e84ee144ee2bc366fb0e1b1ededc15920351443");
-  const sourcePath = "example_scenes/basic.py";
-  const expected = {
-    frame: { height: 8, width: 14.222222222222221 },
-    projectId: "default",
-    requestId: "fixture-v8-position",
-    runtimeConfigHash: "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2",
-    sceneId: fastManimSnapshotSceneIdV1(sourcePath, "SquareToCircle"),
-    sceneName: "SquareToCircle",
-    snapshotVersion: 8,
-    sourceHash,
-    sourcePath,
-    squareToCircleV8Plan: deriveSquareToCircleV8PositionPlan(sourceText, "SquareToCircle"),
-  } as const satisfies ExpectedFastManimSnapshotCorrelationV1;
-  return { combined: producer.combined, expected, producer, sourceText };
-}
-
-describe("fast-manim SquareToCircle snapshot profile V8", () => {
   it("accepts, seals, identity-maps, and verifies the frozen real producer Scene IR", async () => {
     const { combined, expected, producer, sourceText } = await loadProducerFixture();
     expect(expected.sourceHash).toBe(FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8);
@@ -267,60 +218,6 @@ describe("fast-manim SquareToCircle snapshot profile V8", () => {
       await expect(parseVerifiedFastManimSnapshotResultV1(sealed, legacyExpected)).resolves.toEqual(sealed);
     },
   );
-
-  it("seals the fixed real producer position candidate and rejects plan or geometry substitution", async () => {
-    const { combined, expected, producer, sourceText } = await loadPositionCandidateProducerFixture();
-    expect(expected.squareToCircleV8Plan).toEqual({ moveTo: { x: 2, y: 1 } });
-
-    const sealed = await parseAndSealFastManimSnapshotProducerJsonV1(producer.snapshotJson, expected, sourceText);
-    expect(sealed.kind).toBe("compiled");
-    if (sealed.kind !== "compiled") throw new Error("Expected one compiled edited V8 snapshot.");
-    expect(sealed.snapshotHash).not.toBe(ZERO_SHA256);
-    await expect(
-      parseAndSealFastManimSnapshotProducerJsonV1(producer.snapshotJson, expected, sourceText),
-    ).resolves.toEqual(sealed);
-    await expect(parseVerifiedFastManimSnapshotResultV1(sealed, expected)).resolves.toEqual(sealed);
-
-    const identity = verifyFastManimSourceRuntimeIdentityV1(combined, {
-      expected,
-      snapshot: sealed,
-      sourceText,
-    });
-    expect(identity?.mappings).toEqual([
-      expect.objectContaining({
-        binding: expect.objectContaining({ name: "square", ordinal: 2 }),
-        entityId: `${expected.sceneId}/entity:0`,
-        familyPath: [],
-      }),
-    ]);
-    expect(() => assertFastManimSnapshotIdentityAuthorityV1(sealed, identity)).not.toThrow();
-
-    const [entity] = sealed.bundle.scene.entities;
-    if (entity?.geometry.kind !== "cubic-path") throw new Error("Expected the edited V8 cubic-path entity.");
-    const morph = sealed.bundle.scene.animationChannels.find((channel) => channel.kind === "path-morph");
-    if (!morph) throw new Error("Expected the edited V8 path-morph channel.");
-    for (const path of [entity.geometry.path, ...morph.keyframes.map(({ value }) => value)]) {
-      expect(cubicPathBoundsCenter(path).x).toBeCloseTo(2, 12);
-      expect(cubicPathBoundsCenter(path).y).toBeCloseTo(1, 12);
-    }
-
-    await expect(
-      parseVerifiedFastManimSnapshotResultV1(sealed, {
-        ...expected,
-        squareToCircleV8Plan: { moveTo: { x: 2.001, y: 1 } },
-      }),
-    ).rejects.toMatchObject({ code: "profile-violation" });
-
-    const geometrySubstitution = structuredClone(sealed);
-    const substitutedEntity = geometrySubstitution.bundle.scene.entities[0];
-    if (substitutedEntity?.geometry.kind !== "cubic-path") {
-      throw new Error("Expected the substituted V8 cubic-path entity.");
-    }
-    substitutedEntity.geometry.path.subpaths[0]!.start.x += 0.001;
-    await expect(parseVerifiedFastManimSnapshotResultV1(geometrySubstitution, expected)).rejects.toMatchObject({
-      code: "profile-violation",
-    });
-  });
 
   it("rejects geometry, easing, and source-semantic substitutions independently", async () => {
     const { envelope, expected, sourceText } = await loadProducerFixture();

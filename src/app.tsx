@@ -87,9 +87,8 @@ import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewInitialEntityPresence,
   projectStudioPreviewInitialValidationScene,
-  studioPreviewInitialEditBaseCenter,
-  type StudioPreviewInitialEditProjectionAuthority,
   studioPreviewGenericInitialEditProgramSet,
+  studioPreviewInitialEditBaseCenter,
   studioPreviewInitialEditTargetIsPresent,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -793,7 +792,6 @@ export function App({
   const boundedRuntimeEditTargetIds = new Set(
     [
       ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
-      previewRenderer?.initialEditAuthority?.studioEntityId,
       previewRenderer?.runtimeTraceTerminalEdit?.studioEntityId,
     ].filter((entityId): entityId is string => typeof entityId === "string"),
   );
@@ -877,7 +875,7 @@ export function App({
       genericCandidates.length > 0 &&
       studioPreviewGenericInitialEditProgramSet(records, genericCandidates).kind !== "authorized"
     ) {
-      return "This generic Runtime Trace permits exactly one initial position move, uniform resize, rotation, or opacity edit on one verified binding.";
+      return "This Runtime Trace permits exactly one initial position move, uniform resize, rotation, or opacity edit on one verified binding.";
     }
     return null;
   }
@@ -1068,18 +1066,13 @@ export function App({
       : {};
   const appliedTransactionIds = new Set(appliedProgramTransactionIds);
   const boundary = workspaceProjection?.boundary ?? null;
-  const initialEditProjectionAuthorities: readonly StudioPreviewInitialEditProjectionAuthority[] =
-    previewRenderer?.initialEditAuthority ? [previewRenderer.initialEditAuthority] : genericInitialEditCandidates;
+  const initialEditProjectionAuthorities = genericInitialEditCandidates;
   const initialEditProjectionAuthorityFor = (entityId: string | null | undefined) =>
     entityId == null
       ? null
       : (initialEditProjectionAuthorities.find(({ studioEntityId }) => studioEntityId === entityId) ?? null);
   const retainedInitialEditDragAuthorities =
-    (gesturePreviewKind === "drag" || gesturePreviewKind === "scale") &&
-    (currentTime === 0 ||
-      (previewRenderer?.initialEditAuthority !== null &&
-        previewRenderer?.initialEditAuthority !== undefined &&
-        previewRenderer.initialEditAuthority.capabilities.retainDuringGestureAwayFromAnchor))
+    (gesturePreviewKind === "drag" || gesturePreviewKind === "scale") && currentTime === 0
       ? initialEditProjectionAuthorities
       : [];
   const presentedInitialEditAuthorities =
@@ -2106,10 +2099,7 @@ export function App({
       : undefined;
     const runtimePresenceAuthority =
       sourceAnchor === null && syntheticSourceAnchor === 0
-        ? (previewRenderer?.initialEditAuthority ??
-          genericInitialEditCandidateFor(input.targetEntityIds?.[0]) ??
-          genericInitialEditCandidates[0] ??
-          null)
+        ? (genericInitialEditCandidateFor(input.targetEntityIds?.[0]) ?? genericInitialEditCandidates[0] ?? null)
         : null;
     const anchor =
       terminalTargetIsExact && syntheticSourceAnchor !== null && syntheticSourceAnchor !== undefined
@@ -2146,15 +2136,7 @@ export function App({
       setIsPlaying(false);
       return null;
     }
-    const allowsOffPlayheadInitialEdit =
-      runtimePresenceAuthority !== null &&
-      runtimePresenceAuthority.capabilities.allowOffPlayheadInitialEdit &&
-      anchor.sourceTime === 0;
-    if (
-      input.requireAlignedPlayhead &&
-      !allowsOffPlayheadInitialEdit &&
-      Math.abs(currentTime - anchor.workingTime) >= 0.0005
-    ) {
+    if (input.requireAlignedPlayhead && Math.abs(currentTime - anchor.workingTime) >= 0.0005) {
       setCurrentTime(anchor.workingTime);
       setIsPlaying(false);
       setDraftError(
@@ -2178,7 +2160,7 @@ export function App({
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError(
-        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+        "This Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
       );
       return;
     }
@@ -2323,16 +2305,16 @@ export function App({
       setDraftError("This source-bound grid title supports terminal position only.");
       return;
     }
-    const initialEditAuthority = previewRenderer?.initialEditAuthority;
-    if (initialEditAuthority?.studioEntityId === entityId && !initialEditAuthority.capabilities.uniformScale) {
+    const initialEditCandidate = genericInitialEditCandidateFor(entityId);
+    if (initialEditCandidate && !initialEditCandidate.capabilities.uniformScale) {
       setSelectedObjectIds([entityId]);
-      setDraftError(initialEditAuthority.restrictionMessage);
+      setDraftError(initialEditCandidate.restrictionMessage);
       return;
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError(
-        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+        "This Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
       );
       return;
     }
@@ -2349,7 +2331,6 @@ export function App({
     if (!editable) return;
     const runtimeUniformResizeOnly =
       genericInitialEditCandidateFor(entity.id) !== null ||
-      previewRenderer?.initialEditAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEdit?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
     const unknownGeometry = entity.geometry.scale.kind === "unknown" ? entity.geometry.scale : null;
@@ -2495,16 +2476,16 @@ export function App({
       setSelectedObjectIds([entityId]);
       return;
     }
-    const initialEditAuthority = previewRenderer?.initialEditAuthority;
-    if (initialEditAuthority?.studioEntityId === entityId && !initialEditAuthority.capabilities.uniformScale) {
+    const initialEditCandidate = genericInitialEditCandidateFor(entityId);
+    if (initialEditCandidate && !initialEditCandidate.capabilities.uniformScale) {
       setSelectedObjectIds([entityId]);
-      setDraftError(initialEditAuthority.restrictionMessage);
+      setDraftError(initialEditCandidate.restrictionMessage);
       return;
     }
     if (genericInitialEditCandidateFor(entityId) && interactionMode !== "position") {
       setSelectedObjectIds([entityId]);
       setDraftError(
-        "This generic Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
+        "This Runtime Trace target supports an initial move, uniform resize, rotation, or opacity edit only.",
       );
       return;
     }
@@ -2513,7 +2494,6 @@ export function App({
     if (!entity) return;
     const runtimeUniformResizeOnly =
       genericInitialEditCandidateFor(entity.id) !== null ||
-      previewRenderer?.initialEditAuthority?.studioEntityId === entity.id ||
       previewRenderer?.runtimeTraceTerminalEdit?.studioEntityId === entity.id;
     const shape = runtimeUniformResizeOnly ? null : resizeKindForType(entity.type);
     if (
@@ -2811,9 +2791,9 @@ export function App({
       setDraftError("This source-bound grid title supports terminal position only.");
       return false;
     }
-    const initialEditAuthority = previewRenderer?.initialEditAuthority;
-    if (initialEditAuthority?.studioEntityId === entityId && !initialEditAuthority.capabilities.uniformScale) {
-      setDraftError(initialEditAuthority.restrictionMessage);
+    const initialEditCandidate = genericInitialEditCandidateFor(entityId);
+    if (initialEditCandidate && !initialEditCandidate.capabilities.uniformScale) {
+      setDraftError(initialEditCandidate.restrictionMessage);
       return false;
     }
     if (previewRenderer?.runtimeTraceTerminalEdit?.studioEntityId === entityId) {
@@ -3104,9 +3084,7 @@ export function App({
     const validationScene = projectStudioPreviewRuntimeTraceTerminalValidationScene(
       projectStudioPreviewInitialValidationScene(
         sourceScene,
-        anchor.sourceTime === 0
-          ? (previewRenderer?.initialEditAuthority ?? genericInitialEditCandidateFor(targetIds[0]) ?? null)
-          : null,
+        anchor.sourceTime === 0 ? (genericInitialEditCandidateFor(targetIds[0]) ?? null) : null,
       ),
       anchor.sourceTime === previewRenderer?.runtimeTraceTerminalEdit?.sourceAnchor
         ? previewRenderer.runtimeTraceTerminalEdit
@@ -3286,9 +3264,7 @@ export function App({
           })),
           sourceHash: activeScene.sourceHash,
           sourcePath: activeScene.sourcePath,
-          ...(previewRenderer?.initialEditAuthority || genericInitialEditProgramSet?.kind === "authorized"
-            ? { verifiedInitialEditAnchor: 0 as const }
-            : {}),
+          ...(genericInitialEditProgramSet?.kind === "authorized" ? { verifiedInitialEditAnchor: 0 as const } : {}),
           ...(previewRenderer?.runtimeTracePendingPresentation
             ? {
                 verifiedRuntimeTraceTerminalEdit: previewRenderer.runtimeTracePendingPresentation.renderProof,

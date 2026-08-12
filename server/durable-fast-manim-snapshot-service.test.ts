@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -12,8 +10,6 @@ import {
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
-  deriveWarpSquareV9TransformPlan,
-  deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
   type FastManimSnapshotRunViewV1,
@@ -26,7 +22,6 @@ import type {
   FastManimUnpublishedSnapshotRunViewV1,
 } from "./fast-manim-snapshot-runner";
 import { DurableFastManimSnapshotSourceProviderV1 } from "./fast-manim-snapshot-source-provider";
-import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 import { HttpError } from "./http/json";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
 import type { SnapshotArtifactReceiptV1, SnapshotPublicationV1 } from "./storage/snapshot-publication-repository";
@@ -47,8 +42,6 @@ const RESULT_DIGEST = "d".repeat(64);
 const SNAPSHOT_DIGEST = "e".repeat(64);
 const RELEASE_RUNTIME_DIGEST = "f".repeat(64);
 const V8_RUNTIME_CONFIG_HASH = "9650b633875a68d2e6c000e89cb21bdffabe2b6fbf08f2262b54842344e000a2";
-const V9_RUNTIME_CONFIG_HASH = "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a";
-const V12_RUNTIME_CONFIG_HASH = "2022ea1ccebb06668fc92386455c4d4928305e72a5a5459d103e3d86261a4593";
 const PUBLISHED_AT = new Date("2026-07-28T01:02:03.000Z");
 const request = {
   projectId: PROJECT,
@@ -57,7 +50,7 @@ const request = {
   sourcePath: SOURCE_PATH,
 } as const;
 const runtimeTraceCandidateRequest = {
-  genericInitialMove: {
+  initialMove: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -67,12 +60,12 @@ const runtimeTraceCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedWorldCenter: { x: 1.25, y: -0.5 },
-    kind: "fast-manim-generic-initial-move-v3",
+    kind: "runtime-trace-initial-move",
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
 const runtimeTraceResizeCandidateRequest = {
-  genericInitialResize: {
+  initialResize: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -82,12 +75,12 @@ const runtimeTraceResizeCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedScaleFactor: 1.5,
-    kind: "fast-manim-generic-initial-resize-v3",
+    kind: "runtime-trace-initial-resize",
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
 const runtimeTraceOpacityCandidateRequest = {
-  genericInitialOpacity: {
+  initialOpacity: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -97,7 +90,7 @@ const runtimeTraceOpacityCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedOpacity: 0.35,
-    kind: "fast-manim-generic-initial-opacity-v3",
+    kind: "runtime-trace-initial-opacity",
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
@@ -208,26 +201,6 @@ const verifiedView = {
   version: 1,
 } as const satisfies FastManimUnpublishedSnapshotRunViewV1;
 
-function v9VerifiedView(sourceHash: string) {
-  return {
-    ...verifiedView,
-    runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
-    sceneName: "WarpSquare",
-    snapshot: {
-      ...compiledSnapshot,
-      bundle: {
-        ...compiledSnapshot.bundle,
-        scene: {
-          ...compiledSnapshot.bundle.scene,
-          source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 9, sourceHash },
-        },
-      },
-      sourceHash,
-    } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
-    sourcePath: "example_scenes/basic.py",
-  } satisfies FastManimUnpublishedSnapshotRunViewV1;
-}
-
 function v8VerifiedView(sourceHash: string, sourcePath = "example_scenes/basic.py") {
   return {
     ...verifiedView,
@@ -245,26 +218,6 @@ function v8VerifiedView(sourceHash: string, sourcePath = "example_scenes/basic.p
       sourceHash,
     } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
     sourcePath,
-  } satisfies FastManimUnpublishedSnapshotRunViewV1;
-}
-
-function v12VerifiedView(sourceHash: string) {
-  return {
-    ...verifiedView,
-    runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
-    sceneName: "WriteStuff",
-    snapshot: {
-      ...compiledSnapshot,
-      bundle: {
-        ...compiledSnapshot.bundle,
-        scene: {
-          ...compiledSnapshot.bundle.scene,
-          source: { ...compiledSnapshot.bundle.scene.source, snapshotVersion: 12, sourceHash },
-        },
-      },
-      sourceHash,
-    } as unknown as VerifiedCompiledFastManimSnapshotResultV1,
-    sourcePath: "example_scenes/basic.py",
   } satisfies FastManimUnpublishedSnapshotRunViewV1;
 }
 
@@ -431,13 +384,25 @@ function harness(
 ) {
   const runnerClose = vi.fn(async () => undefined);
   const runnerRun = vi.fn<FastManimSnapshotRunner["runUnpublished"]>(async () => runView);
-  const runnerRunCandidate = vi.fn<FastManimSnapshotRunner["runCandidateUnpublished"]>(async () => runView);
+  const runnerRunRuntimeTrace = vi.fn<FastManimSnapshotRunner["runRuntimeTrace"]>(async () => ({
+    failure: { code: "unsupported-profile", message: "Unsupported test profile." },
+    projectId: PROJECT,
+    requestId: "runtime-trace-request-a",
+    runtimeConfigHash: RUNTIME_DIGEST,
+    sceneId: `source:${SOURCE_PATH}#${SCENE_NAME}`,
+    sceneName: SCENE_NAME,
+    schema: "poietra.fast-manim-runtime-trace-run",
+    sourceHash: SOURCE_DIGEST,
+    sourcePath: SOURCE_PATH,
+    status: "failed",
+    version: 1,
+  }));
   const runnerRunRuntimeTraceCandidate = vi.fn<FastManimSnapshotRunner["runRuntimeTraceCandidateUnpublished"]>(
     async () => runtimeTraceCandidateView,
   );
   const runner = {
     close: runnerClose,
-    runCandidateUnpublished: runnerRunCandidate,
+    runRuntimeTrace: runnerRunRuntimeTrace,
     runRuntimeTraceCandidateUnpublished: runnerRunRuntimeTraceCandidate,
     runUnpublished: runnerRun,
   } as unknown as FastManimSnapshotRunner;
@@ -496,8 +461,8 @@ function harness(
     runner,
     runnerClose,
     runnerRun,
-    runnerRunCandidate,
     runnerRunRuntimeTraceCandidate,
+    runnerRunRuntimeTrace,
     service,
     softDeleteProject,
     sourceRepository,
@@ -544,20 +509,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     });
   });
 
-  it("verifies immutable candidate bytes without source reads or publication", async () => {
-    const fixture = harness();
-    const candidateSource = "from manim import Scene\n";
-
-    await expect(fixture.service.runCandidateUnpublished(candidateSource, request)).resolves.toBe(verifiedView);
-
-    expect(fixture.factory.create).toHaveBeenCalledOnce();
-    expect(fixture.runnerRunCandidate).toHaveBeenCalledWith(candidateSource, request, undefined);
-    expect(fixture.runnerRun).not.toHaveBeenCalled();
-    expect(fixture.readSourceHead).not.toHaveBeenCalled();
-    expect(fixture.readSource).not.toHaveBeenCalled();
-    expect(fixture.publish).not.toHaveBeenCalled();
-  });
-
   it("delegates a generic Runtime Trace pair to the project runner without publication", async () => {
     const fixture = harness();
     const candidateSource = "from manim import Scene, Square\n";
@@ -572,10 +523,27 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeTraceCandidateRequest,
       undefined,
     );
-    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
     expect(fixture.runnerRun).not.toHaveBeenCalled();
     expect(fixture.readSourceHead).not.toHaveBeenCalled();
     expect(fixture.readSource).not.toHaveBeenCalled();
+    expect(fixture.publish).not.toHaveBeenCalled();
+  });
+
+  it("delegates a browser Runtime Trace preview to the durable project runner", async () => {
+    const fixture = harness();
+    const runtimeTraceRequest = {
+      ...request,
+      requestId: "runtime-trace-request-a",
+      responseVersion: 2 as const,
+      sourceHash: SOURCE_DIGEST,
+    };
+
+    await expect(fixture.service.runRuntimeTrace(runtimeTraceRequest)).resolves.toMatchObject({
+      requestId: runtimeTraceRequest.requestId,
+      status: "failed",
+    });
+
+    expect(fixture.runnerRunRuntimeTrace).toHaveBeenCalledWith(runtimeTraceRequest, undefined);
     expect(fixture.publish).not.toHaveBeenCalled();
   });
 
@@ -592,7 +560,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeTraceResizeCandidateRequest,
       undefined,
     );
-    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
     expect(fixture.publish).not.toHaveBeenCalled();
   });
 
@@ -609,22 +576,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       runtimeTraceOpacityCandidateRequest,
       undefined,
     );
-    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
-    expect(fixture.publish).not.toHaveBeenCalled();
-  });
-
-  it("does not allocate a candidate runner after an early abort", async () => {
-    const fixture = harness();
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      fixture.service.runCandidateUnpublished("from manim import Scene\n", request, controller.signal),
-    ).rejects.toMatchObject({ name: "AbortError" });
-
-    expect(fixture.factory.create).not.toHaveBeenCalled();
-    expect(fixture.runnerRunCandidate).not.toHaveBeenCalled();
-    expect(fixture.readSourceHead).not.toHaveBeenCalled();
     expect(fixture.publish).not.toHaveBeenCalled();
   });
 
@@ -652,94 +603,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     );
   });
 
-  it("retains the server-derived edited V9 plan at the durable publication boundary", async () => {
-    const official = await readFile(
-      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
-      "utf8",
-    );
-    const anchor = "class WarpSquare(Scene):\n    def construct(self):\n        square = Square()\n";
-    const source = official.replace(
-      anchor,
-      `${anchor}        square.move_to((1.25, -0.5, 0))\n        square.scale(1.5)\n`,
-    );
-    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
-    const view = v9VerifiedView(sourceHash);
-    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V9_RUNTIME_CONFIG_HASH);
-    const head = {
-      ...sourceHead(7n, sourceHash),
-      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
-      sourcePath: "example_scenes/basic.py",
-    };
-    fixture.readSourceHead.mockResolvedValue(head);
-    fixture.readSource.mockResolvedValue(source);
-    const v9Request = {
-      ...request,
-      sceneName: "WarpSquare",
-      sourcePath: "example_scenes/basic.py",
-    };
-
-    await expect(fixture.service.run(v9Request)).resolves.toMatchObject({ status: "verified" });
-
-    expect(fixture.publish).toHaveBeenCalledOnce();
-    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
-      expected: {
-        runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
-        snapshotVersion: 9,
-        warpSquareV9Plan: deriveWarpSquareV9TransformPlan(source, "WarpSquare"),
-      },
-      runtimeConfigHash: V9_RUNTIME_CONFIG_HASH,
-      snapshot: view.snapshot,
-    });
-
-    await expect(
-      fixture.service.snapshot(PROJECT, { sceneName: "WarpSquare", sourcePath: "example_scenes/basic.py" }),
-    ).rejects.toMatchObject({ status: 404 });
-    expect(fixture.readCurrent).toHaveBeenCalledWith(
-      expect.objectContaining({ runtimeConfigHash: V9_RUNTIME_CONFIG_HASH }),
-      undefined,
-    );
-  });
-
-  it("retains the server-derived edited V8 position plan at the durable publication boundary", async () => {
-    const official = await readFile(
-      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
-      "utf8",
-    );
-    const anchor = "        circle.set_fill(PINK, opacity=0.5)\n";
-    const source = official.replace(
-      anchor,
-      `${anchor}        square.move_to((1.25, -0.5, 0))\n        circle.move_to((1.25, -0.5, 0))\n`,
-    );
-    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
-    const view = v8VerifiedView(sourceHash);
-    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V8_RUNTIME_CONFIG_HASH);
-    const head = {
-      ...sourceHead(7n, sourceHash),
-      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
-      sourcePath: "example_scenes/basic.py",
-    };
-    fixture.readSourceHead.mockResolvedValue(head);
-    fixture.readSource.mockResolvedValue(source);
-    const v8Request = {
-      ...request,
-      sceneName: "SquareToCircle",
-      sourcePath: "example_scenes/basic.py",
-    };
-
-    await expect(fixture.service.run(v8Request)).resolves.toMatchObject({ status: "verified" });
-
-    expect(fixture.publish).toHaveBeenCalledOnce();
-    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
-      expected: {
-        runtimeConfigHash: V8_RUNTIME_CONFIG_HASH,
-        snapshotVersion: 8,
-        squareToCircleV8Plan: deriveSquareToCircleV8PositionPlan(source, "SquareToCircle"),
-      },
-      runtimeConfigHash: V8_RUNTIME_CONFIG_HASH,
-      snapshot: view.snapshot,
-    });
-  });
-
   it("publishes a legacy minimal V8 source without requiring a new source-blob read", async () => {
     const view = v8VerifiedView(FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8, SOURCE_PATH);
     const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V8_RUNTIME_CONFIG_HASH);
@@ -761,46 +624,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
       snapshot: view.snapshot,
     });
     expect(fixture.publish.mock.calls[0]?.[0].expected.squareToCircleV8Plan).toBeUndefined();
-  });
-
-  it("retains the server-derived edited V12 plan at the durable publication boundary", async () => {
-    const official = await readFile(
-      new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
-      "utf8",
-    );
-    const anchor = '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n';
-    const source = official.replace(
-      anchor,
-      `${anchor}        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n`,
-    );
-    const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
-    const view = v12VerifiedView(sourceHash);
-    const fixture = harness(view, RELEASE_RUNTIME_DIGEST, V12_RUNTIME_CONFIG_HASH);
-    const head = {
-      ...sourceHead(7n, sourceHash),
-      blob: { ...sourceHead(7n, sourceHash).blob, byteSize: Buffer.byteLength(source, "utf8") },
-      sourcePath: "example_scenes/basic.py",
-    };
-    fixture.readSourceHead.mockResolvedValue(head);
-    fixture.readSource.mockResolvedValue(source);
-    const v12Request = {
-      ...request,
-      sceneName: "WriteStuff",
-      sourcePath: "example_scenes/basic.py",
-    };
-
-    await expect(fixture.service.run(v12Request)).resolves.toMatchObject({ status: "verified" });
-
-    expect(fixture.publish).toHaveBeenCalledOnce();
-    expect(fixture.publish.mock.calls[0]?.[0]).toMatchObject({
-      expected: {
-        runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
-        snapshotVersion: 12,
-        writeStuffV12Plan: deriveWriteStuffV12TransformPlan(source, "WriteStuff"),
-      },
-      runtimeConfigHash: V12_RUNTIME_CONFIG_HASH,
-      snapshot: view.snapshot,
-    });
   });
 
   it("retains the server-derived V4 image transform plan for durable publication", async () => {

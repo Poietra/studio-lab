@@ -13,15 +13,16 @@ import type {
   RenderCommitRequest,
   RenderSourceActionCancellationRequest,
 } from "../src/render-pipeline/contracts";
+import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import type { MutableManimProjectApiOperations } from "./manim-api";
 import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
-import type { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
@@ -63,7 +64,7 @@ export type DurableManimExecutionReadinessV1 = Readonly<{
 export type DurableManimRuntimeOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">;
   blobs: SourceContentBlobStoreV1;
-  candidateVerifier?: Pick<ManimRenderCandidateVerifierV1, "verify">;
+  runtimeTraceEditVerifier?: Pick<ManimRuntimeTraceEditVerifier, "verify">;
   editorDocuments?: EditorDocumentRepositoryV1;
   execution?: DurableManimExecutionReadinessV1;
   frame?: Readonly<{ height: number; width: number }>;
@@ -129,7 +130,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     | Pick<AuthorizedArtifactReaderV1, "close" | "projectThumbnail" | "projectThumbnailBytes" | "ready">
     | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #candidateVerifier: Pick<ManimRenderCandidateVerifierV1, "verify"> | undefined;
+  readonly #runtimeTraceEditVerifier: Pick<ManimRuntimeTraceEditVerifier, "verify"> | undefined;
   readonly editorDocuments: EditorDocumentRepositoryV1 | undefined;
   readonly #execution: DurableManimExecutionReadinessV1 | undefined;
   readonly #frame: Readonly<{ height: number; width: number }>;
@@ -155,7 +156,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     this.#repository = options.repository;
     this.#artifactReader = options.artifactReader;
     this.#blobs = options.blobs;
-    this.#candidateVerifier = options.candidateVerifier;
+    this.#runtimeTraceEditVerifier = options.runtimeTraceEditVerifier;
     this.editorDocuments = options.editorDocuments;
     this.#execution = options.execution;
     this.#renders = options.renders;
@@ -428,14 +429,15 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       request,
     });
     if (
-      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3" ||
-      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3" ||
-      lowered.lowered.preflight?.kind === "fast-manim-generic-initial-rotation-v3"
+      lowered.lowered.preflight?.kind === "runtime-trace-initial-move" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-initial-opacity" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-initial-resize" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-initial-rotation"
     ) {
-      if (!this.#candidateVerifier) {
-        throw new HttpError("Edited Manim source candidate verification is unavailable.", 503);
+      if (!this.#runtimeTraceEditVerifier) {
+        throw new HttpError("Runtime Trace edit verification is unavailable.", 503);
       }
-      await this.#candidateVerifier.verify(lowered.lowered, lowered.renderRequest, signal);
+      await this.#runtimeTraceEditVerifier.verify(lowered.lowered, lowered.renderRequest, signal);
       signal?.throwIfAborted();
     }
     return {
@@ -514,6 +516,13 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     signal?.throwIfAborted();
     if (!this.#snapshots) throw new HttpError("Durable Scene snapshots require the external sandbox runtime.", 503);
     return this.#snapshots.run(request, signal);
+  }
+
+  async runRuntimeTrace(request: FastManimRuntimeTraceRunRequestV1, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!this.#snapshots)
+      throw new HttpError("Durable Runtime Trace preview requires the external sandbox runtime.", 503);
+    return this.#snapshots.runRuntimeTrace(request, signal);
   }
 
   async sceneSnapshot(projectId: string, query: FastManimSnapshotQueryV1) {

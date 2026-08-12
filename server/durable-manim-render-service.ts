@@ -11,7 +11,6 @@ import {
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
-import type { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import {
   renderCommitCorrelationKey,
@@ -20,6 +19,7 @@ import {
   renderSessionStatusPolicy,
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import {
   type CreateDurableRenderSessionInputV1,
@@ -33,7 +33,7 @@ import type { SourceContentBlobStoreV1, WorkspaceSourceRepositoryV1 } from "./st
 export type DurableManimRenderServiceOptionsV1 = Readonly<{
   artifactReader?: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo">;
   blobs: SourceContentBlobStoreV1;
-  candidateVerifier?: Pick<ManimRenderCandidateVerifierV1, "verify">;
+  runtimeTraceEditVerifier?: Pick<ManimRuntimeTraceEditVerifier, "verify">;
   execution: Readonly<{ cancel: (sessionId: string) => Promise<void>; wake: () => void }>;
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
@@ -92,7 +92,7 @@ function sessionView(
 export class DurableManimRenderServiceV1 {
   readonly #artifactReader: Pick<AuthorizedArtifactReaderV1, "ready" | "sessionVideo"> | undefined;
   readonly #blobs: SourceContentBlobStoreV1;
-  readonly #candidateVerifier: Pick<ManimRenderCandidateVerifierV1, "verify"> | undefined;
+  readonly #runtimeTraceEditVerifier: Pick<ManimRuntimeTraceEditVerifier, "verify"> | undefined;
   readonly #execution: DurableManimRenderServiceOptionsV1["execution"];
   readonly #executionTimeoutMs: number;
   readonly #frame: Readonly<{ height: number; width: number }>;
@@ -111,7 +111,7 @@ export class DurableManimRenderServiceV1 {
     }
     this.#tenantId = tenant.data;
     this.#artifactReader = options.artifactReader;
-    this.#candidateVerifier = options.candidateVerifier;
+    this.#runtimeTraceEditVerifier = options.runtimeTraceEditVerifier;
     const executionTimeoutMs = options.executionTimeoutMs ?? 2 * 60 * 1_000;
     if (
       !Number.isSafeInteger(executionTimeoutMs) ||
@@ -167,10 +167,10 @@ export class DurableManimRenderServiceV1 {
     });
     signal?.throwIfAborted();
     if (lowered.preflight) {
-      if (!this.#candidateVerifier) {
-        throw new HttpError("Edited Manim source candidate verification is unavailable.", 503);
+      if (!this.#runtimeTraceEditVerifier) {
+        throw new HttpError("Runtime Trace edit verification is unavailable.", 503);
       }
-      await this.#candidateVerifier.verify(lowered, renderRequest, signal);
+      await this.#runtimeTraceEditVerifier.verify(lowered, renderRequest, signal);
       signal?.throwIfAborted();
     }
     const patchedBlob = await this.#blobs.putSource(this.#tenantId, lowered.source, signal);

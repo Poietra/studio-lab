@@ -2,18 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
 import {
+  type FastManimRuntimeTraceRunRequestV1,
+  type FastManimRuntimeTraceRunView,
+  fastManimRuntimeTraceRunRequestV1Schema,
+} from "../src/render-pipeline/runtime-trace-preview-contract";
+import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
-  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
-  deriveWarpSquareV9TransformPlan,
-  deriveWriteStuffV12TransformPlan,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
-  FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
-  FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   type FastManimSnapshotQueryV1,
   type FastManimSnapshotRunRequestV1,
   type FastManimSnapshotRunViewV1,
@@ -31,7 +31,6 @@ import {
   DurableFastManimSnapshotSourceProviderV1,
   type FastManimSnapshotSourceProviderV1,
 } from "./fast-manim-snapshot-source-provider";
-import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 import { HttpError } from "./http/json";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { SnapshotArtifactPublisherV1 } from "./storage/snapshot-artifact-publisher";
@@ -269,24 +268,29 @@ export class DurableFastManimSnapshotServiceV1 {
     return this.#track(operation);
   }
 
-  runCandidateUnpublished(
-    sourceText: string,
-    requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
-    signal?: AbortSignal,
-  ) {
-    const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
-    const request = {
-      projectId: parsed.projectId,
-      requestId: parsed.requestId,
-      sceneName: parsed.sceneName,
-      sourcePath: parsed.sourcePath,
-    };
+  runRuntimeTrace(requestValue: FastManimRuntimeTraceRunRequestV1, signal?: AbortSignal) {
+    const request = fastManimRuntimeTraceRunRequestV1Schema.parse(requestValue);
     this.#assertOpen();
     const entry = this.#acquireProject(request.projectId);
-    const operation = this.#runCandidateUnpublished(sourceText, request, entry, signal).finally(() =>
+    const operation = this.#runRuntimeTrace(request, entry, signal).finally(() =>
       this.#releaseProjectReference(request.projectId, entry),
     );
     return this.#track(operation);
+  }
+
+  async #runRuntimeTrace(
+    request: FastManimRuntimeTraceRunRequestV1,
+    entry: ProjectRunnerEntry,
+    signal?: AbortSignal,
+  ): Promise<FastManimRuntimeTraceRunView> {
+    signal?.throwIfAborted();
+    const handle = await this.#runner(request.projectId, entry);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    const view = await handle.runner.runRuntimeTrace(request, signal);
+    this.#assertProjectActive(request.projectId, entry);
+    signal?.throwIfAborted();
+    return view;
   }
 
   runRuntimeTraceCandidateUnpublished(
@@ -294,19 +298,13 @@ export class DurableFastManimSnapshotServiceV1 {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ) {
-    const {
-      genericInitialMove,
-      genericInitialOpacity,
-      genericInitialResize,
-      genericInitialRotation,
-      ...requestFields
-    } = requestValue;
+    const { initialMove, initialOpacity, initialResize, initialRotation, ...requestFields } = requestValue;
     const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestFields);
     const request: FastManimRuntimeTraceCandidateRunRequestV1 = {
-      ...(genericInitialMove === undefined ? {} : { genericInitialMove }),
-      ...(genericInitialOpacity === undefined ? {} : { genericInitialOpacity }),
-      ...(genericInitialResize === undefined ? {} : { genericInitialResize }),
-      ...(genericInitialRotation === undefined ? {} : { genericInitialRotation }),
+      ...(initialMove === undefined ? {} : { initialMove }),
+      ...(initialOpacity === undefined ? {} : { initialOpacity }),
+      ...(initialResize === undefined ? {} : { initialResize }),
+      ...(initialRotation === undefined ? {} : { initialRotation }),
       projectId: parsed.projectId,
       requestId: parsed.requestId,
       sceneName: parsed.sceneName,
@@ -318,29 +316,6 @@ export class DurableFastManimSnapshotServiceV1 {
       this.#releaseProjectReference(request.projectId, entry),
     );
     return this.#track(operation);
-  }
-
-  async #runCandidateUnpublished(
-    sourceText: string,
-    request: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
-    entry: ProjectRunnerEntry,
-    signal?: AbortSignal,
-  ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
-    signal?.throwIfAborted();
-    const handle = await this.#runner(request.projectId, entry);
-    this.#assertProjectActive(request.projectId, entry);
-    signal?.throwIfAborted();
-    const view = await handle.runner.runCandidateUnpublished(sourceText, request, signal);
-    this.#assertProjectActive(request.projectId, entry);
-    signal?.throwIfAborted();
-    if (
-      view.status === "verified" &&
-      this.#runtimeConfigHash !== null &&
-      view.runtimeConfigHash !== this.#runtimeConfigHash
-    ) {
-      throw new Error("The verified durable candidate snapshot does not match the active runtime configuration.");
-    }
-    return view;
   }
 
   async #runRuntimeTraceCandidateUnpublished(
@@ -404,21 +379,11 @@ export class DurableFastManimSnapshotServiceV1 {
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
-    let squareToCircleV8Plan: ExpectedFastManimSnapshotCorrelationV1["squareToCircleV8Plan"];
-    let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
-    let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
-    let writeStuffV12Plan: ExpectedFastManimSnapshotCorrelationV1["writeStuffV12Plan"];
     if (
       scene.source.snapshotVersion === 3 ||
       scene.source.snapshotVersion === 4 ||
       scene.source.snapshotVersion === 5 ||
-      scene.source.snapshotVersion === 7 ||
-      (scene.source.snapshotVersion === 8 &&
-        scene.source.sourceHash !== FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 &&
-        scene.source.sourceHash !== FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8) ||
-      scene.source.snapshotVersion === 9 ||
-      scene.source.snapshotVersion === 10 ||
-      scene.source.snapshotVersion === 12
+      scene.source.snapshotVersion === 7
     ) {
       signal?.throwIfAborted();
       const source = await this.#blobs.readSource(this.#tenantId, before.blob, signal);
@@ -436,16 +401,8 @@ export class DurableFastManimSnapshotServiceV1 {
         hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(source, view.sceneName);
       } else if (scene.source.snapshotVersion === 5) {
         hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(source, view.sceneName);
-      } else if (scene.source.snapshotVersion === 7) {
-        hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, view.sceneName);
-      } else if (scene.source.snapshotVersion === 8) {
-        squareToCircleV8Plan = deriveSquareToCircleV8PositionPlan(source, view.sceneName);
-      } else if (scene.source.snapshotVersion === 9) {
-        warpSquareV9Plan = deriveWarpSquareV9TransformPlan(source, view.sceneName);
-      } else if (scene.source.snapshotVersion === 10) {
-        lineJointsV10Plan = deriveLineJointsV10TransformPlan(source, view.sceneName);
       } else {
-        writeStuffV12Plan = deriveWriteStuffV12TransformPlan(source, view.sceneName);
+        hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(source, view.sceneName);
       }
     }
     const expected: ExpectedFastManimSnapshotCorrelationV1 = {
@@ -453,10 +410,6 @@ export class DurableFastManimSnapshotServiceV1 {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
-      ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
-      ...(squareToCircleV8Plan ? { squareToCircleV8Plan } : {}),
-      ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
-      ...(writeStuffV12Plan ? { writeStuffV12Plan } : {}),
       projectId: view.projectId,
       requestId: view.requestId,
       runtimeConfigHash: view.runtimeConfigHash,

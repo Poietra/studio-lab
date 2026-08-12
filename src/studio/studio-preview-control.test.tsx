@@ -14,7 +14,6 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
     cameraCenter: null,
     epoch: 0,
     genericInitialEditCandidates: [],
-    initialEditAuthority: null,
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,
     runtimeTraceBaseFrameRetained: false,

@@ -64,12 +64,9 @@ import {
 } from "./preview-snapshot-provider";
 import {
   compileStudioPreviewGenericInitialEdit,
-  compileStudioPreviewTemporalRebase,
+  compileStudioPreviewImportedAnimationEdit,
   type StudioPreviewGenericInitialEditCandidate,
-  type StudioPreviewInitialEditProjectionAuthority,
   studioPreviewGenericInitialEditCandidates,
-  studioPreviewInitialEditIntegrationAuthority,
-  studioPreviewInitialEditProjection,
   studioPreviewSyntheticInitialEditAnchor,
 } from "./preview-temporal-rebase";
 import { insertedProgramDuration } from "./program-composition";
@@ -98,10 +95,8 @@ export type StudioPreviewRendererView = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometryV1 | null;
   interactionAuthority: StudioPreviewInteractionAuthority;
-  /** Verified generic V3 candidates that may request one server-authorized t=0 edit. */
+  /** Verified Runtime Trace candidates that may request one server-authorized t=0 edit. */
   genericInitialEditCandidates: readonly StudioPreviewGenericInitialEditCandidate[];
-  /** Exact runtime authority for one bounded initial imported-Scene edit. */
-  initialEditAuthority: StudioPreviewInitialEditProjectionAuthority | null;
   /** Profile-free edit authority for one reviewed Runtime Trace terminal target. */
   runtimeTraceTerminalEdit: StudioPreviewRuntimeTraceTerminalEditProjection | null;
   /** A retained exact source-anchor frame is visible behind a target-only ghost. */
@@ -1065,20 +1060,7 @@ export function projectStudioPreviewRuntimeTraceOpaqueSelectionEntities(
   ];
 }
 
-/**
- * Runtime pixels may be presented without source interaction authority. V5
- * deliberately has aggregate morph lineage, while V9's pointwise-function
- * morph remains display-only unless the exact WarpSquare V9 temporal slice can
- * be truthfully rebased. V6 through V9 require server-verified source/runtime
- * bindings. V10 additionally requires the sealed LineJoints hierarchy and
- * admits mutation only for its runtime-proven center leaf. V11 requires its
- * complete SpiralIn hierarchy but remains selection-only because it has no
- * source rewrite contract. V12 admits only its exact source-bound example_tex
- * root for mutation; example_text remains a paint-free selector and both root
- * bounds come from their prepared drawable descendants. Older snapshot-only
- * profiles retain their semantic interaction fallback; no gesture guesses
- * from Scene order.
- */
+/** Runtime pixels may be presented without granting source mutation authority. */
 export function studioPreviewInteractionAuthority(
   snapshot: StudioVerifiedPreviewSnapshotV1 | null,
 ): StudioPreviewInteractionAuthority {
@@ -1087,7 +1069,7 @@ export function studioPreviewInteractionAuthority(
     const verifiedRuntimeEntityIds = snapshot?.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
-    // Generic V3 stays selection-only unless at least one exact initial-edit
+    // A Runtime Trace stays selection-only unless at least one exact initial-edit
     // candidate exists. Updater-conflicted or degenerate roots mint no
     // candidate and never receive a gesture; the browser may submit one
     // bounded request per candidate; the fresh-source server lowerer remains
@@ -1132,117 +1114,29 @@ export function studioPreviewInteractionAuthority(
   if (Number(source.snapshotVersion) === 5) {
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
-  if (Number(source.snapshotVersion) === 9) {
-    return snapshot && studioPreviewSyntheticInitialEditAnchor(snapshot) === 0
+  const legacyRuntimeProfile = Number(source.snapshotVersion);
+  if (legacyRuntimeProfile === 6) {
+    return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
       ? { kind: "interactive" }
-      : { kind: "display-only", reason: "temporal-rebase-unavailable" };
+      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  if (
-    Number(source.snapshotVersion) !== 6 &&
-    Number(source.snapshotVersion) !== 7 &&
-    Number(source.snapshotVersion) !== 8 &&
-    Number(source.snapshotVersion) !== 10 &&
-    Number(source.snapshotVersion) !== 11 &&
-    Number(source.snapshotVersion) !== 12
-  ) {
-    return { kind: "interactive" };
-  }
-  const identity = snapshot?.sourceRuntimeIdentity;
-  if (
-    Number(source.snapshotVersion) === 7 ||
-    Number(source.snapshotVersion) === 8 ||
-    Number(source.snapshotVersion) === 10 ||
-    Number(source.snapshotVersion) === 11 ||
-    Number(source.snapshotVersion) === 12
-  ) {
+  if (legacyRuntimeProfile === 7) {
+    const identity = snapshot?.sourceRuntimeIdentity;
     const entities = snapshot?.snapshot.scene.entities;
     const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
-    const writeStuffComplete = (() => {
-      if (Number(source.snapshotVersion) !== 12 || !identity || !entities || entities.length !== 61) return false;
-      const group = identity.get("group");
-      const exampleText = identity.get("example_text");
-      const exampleTex = identity.get("example_tex");
-      if (
-        identity.size !== 3 ||
-        group?.sourceName !== "group" ||
-        exampleText?.sourceName !== "example_text" ||
-        exampleTex?.sourceName !== "example_tex"
-      ) {
-        return false;
-      }
-      const byId = new Map(entities.map((entity) => [entity.id, entity]));
-      const groupEntity = byId.get(group.entityId);
-      const textEntity = byId.get(exampleText.entityId);
-      const texEntity = byId.get(exampleTex.entityId);
-      return (
-        groupEntity?.geometry.kind === "group" &&
-        groupEntity.parentId === null &&
-        groupEntity.sceneOrder === 0 &&
-        textEntity?.geometry.kind === "group" &&
-        textEntity.parentId === groupEntity.id &&
-        textEntity.sceneOrder === 1 &&
-        texEntity?.geometry.kind === "group" &&
-        texEntity.parentId === groupEntity.id &&
-        texEntity.sceneOrder === 32
-      );
-    })();
-    const complete =
-      Number(source.snapshotVersion) === 12
-        ? writeStuffComplete
-        : identity !== null &&
-          identity !== undefined &&
-          entities !== undefined &&
-          mappedEntityIds.size === entities.length &&
-          entities.every(({ id }) => mappedEntityIds.has(id));
-    if (!complete) return { kind: "display-only", reason: "source-runtime-identity-unverified" };
-    if (
-      Number(source.snapshotVersion) !== 10 &&
-      Number(source.snapshotVersion) !== 11 &&
-      Number(source.snapshotVersion) !== 12
-    ) {
-      return { kind: "interactive" };
-    }
-    if (Number(source.snapshotVersion) === 11) {
-      return { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
-    }
-    const initialEditAuthority = snapshot ? studioPreviewInitialEditIntegrationAuthority(snapshot) : null;
-    if (Number(source.snapshotVersion) === 12) {
-      const exampleText = identity?.get("example_text");
-      const exampleTex = identity?.get("example_tex");
-      return initialEditAuthority?.profile === "write-stuff-v12" && exampleText && exampleTex
-        ? { kind: "interactive", nestedGroupEntityIds: [exampleText.entityId, exampleTex.entityId] }
-        : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
-    }
-    return initialEditAuthority?.profile === "line-joints-v10"
+    return identity &&
+      entities &&
+      mappedEntityIds.size === entities.length &&
+      entities.every(({ id }) => mappedEntityIds.has(id))
       ? { kind: "interactive" }
-      : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
+      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  return identity && identity.size > 0
-    ? { kind: "interactive" }
-    : { kind: "display-only", reason: "source-runtime-identity-unverified" };
-}
-
-/** Local affine rebasing is truthful for WarpSquare V9 only at its source endpoint. */
-export function studioPreviewEditedV9SampleFallbackV1(
-  snapshot: StudioVerifiedPreviewSnapshotV1 | null,
-  workingRevision: string | null | undefined,
-  sampleTime: number,
-): PreviewRendererHostStateV1 | null {
-  const source = snapshot?.snapshot.scene.source;
-  const unsupported =
-    source?.kind === "imported-manim-server-snapshot" &&
-    Number(source.snapshotVersion) === 9 &&
-    workingRevision !== null &&
-    workingRevision !== undefined &&
-    workingRevision !== PRISTINE_WORKING_REVISION &&
-    sampleTime !== 0;
-  return unsupported
-    ? {
-        detail: "A local WarpSquare edit is truthful only at t=0 until producer-backed reimport completes.",
-        phase: "fallback",
-        reason: "snapshot-uncorrelated",
-      }
-    : null;
+  if (legacyRuntimeProfile >= 8 && legacyRuntimeProfile <= 12) {
+    return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
+      ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
+      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+  }
+  return { kind: "interactive" };
 }
 
 /** Selects only IDs admitted by the server-verified source/runtime map. */
@@ -2405,7 +2299,7 @@ export async function compileStudioPreviewSceneV1(
     });
     if (rebased.kind === "unsupported") {
       return {
-        error: `Generic Runtime Trace initial edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        error: `Runtime Trace initial edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
         kind: "unsupported",
       };
     }
@@ -2427,20 +2321,10 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
-  const importedProfile =
-    importedSource.kind === "imported-manim-server-snapshot" ? Number(importedSource.snapshotVersion) : null;
-  if (input.snapshot.snapshot.scene.animationChannels.length > 0 || importedProfile === 10) {
-    const source = input.snapshot.snapshot.scene.source;
-    if (
-      source.kind !== "imported-manim-server-snapshot" ||
-      (Number(source.snapshotVersion) !== 7 &&
-        Number(source.snapshotVersion) !== 8 &&
-        Number(source.snapshotVersion) !== 9 &&
-        Number(source.snapshotVersion) !== 10 &&
-        Number(source.snapshotVersion) !== 12)
-    ) {
+  if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
+    if (importedSource.kind !== "imported-manim-server-snapshot" || Number(importedSource.snapshotVersion) !== 7) {
       return {
-        error: "Editing a verified Scene with imported animation channels requires temporal rebasing support.",
+        error: "Editing this imported animation requires Runtime Trace authoring support.",
         kind: "unsupported",
       };
     }
@@ -2451,7 +2335,7 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const rebased = await compileStudioPreviewTemporalRebase({
+    const rebased = await compileStudioPreviewImportedAnimationEdit({
       frame: input.frame,
       proposedState: input.proposedState,
       snapshot: input.snapshot,
@@ -2460,7 +2344,7 @@ export async function compileStudioPreviewSceneV1(
     });
     if (rebased.kind === "unsupported") {
       return {
-        error: `Imported temporal rebase is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
+        error: `Imported animation edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
         kind: "unsupported",
       };
     }
@@ -2882,12 +2766,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
         reason: "snapshot-uncorrelated",
       };
     }
-    const editedV9SampleFallback = studioPreviewEditedV9SampleFallbackV1(
-      snapshot,
-      context?.workingRevision,
-      sampleTime,
-    );
-    if (editedV9SampleFallback) return editedV9SampleFallback;
     if (compilationError) {
       return {
         detail: compilationError,
@@ -3010,11 +2888,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
     epoch,
     genericInitialEditCandidates,
-    initialEditAuthority: snapshot
-      ? ((authority) => (authority ? studioPreviewInitialEditProjection(authority) : null))(
-          studioPreviewInitialEditIntegrationAuthority(snapshot),
-        )
-      : null,
     interactionGeometry: presentedOrRetainedInteractionGeometry,
     interactionAuthority,
     runtimeTraceBaseFrameRetained: runtimeTraceTerminalUiState.baseFrameRetained,
