@@ -19,6 +19,7 @@ const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
       fadeIn: { end: 0.9 },
       geometry: { height: 2, kind: "rectangle", width: 4 },
       id: "tx:create/entity:rectangle",
+      instantTransform: { at: 1.25, position: { x: 3, y: 1 }, scaleX: 1.5, scaleY: 0.75 },
       lifetime: { end: 2.4, start: 0.5 },
       position: { x: 2, y: 0 },
       scale: 1,

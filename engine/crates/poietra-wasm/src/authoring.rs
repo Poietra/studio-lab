@@ -1,8 +1,8 @@
 use poietra_eval::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
-    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneTimelineInsertion,
-    EngineSessionV1, EvaluationError, RotateSceneEntityCommand, RotateSceneEntityError,
-    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
+    CreateSceneTimelineInsertion, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
+    RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
     TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
 };
 use poietra_scene_ir::{
@@ -70,6 +70,27 @@ struct CreateSceneEntityJsonV1 {
     lifetime: IntervalV1,
     position: PointV1,
     scale: f64,
+    instant_transform: Option<CreateSceneEntityInstantTransformJsonV1>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneEntityInstantTransformJsonV1 {
+    at: f64,
+    position: PointV1,
+    scale_x: f64,
+    scale_y: f64,
+}
+
+impl From<CreateSceneEntityInstantTransformJsonV1> for CreateSceneEntityInstantTransform {
+    fn from(value: CreateSceneEntityInstantTransformJsonV1) -> Self {
+        Self {
+            at: value.at,
+            position: value.position,
+            scale_x: value.scale_x,
+            scale_y: value.scale_y,
+        }
+    }
 }
 
 impl From<CreateSceneEntityJsonV1> for CreateSceneEntity {
@@ -81,6 +102,7 @@ impl From<CreateSceneEntityJsonV1> for CreateSceneEntity {
             lifetime: value.lifetime,
             position: value.position,
             scale: value.scale,
+            instant_transform: value.instant_transform.map(Into::into),
         }
     }
 }
@@ -429,7 +451,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use poietra_scene_ir::{
-        RenderDrawV1, SceneAppearanceV1, SceneGeometryV1, SceneSourceV1,
+        AnimationChannelV1, RenderDrawV1, SceneAppearanceV1, SceneGeometryV1, SceneSourceV1,
         parse_scene_ir_bundle_json_v1,
     };
     use serde_json::json;
@@ -474,7 +496,13 @@ mod tests {
                 "id": "studio-created-rectangle",
                 "lifetime": { "end": 2.4, "start": 0.5 },
                 "position": { "x": 2.0, "y": 0.0 },
-                "scale": 1.0
+                "scale": 1.0,
+                "instantTransform": {
+                    "at": 1.25,
+                    "position": { "x": 3.0, "y": 1.0 },
+                    "scaleX": 1.5,
+                    "scaleY": 0.75
+                }
             }],
             "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -824,6 +852,23 @@ mod tests {
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         ));
+        assert!(
+            bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::AffineTransform {
+                        entity_id,
+                        keyframes,
+                        ..
+                    } if entity_id == "studio-created-rectangle"
+                        && (keyframes[0].at - 1.25).abs() < f64::EPSILON
+                        && (keyframes[0].value.m11 - 1.5).abs() < f64::EPSILON
+                        && (keyframes[0].value.m22 - 0.75).abs() < f64::EPSILON
+                ))
+        );
     }
 
     #[test]

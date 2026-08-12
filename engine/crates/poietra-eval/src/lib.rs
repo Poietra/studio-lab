@@ -12,10 +12,10 @@ mod scene_delta;
 
 pub use authoring::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
-    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneTimelineInsertion,
-    RotateSceneEntityCommand, RotateSceneEntityError, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, TransformSceneEntityCommand, TransformSceneEntityError,
-    UniformScaleAboutPivot,
+    CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
+    CreateSceneTimelineInsertion, RotateSceneEntityCommand, RotateSceneEntityError,
+    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
