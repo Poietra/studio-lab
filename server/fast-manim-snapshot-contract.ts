@@ -28,11 +28,7 @@ import {
   HERMETIC_MATHTEX_MORPH_MAX_DURATION_SECONDS_V5,
 } from "../src/render-pipeline/mathtex-morph-source-v5";
 import { analyzePythonSource, isPythonStatementStart } from "../src/render-pipeline/python-source-analysis";
-import { findSourceSceneBlock, findSourceSceneStatements } from "../src/render-pipeline/source-import";
-import {
-  deriveSquareToCircleV8PositionPlan,
-  FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8,
-} from "./fast-manim-square-to-circle-v8-candidate";
+import { findSourceSceneBlock } from "../src/render-pipeline/source-import";
 
 export const FAST_MANIM_SNAPSHOT_SCHEMA_V1 = "poietra.fast-manim-snapshot-result" as const;
 export const FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1 = "poietra.fast-manim-snapshot-producer-request" as const;
@@ -2309,6 +2305,7 @@ export const FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 =
   "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
 export const FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8 =
   "ef874f1ab5899aadf870956ec71ce71653d373366b23e40c2ee8b070ad193c40" as const;
+const FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_PATH_V8 = "example_scenes/basic.py" as const;
 const FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8 = new Set<string>([
   FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
@@ -2379,284 +2376,9 @@ const FAST_MANIM_WRITE_STUFF_REQUIRED_CAPABILITIES_V12 = [
   "path-trim-animation",
   "vector-appearance-animation",
 ] as const;
-const WARP_SQUARE_V9_CANONICAL_NUMBER = /^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?$/;
 const WARP_SQUARE_V9_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WarpSquareV9TransformPlan;
 const LINE_JOINTS_V10_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies LineJointsV10TransformPlan;
 const WRITE_STUFF_V12_EMPTY_PLAN = Object.freeze({ moveTo: null, scale: null }) satisfies WriteStuffV12TransformPlan;
-
-function warpSquareV9CanonicalNumber(source: string, positive = false) {
-  if (!WARP_SQUARE_V9_CANONICAL_NUMBER.test(source)) return null;
-  const value = Number(source);
-  if (
-    !Number.isFinite(value) ||
-    Object.is(value, -0) ||
-    Math.abs(value) > MAX_COORDINATE ||
-    value.toString() !== source ||
-    (positive && value <= 0)
-  ) {
-    return null;
-  }
-  return value;
-}
-
-/**
- * Derives the complete bounded V9 base-edit plan without executing Python.
- *
- * Studio may insert only these exact, single-line statements immediately
- * after the official `square = Square()` assignment:
- *
- *     square.move_to((x, y, 0))
- *     square.scale(factor)
- *
- * Removing the admitted lines must reconstruct the byte-exact audited
- * official source. This makes the edit plan a narrow source proof, not a
- * second Python parser or producer-authored geometry claim.
- */
-export function deriveWarpSquareV9TransformPlan(source: string, sceneName: string): WarpSquareV9TransformPlan {
-  if (sceneName !== "WarpSquare") {
-    profileViolation("WarpSquare profile V9 source verification requires the exact selected Scene name.");
-  }
-  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
-  if (sourceDigest === FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9) return WARP_SQUARE_V9_EMPTY_PLAN;
-
-  const analysis = analyzePythonSource(source);
-  let statements: ReturnType<typeof findSourceSceneStatements>;
-  try {
-    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_WARP_SQUARE_SOURCE_PATH_V9);
-  } catch (cause) {
-    throw new FastManimSnapshotContractError(
-      "profile-violation",
-      "WarpSquare profile V9 source does not identify one unambiguous selected Scene.",
-      { cause },
-    );
-  }
-  if (!analysis.valid || statements[0]?.text !== "square = Square()") {
-    profileViolation("WarpSquare profile V9 edits require the exact official Square assignment.");
-  }
-
-  const sourceLines = source.split("\n");
-  const removedLines = new Set<number>();
-  let statementIndex = 1;
-  let moveTo: WarpSquareV9TransformPlan["moveTo"] = null;
-  let scale: number | null = null;
-
-  const moveStatement = statements[statementIndex];
-  const moveMatch = moveStatement?.text.match(
-    /^square\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
-  );
-  if (moveStatement && moveMatch) {
-    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
-    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
-    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
-      profileViolation("WarpSquare profile V9 move_to must use bounded canonical Studio literals.");
-    }
-    moveTo = { x, y };
-    removedLines.add(moveStatement.line);
-    statementIndex += 1;
-  }
-
-  const scaleStatement = statements[statementIndex];
-  const scaleMatch = scaleStatement?.text.match(
-    /^square\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/,
-  );
-  if (scaleStatement && scaleMatch) {
-    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
-    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
-      profileViolation("WarpSquare profile V9 scale must use one bounded canonical positive Studio literal.");
-    }
-    scale = factor;
-    removedLines.add(scaleStatement.line);
-  }
-
-  if (removedLines.size === 0) {
-    profileViolation("WarpSquare profile V9 source is not the official generation or one bounded Studio edit of it.");
-  }
-  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
-  if (
-    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
-    FAST_MANIM_WARP_SQUARE_OFFICIAL_SOURCE_SHA256_V9
-  ) {
-    profileViolation("Removing the bounded WarpSquare V9 edits must reconstruct the exact official source bytes.");
-  }
-  return warpSquareV9TransformPlanSchema.parse({ moveTo, scale });
-}
-
-/**
- * Derives the only Studio-authored edit admitted by LineJoints V10.
- *
- * The target is deliberately fixed to the central `t2` leaf. Optional
- * canonical move/scale statements must sit after the final group layout and
- * before `self.add(grp)`. Removing them must reconstruct the byte-exact
- * official source, so this never grows into a second general Python parser.
- */
-export function deriveLineJointsV10TransformPlan(source: string, sceneName: string): LineJointsV10TransformPlan {
-  if (sceneName !== "LineJoints") {
-    profileViolation("LineJoints profile V10 source verification requires the exact selected Scene name.");
-  }
-  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
-  if (sourceDigest === FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10) return LINE_JOINTS_V10_EMPTY_PLAN;
-
-  const analysis = analyzePythonSource(source);
-  let statements: ReturnType<typeof findSourceSceneStatements>;
-  try {
-    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_LINE_JOINTS_SOURCE_PATH_V10);
-  } catch (cause) {
-    throw new FastManimSnapshotContractError(
-      "profile-violation",
-      "LineJoints profile V10 source does not identify one unambiguous selected Scene.",
-      { cause },
-    );
-  }
-  const fixedPrefix = [
-    "t1 = Triangle()",
-    "t2 = Triangle(joint_type=LineJointType.ROUND)",
-    "t3 = Triangle(joint_type=LineJointType.BEVEL)",
-    "grp = VGroup(t1, t2, t3).arrange(RIGHT)",
-    "grp.set(width=config.frame_width - 1)",
-  ] as const;
-  if (!analysis.valid || fixedPrefix.some((text, index) => statements[index]?.text !== text)) {
-    profileViolation("LineJoints profile V10 edits require the exact official VGroup layout prefix.");
-  }
-
-  const sourceLines = source.split("\n");
-  const removedLines = new Set<number>();
-  let statementIndex = fixedPrefix.length;
-  let moveTo: LineJointsV10TransformPlan["moveTo"] = null;
-  let scale: number | null = null;
-
-  const moveStatement = statements[statementIndex];
-  const moveMatch = moveStatement?.text.match(
-    /^t2\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
-  );
-  if (moveStatement && moveMatch) {
-    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
-    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
-    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
-      profileViolation("LineJoints profile V10 move_to must use bounded canonical Studio literals.");
-    }
-    moveTo = { x, y };
-    removedLines.add(moveStatement.line);
-    statementIndex += 1;
-  }
-
-  const scaleStatement = statements[statementIndex];
-  const scaleMatch = scaleStatement?.text.match(/^t2\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/);
-  if (scaleStatement && scaleMatch) {
-    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
-    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
-      profileViolation("LineJoints profile V10 scale must use one bounded canonical positive Studio literal.");
-    }
-    scale = factor;
-    removedLines.add(scaleStatement.line);
-    statementIndex += 1;
-  }
-
-  if (
-    removedLines.size === 0 ||
-    statements.length !== statementIndex + 1 ||
-    statements[statementIndex]?.text !== "self.add(grp)"
-  ) {
-    profileViolation("LineJoints profile V10 source is not the official generation or one bounded central-leaf edit.");
-  }
-  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
-  if (
-    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
-    FAST_MANIM_LINE_JOINTS_OFFICIAL_SOURCE_SHA256_V10
-  ) {
-    profileViolation("Removing the bounded LineJoints V10 edits must reconstruct the exact official source bytes.");
-  }
-  return lineJointsV10TransformPlanSchema.parse({ moveTo, scale });
-}
-
-/**
- * Derives the only Studio-authored edit admitted by WriteStuff V12.
- *
- * Optional canonical move/scale statements must sit after the final VGroup
- * width assignment and before the first Write. Removing them must reconstruct
- * the byte-exact official module, preserving every other Scene and option.
- */
-export function deriveWriteStuffV12TransformPlan(source: string, sceneName: string): WriteStuffV12TransformPlan {
-  if (sceneName !== "WriteStuff") {
-    profileViolation("WriteStuff profile V12 source verification requires the exact selected Scene name.");
-  }
-  const sourceDigest = createHash("sha256").update(source, "utf8").digest("hex");
-  if (sourceDigest === FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12) return WRITE_STUFF_V12_EMPTY_PLAN;
-
-  const analysis = analyzePythonSource(source);
-  let statements: ReturnType<typeof findSourceSceneStatements>;
-  try {
-    statements = findSourceSceneStatements(source, sceneName, FAST_MANIM_WRITE_STUFF_SOURCE_PATH_V12);
-  } catch (cause) {
-    throw new FastManimSnapshotContractError(
-      "profile-violation",
-      "WriteStuff profile V12 source does not identify one unambiguous selected Scene.",
-      { cause },
-    );
-  }
-  const fixedPrefix = [
-    'example_text = Tex("This is a some text", tex_to_color_map={"text": YELLOW})',
-    'example_tex = MathTex(\n"\\\\sum_{k=1}^\\\\infty {1 \\\\over k^2} = {\\\\pi^2 \\\\over 6}",\n)',
-    "group = VGroup(example_text, example_tex)",
-    "group.arrange(DOWN)",
-    'group.width = config["frame_width"] - 2 * LARGE_BUFF',
-  ] as const;
-  if (!analysis.valid || fixedPrefix.some((text, index) => statements[index]?.text !== text)) {
-    profileViolation("WriteStuff profile V12 edits require the exact official Tex/MathTex and VGroup layout prefix.");
-  }
-
-  const sourceLines = source.split("\n");
-  const removedLines = new Set<number>();
-  let statementIndex = fixedPrefix.length;
-  let moveTo: WriteStuffV12TransformPlan["moveTo"] = null;
-  let scale: number | null = null;
-
-  const moveStatement = statements[statementIndex];
-  const moveMatch = moveStatement?.text.match(
-    /^example_tex\.move_to\(\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), (-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?), 0\)\)$/,
-  );
-  if (moveStatement && moveMatch) {
-    const x = warpSquareV9CanonicalNumber(moveMatch[1]!);
-    const y = warpSquareV9CanonicalNumber(moveMatch[2]!);
-    if (x === null || y === null || sourceLines[moveStatement.line] !== `        ${moveStatement.text}`) {
-      profileViolation("WriteStuff profile V12 move_to must use bounded canonical Studio literals.");
-    }
-    moveTo = { x, y };
-    removedLines.add(moveStatement.line);
-    statementIndex += 1;
-  }
-
-  const scaleStatement = statements[statementIndex];
-  const scaleMatch = scaleStatement?.text.match(
-    /^example_tex\.scale\((-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:e[+-]?[0-9]+)?)\)$/,
-  );
-  if (scaleStatement && scaleMatch) {
-    const factor = warpSquareV9CanonicalNumber(scaleMatch[1]!, true);
-    if (factor === null || sourceLines[scaleStatement.line] !== `        ${scaleStatement.text}`) {
-      profileViolation("WriteStuff profile V12 scale must use one bounded canonical positive Studio literal.");
-    }
-    scale = factor;
-    removedLines.add(scaleStatement.line);
-    statementIndex += 1;
-  }
-
-  if (
-    removedLines.size === 0 ||
-    statements.length !== statementIndex + 3 ||
-    statements[statementIndex]?.text !== "self.play(Write(example_text))" ||
-    statements[statementIndex + 1]?.text !== "self.play(Write(example_tex))" ||
-    statements[statementIndex + 2]?.text !== "self.wait()"
-  ) {
-    profileViolation("WriteStuff profile V12 source is not the official generation or one bounded equation edit.");
-  }
-  const reconstructed = sourceLines.filter((_line, index) => !removedLines.has(index)).join("\n");
-  if (
-    createHash("sha256").update(reconstructed, "utf8").digest("hex") !==
-    FAST_MANIM_WRITE_STUFF_OFFICIAL_SOURCE_SHA256_V12
-  ) {
-    profileViolation("Removing the bounded WriteStuff V12 edits must reconstruct the exact official source bytes.");
-  }
-  return writeStuffV12TransformPlanSchema.parse({ moveTo, scale });
-}
 
 type WarpSquarePointV9 = { x: number; y: number };
 
@@ -3091,7 +2813,7 @@ function assertSquareToCircleProducerProvenanceV8(
       ? 75
       : sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8 && plan.moveTo === null
         ? 7
-        : sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8 && plan.moveTo !== null
+        : sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_PATH_V8 && plan.moveTo !== null
           ? 75
           : null;
   if (sourceAnchorLine === null) {
@@ -3176,7 +2898,7 @@ function assertSquareToCircleProfileV8(
   const officialBase = expectedIdentity.sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8;
   const minimalBase = expectedIdentity.sourceHash === FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8;
   const editedOfficial =
-    expectedIdentity.sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8 &&
+    expectedIdentity.sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_PATH_V8 &&
     plan.moveTo !== null &&
     !FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expectedIdentity.sourceHash);
   if (
@@ -4702,10 +4424,19 @@ async function parseFastManimSnapshotResultV1(
   let hermeticMathTexV3Plan = expected.hermeticMathTexV3Plan;
   let hermeticPngV4Plan = expected.hermeticPngV4Plan;
   let hermeticMathTexMorphV5Plan = expected.hermeticMathTexMorphV5Plan;
-  let squareToCircleV8Plan = expected.squareToCircleV8Plan;
-  let warpSquareV9Plan = expected.warpSquareV9Plan;
-  let lineJointsV10Plan = expected.lineJointsV10Plan;
-  let writeStuffV12Plan = expected.writeStuffV12Plan;
+  const squareToCircleV8Plan = expected.squareToCircleV8Plan;
+  const warpSquareV9Plan = expected.warpSquareV9Plan;
+  const lineJointsV10Plan = expected.lineJointsV10Plan;
+  const writeStuffV12Plan = expected.writeStuffV12Plan;
+  if (
+    mode === "producer" &&
+    (squareToCircleV8Plan !== undefined ||
+      warpSquareV9Plan !== undefined ||
+      lineJointsV10Plan !== undefined ||
+      writeStuffV12Plan !== undefined)
+  ) {
+    profileViolation("Legacy snapshot edit plans are playback-only.");
+  }
   if (
     (expected.snapshotVersion === 3 ||
       expected.snapshotVersion === 4 ||
@@ -4725,57 +4456,8 @@ async function parseFastManimSnapshotResultV1(
       "The server-held hermetic source does not match the expected source digest.",
     );
   }
-  if (expected.snapshotVersion === 8 && mode === "producer" && sourceText === undefined) {
-    profileViolation("SquareToCircle profile V8 requires the exact server-held source during sealing.");
-  }
-  if (expected.snapshotVersion === 9 && mode === "producer" && sourceText === undefined) {
-    profileViolation("WarpSquare profile V9 requires the exact server-held source during sealing.");
-  }
-  if (expected.snapshotVersion === 10 && mode === "producer" && sourceText === undefined) {
-    profileViolation("LineJoints profile V10 requires the exact server-held source during sealing.");
-  }
   if (expected.snapshotVersion === 11 && mode === "producer" && sourceText === undefined) {
     profileViolation("SpiralIn profile V11 requires the exact server-held source during sealing.");
-  }
-  if (expected.snapshotVersion === 12 && mode === "producer" && sourceText === undefined) {
-    profileViolation("WriteStuff profile V12 requires the exact server-held source during sealing.");
-  }
-  if (expected.snapshotVersion === 8 && mode === "producer" && sourceText !== undefined) {
-    let derivedPlan: SquareToCircleV8PositionPlan;
-    try {
-      derivedPlan = FAST_MANIM_SQUARE_TO_CIRCLE_SOURCE_HASHES_V8.has(expected.sourceHash)
-        ? SQUARE_TO_CIRCLE_V8_EMPTY_PLAN
-        : expected.sourcePath === FAST_MANIM_SQUARE_TO_CIRCLE_CANDIDATE_SOURCE_PATH_V8
-          ? deriveSquareToCircleV8PositionPlan(sourceText, expected.sceneName)
-          : profileViolation("SquareToCircle profile V8 source path is outside its audited source family.");
-    } catch {
-      derivedPlan = profileViolation("SquareToCircle profile V8 source does not match its audited position edit.");
-    }
-    if (squareToCircleV8Plan && canonicalJsonV1(squareToCircleV8Plan) !== canonicalJsonV1(derivedPlan)) {
-      profileViolation("The retained SquareToCircle position plan does not match the server-held source.");
-    }
-    squareToCircleV8Plan = derivedPlan;
-  }
-  if (expected.snapshotVersion === 9 && mode === "producer" && sourceText !== undefined) {
-    const derivedPlan = deriveWarpSquareV9TransformPlan(sourceText, expected.sceneName);
-    if (warpSquareV9Plan && canonicalJsonV1(warpSquareV9Plan) !== canonicalJsonV1(derivedPlan)) {
-      profileViolation("The retained WarpSquare transform plan does not match the server-held source.");
-    }
-    warpSquareV9Plan = derivedPlan;
-  }
-  if (expected.snapshotVersion === 10 && mode === "producer" && sourceText !== undefined) {
-    const derivedPlan = deriveLineJointsV10TransformPlan(sourceText, expected.sceneName);
-    if (lineJointsV10Plan && canonicalJsonV1(lineJointsV10Plan) !== canonicalJsonV1(derivedPlan)) {
-      profileViolation("The retained LineJoints transform plan does not match the server-held source.");
-    }
-    lineJointsV10Plan = derivedPlan;
-  }
-  if (expected.snapshotVersion === 12 && mode === "producer" && sourceText !== undefined) {
-    const derivedPlan = deriveWriteStuffV12TransformPlan(sourceText, expected.sceneName);
-    if (writeStuffV12Plan && canonicalJsonV1(writeStuffV12Plan) !== canonicalJsonV1(derivedPlan)) {
-      profileViolation("The retained WriteStuff transform plan does not match the server-held source.");
-    }
-    writeStuffV12Plan = derivedPlan;
   }
   if (
     (expected.snapshotVersion === 3 || expected.snapshotVersion === 7) &&

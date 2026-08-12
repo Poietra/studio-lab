@@ -1,47 +1,27 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { LoweredProgramBatchSource } from "../src/render-pipeline/source-lowering";
-import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
-import { lowerManimRenderRequest } from "./manim-render-request-lowering";
+import { request } from "./manim-render-pipeline-test-fixtures";
+import { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import { sourceHash } from "./manim-source-store";
-import {
-  CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-  CANDIDATE_PREFLIGHT_PROFILES_V1,
-} from "./test-fixtures/manim-render-candidate-preflight-fixture";
 
-describe("ManimRenderCandidateVerifierV1", () => {
+describe("ManimRuntimeTraceEditVerifier", () => {
   it("fails an unregistered candidate profile closed before producer execution", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { lowered, renderRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
-    expect(lowered.preflight).toBeDefined();
+    const renderRequest = request();
     const unsupported = {
-      ...lowered,
-      preflight: { ...lowered.preflight, kind: "fast-manim-future-unregistered-v11" },
+      anchorLine: 1,
+      anchorLines: [1],
+      insertedCode: "pass",
+      preflight: { baseSourceHash: renderRequest.sourceHash, kind: "fast-manim-future-unregistered" },
+      source: "candidate",
     } as unknown as LoweredProgramBatchSource;
-    const runCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished },
-    });
+    const verifier = new ManimRuntimeTraceEditVerifier({});
 
     await expect(verifier.verify(unsupported, renderRequest)).rejects.toMatchObject({ status: 409 });
-
-    expect(runCandidateUnpublished).not.toHaveBeenCalled();
   });
 
   it("delegates UpdatersExample terminal edits to exact Runtime Trace execution", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass UpdatersExample(Scene):\n    pass\n";
     const lowered = {
       anchorLine: 129,
@@ -64,10 +44,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "a".repeat(64),
     });
-    const runCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -81,17 +58,10 @@ describe("ManimRenderCandidateVerifierV1", () => {
       }),
       undefined,
     );
-    expect(runCandidateUnpublished).not.toHaveBeenCalled();
   });
 
   it("delegates OpeningManim terminal position edits to exact Runtime Trace V2 execution", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass OpeningManim(Scene):\n    pass\n";
     const lowered = {
       anchorLine: 68,
@@ -114,10 +84,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "b".repeat(64),
     });
-    const runCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -131,17 +98,10 @@ describe("ManimRenderCandidateVerifierV1", () => {
       }),
       undefined,
     );
-    expect(runCandidateUnpublished).not.toHaveBeenCalled();
   });
 
   it("delegates one source-bound generic initial move with its server-derived target evidence", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
     const baseSourceHash = "c".repeat(64);
@@ -159,7 +119,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
         baseSourceHash,
         entityId,
         expectedWorldCenter: { x: 1.25, y: -0.5 },
-        kind: "fast-manim-generic-initial-move-v3" as const,
+        kind: "runtime-trace-initial-move" as const,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -175,9 +135,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "e".repeat(64),
     });
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -185,7 +143,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        genericInitialMove: lowered.preflight,
+        initialMove: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -195,13 +153,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
   });
 
   it("delegates one source-bound generic initial resize with its server-derived factor evidence", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
     const baseSourceHash = "c".repeat(64);
@@ -219,7 +171,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
         baseSourceHash,
         entityId,
         expectedScaleFactor: 1.5,
-        kind: "fast-manim-generic-initial-resize-v3" as const,
+        kind: "runtime-trace-initial-resize" as const,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -235,9 +187,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "e".repeat(64),
     });
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -245,7 +195,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        genericInitialResize: lowered.preflight,
+        initialResize: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -255,13 +205,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
   });
 
   it("delegates one source-bound generic initial opacity with its server-derived value", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
     const baseSourceHash = "c".repeat(64);
@@ -279,7 +223,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
         baseSourceHash,
         entityId,
         expectedOpacity: 0.35,
-        kind: "fast-manim-generic-initial-opacity-v3" as const,
+        kind: "runtime-trace-initial-opacity" as const,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -295,9 +239,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "e".repeat(64),
     });
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -305,7 +247,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        genericInitialOpacity: lowered.preflight,
+        initialOpacity: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -315,13 +257,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
   });
 
   it("delegates one source-bound generic initial rotation with its server-derived angle evidence", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest: fixtureRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
     const baseSourceHash = "c".repeat(64);
@@ -339,7 +275,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
         baseSourceHash,
         entityId,
         expectedAngleRadians: 0.5,
-        kind: "fast-manim-generic-initial-rotation-v3" as const,
+        kind: "runtime-trace-initial-rotation" as const,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -355,9 +291,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       status: "verified",
       traceDigest: "e".repeat(64),
     });
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
@@ -365,7 +299,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        genericInitialRotation: lowered.preflight,
+        initialRotation: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -378,9 +312,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
     const candidateSource = "candidate";
     const entityId = "source:scene.py#StaticSquare:square";
     const runRuntimeTraceCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
     for (const expectedScaleFactor of [1, 0, -1.5, Number.NaN]) {
@@ -398,12 +330,12 @@ describe("ManimRenderCandidateVerifierV1", () => {
           baseSourceHash: "c".repeat(64),
           entityId,
           expectedScaleFactor,
-          kind: "fast-manim-generic-initial-resize-v3" as const,
+          kind: "runtime-trace-initial-resize" as const,
         },
         source: candidateSource,
       } satisfies LoweredProgramBatchSource;
       const renderRequest = {
-        ...CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request(),
+        ...request(),
         sceneName: "StaticSquare",
         sourceBindings: [{ entityId, sourceVariable: "square" }],
         sourceHash: "c".repeat(64),
@@ -417,9 +349,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
   it("rejects a generic initial opacity outside the closed unit interval", async () => {
     const entityId = "source:scene.py#StaticSquare:square";
     const runRuntimeTraceCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
     for (const expectedOpacity of [-0.1, 1.1, Number.NaN]) {
@@ -437,13 +367,13 @@ describe("ManimRenderCandidateVerifierV1", () => {
           baseSourceHash: "c".repeat(64),
           entityId,
           expectedOpacity,
-          kind: "fast-manim-generic-initial-opacity-v3" as const,
+          kind: "runtime-trace-initial-opacity" as const,
         },
         source: "candidate",
       } satisfies LoweredProgramBatchSource;
       await expect(
         verifier.verify(lowered, {
-          ...CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request(),
+          ...request(),
           sceneName: "StaticSquare",
           sourceBindings: [{ entityId, sourceVariable: "square" }],
           sourceHash: lowered.preflight.baseSourceHash,
@@ -471,20 +401,18 @@ describe("ManimRenderCandidateVerifierV1", () => {
         baseSourceHash: "b".repeat(64),
         entityId,
         expectedWorldCenter: { x: 1, y: 1 },
-        kind: "fast-manim-generic-initial-move-v3" as const,
+        kind: "runtime-trace-initial-move" as const,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
     const runRuntimeTraceCandidateUnpublished = vi.fn();
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
+    const verifier = new ManimRuntimeTraceEditVerifier({
       runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
     });
 
     await expect(
       verifier.verify(lowered, {
-        ...CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request(),
+        ...request(),
         sourceBindings: [{ entityId: "another-entity", sourceVariable: "square" }],
         sourceHash: lowered.preflight.baseSourceHash,
       }),
@@ -493,13 +421,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
   });
 
   it("fails UpdatersExample edits closed without Runtime Trace authority", async () => {
-    const input = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!.request();
-    const { renderRequest } = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-      projectId: input.projectId,
-      request: input,
-    });
+    const renderRequest = request();
     const lowered = {
       anchorLine: 129,
       anchorLines: [129],
@@ -510,10 +432,7 @@ describe("ManimRenderCandidateVerifierV1", () => {
       },
       source: "candidate",
     } satisfies LoweredProgramBatchSource;
-    const verifier = new ManimRenderCandidateVerifierV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      runner: { runCandidateUnpublished: vi.fn() },
-    });
+    const verifier = new ManimRuntimeTraceEditVerifier({});
 
     await expect(verifier.verify(lowered, renderRequest)).rejects.toMatchObject({ status: 409 });
   });

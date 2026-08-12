@@ -11,29 +11,16 @@ import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 const frame = { height: 8, width: 14.222 } as const;
 const sourcePath = "scene.py";
 const entityId = "source:scene.py#GroupedEquation:equation";
-const warpSquareSourcePath = "example_scenes/basic.py";
-const warpSquareEntityId = `source:${warpSquareSourcePath}#WarpSquare:square`;
-const warpSquareSource = readFileSync(
+const exampleScenesSourcePath = "example_scenes/basic.py";
+const warpSquareEntityId = `source:${exampleScenesSourcePath}#WarpSquare:square`;
+const exampleScenesSource = readFileSync(
   new URL("../fixtures/real-preview-harness/example_scenes/basic.py", import.meta.url),
   "utf8",
 );
-const lineJointsSourcePath = "example_scenes/basic.py";
-const lineJointsSceneName = "LineJoints";
-const lineJointsEntityId = `source:${lineJointsSourcePath}#${lineJointsSceneName}:t2`;
-const lineJointsSourceBindings = ["t1", "t2", "t3", "grp"].map((sourceVariable) => ({
-  entityId: `source:${lineJointsSourcePath}#${lineJointsSceneName}:${sourceVariable}`,
-  sourceVariable,
-}));
-const writeStuffSceneName = "WriteStuff";
-const writeStuffEntityId = `source:${warpSquareSourcePath}#${writeStuffSceneName}:example_tex`;
-const writeStuffSourceBindings = ["example_text", "example_tex", "group"].map((sourceVariable) => ({
-  entityId: `source:${warpSquareSourcePath}#${writeStuffSceneName}:${sourceVariable}`,
-  sourceVariable,
-}));
 const updatersSceneName = "UpdatersExample";
-const updatersSquareEntityId = `source:${warpSquareSourcePath}#${updatersSceneName}:square`;
+const updatersSquareEntityId = `source:${exampleScenesSourcePath}#${updatersSceneName}:square`;
 const openingSceneName = "OpeningManim";
-const openingGridTitleEntityId = `source:${warpSquareSourcePath}#${openingSceneName}:grid_title`;
+const openingGridTitleEntityId = `source:${exampleScenesSourcePath}#${openingSceneName}:grid_title`;
 const staticSquareSourcePath = "scenes/static_square.py";
 const staticSquareSceneName = "StaticSquare";
 const staticSquareEntityId = `source:${staticSquareSourcePath}#${staticSquareSceneName}:square`;
@@ -155,7 +142,7 @@ describe("Manim render request lowering", () => {
       interval: { end: 0, start: 0 },
       key: "position",
       kind: "SetProperty",
-      provenance: { evidence: ["generic Runtime Trace V3 root"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace root"], origin: "direct-manipulation" },
       value: { x: 410, y: 135 },
     };
     const editProgram: CanonicalEditProgram = {
@@ -168,7 +155,7 @@ describe("Manim render request lowering", () => {
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["generic Runtime Trace V3 initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace initial edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: "generic-v3-initial-move",
@@ -197,7 +184,7 @@ describe("Manim render request lowering", () => {
       baseBinding: { name: "square", ordinal: 1 },
       entityId: staticSquareEntityId,
       expectedWorldCenter: { x: 2, y: 1 },
-      kind: "fast-manim-generic-initial-move-v3",
+      kind: "runtime-trace-initial-move",
     });
     expect(result.lowered.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.move_to((2, 1, 0))",
@@ -214,7 +201,7 @@ describe("Manim render request lowering", () => {
       interval: { end: 0, start: 0 },
       key: "scale",
       kind: "AnimateProperty",
-      provenance: { evidence: ["generic Runtime Trace V3 root"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace root"], origin: "direct-manipulation" },
       relativeFactor: 1.5,
       to: 1.5,
     };
@@ -228,7 +215,7 @@ describe("Manim render request lowering", () => {
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["generic Runtime Trace V3 initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace initial edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: "generic-v3-initial-resize",
@@ -257,14 +244,14 @@ describe("Manim render request lowering", () => {
       baseBinding: { name: "square", ordinal: 1 },
       entityId: staticSquareEntityId,
       expectedScaleFactor: 1.5,
-      kind: "fast-manim-generic-initial-resize-v3",
+      kind: "runtime-trace-initial-resize",
     });
     expect(result.lowered.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.scale(1.5)",
     );
   });
 
-  it("routes one source-time-zero WarpSquare V9 transform through the bounded early lowerer", () => {
+  it("routes a former pinned Scene name through generic Runtime Trace evidence", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId: warpSquareEntityId,
@@ -272,28 +259,28 @@ describe("Manim render request lowering", () => {
       interval: { end: 0, start: 0 },
       key: "position",
       kind: "SetProperty",
-      provenance: { evidence: ["verified WarpSquare V9 source-time zero"], origin: "direct-manipulation" },
+      provenance: { evidence: ["verified generic source-time zero"], origin: "direct-manipulation" },
       value: { x: 410, y: 135 },
     };
     const editProgram: CanonicalEditProgram = {
       anchor: {
         capturedPlayhead: 0,
-        evidence: ["verified WarpSquare V9 source-time zero"],
+        evidence: ["verified generic source-time zero"],
         resolvedSeconds: 0,
         source: { kind: "absolute", seconds: 0 },
       },
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["WarpSquare V9 initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["generic Runtime Trace initial edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "warp-square-v9-initial-transform",
+      transactionId: "generic-warp-square-initial-transform",
       version: 1,
     };
     const result = lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
-      originalSource: warpSquareSource,
+      originalSource: exampleScenesSource,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -302,116 +289,14 @@ describe("Manim render request lowering", () => {
         projectId: "default",
         sceneName: "WarpSquare",
         sourceBindings: [{ entityId: warpSquareEntityId, sourceVariable: "square" }],
-        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
-        sourcePath: warpSquareSourcePath,
+        sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
+        sourcePath: exampleScenesSourcePath,
         viewport: { height: 360, width: 640 },
       },
     });
 
-    expect(result.lowered.preflight?.kind).toBe("fast-manim-warp-square-v9");
+    expect(result.lowered.preflight?.kind).toBe("runtime-trace-initial-move");
     expect(result.lowered.source).toContain("        square.move_to((2, 1, 0))\n        self.play(");
-  });
-
-  it("routes one source-time-zero LineJoints V10 leaf transform through the bounded early lowerer", () => {
-    const operation: CanonicalEditOperation = {
-      dependsOn: [],
-      entityId: lineJointsEntityId,
-      id: "line-joints-position",
-      interval: { end: 0, start: 0 },
-      key: "position",
-      kind: "SetProperty",
-      provenance: { evidence: ["verified LineJoints V10 source-time zero"], origin: "direct-manipulation" },
-      value: { x: 410, y: 135 },
-    };
-    const editProgram: CanonicalEditProgram = {
-      anchor: {
-        capturedPlayhead: 0,
-        evidence: ["verified LineJoints V10 source-time zero"],
-        resolvedSeconds: 0,
-        source: { kind: "absolute", seconds: 0 },
-      },
-      intentCount: 1,
-      loweringStatus: "supported",
-      operations: [operation],
-      provenance: { evidence: ["LineJoints V10 central-leaf edit"], origin: "direct-manipulation" },
-      requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "line-joints-v10-initial-transform",
-      version: 1,
-    };
-    const result = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: warpSquareSource,
-      projectId: "default",
-      request: {
-        cameraCenter: { x: 0, y: 0 },
-        destination: null,
-        program: editProgram,
-        projectId: "default",
-        sceneName: lineJointsSceneName,
-        sourceBindings: lineJointsSourceBindings,
-        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
-        sourcePath: lineJointsSourcePath,
-        viewport: { height: 360, width: 640 },
-      },
-    });
-
-    expect(result.lowered.preflight?.kind).toBe("fast-manim-line-joints-v10");
-    expect(result.lowered.source).toContain(
-      "        grp.set(width=config.frame_width - 1)\n        t2.move_to((2, 1, 0))\n\n        self.add(grp)",
-    );
-  });
-
-  it("routes one source-time-zero WriteStuff V12 equation transform through the bounded early lowerer", () => {
-    const operation: CanonicalEditOperation = {
-      dependsOn: [],
-      entityId: writeStuffEntityId,
-      id: "write-stuff-position",
-      interval: { end: 0, start: 0 },
-      key: "position",
-      kind: "SetProperty",
-      provenance: { evidence: ["verified WriteStuff V12 source-time zero"], origin: "direct-manipulation" },
-      value: { x: 376.25, y: 202.5 },
-    };
-    const editProgram: CanonicalEditProgram = {
-      anchor: {
-        capturedPlayhead: 0,
-        evidence: ["verified WriteStuff V12 source-time zero"],
-        resolvedSeconds: 0,
-        source: { kind: "absolute", seconds: 0 },
-      },
-      intentCount: 1,
-      loweringStatus: "supported",
-      operations: [operation],
-      provenance: { evidence: ["WriteStuff V12 equation edit"], origin: "direct-manipulation" },
-      requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "write-stuff-v12-initial-transform",
-      version: 1,
-    };
-    const result = lowerManimRenderRequest({
-      frame: { height: 8, width: 14.222222222222221 },
-      originalSource: warpSquareSource,
-      projectId: "default",
-      request: {
-        cameraCenter: { x: 0, y: 0 },
-        destination: null,
-        program: editProgram,
-        projectId: "default",
-        sceneName: writeStuffSceneName,
-        sourceBindings: writeStuffSourceBindings,
-        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
-        sourcePath: warpSquareSourcePath,
-        viewport: { height: 360, width: 640 },
-      },
-    });
-
-    expect(result.lowered.preflight?.kind).toBe("fast-manim-write-stuff-v12");
-    expect(result.lowered.source).toContain(
-      '        group.width = config["frame_width"] - 2 * LARGE_BUFF\n' +
-        "        example_tex.move_to((1.25, -0.5, 0))\n\n" +
-        "        self.play(Write(example_text))",
-    );
   });
 
   it("routes one five-second UpdatersExample resize through the bounded early lowerer", () => {
@@ -445,7 +330,7 @@ describe("Manim render request lowering", () => {
     };
     const result = lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
-      originalSource: warpSquareSource,
+      originalSource: exampleScenesSource,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -454,8 +339,8 @@ describe("Manim render request lowering", () => {
         projectId: "default",
         sceneName: updatersSceneName,
         sourceBindings: [{ entityId: updatersSquareEntityId, sourceVariable: "square" }],
-        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
-        sourcePath: warpSquareSourcePath,
+        sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
+        sourcePath: exampleScenesSourcePath,
         viewport: { height: 360, width: 640 },
       },
     });
@@ -504,7 +389,7 @@ describe("Manim render request lowering", () => {
 
     const result = lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
-      originalSource: warpSquareSource,
+      originalSource: exampleScenesSource,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -513,8 +398,8 @@ describe("Manim render request lowering", () => {
         projectId: "default",
         sceneName: openingSceneName,
         sourceBindings: [{ entityId: openingGridTitleEntityId, sourceVariable: "grid_title" }],
-        sourceHash: createHash("sha256").update(warpSquareSource).digest("hex"),
-        sourcePath: warpSquareSourcePath,
+        sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
+        sourcePath: exampleScenesSourcePath,
         viewport,
       },
     });

@@ -8,9 +8,9 @@ import { describe, expect, it } from "vitest";
 
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import {
-  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
+  deriveRuntimeTraceInitialMoveSourceEditPlan,
+  deriveRuntimeTraceInitialResizeSourceEditPlan,
+  deriveRuntimeTraceInitialRotationSourceEditPlan,
 } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
@@ -121,12 +121,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
-        candidateSource,
-        "StaticSquare",
-        sourcePath,
-        "square",
-      );
+      const plan = deriveRuntimeTraceInitialMoveSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -144,12 +139,12 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          genericInitialMove: {
+          initialMove: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticSquare:square`,
             expectedWorldCenter: plan.expectedWorldCenter,
-            kind: "fast-manim-generic-initial-move-v3",
+            kind: "runtime-trace-initial-move",
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-candidate-real-1",
@@ -205,12 +200,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
-        candidateSource,
-        "StaticSquare",
-        sourcePath,
-        "square",
-      );
+      const plan = deriveRuntimeTraceInitialResizeSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -228,12 +218,12 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          genericInitialResize: {
+          initialResize: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticSquare:square`,
             expectedScaleFactor: plan.expectedScaleFactor,
-            kind: "fast-manim-generic-initial-resize-v3",
+            kind: "runtime-trace-initial-resize",
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-resize-real-1",
@@ -290,7 +280,7 @@ class StaticTriangle(Scene):
         "        triangle.rotate(0.3)\n",
         "        triangle.rotate(0.3)\n        triangle.rotate(0.261799387799)\n",
       );
-      const plan = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+      const plan = deriveRuntimeTraceInitialRotationSourceEditPlan(
         candidateSource,
         "StaticTriangle",
         sourcePath,
@@ -313,12 +303,12 @@ class StaticTriangle(Scene):
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          genericInitialRotation: {
+          initialRotation: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticTriangle:triangle`,
             expectedAngleRadians: plan.expectedAngleRadians,
-            kind: "fast-manim-generic-initial-rotation-v3",
+            kind: "runtime-trace-initial-rotation",
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-rotation-real-1",

@@ -1,9 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import type { RenderCommitRequest } from "../src/render-pipeline/contracts";
+import type { ProgramRenderRequest, RenderCommitRequest } from "../src/render-pipeline/contracts";
+import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
 import { type DurableManimRenderServiceOptionsV1, DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { HttpError } from "./http/json";
-import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import { request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import { renderCommitCorrelationKey } from "./manim-render-session-policy";
 import { sourceHash } from "./manim-source-store";
@@ -18,11 +18,6 @@ import type {
   WorkspaceSourceHeadV1,
   WorkspaceSourceRepositoryV1,
 } from "./storage/workspace-source-repository";
-import {
-  CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
-  CANDIDATE_PREFLIGHT_PROFILES_V1,
-  CANDIDATE_PREFLIGHT_REJECTION_CASES_V1,
-} from "./test-fixtures/manim-render-candidate-preflight-fixture";
 
 function partial<T>(value: Partial<T>): T {
   return value as T;
@@ -82,7 +77,7 @@ function sessionFromCreate(input: CreateDurableRenderSessionInputV1): DurableRen
 function fixture(
   overrides: Readonly<{
     artifactReader?: DurableManimRenderServiceOptionsV1["artifactReader"];
-    candidateVerifier?: DurableManimRenderServiceOptionsV1["candidateVerifier"];
+    runtimeTraceEditVerifier?: DurableManimRenderServiceOptionsV1["runtimeTraceEditVerifier"];
     createSession?: RenderSessionRepositoryV1["createSession"];
     originalHead?: WorkspaceSourceHeadV1;
     originalSource?: string;
@@ -130,7 +125,7 @@ function fixture(
   const service = new DurableManimRenderServiceV1({
     ...(overrides.artifactReader ? { artifactReader: overrides.artifactReader } : {}),
     blobs,
-    ...(overrides.candidateVerifier ? { candidateVerifier: overrides.candidateVerifier } : {}),
+    ...(overrides.runtimeTraceEditVerifier ? { runtimeTraceEditVerifier: overrides.runtimeTraceEditVerifier } : {}),
     execution: { cancel: executionCancel, wake },
     frame: { height: 8, width: 14.222 },
     repository,
@@ -154,16 +149,67 @@ function fixture(
   };
 }
 
-function candidateFixture(
-  profile: (typeof CANDIDATE_PREFLIGHT_PROFILES_V1)[number],
+const genericSource = `from manim import *
+
+class StaticSquare(Scene):
+    def construct(self):
+        square = Square()
+        self.add(square)
+        self.wait(1 / 60)
+`;
+
+type RuntimeTraceEditVerify = NonNullable<DurableManimRenderServiceOptionsV1["runtimeTraceEditVerifier"]>["verify"];
+
+function initialMoveRequest(): ProgramRenderRequest {
+  const sourcePath = "scenes/static_square.py";
+  const sceneName = "StaticSquare";
+  const entityId = `source:${sourcePath}#${sceneName}:square`;
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: "generic-initial-position",
+    interval: { end: 0, start: 0 },
+    key: "position",
+    kind: "SetProperty",
+    provenance: { evidence: ["runtime trace"], origin: "direct-manipulation" },
+    value: { x: 410, y: 135 },
+  };
+  const program: CanonicalEditProgram = {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["source-time zero"],
+      resolvedSeconds: 0,
+      source: { kind: "absolute", seconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["runtime trace"], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "generic-initial-move",
+    version: 1,
+  };
+  return {
+    cameraCenter: { x: 0, y: 0 },
+    destination: null,
+    program,
+    projectId: "default",
+    sceneName,
+    sourceBindings: [{ entityId, sourceVariable: "square" }],
+    sourceHash: sourceHash(genericSource),
+    sourcePath,
+    viewport: { height: 360, width: 640 },
+  };
+}
+
+function runtimeTraceEditFixture(
   options: Readonly<{
-    beforeRunnerResult?: () => void;
-    candidateVerifier?: DurableManimRenderServiceOptionsV1["candidateVerifier"] | null;
-    mutate?: (result: ReturnType<typeof profile.verifiedCandidate>) => ReturnType<typeof profile.verifiedCandidate>;
-    runnerError?: unknown;
+    runtimeTraceEditVerifier?: DurableManimRenderServiceOptionsV1["runtimeTraceEditVerifier"] | null;
+    verify?: RuntimeTraceEditVerify;
   }> = {},
 ) {
-  const input = profile.request();
+  const input = initialMoveRequest();
   const head: WorkspaceSourceHeadV1 = {
     blob: receipt(input.sourceHash, "candidate-source-version"),
     generation: 4n,
@@ -171,29 +217,18 @@ function candidateFixture(
     sourcePath: input.sourcePath,
     tenantId: "tenant-a",
   };
-  const runCandidateUnpublished = vi.fn(async (candidateSource, runRequest) => {
-    options.beforeRunnerResult?.();
-    if (options.runnerError !== undefined) throw options.runnerError;
-    const verified = profile.verifiedCandidate(candidateSource, runRequest);
-    return options.mutate ? options.mutate(verified) : verified;
-  });
-  const candidateVerifier =
-    options.candidateVerifier === null
-      ? undefined
-      : (options.candidateVerifier ??
-        new ManimRenderCandidateVerifierV1({
-          frame: { height: 8, width: 14.222222222222221 },
-          runner: { runCandidateUnpublished },
-        }));
+  const verify = vi.fn(options.verify ?? (async () => undefined));
+  const runtimeTraceEditVerifier =
+    options.runtimeTraceEditVerifier === null ? undefined : (options.runtimeTraceEditVerifier ?? { verify });
   return {
     ...fixture({
-      ...(candidateVerifier ? { candidateVerifier } : {}),
+      ...(runtimeTraceEditVerifier ? { runtimeTraceEditVerifier } : {}),
       originalHead: head,
-      originalSource: CANDIDATE_PREFLIGHT_OFFICIAL_SOURCE_V1,
+      originalSource: genericSource,
     }),
     head,
     input,
-    runCandidateUnpublished,
+    verify,
   };
 }
 
@@ -227,32 +262,28 @@ describe("DurableManimRenderServiceV1", () => {
     expect(wake).toHaveBeenCalledOnce();
   });
 
-  it.each(CANDIDATE_PREFLIGHT_PROFILES_V1)(
-    "verifies $label candidate bytes before any durable render side effect",
-    async (profile) => {
-      const { createSession, input, putSource, runCandidateUnpublished, service, wake } = candidateFixture(profile);
+  it("verifies a generic Runtime Trace edit before any durable render side effect", async () => {
+    const { createSession, input, putSource, service, verify, wake } = runtimeTraceEditFixture();
 
-      await expect(service.start(input)).resolves.toMatchObject({ status: "preparing" });
+    await expect(service.start(input)).resolves.toMatchObject({ status: "preparing" });
 
-      expect(runCandidateUnpublished).toHaveBeenCalledOnce();
-      expect(runCandidateUnpublished.mock.calls[0]?.[0]).toContain(profile.candidateSnippet);
-      expect(runCandidateUnpublished.mock.invocationCallOrder[0]).toBeLessThan(putSource.mock.invocationCallOrder[0]!);
-      expect(putSource.mock.invocationCallOrder[0]).toBeLessThan(createSession.mock.invocationCallOrder[0]!);
-      expect(wake).toHaveBeenCalledOnce();
-    },
-  );
+    expect(verify).toHaveBeenCalledOnce();
+    expect(verify.mock.invocationCallOrder[0]).toBeLessThan(putSource.mock.invocationCallOrder[0]!);
+    expect(putSource.mock.invocationCallOrder[0]).toBeLessThan(createSession.mock.invocationCallOrder[0]!);
+    expect(wake).toHaveBeenCalledOnce();
+  });
 
-  it.each(
-    CANDIDATE_PREFLIGHT_PROFILES_V1.flatMap((profile) =>
-      CANDIDATE_PREFLIGHT_REJECTION_CASES_V1.map((rejection) => ({ profile, rejection })),
-    ),
-  )("fails $profile.label closed without durable residue for $rejection.label", async ({ profile, rejection }) => {
-    const { createSession, input, putSource, queueBlobDeletion, service, wake } = candidateFixture(profile, {
-      mutate: rejection.mutate,
+  it("leaves no durable residue when generic Runtime Trace edit verification rejects", async () => {
+    const failure = new HttpError("candidate rejected", 409);
+    const { createSession, input, putSource, queueBlobDeletion, service, verify, wake } = runtimeTraceEditFixture({
+      verify: async () => {
+        throw failure;
+      },
     });
 
-    await expect(service.start(input)).rejects.toMatchObject({ status: 409 });
+    await expect(service.start(input)).rejects.toBe(failure);
 
+    expect(verify).toHaveBeenCalledOnce();
     expect(putSource).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
     expect(queueBlobDeletion).not.toHaveBeenCalled();
@@ -260,45 +291,31 @@ describe("DurableManimRenderServiceV1", () => {
   });
 
   it("fails edited candidates closed when the durable verifier is not composed", async () => {
-    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
-    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
-      candidateFixture(profile, { candidateVerifier: null });
+    const { createSession, input, putSource, queueBlobDeletion, service, verify, wake } = runtimeTraceEditFixture({
+      runtimeTraceEditVerifier: null,
+    });
 
     await expect(service.start(input)).rejects.toMatchObject({ status: 503 });
 
-    expect(runCandidateUnpublished).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
     expect(putSource).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
     expect(queueBlobDeletion).not.toHaveBeenCalled();
     expect(wake).not.toHaveBeenCalled();
   });
 
-  it("leaves no durable residue when candidate production rejects or times out", async () => {
-    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
-    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
-      candidateFixture(profile, { runnerError: new Error("candidate producer timed out") });
-
-    await expect(service.start(input)).rejects.toMatchObject({ status: 409 });
-
-    expect(runCandidateUnpublished).toHaveBeenCalledOnce();
-    expect(putSource).not.toHaveBeenCalled();
-    expect(createSession).not.toHaveBeenCalled();
-    expect(queueBlobDeletion).not.toHaveBeenCalled();
-    expect(wake).not.toHaveBeenCalled();
-  });
-
-  it("leaves no durable residue when candidate verification is aborted", async () => {
-    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
+  it("leaves no durable residue when Runtime Trace edit verification is aborted", async () => {
     const controller = new AbortController();
-    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
-      candidateFixture(profile, {
-        beforeRunnerResult: () => controller.abort(),
-        runnerError: new Error("candidate producer observed abort"),
-      });
+    const { createSession, input, putSource, queueBlobDeletion, service, verify, wake } = runtimeTraceEditFixture({
+      verify: async () => {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      },
+    });
 
     await expect(service.start(input, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
 
-    expect(runCandidateUnpublished).toHaveBeenCalledOnce();
+    expect(verify).toHaveBeenCalledOnce();
     expect(putSource).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
     expect(queueBlobDeletion).not.toHaveBeenCalled();
@@ -306,13 +323,11 @@ describe("DurableManimRenderServiceV1", () => {
   });
 
   it("leaves no durable residue when the edited source head is stale", async () => {
-    const profile = CANDIDATE_PREFLIGHT_PROFILES_V1[0]!;
-    const { createSession, input, putSource, queueBlobDeletion, runCandidateUnpublished, service, wake } =
-      candidateFixture(profile);
+    const { createSession, input, putSource, queueBlobDeletion, service, verify, wake } = runtimeTraceEditFixture();
 
     await expect(service.start({ ...input, sourceHash: "0".repeat(64) })).rejects.toMatchObject({ status: 409 });
 
-    expect(runCandidateUnpublished).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
     expect(putSource).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
     expect(queueBlobDeletion).not.toHaveBeenCalled();

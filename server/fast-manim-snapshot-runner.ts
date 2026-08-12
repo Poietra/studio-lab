@@ -14,16 +14,16 @@ import {
 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
-  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
   deriveOpeningManimTerminalPositionSourceEditPlanV2,
-  type GenericRuntimeTraceInitialEditPreflightV3,
-  type GenericRuntimeTraceInitialMovePreflightV3,
-  type GenericRuntimeTraceInitialOpacityPreflightV3,
-  type GenericRuntimeTraceInitialResizePreflightV3,
-  type GenericRuntimeTraceInitialRotationPreflightV3,
+  deriveRuntimeTraceInitialMoveSourceEditPlan,
+  deriveRuntimeTraceInitialOpacitySourceEditPlan,
+  deriveRuntimeTraceInitialResizeSourceEditPlan,
+  deriveRuntimeTraceInitialRotationSourceEditPlan,
+  type RuntimeTraceInitialEditPreflight,
+  type RuntimeTraceInitialMovePreflight,
+  type RuntimeTraceInitialOpacityPreflight,
+  type RuntimeTraceInitialResizePreflight,
+  type RuntimeTraceInitialRotationPreflight,
   recoverOpeningManimOfficialSourceV2,
   recoverUpdatersTerminalOfficialSourceV1,
 } from "../src/render-pipeline/source-lowering";
@@ -118,18 +118,13 @@ import {
   deriveHermeticMathTexMorphV5Plan,
   deriveHermeticMathTexV3TransformPlan,
   deriveHermeticPngV4TransformPlan,
-  deriveLineJointsV10TransformPlan,
   deriveMixedDynamicMathTexV7TransformPlan,
-  deriveWarpSquareV9TransformPlan,
-  deriveWriteStuffV12TransformPlan,
   digestFastManimSnapshotRuntimeConfigV1,
   type ExpectedFastManimSnapshotCorrelationV1,
   FAST_MANIM_SNAPSHOT_FALLBACK_V1,
   FAST_MANIM_SNAPSHOT_PRODUCER_REQUEST_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUN_SCHEMA_V1,
   FAST_MANIM_SNAPSHOT_RUNTIME_CAPABILITIES_V1,
-  FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8,
-  FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8,
   FastManimSnapshotContractError,
   type FastManimSnapshotProducerRequestV1,
   type FastManimSnapshotProfileVersionV1,
@@ -144,7 +139,6 @@ import {
   fastManimSnapshotRunViewV1Schema,
   fastManimSnapshotSceneIdV1,
   MAX_FAST_MANIM_PROFILE_SELECTION_RESULT_JSON_BYTES,
-  MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES,
   parseAndSealFastManimSnapshotProducerJsonV1,
   parseVerifiedFastManimSnapshotResultV1,
   type VerifiedCompiledFastManimSnapshotResultV1,
@@ -179,7 +173,6 @@ import {
   parseVerifiedSourceRuntimeIdentityMapV1,
   verifyFastManimSourceRuntimeIdentityV1,
 } from "./fast-manim-source-runtime-identity";
-import { deriveSquareToCircleV8PositionPlan } from "./fast-manim-square-to-circle-v8-candidate";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimSourceReadHooks } from "./manim-source-store";
@@ -236,10 +229,10 @@ export type FastManimRuntimeTraceCandidateRunRequestV1 = Omit<
   "responseVersion" | "sourceHash"
 > &
   Readonly<{
-    genericInitialMove?: GenericRuntimeTraceInitialMovePreflightV3;
-    genericInitialOpacity?: GenericRuntimeTraceInitialOpacityPreflightV3;
-    genericInitialRotation?: GenericRuntimeTraceInitialRotationPreflightV3;
-    genericInitialResize?: GenericRuntimeTraceInitialResizePreflightV3;
+    initialMove?: RuntimeTraceInitialMovePreflight;
+    initialOpacity?: RuntimeTraceInitialOpacityPreflight;
+    initialRotation?: RuntimeTraceInitialRotationPreflight;
+    initialResize?: RuntimeTraceInitialResizePreflight;
   }>;
 
 type FastManimRuntimeTraceVerifiedRootsV1 = Extract<
@@ -1238,28 +1231,19 @@ export class FastManimSnapshotRunner {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
-    const {
-      genericInitialMove,
-      genericInitialOpacity,
-      genericInitialResize,
-      genericInitialRotation,
-      ...runtimeRequestValue
-    } = requestValue;
-    if (
-      [genericInitialMove, genericInitialOpacity, genericInitialResize, genericInitialRotation].filter(Boolean).length >
-      1
-    ) {
+    const { initialMove, initialOpacity, initialResize, initialRotation, ...runtimeRequestValue } = requestValue;
+    if ([initialMove, initialOpacity, initialResize, initialRotation].filter(Boolean).length > 1) {
       throw new TypeError("A generic Runtime Trace candidate carries exactly one initial-edit authority.");
     }
     const genericInitialEdit =
-      genericInitialMove?.kind === "fast-manim-generic-initial-move-v3"
-        ? genericInitialMove
-        : genericInitialOpacity?.kind === "fast-manim-generic-initial-opacity-v3"
-          ? genericInitialOpacity
-          : genericInitialResize?.kind === "fast-manim-generic-initial-resize-v3"
-            ? genericInitialResize
-            : genericInitialRotation?.kind === "fast-manim-generic-initial-rotation-v3"
-              ? genericInitialRotation
+      initialMove?.kind === "runtime-trace-initial-move"
+        ? initialMove
+        : initialOpacity?.kind === "runtime-trace-initial-opacity"
+          ? initialOpacity
+          : initialResize?.kind === "runtime-trace-initial-resize"
+            ? initialResize
+            : initialRotation?.kind === "runtime-trace-initial-rotation"
+              ? initialRotation
               : undefined;
     const version =
       genericInitialEdit !== undefined
@@ -1272,8 +1256,8 @@ export class FastManimSnapshotRunner {
     if (version === null) {
       throw new TypeError("Runtime Trace candidate preflight is outside the reviewed Scene profiles.");
     }
-    const genericPreflight = version === 3 ? genericInitialEdit : undefined;
-    if (version === 3 && genericPreflight === undefined) {
+    const initialEditPreflight = version === 3 ? genericInitialEdit : undefined;
+    if (version === 3 && initialEditPreflight === undefined) {
       throw new TypeError("Generic Runtime Trace candidate authority is unavailable.");
     }
     const sourceByteLimit =
@@ -1303,7 +1287,7 @@ export class FastManimSnapshotRunner {
       if (request.sourcePath !== sourcePath || candidateSourceHash === sourceHash) {
         throw new TypeError("Runtime Trace candidate preflight is outside the reviewed source profile.");
       }
-    } else if (candidateSourceHash === genericPreflight!.baseSourceHash) {
+    } else if (candidateSourceHash === initialEditPreflight!.baseSourceHash) {
       throw new TypeError("A generic Runtime Trace candidate must identify distinct edited source bytes.");
     }
 
@@ -1321,7 +1305,7 @@ export class FastManimSnapshotRunner {
         ? this.runRuntimeTraceCandidateLockedV1(sourceText, request, signal)
         : version === 2
           ? this.runRuntimeTraceCandidateLockedV2(sourceText, request, signal)
-          : this.runRuntimeTraceCandidateLockedV3(sourceText, request, genericPreflight!, signal);
+          : this.runRuntimeTraceEditCandidateLocked(sourceText, request, initialEditPreflight!, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
@@ -1526,10 +1510,10 @@ export class FastManimSnapshotRunner {
     });
   }
 
-  private async runRuntimeTraceCandidateLockedV3(
+  private async runRuntimeTraceEditCandidateLocked(
     sourceText: string,
     request: FastManimRuntimeTraceRunRequestV1,
-    preflight: GenericRuntimeTraceInitialEditPreflightV3,
+    preflight: RuntimeTraceInitialEditPreflight,
     signal?: AbortSignal,
   ): Promise<FastManimRuntimeTraceCandidateRunViewV1> {
     const throwIfHalted = () => {
@@ -1545,28 +1529,28 @@ export class FastManimSnapshotRunner {
     throwIfHalted();
 
     const plan =
-      preflight.kind === "fast-manim-generic-initial-move-v3"
-        ? deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
+      preflight.kind === "runtime-trace-initial-move"
+        ? deriveRuntimeTraceInitialMoveSourceEditPlan(
             sourceText,
             request.sceneName,
             request.sourcePath,
             preflight.baseBinding.name,
           )
-        : preflight.kind === "fast-manim-generic-initial-opacity-v3"
-          ? deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+        : preflight.kind === "runtime-trace-initial-opacity"
+          ? deriveRuntimeTraceInitialOpacitySourceEditPlan(
               sourceText,
               request.sceneName,
               request.sourcePath,
               preflight.baseBinding.name,
             )
-          : preflight.kind === "fast-manim-generic-initial-resize-v3"
-            ? deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+          : preflight.kind === "runtime-trace-initial-resize"
+            ? deriveRuntimeTraceInitialResizeSourceEditPlan(
                 sourceText,
                 request.sceneName,
                 request.sourcePath,
                 preflight.baseBinding.name,
               )
-            : deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+            : deriveRuntimeTraceInitialRotationSourceEditPlan(
                 sourceText,
                 request.sceneName,
                 request.sourcePath,
@@ -1574,15 +1558,14 @@ export class FastManimSnapshotRunner {
               );
     const planMatchesPreflight =
       "expectedWorldCenter" in plan
-        ? preflight.kind === "fast-manim-generic-initial-move-v3" &&
+        ? preflight.kind === "runtime-trace-initial-move" &&
           isDeepStrictEqual(plan.expectedWorldCenter, preflight.expectedWorldCenter)
         : "expectedOpacity" in plan
-          ? preflight.kind === "fast-manim-generic-initial-opacity-v3" &&
-            plan.expectedOpacity === preflight.expectedOpacity
+          ? preflight.kind === "runtime-trace-initial-opacity" && plan.expectedOpacity === preflight.expectedOpacity
           : "expectedScaleFactor" in plan
-            ? preflight.kind === "fast-manim-generic-initial-resize-v3" &&
+            ? preflight.kind === "runtime-trace-initial-resize" &&
               plan.expectedScaleFactor === preflight.expectedScaleFactor
-            : preflight.kind === "fast-manim-generic-initial-rotation-v3" &&
+            : preflight.kind === "runtime-trace-initial-rotation" &&
               plan.expectedAngleRadians === preflight.expectedAngleRadians;
     if (
       before.hash !== preflight.baseSourceHash ||
@@ -1690,17 +1673,17 @@ export class FastManimSnapshotRunner {
       candidateRequest: candidateProducerRequest,
     };
     const verified =
-      preflight.kind === "fast-manim-generic-initial-move-v3"
+      preflight.kind === "runtime-trace-initial-move"
         ? verifyFastManimRuntimeTraceInitialMoveCandidateV3({
             ...candidatePair,
             expectedWorldCenter: preflight.expectedWorldCenter,
           })
-        : preflight.kind === "fast-manim-generic-initial-opacity-v3"
+        : preflight.kind === "runtime-trace-initial-opacity"
           ? verifyFastManimRuntimeTraceInitialOpacityCandidateV3({
               ...candidatePair,
               expectedOpacity: preflight.expectedOpacity,
             })
-          : preflight.kind === "fast-manim-generic-initial-resize-v3"
+          : preflight.kind === "runtime-trace-initial-resize"
             ? verifyFastManimRuntimeTraceInitialResizeCandidateV3({
                 ...candidatePair,
                 expectedScaleFactor: preflight.expectedScaleFactor,
@@ -1729,67 +1712,10 @@ export class FastManimSnapshotRunner {
     });
   }
 
-  /**
-   * Verifies immutable candidate bytes without reading or publishing project
-   * source. This is the server-internal bounded-edit preflight: candidate bytes
-   * become the correlated producer input and must pass the same seal plus
-   * complete source/runtime identity authority as a normal unpublished run.
-   */
-  async runCandidateUnpublished(
-    sourceText: string,
-    requestValue: Omit<FastManimSnapshotRunRequestV1, "sourceHash">,
-    signal?: AbortSignal,
-  ): Promise<FastManimUnpublishedSnapshotRunViewV1> {
-    const candidateProfile =
-      requestValue.sceneName === "SquareToCircle"
-        ? 8
-        : requestValue.sceneName === "WarpSquare"
-          ? 9
-          : requestValue.sceneName === "LineJoints"
-            ? 10
-            : requestValue.sceneName === "WriteStuff"
-              ? 12
-              : null;
-    if (
-      candidateProfile === null ||
-      (this.snapshotVersion !== undefined && this.snapshotVersion !== candidateProfile)
-    ) {
-      throw new TypeError(
-        "Candidate source preflight is available only for the bounded V8, V9, V10, and V12 profiles.",
-      );
-    }
-    if (
-      typeof sourceText !== "string" ||
-      Buffer.byteLength(sourceText, "utf8") > MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES
-    ) {
-      throw new RangeError(`Candidate source accepts at most ${MAX_FAST_MANIM_SNAPSHOT_SOURCE_BYTES} UTF-8 bytes.`);
-    }
-    // Candidate preflight is an internal fail-closed seam. Reject bytes that
-    // cannot be reduced to the corresponding audited source before reserving
-    // any producer or sandbox capacity.
-    if (candidateProfile === 8) deriveSquareToCircleV8PositionPlan(sourceText, requestValue.sceneName);
-    else if (candidateProfile === 9) deriveWarpSquareV9TransformPlan(sourceText, requestValue.sceneName);
-    else if (candidateProfile === 10) deriveLineJointsV10TransformPlan(sourceText, requestValue.sceneName);
-    else deriveWriteStuffV12TransformPlan(sourceText, requestValue.sceneName);
-    const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
-    const candidate = Object.freeze({
-      hash: sourceHash,
-      source: sourceText,
-      versionToken: `candidate:${sourceHash}`,
-    }) satisfies FastManimSnapshotSourceReadV1;
-    return this.runRequest(
-      { ...requestValue, sourceHash },
-      false,
-      signal,
-      candidate,
-    ) as Promise<FastManimUnpublishedSnapshotRunViewV1>;
-  }
-
   private async runRequest(
     requestValue: FastManimSnapshotRunRequestV1,
     publishLocally: boolean,
     signal?: AbortSignal,
-    candidateSource?: FastManimSnapshotSourceReadV1,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const request = fastManimSnapshotRunRequestV1Schema.parse(requestValue);
     signal?.throwIfAborted();
@@ -1803,7 +1729,7 @@ export class FastManimSnapshotRunner {
       "A Scene snapshot run is already in progress for this source and Scene.",
       "Too many concurrent Scene snapshot runs.",
     );
-    const pending = this.runLocked(request, publishLocally, signal, candidateSource);
+    const pending = this.runLocked(request, publishLocally, signal);
     this.activeRuns.add(pending);
     pending.catch(() => undefined);
     try {
@@ -1818,7 +1744,6 @@ export class FastManimSnapshotRunner {
     request: FastManimSnapshotRunRequestV1,
     publishLocally: boolean,
     signal?: AbortSignal,
-    candidateSource?: FastManimSnapshotSourceReadV1,
   ): Promise<FastManimSnapshotRunViewV1 | FastManimUnpublishedSnapshotRunViewV1> {
     const throwIfHalted = () => {
       if (signal?.aborted || this.closing) throw abortError();
@@ -1880,15 +1805,11 @@ export class FastManimSnapshotRunner {
     // root, immune to validate-then-open pathname swaps. Platforms that
     // cannot prove this fail closed (HTTP 501) before any Python runs.
     let before: FastManimSnapshotSourceReadV1;
-    if (candidateSource) {
-      before = candidateSource;
-    } else {
-      try {
-        before = await this.sourceProvider.readVerified(request.sourcePath, signal);
-      } catch (error) {
-        throwIfHalted();
-        throw error;
-      }
+    try {
+      before = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch (error) {
+      throwIfHalted();
+      throw error;
     }
     throwIfHalted();
     if (request.sourceHash !== undefined && request.sourceHash !== before.hash) {
@@ -1978,20 +1899,7 @@ export class FastManimSnapshotRunner {
     let hermeticMathTexV3Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexV3Plan"];
     let hermeticPngV4Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticPngV4Plan"];
     let hermeticMathTexMorphV5Plan: ExpectedFastManimSnapshotCorrelationV1["hermeticMathTexMorphV5Plan"];
-    let squareToCircleV8Plan: ExpectedFastManimSnapshotCorrelationV1["squareToCircleV8Plan"];
-    let warpSquareV9Plan: ExpectedFastManimSnapshotCorrelationV1["warpSquareV9Plan"];
-    let lineJointsV10Plan: ExpectedFastManimSnapshotCorrelationV1["lineJointsV10Plan"];
-    let writeStuffV12Plan: ExpectedFastManimSnapshotCorrelationV1["writeStuffV12Plan"];
-    if (
-      snapshotVersion === 3 ||
-      snapshotVersion === 4 ||
-      snapshotVersion === 5 ||
-      snapshotVersion === 7 ||
-      snapshotVersion === 8 ||
-      snapshotVersion === 9 ||
-      snapshotVersion === 10 ||
-      snapshotVersion === 12
-    ) {
+    if (snapshotVersion === 3 || snapshotVersion === 4 || snapshotVersion === 5 || snapshotVersion === 7) {
       try {
         if (snapshotVersion === 3) {
           hermeticMathTexV3Plan = deriveHermeticMathTexV3TransformPlan(before.source, request.sceneName);
@@ -1999,21 +1907,8 @@ export class FastManimSnapshotRunner {
           hermeticPngV4Plan = deriveHermeticPngV4TransformPlan(before.source, request.sceneName);
         } else if (snapshotVersion === 5) {
           hermeticMathTexMorphV5Plan = deriveHermeticMathTexMorphV5Plan(before.source, request.sceneName);
-        } else if (snapshotVersion === 7) {
-          hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
-        } else if (snapshotVersion === 8) {
-          if (
-            before.hash !== FAST_MANIM_SQUARE_TO_CIRCLE_OFFICIAL_SOURCE_SHA256_V8 &&
-            before.hash !== FAST_MANIM_SQUARE_TO_CIRCLE_MINIMAL_SOURCE_SHA256_V8
-          ) {
-            squareToCircleV8Plan = deriveSquareToCircleV8PositionPlan(before.source, request.sceneName);
-          }
-        } else if (snapshotVersion === 9) {
-          warpSquareV9Plan = deriveWarpSquareV9TransformPlan(before.source, request.sceneName);
-        } else if (snapshotVersion === 10) {
-          lineJointsV10Plan = deriveLineJointsV10TransformPlan(before.source, request.sceneName);
         } else {
-          writeStuffV12Plan = deriveWriteStuffV12TransformPlan(before.source, request.sceneName);
+          hermeticMathTexV3Plan = deriveMixedDynamicMathTexV7TransformPlan(before.source, request.sceneName);
         }
       } catch {
         // An unsupported source must still reach the producer and preserve its
@@ -2026,10 +1921,6 @@ export class FastManimSnapshotRunner {
       ...(hermeticMathTexV3Plan ? { hermeticMathTexV3Plan } : {}),
       ...(hermeticMathTexMorphV5Plan ? { hermeticMathTexMorphV5Plan } : {}),
       ...(hermeticPngV4Plan ? { hermeticPngV4Plan } : {}),
-      ...(lineJointsV10Plan ? { lineJointsV10Plan } : {}),
-      ...(squareToCircleV8Plan ? { squareToCircleV8Plan } : {}),
-      ...(warpSquareV9Plan ? { warpSquareV9Plan } : {}),
-      ...(writeStuffV12Plan ? { writeStuffV12Plan } : {}),
       projectId: request.projectId,
       requestId: request.requestId,
       runtimeConfigHash,
@@ -2095,15 +1986,11 @@ export class FastManimSnapshotRunner {
     // Filesystem providers retain hash-only change-and-restore semantics;
     // durable providers bind the source generation as well as its digest.
     let after: FastManimSnapshotSourceReadV1;
-    if (candidateSource) {
-      after = candidateSource;
-    } else {
-      try {
-        after = await this.sourceProvider.readVerified(request.sourcePath, signal);
-      } catch {
-        throwIfHalted();
-        return failed("source-changed");
-      }
+    try {
+      after = await this.sourceProvider.readVerified(request.sourcePath, signal);
+    } catch {
+      throwIfHalted();
+      return failed("source-changed");
     }
     throwIfHalted();
     if (after.hash !== expected.sourceHash || after.versionToken !== before.versionToken)

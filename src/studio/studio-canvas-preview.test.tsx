@@ -4,10 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
-import {
-  studioPreviewInitialEditProjection,
-  type StudioPreviewGenericInitialEditCandidate,
-} from "./preview-temporal-rebase";
+import type { StudioPreviewGenericInitialEditCandidate } from "./preview-temporal-rebase";
 import { compensatePreviewGeometryForSemanticScalesV1, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
@@ -153,7 +150,6 @@ function previewView(
   interactionGeometry: StudioPreviewRendererView["interactionGeometry"] = null,
   sourceRuntimeIdentity: StudioPreviewRendererView["sourceRuntimeIdentity"] = null,
   interactionAuthority: StudioPreviewRendererView["interactionAuthority"] = { kind: "interactive" },
-  initialEditAuthority: StudioPreviewRendererView["initialEditAuthority"] = null,
   runtimeTraceTerminalEdit: StudioPreviewRendererView["runtimeTraceTerminalEdit"] = null,
   runtimeTracePendingPresentation: StudioPreviewRendererView["runtimeTracePendingPresentation"] = null,
   runtimeTraceBaseFrameRetained = runtimeTracePendingPresentation?.baseFrameRetained === true,
@@ -165,7 +161,6 @@ function previewView(
     cameraCenter: null,
     epoch: 0,
     genericInitialEditCandidates,
-    initialEditAuthority,
     interactionGeometry,
     interactionAuthority,
     runtimeTraceBaseFrameRetained,
@@ -249,56 +244,6 @@ describe("StudioCanvas retained preview layer", () => {
     expect(markup).toContain('data-studio-semantic-paint="deferred-to-canvas"');
     expect(markup).toContain('data-studio-entity="entity:circle_1"');
     expect(markup).toContain("Move circle_1");
-  });
-
-  it("offers the exact WarpSquare runtime target one uniform-scale handle instead of shape geometry handles", () => {
-    const studioEntityId = "source:example_scenes/basic.py#WarpSquare:square";
-    const runtimeEntityId = "scene:warp-square/entity:0";
-    const square: ProjectedEntity = {
-      ...CIRCLE_ENTITY,
-      geometry: {
-        ...CIRCLE_ENTITY.geometry,
-        dimensions: { kind: "known", value: { height: 2, width: 2 } },
-      },
-      id: studioEntityId,
-      sourceIdentity: { kind: "known", value: "square" },
-      type: "Square",
-    };
-    const markup = renderToStaticMarkup(
-      <StudioCanvas
-        {...baseProps()}
-        entities={[square]}
-        preview={previewView(
-          {
-            frame: {
-              packetId: "canvas:warp-square",
-              revision: "a".repeat(64),
-              sampleTime: 0,
-              viewport: { heightPx: 90, widthPx: 160 },
-            },
-            phase: "presented",
-          },
-          new Map([[runtimeEntityId, { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } }]]),
-          new Map([
-            [
-              "square",
-              { bindingId: `source-binding:${"b".repeat(64)}`, entityId: runtimeEntityId, sourceName: "square" },
-            ],
-          ]),
-          { kind: "interactive" },
-          studioPreviewInitialEditProjection({
-            duration: 4,
-            profile: "warp-square-v9",
-            runtimeEntityId,
-            studioEntityId,
-            studioSceneId: "example_scenes/basic.py#WarpSquare",
-          }),
-        )}
-        selectedIds={new Set([studioEntityId])}
-      />,
-    );
-    expect(markup).toContain('aria-label="Resize square from bottom-right corner"');
-    expect(markup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
   });
 
   it("presents display-only runtime pixels without enabling guessed authoring gestures", () => {
@@ -574,7 +519,7 @@ describe("StudioCanvas retained preview layer", () => {
       preview: previewView(
         {
           frame: {
-            packetId: "canvas:line-joints-v10",
+            packetId: "canvas:line-joints-selection",
             revision: "a".repeat(64),
             sampleTime: 0,
             viewport: { heightPx: 360, widthPx: 640 },
@@ -632,125 +577,6 @@ describe("StudioCanvas retained preview layer", () => {
       expect(inspector).toContain(`<dd class="truncate text-zinc-300">${triangle.sourceIdentity.value}</dd>`);
       expect(inspector).toContain('<dd class="text-zinc-300">Triangle</dd>');
     }
-
-    const t2 = {
-      ...triangles[1]!,
-      geometry: {
-        ...triangles[1]!.geometry,
-        position: { kind: "known" as const, value: { x: 320, y: 180 } },
-        scale: { kind: "known" as const, value: 1 },
-      },
-    };
-    const beginAuthorizedMutation = vi.fn();
-    const interactiveProps: StudioCanvasProps = {
-      ...baseProps(),
-      entities: [group, triangles[0]!, t2, triangles[2]!],
-      onEntityPointerDown: beginAuthorizedMutation,
-      preview: previewView(
-        props.preview!.state,
-        interactionGeometry,
-        sourceRuntimeIdentity,
-        { kind: "interactive" },
-        studioPreviewInitialEditProjection({
-          baseCenter: { x: 320, y: 180 },
-          duration: 1,
-          lifetime: { end: 1, start: 0 },
-          profile: "line-joints-v10",
-          relativeScale: 1,
-          runtimeEntityId: leafRuntimeIds[1],
-          studioEntityId: t2.id,
-          studioSceneId: "example_scenes/basic.py#LineJoints",
-        }),
-      ),
-      selectedIds: new Set([t2.id]),
-    };
-    const interactiveTree = StudioCanvas(interactiveProps);
-    expect(findEntityButton(interactiveTree, triangles[0]!.id).props.onPointerMove).toBeUndefined();
-    const targetButton = findEntityButton(interactiveTree, t2.id);
-    expect(targetButton.props.onPointerMove).toBe(interactiveProps.onEntityPointerMove);
-    const targetPointerDown = targetButton.props.onPointerDown as ((event: unknown) => void) | undefined;
-    targetPointerDown?.({});
-    expect(beginAuthorizedMutation).toHaveBeenCalledWith({}, t2.id);
-
-    const interactiveMarkup = renderToStaticMarkup(<StudioCanvas {...interactiveProps} />);
-    expect(interactiveMarkup).not.toContain(`data-studio-entity="${group.id}"`);
-    expect(interactiveMarkup.match(/data-studio-resize-handle=/g)).toHaveLength(1);
-    expect(interactiveMarkup).toContain(`data-studio-resize-handle="${t2.id}"`);
-  });
-
-  it("keeps the producer-backed SquareToCircle V8 target position-only", () => {
-    const squareId = "source:example_scenes/basic.py#SquareToCircle:square";
-    const runtimeId = "scene:square-to-circle/entity:0";
-    const square: ProjectedEntity = {
-      ...CIRCLE_ENTITY,
-      geometry: {
-        ...CIRCLE_ENTITY.geometry,
-        dimensions: { kind: "known", value: { height: 2, width: 2 } },
-      },
-      id: squareId,
-      sourceIdentity: { kind: "known", value: "square" },
-      type: "Square",
-    };
-    const sourceRuntimeIdentity = new Map([
-      ["square", { bindingId: "source-binding:square", entityId: runtimeId, sourceName: "square" }],
-    ]);
-    const initialEditAuthority = studioPreviewInitialEditProjection({
-      baseCenter: { x: 320, y: 180 },
-      duration: 3,
-      lifetime: { end: 3, start: 0 },
-      profile: "square-to-circle-v8" as const,
-      relativeScale: 1,
-      runtimeEntityId: runtimeId,
-      studioEntityId: squareId,
-      studioSceneId: "example_scenes/basic.py#SquareToCircle",
-    });
-    const props: StudioCanvasProps = {
-      ...baseProps(),
-      entities: [square],
-      preview: previewView(
-        {
-          frame: {
-            packetId: "canvas:square-to-circle-v8",
-            revision: "8".repeat(64),
-            sampleTime: 0,
-            viewport: { heightPx: 360, widthPx: 640 },
-          },
-          phase: "presented",
-        },
-        new Map(),
-        sourceRuntimeIdentity,
-        { kind: "interactive" },
-        initialEditAuthority,
-      ),
-      selectedIds: new Set([squareId]),
-    };
-    expect(findEntityButton(StudioCanvas(props), squareId).props.onPointerMove).toBe(props.onEntityPointerMove);
-    const markup = renderToStaticMarkup(<StudioCanvas {...props} />);
-    expect(markup).toContain(`data-studio-entity="${squareId}"`);
-    expect(markup).not.toContain("data-studio-runtime-entity");
-    expect(markup).not.toContain("data-studio-resize-handle");
-
-    const inactiveMarkup = renderToStaticMarkup(
-      <StudioCanvas
-        {...props}
-        preview={previewView(
-          {
-            frame: {
-              packetId: "canvas:square-to-circle-v8-inactive",
-              revision: "8".repeat(64),
-              sampleTime: 3,
-              viewport: { heightPx: 360, widthPx: 640 },
-            },
-            phase: "presented",
-          },
-          new Map(),
-          sourceRuntimeIdentity,
-          { kind: "interactive" },
-          initialEditAuthority,
-        )}
-      />,
-    );
-    expect(inactiveMarkup).not.toContain(`data-studio-entity="${squareId}"`);
   });
 
   it("opens only the exact generic V3 root for an initial move or uniform resize", () => {
@@ -775,11 +601,8 @@ describe("StudioCanvas retained preview layer", () => {
       baseOpacity: 1,
       bindingId: `source-binding:${"a".repeat(64)}`,
       capabilities: {
-        allowOffPlayheadInitialEdit: false,
         paintOpacity: true,
-        retainDuringGestureAwayFromAnchor: false,
         rotation: true,
-        semanticHitTargetWhenRuntimeBoundsMissing: false,
         uniformScale: true,
       },
       duration: 0.1,
@@ -823,7 +646,6 @@ describe("StudioCanvas retained preview layer", () => {
         boundedAuthority,
         null,
         null,
-        null,
         false,
         [],
         [candidate],
@@ -858,7 +680,6 @@ describe("StudioCanvas retained preview layer", () => {
           new Map([[runtimeId, { dimensions: { height: 2, width: 2 }, position: { x: 384, y: 144 } }]]),
           new Map([["square", { bindingId: candidate.bindingId, entityId: runtimeId, sourceName: "square" }]]),
           boundedAuthority,
-          null,
           null,
           null,
           false,
@@ -945,7 +766,6 @@ describe("StudioCanvas retained preview layer", () => {
         interactionGeometry,
         sourceRuntimeIdentity,
         boundedAuthority,
-        null,
         terminalAuthority,
       ),
       selectedIds: new Set([squareId]),
@@ -980,7 +800,6 @@ describe("StudioCanvas retained preview layer", () => {
             reason: "runtime-trace-preview-only",
             verifiedRuntimeEntityIds: [squareRuntimeId, decimalRuntimeId],
           },
-          null,
           null,
           {
             baseFrameRetained: true,
@@ -1018,7 +837,6 @@ describe("StudioCanvas retained preview layer", () => {
             verifiedRuntimeEntityIds: [squareRuntimeId, decimalRuntimeId],
           },
           null,
-          null,
           {
             baseFrameRetained: false,
             dimensions: { height: 3, width: 3 },
@@ -1046,7 +864,6 @@ describe("StudioCanvas retained preview layer", () => {
           interactionGeometry,
           sourceRuntimeIdentity,
           boundedAuthority,
-          null,
           terminalAuthority,
           null,
           true,
@@ -1065,7 +882,6 @@ describe("StudioCanvas retained preview layer", () => {
           interactionGeometry,
           sourceRuntimeIdentity,
           boundedAuthority,
-          null,
           terminalAuthority,
           null,
           true,
@@ -1159,7 +975,6 @@ describe("StudioCanvas retained preview layer", () => {
         interactionGeometry,
         sourceRuntimeIdentity,
         boundedAuthority,
-        null,
         terminalAuthority,
       ),
       selectedIds: new Set([gridTitleId]),
@@ -1180,7 +995,6 @@ describe("StudioCanvas retained preview layer", () => {
           interactionGeometry,
           sourceRuntimeIdentity,
           boundedAuthority,
-          null,
           terminalAuthority,
           null,
           true,
@@ -1220,7 +1034,6 @@ describe("StudioCanvas retained preview layer", () => {
             reason: "runtime-trace-preview-only",
             verifiedRuntimeEntityIds: [titleRuntimeId, gridTitleRuntimeId],
           },
-          null,
           null,
           {
             baseFrameRetained: true,

@@ -20,8 +20,8 @@ import {
 } from "../src/render-pipeline/runtime-trace-v3-shared-contract";
 import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-analysis";
 import {
-  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
+  deriveRuntimeTraceInitialMoveSourceEditPlan,
+  deriveRuntimeTraceInitialResizeSourceEditPlan,
 } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import {
@@ -364,24 +364,19 @@ describe.skipIf(!producerCommand || !sourceRoot || !texBin || !ManimSourceStore.
         LABELS_ASSIGNMENT_ANCHOR,
         `${LABELS_ASSIGNMENT_ANCHOR}        labels.move_to((-1.5, 0.5, 0))\n`,
       );
-      const plan = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(
-        candidateSource,
-        SCENE_NAME,
-        SOURCE_PATH,
-        "labels",
-      );
+      const plan = deriveRuntimeTraceInitialMoveSourceEditPlan(candidateSource, SCENE_NAME, SOURCE_PATH, "labels");
       expect(plan.baseSource).toBe(source);
       expect(plan.baseSourceHash).toBe(PINNED_SOURCE_SHA256);
       expect(plan.baseBinding.name).toBe("labels");
       expect(plan.expectedWorldCenter).toEqual({ x: -1.5, y: 0.5 });
 
       const result = await candidateRoundtrip(candidateSource, {
-        genericInitialMove: {
+        initialMove: {
           baseBinding: plan.baseBinding,
           baseSourceHash: plan.baseSourceHash,
           entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:labels`,
           expectedWorldCenter: plan.expectedWorldCenter,
-          kind: "fast-manim-generic-initial-move-v3",
+          kind: "runtime-trace-initial-move",
         },
         projectId: "second-editable-scene-evidence",
         requestId: "feynman-labels-initial-move-v3-candidate",
@@ -405,24 +400,19 @@ describe.skipIf(!producerCommand || !sourceRoot || !texBin || !ManimSourceStore.
         LABELS_ASSIGNMENT_ANCHOR,
         `${LABELS_ASSIGNMENT_ANCHOR}        labels.scale(1.25)\n`,
       );
-      const plan = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
-        candidateSource,
-        SCENE_NAME,
-        SOURCE_PATH,
-        "labels",
-      );
+      const plan = deriveRuntimeTraceInitialResizeSourceEditPlan(candidateSource, SCENE_NAME, SOURCE_PATH, "labels");
       expect(plan.baseSource).toBe(source);
       expect(plan.baseSourceHash).toBe(PINNED_SOURCE_SHA256);
       expect(plan.baseBinding.name).toBe("labels");
       expect(plan.expectedScaleFactor).toBe(1.25);
 
       const result = await candidateRoundtrip(candidateSource, {
-        genericInitialResize: {
+        initialResize: {
           baseBinding: plan.baseBinding,
           baseSourceHash: plan.baseSourceHash,
           entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:labels`,
           expectedScaleFactor: plan.expectedScaleFactor,
-          kind: "fast-manim-generic-initial-resize-v3",
+          kind: "runtime-trace-initial-resize",
         },
         projectId: "second-editable-scene-evidence",
         requestId: "feynman-labels-initial-resize-v3-candidate",

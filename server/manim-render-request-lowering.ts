@@ -2,13 +2,9 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
-  lowerGenericRuntimeTraceInitialEditSourceV3,
-  lowerLineJointsInitialTransformSourceV10,
   lowerOpeningManimTerminalPositionSourceV2,
-  lowerSquareToCircleInitialPositionSourceV8,
+  lowerRuntimeTraceInitialEditSource,
   lowerUpdatersTerminalTransformSourceV1,
-  lowerWarpSquareInitialTransformSourceV9,
-  lowerWriteStuffInitialTransformSourceV12,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
@@ -63,38 +59,6 @@ export function lowerManimRenderRequest({
     throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
   }
   try {
-    const squareToCircleV8 = lowerSquareToCircleInitialPositionSourceV8(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (squareToCircleV8) return { lowered: squareToCircleV8, renderRequest: request };
-    const warpSquareV9 = lowerWarpSquareInitialTransformSourceV9(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (warpSquareV9) return { lowered: warpSquareV9, renderRequest: request };
-    const lineJointsV10 = lowerLineJointsInitialTransformSourceV10(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (lineJointsV10) return { lowered: lineJointsV10, renderRequest: request };
-    const writeStuffV12 = lowerWriteStuffInitialTransformSourceV12(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (writeStuffV12) return { lowered: writeStuffV12, renderRequest: request };
     const updatersTerminalV1 = lowerUpdatersTerminalTransformSourceV1(
       originalSource,
       request,
@@ -118,14 +82,14 @@ export function lowerManimRenderRequest({
       );
       if (openingTerminalV2) return { lowered: openingTerminalV2, renderRequest: request };
     }
-    const genericInitialEditV3 = lowerGenericRuntimeTraceInitialEditSourceV3(
+    const runtimeTraceInitialEdit = lowerRuntimeTraceInitialEditSource(
       originalSource,
       request,
       orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
       frame,
       null,
     );
-    if (genericInitialEditV3) return { lowered: genericInitialEditV3, renderRequest: request };
+    if (runtimeTraceInitialEdit) return { lowered: runtimeTraceInitialEdit, renderRequest: request };
   } catch (error) {
     if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
     throw error;

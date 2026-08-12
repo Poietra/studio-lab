@@ -42,7 +42,6 @@ import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import type { ManimProjectKind } from "./manim-project-catalog";
-import { ManimRenderCandidateVerifierV1 } from "./manim-render-candidate-verifier";
 import {
   beginRenderSessionAction,
   createRenderMutationTransactionState,
@@ -67,6 +66,7 @@ import {
   renderSessionStatusPolicy,
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
+import { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
@@ -198,7 +198,7 @@ export class ManimRenderManager {
   private pendingStarts = 0;
   private pendingRetainedSessions = 0;
   private readonly renderTimeoutMs: number;
-  private readonly candidateVerifier: ManimRenderCandidateVerifierV1;
+  private readonly runtimeTraceEditVerifier: ManimRuntimeTraceEditVerifier;
   private readonly runtimeTraceRunner: FastManimSnapshotRunner | null;
   private readonly sessionRetentionMs: number;
   private readonly staticVideoCommand: readonly string[];
@@ -352,10 +352,8 @@ export class ManimRenderManager {
           timeoutMs: options.snapshotTimeoutMs ?? DEFAULT_RUNTIME_TRACE_TIMEOUT_MS,
         })
       : null;
-    this.candidateVerifier = new ManimRenderCandidateVerifierV1({
-      frame: this.frame,
+    this.runtimeTraceEditVerifier = new ManimRuntimeTraceEditVerifier({
       logger: this.logger,
-      runner: this.snapshotRunner,
       ...(this.runtimeTraceRunner ? { runtimeTraceRunner: this.runtimeTraceRunner } : {}),
     });
     const thumbnailCacheRoot = options.thumbnailCacheRoot ?? join(this.projectRoot, ".poietra", "thumbnails");
@@ -716,11 +714,12 @@ export class ManimRenderManager {
       this.assertRequestProject(request);
       const prepared = await this.lowerRequest(request, signal);
       if (
-        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-move-v3" ||
-        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-resize-v3" ||
-        prepared.lowered.preflight?.kind === "fast-manim-generic-initial-rotation-v3"
+        prepared.lowered.preflight?.kind === "runtime-trace-initial-move" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-initial-opacity" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-initial-resize" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-initial-rotation"
       ) {
-        await this.candidateVerifier.verify(prepared.lowered, prepared.renderRequest, signal);
+        await this.runtimeTraceEditVerifier.verify(prepared.lowered, prepared.renderRequest, signal);
       }
       const stem =
         basename(request.sourcePath, ".py")
@@ -796,7 +795,7 @@ export class ManimRenderManager {
     let tempRoot: string | null = null;
     try {
       const { lowered, renderRequest, sourceSnapshot } = await this.lowerRequest(request, signal);
-      await this.candidateVerifier.verify(lowered, renderRequest, signal);
+      await this.runtimeTraceEditVerifier.verify(lowered, renderRequest, signal);
       const sourcePath = sourceSnapshot.absolutePath;
       const originalSource = sourceSnapshot.source;
       throwIfAborted(signal);

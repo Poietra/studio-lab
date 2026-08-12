@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3,
-  deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3,
+  deriveRuntimeTraceInitialMoveSourceEditPlan,
+  deriveRuntimeTraceInitialOpacitySourceEditPlan,
+  deriveRuntimeTraceInitialResizeSourceEditPlan,
+  deriveRuntimeTraceInitialRotationSourceEditPlan,
 } from "../src/render-pipeline/source-lowering";
 import type { FastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { digestFastManimRuntimeTraceDomainV3 } from "./fast-manim-runtime-trace-v3-contract";
@@ -43,12 +43,12 @@ const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
-const PLAN = deriveGenericRuntimeTraceInitialMoveSourceEditPlanV3(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
+const PLAN = deriveRuntimeTraceInitialMoveSourceEditPlan(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
 const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const RESIZE_PLAN = deriveGenericRuntimeTraceInitialResizeSourceEditPlanV3(
+const RESIZE_PLAN = deriveRuntimeTraceInitialResizeSourceEditPlan(
   RESIZE_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
@@ -58,7 +58,7 @@ const ROTATION_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.rotate(0.5)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const ROTATION_PLAN = deriveGenericRuntimeTraceInitialRotationSourceEditPlanV3(
+const ROTATION_PLAN = deriveRuntimeTraceInitialRotationSourceEditPlan(
   ROTATION_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
@@ -68,7 +68,7 @@ const OPACITY_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.set_opacity(0.35)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const OPACITY_PLAN = deriveGenericRuntimeTraceInitialOpacitySourceEditPlanV3(
+const OPACITY_PLAN = deriveRuntimeTraceInitialOpacitySourceEditPlan(
   OPACITY_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
@@ -310,12 +310,12 @@ function runner(root: string, backend: FastManimSandboxBackendV1) {
 
 function candidateRequest() {
   return {
-    genericInitialMove: {
+    initialMove: {
       baseBinding: PLAN.baseBinding,
       baseSourceHash: PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedWorldCenter: PLAN.expectedWorldCenter,
-      kind: "fast-manim-generic-initial-move-v3" as const,
+      kind: "runtime-trace-initial-move" as const,
     },
     projectId: "generic-preview",
     requestId: "generic-initial-move-v3-candidate",
@@ -326,12 +326,12 @@ function candidateRequest() {
 
 function resizeCandidateRequest() {
   return {
-    genericInitialResize: {
+    initialResize: {
       baseBinding: RESIZE_PLAN.baseBinding,
       baseSourceHash: RESIZE_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedScaleFactor: RESIZE_PLAN.expectedScaleFactor,
-      kind: "fast-manim-generic-initial-resize-v3" as const,
+      kind: "runtime-trace-initial-resize" as const,
     },
     projectId: "generic-preview",
     requestId: "generic-initial-resize-v3-candidate",
@@ -342,12 +342,12 @@ function resizeCandidateRequest() {
 
 function rotationCandidateRequest() {
   return {
-    genericInitialRotation: {
+    initialRotation: {
       baseBinding: ROTATION_PLAN.baseBinding,
       baseSourceHash: ROTATION_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedAngleRadians: ROTATION_PLAN.expectedAngleRadians,
-      kind: "fast-manim-generic-initial-rotation-v3" as const,
+      kind: "runtime-trace-initial-rotation" as const,
     },
     projectId: "generic-preview",
     requestId: "generic-initial-rotation-v3-candidate",
@@ -358,12 +358,12 @@ function rotationCandidateRequest() {
 
 function opacityCandidateRequest() {
   return {
-    genericInitialOpacity: {
+    initialOpacity: {
       baseBinding: OPACITY_PLAN.baseBinding,
       baseSourceHash: OPACITY_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedOpacity: OPACITY_PLAN.expectedOpacity,
-      kind: "fast-manim-generic-initial-opacity-v3" as const,
+      kind: "runtime-trace-initial-opacity" as const,
     },
     projectId: "generic-preview",
     requestId: "generic-initial-opacity-v3-candidate",
@@ -461,7 +461,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       await expect(
         runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(ROTATION_CANDIDATE_SOURCE, {
           ...rotationCandidateRequest(),
-          genericInitialMove: candidateRequest().genericInitialMove,
+          initialMove: candidateRequest().initialMove,
         }),
       ).rejects.toThrow(/exactly one initial-edit authority/i);
       expect(backend.requests).toHaveLength(0);
@@ -484,7 +484,7 @@ describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
       await expect(
         runner(await projectRoot(), staleBackend).runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, {
           ...candidateRequest(),
-          genericInitialMove: { ...candidateRequest().genericInitialMove, baseSourceHash: "f".repeat(64) },
+          initialMove: { ...candidateRequest().initialMove, baseSourceHash: "f".repeat(64) },
         }),
       ).rejects.toMatchObject({ status: 409 });
       expect(staleBackend.requests).toHaveLength(0);

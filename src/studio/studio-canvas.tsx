@@ -351,13 +351,11 @@ export function StudioCanvas({
   const genericInitialEditCandidatesByStudioEntityId = new Map(
     genericInitialEditCandidates.map((candidate) => [candidate.studioEntityId, candidate]),
   );
-  const pinnedRuntimeEditAuthority = preview?.initialEditAuthority ?? preview?.runtimeTraceTerminalEdit ?? null;
-  const initialEditCapabilities = preview?.initialEditAuthority?.capabilities ?? null;
   const terminalEditCapabilities = preview?.runtimeTraceTerminalEdit?.capabilities ?? null;
   const terminalPendingPresentation = preview?.runtimeTracePendingPresentation ?? null;
   const boundedRuntimeEditTargetIds = new Set([
     ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
-    ...(pinnedRuntimeEditAuthority ? [pinnedRuntimeEditAuthority.studioEntityId] : []),
+    ...(preview?.runtimeTraceTerminalEdit ? [preview.runtimeTraceTerminalEdit.studioEntityId] : []),
   ]);
   const boundedRuntimeEditActive = boundedRuntimeEditTargetIds.size > 0;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
@@ -512,27 +510,11 @@ export function StudioCanvas({
             const scaleUnknown = entity.geometry.scale.kind === "unknown";
             const dimensionsUnknown = entity.geometry.dimensions.kind === "unknown";
             const approximate = Object.values(entity.geometry).some((knowledge) => knowledge.kind === "unknown");
-            const geometrylessInitialTargetIsRetained =
-              (preview?.state.phase === "presented" && preview.state.frame.sampleTime === 0) ||
-              dragPreview?.entityIds.includes(entity.id) === true;
-            const sealedPositionOnlyTarget =
-              initialEditCapabilities?.semanticHitTargetWhenRuntimeBoundsMissing === true &&
-              preview?.initialEditAuthority?.studioEntityId === entity.id &&
-              geometrylessInitialTargetIsRetained &&
-              !positionUnknown &&
-              !dimensionsUnknown &&
-              !scaleUnknown;
             // A logical source group with no requested prepared bounds must
             // not mint a semantic hit target beside the WebGPU frame. The
-            // bounded V10/V12 targets are admitted only by runtime identity.
-            // Exact V8 is position-only and its sealed source projection owns
-            // the hit target even when the retained packet has no AABB table.
-            if (
-              (selectionOnlyPreview || boundedRuntimeEditActive) &&
-              showingCanvasPixels &&
-              presentedIdentity === null &&
-              !sealedPositionOnlyTarget
-            )
+            // bounded edit targets are admitted only by verified runtime
+            // identity or a Runtime Trace candidate.
+            if ((selectionOnlyPreview || boundedRuntimeEditActive) && showingCanvasPixels && presentedIdentity === null)
               return null;
             const runtimeTraceTargetGhost =
               pendingRuntimeTraceTargetId === entity.id ||
@@ -574,10 +556,7 @@ export function StudioCanvas({
             const opacity = draftTransactionId === entity.transactionId && entity.opacity === 0 ? 0.35 : entity.opacity;
             const shape = resizeKindForType(entity.type);
             const runtimeUniformScaleOnly = boundedRuntimeEditTargetIds.has(entity.id);
-            const runtimePositionOnly =
-              terminalPositionOnly ||
-              (preview?.initialEditAuthority?.studioEntityId === entity.id &&
-                initialEditCapabilities?.uniformScale === false);
+            const runtimePositionOnly = terminalPositionOnly;
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the semantic source projection.
