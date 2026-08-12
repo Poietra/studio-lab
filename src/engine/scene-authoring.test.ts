@@ -6,10 +6,12 @@ import {
   createMoveSceneEntityCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
+  createTransformSceneEntityCompiler,
   createUniformScaleSceneEntityCompiler,
   type MoveSceneEntityWireCommandV1,
   type RotateSceneEntityWireCommandV1,
   type SetSubtreeVectorPaintAlphaWireCommandV1,
+  type TransformSceneEntityWireCommandV1,
   type UniformScaleSceneEntityWireCommandV1,
 } from "./scene-authoring";
 
@@ -54,6 +56,21 @@ const uniformScaleCommand: UniformScaleSceneEntityWireCommandV1 = {
     origin: "studio-edit-program",
   },
   schema: "poietra.uniform-scale-scene-entity",
+  version: 1,
+};
+
+const transformCommand: TransformSceneEntityWireCommandV1 = {
+  delta: { x: 2.5, y: -1.5 },
+  entityId: "later",
+  expectedBaseRevision: "a".repeat(64),
+  nextRevision: "f".repeat(64),
+  provenance: {
+    evidence: ["Studio atomic transform"],
+    id: "studio-edit:transform-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.transform-scene-entity",
+  uniformScale: { factor: 1.5, pivot: { x: 1.25, y: -0.5 } },
   version: 1,
 };
 
@@ -133,6 +150,24 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(uniformScaleCommand);
   });
 
+  it("forwards one exact atomic root transform and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createTransformSceneEntityCompiler(async () => ({
+      transformSceneEntityV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, transformCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(transformCommand);
+  });
+
   it("forwards the exact subtree vector-paint command and complete base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
@@ -165,10 +200,14 @@ describe("Scene authoring WASM adapter", () => {
     const compileSetPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(async () => ({
       setSubtreeVectorPaintAlphaV1: () => new TextEncoder().encode("[]"),
     }));
+    const compileTransform = createTransformSceneEntityCompiler(async () => ({
+      transformSceneEntityV1: () => new TextEncoder().encode("{}"),
+    }));
 
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileMove(bundle, moveCommand)).rejects.toThrow();
     await expect(compileUniformScale(bundle, uniformScaleCommand)).rejects.toThrow();
     await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
+    await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();
   });
 });

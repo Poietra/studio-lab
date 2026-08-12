@@ -13,6 +13,7 @@ mod scene_delta;
 pub use authoring::{
     MoveSceneEntityCommand, MoveSceneEntityError, RotateSceneEntityCommand, RotateSceneEntityError,
     SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    TransformSceneEntityCommand, TransformSceneEntityError, UniformScaleAboutPivot,
     UniformScaleSceneEntityCommand, UniformScaleSceneEntityError,
 };
 pub use evaluator::{

@@ -39,6 +39,24 @@ pub struct UniformScaleSceneEntityCommand {
     pub provenance: ProvenanceRecordV1,
 }
 
+/// One optional uniform scale within an atomic world-space transform.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UniformScaleAboutPivot {
+    pub factor: f64,
+    pub pivot: PointV1,
+}
+
+/// One profile-free Studio command that atomically transforms an authorized entity.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformSceneEntityCommand {
+    pub delta: PointV1,
+    pub entity_id: String,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
+    pub uniform_scale: Option<UniformScaleAboutPivot>,
+}
+
 /// One profile-free Studio command that sets vector-paint alpha in one root subtree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetSubtreeVectorPaintAlphaCommand {
@@ -120,6 +138,34 @@ pub enum UniformScaleSceneEntityError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum TransformSceneEntityError {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the transform must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the world-space translation delta must be finite")]
+    InvalidDelta,
+    #[error("the optional uniform scale factor must be finite, positive, and non-identity")]
+    InvalidFactor,
+    #[error("the optional world-space uniform scale pivot must be finite")]
+    InvalidPivot,
+    #[error("the transform must contain a non-zero translation or a uniform scale")]
+    NoOp,
+    #[error("the transform target does not exist: {0}")]
+    TargetMissing(String),
+    #[error("world-space transform does not yet support an animated transform target: {0}")]
+    AnimatedTransformUnsupported(String),
+    #[error("world-space transform requires identity, transform-static ancestors: {0}")]
+    TransformedAncestorUnsupported(String),
+    #[error("the transform provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("the transform provenance ID already exists: {0}")]
+    ProvenanceConflict(String),
+    #[error("the transformed Scene failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum SetSubtreeVectorPaintAlphaError {
     #[error("the installed Scene revision does not match expectedBaseRevision")]
     StaleBaseRevision,
@@ -148,6 +194,26 @@ pub enum SetSubtreeVectorPaintAlphaError {
 fn rotation_is_noop(angle_radians: f64) -> bool {
     let normalized = angle_radians.sin().atan2(angle_radians.cos());
     normalized.abs() <= ROTATION_NOOP_EPSILON
+}
+
+fn apply_world_translation(transform: &mut poietra_scene_ir::AffineTransformV1, delta: &PointV1) {
+    transform.tx += delta.x;
+    transform.ty += delta.y;
+}
+
+fn apply_world_uniform_scale(
+    transform: &mut poietra_scene_ir::AffineTransformV1,
+    factor: f64,
+    pivot: &PointV1,
+) {
+    *transform = poietra_scene_ir::AffineTransformV1 {
+        m11: factor * transform.m11,
+        m12: factor * transform.m12,
+        m21: factor * transform.m21,
+        m22: factor * transform.m22,
+        tx: pivot.x + factor * (transform.tx - pivot.x),
+        ty: pivot.y + factor * (transform.ty - pivot.y),
+    };
 }
 
 impl EngineSessionV1 {
@@ -308,8 +374,7 @@ impl EngineSessionV1 {
         if target.parent_id.is_some() {
             return Err(MoveSceneEntityError::TargetIsNotRoot(command.entity_id));
         }
-        target.transform.tx += command.delta.x;
-        target.transform.ty += command.delta.y;
+        apply_world_translation(&mut target.transform, &command.delta);
         target.provenance_id.clone_from(&command.provenance.id);
         candidate.scene.provenance.push(command.provenance);
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
@@ -395,15 +460,125 @@ impl EngineSessionV1 {
                 command.entity_id,
             ));
         }
-        let transform = &target.transform;
-        target.transform = poietra_scene_ir::AffineTransformV1 {
-            m11: command.factor * transform.m11,
-            m12: command.factor * transform.m12,
-            m21: command.factor * transform.m21,
-            m22: command.factor * transform.m22,
-            tx: command.pivot.x + command.factor * (transform.tx - command.pivot.x),
-            ty: command.pivot.y + command.factor * (transform.ty - command.pivot.y),
+        apply_world_uniform_scale(&mut target.transform, command.factor, &command.pivot);
+        target.provenance_id.clone_from(&command.provenance.id);
+        candidate.scene.provenance.push(command.provenance);
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
         };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
+    /// Atomically applies a world-space translation and optional uniform scale to one entity.
+    ///
+    /// Uniform scale is applied about its pivot before the world-space translation. The command
+    /// is independent of source profiles, viewport coordinates, and Manim bindings.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene and retained index.
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact identity defines whether the optional scale is a valid command"
+    )]
+    pub fn transform_scene_entity(
+        &mut self,
+        command: TransformSceneEntityCommand,
+    ) -> Result<SceneIrBundleV1, TransformSceneEntityError> {
+        if self.scene().source.revision_hash() != command.expected_base_revision {
+            return Err(TransformSceneEntityError::StaleBaseRevision);
+        }
+        if command.next_revision == command.expected_base_revision {
+            return Err(TransformSceneEntityError::RevisionDidNotAdvance);
+        }
+        if !command.delta.x.is_finite() || !command.delta.y.is_finite() {
+            return Err(TransformSceneEntityError::InvalidDelta);
+        }
+        if let Some(scale) = &command.uniform_scale {
+            if !scale.factor.is_finite() || scale.factor <= 0.0 || scale.factor == 1.0 {
+                return Err(TransformSceneEntityError::InvalidFactor);
+            }
+            if !scale.pivot.x.is_finite() || !scale.pivot.y.is_finite() {
+                return Err(TransformSceneEntityError::InvalidPivot);
+            }
+        } else if command.delta.x == 0.0 && command.delta.y == 0.0 {
+            return Err(TransformSceneEntityError::NoOp);
+        }
+        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+            return Err(TransformSceneEntityError::InvalidProvenanceOrigin);
+        }
+        if self
+            .scene()
+            .provenance
+            .iter()
+            .any(|record| record.id == command.provenance.id)
+        {
+            return Err(TransformSceneEntityError::ProvenanceConflict(
+                command.provenance.id,
+            ));
+        }
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        if candidate.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::AffineTransform { entity_id, .. }
+                    | AnimationChannelV1::MotionPath { entity_id, .. }
+                    if entity_id == &command.entity_id
+            )
+        }) {
+            return Err(TransformSceneEntityError::AnimatedTransformUnsupported(
+                command.entity_id,
+            ));
+        }
+        let target_index = candidate
+            .scene
+            .entities
+            .iter()
+            .position(|entity| entity.id == command.entity_id)
+            .ok_or_else(|| TransformSceneEntityError::TargetMissing(command.entity_id.clone()))?;
+        let target = &candidate.scene.entities[target_index];
+        let mut parent_id = target.parent_id.as_deref();
+        while let Some(id) = parent_id {
+            let Some(parent) = candidate
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == id)
+            else {
+                return Err(TransformSceneEntityError::TransformedAncestorUnsupported(
+                    id.to_owned(),
+                ));
+            };
+            if parent.transform != poietra_scene_ir::AffineTransformV1::identity()
+                || candidate.scene.animation_channels.iter().any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform { entity_id, .. }
+                            | AnimationChannelV1::MotionPath { entity_id, .. }
+                            if entity_id == id
+                    )
+                })
+            {
+                return Err(TransformSceneEntityError::TransformedAncestorUnsupported(
+                    id.to_owned(),
+                ));
+            }
+            parent_id = parent.parent_id.as_deref();
+        }
+        let target = &mut candidate.scene.entities[target_index];
+        if let Some(scale) = &command.uniform_scale {
+            apply_world_uniform_scale(&mut target.transform, scale.factor, &scale.pivot);
+        }
+        apply_world_translation(&mut target.transform, &command.delta);
         target.provenance_id.clone_from(&command.provenance.id);
         candidate.scene.provenance.push(command.provenance);
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
@@ -733,6 +908,41 @@ mod tests {
         error
     }
 
+    fn transform_command_for(
+        bundle: &SceneIrBundleV1,
+        entity_id: &str,
+    ) -> TransformSceneEntityCommand {
+        TransformSceneEntityCommand {
+            delta: PointV1 { x: 2.0, y: -1.0 },
+            entity_id: entity_id.to_owned(),
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio atomic transform".to_owned()],
+                id: "studio-atomic-transform".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+            uniform_scale: Some(UniformScaleAboutPivot {
+                factor: 1.5,
+                pivot: PointV1 { x: 1.0, y: -0.5 },
+            }),
+        }
+    }
+
+    fn rejected_transform(
+        bundle: SceneIrBundleV1,
+        command: TransformSceneEntityCommand,
+    ) -> TransformSceneEntityError {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.transform_scene_entity(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
     fn paint_alpha_command_for(
         bundle: &SceneIrBundleV1,
         root_entity_id: &str,
@@ -914,6 +1124,97 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "these operations produce exact finite products"
+    )]
+    fn atomic_transform_supports_move_scale_and_their_composition() {
+        let bundle = real_line_joints_bundle();
+        let root_id = bundle.scene.entities[0].id.clone();
+        for (delta, factor, expected) in [
+            (
+                PointV1 { x: 2.0, y: -1.0 },
+                None,
+                [1.25, 0.5, -0.25, 0.75, 5.0, -3.0],
+            ),
+            (
+                PointV1 { x: 0.0, y: 0.0 },
+                Some(1.5),
+                [1.875, 0.75, -0.375, 1.125, 4.0, -2.75],
+            ),
+            (
+                PointV1 { x: 2.0, y: -1.0 },
+                Some(1.5),
+                [1.875, 0.75, -0.375, 1.125, 6.0, -3.75],
+            ),
+        ] {
+            let mut command = transform_command_for(&bundle, &root_id);
+            command.delta = delta;
+            command.uniform_scale = factor.map(|factor| UniformScaleAboutPivot {
+                factor,
+                pivot: PointV1 { x: 1.0, y: -0.5 },
+            });
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+            let result = session.transform_scene_entity(command.clone()).unwrap();
+            let transformed = result
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == root_id)
+                .unwrap();
+
+            assert_eq!(
+                [
+                    transformed.transform.m11,
+                    transformed.transform.m12,
+                    transformed.transform.m21,
+                    transformed.transform.m22,
+                    transformed.transform.tx,
+                    transformed.transform.ty,
+                ],
+                expected
+            );
+            assert_eq!(transformed.provenance_id, command.provenance.id);
+            assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
+            assert_eq!(session.scene(), &result.scene);
+            assert_eq!(session.retained_index_stats().build_count, 2);
+        }
+    }
+
+    #[test]
+    fn atomic_transform_updates_one_authorized_nested_entity_only() {
+        let bundle = fixture_bundle("real-line-joints-v10.json");
+        let target = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_some())
+            .unwrap()
+            .clone();
+        let mut command = transform_command_for(&bundle, &target.id);
+        command.uniform_scale = None;
+        let mut expected = target.clone();
+        expected.transform.tx += command.delta.x;
+        expected.transform.ty += command.delta.y;
+        expected.provenance_id.clone_from(&command.provenance.id);
+        let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+        let result = session.transform_scene_entity(command).unwrap();
+
+        for (actual, before) in result.scene.entities.iter().zip(&bundle.scene.entities) {
+            assert_eq!(
+                actual,
+                if actual.id == target.id {
+                    &expected
+                } else {
+                    before
+                }
+            );
+        }
     }
 
     #[test]
@@ -1153,6 +1454,75 @@ mod tests {
                 rejected_uniform_scale(animated_bundle, command),
                 UniformScaleSceneEntityError::AnimatedTransformUnsupported(id)
                     if id == entity_id
+            ));
+        }
+    }
+
+    #[test]
+    fn rejected_atomic_transforms_preserve_the_retained_scene() {
+        let bundle = real_line_joints_bundle();
+        let root_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap()
+            .id
+            .clone();
+        let command = transform_command_for(&bundle, &root_id);
+
+        let mut stale = command.clone();
+        stale.expected_base_revision = "f".repeat(64);
+        assert!(matches!(
+            rejected_transform(bundle.clone(), stale),
+            TransformSceneEntityError::StaleBaseRevision
+        ));
+
+        let mut no_op = command.clone();
+        no_op.delta = PointV1 { x: 0.0, y: 0.0 };
+        no_op.uniform_scale = None;
+        assert!(matches!(
+            rejected_transform(bundle.clone(), no_op),
+            TransformSceneEntityError::NoOp
+        ));
+
+        let mut invalid_delta = command.clone();
+        invalid_delta.delta.x = f64::NAN;
+        assert!(matches!(
+            rejected_transform(bundle.clone(), invalid_delta),
+            TransformSceneEntityError::InvalidDelta
+        ));
+
+        let mut identity_scale = command.clone();
+        identity_scale.uniform_scale.as_mut().unwrap().factor = 1.0;
+        assert!(matches!(
+            rejected_transform(bundle.clone(), identity_scale),
+            TransformSceneEntityError::InvalidFactor
+        ));
+
+        let child_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.as_deref() == Some(root_id.as_str()))
+            .unwrap()
+            .id
+            .clone();
+        let ancestor_transformed = transform_command_for(&bundle, &child_id);
+        assert!(matches!(
+            rejected_transform(bundle, ancestor_transformed),
+            TransformSceneEntityError::TransformedAncestorUnsupported(id) if id == root_id
+        ));
+
+        for (fixture, entity_id) in [
+            ("dynamic-affine-camera.json", "dynamic-parent"),
+            ("manim-motion-path.json", "mover"),
+        ] {
+            let animated = fixture_bundle(fixture);
+            let command = transform_command_for(&animated, entity_id);
+            assert!(matches!(
+                rejected_transform(animated, command),
+                TransformSceneEntityError::AnimatedTransformUnsupported(id) if id == entity_id
             ));
         }
     }
