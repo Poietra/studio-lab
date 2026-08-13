@@ -5,9 +5,8 @@ import { expect, type Page, test } from "@playwright/test";
 import type { CanvasFrameEvidenceResponseV1 } from "../src/engine/canvas-worker-client";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "../src/engine/contracts";
 import type { PreviewRendererHostStateV1, PreviewViewportV1 } from "../src/engine/preview-renderer";
-import { createSceneIrDeltaV1, type SceneIrDeltaV1 } from "../src/engine/scene-delta";
 
-const DELTA_REVISION = "b".repeat(64);
+const CHANGED_REVISION = "b".repeat(64);
 const RESTORED_REVISION = "c".repeat(64);
 const WORKSPACE_REVISION = "d".repeat(64);
 const INTERACTION_ENTITY_IDS = ["dynamic-parent", "asymmetric-child", "trim-motion-child"] as const;
@@ -17,7 +16,6 @@ type RgbaPixel = readonly [number, number, number, number];
 type FrameEvidence = CanvasFrameEvidenceResponseV1;
 type PresentedState = Extract<PreviewRendererHostStateV1, Readonly<{ phase: "presented" }>>;
 type HarnessSnapshot = Readonly<{
-  deltaOperations: readonly string[];
   fullReplacements: number;
   oldEmissionCount: number | null;
   oldEmissionCountAtDispose: number | null;
@@ -54,7 +52,6 @@ type DynamicFixture = Readonly<{
 type HarnessInput = Readonly<{
   base: SceneIrBundleV1;
   changed: SceneIrBundleV1;
-  delta: SceneIrDeltaV1;
   restored: SceneIrBundleV1;
   workspace: SceneIrBundleV1;
 }>;
@@ -79,15 +76,12 @@ function revisionBundle(bundle: SceneIrBundleV1, revision: string, includeAnimat
 async function fixtureInput() {
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/dynamic-affine-camera.json", "utf8")) as DynamicFixture;
   const base = sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
-  const changed = revisionBundle(base, DELTA_REVISION, false);
-  const delta = await createSceneIrDeltaV1(base, changed);
-  if (!delta) throw new Error("The dynamic camera removal must fit the bounded Scene delta contract.");
+  const changed = revisionBundle(base, CHANGED_REVISION, false);
   return {
     fixture,
     input: {
       base,
       changed,
-      delta,
       restored: revisionBundle(base, RESTORED_REVISION),
       workspace: revisionBundle(base, WORKSPACE_REVISION),
     } satisfies HarnessInput,
@@ -97,7 +91,7 @@ async function fixtureInput() {
 async function installHarness(page: Page, input: HarnessInput) {
   await page.goto("/");
   await page.evaluate(
-    async ({ base, changed, delta, restored, workspace, interactionEntityIds, revisions }) => {
+    async ({ base, changed, restored, workspace, interactionEntityIds, revisions }) => {
       const clientModuleUrl = "/src/engine/canvas-worker-client.ts";
       const previewModuleUrl = "/src/engine/preview-renderer.ts";
       const { PoietraCanvasWorkerClient } = (await import(
@@ -114,7 +108,6 @@ async function installHarness(page: Page, input: HarnessInput) {
       document.body.replaceChildren();
       let workerCount = 0;
       let workerTerminations = 0;
-      const deltaOperations: string[] = [];
       let fullReplacements = 0;
       let stateLog = { emissions: 0, presentedRevisions: [] as string[] };
       let oldStateLog: typeof stateLog | null = null;
@@ -157,11 +150,6 @@ async function installHarness(page: Page, input: HarnessInput) {
             await client.replaceScene(value);
             fullReplacements += 1;
           },
-          updateScene: async (value: Parameters<typeof client.updateScene>[0]) => {
-            const result = await client.updateScene(value);
-            deltaOperations.push(result.operation);
-            return result;
-          },
         };
       };
       const makeHost = () => {
@@ -188,7 +176,6 @@ async function installHarness(page: Page, input: HarnessInput) {
         host.requestFrame({ sampleTime, viewport });
       };
       const snapshot = (): HarnessSnapshot => ({
-        deltaOperations: [...deltaOperations],
         fullReplacements,
         oldEmissionCount: oldStateLog?.emissions ?? null,
         oldEmissionCountAtDispose,
@@ -205,11 +192,10 @@ async function installHarness(page: Page, input: HarnessInput) {
         return immediate;
       };
       const harness = {
-        applyDelta: () =>
+        replaceChanged: () =>
           update({
-            delta,
             interactionEntityIds,
-            revision: revisions.delta,
+            revision: revisions.changed,
             snapshot: changed,
           }),
         capture: (samples: readonly Readonly<{ fractionX: number; fractionY: number }>[]) =>
@@ -219,9 +205,8 @@ async function installHarness(page: Page, input: HarnessInput) {
           for (const sample of samples) request(sample.sampleTime, sample.viewport);
           return snapshot();
         },
-        replace: () =>
+        replaceRestored: () =>
           update({
-            delta: null,
             interactionEntityIds,
             revision: revisions.restored,
             snapshot: restored,
@@ -257,7 +242,7 @@ async function installHarness(page: Page, input: HarnessInput) {
     {
       ...input,
       interactionEntityIds: INTERACTION_ENTITY_IDS,
-      revisions: { delta: DELTA_REVISION, restored: RESTORED_REVISION, workspace: WORKSPACE_REVISION },
+      revisions: { changed: CHANGED_REVISION, restored: RESTORED_REVISION, workspace: WORKSPACE_REVISION },
     },
   );
 }
@@ -392,20 +377,18 @@ test("keeps dynamic bounds correlated across one retained production session, re
   expectInteraction(rapidA.state, aSample);
   expect(rapidA.state.frame.packetId).not.toBe(beforeRapid.state.frame.packetId);
 
-  const deltaUpdate = await invoke<HarnessSnapshot>(page, "applyDelta");
-  expect(deltaUpdate.state).toMatchObject({ phase: "fallback", reason: "frame-stale" });
-  const changed = await waitForPresented(page, DELTA_REVISION, aSample.sampleTime, aSample.viewport);
-  expect(changed.deltaOperations).toEqual(["delta"]);
-  expect(changed.fullReplacements).toBe(0);
+  const changedUpdate = await invoke<HarnessSnapshot>(page, "replaceChanged");
+  expect(changedUpdate.state).toMatchObject({ phase: "fallback", reason: "frame-stale" });
+  const changed = await waitForPresented(page, CHANGED_REVISION, aSample.sampleTime, aSample.viewport);
+  expect(changed.fullReplacements).toBe(1);
   expect(changed.workerCount).toBe(1);
-  if (changed.state.phase !== "presented") throw new Error("The delta revision was not presented.");
+  if (changed.state.phase !== "presented") throw new Error("The changed revision was not presented.");
   expect(changed.state.frame.interaction).not.toEqual(baseInteraction);
 
-  const replacement = await invoke<HarnessSnapshot>(page, "replace");
+  const replacement = await invoke<HarnessSnapshot>(page, "replaceRestored");
   expect(replacement.state).toMatchObject({ phase: "fallback", reason: "frame-stale" });
   const restored = await waitForPresented(page, RESTORED_REVISION, aSample.sampleTime, aSample.viewport);
-  expect(restored.deltaOperations).toEqual(["delta"]);
-  expect(restored.fullReplacements).toBe(1);
+  expect(restored.fullReplacements).toBe(2);
   expect(restored.workerCount).toBe(1);
   if (restored.state.phase !== "presented") throw new Error("The replacement revision was not presented.");
   expectInteraction(restored.state, aSample);

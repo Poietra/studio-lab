@@ -2,13 +2,11 @@ import {
   type CanvasPngAssetRegistrySnapshotV1,
   type CanvasPngAssetTransferV1,
   type CanvasPngDimensionDecoderV1,
-  canvasSceneDeltaChangesAssetsV1,
   prepareCanvasPngAssetTransfersV1,
 } from "./canvas-png-assets";
 import type { CanvasFrameEvidenceResponseV1 } from "./canvas-worker-evidence";
 import {
   type CanvasFrameTelemetryV1,
-  type CanvasSceneDeltaDirtySetV1,
   type CanvasWorkerErrorCodeV1,
   type CanvasWorkerRequestV1,
   type CanvasWorkerResponseV1,
@@ -22,7 +20,6 @@ import {
 } from "./canvas-worker-protocol";
 import type { SceneIrBundleV1 } from "./contracts";
 import { parseVerifiedSceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
-import { parseSceneIrDeltaV1, type SceneIrDeltaV1 } from "./scene-delta";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
@@ -111,23 +108,6 @@ export type ReplaceCanvasSceneInputV1 = Readonly<{
   revision: string;
   snapshot: SceneIrBundleV1;
 }>;
-
-export type ApplyCanvasSceneDeltaInputV1 = Readonly<{
-  baseRevision: string;
-  delta: SceneIrDeltaV1;
-  revision: string;
-}>;
-
-export type UpdateCanvasSceneInputV1 = ApplyCanvasSceneDeltaInputV1 &
-  Readonly<{
-    assetPayloads?: readonly CanvasPngAssetTransferV1[];
-    /** Complete verified fallback used only when the bounded delta is rejected. */
-    snapshot: SceneIrBundleV1;
-  }>;
-
-export type UpdateCanvasSceneResultV1 =
-  | Readonly<{ dirty: CanvasSceneDeltaDirtySetV1; operation: "delta" }>
-  | Readonly<{ operation: "replace" }>;
 
 export type RenderCanvasFrameInputV1 = Readonly<{
   /** Verified runtime IDs whose sampled visual hit bounds are requested. */
@@ -238,22 +218,6 @@ async function verifySnapshot(snapshot: SceneIrBundleV1) {
   }
 }
 
-function encodeSceneDelta(input: ApplyCanvasSceneDeltaInputV1) {
-  let delta: SceneIrDeltaV1;
-  try {
-    delta = parseSceneIrDeltaV1(input.delta);
-  } catch (cause) {
-    throw validationError("The Scene delta does not match the bounded v1 contract.", cause);
-  }
-  if (canvasSceneDeltaChangesAssetsV1(delta)) {
-    throw validationError("Canvas Scene deltas cannot change assets; use verified replacement.");
-  }
-  if (delta.baseRevision !== input.baseRevision || delta.nextRevision !== input.revision) {
-    throw validationError("The Scene delta revisions do not match their transport correlation.");
-  }
-  return new TextEncoder().encode(JSON.stringify(delta)).buffer;
-}
-
 function parseWorkerRequest(value: unknown) {
   const parsed = canvasWorkerRequestV1Schema.safeParse(value);
   if (!parsed.success) throw validationError("The canvas worker request does not match the v1 protocol.", parsed.error);
@@ -305,7 +269,7 @@ export class PoietraCanvasWorkerClient {
   private nextRequestId = 1;
   private queuedRender: ScheduledRenderV1 | null = null;
   private exclusiveOperation: ExclusiveCanvasOperationV1 | null = null;
-  private state: "applying-delta" | "empty" | "failed" | "installing" | "ready" | "replacing" | "disposed" = "empty";
+  private state: "empty" | "failed" | "installing" | "ready" | "replacing" | "disposed" = "empty";
   private terminalError: CanvasWorkerClientError | null = null;
 
   private readonly handleError = (event: ErrorEvent) => {
@@ -512,96 +476,6 @@ export class PoietraCanvasWorkerClient {
       }
       throw normalized;
     }
-  }
-
-  async applySceneDelta(input: ApplyCanvasSceneDeltaInputV1): Promise<CanvasSceneDeltaDirtySetV1> {
-    if (this.exclusiveOperation !== null) {
-      throw new CanvasWorkerClientError(
-        "invalid-state",
-        `The ${this.exclusiveOperation} operation is in flight; Scene delta application is mutually exclusive with it.`,
-      );
-    }
-    if (this.state !== "ready" || this.currentRevision !== input.baseRevision) {
-      throw new CanvasWorkerClientError("invalid-state", "The Scene delta base revision is not installed.");
-    }
-    const deltaJson = encodeSceneDelta(input);
-    const request = parseWorkerRequest({
-      baseRevision: input.baseRevision,
-      deltaJson,
-      kind: "apply-scene-delta",
-      requestId: this.takeRequestId(),
-      revision: input.revision,
-      schema: "poietra.canvas-worker-request",
-      version: POIETRA_CANVAS_WORKER_VERSION,
-    });
-    if (request.kind !== "apply-scene-delta") {
-      throw new CanvasWorkerClientError("protocol-violation", "The Scene delta request kind was lost.");
-    }
-    this.cancelScheduledRenders(
-      new CanvasWorkerClientError("stale-response", "A Scene delta superseded this canvas render."),
-    );
-    this.state = "applying-delta";
-    try {
-      const response = await this.dispatch(request, ["scene-delta-applied"], undefined, [deltaJson]);
-      this.requirePendingState("applying-delta", "The Scene delta was superseded.");
-      if (response.kind !== "scene-delta-applied") {
-        throw new CanvasWorkerClientError(
-          "protocol-violation",
-          "The canvas worker did not acknowledge the Scene delta.",
-        );
-      }
-      // Revision ownership advances only after the correlated worker ACK.
-      this.currentRevision = input.revision;
-      this.state = "ready";
-      return response.dirty;
-    } catch (error) {
-      const normalized = normalizeError(error, "internal-error", "The Scene delta application failed.");
-      if (normalized.code === "delta-rejected" || normalized.code === "stale-revision") {
-        if (this.state === "applying-delta") this.state = "ready";
-      } else {
-        this.failFatally(normalized);
-      }
-      throw normalized;
-    }
-  }
-
-  /**
-   * Applies the small delta on the production worker path and performs the
-   * existing whole-scene replacement only as explicit fail-closed recovery.
-   */
-  async updateScene(input: UpdateCanvasSceneInputV1): Promise<UpdateCanvasSceneResultV1> {
-    let parsedDelta: SceneIrDeltaV1 | null = null;
-    try {
-      parsedDelta = parseSceneIrDeltaV1(input.delta);
-    } catch {
-      // Preserve the established malformed-delta path: the verified complete
-      // snapshot below remains the only recovery authority.
-    }
-    if (parsedDelta && canvasSceneDeltaChangesAssetsV1(parsedDelta)) {
-      await this.replaceScene({
-        assetPayloads: input.assetPayloads,
-        baseRevision: input.baseRevision,
-        revision: input.revision,
-        snapshot: input.snapshot,
-      });
-      return { operation: "replace" };
-    }
-    try {
-      const dirty = await this.applySceneDelta(input);
-      return { dirty, operation: "delta" };
-    } catch (error) {
-      const recoverable =
-        error instanceof CanvasWorkerClientError &&
-        (error.code === "delta-rejected" || error.code === "invalid-input" || error.code === "stale-revision");
-      if (!recoverable) throw error;
-    }
-    await this.replaceScene({
-      assetPayloads: input.assetPayloads,
-      baseRevision: input.baseRevision,
-      revision: input.revision,
-      snapshot: input.snapshot,
-    });
-    return { operation: "replace" };
   }
 
   async render(input: RenderCanvasFrameInputV1): Promise<PresentedCanvasFrameV1> {
@@ -937,7 +811,7 @@ export class PoietraCanvasWorkerClient {
     render.reject(error);
   }
 
-  private requirePendingState(expected: "applying-delta" | "installing" | "replacing", message: string) {
+  private requirePendingState(expected: "installing" | "replacing", message: string) {
     if (this.state === expected) return;
     if (this.terminalError) throw this.terminalError;
     throw new CanvasWorkerClientError(this.state === "disposed" ? "disposed" : "invalid-state", message);

@@ -21,7 +21,6 @@ import {
   canvasWorkerRequestV1Schema,
 } from "./canvas-worker-protocol";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
-import type { SceneIrDeltaV1 } from "./scene-delta";
 
 const REVISION_A = "a".repeat(64);
 const REVISION_B = "b".repeat(64);
@@ -99,19 +98,6 @@ function readyResponse(
   };
 }
 
-function deltaAppliedResponse(
-  request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "apply-scene-delta" }>>,
-): CanvasWorkerResponseV1 {
-  return {
-    dirty: { assets: false, camera: false, channelIds: [], entityIds: ["earlier"], sceneMetadata: false },
-    kind: "scene-delta-applied",
-    requestId: request.requestId,
-    revision: request.revision,
-    schema: "poietra.canvas-worker-response",
-    version: 1,
-  };
-}
-
 function presentedResponse(
   request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "render-frame" }>>,
   overrides: Partial<PresentedCanvasFrameV1> = {},
@@ -169,12 +155,6 @@ async function fixtureBundle(): Promise<SceneIrBundleV1> {
   const url = new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url);
   const fixture = JSON.parse(await readFile(url, "utf8")) as Readonly<{ assets: unknown; scene: unknown }>;
   return sceneIrBundleV1Schema.parse({ assets: fixture.assets, scene: fixture.scene });
-}
-
-async function fixtureDelta(): Promise<SceneIrDeltaV1> {
-  const url = new URL("../../fixtures/engine-v1/shared-single-entity-delta.json", import.meta.url);
-  const fixture = JSON.parse(await readFile(url, "utf8")) as Readonly<{ delta: SceneIrDeltaV1 }>;
-  return fixture.delta;
 }
 
 function revisionBundle(bundle: SceneIrBundleV1, revision: string): SceneIrBundleV1 {
@@ -580,131 +560,6 @@ describe("Poietra canvas worker client", () => {
     expect(retryRequest.assetPayloads).toHaveLength(1);
     worker.emitMessage(readyResponse(retryRequest));
     await retry;
-    client.dispose();
-  });
-
-  it("lowers an asset-changing delta directly to verified replacement", async () => {
-    const base = await fixtureBundle();
-    const delta = await fixtureDelta();
-    const next = await bundleWithPng(revisionBundle(base, REVISION_B), new Uint8Array([1, 2, 3, 4]).buffer);
-    const assetDelta = {
-      ...delta,
-      operations: [...delta.operations, { assets: next.bundle.assets, kind: "update-scene" as const }],
-    };
-    const worker = new FakeWorker();
-    const client = new PoietraCanvasWorkerClient({
-      decodePngDimensions,
-      wasmModuleUrl: "./engine-wasm/poietra_wasm.js",
-      workerFactory: () => worker as unknown as Worker,
-    });
-    await install(client, worker, base);
-
-    await expect(
-      client.applySceneDelta({ baseRevision: REVISION_A, delta: assetDelta, revision: REVISION_B }),
-    ).rejects.toMatchObject({ code: "invalid-input" });
-    expect(worker.posted).toHaveLength(1);
-
-    const updating = client.updateScene({
-      assetPayloads: [next.payload],
-      baseRevision: REVISION_A,
-      delta: assetDelta,
-      revision: REVISION_B,
-      snapshot: next.bundle,
-    });
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
-    const request = requestAt(worker, 1);
-    expect(request.kind).toBe("replace-scene");
-    if (request.kind !== "replace-scene") throw new Error("asset delta reached the delta transport");
-    expect(request.assetPayloads).toHaveLength(1);
-    worker.emitMessage(readyResponse(request));
-    await expect(updating).resolves.toEqual({ operation: "replace" });
-    client.dispose();
-  });
-
-  it("transfers one bounded delta and advances revision only after its dirty-set ACK", async () => {
-    const bundle = await fixtureBundle();
-    const delta = await fixtureDelta();
-    const worker = new FakeWorker();
-    const client = createClient(worker);
-    await install(client, worker, bundle);
-    worker.detachArrayBufferTransfers = true;
-
-    const applying = client.applySceneDelta({ baseRevision: REVISION_A, delta, revision: REVISION_B });
-    expect(client.revision).toBe(REVISION_A);
-    const request = requestAt(worker, 1);
-    if (request.kind !== "apply-scene-delta") throw new Error("missing Scene delta request");
-    expect(request).not.toHaveProperty("snapshotJson");
-    expect(worker.posted[1]?.transfer).toHaveLength(1);
-    const transferredDelta = worker.posted[1]?.transfer[0];
-    expect(transferredDelta).toBeInstanceOf(ArrayBuffer);
-    expect((transferredDelta as ArrayBuffer).byteLength).toBe(0);
-    expect(request.deltaJson.byteLength).toBeGreaterThan(0);
-    expect(request.deltaJson.byteLength * 2).toBeLessThan(new TextEncoder().encode(JSON.stringify(bundle)).byteLength);
-    expect(client.revision).toBe(REVISION_A);
-
-    worker.emitMessage(deltaAppliedResponse(request));
-    await expect(applying).resolves.toEqual({
-      assets: false,
-      camera: false,
-      channelIds: [],
-      entityIds: ["earlier"],
-      sceneMetadata: false,
-    });
-    expect(client.revision).toBe(REVISION_B);
-    expect(worker.terminate).not.toHaveBeenCalled();
-    client.dispose();
-  });
-
-  it("recovers a stale delta through the existing explicit replace-scene path", async () => {
-    const bundle = await fixtureBundle();
-    const delta = await fixtureDelta();
-    const replacement = revisionBundle(bundle, REVISION_B);
-    const worker = new FakeWorker();
-    const client = createClient(worker);
-    await install(client, worker, bundle);
-
-    const updating = client.updateScene({
-      baseRevision: REVISION_A,
-      delta,
-      revision: REVISION_B,
-      snapshot: replacement,
-    });
-    const deltaRequest = requestAt(worker, 1);
-    if (deltaRequest.kind !== "apply-scene-delta") throw new Error("missing Scene delta request");
-    worker.emitMessage(errorResponse(deltaRequest, "stale-revision"));
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(3));
-    expect(client.revision).toBe(REVISION_A);
-
-    const replacementRequest = requestAt(worker, 2);
-    if (replacementRequest.kind !== "replace-scene") throw new Error("missing fallback replacement request");
-    worker.emitMessage(readyResponse(replacementRequest));
-    await expect(updating).resolves.toEqual({ operation: "replace" });
-    expect(client.revision).toBe(REVISION_B);
-    expect(worker.terminate).not.toHaveBeenCalled();
-    client.dispose();
-  });
-
-  it("falls back to replace-scene when a malformed delta is rejected before transport", async () => {
-    const bundle = await fixtureBundle();
-    const replacement = revisionBundle(bundle, REVISION_B);
-    const worker = new FakeWorker();
-    const client = createClient(worker);
-    await install(client, worker, bundle);
-
-    const updating = client.updateScene({
-      baseRevision: REVISION_A,
-      delta: { debug: true } as unknown as SceneIrDeltaV1,
-      revision: REVISION_B,
-      snapshot: replacement,
-    });
-    await vi.waitFor(() => expect(worker.posted).toHaveLength(2));
-    const request = requestAt(worker, 1);
-    expect(request.kind).toBe("replace-scene");
-    if (request.kind !== "replace-scene") throw new Error("missing fallback replacement request");
-    expect(client.revision).toBe(REVISION_A);
-    worker.emitMessage(readyResponse(request));
-    await expect(updating).resolves.toEqual({ operation: "replace" });
-    expect(client.revision).toBe(REVISION_B);
     client.dispose();
   });
 

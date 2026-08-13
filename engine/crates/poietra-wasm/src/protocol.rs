@@ -1,8 +1,6 @@
 use std::collections::BTreeSet;
 
 use poietra_eval::{EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1};
-#[cfg(target_arch = "wasm32")]
-use poietra_eval::{SceneDeltaErrorV1, scene_delta_updates_assets_v1};
 #[cfg(any(target_arch = "wasm32", test))]
 use poietra_scene_ir::SceneIrV1;
 use poietra_scene_ir::{
@@ -435,30 +433,6 @@ impl EngineWorkerSessionV1 {
     #[cfg(target_arch = "wasm32")]
     pub(crate) fn retained_index_accounted_bytes(&self) -> usize {
         self.session.retained_index_stats().accounted_bytes()
-    }
-
-    /// Atomically applies one bounded Studio-only Scene delta.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error and preserves the retained Scene and index on failure.
-    #[cfg(target_arch = "wasm32")]
-    pub(crate) fn apply_scene_delta_json(
-        &mut self,
-        delta_json: &[u8],
-        expected_base_revision: &str,
-        expected_next_revision: &str,
-    ) -> Result<Vec<u8>, SceneDeltaErrorV1> {
-        if scene_delta_updates_assets_v1(delta_json)? {
-            return Err(SceneDeltaErrorV1::Invalid(
-                "canvas Scene deltas cannot change the asset manifest; use atomic replacement",
-            ));
-        }
-        self.session.apply_scene_delta_json_v1(
-            delta_json,
-            expected_base_revision,
-            expected_next_revision,
-        )
     }
 
     /// Parses, validates, and evaluates one bounded request into a typed packet.

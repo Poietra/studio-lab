@@ -10,12 +10,9 @@ import {
   type PresentedCanvasFrameV1,
   type RenderCanvasFrameInputV1,
   type ReplaceCanvasSceneInputV1,
-  type UpdateCanvasSceneInputV1,
-  type UpdateCanvasSceneResultV1,
 } from "./canvas-worker-client";
 import type { CanvasInteractionResultV1 } from "./canvas-worker-protocol";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
-import { createSceneIrDeltaV1 } from "./scene-delta";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 /**
@@ -32,7 +29,6 @@ export type PreviewRendererV1 = Readonly<{
   installScene: (input: InstallCanvasSceneInputV1) => Promise<void>;
   render: (input: RenderCanvasFrameInputV1) => Promise<PresentedCanvasFrameV1>;
   replaceScene: (input: ReplaceCanvasSceneInputV1) => Promise<void>;
-  updateScene: (input: UpdateCanvasSceneInputV1) => Promise<UpdateCanvasSceneResultV1>;
 }>;
 
 export function createCanvasPreviewRendererV1(options: CanvasWorkerClientOptions = {}): PreviewRendererV1 {
@@ -141,7 +137,6 @@ export class StudioPreviewRendererHost {
   }> | null = null;
   private phase: "disposed" | "failed" | "idle" | "installing" | "ready" | "updating" = "idle";
   private interactionEntityIds: readonly string[] = [];
-  private installedSnapshot: SceneIrBundleV1 | null = null;
   private presented: Readonly<{
     interaction: CanvasInteractionResultV1 | null;
     packetId: string;
@@ -188,7 +183,6 @@ export class StudioPreviewRendererHost {
         revision: input.revision,
         snapshot,
       });
-      this.installedSnapshot = snapshot;
     } catch (error) {
       if (!this.isDisposed()) {
         this.phase = "failed";
@@ -326,45 +320,24 @@ export class StudioPreviewRendererHost {
     if (this.phase === "disposed") {
       throw new CanvasWorkerClientError("disposed", "The preview renderer host was disposed.");
     }
-    if (this.phase === "failed" || !renderer || this.revision !== baseRevision || !this.installedSnapshot) {
+    if (this.phase === "failed" || !renderer || this.revision !== baseRevision) {
       throw new CanvasWorkerClientError("invalid-state", "A prior preview Scene update did not commit.");
     }
     try {
-      const [base, next] = await Promise.all([
-        parseVerifiedSceneIrBundleV1(this.installedSnapshot),
-        parseVerifiedSceneIrBundleV1(input.snapshot),
-      ]);
-      if (
-        sceneIrSourceRevisionHash(base.scene) !== baseRevision ||
-        sceneIrSourceRevisionHash(next.scene) !== input.revision
-      ) {
+      const next = await parseVerifiedSceneIrBundleV1(input.snapshot);
+      if (sceneIrSourceRevisionHash(next.scene) !== input.revision) {
         throw new CanvasWorkerClientError(
           "invalid-input",
           "The preview Scene update snapshot revisions do not match the retained host.",
         );
       }
-      // Derive the transport optimization from the retained authority and the
-      // verified next snapshot. Callers cannot pair an unrelated delta with
-      // the snapshot that advances host authority.
-      const delta = await createSceneIrDeltaV1(base, next);
       if (this.isDisposed() || this.renderer !== renderer) return;
-      if (delta === null) {
-        await renderer.replaceScene({
-          assetPayloads: input.assetPayloads,
-          baseRevision,
-          revision: input.revision,
-          snapshot: next,
-        });
-      } else {
-        await renderer.updateScene({
-          assetPayloads: input.assetPayloads,
-          baseRevision,
-          delta,
-          revision: input.revision,
-          snapshot: next,
-        });
-      }
-      this.installedSnapshot = next;
+      await renderer.replaceScene({
+        assetPayloads: input.assetPayloads,
+        baseRevision,
+        revision: input.revision,
+        snapshot: next,
+      });
     } catch (error) {
       if (!this.isDisposed() && this.renderer === renderer) {
         const normalized =
@@ -381,8 +354,8 @@ export class StudioPreviewRendererHost {
     }
     if (this.isDisposed() || this.renderer !== renderer) return;
 
-    // These authorities advance only after the worker ACK (or its correlated
-    // full-replacement recovery) has committed the matching revision.
+    // These authorities advance only after the worker has acknowledged the
+    // correlated atomic replacement.
     this.revision = input.revision;
     this.duration = input.snapshot.scene.duration;
     this.interactionEntityIds = input.interactionEntityIds ?? [];

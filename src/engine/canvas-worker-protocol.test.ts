@@ -19,7 +19,6 @@ import {
   MAX_CANVAS_INTERACTION_ENTITY_IDS,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
-  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_SNAPSHOT_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   MAX_CANVAS_WASM_MODULE_URL_LENGTH,
@@ -80,35 +79,8 @@ describe("canvas worker v1 protocol", () => {
     expect(MAX_CANVAS_SNAPSHOT_JSON_BYTES).toBe(8 * 1024 * 1024);
     expect(MAX_CANVAS_SAMPLE_JSON_BYTES).toBe(256 * 1024);
     expect(MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES).toBe(16 * 1024);
-    expect(MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES).toBe(128 * 1024);
     expect(MAX_CANVAS_INTERACTION_ENTITY_IDS).toBe(128);
     expect(MAX_CANVAS_WASM_MODULE_URL_LENGTH).toBe(2_048);
-  });
-
-  it("bounds the transferred Scene delta and its dirty-set acknowledgement", () => {
-    const request = {
-      baseRevision: REVISION,
-      deltaJson: new ArrayBuffer(256 * 1024),
-      kind: "apply-scene-delta",
-      requestId: 3,
-      revision: "b".repeat(64),
-      schema: "poietra.canvas-worker-request",
-      version: 1,
-    };
-    expect(canvasWorkerRequestV1Schema.parse(request)).toEqual(request);
-    expect(
-      canvasWorkerRequestV1Schema.safeParse({ ...request, deltaJson: new ArrayBuffer(256 * 1024 + 1) }).success,
-    ).toBe(false);
-    expect(
-      canvasWorkerResponseV1Schema.parse({
-        dirty: { assets: false, camera: false, channelIds: [], entityIds: ["entity#1"], sceneMetadata: false },
-        kind: "scene-delta-applied",
-        requestId: 3,
-        revision: "b".repeat(64),
-        schema: "poietra.canvas-worker-response",
-        version: 1,
-      }),
-    ).toMatchObject({ dirty: { entityIds: ["entity#1"] }, kind: "scene-delta-applied" });
   });
 
   it("matches the strict Rust canvas response without a RenderPacket", () => {

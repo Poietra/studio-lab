@@ -10,13 +10,11 @@ import {
   canvasEngineSampleRequestV1Schema,
   canvasRenderResponseV1Schema,
   canvasRenderTelemetryResponseV1Schema,
-  canvasSceneDeltaDirtySetV1Schema,
   canvasUrlsShareOrigin,
   canvasWorkerRequestV1Schema,
   MAX_CANVAS_ADAPTER_EVIDENCE_JSON_BYTES,
   MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES,
   MAX_CANVAS_SAMPLE_JSON_BYTES,
-  MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES,
   MAX_CANVAS_TELEMETRY_RESPONSE_JSON_BYTES,
   normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_TELEMETRY_ABI_VERSION,
@@ -26,9 +24,6 @@ import {
 const MAX_ERROR_MESSAGE_LENGTH = 4_096;
 
 export type PoietraWasmCanvasEngineV1 = {
-  // Optional only for injected negative-test seams; the ABI v4 loader below
-  // requires this method before a production engine can be constructed.
-  applySceneDelta?: (deltaJson: Uint8Array, baseRevision: string, nextRevision: string) => Uint8Array;
   render: (requestJson: Uint8Array) => Promise<Uint8Array>;
   replaceSnapshot: (snapshotJson: Uint8Array, assetMetadataJson: Uint8Array, assetBytes: Uint8Array[]) => void;
   // Telemetry-free modules remain supported. A module that exposes any
@@ -137,7 +132,6 @@ export async function initializePoietraCanvasBindingsV1(module: unknown): Promis
     typeof Engine !== "function" ||
     typeof EngineClass.create !== "function" ||
     !isRecord(EngineClass.prototype) ||
-    typeof EngineClass.prototype.applySceneDelta !== "function" ||
     typeof EngineClass.prototype.replaceSnapshot !== "function" ||
     typeof EngineClass.prototype.render !== "function"
   ) {
@@ -226,15 +220,6 @@ function decodeAdapterEvidence(evidenceJson: Uint8Array) {
   return parsed.data;
 }
 
-function decodeSceneDeltaDirtySet(dirtyJson: Uint8Array) {
-  const decoded = decodeBoundedJson(dirtyJson, MAX_CANVAS_SCENE_DELTA_ACK_JSON_BYTES);
-  const parsed = canvasSceneDeltaDirtySetV1Schema.safeParse(decoded);
-  if (!parsed.success) {
-    throw new Error("The canvas engine Scene delta dirty set violated the v1 contract.", { cause: parsed.error });
-  }
-  return parsed.data;
-}
-
 export class PoietraCanvasWorkerRuntimeV1 {
   private readonly loadWasm: (moduleUrl: URL) => Promise<PoietraWasmCanvasEngineClassV1>;
   private readonly postMessage: (response: CanvasWorkerResponseV1) => void;
@@ -290,10 +275,6 @@ export class PoietraCanvasWorkerRuntimeV1 {
     }
     if (request.kind === "replace-scene") {
       this.replace(request);
-      return;
-    }
-    if (request.kind === "apply-scene-delta") {
-      this.applyDelta(request);
       return;
     }
     if (request.kind === "render-frame-telemetry") {
@@ -414,65 +395,6 @@ export class PoietraCanvasWorkerRuntimeV1 {
     this.postMessage({
       kind: "canvas-ready",
       operation: "replace",
-      requestId: request.requestId,
-      revision: request.revision,
-      schema: "poietra.canvas-worker-response",
-      version: POIETRA_CANVAS_WORKER_VERSION,
-    });
-  }
-
-  private applyDelta(request: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "apply-scene-delta" }>>) {
-    const correlation = correlationFromUnknown(request);
-    if (!this.engine) {
-      this.postMessage(errorResponse(correlation, "invalid-state", null, "No canvas Scene is installed."));
-      return;
-    }
-    if (request.baseRevision !== this.currentRevision) {
-      this.postMessage(errorResponse(correlation, "stale-revision", null, "The Scene delta base revision is stale."));
-      return;
-    }
-    const applySceneDelta = this.engine.applySceneDelta;
-    if (typeof applySceneDelta !== "function") {
-      this.postMessage(
-        errorResponse(correlation, "delta-rejected", null, "The loaded canvas engine cannot apply Scene deltas."),
-      );
-      return;
-    }
-    let dirtyJson: Uint8Array;
-    try {
-      dirtyJson = applySceneDelta.call(
-        this.engine,
-        new Uint8Array(request.deltaJson),
-        request.baseRevision,
-        request.revision,
-      );
-    } catch (error) {
-      // Rust constructs and verifies the complete candidate before swapping.
-      // A rejected delta therefore preserves the retained Scene/index and all
-      // renderer/GPU state, allowing the caller to recover with replace-scene.
-      this.postMessage(errorResponse(correlation, "delta-rejected", error, "The Scene delta was rejected."));
-      return;
-    }
-    let dirty: ReturnType<typeof decodeSceneDeltaDirtySet>;
-    try {
-      dirty = decodeSceneDeltaDirtySet(dirtyJson);
-    } catch (error) {
-      // The ABI commits only after pre-serializing a bounded ACK. Reaching
-      // this branch therefore means the loaded module violated ABI v4 after
-      // applying the revision; retain that revision internally and force the
-      // page client to terminate rather than attempting unsafe recovery.
-      this.currentRevision = request.revision;
-      this.evidenceCapture?.invalidateCommitted();
-      this.postMessage(
-        errorResponse(correlation, "protocol-violation", error, "The Scene delta acknowledgement was invalid."),
-      );
-      return;
-    }
-    this.currentRevision = request.revision;
-    this.evidenceCapture?.invalidateCommitted();
-    this.postMessage({
-      dirty,
-      kind: "scene-delta-applied",
       requestId: request.requestId,
       revision: request.revision,
       schema: "poietra.canvas-worker-response",

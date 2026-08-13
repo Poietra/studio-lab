@@ -61,10 +61,6 @@ function encodeUnknown(value: unknown) {
   return new TextEncoder().encode(JSON.stringify(value));
 }
 
-function encodedDirtySet(entityIds: readonly string[] = ["earlier"]) {
-  return encodeUnknown({ assets: false, camera: false, channelIds: [], entityIds, sceneMetadata: false });
-}
-
 function installRequest(overrides: Readonly<Record<string, unknown>> = {}) {
   return {
     assetPayloads: [],
@@ -89,19 +85,6 @@ function renderRequest(overrides: Readonly<Record<string, unknown>> = {}) {
     schema: "poietra.canvas-worker-request",
     version: 1,
     viewport: { heightPx: 90, widthPx: 160 },
-    ...overrides,
-  };
-}
-
-function deltaRequest(overrides: Readonly<Record<string, unknown>> = {}) {
-  return {
-    baseRevision: REVISION_A,
-    deltaJson: encodeUnknown({ schema: "poietra.scene-delta", version: 1 }).buffer,
-    kind: "apply-scene-delta",
-    requestId: 2,
-    revision: REVISION_B,
-    schema: "poietra.canvas-worker-request",
-    version: 1,
     ...overrides,
   };
 }
@@ -391,94 +374,6 @@ describe("Poietra canvas worker runtime", () => {
     });
     expect(replaceSnapshot).toHaveBeenCalledOnce();
     expect(posted.at(-1)).toMatchObject({ code: "stale-revision", kind: "error", requestId: 4 });
-  });
-
-  it("applies a correlated delta, keeps its bounded dirty set, and advances only after success", async () => {
-    const applied: Readonly<{ base: string; delta: string; next: string }>[] = [];
-    class Engine implements PoietraWasmCanvasEngineV1 {
-      static async create() {
-        return new Engine();
-      }
-
-      applySceneDelta(deltaJson: Uint8Array, base: string, next: string) {
-        applied.push({ base, delta: new TextDecoder().decode(deltaJson), next });
-        return encodedDirtySet();
-      }
-      replaceSnapshot() {}
-      async render() {
-        return encodeResponse(presentedResponse("canvas:3"));
-      }
-    }
-    const posted: CanvasWorkerResponseV1[] = [];
-    const runtime = new PoietraCanvasWorkerRuntimeV1({
-      loadWasm: async () => Engine,
-      postMessage: (response) => posted.push(response),
-      scopeUrl: "https://studio.test/worker.js",
-    });
-
-    await runtime.accept(installRequest());
-    await runtime.accept(deltaRequest());
-    expect(applied).toEqual([
-      {
-        base: REVISION_A,
-        delta: JSON.stringify({ schema: "poietra.scene-delta", version: 1 }),
-        next: REVISION_B,
-      },
-    ]);
-    expect(posted.at(-1)).toEqual({
-      dirty: { assets: false, camera: false, channelIds: [], entityIds: ["earlier"], sceneMetadata: false },
-      kind: "scene-delta-applied",
-      requestId: 2,
-      revision: REVISION_B,
-      schema: "poietra.canvas-worker-response",
-      version: 1,
-    });
-
-    await runtime.accept(renderRequest({ requestId: 3, revision: REVISION_B }));
-    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", revision: REVISION_B });
-  });
-
-  it("preserves the base revision after delta rejection and accepts explicit replace recovery", async () => {
-    const replaceSnapshot = vi.fn();
-    const applySceneDelta = vi.fn(() => {
-      throw new Error("operation-conflict");
-    });
-    class Engine implements PoietraWasmCanvasEngineV1 {
-      static async create() {
-        return new Engine();
-      }
-
-      applySceneDelta = applySceneDelta;
-      replaceSnapshot = replaceSnapshot;
-      async render() {
-        return encodeResponse(presentedResponse("canvas:3"));
-      }
-    }
-    const posted: CanvasWorkerResponseV1[] = [];
-    const runtime = new PoietraCanvasWorkerRuntimeV1({
-      loadWasm: async () => Engine,
-      postMessage: (response) => posted.push(response),
-      scopeUrl: "https://studio.test/worker.js",
-    });
-
-    await runtime.accept(installRequest());
-    await runtime.accept(deltaRequest());
-    expect(posted.at(-1)).toMatchObject({ code: "delta-rejected", kind: "error", revision: REVISION_B });
-    await runtime.accept(renderRequest({ requestId: 3, revision: REVISION_A }));
-    expect(posted.at(-1)).toMatchObject({ kind: "frame-presented", revision: REVISION_A });
-
-    await runtime.accept({
-      assetPayloads: [],
-      baseRevision: REVISION_A,
-      kind: "replace-scene",
-      requestId: 4,
-      revision: REVISION_B,
-      schema: "poietra.canvas-worker-request",
-      snapshotJson: new TextEncoder().encode("snapshot-b").buffer,
-      version: 1,
-    });
-    expect(replaceSnapshot).toHaveBeenCalledOnce();
-    expect(posted.at(-1)).toMatchObject({ kind: "canvas-ready", operation: "replace", revision: REVISION_B });
   });
 
   it("maps correlated engine failures without widening their payload", async () => {
@@ -1285,21 +1180,18 @@ describe("Poietra canvas WASM binding handshake", () => {
       return new Engine();
     }
 
-    applySceneDelta() {
-      return encodedDirtySet();
-    }
     replaceSnapshot() {}
     async render() {
       return encodeResponse(presentedResponse("canvas:1"));
     }
   }
 
-  it("accepts only canvas ABI v4 with the complete class shape", async () => {
+  it("accepts only canvas ABI v5 with the complete class shape", async () => {
     const initialize = vi.fn(async () => undefined);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: initialize,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);
@@ -1313,11 +1205,11 @@ describe("Poietra canvas WASM binding handshake", () => {
         poietraCanvasAbiVersion: () => 1,
         PoietraCanvasEngineV1: Engine,
       }),
-    ).rejects.toThrow(/ABI version 4/i);
+    ).rejects.toThrow(/ABI version 5/i);
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         PoietraCanvasEngineV1: class Incomplete {},
       }),
     ).rejects.toThrow(/PoietraCanvasEngineV1/i);
@@ -1336,7 +1228,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1346,7 +1238,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         poietraCanvasTelemetryAbiVersion: () => 3,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
@@ -1356,7 +1248,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         PoietraCanvasEngineV1: TelemetryEngine,
       }),
     ).rejects.toThrow(/telemetry ABI version 4/i);
@@ -1370,7 +1262,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         poietraCanvasTelemetryAbiVersion: () => 4,
         PoietraCanvasEngineV1: PartialTelemetryEngine,
       }),
@@ -1380,7 +1272,7 @@ describe("Poietra canvas WASM binding handshake", () => {
     await expect(
       initializePoietraCanvasBindingsV1({
         default: async () => undefined,
-        poietraCanvasAbiVersion: () => 4,
+        poietraCanvasAbiVersion: () => 5,
         PoietraCanvasEngineV1: Engine,
       }),
     ).resolves.toBe(Engine);
