@@ -676,37 +676,6 @@ export function canonicalizeSuggestionProgram(
   return validateAndScheduleProgram(program, context.scene);
 }
 
-export function createDirectManipulationMotionProgram(
-  input: Readonly<{
-    capturedPlayhead: number;
-    controlOffset: Readonly<{ x: number; y: number }>;
-    delta: Readonly<{ x: number; y: number }>;
-    interval: Readonly<{ end: number; start: number }>;
-    scene: RuntimeSceneState;
-    targetEntityIds: readonly string[];
-    transactionId: string;
-  }>,
-) {
-  return canonicalizeSuggestionProgram(
-    {
-      anchor: { kind: "playhead", referenceSeconds: input.capturedPlayhead },
-      controlOffset: input.controlOffset,
-      delta: input.delta,
-      easing: "smooth",
-      end: input.interval.end,
-      kind: "create-motion",
-      start: input.interval.start,
-      targetObjectIds: input.targetEntityIds,
-    },
-    {
-      capturedPlayhead: input.capturedPlayhead,
-      origin: "direct-manipulation",
-      scene: input.scene,
-      transactionId: input.transactionId,
-    },
-  );
-}
-
 export function createDirectManipulationPositionProgram(
   input: Readonly<{
     capturedPlayhead: number;
@@ -962,50 +931,6 @@ export function createDirectManipulationResizeProgram(
       loweringStatus: "supported",
       operations: [operation],
       provenance: provenance("direct-manipulation", ["shape-aware resize constraint"]),
-      requestedExecution: "sequence",
-      schedule: { edges: [], mode: "sequence", order: [operation.id] },
-      transactionId: input.transactionId,
-      version: EDIT_OPERATION_VERSION,
-    },
-    input.scene,
-  );
-}
-
-export function createDirectManipulationModifyMotionProgram(
-  input: Readonly<{
-    capturedPlayhead: number;
-    controlOffset: Readonly<{ x: number; y: number }>;
-    interval: Readonly<{ end: number; start: number }>;
-    motionId: string;
-    scene: RuntimeSceneState;
-    transactionId: string;
-  }>,
-) {
-  const resolution = resolveTimeAnchorOnce(
-    { kind: "absolute", seconds: input.interval.start },
-    {
-      capturedPlayhead: input.capturedPlayhead,
-      sceneDuration: input.scene.duration,
-    },
-  );
-  if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: CanonicalEditOperation = {
-    controlOffset: input.controlOffset,
-    dependsOn: [],
-    id: operationId(input.transactionId, "modify-motion"),
-    interval: input.interval,
-    kind: "ModifyMotion",
-    motionId: input.motionId,
-    preserve: ["start", "end", "duration"],
-    provenance: provenance("direct-manipulation", ["path bend gesture", "endpoints preserved"]),
-  };
-  return validateAndScheduleProgram(
-    {
-      anchor: resolution.anchor,
-      intentCount: 1,
-      loweringStatus: "illustrative",
-      operations: [operation],
-      provenance: provenance("direct-manipulation", ["gesture constraint"]),
       requestedExecution: "sequence",
       schedule: { edges: [], mode: "sequence", order: [operation.id] },
       transactionId: input.transactionId,

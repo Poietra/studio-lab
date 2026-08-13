@@ -3,19 +3,11 @@ import { describe, expect, it } from "vitest";
 
 import { DraftInspector } from "./draft-inspector";
 import { programRecord } from "./evaluator";
-import { STUDIO_FIXTURE_SCENE } from "./fixture";
-import { createDirectManipulationModifyMotionProgram } from "./suggestion-program";
+import { validateModifyMotionProgramFixture } from "./fixture";
 
 describe("DraftInspector execution capabilities", () => {
   it("shows the shared preview/apply/lowering contract and disables blocked Apply", () => {
-    const validation = createDirectManipulationModifyMotionProgram({
-      capturedPlayhead: 5,
-      controlOffset: { x: 0, y: -32 },
-      interval: { end: 7, start: 4 },
-      motionId: "move-equation",
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "modify-motion-inspector",
-    });
+    const validation = validateModifyMotionProgramFixture("modify-motion-inspector");
     const markup = renderToStaticMarkup(
       <DraftInspector
         error="A newer transient error."

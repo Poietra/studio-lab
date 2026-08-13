@@ -1,5 +1,4 @@
-import type { ProgramRecord, WorkingState } from "./model";
-import { programExecutionCapabilities } from "./operation-registry";
+import type { ProgramRecord } from "./model";
 import { APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1 } from "./operations";
 
 export type AppliedProgramReplacementResult<TRecord extends ProgramRecord = ProgramRecord> =
@@ -85,35 +84,5 @@ export function replaceAppliedProgram<TRecord extends ProgramRecord>(
     kind: "replaced",
     previous: programs[index],
     programs: programs.map((record, candidateIndex) => (candidateIndex === index ? replacement : record)),
-  };
-}
-
-export function stageProgram(workingState: WorkingState, record: ProgramRecord): WorkingState {
-  return {
-    ...workingState,
-    stagedPrograms: [...workingState.stagedPrograms, record],
-  };
-}
-
-export function applyStagedPrograms(workingState: WorkingState): WorkingState {
-  if (workingState.stagedPrograms.length === 0) return workingState;
-  const applicable = workingState.stagedPrograms.filter(
-    (record) =>
-      record.validation.status === "valid" && programExecutionCapabilities(record.program).apply === "supported",
-  );
-  if (applicable.length === 0) return workingState;
-  const appliedRecords = new Set(applicable);
-  return {
-    ...workingState,
-    appliedPrograms: [...workingState.appliedPrograms, ...applicable],
-    stagedPrograms: workingState.stagedPrograms.filter((record) => !appliedRecords.has(record)),
-  };
-}
-
-export function undoLastAppliedProgram(workingState: WorkingState): WorkingState {
-  if (workingState.appliedPrograms.length === 0) return workingState;
-  return {
-    ...workingState,
-    appliedPrograms: workingState.appliedPrograms.slice(0, -1),
   };
 }

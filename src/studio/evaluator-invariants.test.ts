@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import { STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import {
   type CanonicalEditOperation,
@@ -13,11 +13,7 @@ import {
 } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import { normalizeDimensionsSamples, normalizePositionSamples, normalizeScaleSamples } from "./property-sampling";
-import {
-  canonicalizeSuggestionProgram,
-  createDirectManipulationMotionProgram,
-  createDirectManipulationResizeProgram,
-} from "./suggestion-program";
+import { canonicalizeSuggestionProgram, createDirectManipulationResizeProgram } from "./suggestion-program";
 
 function programWith(
   operations: readonly CanonicalEditOperation[],
@@ -142,7 +138,7 @@ class Moving(Scene):
     expect(imported).not.toBeNull();
     if (!imported) return;
     const entityId = "source:moving.py#Moving:dot";
-    const validation = createDirectManipulationMotionProgram({
+    const validation = validateMotionProgramFixture({
       capturedPlayhead: 1,
       controlOffset: { x: 0, y: -10 },
       delta: { x: 40, y: 20 },
