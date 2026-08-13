@@ -7,7 +7,6 @@ import {
 import { programRenderRequestSchema } from "./contracts";
 import { importManimScene } from "./source-import";
 import {
-  findMotionAnchors,
   findSceneMotionAnchors,
   lowerCanonicalProgramBatchSource,
   lowerCanonicalProgramSource,
@@ -24,7 +23,6 @@ import {
 
 describe("Canonical EditProgram source lowering", () => {
   it("discovers explicit source anchors inside their Scene", () => {
-    expect(findMotionAnchors(source)).toEqual([{ line: 6, seconds: 7 }]);
     expect(findSceneMotionAnchors(source, "GroupedEquation")).toEqual([{ line: 6, seconds: 7 }]);
   });
 
@@ -290,7 +288,6 @@ class GroupedEquation(Scene):
         self.wait(1)
 `;
 
-    expect(findMotionAnchors(stringMarkerSource)).toEqual([]);
     expect(findSceneMotionAnchors(stringMarkerSource, "GroupedEquation")).toEqual([]);
     expect(() =>
       lowerCanonicalProgramSource(stringMarkerSource, request(), { height: 8, width: 14.222 }, null),
@@ -320,7 +317,6 @@ class GroupedEquation(Scene):
         self.wait(1)
 `;
 
-    expect(findMotionAnchors(nestedMarkerSource)).toEqual([]);
     expect(findSceneMotionAnchors(nestedMarkerSource, "GroupedEquation")).toEqual([]);
     expect(() =>
       lowerCanonicalProgramSource(nestedMarkerSource, request(), { height: 8, width: 14.222 }, null),
@@ -343,7 +339,6 @@ class GroupedEquation(Scene):
         self.wait(1)
 `;
 
-    expect(findMotionAnchors(mixedMarkerSource)).toEqual([{ line: 12, seconds: 7 }]);
     expect(findSceneMotionAnchors(mixedMarkerSource, "GroupedEquation")).toEqual([{ line: 12, seconds: 7 }]);
     const lowered = lowerCanonicalProgramSource(mixedMarkerSource, request(), { height: 8, width: 14.222 }, null);
 

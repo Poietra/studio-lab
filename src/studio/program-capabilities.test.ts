@@ -2,12 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import {
-  createFixtureWorkingState,
-  STUDIO_FIXTURE_SCENE,
-  validateModifyMotionProgramFixture,
-  validateMotionProgramFixture,
-} from "./fixture";
+import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
@@ -138,7 +133,6 @@ describe("EditProgram execution capabilities", () => {
       apply: "blocked",
       applyBlocker: "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
       lowering: "illustrative",
-      preview: "supported",
     });
     expect(validation.issues).toContainEqual(
       expect.objectContaining({
@@ -151,32 +145,6 @@ describe("EditProgram execution capabilities", () => {
     const record = programRecord(validation.program, validation);
     const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
     expect(projectProposedState(preview, 5.92).camera.scale).toBeCloseTo(1.35);
-  });
-
-  it("keeps ModifyMotion previewable but blocks Apply before source lowering", () => {
-    const validation = validateModifyMotionProgramFixture("modify-motion-contract");
-
-    expect(validation.kind).toBe("valid");
-    expect(programExecutionCapabilities(validation.program)).toEqual({
-      apply: "blocked",
-      applyBlocker:
-        "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
-      lowering: "illustrative",
-      preview: "supported",
-    });
-    const revalidated = validateAndScheduleProgram(
-      {
-        ...validation.program,
-        loweringStatus: "supported",
-      },
-      STUDIO_FIXTURE_SCENE,
-    );
-    expect(revalidated.program.loweringStatus).toBe("illustrative");
-    expect(programExecutionCapabilities(revalidated.program).apply).toBe("blocked");
-    const record = programRecord(validation.program, validation);
-    const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
-    const equation = projectProposedState(preview, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");
-    expect(equation?.position).toEqual({ x: 352, y: 120 });
   });
 
   it("preserves supported motion, position, and scale authoring paths", () => {

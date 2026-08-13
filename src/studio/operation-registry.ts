@@ -2,12 +2,10 @@ import { z } from "zod";
 import { canonicalEditableContent } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type {
-  ConstraintGraph,
   EntityDimensions,
   IdentityLineage,
   PropertyChannel,
   PropertyChannelSample,
-  PropertyChannels,
   ProvenanceRecord,
   RuntimeEntity,
   RuntimeSceneState,
@@ -93,12 +91,6 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
     targetEntityIds: z.array(z.string()).min(1),
   }),
   baseSchema.extend({
-    controlOffset: pointSchema,
-    kind: z.literal("ModifyMotion"),
-    motionId: z.string(),
-    preserve: z.array(z.enum(["duration", "end", "start"])),
-  }),
-  baseSchema.extend({
     kind: z.literal("TransformContent"),
     replacement: contentSchema,
     sourceEntityId: z.string(),
@@ -135,11 +127,6 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   }),
   baseSchema.extend({ at: z.number(), destination: z.literal("next-scene"), kind: z.literal("InsertSceneBoundary") }),
   baseSchema.extend({
-    action: z.enum(["remove", "replace"]),
-    constraintId: z.string(),
-    kind: z.literal("ChangeConstraint"),
-  }),
-  baseSchema.extend({
     kind: z.literal("ChangeCamera"),
     property: z.enum(["position", "rotation", "scale"]),
     value: z.union([z.number(), pointSchema]),
@@ -160,7 +147,6 @@ export type OperationExecutionCapabilities = Readonly<{
   apply: "blocked" | "supported";
   applyBlocker: string | null;
   lowering: "illustrative" | "supported" | "unsupported";
-  preview: "supported" | "unsupported";
 }>;
 
 export type ProgramExecutionCapabilities = OperationExecutionCapabilities;
@@ -170,23 +156,12 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     reads: readonly ChannelAccess[];
     writes: readonly ChannelAccess[];
   }>;
-  defaults: Readonly<Record<string, unknown>>;
   evaluate: (
     draft: EvaluationDraft,
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
     program: CanonicalEditProgram,
   ) => void;
   execution: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => OperationExecutionCapabilities;
-  lifetimeRequirement: "existing-at-start" | "explicit" | "none";
-  projection: readonly (
-    | "canvas"
-    | "inspector"
-    | "object-list"
-    | "semantic-thumbnail"
-    | "timeline"
-    | "working-playback"
-  )[];
-  targetRequirement: "camera" | "constraint" | "entity" | "none";
   validate: (
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
     scene: RuntimeSceneState,
@@ -197,7 +172,6 @@ const SUPPORTED_EXECUTION: OperationExecutionCapabilities = {
   apply: "supported",
   applyBlocker: null,
   lowering: "supported",
-  preview: "supported",
 };
 const SOURCE_LOWERING_EPSILON = 0.0005;
 
@@ -209,7 +183,6 @@ function previewOnlyExecution(
     apply: "blocked",
     applyBlocker,
     lowering,
-    preview: "supported",
   };
 }
 
@@ -543,15 +516,6 @@ function removeSceneTime(
   );
 }
 
-const allEntityProjections = [
-  "canvas",
-  "inspector",
-  "object-list",
-  "semantic-thumbnail",
-  "timeline",
-  "working-playback",
-] as const;
-
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
   if (dimensions === undefined) return true;
   if (type === "Circle") return exactShapeDimensions("circle", dimensions);
@@ -707,7 +671,6 @@ export const OPERATION_REGISTRY = {
         { channel: "presence", entityId: operation.entity.id },
       ],
     }),
-    defaults: { provisional: true },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       // Studio-owned finite endpoints use source coordinates, so their working
@@ -760,9 +723,6 @@ export const OPERATION_REGISTRY = {
       });
     },
     execution: createEntityExecution,
-    lifetimeRequirement: "explicit",
-    projection: allEntityProjections,
-    targetRequirement: "none",
     validate: (operation, scene) => {
       const issues = baseIssues(operation, scene);
       if (!validCreateDimensions(operation.entity.type, operation.entity.dimensions)) {
@@ -779,7 +739,6 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"CreateEntity">,
   SetProperty: {
     access: (operation) => ({ reads: [], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
-    defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       appendSample(draft, operation.entityId, operation.key, {
@@ -791,9 +750,6 @@ export const OPERATION_REGISTRY = {
       });
     },
     execution: setPropertyExecution,
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: setPropertyIssues,
   } satisfies Capability<"SetProperty">,
   AnimateProperty: {
@@ -801,7 +757,6 @@ export const OPERATION_REGISTRY = {
       reads: [{ channel: operation.key, entityId: operation.entityId }],
       writes: [{ channel: operation.key, entityId: operation.entityId }],
     }),
-    defaults: { easing: "smooth" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const sampledFrom = sampleChannel(draft, operation.entityId, operation.key, operation.interval.start);
@@ -840,9 +795,6 @@ export const OPERATION_REGISTRY = {
       });
     },
     execution: animatePropertyExecution,
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       if (operation.relativeDelta !== undefined) {
@@ -926,7 +878,6 @@ export const OPERATION_REGISTRY = {
         { channel: "position", entityId: operation.entityId },
       ],
     }),
-    defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const kind = operation.interval.end > operation.interval.start ? "animated" : "exact";
@@ -948,9 +899,6 @@ export const OPERATION_REGISTRY = {
       });
     },
     execution: () => SUPPORTED_EXECUTION,
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
       const entity = scene.objectGraph.entities[operation.entityId];
@@ -1036,7 +984,6 @@ export const OPERATION_REGISTRY = {
       reads: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
       writes: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
     }),
-    defaults: { easing: "smooth" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       for (const entityId of operation.targetEntityIds) {
@@ -1060,95 +1007,8 @@ export const OPERATION_REGISTRY = {
       }
     },
     execution: createMotionExecution,
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) => entityIssues(operation.targetEntityIds, operation, scene),
   } satisfies Capability<"CreateMotion">,
-  ModifyMotion: {
-    access: (operation) => ({
-      reads: [{ channel: "position", entityId: `motion:${operation.motionId}` }],
-      writes: [{ channel: "position", entityId: `motion:${operation.motionId}` }],
-    }),
-    defaults: { preserve: ["start", "end", "duration"] },
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      for (const [channelId, channel] of Object.entries(draft.propertyChannels)) {
-        if (channel.key !== "position") continue;
-        const samples = channel.samples.map((sample) => {
-          const matchesMotion =
-            sample.operationId === operation.motionId ||
-            sample.provenanceId === operation.motionId ||
-            sample.provenanceId === `source:${operation.motionId}`;
-          if (
-            !matchesMotion ||
-            sample.kind !== "animated" ||
-            !isPointValue(sample.from) ||
-            !isPointValue(sample.value)
-          ) {
-            return sample;
-          }
-          const control = sample.control ?? {
-            x: (sample.from.x + sample.value.x) / 2,
-            y: (sample.from.y + sample.value.y) / 2,
-          };
-          return {
-            ...sample,
-            control: {
-              x: control.x + operation.controlOffset.x,
-              y: control.y + operation.controlOffset.y,
-            },
-            operationId: operation.id,
-          };
-        });
-        draft.propertyChannels[channelId] = { ...channel, samples };
-      }
-    },
-    execution: () =>
-      previewOnlyExecution(
-        "ModifyMotion has no truthful source lowering yet. It can be previewed, but editing an existing motion path cannot be applied.",
-      ),
-    lifetimeRequirement: "none",
-    projection: allEntityProjections,
-    targetRequirement: "none",
-    validate: (operation, scene) => {
-      const issues = baseIssues(operation, scene);
-      const matches = Object.values(scene.propertyChannels).flatMap((channel) =>
-        channel.key === "position"
-          ? channel.samples.filter(
-              (sample) =>
-                sample.operationId === operation.motionId ||
-                sample.provenanceId === operation.motionId ||
-                sample.provenanceId === `source:${operation.motionId}`,
-            )
-          : [],
-      );
-      if (matches.length === 0) {
-        issues.push({
-          code: "target-missing",
-          field: "motionId",
-          message: `Motion ${operation.motionId} does not exist in RuntimeSceneState.`,
-          operationId: operation.id,
-          severity: "error",
-        });
-      } else if (
-        matches.some(
-          (sample) =>
-            Math.abs(sample.interval.start - operation.interval.start) >= 0.001 ||
-            Math.abs(sample.interval.end - operation.interval.end) >= 0.001,
-        )
-      ) {
-        issues.push({
-          code: "interval-invalid",
-          field: "interval",
-          message: `ModifyMotion must preserve the ${operation.motionId} start, end, and duration.`,
-          operationId: operation.id,
-          severity: "error",
-        });
-      }
-      return issues;
-    },
-  } satisfies Capability<"ModifyMotion">,
   TransformContent: {
     access: (operation) => ({
       reads: [
@@ -1160,7 +1020,6 @@ export const OPERATION_REGISTRY = {
         { channel: "identity", entityId: operation.targetEntityId },
       ],
     }),
-    defaults: { strategy: "transform-matching-tex" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const source = draft.entities[operation.sourceEntityId];
@@ -1232,9 +1091,6 @@ export const OPERATION_REGISTRY = {
         : previewOnlyExecution(
             "A zero-duration TransformContent can be previewed, but it cannot be lowered truthfully to Manim source.",
           ),
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) => {
       const issues = entityIssues([operation.sourceEntityId], operation, scene);
       const source = scene.objectGraph.entities[operation.sourceEntityId];
@@ -1258,7 +1114,6 @@ export const OPERATION_REGISTRY = {
       ],
       writes: [{ channel: "position", entityId: operation.sourceEntityId }],
     }),
-    defaults: { mode: "snapshot" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const targetPosition = sampleChannel(draft, operation.targetEntityId, "position", operation.interval.start);
@@ -1287,9 +1142,6 @@ export const OPERATION_REGISTRY = {
         : previewOnlyExecution(
             "SetRelation live has no truthful source lowering; only snapshot relations can be applied.",
           ),
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) =>
       entityIssues([operation.sourceEntityId, operation.targetEntityId], operation, scene),
   } satisfies Capability<"SetRelation">,
@@ -1301,7 +1153,6 @@ export const OPERATION_REGISTRY = {
         { channel: "presence", entityId: operation.entityId },
       ],
     }),
-    defaults: { persistent: false },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const isFade = operation.effect === "fade-in";
@@ -1354,14 +1205,10 @@ export const OPERATION_REGISTRY = {
       }
     },
     execution: changePresenceExecution,
-    lifetimeRequirement: "existing-at-start",
-    projection: allEntityProjections,
-    targetRequirement: "entity",
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
   } satisfies Capability<"ChangePresence">,
   InsertTimelineEvent: {
     access: () => ({ reads: [], writes: [] }),
-    defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       draft.events.push({
@@ -1377,9 +1224,6 @@ export const OPERATION_REGISTRY = {
       operation.eventKind === "wait"
         ? SUPPORTED_EXECUTION
         : previewOnlyExecution("Only an explicit wait timeline event has truthful Manim source lowering."),
-    lifetimeRequirement: "none",
-    projection: ["timeline", "inspector"],
-    targetRequirement: "none",
     validate: (operation, scene) => {
       const issues: ProgramValidationIssue[] = [];
       if (
@@ -1420,15 +1264,11 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"InsertTimelineEvent">,
   TrimSceneDuration: {
     access: () => ({ reads: [], writes: [] }),
-    defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       removeSceneTime(draft, operation.interval.start, operation.removedDuration, new Set(operation.waitOperationIds));
     },
     execution: () => SUPPORTED_EXECUTION,
-    lifetimeRequirement: "none",
-    projection: ["timeline", "inspector", "working-playback"],
-    targetRequirement: "none",
     validate: (operation, scene) => {
       const issues = baseIssues(operation, scene);
       if (Math.abs(operation.interval.end - operation.interval.start) >= TIME_EPSILON) {
@@ -1478,7 +1318,6 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"TrimSceneDuration">,
   InsertSceneBoundary: {
     access: () => ({ reads: [], writes: [] }),
-    defaults: { destination: "next-scene" },
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       draft.events.push({
@@ -1491,34 +1330,13 @@ export const OPERATION_REGISTRY = {
       });
     },
     execution: () => SUPPORTED_EXECUTION,
-    lifetimeRequirement: "none",
-    projection: ["timeline", "inspector", "semantic-thumbnail", "working-playback"],
-    targetRequirement: "none",
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"InsertSceneBoundary">,
-  ChangeConstraint: {
-    access: () => ({ reads: [], writes: [] }),
-    defaults: {},
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      draft.constraints = draft.constraints.filter((constraint) => constraint.id !== operation.constraintId);
-    },
-    execution: () =>
-      previewOnlyExecution(
-        "ChangeConstraint is read-only until constraint edits have truthful Manim source lowering.",
-        "unsupported",
-      ),
-    lifetimeRequirement: "none",
-    projection: ["inspector"],
-    targetRequirement: "constraint",
-    validate: (operation, scene) => baseIssues(operation, scene),
-  } satisfies Capability<"ChangeConstraint">,
   ChangeCamera: {
     access: () => ({
       reads: [{ channel: "camera", entityId: "camera" }],
       writes: [{ channel: "camera", entityId: "camera" }],
     }),
-    defaults: {},
     evaluate: (draft, operation, program) => {
       recordOperation(draft, operation, program);
       const fallback = operation.property === "position" ? { x: 0, y: 0 } : 1;
@@ -1537,9 +1355,6 @@ export const OPERATION_REGISTRY = {
       previewOnlyExecution(
         "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
       ),
-    lifetimeRequirement: "none",
-    projection: ["canvas", "inspector", "semantic-thumbnail", "working-playback"],
-    targetRequirement: "camera",
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"ChangeCamera">,
 } as const;
@@ -1568,7 +1383,6 @@ export function programExecutionCapabilities(program: CanonicalEditProgram): Pro
     "supported",
   );
   const blockedOperation = operationCapabilities.find((capability) => capability.apply !== "supported");
-  const unsupportedPreview = operationCapabilities.find((capability) => capability.preview !== "supported");
   const structureBlocker = programStructureBlocker(program);
   const lowering = structureBlocker && operationLowering === "supported" ? "illustrative" : operationLowering;
   const applyBlocker =
@@ -1581,7 +1395,6 @@ export function programExecutionCapabilities(program: CanonicalEditProgram): Pro
     apply: applyBlocker === null && lowering === "supported" ? "supported" : "blocked",
     applyBlocker,
     lowering,
-    preview: unsupportedPreview ? "unsupported" : "supported",
   };
 }
 
@@ -1611,12 +1424,4 @@ export function evaluateOperation(
   program: CanonicalEditProgram,
 ) {
   operationCapability(operation).evaluate(draft, operation as never, program);
-}
-
-export function constraintGraph(constraints: readonly SceneConstraint[]): ConstraintGraph {
-  return { constraints };
-}
-
-export function propertyChannels(channels: Record<string, PropertyChannel>): PropertyChannels {
-  return channels;
 }

@@ -88,14 +88,6 @@ export type CreateMotionOperation = OperationBase &
     targetEntityIds: readonly string[];
   }>;
 
-export type ModifyMotionOperation = OperationBase &
-  Readonly<{
-    controlOffset: Point;
-    kind: "ModifyMotion";
-    motionId: string;
-    preserve: readonly ("duration" | "end" | "start")[];
-  }>;
-
 export type TransformContentOperation = OperationBase &
   Readonly<{
     kind: "TransformContent";
@@ -148,13 +140,6 @@ export type InsertSceneBoundaryOperation = OperationBase &
     kind: "InsertSceneBoundary";
   }>;
 
-export type ChangeConstraintOperation = OperationBase &
-  Readonly<{
-    action: "remove" | "replace";
-    constraintId: string;
-    kind: "ChangeConstraint";
-  }>;
-
 export type ChangeCameraOperation = OperationBase &
   Readonly<{
     kind: "ChangeCamera";
@@ -165,13 +150,11 @@ export type ChangeCameraOperation = OperationBase &
 export type CanonicalEditOperation =
   | AnimatePropertyOperation
   | ChangeCameraOperation
-  | ChangeConstraintOperation
   | ChangePresenceOperation
   | CreateEntityOperation
   | CreateMotionOperation
   | InsertSceneBoundaryOperation
   | InsertTimelineEventOperation
-  | ModifyMotionOperation
   | ResizeEntityOperation
   | SetPropertyOperation
   | SetRelationOperation
