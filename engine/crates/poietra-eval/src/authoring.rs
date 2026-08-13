@@ -136,10 +136,6 @@ pub struct SceneEntityAxisFactors {
 pub enum TransformSceneEntityExpectedBaseline {
     CurrentCenter,
     CurrentUniformAffine,
-    UniformAffine {
-        uniform_scale: f64,
-        world_center: PointV1,
-    },
     WorldSize {
         height: f64,
         width: f64,
@@ -504,8 +500,7 @@ fn transform_baseline_matches(
             && transform_is_uniform(entity.transform.m11, entity.transform.m22);
     }
     let expected_center = match expected {
-        TransformSceneEntityExpectedBaseline::UniformAffine { world_center, .. }
-        | TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. } => world_center,
+        TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. } => world_center,
         TransformSceneEntityExpectedBaseline::CurrentCenter
         | TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
     };
@@ -519,13 +514,6 @@ fn transform_baseline_matches(
     match expected {
         TransformSceneEntityExpectedBaseline::CurrentCenter
         | TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
-        TransformSceneEntityExpectedBaseline::UniformAffine { uniform_scale, .. } => {
-            uniform_scale.is_finite()
-                && *uniform_scale > 0.0
-                && positive_axis_aligned_transform(entity)
-                && transform_is_uniform(entity.transform.m11, entity.transform.m22)
-                && close_transform_baseline_value(*uniform_scale, entity.transform.m11)
-        }
         TransformSceneEntityExpectedBaseline::WorldSize { height, width, .. } => {
             width.is_finite()
                 && height.is_finite()
@@ -2522,7 +2510,7 @@ mod tests {
     }
 
     #[test]
-    fn baseline_transform_supports_image_centers_and_uniform_cubic_baselines() {
+    fn baseline_transform_supports_image_centers_and_world_sizes() {
         let mut rectangle = imported_bundle().scene.entities[0].clone();
         rectangle.geometry = SceneGeometryV1::Rectangle {
             center: PointV1 { x: 1.0, y: 2.0 },
@@ -2562,27 +2550,6 @@ mod tests {
             &image_center,
         ));
 
-        let mathtex_bundle = fixture_bundle("mathtex-nested-radical-fraction.json");
-        let mut mathtex = mathtex_bundle.scene.entities[0].clone();
-        mathtex.transform = AffineTransformV1 {
-            m11: 1.5,
-            m12: 0.0,
-            m21: 0.0,
-            m22: 1.5,
-            tx: 2.0,
-            ty: -1.0,
-        };
-        let bounds = scene_entity_local_bounds(&mathtex).unwrap();
-        let center = scene_entity_world_center(&mathtex, &bounds);
-        assert!(transform_baseline_matches(
-            &mathtex,
-            &TransformSceneEntityExpectedBaseline::UniformAffine {
-                uniform_scale: 1.5,
-                world_center: center.clone(),
-            },
-            &bounds,
-            &center,
-        ));
         assert!(!transform_is_uniform(1.5, 1.5 + 1.0e-10));
 
         let mut drifted = baseline_transform_command_for(&imported_bundle(), "later");
