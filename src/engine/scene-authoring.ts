@@ -1,6 +1,6 @@
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 
-const POIETRA_ENGINE_ABI_VERSION = 1;
+const POIETRA_ENGINE_ABI_VERSION = 2;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -46,6 +46,31 @@ export type TransformSceneEntityWireCommandV1 = Readonly<{
 export type TransformSceneEntityCompiler = (
   snapshot: SceneIrBundleV1,
   command: TransformSceneEntityWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
+export type TransformSceneEntityAtTimeWireCommandV1 = Readonly<{
+  at: number;
+  delta: Readonly<{ x: number; y: number }>;
+  entityId: string;
+  expectedBaseRevision: string;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  scale?: Readonly<{
+    pivot: Readonly<{ x: number; y: number }>;
+    xFactor: number;
+    yFactor: number;
+  }>;
+  schema: "poietra.transform-scene-entity-at-time";
+  version: 1;
+}>;
+
+export type TransformSceneEntityAtTimeCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: TransformSceneEntityAtTimeWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 export type EditSceneTimelineWireCommandV1 = Readonly<{
@@ -138,6 +163,10 @@ type TransformSceneAuthoringBindingsV1 = Readonly<{
   transformSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type TransformSceneAtTimeAuthoringBindingsV1 = Readonly<{
+  transformSceneEntityAtTimeV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type EditSceneTimelineBindingsV1 = Readonly<{
   editSceneTimelineV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -154,6 +183,7 @@ type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
   EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
+  TransformSceneAtTimeAuthoringBindingsV1 &
   SetSubtreeVectorPaintAlphaBindingsV1;
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -181,6 +211,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.editSceneTimelineV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
+      typeof candidate.transformSceneEntityAtTimeV1 !== "function" ||
       typeof candidate.transformSceneEntityV1 !== "function"
     ) {
       throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
@@ -191,6 +222,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
+      transformSceneEntityAtTimeV1:
+        candidate.transformSceneEntityAtTimeV1 as SceneAuthoringBindingsV1["transformSceneEntityAtTimeV1"],
       transformSceneEntityV1: candidate.transformSceneEntityV1 as SceneAuthoringBindingsV1["transformSceneEntityV1"],
     };
   })();
@@ -237,6 +270,16 @@ export function createTransformSceneEntityCompiler(
   };
 }
 
+/** Creates the browser adapter around one atomic transform at an exact Scene time. */
+export function createTransformSceneEntityAtTimeCompiler(
+  getBindings: () => Promise<TransformSceneAtTimeAuthoringBindingsV1>,
+): TransformSceneEntityAtTimeCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.transformSceneEntityAtTimeV1);
+  };
+}
+
 /** Creates the browser adapter around one ordered, atomic Scene timeline edit. */
 export function createEditSceneTimelineCompiler(
   getBindings: () => Promise<EditSceneTimelineBindingsV1>,
@@ -261,4 +304,5 @@ export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(load
 export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
+export const compileTransformSceneEntityAtTime = createTransformSceneEntityAtTimeCompiler(loadBindings);
 export const compileSetSubtreeVectorPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(loadBindings);

@@ -8,10 +8,12 @@ import {
   createEditSceneTimelineCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
+  createTransformSceneEntityAtTimeCompiler,
   createTransformSceneEntityCompiler,
   type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityWireCommandV1,
   type SetSubtreeVectorPaintAlphaWireCommandV1,
+  type TransformSceneEntityAtTimeWireCommandV1,
   type TransformSceneEntityWireCommandV1,
 } from "./scene-authoring";
 
@@ -70,6 +72,12 @@ const transformCommand: TransformSceneEntityWireCommandV1 = {
   schema: "poietra.transform-scene-entity",
   scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
   version: 1,
+};
+
+const timedTransformCommand: TransformSceneEntityAtTimeWireCommandV1 = {
+  ...transformCommand,
+  at: 1.5,
+  schema: "poietra.transform-scene-entity-at-time",
 };
 
 const editTimelineCommand: EditSceneTimelineWireCommandV1 = {
@@ -162,6 +170,24 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, transformCommand);
     expect(result).toEqual(calls[0]);
     expect(calls[1]).toEqual(transformCommand);
+  });
+
+  it("forwards one exact timed root transform and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createTransformSceneEntityAtTimeCompiler(async () => ({
+      transformSceneEntityAtTimeV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, timedTransformCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(timedTransformCommand);
   });
 
   it("forwards one ordered atomic Scene timeline command and complete base snapshot", async () => {

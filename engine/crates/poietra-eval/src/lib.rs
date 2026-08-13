@@ -16,7 +16,7 @@ pub use authoring::{
     EditSceneTimelineCommand, EditSceneTimelineError, RotateSceneEntityCommand,
     RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit, SceneTimelineInsertion,
     SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    TransformSceneEntityCommand, TransformSceneEntityError,
+    TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
