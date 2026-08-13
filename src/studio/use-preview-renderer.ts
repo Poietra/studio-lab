@@ -66,7 +66,6 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewImportedAnimationEdit,
   compileStudioPreviewRuntimeTraceEdit,
   type StudioPreviewRuntimeTraceEditCandidate,
   type StudioPreviewRuntimeTraceProgramValidation,
@@ -290,10 +289,10 @@ export function studioPreviewInteractionAuthority(
     return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
   }
   const snapshotVersion = Number(source.snapshotVersion);
-  // The canonical compiler can rebase animated server snapshots only for the
-  // one legacy profile that carries exact animation-edit evidence. Do not
-  // advertise gestures that the Rust command boundary will reject.
-  if (snapshot.snapshot.scene.animationChannels.length > 0 && snapshotVersion !== 7) {
+  // Dynamic authoring belongs to the generic Runtime Trace authority above.
+  // A legacy server snapshot may still render, but it never advertises an
+  // editable target that cannot be reproduced by that canonical path.
+  if (snapshot.snapshot.scene.animationChannels.length > 0) {
     return (snapshot.sourceRuntimeIdentity?.size ?? 0) > 0
       ? { kind: "selection-only", reason: "source-edit-unsupported" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
@@ -303,18 +302,7 @@ export function studioPreviewInteractionAuthority(
       ? { kind: "interactive" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  if (snapshotVersion === 7) {
-    const identity = snapshot?.sourceRuntimeIdentity;
-    const entities = snapshot?.snapshot.scene.entities;
-    const mappedEntityIds = new Set(identity ? [...identity.values()].map(({ entityId }) => entityId) : []);
-    return identity &&
-      entities &&
-      mappedEntityIds.size === entities.length &&
-      entities.every(({ id }) => mappedEntityIds.has(id))
-      ? { kind: "interactive" }
-      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
-  }
-  if (snapshotVersion >= 8 && snapshotVersion <= 12) {
+  if (snapshotVersion >= 7 && snapshotVersion <= 12) {
     return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
       ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
       : { kind: "display-only", reason: "source-runtime-identity-unverified" };
@@ -1298,6 +1286,16 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
+  const importedSource = input.snapshot.snapshot.scene.source;
+  if (
+    input.snapshot.snapshot.scene.animationChannels.length > 0 &&
+    (importedSource.kind !== "imported-manim-runtime-trace" || importedSource.traceVersion !== 3)
+  ) {
+    return {
+      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
+      kind: "unsupported",
+    };
+  }
   const createdEntityPlan = planStudioCreatedEntities(input.proposedState);
   if (createdEntityPlan.kind === "unsupported") {
     return { error: createdEntityPlan.message, kind: "unsupported" };
@@ -1583,7 +1581,6 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const importedSource = input.snapshot.snapshot.scene.source;
   if (importedSource.kind === "imported-manim-runtime-trace" && importedSource.traceVersion === 3) {
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
@@ -1605,55 +1602,6 @@ export async function compileStudioPreviewSceneV1(
     if (rebased.kind === "unsupported") {
       return {
         error: `Runtime Trace endpoint edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
-        kind: "unsupported",
-      };
-    }
-    const bundle = { assets: input.snapshot.snapshot.assets, scene: rebased.scene };
-    return {
-      kind: "compiled",
-      scene: {
-        bundle,
-        engineRevisionHash,
-        frame: { ...input.frame },
-        interactionEntityIds: studioPreviewInteractionEntityIdsV1(
-          input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthority(
-            input.snapshot,
-            0,
-            input.proposedState.base.runtimeSceneState.eventTrack.events,
-          ),
-          rebased.scene.entities,
-        ),
-        snapshot: input.snapshot,
-        workingRevision: input.workingRevision,
-        workspaceKey: input.workspaceKey,
-      },
-    };
-  }
-  if (input.snapshot.snapshot.scene.animationChannels.length > 0) {
-    if (importedSource.kind !== "imported-manim-server-snapshot" || Number(importedSource.snapshotVersion) !== 7) {
-      return {
-        error: "Editing this imported animation requires Runtime Trace authoring support.",
-        kind: "unsupported",
-      };
-    }
-    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
-      frame: input.frame,
-      snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
-      workingRevision: input.workingRevision,
-      workspaceKey: input.workspaceKey,
-    });
-    const rebased = await compileStudioPreviewImportedAnimationEdit({
-      frame: input.frame,
-      proposedState: input.proposedState,
-      snapshot: input.snapshot,
-      sourceRevisionHash: engineRevisionHash,
-      transformCompiler: input.transformCompiler,
-    });
-    if (rebased.kind === "unsupported") {
-      return {
-        error: `Imported animation edit is unsupported (${rebased.issue.code}): ${rebased.issue.message}`,
         kind: "unsupported",
       };
     }

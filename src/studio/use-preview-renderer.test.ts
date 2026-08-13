@@ -1,10 +1,7 @@
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
-import {
-  mixedDynamic2dSnapshotBundleFixtureV7,
-  pngSnapshotBundleFixture,
-} from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
+import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
@@ -17,7 +14,6 @@ import type {
   TransformSceneEntityCompiler,
   TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
-import type { SceneEntityV1 } from "../engine/scene-ir";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -59,7 +55,6 @@ import {
 const HASH_A = "a".repeat(64);
 const HASH_B = "b".repeat(64);
 const HASH_C = "c".repeat(64);
-const MIXED_V7_FRAME = { height: 8, width: 14.222222222222221 } as const;
 
 function compiledMathTexResponse(
   digests: Readonly<{ content?: string; font?: string; toolchain?: string }> = {},
@@ -798,121 +793,6 @@ async function importedImagePreviewInput() {
   };
 }
 
-async function mixedV7EditedMathTexPreviewInput(
-  options: Readonly<{
-    cameraCenter?: Readonly<{ x: number; y: number }>;
-    includeRing?: boolean;
-    mathTexTransform?: SceneEntityV1["transform"];
-  }> = {},
-) {
-  const fixture = await importedMathTexPreviewInput();
-  const baseStudioMathTex = fixture.workingState.runtimeSceneState.objectGraph.entities[fixture.entityId];
-  const editedStudioMathTex = fixture.edited.evaluatedScene.objectGraph.entities[fixture.entityId];
-  const importedSource = fixture.snapshot.snapshot.scene.source;
-  if (importedSource.kind !== "imported-manim-server-snapshot" || !baseStudioMathTex || !editedStudioMathTex) {
-    throw new Error("Mixed V7 MathTex fixture is incomplete.");
-  }
-  const ringStudioId = "source:scene.py#MathTexScene:ring";
-  const particleStudioId = "source:scene.py#MathTexScene:particle";
-  const importedCircle = (
-    id: string,
-    sourceIdentity: string,
-  ): RuntimeSceneState["objectGraph"]["entities"][string] => ({
-    geometry: {
-      dimensions: { kind: "known", value: { radius: 1 } },
-      position: { kind: "known", value: { x: 320, y: 180 } },
-      scale: { kind: "known", value: 1 },
-      style: { kind: "known", value: {} },
-    },
-    id,
-    lifetime: [{ end: 4, start: 0 }],
-    provisional: false,
-    sourceIdentity: { kind: "known", value: sourceIdentity },
-    type: "Circle",
-  });
-  const ringStudioEntity = importedCircle(ringStudioId, "ring");
-  const particleStudioEntity = importedCircle(particleStudioId, "particle");
-  const extendScene = (scene: RuntimeSceneState, mathTexEntity: typeof baseStudioMathTex): RuntimeSceneState => ({
-    ...scene,
-    duration: 4,
-    objectGraph: {
-      ...scene.objectGraph,
-      entities: {
-        [fixture.entityId]: { ...mathTexEntity, lifetime: [{ end: 4, start: 0 }] },
-        ...(options.includeRing ? { [ringStudioId]: ringStudioEntity } : {}),
-        [particleStudioId]: particleStudioEntity,
-      },
-    },
-  });
-  const fixtureBundle = await mixedDynamic2dSnapshotBundleFixtureV7({
-    frame: MIXED_V7_FRAME,
-    projectId: fixture.snapshot.correlation.context.projectId,
-    requestId: "mixed-v7-preview-test",
-    runtimeConfigHash: importedSource.runtimeConfigHash,
-    sceneId: fixture.snapshot.sceneId,
-    sceneName: fixture.snapshot.correlation.context.sceneName,
-    snapshotVersion: 7,
-    sourceHash: importedSource.sourceHash,
-    sourcePath: fixture.snapshot.correlation.context.sourcePath,
-  });
-  const mathTexTransform = options.mathTexTransform;
-  const unsigned = {
-    ...fixtureBundle,
-    scene: {
-      ...fixtureBundle.scene,
-      camera: options.cameraCenter
-        ? {
-            ...fixtureBundle.scene.camera,
-            view: { ...fixtureBundle.scene.camera.view, center: options.cameraCenter },
-          }
-        : fixtureBundle.scene.camera,
-      entities: mathTexTransform
-        ? fixtureBundle.scene.entities.map((entity, index) =>
-            index === 0 ? { ...entity, transform: mathTexTransform } : entity,
-          )
-        : fixtureBundle.scene.entities,
-    },
-  };
-  const snapshotHash = await digestFastManimSnapshotBundleInBrowserV1(unsigned);
-  const snapshotBundle = await parseVerifiedSceneIrBundleV1({
-    ...unsigned,
-    scene: { ...unsigned.scene, source: { ...unsigned.scene.source, snapshotHash } },
-  });
-  const [mathTexRuntime, ringRuntime, particleRuntime] = snapshotBundle.scene.entities;
-  if (!mathTexRuntime || !ringRuntime || !particleRuntime) throw new Error("Mixed V7 runtime fixture is incomplete.");
-  return {
-    ...fixture,
-    edited: {
-      ...fixture.edited,
-      base: {
-        ...fixture.edited.base,
-        runtimeSceneState: extendScene(fixture.workingState.runtimeSceneState, baseStudioMathTex),
-      },
-      evaluatedScene: extendScene(fixture.edited.evaluatedScene, editedStudioMathTex),
-    },
-    particleStudioId,
-    ringStudioId,
-    runtimeEntityId: mathTexRuntime.id,
-    snapshot: {
-      ...fixture.snapshot,
-      correlation: {
-        ...fixture.snapshot.correlation,
-        assetsManifestDigest: snapshotBundle.assets.manifestDigest,
-        context: { ...fixture.snapshot.correlation.context, sourceDuration: 4 },
-        engineRevisionHash: snapshotHash,
-        sceneDuration: 4,
-      },
-      duration: 4,
-      snapshot: snapshotBundle,
-      sourceRuntimeIdentity: new Map([
-        ["equation", { bindingId: "binding:equation", entityId: mathTexRuntime.id, sourceName: "equation" }],
-        ["ring", { bindingId: "binding:ring", entityId: ringRuntime.id, sourceName: "ring" }],
-        ["particle", { bindingId: "binding:particle", entityId: particleRuntime.id, sourceName: "particle" }],
-      ]),
-    } satisfies StudioVerifiedPreviewSnapshotV1,
-  };
-}
-
 describe("claimStudioPreviewCanvasV1", () => {
   it("claims a canvas exactly once so StrictMode remounts must mint a fresh element", () => {
     const canvas = {};
@@ -1361,7 +1241,7 @@ describe("studioPreviewInteractionAuthority", () => {
     expect(compiled.scene.interactionEntityIds).toEqual([textRootId, texRootId]);
   });
 
-  it("preserves V6/V7 editing while legacy V8 snapshots remain selection-only", async () => {
+  it("keeps V6 static snapshots editable while legacy V7/V8 snapshots remain selectable but read-only", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;
     if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
@@ -1413,10 +1293,19 @@ describe("studioPreviewInteractionAuthority", () => {
         sourceRuntimeIdentity: identity,
       }) as StudioVerifiedPreviewSnapshotV1;
     expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, null), 0, [])).toEqual(displayOnly);
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, partialIdentity), 0, [])).toEqual({
-      kind: "interactive",
+    const v7Partial = identityBoundSnapshot(7, partialIdentity);
+    const v7PartialAuthority = studioPreviewInteractionAuthority(v7Partial, 0, []);
+    expect(v7PartialAuthority).toEqual({
+      kind: "selection-only",
+      reason: "source-edit-anchor-unavailable",
     });
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, fullIdentity), 0, [])).toEqual(displayOnly);
+    expect(
+      studioPreviewInteractionEntityIdsV1(partialIdentity, v7PartialAuthority, v7Partial.snapshot.scene.entities),
+    ).toEqual(["runtime-line"]);
+    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, fullIdentity), 0, [])).toEqual({
+      kind: "selection-only",
+      reason: "source-edit-anchor-unavailable",
+    });
     expect(studioPreviewInteractionAuthority(identityBoundSnapshot(8, null), 0, [])).toEqual(displayOnly);
     expect(studioPreviewInteractionAuthority(identityBoundSnapshot(8, partialIdentity), 0, [])).toEqual({
       kind: "selection-only",
@@ -1430,8 +1319,10 @@ describe("studioPreviewInteractionAuthority", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
-  it("routes CreateMotion on an opacity-animated Scene through Rust and rejects moving coordinates", async () => {
+  it("rejects legacy animated Scene motion before invoking a core planner", async () => {
     const base = await compilablePreviewInput();
+    const legacySource = base.snapshot.snapshot.scene.source;
+    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
     const workingBase = exactImportedTimelineWorkingBase(base);
     const validation = createDirectManipulationMotionProgram({
       capturedPlayhead: 0.5,
@@ -1453,6 +1344,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...base.snapshot.snapshot,
         scene: {
           ...base.snapshot.snapshot.scene,
+          source: { ...legacySource, snapshotVersion: 7 as const },
           animationChannels: [
             {
               entityId: "earlier",
@@ -1478,79 +1370,11 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: "project-a/scene.py/CircleScene",
     });
 
-    expect(result.kind).toBe("compiled");
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      controlOffset: { x: 0.8, y: -0.45 },
-      delta: { x: 1.6, y: 0.9 },
-      easing: "smooth",
-      expectedBaseRevision: HASH_C,
-      interval: { end: 1.5, start: 0.5 },
-      schema: "poietra.create-scene-motion",
-      targetEntityIds: ["earlier"],
-      version: 1,
-    });
-    expect(commands[0]?.provenance.evidence).toEqual([`authorized operation ${validation.program.operations[0]?.id}`]);
-
-    const mismatchedAnchorResult = await compileStudioPreviewSceneV1({
-      createSceneMotionCompiler: recordingMotionCompiler(commands),
-      frame: { height: 9, width: 16 },
-      proposedState: {
-        ...proposedState,
-        programs: proposedState.programs.map((record) => ({
-          ...record,
-          program: {
-            ...record.program,
-            anchor: { ...record.program.anchor, resolvedSeconds: record.program.anchor.resolvedSeconds + 0.0005 },
-          },
-        })),
-      },
-      snapshot,
-      workingRevision: "studio-working-v1:create-static-motion",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(mismatchedAnchorResult).toMatchObject({
-      error: expect.stringContaining("authoring authority"),
+    expect(result).toMatchObject({
+      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
       kind: "unsupported",
     });
-    expect(commands).toHaveLength(1);
-
-    const cameraResult = await compileStudioPreviewSceneV1({
-      createSceneMotionCompiler: recordingMotionCompiler(commands),
-      frame: { height: 9, width: 16 },
-      proposedState,
-      snapshot: {
-        ...snapshot,
-        snapshot: {
-          ...snapshot.snapshot,
-          scene: {
-            ...snapshot.snapshot.scene,
-            animationChannels: [
-              {
-                id: "camera:move",
-                keyframes: [
-                  {
-                    at: 0,
-                    easingToNext: { kind: "linear" },
-                    value: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
-                  },
-                  { at: 2, easingToNext: null, value: { center: { x: 1, y: 0 }, frameHeight: 9, frameWidth: 16 } },
-                ],
-                kind: "camera",
-                provenanceId: "fixture",
-              },
-            ],
-          },
-        },
-      },
-      workingRevision: "studio-working-v1:create-static-motion",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(cameraResult).toMatchObject({
-      error: expect.stringContaining("static camera and geometry"),
-      kind: "unsupported",
-    });
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(0);
   });
 
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {
@@ -1622,8 +1446,10 @@ describe("compileStudioPreviewSceneV1", () => {
     });
   });
 
-  it("preserves an imported animation channel at the Rust timeline compiler boundary", async () => {
+  it("rejects a legacy animated Scene timeline edit before invoking the core planner", async () => {
     const base = await compilablePreviewInput();
+    const legacySource = base.snapshot.snapshot.scene.source;
+    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
     const animationChannels: SceneIrBundleV1["scene"]["animationChannels"] = [
       {
         entityId: "earlier",
@@ -1642,6 +1468,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...base.snapshot.snapshot.scene,
         animationChannels,
         requiredCapabilities: ["opacity-animation", "shape-primitives"],
+        source: { ...legacySource, snapshotVersion: 7 },
       },
     });
     const snapshot = { ...base.snapshot, snapshot: animatedBundle };
@@ -1671,11 +1498,11 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
 
-    expect(result.kind).toBe("compiled");
-    expect(compilerCalls).toBe(1);
-    if (result.kind === "compiled") {
-      expect(result.scene.bundle.scene.animationChannels).toEqual(animationChannels);
-    }
+    expect(result).toEqual({
+      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
+      kind: "unsupported",
+    });
+    expect(compilerCalls).toBe(0);
   });
 
   it("preserves source order for extension, trim, and a later same-anchor extension", async () => {
@@ -2846,233 +2673,6 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(compilerCalls).toBe(1);
   });
 
-  it("rebases an initial MathTex transform without reconstructing mixed V7 animation", async () => {
-    const fixture = await mixedV7EditedMathTexPreviewInput();
-    const baseScene = fixture.snapshot.snapshot.scene;
-    let compilerCalls = 0;
-    let transformCommand: TransformSceneEntityWireCommandV1 | null = null;
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      mathTexOutlineCompiler: async () => {
-        compilerCalls += 1;
-        return compiledMathTexResponse();
-      },
-      proposedState: fixture.edited,
-      snapshot: fixture.snapshot,
-      transformCompiler: async (bundle, command) => {
-        transformCommand = command;
-        return await testTransformCompiler(bundle, command);
-      },
-      workingRevision: "studio-working-v1:mixed-v7-mathtex-transform",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    expect(compilerCalls).toBe(0);
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(transformCommand).toMatchObject({
-      intent: {
-        baseline: { kind: "current-uniform-affine" },
-        kind: "from-baseline",
-        scale: { xFactor: 2, yFactor: 2 },
-      },
-    });
-    const scene = result.scene.bundle.scene;
-    expect(scene.sceneId).toBe(baseScene.sceneId);
-    expect(scene.camera).toEqual(baseScene.camera);
-    expect(scene.duration).toBe(baseScene.duration);
-    expect(scene.animationChannels).toEqual(baseScene.animationChannels);
-    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
-    expect(scene.entities[1]).toEqual(baseScene.entities[1]);
-    expect(scene.entities[2]).toEqual(baseScene.entities[2]);
-    expect(scene.entities[0]).toMatchObject({
-      geometry: baseScene.entities[0]?.geometry,
-      id: fixture.runtimeEntityId,
-      transform: { m11: 2, m12: 0, m21: 0, m22: 2 },
-    });
-    expect(scene.entities[0]?.transform.tx).toBeCloseTo(3.5555555555555554, 12);
-    expect(scene.entities[0]?.transform.ty).toBeCloseTo(0.8888888888888888, 12);
-    expect(scene.entities[0]?.provenanceId).not.toBe(baseScene.entities[0]?.provenanceId);
-    expect(scene.source).toEqual({
-      editProgramVersion: 1,
-      kind: "studio-edit-program",
-      revisionHash: result.scene.engineRevisionHash,
-    });
-  });
-
-  it("keeps V7 fail-closed when Studio contains an unmapped semantic entity", async () => {
-    const fixture = await mixedV7EditedMathTexPreviewInput();
-    const particle = fixture.edited.evaluatedScene.objectGraph.entities[fixture.particleStudioId];
-    if (!particle) throw new Error("Mixed V7 fixture has no particle semantic entity.");
-    const ghostId = "source:scene.py#MathTexScene:ghost";
-    const ghost = {
-      ...particle,
-      id: ghostId,
-      sourceIdentity: { kind: "known" as const, value: "ghost" },
-    };
-    const addGhost = (scene: RuntimeSceneState): RuntimeSceneState => ({
-      ...scene,
-      objectGraph: {
-        ...scene.objectGraph,
-        entities: { ...scene.objectGraph.entities, [ghostId]: ghost },
-      },
-    });
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: {
-        ...fixture.edited,
-        base: { ...fixture.edited.base, runtimeSceneState: addGhost(fixture.edited.base.runtimeSceneState) },
-        evaluatedScene: addGhost(fixture.edited.evaluatedScene),
-      },
-      snapshot: fixture.snapshot,
-      workingRevision: "studio-working-v1:mixed-v7-unmapped-semantic",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    expect(result).toMatchObject({
-      error: expect.stringContaining("identity-unverified"),
-      kind: "unsupported",
-    });
-  });
-
-  it("composes a repeated MathTex edit against the transformed V7 source", async () => {
-    const baseScale = 1.5;
-    const fixture = await mixedV7EditedMathTexPreviewInput({
-      mathTexTransform: { m11: baseScale, m12: 0, m21: 0, m22: baseScale, tx: 0.75, ty: -0.5 },
-    });
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: fixture.edited,
-      snapshot: fixture.snapshot,
-      transformCompiler: testTransformCompiler,
-      workingRevision: "studio-working-v1:second-mixed-v7-transform",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    if (result.kind !== "compiled") throw new Error(result.error);
-    const scene = result.scene.bundle.scene;
-    const edited = scene.entities[0];
-    if (!edited) throw new Error("Repeated MathTex edit lost its target.");
-    expect(edited.transform.m11).toBeCloseTo(3, 12);
-    expect(edited.transform.m22).toBeCloseTo(3, 12);
-    expect(edited.transform.tx).toBeCloseTo(3.5555555555555554, 12);
-    expect(edited.transform.ty).toBeCloseTo(0.8888888888888888, 12);
-    expect(scene.animationChannels).toEqual(fixture.snapshot.snapshot.scene.animationChannels);
-    expect(scene.entities.slice(1)).toEqual(fixture.snapshot.snapshot.scene.entities.slice(1));
-  });
-
-  it("projects a mixed V7 GUI position through a non-origin camera center", async () => {
-    const cameraCenter = { x: 2.5, y: -1.25 };
-    const fixture = await mixedV7EditedMathTexPreviewInput({ cameraCenter });
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: fixture.edited,
-      snapshot: fixture.snapshot,
-      transformCompiler: testTransformCompiler,
-      workingRevision: "studio-working-v1:panned-camera-transform",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    if (result.kind !== "compiled") throw new Error(result.error);
-    const edited = result.scene.bundle.scene.entities[0];
-    if (!edited) throw new Error("Panned-camera edit lost its target.");
-
-    expect(result.scene.bundle.scene.camera.view.center).toEqual(cameraCenter);
-    expect(edited.transform.tx).toBeCloseTo(6.055555555555555, 12);
-    expect(edited.transform.ty).toBeCloseTo(-0.36111111111111116, 12);
-  });
-
-  it.each([
-    ["rotation", { m11: 1, m12: -0.25, m21: 0.25, m22: 1, tx: 0, ty: 0 }],
-    ["shear", { m11: 1, m12: 0.25, m21: 0, m22: 1, tx: 0, ty: 0 }],
-    ["non-uniform scale", { m11: 1, m12: 0, m21: 0, m22: 1.25, tx: 0, ty: 0 }],
-    ["reflection", { m11: -1, m12: 0, m21: 0, m22: -1, tx: 0, ty: 0 }],
-  ])("delegates rejection of a source transform with %s to Rust", async (_name, transform) => {
-    const fixture = await mixedV7EditedMathTexPreviewInput({ mathTexTransform: transform });
-    let compilerCalls = 0;
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: fixture.edited,
-      snapshot: fixture.snapshot,
-      transformCompiler: async () => {
-        compilerCalls += 1;
-        throw new Error("the expected transform baseline is invalid or does not match the installed Scene");
-      },
-      workingRevision: "studio-working-v1:unsupported-source-transform",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    expect(result).toMatchObject({ error: expect.stringContaining("transform baseline"), kind: "unsupported" });
-    expect(compilerCalls).toBe(1);
-  });
-
-  it("rebases an initial Create target transform while preserving the imported channels", async () => {
-    const fixture = await mixedV7EditedMathTexPreviewInput({ includeRing: true });
-    const baseScene = fixture.snapshot.snapshot.scene;
-    const baseState = fixture.edited.base.runtimeSceneState;
-    const position = createDirectManipulationPositionProgram({
-      capturedPlayhead: 0,
-      delta: { x: 64, y: -36 },
-      positions: { [fixture.ringStudioId]: { x: 320, y: 180 } },
-      scene: baseState,
-      start: 0,
-      targetEntityIds: [fixture.ringStudioId],
-      transactionId: "move-imported-create-target",
-    });
-    const scale = createDirectManipulationScaleProgram({
-      capturedPlayhead: 0,
-      interval: { end: 0, start: 0 },
-      scales: { [fixture.ringStudioId]: { from: 1, to: 1.25 } },
-      scene: baseState,
-      targetEntityIds: [fixture.ringStudioId],
-      transactionId: "scale-imported-create-target",
-    });
-    if (position.kind !== "valid" || scale.kind !== "valid") throw new Error("Create target edits are invalid.");
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: evaluateWorkingState({
-        ...fixture.edited.base,
-        appliedPrograms: [programRecord(position.program, position), programRecord(scale.program, scale)],
-      }),
-      snapshot: fixture.snapshot,
-      transformCompiler: testTransformCompiler,
-      workingRevision: "studio-working-v1:mixed-v7-create-transform",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    if (result.kind !== "compiled") throw new Error(result.error);
-    const scene = result.scene.bundle.scene;
-    expect(scene.animationChannels).toEqual(baseScene.animationChannels);
-    expect(canonicalJsonV1(scene.animationChannels)).toBe(canonicalJsonV1(baseScene.animationChannels));
-    expect(scene.animationChannels[0]).toMatchObject({ entityId: baseScene.entities[1]?.id, kind: "path-trim" });
-    expect(scene.entities[0]).toEqual(baseScene.entities[0]);
-    expect(scene.entities[2]).toEqual(baseScene.entities[2]);
-    expect(scene.entities[1]).toMatchObject({
-      geometry: baseScene.entities[1]?.geometry,
-      id: baseScene.entities[1]?.id,
-      transform: { m11: 1.25, m12: 0, m21: 0, m22: 1.25 },
-    });
-    expect(scene.entities[1]?.transform.tx).toBeCloseTo(2.672222222222222, 12);
-    expect(scene.entities[1]?.transform.ty).toBeCloseTo(0.8, 12);
-  });
-
-  it("fails closed when a mixed V7 edit targets MoveAlongPath", async () => {
-    const fixture = await mixedV7EditedMathTexPreviewInput();
-    const programs = fixture.edited.programs.map((record) => ({
-      ...record,
-      program: {
-        ...record.program,
-        operations: record.program.operations.map((operation) =>
-          "entityId" in operation ? { ...operation, entityId: fixture.particleStudioId } : operation,
-        ),
-      },
-    }));
-    const result = await compileStudioPreviewSceneV1({
-      frame: MIXED_V7_FRAME,
-      proposedState: { ...fixture.edited, programs },
-      snapshot: fixture.snapshot,
-      workingRevision: "studio-working-v1:mixed-v7-motion-target",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
-    expect(result).toMatchObject({
-      error: expect.stringContaining("motion-path-edit-unsupported"),
-      kind: "unsupported",
-    });
-  });
-
   it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {
     const fixture = await importedMathTexPreviewInput();
     const contentEdit = createInspectorEntityEditProgram({
@@ -3246,8 +2846,10 @@ describe("compileStudioPreviewSceneV1", () => {
     });
   });
 
-  it("routes creation on an animated base through the core timeline insertion", async () => {
+  it("rejects creation on a legacy animated Scene before invoking the core planner", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
+    const legacySource = snapshot.snapshot.scene.source;
+    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
       entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
@@ -3264,6 +2866,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...snapshot.snapshot,
         scene: {
           ...snapshot.snapshot.scene,
+          source: { ...legacySource, snapshotVersion: 7 },
           animationChannels: [
             {
               entityId: "earlier",
@@ -3291,12 +2894,11 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevision: "studio-working-v1:edit-animated-source",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
-    expect(result.kind).toBe("compiled");
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      schema: "poietra.create-scene-entities",
-      timelineInsertions: [{ at: 0.5, duration: 0.4 }],
+    expect(result).toMatchObject({
+      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
+      kind: "unsupported",
     });
+    expect(commands).toHaveLength(0);
   });
 
   it("changes the compiled revision across every snapshot, asset, and frame authority axis", async () => {
