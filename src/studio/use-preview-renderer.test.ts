@@ -10,6 +10,8 @@ import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../en
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import type {
   CreateSceneEntitiesWireCommandV1,
+  CreateSceneMotionCompiler,
+  CreateSceneMotionWireCommandV1,
   EditSceneTimelineCompiler,
   EditSceneTimelineWireCommandV1,
   TransformSceneEntityCompiler,
@@ -39,6 +41,7 @@ import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
   createDirectManipulationPositionProgram,
+  createDirectManipulationMotionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
@@ -219,6 +222,13 @@ function exactImportedTimelineWorkingBase(base: Awaited<ReturnType<typeof compil
 }
 
 function recordingTimelineCompiler(calls: EditSceneTimelineWireCommandV1[]): EditSceneTimelineCompiler {
+  return async (bundle, command) => {
+    calls.push(command);
+    return bundle;
+  };
+}
+
+function recordingMotionCompiler(calls: CreateSceneMotionWireCommandV1[]): CreateSceneMotionCompiler {
   return async (bundle, command) => {
     calls.push(command);
     return bundle;
@@ -1389,6 +1399,129 @@ describe("studioPreviewInteractionAuthority", () => {
 });
 
 describe("compileStudioPreviewSceneV1", () => {
+  it("routes CreateMotion on an opacity-animated Scene through Rust and rejects moving coordinates", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const validation = createDirectManipulationMotionProgram({
+      capturedPlayhead: 0.5,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1.5, start: 0.5 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "create-static-motion",
+    });
+    if (validation.kind !== "valid") throw new Error("Static motion fixture did not validate.");
+    const proposedState = evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [programRecord(validation.program, validation)],
+    });
+    const snapshot = {
+      ...base.snapshot,
+      snapshot: {
+        ...base.snapshot.snapshot,
+        scene: {
+          ...base.snapshot.snapshot.scene,
+          animationChannels: [
+            {
+              entityId: "earlier",
+              id: "opacity:earlier",
+              keyframes: [
+                { at: 0, easingToNext: { kind: "linear" as const }, value: 0.5 },
+                { at: 2, easingToNext: null, value: 1 },
+              ],
+              kind: "opacity" as const,
+              provenanceId: "fixture",
+            },
+          ],
+        },
+      },
+    };
+    const commands: CreateSceneMotionWireCommandV1[] = [];
+    const result = await compileStudioPreviewSceneV1({
+      createSceneMotionCompiler: recordingMotionCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot,
+      workingRevision: "studio-working-v1:create-static-motion",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+
+    expect(result.kind).toBe("compiled");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      controlOffset: { x: 0.8, y: -0.45 },
+      delta: { x: 1.6, y: 0.9 },
+      easing: "smooth",
+      expectedBaseRevision: HASH_C,
+      interval: { end: 1.5, start: 0.5 },
+      schema: "poietra.create-scene-motion",
+      targetEntityIds: ["earlier"],
+      version: 1,
+    });
+    expect(commands[0]?.provenance.evidence).toEqual([`authorized operation ${validation.program.operations[0]?.id}`]);
+
+    const mismatchedAnchorResult = await compileStudioPreviewSceneV1({
+      createSceneMotionCompiler: recordingMotionCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState: {
+        ...proposedState,
+        programs: proposedState.programs.map((record) => ({
+          ...record,
+          program: {
+            ...record.program,
+            anchor: { ...record.program.anchor, resolvedSeconds: record.program.anchor.resolvedSeconds + 0.0005 },
+          },
+        })),
+      },
+      snapshot,
+      workingRevision: "studio-working-v1:create-static-motion",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(mismatchedAnchorResult).toMatchObject({
+      error: expect.stringContaining("authoring authority"),
+      kind: "unsupported",
+    });
+    expect(commands).toHaveLength(1);
+
+    const cameraResult = await compileStudioPreviewSceneV1({
+      createSceneMotionCompiler: recordingMotionCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot: {
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            animationChannels: [
+              {
+                id: "camera:move",
+                keyframes: [
+                  {
+                    at: 0,
+                    easingToNext: { kind: "linear" },
+                    value: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
+                  },
+                  { at: 2, easingToNext: null, value: { center: { x: 1, y: 0 }, frameHeight: 9, frameWidth: 16 } },
+                ],
+                kind: "camera",
+                provenanceId: "fixture",
+              },
+            ],
+          },
+        },
+      },
+      workingRevision: "studio-working-v1:create-static-motion",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+    expect(cameraResult).toMatchObject({
+      error: expect.stringContaining("static camera and geometry"),
+      kind: "unsupported",
+    });
+    expect(commands).toHaveLength(1);
+  });
+
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {
     const { proposedState, snapshot } = await linePreviewInput();
     const result = await compileStudioPreviewSceneV1({

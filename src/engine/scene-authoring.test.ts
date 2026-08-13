@@ -5,6 +5,7 @@ import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type CreateSceneEntitiesWireCommandV1,
   createCreateSceneEntitiesCompiler,
+  createCreateSceneMotionCompiler,
   createEditSceneTimelineCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
@@ -15,6 +16,7 @@ import {
   type SetSubtreeVectorPaintAlphaWireCommandV1,
   type TransformSceneEntityAtTimeWireCommandV1,
   type TransformSceneEntityWireCommandV1,
+  type CreateSceneMotionWireCommandV1,
 } from "./scene-authoring";
 
 const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
@@ -41,6 +43,23 @@ const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
     { at: 0.5, duration: 0.2 },
     { at: 0.7, duration: 0.2 },
   ],
+  version: 1,
+};
+
+const createMotionCommand: CreateSceneMotionWireCommandV1 = {
+  controlOffset: { x: 0.5, y: 1 },
+  delta: { x: 3, y: -2 },
+  easing: "smooth",
+  expectedBaseRevision: "a".repeat(64),
+  interval: { end: 2, start: 0.5 },
+  nextRevision: "9".repeat(64),
+  provenance: {
+    evidence: ["Studio pointer motion"],
+    id: "studio-edit:motion-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.create-scene-motion",
+  targetEntityIds: ["later"],
   version: 1,
 };
 
@@ -170,6 +189,24 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, transformCommand);
     expect(result).toEqual(calls[0]);
     expect(calls[1]).toEqual(transformCommand);
+  });
+
+  it("forwards one exact motion command and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createCreateSceneMotionCompiler(async () => ({
+      createSceneMotionV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, createMotionCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(createMotionCommand);
   });
 
   it("forwards one exact timed root transform and complete base snapshot", async () => {

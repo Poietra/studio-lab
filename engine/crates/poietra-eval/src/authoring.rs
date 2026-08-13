@@ -1,10 +1,11 @@
 use std::collections::BTreeSet;
 
 use poietra_scene_ir::{
-    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, EasingV1, FidelityV1,
-    FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1, PointV1, ProvenanceOriginV1,
-    ProvenanceRecordV1, RgbaColorV1, SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1,
-    SceneGeometryV1, SceneIrBundleV1, SceneSourceV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
+    AffineTransformV1, AnimationChannelV1, ContractVersionV1, CubicPathV1, CubicSegmentV1,
+    CubicSubpathV1, EasingV1, FidelityV1, FillRuleV1, FillStyleV1, IntervalV1, KeyframeV1,
+    MotionPathParameterizationV1, PointV1, ProvenanceOriginV1, ProvenanceRecordV1, RgbaColorV1,
+    SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
+    SceneSourceV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
 };
 
 use crate::{EngineSessionV1, EvaluationError};
@@ -83,6 +84,26 @@ pub struct CreateSceneEntitiesCommand {
     pub timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
+/// Easing choices exposed by the Studio motion authoring command.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CreateSceneMotionEasing {
+    Linear,
+    Smooth,
+}
+
+/// One profile-free Studio command that adds the same world-space motion to root entities.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CreateSceneMotionCommand {
+    pub control_offset: PointV1,
+    pub delta: PointV1,
+    pub easing: CreateSceneMotionEasing,
+    pub expected_base_revision: String,
+    pub interval: IntervalV1,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
+    pub target_entity_ids: Vec<String>,
+}
+
 /// One profile-free Studio command that rotates a root entity in world space.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RotateSceneEntityCommand {
@@ -152,6 +173,36 @@ pub enum CreateSceneEntitiesError {
     #[error("a created entity instant transform must be finite, positive, and inside its lifetime")]
     InvalidInstantTransform,
     #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CreateSceneMotionError {
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the motion command must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the motion interval must be finite, non-negative, non-empty, and inside the Scene")]
+    InvalidInterval,
+    #[error("motion points must be finite and the delta or control offset must be non-zero")]
+    InvalidMotion,
+    #[error("a motion command must contain at least one target")]
+    EmptyTargets,
+    #[error("the motion command contains a duplicate target: {0}")]
+    DuplicateTarget(String),
+    #[error("the motion target does not exist: {0}")]
+    TargetMissing(String),
+    #[error("world-space motion currently requires a root entity: {0}")]
+    TargetIsNotRoot(String),
+    #[error("the motion target is not active for the complete interval: {0}")]
+    TargetInactive(String),
+    #[error("world-space motion does not support an already animated transform target: {0}")]
+    AnimatedTransformUnsupported(String),
+    #[error("the motion provenance must use the Studio Edit Program origin")]
+    InvalidProvenanceOrigin,
+    #[error("the motion provenance ID already exists: {0}")]
+    ProvenanceConflict(String),
+    #[error("the authored motion Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
 }
 
@@ -640,6 +691,117 @@ fn unused_channel_id(scene: &poietra_scene_ir::SceneIrV1, prefix: &str) -> Strin
     candidate
 }
 
+fn quadratic_motion_path(start: PointV1, delta: &PointV1, control_offset: &PointV1) -> CubicPathV1 {
+    let control_offset_x = 2.0 * control_offset.x / 3.0;
+    let control_offset_y = 2.0 * control_offset.y / 3.0;
+    CubicPathV1 {
+        subpaths: vec![CubicSubpathV1 {
+            closed: false,
+            segments: vec![CubicSegmentV1 {
+                control1: PointV1 {
+                    x: start.x + delta.x / 3.0 + control_offset_x,
+                    y: start.y + delta.y / 3.0 + control_offset_y,
+                },
+                control2: PointV1 {
+                    x: start.x + 2.0 * delta.x / 3.0 + control_offset_x,
+                    y: start.y + 2.0 * delta.y / 3.0 + control_offset_y,
+                },
+                end: PointV1 {
+                    x: start.x + delta.x,
+                    y: start.y + delta.y,
+                },
+            }],
+            start,
+        }],
+    }
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "exact zero distinguishes a visible motion command from a no-op"
+)]
+fn validate_create_scene_motion_command(
+    scene: &poietra_scene_ir::SceneIrV1,
+    command: &CreateSceneMotionCommand,
+) -> Result<Vec<(String, PointV1)>, CreateSceneMotionError> {
+    if scene.source.revision_hash() != command.expected_base_revision {
+        return Err(CreateSceneMotionError::StaleBaseRevision);
+    }
+    if command.next_revision == command.expected_base_revision {
+        return Err(CreateSceneMotionError::RevisionDidNotAdvance);
+    }
+    if !command.interval.start.is_finite()
+        || !command.interval.end.is_finite()
+        || command.interval.start < 0.0
+        || command.interval.start >= command.interval.end
+        || command.interval.end > scene.duration
+    {
+        return Err(CreateSceneMotionError::InvalidInterval);
+    }
+    if !command.delta.x.is_finite()
+        || !command.delta.y.is_finite()
+        || !command.control_offset.x.is_finite()
+        || !command.control_offset.y.is_finite()
+        || (command.delta.x == 0.0
+            && command.delta.y == 0.0
+            && command.control_offset.x == 0.0
+            && command.control_offset.y == 0.0)
+    {
+        return Err(CreateSceneMotionError::InvalidMotion);
+    }
+    if command.target_entity_ids.is_empty() {
+        return Err(CreateSceneMotionError::EmptyTargets);
+    }
+    let mut unique_targets = BTreeSet::new();
+    for entity_id in &command.target_entity_ids {
+        if !unique_targets.insert(entity_id.as_str()) {
+            return Err(CreateSceneMotionError::DuplicateTarget(entity_id.clone()));
+        }
+    }
+    if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+        return Err(CreateSceneMotionError::InvalidProvenanceOrigin);
+    }
+    if scene
+        .provenance
+        .iter()
+        .any(|record| record.id == command.provenance.id)
+    {
+        return Err(CreateSceneMotionError::ProvenanceConflict(
+            command.provenance.id.clone(),
+        ));
+    }
+
+    let mut target_starts = Vec::with_capacity(command.target_entity_ids.len());
+    for entity_id in &command.target_entity_ids {
+        let target = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == *entity_id)
+            .ok_or_else(|| CreateSceneMotionError::TargetMissing(entity_id.clone()))?;
+        if target.parent_id.is_some() {
+            return Err(CreateSceneMotionError::TargetIsNotRoot(entity_id.clone()));
+        }
+        if !target.lifetimes.iter().any(|lifetime| {
+            command.interval.start >= lifetime.start && command.interval.end <= lifetime.end
+        }) {
+            return Err(CreateSceneMotionError::TargetInactive(entity_id.clone()));
+        }
+        if has_animated_transform(scene, entity_id) {
+            return Err(CreateSceneMotionError::AnimatedTransformUnsupported(
+                entity_id.clone(),
+            ));
+        }
+        target_starts.push((
+            entity_id.clone(),
+            PointV1 {
+                x: target.transform.tx,
+                y: target.transform.ty,
+            },
+        ));
+    }
+    Ok(target_starts)
+}
+
 fn append_created_entity(
     scene: &mut poietra_scene_ir::SceneIrV1,
     entity: CreateSceneEntity,
@@ -886,6 +1048,85 @@ impl EngineSessionV1 {
             source_z_index += 1.0;
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
+    /// Atomically adds one quadratic world-space motion to one or more root entities.
+    ///
+    /// Every target receives an independent cubic path beginning at its static translation. The
+    /// command is profile-free: source bindings and viewport coordinates must be lowered before
+    /// this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene, assets, and retained index.
+    pub fn create_scene_motion(
+        &mut self,
+        command: CreateSceneMotionCommand,
+    ) -> Result<SceneIrBundleV1, CreateSceneMotionError> {
+        let scene = self.scene();
+        let target_starts = validate_create_scene_motion_command(scene, &command)?;
+
+        let easing = match command.easing {
+            CreateSceneMotionEasing::Linear => EasingV1::Linear {},
+            CreateSceneMotionEasing::Smooth => EasingV1::ManimSmooth {},
+        };
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: scene.clone(),
+        };
+        insert_scene_time(
+            &mut candidate.scene,
+            &SceneTimelineInsertion {
+                at: command.interval.start,
+                duration: command.interval.end - command.interval.start,
+            },
+        );
+        for (entity_id, start) in target_starts {
+            let channel_id = unused_channel_id(&candidate.scene, "studio-motion");
+            candidate
+                .scene
+                .animation_channels
+                .push(AnimationChannelV1::MotionPath {
+                    entity_id,
+                    id: channel_id,
+                    keyframes: vec![
+                        KeyframeV1 {
+                            at: command.interval.start,
+                            easing_to_next: Some(easing.clone()),
+                            value: 0.0,
+                        },
+                        KeyframeV1 {
+                            at: command.interval.end,
+                            easing_to_next: None,
+                            value: 1.0,
+                        },
+                    ],
+                    orient_to_path: false,
+                    parameterization: Some(
+                        MotionPathParameterizationV1::ManimPointFromProportionV1,
+                    ),
+                    path: quadratic_motion_path(start, &command.delta, &command.control_offset),
+                    provenance_id: command.provenance.id.clone(),
+                });
+        }
+        let mut capabilities = candidate
+            .scene
+            .required_capabilities
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        capabilities.insert(SceneCapabilityV1::MotionPathAnimation);
+        candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        candidate.scene.provenance.push(command.provenance);
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
             revision_hash: command.next_revision,
@@ -1406,6 +1647,26 @@ mod tests {
         }
     }
 
+    fn motion_command(bundle: &SceneIrBundleV1) -> CreateSceneMotionCommand {
+        CreateSceneMotionCommand {
+            control_offset: PointV1 { x: 0.0, y: 4.0 },
+            delta: PointV1 { x: 6.0, y: 2.0 },
+            easing: CreateSceneMotionEasing::Smooth,
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            interval: IntervalV1 {
+                end: 1.5,
+                start: 0.5,
+            },
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio motion".to_owned()],
+                id: "studio-motion-authoring".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+            target_entity_ids: vec!["later".to_owned(), "stroke".to_owned()],
+        }
+    }
+
     fn real_line_joints_bundle() -> SceneIrBundleV1 {
         let mut bundle = fixture_bundle("real-line-joints-v10.json");
         let root = bundle
@@ -1607,6 +1868,20 @@ mod tests {
         let expected_assets = bundle.assets.clone();
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let error = session.transform_scene_entity_at_time(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
+    fn rejected_motion(
+        bundle: SceneIrBundleV1,
+        command: CreateSceneMotionCommand,
+    ) -> CreateSceneMotionError {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.create_scene_motion(command).unwrap_err();
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 1);
@@ -2677,5 +2952,218 @@ mod tests {
             assert_eq!(session.assets(), &expected_assets);
             assert_eq!(session.retained_index_stats().build_count, 1);
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "exact authored values and sampled endpoints verify the complete atomic motion"
+    )]
+    fn creates_one_quadratic_motion_channel_per_root_and_samples_it() {
+        let bundle = imported_bundle();
+        let command = motion_command(&bundle);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.create_scene_motion(command.clone()).unwrap();
+        let motion_channels: Vec<_> = result
+            .scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    id,
+                    keyframes,
+                    orient_to_path,
+                    parameterization,
+                    path,
+                    provenance_id,
+                } => Some((
+                    entity_id,
+                    id,
+                    keyframes,
+                    orient_to_path,
+                    parameterization,
+                    path,
+                    provenance_id,
+                )),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(motion_channels.len(), 2);
+        for (index, (entity_id, id, keyframes, orient, parameterization, path, provenance)) in
+            motion_channels.into_iter().enumerate()
+        {
+            assert_eq!(entity_id, &command.target_entity_ids[index]);
+            assert_eq!(
+                id,
+                if index == 0 {
+                    "studio-motion"
+                } else {
+                    "studio-motion-1"
+                }
+            );
+            assert_eq!(keyframes[0].at, 0.5);
+            assert_eq!(keyframes[0].value, 0.0);
+            assert!(matches!(
+                keyframes[0].easing_to_next,
+                Some(EasingV1::ManimSmooth {})
+            ));
+            assert_eq!(keyframes[1].at, 1.5);
+            assert_eq!(keyframes[1].value, 1.0);
+            assert!(!orient);
+            assert_eq!(
+                *parameterization,
+                Some(MotionPathParameterizationV1::ManimPointFromProportionV1)
+            );
+            assert_eq!(provenance, &command.provenance.id);
+            let subpath = &path.subpaths[0];
+            let segment = &subpath.segments[0];
+            let start = if index == 0 {
+                PointV1 { x: 3.0, y: -2.0 }
+            } else {
+                PointV1 { x: 0.0, y: 0.0 }
+            };
+            assert_eq!(subpath.start, start);
+            assert!((segment.control1.x - (start.x + 2.0)).abs() < 1e-12);
+            assert!((segment.control1.y - (start.y + 10.0 / 3.0)).abs() < 1e-12);
+            assert!((segment.control2.x - (start.x + 4.0)).abs() < 1e-12);
+            assert!((segment.control2.y - (start.y + 4.0)).abs() < 1e-12);
+            assert_eq!(
+                segment.end,
+                PointV1 {
+                    x: start.x + 6.0,
+                    y: start.y + 2.0,
+                }
+            );
+        }
+        assert!(
+            result
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::MotionPathAnimation)
+        );
+        assert_eq!(result.scene.duration, 3.0);
+        assert_eq!(
+            result
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == "later")
+                .unwrap()
+                .lifetimes[0]
+                .end,
+            3.0
+        );
+        assert!(matches!(
+            &result.scene.animation_channels[0],
+            AnimationChannelV1::Opacity { keyframes, .. }
+                if keyframes[0].at == 0.0 && keyframes[1].at == 3.0
+        ));
+        assert_eq!(result.scene.provenance.last(), Some(&command.provenance));
+        assert_eq!(session.retained_index_stats().build_count, 2);
+
+        let sampled_transform = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "authored-motion-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            match packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later")
+                .unwrap()
+            {
+                poietra_scene_ir::RenderDrawV1::Path { transform, .. } => transform.clone(),
+                _ => panic!("motion target must remain a path draw"),
+            }
+        };
+        assert_eq!(
+            (sampled_transform(0.25).tx, sampled_transform(0.25).ty),
+            (3.0, -2.0)
+        );
+        assert_eq!(
+            (sampled_transform(0.5).tx, sampled_transform(0.5).ty),
+            (3.0, -2.0)
+        );
+        let midpoint = sampled_transform(1.0);
+        assert!((midpoint.tx - 6.0).abs() < 1e-12);
+        assert!((midpoint.ty - 1.0).abs() < 1e-12);
+        assert_eq!(
+            (sampled_transform(1.5).tx, sampled_transform(1.5).ty),
+            (9.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn rejected_motion_commands_preserve_the_retained_scene() {
+        let bundle = imported_bundle();
+
+        let mut duplicate = motion_command(&bundle);
+        duplicate.target_entity_ids = vec!["later".to_owned(), "later".to_owned()];
+        assert!(matches!(
+            rejected_motion(bundle.clone(), duplicate),
+            CreateSceneMotionError::DuplicateTarget(id) if id == "later"
+        ));
+
+        let mut no_op = motion_command(&bundle);
+        no_op.delta = PointV1 { x: 0.0, y: 0.0 };
+        no_op.control_offset = PointV1 { x: 0.0, y: 0.0 };
+        assert!(matches!(
+            rejected_motion(bundle.clone(), no_op),
+            CreateSceneMotionError::InvalidMotion
+        ));
+
+        let mut inactive_bundle = bundle.clone();
+        inactive_bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .lifetimes[0]
+            .end = 1.0;
+        let inactive = motion_command(&inactive_bundle);
+        assert!(matches!(
+            rejected_motion(inactive_bundle, inactive),
+            CreateSceneMotionError::TargetInactive(id) if id == "later"
+        ));
+
+        let animated = fixture_bundle("manim-motion-path.json");
+        let mut already_animated = motion_command(&animated);
+        already_animated.target_entity_ids = vec!["mover".to_owned()];
+        assert!(matches!(
+            rejected_motion(animated, already_animated),
+            CreateSceneMotionError::AnimatedTransformUnsupported(id) if id == "mover"
+        ));
+
+        let nested = fixture_bundle("real-line-joints-v10.json");
+        let child_id = nested
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_some())
+            .unwrap()
+            .id
+            .clone();
+        let mut nested_target = motion_command(&nested);
+        nested_target.interval = IntervalV1 {
+            start: 0.0,
+            end: 1.0,
+        };
+        nested_target.target_entity_ids = vec![child_id.clone()];
+        assert!(matches!(
+            rejected_motion(nested, nested_target),
+            CreateSceneMotionError::TargetIsNotRoot(id) if id == child_id
+        ));
     }
 }

@@ -13,6 +13,7 @@ mod scene_delta;
 pub use authoring::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
+    CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, RotateSceneEntityCommand,
     RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit, SceneTimelineInsertion,
     SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,

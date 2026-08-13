@@ -19,6 +19,8 @@ import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
   type CreateSceneEntitiesCompiler,
   type CreateSceneEntitiesWireCommandV1,
+  type CreateSceneMotionCompiler,
+  compileCreateSceneMotion,
   compileCreateSceneEntities,
   compileEditSceneTimeline,
   compileTransformSceneEntity,
@@ -78,6 +80,7 @@ import {
   sceneEntityUniformPositiveScale,
   sceneEntityWorldCenter,
   studioPointToScenePoint,
+  studioVectorToSceneVector,
 } from "./scene-authoring-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
@@ -466,6 +469,19 @@ type ImportedTimelinePlan =
       operationIds: readonly string[];
     }>;
 
+type ImportedMotionPlan =
+  | Readonly<{ kind: "not-applicable" }>
+  | Readonly<{ kind: "unsupported"; message: string }>
+  | Readonly<{
+      controlOffset: Point;
+      delta: Point;
+      easing: "linear" | "smooth";
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "authorized";
+      operationId: string;
+      runtimeEntityIds: readonly string[];
+    }>;
+
 type StaticImportedPositionOperation = Extract<CanonicalEditOperation, { kind: "SetProperty" }> &
   Readonly<{ key: "position" }>;
 type StaticImportedScaleOperation = Extract<CanonicalEditOperation, { kind: "AnimateProperty" }> &
@@ -760,6 +776,89 @@ function closeStaticTransformValue(left: number, right: number) {
 
 function sameStaticTransformPoint(left: Point, right: Point) {
   return closeStaticTransformValue(left.x, right.x) && closeStaticTransformValue(left.y, right.y);
+}
+
+function planImportedMotion(
+  input: Readonly<{
+    frame: Readonly<{ height: number; width: number }>;
+    proposedState: ProposedState;
+    snapshot: StudioVerifiedPreviewSnapshotV1;
+  }>,
+): ImportedMotionPlan {
+  const entries = input.proposedState.programs.flatMap((record) =>
+    record.program.operations.map((operation) => ({ operation, record })),
+  );
+  const motionEntries = entries.filter(
+    (
+      entry,
+    ): entry is Readonly<{
+      operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
+      record: ProgramRecord;
+    }> => entry.operation.kind === "CreateMotion",
+  );
+  if (motionEntries.length === 0) return { kind: "not-applicable" };
+  if (motionEntries.length !== 1 || entries.length !== 1) {
+    return { kind: "unsupported", message: "A canonical motion preview currently requires one CreateMotion." };
+  }
+
+  const { operation, record } = motionEntries[0]!;
+  const program = record.program;
+  const scene = input.snapshot.snapshot.scene;
+  const correlation = input.snapshot.correlation;
+  const base = input.proposedState.base;
+  if (
+    record.validation.status !== "valid" ||
+    program.loweringStatus !== "supported" ||
+    program.schedule.order.length !== 1 ||
+    program.schedule.order[0] !== operation.id ||
+    program.anchor.resolvedSeconds !== operation.interval.start ||
+    operation.provenance.origin !== program.provenance.origin
+  ) {
+    return { kind: "unsupported", message: "The motion has no validated Studio authoring authority." };
+  }
+  if (
+    scene.source.kind !== "imported-manim-server-snapshot" ||
+    !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
+    input.frame.width !== scene.camera.view.frameWidth ||
+    input.frame.height !== scene.camera.view.frameHeight
+  ) {
+    return { kind: "unsupported", message: "The motion target is not one exact imported Scene." };
+  }
+  if (scene.animationChannels.some((channel) => channel.kind !== "opacity")) {
+    return {
+      kind: "unsupported",
+      message: "Motion authoring requires a static camera and geometry; existing opacity animation is supported.",
+    };
+  }
+  if (
+    base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
+    base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
+    input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
+    base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
+    base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
+  ) {
+    return { kind: "unsupported", message: "Studio motion state is not correlated with the verified Scene." };
+  }
+  const baseEntities = base.runtimeSceneState.objectGraph.entities;
+  const identity = input.snapshot.sourceRuntimeIdentity;
+  const runtimeEntityIds = operation.targetEntityIds.flatMap((studioEntityId) => {
+    const studioEntity = baseEntities[studioEntityId];
+    if (!studioEntity || studioEntity.provisional || studioEntity.sourceIdentity.kind !== "known") return [];
+    const mapping = identity?.get(studioEntity.sourceIdentity.value);
+    return mapping?.sourceName === studioEntity.sourceIdentity.value ? [mapping.entityId] : [];
+  });
+  if (runtimeEntityIds.length !== operation.targetEntityIds.length) {
+    return { kind: "unsupported", message: "A motion target has no verified runtime identity." };
+  }
+  return {
+    controlOffset: studioVectorToSceneVector(operation.controlOffset, input.frame),
+    delta: studioVectorToSceneVector(operation.delta, input.frame),
+    easing: operation.easing,
+    interval: operation.interval,
+    kind: "authorized",
+    operationId: operation.id,
+    runtimeEntityIds,
+  };
 }
 
 function positiveShapeDimensions(type: "Circle" | "Rectangle", value: unknown): value is EntityDimensions {
@@ -1207,6 +1306,7 @@ function planImportedTimeline(
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     createSceneEntitiesCompiler?: CreateSceneEntitiesCompiler;
+    createSceneMotionCompiler?: CreateSceneMotionCompiler;
     editSceneTimelineCompiler?: EditSceneTimelineCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
@@ -1469,6 +1569,64 @@ export async function compileStudioPreviewSceneV1(
     } catch (error) {
       return {
         error: `Rust core rejected the imported Scene timeline edit: ${
+          error instanceof Error ? error.message : "unknown error"
+        }`,
+        kind: "unsupported",
+      };
+    }
+  }
+  const importedMotion = planImportedMotion(input);
+  if (importedMotion.kind === "unsupported") {
+    return { error: `Imported Scene motion is unsupported: ${importedMotion.message}`, kind: "unsupported" };
+  }
+  if (importedMotion.kind === "authorized") {
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      studioScene: input.proposedState.evaluatedScene,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    try {
+      const bundle = await (input.createSceneMotionCompiler ?? compileCreateSceneMotion)(input.snapshot.snapshot, {
+        controlOffset: importedMotion.controlOffset,
+        delta: importedMotion.delta,
+        easing: importedMotion.easing,
+        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+        interval: importedMotion.interval,
+        nextRevision: engineRevisionHash,
+        provenance: {
+          evidence: [`authorized operation ${importedMotion.operationId}`],
+          id: `studio-motion:${engineRevisionHash}`,
+          origin: "studio-edit-program",
+        },
+        schema: "poietra.create-scene-motion",
+        targetEntityIds: importedMotion.runtimeEntityIds,
+        version: 1,
+      });
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+            input.snapshot.sourceRuntimeIdentity,
+            studioPreviewInteractionAuthority(
+              input.snapshot,
+              0,
+              input.proposedState.base.runtimeSceneState.eventTrack.events,
+            ),
+            bundle.scene.entities,
+          ),
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected the imported Scene motion: ${
           error instanceof Error ? error.message : "unknown error"
         }`,
         kind: "unsupported",

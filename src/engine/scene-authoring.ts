@@ -1,6 +1,6 @@
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 
-const POIETRA_ENGINE_ABI_VERSION = 2;
+const POIETRA_ENGINE_ABI_VERSION = 3;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -136,6 +136,28 @@ export type CreateSceneEntitiesCompiler = (
   command: CreateSceneEntitiesWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+export type CreateSceneMotionWireCommandV1 = Readonly<{
+  controlOffset: Readonly<{ x: number; y: number }>;
+  delta: Readonly<{ x: number; y: number }>;
+  easing: "linear" | "smooth";
+  expectedBaseRevision: string;
+  interval: Readonly<{ end: number; start: number }>;
+  nextRevision: string;
+  provenance: Readonly<{
+    evidence: readonly string[];
+    id: string;
+    origin: "studio-edit-program";
+  }>;
+  schema: "poietra.create-scene-motion";
+  targetEntityIds: readonly string[];
+  version: 1;
+}>;
+
+export type CreateSceneMotionCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: CreateSceneMotionWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
   alpha: number;
   expectedBaseRevision: string;
@@ -175,11 +197,16 @@ type CreateSceneEntitiesBindingsV1 = Readonly<{
   createSceneEntitiesV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type CreateSceneMotionBindingsV1 = Readonly<{
+  createSceneMotionV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
   setSubtreeVectorPaintAlphaV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
+  CreateSceneMotionBindingsV1 &
   EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
@@ -208,6 +235,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.poietraEngineAbiVersion !== "function" ||
       candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
       typeof candidate.createSceneEntitiesV1 !== "function" ||
+      typeof candidate.createSceneMotionV1 !== "function" ||
       typeof candidate.editSceneTimelineV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
@@ -218,6 +246,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     }
     return {
       createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
+      createSceneMotionV1: candidate.createSceneMotionV1 as SceneAuthoringBindingsV1["createSceneMotionV1"],
       editSceneTimelineV1: candidate.editSceneTimelineV1 as SceneAuthoringBindingsV1["editSceneTimelineV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
@@ -247,6 +276,16 @@ export function createCreateSceneEntitiesCompiler(
   return async (snapshot, command) => {
     const bindings = await getBindings();
     return invokeSceneAuthoringCommand(snapshot, command, bindings.createSceneEntitiesV1);
+  };
+}
+
+/** Creates one Studio motion through the canonical Scene core. */
+export function createCreateSceneMotionCompiler(
+  getBindings: () => Promise<CreateSceneMotionBindingsV1>,
+): CreateSceneMotionCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.createSceneMotionV1);
   };
 }
 
@@ -301,6 +340,7 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 }
 
 export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(loadBindings);
+export const compileCreateSceneMotion = createCreateSceneMotionCompiler(loadBindings);
 export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
