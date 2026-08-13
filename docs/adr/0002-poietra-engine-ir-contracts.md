@@ -222,13 +222,15 @@ does not stretch a frame silently. The only renderer capabilities are
 `cubic-path-fill`, `cubic-path-stroke`, and `png-image`. Their sorted list must equal
 the features actually used by the packet.
 
-Every production handoff uses the composite `EngineFrameV1` validator. It binds
-packet Scene ID, duration, contract version, source/snapshot revision, manifest,
-draw entity, lifetime, draw kind, static paint/asset/sampler/local rectangle,
-source z-index, and resolved ordering to the same Scene IR. This is structural and
-referential integrity, not proof that sampling was implemented correctly. The pure
-evaluator tests must independently compare sampled path, transform, opacity, and
-camera against golden results before either renderer consumes production frames.
+The canonical Rust core owns composite `EngineFrameV1` validation. It binds packet
+Scene ID, duration, contract version, source/snapshot revision, manifest, draw
+entity, lifetime, draw kind, static paint/asset/sampler/local rectangle, source
+z-index, and resolved ordering to the same Scene IR. Browser adapters consume the
+Rust-validated packet and do not maintain a second TypeScript implementation of
+those cross-document rules. This is structural and referential integrity, not proof
+that sampling was implemented correctly. The pure evaluator tests must independently
+compare sampled path, transform, opacity, and camera against golden results before
+either renderer consumes production frames.
 
 The broader architecture may later need clip and dedicated glyph primitives, but
 they are intentionally not promises of v1. Supported MathTex is compiled by the
@@ -550,8 +552,10 @@ identity is not claimed until transcendental math and number serialization are
 specified independently of the host runtime.
 
 Each benchmark uses 30 warm-up frames and at least 300 measured frames. Browser and
-native/headless consume byte-identical EngineFrames. Adoption needs all fail-closed
-fixtures and the following budgets on the reference host:
+native/headless install the same verified Scene IR and sample the same revision and
+times through the Rust core; the retained browser path does not exchange composite
+EngineFrame JSON per frame. Adoption needs all fail-closed fixtures and the following
+budgets on the reference host:
 
 | Metric | Budget |
 | --- | --- |

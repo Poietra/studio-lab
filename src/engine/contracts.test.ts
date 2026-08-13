@@ -5,8 +5,6 @@ import {
   assetManifestV1Schema,
   countLoweredSceneGeometrySegmentsV1,
   digestAssetManifestV1,
-  engineFrameV1Schema,
-  parseVerifiedEngineFrameV1,
   parseVerifiedSceneIrBundleV1,
   renderPacketCompositingV1,
   renderPacketV1Schema,
@@ -376,120 +374,13 @@ describe("Poietra Engine v1 contracts", () => {
     }
   });
 
-  it("binds explicit Cairo compositing to imported Manim snapshot V11 and V12 only", async () => {
-    const assets = await manifest();
-    const baseScene = scene(assets);
-    const basePacket = packet(baseScene, assets);
-    const vectorScene = {
-      ...baseScene,
-      entities: baseScene.entities.filter((entity) => entity.geometry.kind !== "image"),
-      requiredCapabilities: baseScene.requiredCapabilities.filter((capability) => capability !== "png-image"),
-      source: {
-        kind: "imported-manim-server-snapshot" as const,
-        runtimeConfigHash: ZERO_HASH,
-        snapshotHash: ASSET_HASH,
-        snapshotVersion: 11 as const,
-        sourceHash: SCENE_HASH,
-      },
-    };
-    const cairoPacket = {
-      ...basePacket,
-      compositing: "manim-cairo-srgb" as const,
-      draws: basePacket.draws.filter((draw) => draw.kind !== "image"),
-      requiredCapabilities: basePacket.requiredCapabilities.filter((capability) => capability !== "png-image"),
-      sceneRevisionHash: ASSET_HASH,
-    };
-
-    expect(engineFrameV1Schema.safeParse({ assets, packet: cairoPacket, scene: vectorScene }).success).toBe(true);
-    expect(
-      engineFrameV1Schema.safeParse({
-        assets,
-        packet: cairoPacket,
-        scene: { ...vectorScene, source: { ...vectorScene.source, snapshotVersion: 12 } },
-      }).success,
-    ).toBe(true);
-
-    const missingMode = { ...cairoPacket };
-    delete (missingMode as Partial<typeof missingMode>).compositing;
-    const mismatch = engineFrameV1Schema.safeParse({ assets, packet: missingMode, scene: vectorScene });
-    expect(mismatch.success).toBe(false);
-    if (!mismatch.success) {
-      expect(mismatch.error.issues.some((issue) => issue.message.includes("source profile"))).toBe(true);
-    }
-
-    const studioMismatch = engineFrameV1Schema.safeParse({ assets, packet: cairoPacket, scene: baseScene });
-    expect(studioMismatch.success).toBe(false);
-    if (!studioMismatch.success) {
-      expect(studioMismatch.error.issues.some((issue) => issue.message.includes("source profile"))).toBe(true);
-    }
-  });
-
-  it("accepts and integrity-checks a complete Scene IR to RenderPacket frame", async () => {
+  it("accepts and integrity-checks a complete Scene IR bundle", async () => {
     const assets = await manifest();
     const sceneIr = scene(assets);
-    const renderPacket = packet(sceneIr, assets);
-    const frame = { assets, packet: renderPacket, scene: sceneIr };
+    const bundle = { assets, scene: sceneIr };
 
-    expect(sceneIrBundleV1Schema.safeParse({ assets, scene: sceneIr }).success).toBe(true);
-    expect(renderPacketV1Schema.safeParse(renderPacket).success).toBe(true);
-    expect(engineFrameV1Schema.safeParse(frame).success).toBe(true);
-    await expect(parseVerifiedEngineFrameV1(frame)).resolves.toEqual(frame);
-  });
-
-  it("round-trips every contract through JSON without coercion", async () => {
-    const assets = await manifest();
-    const frame = { assets, packet: packet(scene(assets), assets), scene: scene(assets) };
-    expect(await parseVerifiedEngineFrameV1(JSON.parse(JSON.stringify(frame)))).toEqual(frame);
-  });
-
-  it("binds singular affine empty evidence to its transform and source channel", async () => {
-    const assets = await manifest();
-    const validScene = scene(assets);
-    const validPacket = packet(validScene, assets);
-    const sourceDraw = validPacket.draws[0];
-    const singularDraw = {
-      drawId: sourceDraw.drawId,
-      entityId: sourceDraw.entityId,
-      kind: "empty" as const,
-      opacity: sourceDraw.opacity,
-      paintOrder: sourceDraw.paintOrder,
-      reason: "singular-affine-sample" as const,
-      sourceZIndex: sourceDraw.sourceZIndex,
-      transform: { ...identity, m11: 0 },
-    };
-    const singularPacket = {
-      ...validPacket,
-      draws: [singularDraw, ...validPacket.draws.slice(1)],
-      requiredCapabilities: ["cubic-path-stroke", "png-image"],
-    };
-
-    expect(renderPacketV1Schema.safeParse(singularPacket).success).toBe(true);
-    expect(engineFrameV1Schema.safeParse({ assets, packet: singularPacket, scene: validScene }).success).toBe(false);
-
-    const affineScene = sceneIrV1Schema.parse({
-      ...validScene,
-      animationChannels: [
-        ...validScene.animationChannels,
-        {
-          entityId: "circle",
-          id: "circle-reflection",
-          keyframes: [
-            { at: 0, easingToNext: { kind: "linear" }, value: identity },
-            { at: 2, easingToNext: null, value: { ...identity, m11: -1 } },
-          ],
-          kind: "affine-transform",
-          provenanceId: "fixture",
-        },
-      ],
-      requiredCapabilities: [...validScene.requiredCapabilities, "affine-transform-animation"].sort(),
-    });
-    expect(engineFrameV1Schema.safeParse({ assets, packet: singularPacket, scene: affineScene }).success).toBe(true);
-    expect(
-      renderPacketV1Schema.safeParse({
-        ...singularPacket,
-        draws: [{ ...singularDraw, transform: identity }, ...validPacket.draws.slice(1)],
-      }).success,
-    ).toBe(false);
+    expect(sceneIrBundleV1Schema.safeParse(bundle).success).toBe(true);
+    await expect(parseVerifiedSceneIrBundleV1(JSON.parse(JSON.stringify(bundle)))).resolves.toEqual(bundle);
   });
 
   it("accepts a near-singular empty transform and pins the threshold", async () => {
@@ -782,38 +673,6 @@ describe("Poietra Engine v1 contracts", () => {
       renderPacketV1Schema.safeParse({
         ...validPacket,
         draws: [{ ...validPacket.draws[0], fill: null, stroke: null }, ...validPacket.draws.slice(1)],
-      }).success,
-    ).toBe(false);
-  });
-
-  it("binds packets to the exact Scene, revision, entities, and lifetimes", async () => {
-    const assets = await manifest();
-    const sceneIr = scene(assets);
-    const validPacket = packet(sceneIr, assets);
-    expect(
-      engineFrameV1Schema.safeParse({ assets, packet: { ...validPacket, sceneId: "other" }, scene: sceneIr }).success,
-    ).toBe(false);
-    expect(
-      engineFrameV1Schema.safeParse({
-        assets,
-        packet: {
-          ...validPacket,
-          draws: [{ ...validPacket.draws[0], entityId: "missing" }, ...validPacket.draws.slice(1)],
-        },
-        scene: sceneIr,
-      }).success,
-    ).toBe(false);
-    expect(
-      engineFrameV1Schema.safeParse({ assets, packet: { ...validPacket, sampleTime: 2 }, scene: sceneIr }).success,
-    ).toBe(false);
-    expect(
-      engineFrameV1Schema.safeParse({
-        assets,
-        packet: {
-          ...validPacket,
-          draws: validPacket.draws.slice(1).map((draw, index) => ({ ...draw, paintOrder: index })),
-        },
-        scene: sceneIr,
       }).success,
     ).toBe(false);
   });
