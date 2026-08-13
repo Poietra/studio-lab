@@ -14,6 +14,16 @@ export function studioPointToScenePoint(
   };
 }
 
+export function studioVectorToSceneVector(
+  vector: Point,
+  frame: Readonly<{ height: number; width: number }>,
+): EnginePointV1 {
+  return {
+    x: (vector.x / STUDIO_VIEWPORT.width) * frame.width,
+    y: (-vector.y / STUDIO_VIEWPORT.height) * frame.height,
+  };
+}
+
 type SceneEntityLocalBounds = Readonly<{ bottom: number; left: number; right: number; top: number }>;
 
 export function sceneEntityLocalBounds(entity: Pick<SceneEntityV1, "geometry">): SceneEntityLocalBounds | null {

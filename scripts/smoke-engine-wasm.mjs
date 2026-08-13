@@ -8,10 +8,11 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 2);
+assert.equal(engine.poietraEngineAbiVersion(), 3);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.editSceneTimelineV1, "function");
+assert.equal(typeof engine.createSceneMotionV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
 assert.equal(typeof engine.setSubtreeVectorPaintAlphaV1, "function");
 assert.equal(typeof engine.transformSceneEntityAtTimeV1, "function");

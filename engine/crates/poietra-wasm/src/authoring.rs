@@ -1,6 +1,7 @@
 use poietra_eval::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
+    CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, EngineSessionV1, EvaluationError,
     RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit,
     SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
@@ -31,6 +32,60 @@ enum TransformSceneEntityAtTimeSchemaV1 {
 enum CreateSceneEntitiesSchemaV1 {
     #[serde(rename = "poietra.create-scene-entities")]
     CreateSceneEntities,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum CreateSceneMotionSchemaV1 {
+    #[serde(rename = "poietra.create-scene-motion")]
+    CreateSceneMotion,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CreateSceneMotionEasingJsonV1 {
+    Linear,
+    Smooth,
+}
+
+impl From<CreateSceneMotionEasingJsonV1> for CreateSceneMotionEasing {
+    fn from(value: CreateSceneMotionEasingJsonV1) -> Self {
+        match value {
+            CreateSceneMotionEasingJsonV1::Linear => Self::Linear,
+            CreateSceneMotionEasingJsonV1::Smooth => Self::Smooth,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct CreateSceneMotionCommandJsonV1 {
+    control_offset: PointV1,
+    delta: PointV1,
+    easing: CreateSceneMotionEasingJsonV1,
+    expected_base_revision: String,
+    interval: IntervalV1,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    #[serde(rename = "schema")]
+    _schema: CreateSceneMotionSchemaV1,
+    target_entity_ids: Vec<String>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<CreateSceneMotionCommandJsonV1> for CreateSceneMotionCommand {
+    fn from(value: CreateSceneMotionCommandJsonV1) -> Self {
+        Self {
+            control_offset: value.control_offset,
+            delta: value.delta,
+            easing: value.easing.into(),
+            expected_base_revision: value.expected_base_revision,
+            interval: value.interval,
+            next_revision: value.next_revision,
+            provenance: value.provenance,
+            target_entity_ids: value.target_entity_ids,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -349,6 +404,8 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     CreateCommand(#[from] CreateSceneEntitiesError),
     #[error(transparent)]
+    CreateMotionCommand(#[from] CreateSceneMotionError),
+    #[error(transparent)]
     TimelineCommand(#[from] EditSceneTimelineError),
     #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
@@ -447,6 +504,17 @@ fn create_scene_entities_json(
     scene_authoring_response(&result)
 }
 
+fn create_scene_motion_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: CreateSceneMotionCommandJsonV1 =
+        parse_scene_authoring_command("create motion", command_json)?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.create_scene_motion(command.into())?;
+    scene_authoring_response(&result)
+}
+
 fn edit_scene_timeline_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -483,6 +551,20 @@ pub fn create_scene_entities_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     create_scene_entities_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Creates one atomic multi-target Studio motion through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or authored result.
+#[wasm_bindgen(js_name = createSceneMotionV1)]
+pub fn create_scene_motion_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    create_scene_motion_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -691,6 +773,26 @@ mod tests {
                 { "at": 0.5, "duration": 0.2 },
                 { "at": 0.7, "duration": 0.2 }
             ],
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn create_motion_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "controlOffset": { "x": 0.0, "y": 4.0 },
+            "delta": { "x": 6.0, "y": 2.0 },
+            "easing": "smooth",
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "interval": { "end": 1.5, "start": 0.5 },
+            "nextRevision": "9999999999999999999999999999999999999999999999999999999999999999",
+            "provenance": {
+                "evidence": ["WASM adapter motion test"],
+                "id": "wasm-create-motion",
+                "origin": "studio-edit-program"
+            },
+            "schema": "poietra.create-scene-motion",
+            "targetEntityIds": ["later", "stroke"],
             "version": 1
         }))
         .unwrap()
@@ -1129,6 +1231,89 @@ mod tests {
                         && (keyframes[0].value.m22 - 0.75).abs() < f64::EPSILON
                 ))
         );
+    }
+
+    #[test]
+    fn motion_adapter_forwards_the_strict_command_to_the_core() {
+        let response =
+            create_scene_motion_json(&fixture_json(), &create_motion_command_json()).unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let motions: Vec<_> = bundle
+            .scene
+            .animation_channels
+            .iter()
+            .filter_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    keyframes,
+                    orient_to_path,
+                    parameterization,
+                    path,
+                    provenance_id,
+                    ..
+                } => Some((
+                    entity_id,
+                    keyframes,
+                    orient_to_path,
+                    parameterization,
+                    path,
+                    provenance_id,
+                )),
+                _ => None,
+            })
+            .collect();
+
+        assert_eq!(motions.len(), 2);
+        for (entity_id, keyframes, orient, parameterization, path, provenance_id) in motions {
+            assert!(entity_id == "later" || entity_id == "stroke");
+            assert!(matches!(
+                keyframes[0].easing_to_next,
+                Some(poietra_scene_ir::EasingV1::ManimSmooth {})
+            ));
+            assert_eq!((keyframes[0].at, keyframes[1].at), (0.5, 1.5));
+            assert!(!orient);
+            assert_eq!(
+                *parameterization,
+                Some(poietra_scene_ir::MotionPathParameterizationV1::ManimPointFromProportionV1)
+            );
+            assert_eq!(path.subpaths.len(), 1);
+            assert_eq!(path.subpaths[0].segments.len(), 1);
+            assert_eq!(provenance_id, "wasm-create-motion");
+        }
+        assert!(
+            bundle
+                .scene
+                .required_capabilities
+                .contains(&poietra_scene_ir::SceneCapabilityV1::MotionPathAnimation)
+        );
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "9999999999999999999999999999999999999999999999999999999999999999"
+        ));
+    }
+
+    #[test]
+    fn motion_adapter_rejects_unknown_and_stale_commands() {
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(&create_motion_command_json()).unwrap();
+        unknown["profile"] = json!("generic-runtime-trace-v3");
+        let error =
+            create_scene_motion_json(&fixture_json(), &serde_json::to_vec(&unknown).unwrap())
+                .unwrap_err();
+        assert!(error.to_string().contains("unknown field `profile`"));
+
+        let mut stale: serde_json::Value =
+            serde_json::from_slice(&create_motion_command_json()).unwrap();
+        stale["expectedBaseRevision"] = json!("f".repeat(64));
+        let error = create_scene_motion_json(&fixture_json(), &serde_json::to_vec(&stale).unwrap())
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::CreateMotionCommand(
+                CreateSceneMotionError::StaleBaseRevision
+            )
+        ));
     }
 
     #[test]
