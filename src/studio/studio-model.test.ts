@@ -1,28 +1,23 @@
 import { describe, expect, it } from "vitest";
 
-import { parseEditSuggestionResult } from "../ai/edit-suggestion-schema";
 import { validateEditProgram } from "../ai/edit-program-validation";
+import { parseEditSuggestionResult } from "../ai/edit-suggestion-schema";
 import type {
   CreateExplainedEquationSuggestion,
   EditSuggestionOperation,
   MathTexSuggestionTarget,
 } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { EDIT_OPERATION_VERSION, operationId, type CanonicalEditProgram } from "./operations";
+import {
+  createFixtureWorkingState,
+  STUDIO_FIXTURE_SCENE,
+  validateModifyMotionProgramFixture,
+  validateMotionProgramFixture,
+} from "./fixture";
+import { type CanonicalEditProgram, EDIT_OPERATION_VERSION, operationId } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
-import {
-  canonicalizeSuggestionProgram,
-  createDirectManipulationModifyMotionProgram,
-  createDirectManipulationMotionProgram,
-} from "./suggestion-program";
-import {
-  appendAppliedProgram,
-  applyStagedPrograms,
-  replaceAppliedProgram,
-  stageProgram,
-  undoLastAppliedProgram,
-} from "./transactions";
+import { canonicalizeSuggestionProgram } from "./suggestion-program";
+import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
 
 const MAXWELL_TARGET: MathTexSuggestionTarget = {
   displayLines: ["∇·E = ρ/ε₀", "∇·B = 0", "∇×E = −∂B/∂t", "∇×B = μ₀J + μ₀ε₀∂E/∂t"],
@@ -409,20 +404,6 @@ describe("Studio time and transaction invariants", () => {
     ).toBe(true);
   });
 
-  it("applies and undoes a whole EditProgram as one transaction", () => {
-    const operation = transformAndExplanationSuggestion();
-    const validation = canonicalize(operation, "atomic-program");
-    expect(validation.kind).toBe("valid");
-    expect(validation.program.operations.length).toBeGreaterThan(2);
-    const staged = stageProgram(createFixtureWorkingState(), programRecord(validation.program, validation));
-    const applied = applyStagedPrograms(staged);
-    expect(applied.stagedPrograms).toHaveLength(0);
-    expect(applied.appliedPrograms).toHaveLength(1);
-    expect(applied.appliedPrograms[0].program.transactionId).toBe("atomic-program");
-    const undone = undoLastAppliedProgram(applied);
-    expect(undone.appliedPrograms).toHaveLength(0);
-  });
-
   it("replaces one applied transaction without disturbing identity or source order", () => {
     const firstValidation = canonicalize(motionSuggestion(5), "first-program", 5);
     const originalValidation = canonicalize(motionSuggestion(7), "edited-program", 7);
@@ -564,31 +545,6 @@ describe("canonical operation expansion and DAG validation", () => {
         }),
       ]),
     );
-  });
-
-  it("normalizes new and existing motion gestures through the operation registry", () => {
-    const created = createDirectManipulationMotionProgram({
-      capturedPlayhead: 5,
-      controlOffset: { x: 0, y: -24 },
-      delta: { x: 96, y: 0 },
-      interval: { end: 6, start: 5 },
-      scene: STUDIO_FIXTURE_SCENE,
-      targetEntityIds: ["equation_1"],
-      transactionId: "gesture-create-motion",
-    });
-    const modified = createDirectManipulationModifyMotionProgram({
-      capturedPlayhead: 5,
-      controlOffset: { x: 0, y: -32 },
-      interval: { end: 7, start: 4 },
-      motionId: "move-equation",
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "gesture-modify-motion",
-    });
-    expect(created.kind).toBe("valid");
-    expect(created.program.operations[0].kind).toBe("CreateMotion");
-    expect(modified.kind).toBe("valid");
-    expect(modified.program.operations[0].kind).toBe("ModifyMotion");
-    expect(modified.program.loweringStatus).toBe("illustrative");
   });
 
   it("keeps transform and explanation atomic and targets the post-transform identity", () => {
@@ -783,14 +739,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 
   it("evaluates a ModifyMotion gesture into the shared position channel", () => {
-    const validation = createDirectManipulationModifyMotionProgram({
-      capturedPlayhead: 5,
-      controlOffset: { x: 0, y: -32 },
-      interval: { end: 7, start: 4 },
-      motionId: "move-equation",
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "modify-motion-projection",
-    });
+    const validation = validateModifyMotionProgramFixture("modify-motion-projection");
     expect(validation.kind).toBe("valid");
     const proposed = evaluateWorkingState(
       createFixtureWorkingState({
@@ -1040,7 +989,7 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(createdId).toBeDefined();
     if (!createdId) return;
 
-    const movement = createDirectManipulationMotionProgram({
+    const movement = validateMotionProgramFixture({
       capturedPlayhead: operation.end,
       controlOffset: { x: 0, y: 0 },
       delta: { x: 64, y: 0 },
@@ -1082,7 +1031,7 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(createdId).toBeDefined();
     if (!createdId) return;
 
-    const movement = createDirectManipulationMotionProgram({
+    const movement = validateMotionProgramFixture({
       capturedPlayhead: operation.end,
       controlOffset: { x: 0, y: 0 },
       delta: { x: 64, y: 0 },

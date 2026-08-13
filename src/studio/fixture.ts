@@ -1,4 +1,8 @@
-import { STUDIO_STATE_VERSION, type RuntimeSceneState, type StaticSemanticState, type WorkingState } from "./model";
+import { type RuntimeSceneState, STUDIO_STATE_VERSION, type StaticSemanticState, type WorkingState } from "./model";
+import { type CanonicalEditOperation, EDIT_OPERATION_VERSION, operationId } from "./operations";
+import { validateAndScheduleProgram } from "./program-validation";
+import { canonicalizeSuggestionProgram } from "./suggestion-program";
+import { resolveTimeAnchorOnce } from "./time";
 
 const duration = 12;
 
@@ -144,6 +148,76 @@ export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
   sceneId: "GroupedEquation",
   version: STUDIO_STATE_VERSION,
 };
+
+export function validateMotionProgramFixture(
+  input: Readonly<{
+    capturedPlayhead: number;
+    controlOffset: Readonly<{ x: number; y: number }>;
+    delta: Readonly<{ x: number; y: number }>;
+    interval: Readonly<{ end: number; start: number }>;
+    scene: RuntimeSceneState;
+    targetEntityIds: readonly string[];
+    transactionId: string;
+  }>,
+) {
+  return canonicalizeSuggestionProgram(
+    {
+      anchor: { kind: "playhead", referenceSeconds: input.capturedPlayhead },
+      controlOffset: input.controlOffset,
+      delta: input.delta,
+      easing: "smooth",
+      end: input.interval.end,
+      kind: "create-motion",
+      start: input.interval.start,
+      targetObjectIds: input.targetEntityIds,
+    },
+    {
+      capturedPlayhead: input.capturedPlayhead,
+      origin: "direct-manipulation",
+      scene: input.scene,
+      transactionId: input.transactionId,
+    },
+  );
+}
+
+export function validateModifyMotionProgramFixture(transactionId: string) {
+  const interval = { end: 7, start: 4 };
+  const resolution = resolveTimeAnchorOnce(
+    { kind: "absolute", seconds: interval.start },
+    {
+      capturedPlayhead: 5,
+      sceneDuration: STUDIO_FIXTURE_SCENE.duration,
+    },
+  );
+  if (resolution.kind === "invalid") throw new Error(resolution.message);
+  const operation: CanonicalEditOperation = {
+    controlOffset: { x: 0, y: -32 },
+    dependsOn: [],
+    id: operationId(transactionId, "modify-motion"),
+    interval,
+    kind: "ModifyMotion",
+    motionId: "move-equation",
+    preserve: ["start", "end", "duration"],
+    provenance: {
+      evidence: ["path bend gesture", "endpoints preserved"],
+      origin: "direct-manipulation",
+    },
+  };
+  return validateAndScheduleProgram(
+    {
+      anchor: resolution.anchor,
+      intentCount: 1,
+      loweringStatus: "illustrative",
+      operations: [operation],
+      provenance: { evidence: ["gesture constraint"], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId,
+      version: EDIT_OPERATION_VERSION,
+    },
+    STUDIO_FIXTURE_SCENE,
+  );
+}
 
 export const STUDIO_FIXTURE_STATIC_STATE: StaticSemanticState = {
   entities: Object.values(STUDIO_FIXTURE_SCENE.objectGraph.entities).map((entity) => ({

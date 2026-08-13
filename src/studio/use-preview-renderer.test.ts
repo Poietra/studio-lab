@@ -23,6 +23,7 @@ import {
 } from "./authoring-commands";
 import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
+import { validateMotionProgramFixture } from "./fixture";
 import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import {
   PRISTINE_WORKING_REVISION,
@@ -36,7 +37,6 @@ import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapsho
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
-  createDirectManipulationMotionProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
@@ -1324,7 +1324,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const legacySource = base.snapshot.snapshot.scene.source;
     if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
     const workingBase = exactImportedTimelineWorkingBase(base);
-    const validation = createDirectManipulationMotionProgram({
+    const validation = validateMotionProgramFixture({
       capturedPlayhead: 0.5,
       controlOffset: { x: 32, y: 18 },
       delta: { x: 64, y: -36 },

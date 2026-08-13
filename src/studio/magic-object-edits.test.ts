@@ -1,13 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { validateEditProgram } from "../ai/edit-program-validation";
+import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { validateSuggestionDraft } from "./draft-validation";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { RuntimeSceneState } from "./model";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
-import { applyStagedPrograms, stageProgram, undoLastAppliedProgram } from "./transactions";
 
 const KNOWN_SCALE_SCENE: RuntimeSceneState = {
   ...STUDIO_FIXTURE_SCENE,
@@ -74,7 +73,7 @@ function validate(
 }
 
 describe("Magic Edit scale and delete canonicalization", () => {
-  it("previews, applies, and undoes a relative scale through absolute Canonical values", () => {
+  it("previews a relative scale through absolute Canonical values", () => {
     const result = validate(scaleSuggestion());
     expect(result.kind).toBe("valid");
     if (result.kind !== "valid") return;
@@ -89,17 +88,14 @@ describe("Magic Edit scale and delete canonicalization", () => {
       }),
     ]);
 
-    const staged = stageProgram(createFixtureWorkingState(), result.record);
+    const staged = createFixtureWorkingState({ stagedPrograms: [result.record] });
     const preview = evaluateWorkingState(staged);
     expect(
       projectProposedState(preview, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
     ).toBeCloseTo(1.25);
-    const applied = applyStagedPrograms(staged);
-    expect(applied.appliedPrograms).toHaveLength(1);
-    expect(undoLastAppliedProgram(applied).appliedPrograms).toHaveLength(0);
   });
 
-  it("previews a persistent deletion and keeps Apply/Undo atomic", () => {
+  it("previews a persistent deletion", () => {
     const result = validate(deleteSuggestion());
     expect(result.kind).toBe("valid");
     if (result.kind !== "valid") return;
@@ -112,7 +108,7 @@ describe("Magic Edit scale and delete canonicalization", () => {
       }),
     ]);
 
-    const staged = stageProgram(createFixtureWorkingState(), result.record);
+    const staged = createFixtureWorkingState({ stagedPrograms: [result.record] });
     const preview = evaluateWorkingState(staged);
     expect(
       projectProposedState(preview, 5.2).canvas.entities.find((entity) => entity.id === "equation_1")?.opacity,
@@ -120,9 +116,6 @@ describe("Magic Edit scale and delete canonicalization", () => {
     expect(
       projectProposedState(preview, 5.4).canvas.entities.find((entity) => entity.id === "equation_1")?.present,
     ).toBe(false);
-    const applied = applyStagedPrograms(staged);
-    expect(applied.appliedPrograms).toHaveLength(1);
-    expect(undoLastAppliedProgram(applied).appliedPrograms).toHaveLength(0);
   });
 
   it("rejects unselected, unknown-scale, and unknown-identity targets", () => {

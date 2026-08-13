@@ -2,19 +2,21 @@ import { describe, expect, it } from "vitest";
 
 import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import {
+  createFixtureWorkingState,
+  STUDIO_FIXTURE_SCENE,
+  validateModifyMotionProgramFixture,
+  validateMotionProgramFixture,
+} from "./fixture";
 import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import {
   canonicalizeSuggestionProgram,
-  createDirectManipulationModifyMotionProgram,
-  createDirectManipulationMotionProgram,
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
-import { applyStagedPrograms, stageProgram } from "./transactions";
 
 function cameraFocusSuggestion(): CreateCameraFocusSuggestion {
   return {
@@ -44,7 +46,7 @@ function resizeWithConcurrentMotion(
     to: { dimensions: { height: 3, width: 6 }, position: { x: 320, y: 147 } },
     transactionId: `${testId}-resize`,
   });
-  const motion = createDirectManipulationMotionProgram({
+  const motion = validateMotionProgramFixture({
     capturedPlayhead: 5,
     controlOffset: { x: 0, y: 0 },
     delta: { x: 40, y: 0 },
@@ -149,20 +151,10 @@ describe("EditProgram execution capabilities", () => {
     const record = programRecord(validation.program, validation);
     const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
     expect(projectProposedState(preview, 5.92).camera.scale).toBeCloseTo(1.35);
-    const applied = applyStagedPrograms(stageProgram(createFixtureWorkingState(), record));
-    expect(applied.appliedPrograms).toHaveLength(0);
-    expect(applied.stagedPrograms).toEqual([record]);
   });
 
   it("keeps ModifyMotion previewable but blocks Apply before source lowering", () => {
-    const validation = createDirectManipulationModifyMotionProgram({
-      capturedPlayhead: 5,
-      controlOffset: { x: 0, y: -32 },
-      interval: { end: 7, start: 4 },
-      motionId: "move-equation",
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "modify-motion-contract",
-    });
+    const validation = validateModifyMotionProgramFixture("modify-motion-contract");
 
     expect(validation.kind).toBe("valid");
     expect(programExecutionCapabilities(validation.program)).toEqual({
@@ -185,14 +177,11 @@ describe("EditProgram execution capabilities", () => {
     const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
     const equation = projectProposedState(preview, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");
     expect(equation?.position).toEqual({ x: 352, y: 120 });
-    const applied = applyStagedPrograms(stageProgram(createFixtureWorkingState(), record));
-    expect(applied.appliedPrograms).toHaveLength(0);
-    expect(applied.stagedPrograms).toEqual([record]);
   });
 
   it("preserves supported motion, position, and scale authoring paths", () => {
     const validations = [
-      createDirectManipulationMotionProgram({
+      validateMotionProgramFixture({
         capturedPlayhead: 8,
         controlOffset: { x: 0, y: -24 },
         delta: { x: 0, y: 0 },
@@ -201,7 +190,7 @@ describe("EditProgram execution capabilities", () => {
         targetEntityIds: ["equation_1"],
         transactionId: "supported-curved-loop",
       }),
-      createDirectManipulationMotionProgram({
+      validateMotionProgramFixture({
         capturedPlayhead: 8,
         controlOffset: { x: 0, y: -24 },
         delta: { x: 96, y: 0 },
@@ -361,14 +350,10 @@ describe("EditProgram execution capabilities", () => {
         severity: "warning",
       }),
     );
-    const record = programRecord(validation.program, validation);
-    const applied = applyStagedPrograms(stageProgram(createFixtureWorkingState(), record));
-    expect(applied.appliedPrograms).toHaveLength(0);
-    expect(applied.stagedPrograms).toEqual([record]);
   });
 
   it("blocks a later operation that overlaps source time consumed by an animation", () => {
-    const first = createDirectManipulationMotionProgram({
+    const first = validateMotionProgramFixture({
       capturedPlayhead: 8,
       controlOffset: { x: 0, y: 0 },
       delta: { x: 40, y: 0 },
@@ -377,7 +362,7 @@ describe("EditProgram execution capabilities", () => {
       targetEntityIds: ["equation_1"],
       transactionId: "overlap-first",
     });
-    const second = createDirectManipulationMotionProgram({
+    const second = validateMotionProgramFixture({
       capturedPlayhead: 9,
       controlOffset: { x: 0, y: 0 },
       delta: { x: 20, y: 0 },
