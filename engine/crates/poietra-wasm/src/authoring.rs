@@ -345,9 +345,7 @@ impl From<SceneEntityAxisFactorsJsonV1> for SceneEntityAxisFactors {
     deny_unknown_fields
 )]
 enum TransformSceneEntityExpectedBaselineJsonV1 {
-    Center {
-        world_center: PointV1,
-    },
+    CurrentCenter,
     CurrentUniformAffine,
     UniformAffine {
         uniform_scale: f64,
@@ -363,9 +361,7 @@ enum TransformSceneEntityExpectedBaselineJsonV1 {
 impl From<TransformSceneEntityExpectedBaselineJsonV1> for TransformSceneEntityExpectedBaseline {
     fn from(value: TransformSceneEntityExpectedBaselineJsonV1) -> Self {
         match value {
-            TransformSceneEntityExpectedBaselineJsonV1::Center { world_center } => {
-                Self::Center { world_center }
-            }
+            TransformSceneEntityExpectedBaselineJsonV1::CurrentCenter => Self::CurrentCenter,
             TransformSceneEntityExpectedBaselineJsonV1::CurrentUniformAffine => {
                 Self::CurrentUniformAffine
             }
@@ -889,6 +885,14 @@ mod tests {
         serde_json::to_vec(&command).unwrap()
     }
 
+    fn current_center_transform_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&baseline_transform_command_json(1.0)).unwrap();
+        command["intent"]["baseline"] = json!({ "kind": "current-center" });
+        command["intent"].as_object_mut().unwrap().remove("scale");
+        serde_json::to_vec(&command).unwrap()
+    }
+
     fn create_entities_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "entities": [{
@@ -1091,6 +1095,10 @@ mod tests {
         ));
         assert!(
             transform_scene_entity_json(&snapshot, &current_uniform_transform_command_json())
+                .is_ok()
+        );
+        assert!(
+            transform_scene_entity_json(&snapshot, &current_center_transform_command_json())
                 .is_ok()
         );
 
