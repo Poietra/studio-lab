@@ -20,8 +20,8 @@ import {
   type CreateSceneEntitiesCompiler,
   type CreateSceneEntitiesWireCommandV1,
   type CreateSceneMotionCompiler,
-  compileCreateSceneMotion,
   compileCreateSceneEntities,
+  compileCreateSceneMotion,
   compileEditSceneTimeline,
   compileTransformSceneEntity,
   type EditSceneTimelineCompiler,
@@ -30,6 +30,7 @@ import {
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityAtTimeCompiler,
   type TransformSceneEntityCompiler,
+  type TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
@@ -75,13 +76,7 @@ import {
 } from "./preview-temporal-rebase";
 import { insertedProgramDuration } from "./program-composition";
 import { isEntityDimensionsValue, isPointValue } from "./property-sampling";
-import {
-  sceneEntityLocalBounds,
-  sceneEntityUniformPositiveScale,
-  sceneEntityWorldCenter,
-  studioPointToScenePoint,
-  studioVectorToSceneVector,
-} from "./scene-authoring-geometry";
+import { studioPointToScenePoint, studioVectorToSceneVector } from "./scene-authoring-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -453,11 +448,17 @@ type StaticImportedRootTransformPlan =
   | Readonly<{ kind: "not-applicable" }>
   | Readonly<{ kind: "unsupported"; message: string }>
   | Readonly<{
-      delta: Point;
+      effect:
+        | Readonly<{ delta: Point; kind: "translate" }>
+        | Readonly<{
+            baseline: Extract<TransformSceneEntityWireCommandV1["intent"], { kind: "from-baseline" }>["baseline"];
+            kind: "from-baseline";
+            scale?: Readonly<{ xFactor: number; yFactor: number }>;
+            targetCenter?: Point;
+          }>;
       kind: "authorized";
       operationIds: readonly string[];
       runtimeEntityId: string;
-      scale?: Readonly<{ pivot: Point; xFactor: number; yFactor: number }>;
     }>;
 
 type ImportedTimelinePlan =
@@ -878,41 +879,6 @@ function sameShapeDimensions(type: "Circle" | "Rectangle", left: EntityDimension
     : closeStaticTransformValue(left.width!, right.width!) && closeStaticTransformValue(left.height!, right.height!);
 }
 
-function verifiedPrimitiveBaseline(
-  runtimeEntity: SceneIrBundleV1["scene"]["entities"][number],
-  type: "Circle" | "Rectangle",
-  dimensions: EntityDimensions,
-  semanticScale: number,
-) {
-  const transform = runtimeEntity.transform;
-  const bounds = sceneEntityLocalBounds(runtimeEntity);
-  if (
-    !bounds ||
-    transform.m12 !== 0 ||
-    transform.m21 !== 0 ||
-    !Number.isFinite(transform.m11) ||
-    transform.m11 <= 0 ||
-    !Number.isFinite(transform.m22) ||
-    transform.m22 <= 0
-  ) {
-    return false;
-  }
-  const width = (bounds.right - bounds.left) * transform.m11;
-  const height = (bounds.top - bounds.bottom) * transform.m22;
-  if (type === "Circle") {
-    return (
-      (runtimeEntity.geometry.kind === "circle" || runtimeEntity.geometry.kind === "cubic-path") &&
-      closeStaticTransformValue(width, height) &&
-      closeStaticTransformValue(width, dimensions.radius! * semanticScale * 2)
-    );
-  }
-  return (
-    (runtimeEntity.geometry.kind === "rectangle" || runtimeEntity.geometry.kind === "cubic-path") &&
-    closeStaticTransformValue(width, dimensions.width! * semanticScale) &&
-    closeStaticTransformValue(height, dimensions.height! * semanticScale)
-  );
-}
-
 function planStaticImportedRootTransform(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -1093,14 +1059,7 @@ function planStaticImportedRootTransform(
     return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
   }
   const semanticCenter = studioPointToScenePoint(basePosition.value, input.frame, scene.camera.view.center);
-  const runtimeCenter = imageOrMathTex || primitiveTransform ? sceneEntityWorldCenter(runtimeEntity) : semanticCenter;
-  const mathTexScale = baseEntity.type === "MathTex" ? sceneEntityUniformPositiveScale(runtimeEntity.transform) : null;
   const resize = resizeOperations[0];
-  const primitiveBaselineMatches =
-    !primitiveTransform ||
-    (primitiveType !== null && baseDimensions?.kind === "known" && semanticScale !== null
-      ? verifiedPrimitiveBaseline(runtimeEntity, primitiveType, baseDimensions.value, semanticScale)
-      : false);
   const resizeBaselineMatches =
     !resize ||
     (primitiveType !== null &&
@@ -1109,16 +1068,7 @@ function planStaticImportedRootTransform(
       sameShapeDimensions(primitiveType, resize.from.dimensions, baseDimensions.value) &&
       sameStaticTransformPoint(resize.from.position, basePosition.value) &&
       closeStaticTransformValue(resize.scale, semanticScale));
-  if (
-    !runtimeCenter ||
-    !isFinitePoint(runtimeCenter) ||
-    ((imageOrMathTex || primitiveTransform) && !sameStaticTransformPoint(runtimeCenter, semanticCenter)) ||
-    !primitiveBaselineMatches ||
-    !resizeBaselineMatches ||
-    (scaleOperations.length === 1 &&
-      baseEntity.type === "MathTex" &&
-      (mathTexScale === null || !closeStaticTransformValue(mathTexScale, semanticScale!)))
-  ) {
+  if (!isFinitePoint(semanticCenter) || !resizeBaselineMatches) {
     return { kind: "unsupported", message: "The semantic transform baseline does not match verified geometry." };
   }
 
@@ -1126,8 +1076,7 @@ function planStaticImportedRootTransform(
   const targetPosition = resize?.to.position ?? (position && isFinitePoint(position.value) ? position.value : null);
   const targetCenter = targetPosition
     ? studioPointToScenePoint(targetPosition, input.frame, scene.camera.view.center)
-    : runtimeCenter;
-  const delta = { x: targetCenter.x - runtimeCenter.x, y: targetCenter.y - runtimeCenter.y };
+    : semanticCenter;
   const scaleFactor = scaleOperations[0]?.relativeFactor;
   const xFactor = resize
     ? primitiveType === "Circle"
@@ -1140,20 +1089,51 @@ function planStaticImportedRootTransform(
       : resize.to.dimensions.height! / resize.from.dimensions.height!
     : scaleFactor;
   const hasScale = xFactor !== undefined && yFactor !== undefined && (xFactor !== 1 || yFactor !== 1);
+  const semanticDelta = { x: targetCenter.x - semanticCenter.x, y: targetCenter.y - semanticCenter.y };
   if (
-    !isFinitePoint(delta) ||
+    !isFinitePoint(targetCenter) ||
+    !isFinitePoint(semanticDelta) ||
     (xFactor !== undefined && (!Number.isFinite(xFactor) || xFactor <= 0)) ||
     (yFactor !== undefined && (!Number.isFinite(yFactor) || yFactor <= 0)) ||
-    (!hasScale && delta.x === 0 && delta.y === 0)
+    (!hasScale && semanticDelta.x === 0 && semanticDelta.y === 0)
   ) {
     return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
   }
+
+  const geometryVerifiedTransform = imageOrMathTex || primitiveTransform;
+  let effect: Extract<StaticImportedRootTransformPlan, { kind: "authorized" }>["effect"];
+  if (!geometryVerifiedTransform) {
+    effect = { delta: semanticDelta, kind: "translate" };
+  } else {
+    let baseline: Extract<TransformSceneEntityWireCommandV1["intent"], { kind: "from-baseline" }>["baseline"] = {
+      kind: "center",
+      worldCenter: semanticCenter,
+    };
+    if (primitiveTransform && primitiveType !== null && baseDimensions?.kind === "known" && semanticScale !== null) {
+      const width =
+        primitiveType === "Circle"
+          ? baseDimensions.value.radius! * semanticScale * 2
+          : baseDimensions.value.width! * semanticScale;
+      const height =
+        primitiveType === "Circle"
+          ? baseDimensions.value.radius! * semanticScale * 2
+          : baseDimensions.value.height! * semanticScale;
+      baseline = { height, kind: "world-size", width, worldCenter: semanticCenter };
+    } else if (baseEntity.type === "MathTex" && hasScale && semanticScale !== null) {
+      baseline = { kind: "uniform-affine", uniformScale: semanticScale, worldCenter: semanticCenter };
+    }
+    effect = {
+      baseline,
+      kind: "from-baseline",
+      ...(!hasScale ? {} : { scale: { xFactor: xFactor!, yFactor: yFactor! } }),
+      ...(!targetPosition ? {} : { targetCenter }),
+    };
+  }
   return {
-    delta,
+    effect,
     kind: "authorized",
     operationIds: operations.map(({ id }) => id),
     runtimeEntityId: runtimeEntity.id,
-    ...(!hasScale ? {} : { scale: { pivot: runtimeCenter, xFactor: xFactor!, yFactor: yFactor! } }),
   };
 }
 
@@ -1745,24 +1725,35 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const includesScale = staticRootTransform.scale !== undefined;
+      const includesScale = staticRootTransform.effect.kind === "from-baseline" && staticRootTransform.effect.scale;
+      const provenance = {
+        evidence: [
+          includesScale
+            ? "Studio t=0 transform projected onto one verified static imported root"
+            : "Studio t=0 position request projected onto one verified static imported root",
+          ...staticRootTransform.operationIds.map((operationId) => `authorized operation ${operationId}`),
+        ],
+        id: `studio-static-${includesScale ? "transform" : "move"}:${engineRevisionHash}`,
+        origin: "studio-edit-program" as const,
+      };
+      const intent: TransformSceneEntityWireCommandV1["intent"] =
+        staticRootTransform.effect.kind === "from-baseline"
+          ? {
+              baseline: staticRootTransform.effect.baseline,
+              kind: "from-baseline",
+              ...(staticRootTransform.effect.scale ? { scale: staticRootTransform.effect.scale } : {}),
+              ...(staticRootTransform.effect.targetCenter
+                ? { targetCenter: staticRootTransform.effect.targetCenter }
+                : {}),
+            }
+          : { delta: staticRootTransform.effect.delta, kind: "relative" };
       const bundle = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-        delta: staticRootTransform.delta,
         entityId: staticRootTransform.runtimeEntityId,
         expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+        intent,
         nextRevision: engineRevisionHash,
-        provenance: {
-          evidence: [
-            includesScale
-              ? "Studio t=0 transform projected onto one verified static imported root"
-              : "Studio t=0 position request projected onto one verified static imported root",
-            ...staticRootTransform.operationIds.map((operationId) => `authorized operation ${operationId}`),
-          ],
-          id: `studio-static-${includesScale ? "transform" : "move"}:${engineRevisionHash}`,
-          origin: "studio-edit-program",
-        },
+        provenance,
         schema: "poietra.transform-scene-entity",
-        ...(staticRootTransform.scale ? { scale: staticRootTransform.scale } : {}),
         version: 1,
       });
       return {

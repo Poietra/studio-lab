@@ -123,15 +123,52 @@ pub struct ScaleAboutPivot {
     pub y_factor: f64,
 }
 
+/// Positive axis factors requested by a Studio transform.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SceneEntityAxisFactors {
+    pub x_factor: f64,
+    pub y_factor: f64,
+}
+
+/// Studio semantic baseline that must still match the installed Scene geometry.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransformSceneEntityExpectedBaseline {
+    Center {
+        world_center: PointV1,
+    },
+    UniformAffine {
+        uniform_scale: f64,
+        world_center: PointV1,
+    },
+    WorldSize {
+        height: f64,
+        width: f64,
+        world_center: PointV1,
+    },
+}
+
+/// One profile-free transform intent resolved by the canonical Scene core.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransformSceneEntityIntent {
+    Relative {
+        delta: PointV1,
+        scale: Option<ScaleAboutPivot>,
+    },
+    FromBaseline {
+        expected_baseline: TransformSceneEntityExpectedBaseline,
+        scale: Option<SceneEntityAxisFactors>,
+        target_center: Option<PointV1>,
+    },
+}
+
 /// One profile-free Studio command that atomically transforms an authorized entity.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TransformSceneEntityCommand {
-    pub delta: PointV1,
     pub entity_id: String,
     pub expected_base_revision: String,
+    pub intent: TransformSceneEntityIntent,
     pub next_revision: String,
     pub provenance: ProvenanceRecordV1,
-    pub scale: Option<ScaleAboutPivot>,
 }
 
 /// One profile-free Studio transform that becomes active at an exact Scene time.
@@ -262,7 +299,9 @@ pub enum TransformSceneEntityError {
     RevisionDidNotAdvance,
     #[error("the world-space translation delta must be finite")]
     InvalidDelta,
-    #[error("the optional axis scale factors must be finite, positive, and not both identity")]
+    #[error(
+        "axis scale factors must be finite and positive; relative factors must not both be identity"
+    )]
     InvalidFactor,
     #[error("the optional world-space scale pivot must be finite")]
     InvalidPivot,
@@ -274,7 +313,7 @@ pub enum TransformSceneEntityError {
     NonUniformFactor,
     #[error("the transform target does not exist: {0}")]
     TargetMissing(String),
-    #[error("the timed world-space transform requires a root entity: {0}")]
+    #[error("this world-space transform requires a root entity: {0}")]
     TargetIsNotRoot(String),
     #[error("the timed transform target is not active at its anchor: {0}")]
     TargetInactive(String),
@@ -282,6 +321,12 @@ pub enum TransformSceneEntityError {
     AnimatedTransformUnsupported(String),
     #[error("world-space transform requires identity, transform-static ancestors: {0}")]
     TransformedAncestorUnsupported(String),
+    #[error("the transform target geometry has no supported local bounds")]
+    BaselineUnavailable,
+    #[error("the expected transform baseline is invalid or does not match the installed Scene")]
+    BaselineMismatch,
+    #[error("the target center must be finite")]
+    InvalidTargetCenter,
     #[error("the transform provenance must use the Studio Edit Program origin")]
     InvalidProvenanceOrigin,
     #[error("the transform provenance ID already exists: {0}")]
@@ -351,6 +396,225 @@ fn has_animated_transform(scene: &poietra_scene_ir::SceneIrV1, entity_id: &str) 
                 if animated_id == entity_id
         )
     })
+}
+
+#[derive(Clone, Copy)]
+struct SceneEntityLocalBounds {
+    bottom: f64,
+    left: f64,
+    right: f64,
+    top: f64,
+}
+
+fn scene_entity_local_bounds(entity: &SceneEntityV1) -> Option<SceneEntityLocalBounds> {
+    match &entity.geometry {
+        SceneGeometryV1::Circle { center, radius } => Some(SceneEntityLocalBounds {
+            bottom: center.y - radius,
+            left: center.x - radius,
+            right: center.x + radius,
+            top: center.y + radius,
+        }),
+        SceneGeometryV1::Rectangle {
+            center,
+            height,
+            width,
+            ..
+        } => Some(SceneEntityLocalBounds {
+            bottom: center.y - height / 2.0,
+            left: center.x - width / 2.0,
+            right: center.x + width / 2.0,
+            top: center.y + height / 2.0,
+        }),
+        SceneGeometryV1::Image { local_rect, .. } => Some(SceneEntityLocalBounds {
+            bottom: local_rect.bottom,
+            left: local_rect.left,
+            right: local_rect.right,
+            top: local_rect.top,
+        }),
+        SceneGeometryV1::CubicPath { path } => {
+            let first = path.subpaths.first()?;
+            let mut bounds = SceneEntityLocalBounds {
+                bottom: first.start.y,
+                left: first.start.x,
+                right: first.start.x,
+                top: first.start.y,
+            };
+            for subpath in &path.subpaths {
+                for point in std::iter::once(&subpath.start).chain(
+                    subpath
+                        .segments
+                        .iter()
+                        .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end]),
+                ) {
+                    bounds.bottom = bounds.bottom.min(point.y);
+                    bounds.left = bounds.left.min(point.x);
+                    bounds.right = bounds.right.max(point.x);
+                    bounds.top = bounds.top.max(point.y);
+                }
+            }
+            Some(bounds)
+        }
+        SceneGeometryV1::Group {} | SceneGeometryV1::Line { .. } => None,
+    }
+}
+
+fn close_transform_baseline_value(left: f64, right: f64) -> bool {
+    left.is_finite()
+        && right.is_finite()
+        && (left - right).abs() <= 1.0e-9 * left.abs().max(right.abs()).max(1.0)
+}
+
+fn transform_is_uniform(left: f64, right: f64) -> bool {
+    (left - right).abs() <= f64::EPSILON * left.abs().max(right.abs()).max(1.0) * 32.0
+}
+
+fn scene_entity_world_center(entity: &SceneEntityV1, bounds: &SceneEntityLocalBounds) -> PointV1 {
+    let local_x = bounds.left.midpoint(bounds.right);
+    let local_y = bounds.bottom.midpoint(bounds.top);
+    PointV1 {
+        x: entity.transform.m11 * local_x + entity.transform.m12 * local_y + entity.transform.tx,
+        y: entity.transform.m21 * local_x + entity.transform.m22 * local_y + entity.transform.ty,
+    }
+}
+
+fn positive_axis_aligned_transform(entity: &SceneEntityV1) -> bool {
+    entity.transform.m11 > 0.0
+        && entity.transform.m12 == 0.0
+        && entity.transform.m21 == 0.0
+        && entity.transform.m22 > 0.0
+}
+
+fn transform_baseline_matches(
+    entity: &SceneEntityV1,
+    expected: &TransformSceneEntityExpectedBaseline,
+    bounds: &SceneEntityLocalBounds,
+    actual_center: &PointV1,
+) -> bool {
+    let expected_center = match expected {
+        TransformSceneEntityExpectedBaseline::Center { world_center }
+        | TransformSceneEntityExpectedBaseline::UniformAffine { world_center, .. }
+        | TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. } => world_center,
+    };
+    if !expected_center.x.is_finite()
+        || !expected_center.y.is_finite()
+        || !close_transform_baseline_value(expected_center.x, actual_center.x)
+        || !close_transform_baseline_value(expected_center.y, actual_center.y)
+    {
+        return false;
+    }
+    match expected {
+        TransformSceneEntityExpectedBaseline::Center { .. } => true,
+        TransformSceneEntityExpectedBaseline::UniformAffine { uniform_scale, .. } => {
+            uniform_scale.is_finite()
+                && *uniform_scale > 0.0
+                && positive_axis_aligned_transform(entity)
+                && transform_is_uniform(entity.transform.m11, entity.transform.m22)
+                && close_transform_baseline_value(*uniform_scale, entity.transform.m11)
+        }
+        TransformSceneEntityExpectedBaseline::WorldSize { height, width, .. } => {
+            width.is_finite()
+                && height.is_finite()
+                && *width > 0.0
+                && *height > 0.0
+                && matches!(
+                    &entity.geometry,
+                    SceneGeometryV1::Circle { .. }
+                        | SceneGeometryV1::Rectangle { .. }
+                        | SceneGeometryV1::CubicPath { .. }
+                )
+                && positive_axis_aligned_transform(entity)
+                && close_transform_baseline_value(
+                    *width,
+                    (bounds.right - bounds.left) * entity.transform.m11,
+                )
+                && close_transform_baseline_value(
+                    *height,
+                    (bounds.top - bounds.bottom) * entity.transform.m22,
+                )
+        }
+    }
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "exact identity defines whether a transform intent contributes an effect"
+)]
+fn resolve_transform_intent(
+    target: &SceneEntityV1,
+    intent: TransformSceneEntityIntent,
+) -> Result<(PointV1, Option<ScaleAboutPivot>), TransformSceneEntityError> {
+    match intent {
+        TransformSceneEntityIntent::Relative { delta, scale } => {
+            if !delta.x.is_finite() || !delta.y.is_finite() {
+                return Err(TransformSceneEntityError::InvalidDelta);
+            }
+            if let Some(scale) = &scale {
+                if !scale.x_factor.is_finite()
+                    || scale.x_factor <= 0.0
+                    || !scale.y_factor.is_finite()
+                    || scale.y_factor <= 0.0
+                    || (scale.x_factor == 1.0 && scale.y_factor == 1.0)
+                {
+                    return Err(TransformSceneEntityError::InvalidFactor);
+                }
+                if !scale.pivot.x.is_finite() || !scale.pivot.y.is_finite() {
+                    return Err(TransformSceneEntityError::InvalidPivot);
+                }
+            } else if delta.x == 0.0 && delta.y == 0.0 {
+                return Err(TransformSceneEntityError::NoOp);
+            }
+            Ok((delta, scale))
+        }
+        TransformSceneEntityIntent::FromBaseline {
+            expected_baseline,
+            scale,
+            target_center,
+        } => {
+            if target_center
+                .as_ref()
+                .is_some_and(|center| !center.x.is_finite() || !center.y.is_finite())
+            {
+                return Err(TransformSceneEntityError::InvalidTargetCenter);
+            }
+            if scale.as_ref().is_some_and(|scale| {
+                !scale.x_factor.is_finite()
+                    || scale.x_factor <= 0.0
+                    || !scale.y_factor.is_finite()
+                    || scale.y_factor <= 0.0
+            }) {
+                return Err(TransformSceneEntityError::InvalidFactor);
+            }
+            if target.parent_id.is_some() {
+                return Err(TransformSceneEntityError::TargetIsNotRoot(
+                    target.id.clone(),
+                ));
+            }
+            let bounds = scene_entity_local_bounds(target)
+                .ok_or(TransformSceneEntityError::BaselineUnavailable)?;
+            let actual_center = scene_entity_world_center(target, &bounds);
+            if !transform_baseline_matches(target, &expected_baseline, &bounds, &actual_center) {
+                return Err(TransformSceneEntityError::BaselineMismatch);
+            }
+            let delta =
+                target_center
+                    .as_ref()
+                    .map_or(PointV1 { x: 0.0, y: 0.0 }, |target_center| PointV1 {
+                        x: target_center.x - actual_center.x,
+                        y: target_center.y - actual_center.y,
+                    });
+            let scale = scale.and_then(|scale| {
+                (scale.x_factor != 1.0 || scale.y_factor != 1.0).then_some(ScaleAboutPivot {
+                    pivot: actual_center,
+                    x_factor: scale.x_factor,
+                    y_factor: scale.y_factor,
+                })
+            });
+            if scale.is_none() && delta.x == 0.0 && delta.y == 0.0 {
+                return Err(TransformSceneEntityError::NoOp);
+            }
+            Ok((delta, scale))
+        }
+    }
 }
 
 #[allow(
@@ -1222,10 +1486,11 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Atomically applies a world-space translation and optional axis scale to one entity.
+    /// Atomically resolves and applies one world-space transform intent to one entity.
     ///
-    /// Axis scale is applied about its pivot before the world-space translation. The command
-    /// is independent of source profiles, viewport coordinates, and Manim bindings.
+    /// Relative transforms use their explicit pivot. Baseline transforms first verify the
+    /// installed static root geometry, derive its world center, and use that center as the scale
+    /// pivot. Both intents then share one mutation and whole-bundle validation path.
     ///
     /// # Errors
     ///
@@ -1239,59 +1504,50 @@ impl EngineSessionV1 {
         &mut self,
         command: TransformSceneEntityCommand,
     ) -> Result<SceneIrBundleV1, TransformSceneEntityError> {
-        if self.scene().source.revision_hash() != command.expected_base_revision {
+        let TransformSceneEntityCommand {
+            entity_id,
+            expected_base_revision,
+            intent,
+            next_revision,
+            provenance,
+        } = command;
+        if self.scene().source.revision_hash() != expected_base_revision {
             return Err(TransformSceneEntityError::StaleBaseRevision);
         }
-        if command.next_revision == command.expected_base_revision {
+        if next_revision == expected_base_revision {
             return Err(TransformSceneEntityError::RevisionDidNotAdvance);
         }
-        if !command.delta.x.is_finite() || !command.delta.y.is_finite() {
-            return Err(TransformSceneEntityError::InvalidDelta);
-        }
-        if let Some(scale) = &command.scale {
-            if !scale.x_factor.is_finite()
-                || scale.x_factor <= 0.0
-                || !scale.y_factor.is_finite()
-                || scale.y_factor <= 0.0
-                || (scale.x_factor == 1.0 && scale.y_factor == 1.0)
-            {
-                return Err(TransformSceneEntityError::InvalidFactor);
-            }
-            if !scale.pivot.x.is_finite() || !scale.pivot.y.is_finite() {
-                return Err(TransformSceneEntityError::InvalidPivot);
-            }
-        } else if command.delta.x == 0.0 && command.delta.y == 0.0 {
-            return Err(TransformSceneEntityError::NoOp);
-        }
-        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+        if provenance.origin != ProvenanceOriginV1::StudioEditProgram {
             return Err(TransformSceneEntityError::InvalidProvenanceOrigin);
         }
         if self
             .scene()
             .provenance
             .iter()
-            .any(|record| record.id == command.provenance.id)
+            .any(|record| record.id == provenance.id)
         {
-            return Err(TransformSceneEntityError::ProvenanceConflict(
-                command.provenance.id,
-            ));
+            return Err(TransformSceneEntityError::ProvenanceConflict(provenance.id));
         }
 
         let mut candidate = SceneIrBundleV1 {
             assets: self.assets().clone(),
             scene: self.scene().clone(),
         };
-        if has_animated_transform(&candidate.scene, &command.entity_id) {
+        if has_animated_transform(&candidate.scene, &entity_id) {
             return Err(TransformSceneEntityError::AnimatedTransformUnsupported(
-                command.entity_id,
+                entity_id,
             ));
         }
         let target_index = candidate
             .scene
             .entities
             .iter()
-            .position(|entity| entity.id == command.entity_id)
-            .ok_or_else(|| TransformSceneEntityError::TargetMissing(command.entity_id.clone()))?;
+            .position(|entity| entity.id == entity_id)
+            .ok_or_else(|| TransformSceneEntityError::TargetMissing(entity_id.clone()))?;
+
+        let (delta, scale) =
+            resolve_transform_intent(&candidate.scene.entities[target_index], intent)?;
+
         let target = &candidate.scene.entities[target_index];
         let mut parent_id = target.parent_id.as_deref();
         while let Some(id) = parent_id {
@@ -1315,7 +1571,7 @@ impl EngineSessionV1 {
             parent_id = parent.parent_id.as_deref();
         }
         let target = &mut candidate.scene.entities[target_index];
-        if let Some(scale) = &command.scale {
+        if let Some(scale) = &scale {
             apply_world_axis_scale(
                 &mut target.transform,
                 scale.x_factor,
@@ -1323,12 +1579,12 @@ impl EngineSessionV1 {
                 &scale.pivot,
             );
         }
-        apply_world_translation(&mut target.transform, &command.delta);
-        target.provenance_id.clone_from(&command.provenance.id);
-        candidate.scene.provenance.push(command.provenance);
+        apply_world_translation(&mut target.transform, &delta);
+        target.provenance_id.clone_from(&provenance.id);
+        candidate.scene.provenance.push(provenance);
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
-            revision_hash: command.next_revision,
+            revision_hash: next_revision,
         };
 
         let result = candidate.clone();
@@ -1691,20 +1947,50 @@ mod tests {
         entity_id: &str,
     ) -> TransformSceneEntityCommand {
         TransformSceneEntityCommand {
-            delta: PointV1 { x: 2.0, y: -1.0 },
             entity_id: entity_id.to_owned(),
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            intent: TransformSceneEntityIntent::Relative {
+                delta: PointV1 { x: 2.0, y: -1.0 },
+                scale: Some(ScaleAboutPivot {
+                    pivot: PointV1 { x: 1.0, y: -0.5 },
+                    x_factor: 1.5,
+                    y_factor: 1.5,
+                }),
+            },
             next_revision: NEXT_REVISION.to_owned(),
             provenance: ProvenanceRecordV1 {
                 evidence: vec!["authorized Studio atomic transform".to_owned()],
                 id: "studio-atomic-transform".to_owned(),
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
-            scale: Some(ScaleAboutPivot {
-                pivot: PointV1 { x: 1.0, y: -0.5 },
-                x_factor: 1.5,
-                y_factor: 1.5,
-            }),
+        }
+    }
+
+    fn baseline_transform_command_for(
+        bundle: &SceneIrBundleV1,
+        entity_id: &str,
+    ) -> TransformSceneEntityCommand {
+        TransformSceneEntityCommand {
+            entity_id: entity_id.to_owned(),
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            intent: TransformSceneEntityIntent::FromBaseline {
+                expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize {
+                    height: 1.0,
+                    width: 1.0,
+                    world_center: PointV1 { x: 4.0, y: -2.0 },
+                },
+                scale: Some(SceneEntityAxisFactors {
+                    x_factor: 1.5,
+                    y_factor: 1.5,
+                }),
+                target_center: Some(PointV1 { x: 6.0, y: -3.0 }),
+            },
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["verified Studio transform baseline".to_owned()],
+                id: "studio-baseline-transform".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
         }
     }
 
@@ -1991,12 +2277,14 @@ mod tests {
             ),
         ] {
             let mut command = transform_command_for(&bundle, &root_id);
-            command.delta = delta;
-            command.scale = factors.map(|(x_factor, y_factor)| ScaleAboutPivot {
-                pivot: PointV1 { x: 1.0, y: -0.5 },
-                x_factor,
-                y_factor,
-            });
+            command.intent = TransformSceneEntityIntent::Relative {
+                delta,
+                scale: factors.map(|(x_factor, y_factor)| ScaleAboutPivot {
+                    pivot: PointV1 { x: 1.0, y: -0.5 },
+                    x_factor,
+                    y_factor,
+                }),
+            };
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
 
             let result = session.transform_scene_entity(command.clone()).unwrap();
@@ -2023,6 +2311,166 @@ mod tests {
             assert_eq!(session.scene(), &result.scene);
             assert_eq!(session.retained_index_stats().build_count, 2);
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the command applies exact finite factors around its derived center"
+    )]
+    fn baseline_transform_verifies_world_size_and_uses_the_derived_center() {
+        let bundle = imported_bundle();
+        let target_id = "later";
+        let command = baseline_transform_command_for(&bundle, target_id);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.transform_scene_entity(command.clone()).unwrap();
+        let target = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == target_id)
+            .unwrap();
+
+        assert_eq!(target.transform.m11, 1.5);
+        assert_eq!(target.transform.m22, 1.5);
+        assert_eq!(target.transform.tx, 4.5);
+        assert_eq!(target.transform.ty, -3.0);
+        assert_eq!(target.provenance_id, command.provenance.id);
+        assert_eq!(session.scene(), &result.scene);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "scale-only authoring must retain the exact installed translation"
+    )]
+    fn scale_only_transform_uses_actual_center_when_expected_center_is_within_tolerance() {
+        let mut bundle = imported_bundle();
+        let target = bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        let SceneGeometryV1::Circle { center, .. } = &mut target.geometry else {
+            panic!("fixture target must be a Circle");
+        };
+        *center = PointV1 { x: 0.0, y: 0.0 };
+        let mut command = baseline_transform_command_for(&bundle, "later");
+        let TransformSceneEntityIntent::FromBaseline {
+            expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. },
+            target_center,
+            ..
+        } = &mut command.intent
+        else {
+            unreachable!();
+        };
+        *target_center = None;
+        *world_center = PointV1 {
+            x: 3.0 + 1.0e-10,
+            y: -2.0,
+        };
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.transform_scene_entity(command).unwrap();
+        let transformed = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(transformed.transform.m11, 1.5);
+        assert_eq!(transformed.transform.m22, 1.5);
+        assert_eq!(transformed.transform.tx, 3.0);
+        assert_eq!(transformed.transform.ty, -2.0);
+    }
+
+    #[test]
+    fn baseline_transform_supports_image_centers_and_uniform_cubic_baselines() {
+        let mut rectangle = imported_bundle().scene.entities[0].clone();
+        rectangle.geometry = SceneGeometryV1::Rectangle {
+            center: PointV1 { x: 1.0, y: 2.0 },
+            corner_radius: 0.0,
+            height: 4.0,
+            width: 6.0,
+        };
+        rectangle.transform = AffineTransformV1 {
+            m11: 2.0,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 3.0,
+            tx: -1.0,
+            ty: 1.0,
+        };
+        let rectangle_bounds = scene_entity_local_bounds(&rectangle).unwrap();
+        let rectangle_center = scene_entity_world_center(&rectangle, &rectangle_bounds);
+        assert!(transform_baseline_matches(
+            &rectangle,
+            &TransformSceneEntityExpectedBaseline::WorldSize {
+                height: 12.0,
+                width: 12.0,
+                world_center: rectangle_center.clone(),
+            },
+            &rectangle_bounds,
+            &rectangle_center,
+        ));
+
+        let image_bundle = fixture_bundle("png-alpha-edge-camera.json");
+        let image = &image_bundle.scene.entities[0];
+        let image_bounds = scene_entity_local_bounds(image).unwrap();
+        let image_center = scene_entity_world_center(image, &image_bounds);
+        assert!(transform_baseline_matches(
+            image,
+            &TransformSceneEntityExpectedBaseline::Center {
+                world_center: image_center.clone(),
+            },
+            &image_bounds,
+            &image_center,
+        ));
+
+        let mathtex_bundle = fixture_bundle("mathtex-nested-radical-fraction.json");
+        let mut mathtex = mathtex_bundle.scene.entities[0].clone();
+        mathtex.transform = AffineTransformV1 {
+            m11: 1.5,
+            m12: 0.0,
+            m21: 0.0,
+            m22: 1.5,
+            tx: 2.0,
+            ty: -1.0,
+        };
+        let bounds = scene_entity_local_bounds(&mathtex).unwrap();
+        let center = scene_entity_world_center(&mathtex, &bounds);
+        assert!(transform_baseline_matches(
+            &mathtex,
+            &TransformSceneEntityExpectedBaseline::UniformAffine {
+                uniform_scale: 1.5,
+                world_center: center.clone(),
+            },
+            &bounds,
+            &center,
+        ));
+        assert!(!transform_is_uniform(1.5, 1.5 + 1.0e-10));
+
+        let mut drifted = baseline_transform_command_for(&imported_bundle(), "later");
+        let TransformSceneEntityIntent::FromBaseline {
+            expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. },
+            ..
+        } = &mut drifted.intent
+        else {
+            unreachable!();
+        };
+        world_center.x += 0.01;
+        let bundle = imported_bundle();
+        let expected = bundle.scene.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        assert!(matches!(
+            session.transform_scene_entity(drifted),
+            Err(TransformSceneEntityError::BaselineMismatch)
+        ));
+        assert_eq!(session.scene(), &expected);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]
@@ -2460,10 +2908,13 @@ mod tests {
             .unwrap()
             .clone();
         let mut command = transform_command_for(&bundle, &target.id);
-        command.scale = None;
+        let TransformSceneEntityIntent::Relative { delta, scale } = &mut command.intent else {
+            unreachable!();
+        };
+        *scale = None;
         let mut expected = target.clone();
-        expected.transform.tx += command.delta.x;
-        expected.transform.ty += command.delta.y;
+        expected.transform.tx += delta.x;
+        expected.transform.ty += delta.y;
         expected.provenance_id.clone_from(&command.provenance.id);
         let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
 
@@ -2825,22 +3276,30 @@ mod tests {
         ));
 
         let mut no_op = command.clone();
-        no_op.delta = PointV1 { x: 0.0, y: 0.0 };
-        no_op.scale = None;
+        no_op.intent = TransformSceneEntityIntent::Relative {
+            delta: PointV1 { x: 0.0, y: 0.0 },
+            scale: None,
+        };
         assert!(matches!(
             rejected_transform(bundle.clone(), no_op),
             TransformSceneEntityError::NoOp
         ));
 
         let mut invalid_delta = command.clone();
-        invalid_delta.delta.x = f64::NAN;
+        let TransformSceneEntityIntent::Relative { delta, .. } = &mut invalid_delta.intent else {
+            unreachable!();
+        };
+        delta.x = f64::NAN;
         assert!(matches!(
             rejected_transform(bundle.clone(), invalid_delta),
             TransformSceneEntityError::InvalidDelta
         ));
 
         let mut identity_scale = command.clone();
-        let identity = identity_scale.scale.as_mut().unwrap();
+        let TransformSceneEntityIntent::Relative { scale, .. } = &mut identity_scale.intent else {
+            unreachable!();
+        };
+        let identity = scale.as_mut().unwrap();
         identity.x_factor = 1.0;
         identity.y_factor = 1.0;
         assert!(matches!(

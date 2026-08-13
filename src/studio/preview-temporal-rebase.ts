@@ -992,9 +992,15 @@ export async function compileStudioPreviewImportedAnimationEdit(
   const provenanceId = `studio-imported-animation-edit:${input.sourceRevisionHash}`;
   try {
     const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-      delta,
       entityId: edit.runtimeEntityId,
       expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+      intent: {
+        delta,
+        kind: "relative",
+        ...(scaleFactor === null
+          ? {}
+          : { scale: { pivot: sourceTransform.worldCenter, xFactor: scaleFactor, yFactor: scaleFactor } }),
+      },
       nextRevision: input.sourceRevisionHash,
       provenance: {
         evidence: [
@@ -1005,9 +1011,6 @@ export async function compileStudioPreviewImportedAnimationEdit(
         origin: "studio-edit-program",
       },
       schema: "poietra.transform-scene-entity",
-      ...(scaleFactor === null
-        ? {}
-        : { scale: { pivot: sourceTransform.worldCenter, xFactor: scaleFactor, yFactor: scaleFactor } }),
       version: 1,
     });
     return { kind: "rebased", scene: rebased.scene };
@@ -1140,9 +1143,9 @@ export async function compileStudioPreviewRuntimeTraceEdit(
       const rebased =
         candidate.phase === "construction"
           ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-              delta,
               entityId: target.id,
               expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+              intent: { delta, kind: "relative" },
               nextRevision: input.sourceRevisionHash,
               provenance,
               schema: "poietra.transform-scene-entity",
@@ -1187,24 +1190,29 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     }
   }
   try {
-    const command = {
-      delta: { x: 0, y: 0 },
+    const common = {
       entityId: target.id,
       expectedBaseRevision: sceneIrSourceRevisionHash(scene),
       nextRevision: input.sourceRevisionHash,
       provenance,
-      scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
       version: 1 as const,
     };
     const rebased =
       candidate.phase === "construction"
         ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-            ...command,
+            ...common,
+            intent: {
+              delta: { x: 0, y: 0 },
+              kind: "relative",
+              scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
+            },
             schema: "poietra.transform-scene-entity",
           })
         : await (input.transformAtTimeCompiler ?? compileTransformSceneEntityAtTime)(input.snapshot.snapshot, {
-            ...command,
+            ...common,
             at: candidate.sourceAnchor,
+            delta: { x: 0, y: 0 },
+            scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
             schema: "poietra.transform-scene-entity-at-time",
           });
     return { kind: "rebased", scene: rebased.scene };

@@ -1220,6 +1220,7 @@ describe("generic Runtime Trace V3 construction edit", () => {
     expect(directCommand).toMatchObject({
       entityId: root.id,
       expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+      intent: { kind: "relative" },
       nextRevision: "7".repeat(64),
       provenance: {
         evidence: [
@@ -1233,8 +1234,9 @@ describe("generic Runtime Trace V3 construction edit", () => {
       schema: "poietra.transform-scene-entity",
       version: 1,
     });
-    expect(directCommand.delta.x).toBeCloseTo(64 / 45, 12);
-    expect(directCommand.delta.y).toBeCloseTo(0.8, 12);
+    if (directCommand.intent.kind !== "relative") throw new Error("Runtime Trace move used the wrong intent.");
+    expect(directCommand.intent.delta.x).toBeCloseTo(64 / 45, 12);
+    expect(directCommand.intent.delta.y).toBeCloseTo(0.8, 12);
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: FRAME,
@@ -1298,9 +1300,13 @@ describe("generic Runtime Trace V3 construction edit", () => {
     expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-construction-resize:${"8".repeat(64)}`);
     expect(commands).toEqual([
       {
-        delta: { x: 0, y: 0 },
         entityId: root.id,
         expectedBaseRevision: sceneIrSourceRevisionHash(snapshot.snapshot.scene),
+        intent: {
+          delta: { x: 0, y: 0 },
+          kind: "relative",
+          scale: { pivot: { x: 0, y: 0 }, xFactor: 1.5, yFactor: 1.5 },
+        },
         nextRevision: "8".repeat(64),
         provenance: {
           evidence: [
@@ -1312,7 +1318,6 @@ describe("generic Runtime Trace V3 construction edit", () => {
           origin: "studio-edit-program",
         },
         schema: "poietra.transform-scene-entity",
-        scale: { pivot: { x: 0, y: 0 }, xFactor: 1.5, yFactor: 1.5 },
         version: 1,
       },
     ]);

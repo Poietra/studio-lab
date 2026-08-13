@@ -40,8 +40,8 @@ import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapsho
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
-  createDirectManipulationPositionProgram,
   createDirectManipulationMotionProgram,
+  createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
   createDirectManipulationScaleProgram,
 } from "./suggestion-program";
@@ -499,7 +499,16 @@ function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]):
 }
 
 const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
-  const scale = command.scale;
+  const intent = command.intent;
+  const delta =
+    intent.kind === "relative"
+      ? intent.delta
+      : {
+          x: (intent.targetCenter?.x ?? intent.baseline.worldCenter.x) - intent.baseline.worldCenter.x,
+          y: (intent.targetCenter?.y ?? intent.baseline.worldCenter.y) - intent.baseline.worldCenter.y,
+        };
+  const scale =
+    intent.kind === "relative" ? intent.scale : intent.scale && { pivot: intent.baseline.worldCenter, ...intent.scale };
   return await parseVerifiedSceneIrBundleV1({
     ...bundle,
     scene: {
@@ -515,8 +524,8 @@ const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, comma
           transform.tx = scale.pivot.x + scale.xFactor * (transform.tx - scale.pivot.x);
           transform.ty = scale.pivot.y + scale.yFactor * (transform.ty - scale.pivot.y);
         }
-        transform.tx += command.delta.x;
-        transform.ty += command.delta.y;
+        transform.tx += delta.x;
+        transform.ty += delta.y;
         return { ...entity, provenanceId: command.provenance.id, transform };
       }),
       provenance: [...bundle.scene.provenance, command.provenance],
@@ -1774,6 +1783,7 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(command).toMatchObject({
         entityId: "earlier",
         expectedBaseRevision: snapshot.correlation.engineRevisionHash,
+        intent: { kind: "relative" },
         nextRevision: result.scene.engineRevisionHash,
         provenance: {
           evidence: [
@@ -1786,8 +1796,9 @@ describe("compileStudioPreviewSceneV1", () => {
         schema: "poietra.transform-scene-entity",
         version: 1,
       });
-      expect(command.delta.x).toBeCloseTo(1.6, 12);
-      expect(command.delta.y).toBeCloseTo(0.9, 12);
+      if (command.intent.kind !== "relative") throw new Error("Imported move used the wrong transform intent.");
+      expect(command.intent.delta.x).toBeCloseTo(1.6, 12);
+      expect(command.intent.delta.y).toBeCloseTo(0.9, 12);
       expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toEqual(["earlier", "runtime-unmapped"]);
       expect(result.scene.interactionEntityIds).toEqual(["earlier"]);
     },
@@ -1849,14 +1860,26 @@ describe("compileStudioPreviewSceneV1", () => {
     const command = commands[0];
     if (!command) throw new Error(`Imported ${input.type} resize did not reach the Rust compiler boundary.`);
     expect(command).toMatchObject({
+      intent: {
+        baseline: {
+          height: input.type === "Circle" ? 2 : 1,
+          kind: "world-size",
+          width: 2,
+          worldCenter: { x: input.type === "Circle" ? -1 : 2, y: 0 },
+        },
+        kind: "from-baseline",
+        scale: input.expectedScale,
+      },
       entityId: "earlier",
       expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      scale: { pivot: { x: input.type === "Circle" ? -1 : 2, y: 0 }, ...input.expectedScale },
       schema: "poietra.transform-scene-entity",
       version: 1,
     });
-    expect(command.delta.x).toBeCloseTo(0.5, 12);
-    expect(command.delta.y).toBeCloseTo(-0.25, 12);
+    if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
+      throw new Error("Resize did not retain its target center.");
+    }
+    expect(command.intent.targetCenter.x).toBeCloseTo(input.type === "Circle" ? -0.5 : 2.5, 12);
+    expect(command.intent.targetCenter.y).toBeCloseTo(-0.25, 12);
     expect(command.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
     expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
       fixture.snapshot.snapshot.scene.entities[0]?.geometry,
@@ -1898,13 +1921,17 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
-      delta: { x: 0, y: 0 },
       entityId: "earlier",
       expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      scale: { pivot: { x: -1, y: 0 }, xFactor: 1.25, yFactor: 1.25 },
+      intent: {
+        baseline: { height: 2, kind: "world-size", width: 2, worldCenter: { x: -1, y: 0 } },
+        kind: "from-baseline",
+        scale: { xFactor: 1.25, yFactor: 1.25 },
+      },
       schema: "poietra.transform-scene-entity",
       version: 1,
     });
+    expect(commands[0]?.intent).not.toHaveProperty("targetCenter");
     expect(commands[0]?.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
     expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
       fixture.snapshot.snapshot.scene.entities[0]?.geometry,
@@ -2633,16 +2660,25 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(command).toMatchObject({
         entityId: fixture.runtimeEntityId,
         expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
+        intent: {
+          baseline: includeScale ? { kind: "uniform-affine", uniformScale: 1.5 } : { kind: "center" },
+          kind: "from-baseline",
+        },
         nextRevision: result.scene.engineRevisionHash,
         schema: "poietra.transform-scene-entity",
         version: 1,
       });
-      expect(command.delta.x).toBeCloseTo(delta.x, 12);
-      expect(command.delta.y).toBeCloseTo(delta.y, 12);
-      expect(command.scale).toEqual(
-        uniformScale
-          ? { pivot: uniformScale.pivot, xFactor: uniformScale.factor, yFactor: uniformScale.factor }
-          : undefined,
+      if (command.intent.kind !== "from-baseline") throw new Error("MathTex used the wrong transform intent.");
+      expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
+      expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
+      if (includeMove) {
+        expect(command.intent.targetCenter?.x).toBeCloseTo(2 + delta.x, 12);
+        expect(command.intent.targetCenter?.y).toBeCloseTo(-1 + delta.y, 12);
+      } else {
+        expect(command.intent).not.toHaveProperty("targetCenter");
+      }
+      expect(command.intent.scale).toEqual(
+        uniformScale ? { xFactor: uniformScale.factor, yFactor: uniformScale.factor } : undefined,
       );
       for (const operation of fixture.edited.programs.flatMap(({ program }) => program.operations)) {
         expect(command.provenance.evidence).toContain(`authorized operation ${operation.id}`);
@@ -2675,14 +2711,20 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands).toHaveLength(1);
     const command = commands[0]!;
     expect(command).toMatchObject({
-      delta: { x: 2, y: 2 },
       entityId: fixture.runtimeEntityId,
       expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
+      intent: { baseline: { kind: "center" }, kind: "from-baseline", scale: { xFactor: 2, yFactor: 2 } },
       nextRevision: result.scene.engineRevisionHash,
       schema: "poietra.transform-scene-entity",
-      scale: { pivot: { x: 2, y: -1 }, xFactor: 2, yFactor: 2 },
       version: 1,
     });
+    if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
+      throw new Error("Image move did not retain its target center.");
+    }
+    expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
+    expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
+    expect(command.intent.targetCenter.x).toBeCloseTo(4, 12);
+    expect(command.intent.targetCenter.y).toBeCloseTo(1, 12);
     expect(command.provenance.evidence.filter((entry) => entry.startsWith("authorized operation "))).toHaveLength(2);
     expect(result.scene.bundle.assets).toEqual(fixture.snapshot.snapshot.assets);
     expect(result.scene.bundle.scene.entities[0]).toMatchObject({
@@ -2695,7 +2737,7 @@ describe("compileStudioPreviewSceneV1", () => {
   it.each([
     ["move", false],
     ["move and scale", true],
-  ])("rejects an imported MathTex %s when its semantic baseline drifts", async (_label, includeScale) => {
+  ])("delegates imported MathTex %s baseline validation to Rust", async (_label, includeScale) => {
     const fixture = await importedMathTexPreviewInput({ includeScale });
     const baseEntity = fixture.edited.base.runtimeSceneState.objectGraph.entities[fixture.entityId];
     if (!baseEntity?.geometry) throw new Error("Imported MathTex baseline fixture is incomplete.");
@@ -2725,7 +2767,7 @@ describe("compileStudioPreviewSceneV1", () => {
       snapshot: fixture.snapshot,
       transformCompiler: async () => {
         compilerCalls += 1;
-        throw new Error("Drifted evidence must not reach Rust compilation.");
+        throw new Error("the semantic transform baseline does not match verified geometry");
       },
       workingRevision: "studio-working-v1:drifted-imported-affine",
       workspaceKey: "project-a/scene.py/MathTexScene",
@@ -2734,7 +2776,7 @@ describe("compileStudioPreviewSceneV1", () => {
       error: expect.stringContaining("semantic transform baseline"),
       kind: "unsupported",
     });
-    expect(compilerCalls).toBe(0);
+    expect(compilerCalls).toBe(1);
   });
 
   it("rebases an initial MathTex transform without reconstructing mixed V7 animation", async () => {

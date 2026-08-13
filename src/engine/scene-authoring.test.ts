@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type CreateSceneEntitiesWireCommandV1,
+  type CreateSceneMotionWireCommandV1,
   createCreateSceneEntitiesCompiler,
   createCreateSceneMotionCompiler,
   createEditSceneTimelineCompiler,
@@ -16,7 +17,6 @@ import {
   type SetSubtreeVectorPaintAlphaWireCommandV1,
   type TransformSceneEntityAtTimeWireCommandV1,
   type TransformSceneEntityWireCommandV1,
-  type CreateSceneMotionWireCommandV1,
 } from "./scene-authoring";
 
 const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
@@ -79,9 +79,13 @@ const command: RotateSceneEntityWireCommandV1 = {
 };
 
 const transformCommand: TransformSceneEntityWireCommandV1 = {
-  delta: { x: 2.5, y: -1.5 },
   entityId: "later",
   expectedBaseRevision: "a".repeat(64),
+  intent: {
+    delta: { x: 2.5, y: -1.5 },
+    kind: "relative",
+    scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
+  },
   nextRevision: "f".repeat(64),
   provenance: {
     evidence: ["Studio atomic transform"],
@@ -89,14 +93,38 @@ const transformCommand: TransformSceneEntityWireCommandV1 = {
     origin: "studio-edit-program",
   },
   schema: "poietra.transform-scene-entity",
-  scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
+  version: 1,
+};
+
+const verifiedTransformCommand: TransformSceneEntityWireCommandV1 = {
+  entityId: "later",
+  expectedBaseRevision: "a".repeat(64),
+  intent: {
+    baseline: { height: 1, kind: "world-size", width: 1, worldCenter: { x: 1, y: 0 } },
+    kind: "from-baseline",
+    scale: { xFactor: 1.5, yFactor: 0.75 },
+    targetCenter: { x: 2.25, y: -0.5 },
+  },
+  nextRevision: "8".repeat(64),
+  provenance: {
+    evidence: ["Studio geometry-verified transform"],
+    id: "studio-edit:verified-transform-1",
+    origin: "studio-edit-program",
+  },
+  schema: "poietra.transform-scene-entity",
   version: 1,
 };
 
 const timedTransformCommand: TransformSceneEntityAtTimeWireCommandV1 = {
-  ...transformCommand,
   at: 1.5,
+  delta: { x: 2.5, y: -1.5 },
+  entityId: transformCommand.entityId,
+  expectedBaseRevision: transformCommand.expectedBaseRevision,
+  nextRevision: transformCommand.nextRevision,
+  provenance: transformCommand.provenance,
+  scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
   schema: "poietra.transform-scene-entity-at-time",
+  version: 1,
 };
 
 const editTimelineCommand: EditSceneTimelineWireCommandV1 = {
@@ -189,6 +217,24 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, transformCommand);
     expect(result).toEqual(calls[0]);
     expect(calls[1]).toEqual(transformCommand);
+  });
+
+  it("forwards one geometry-verified root transform and complete base snapshot", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createTransformSceneEntityCompiler(async () => ({
+      transformSceneEntityV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, verifiedTransformCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(verifiedTransformCommand);
   });
 
   it("forwards one exact motion command and complete base snapshot", async () => {

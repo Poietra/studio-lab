@@ -15,9 +15,10 @@ pub use authoring::{
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
     CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, RotateSceneEntityCommand,
-    RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit, SceneTimelineInsertion,
-    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors, SceneTimelineEdit,
+    SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
     TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
+    TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,
