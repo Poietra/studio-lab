@@ -500,15 +500,34 @@ function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]):
 
 const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
   const intent = command.intent;
+  const target = bundle.scene.entities.find(({ id }) => id === command.entityId);
+  if (!target) throw new Error("The transform test target is missing.");
+  const baselineCenter =
+    intent.kind === "from-baseline"
+      ? intent.baseline.kind === "current-uniform-affine"
+        ? (() => {
+            if (target.geometry.kind !== "cubic-path") throw new Error("The current-baseline fixture is not cubic.");
+            const points = target.geometry.path.subpaths.flatMap((subpath) => [
+              subpath.start,
+              ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+            ]);
+            const localX = (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2;
+            const localY = (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2;
+            return {
+              x: target.transform.m11 * localX + target.transform.m12 * localY + target.transform.tx,
+              y: target.transform.m21 * localX + target.transform.m22 * localY + target.transform.ty,
+            };
+          })()
+        : intent.baseline.worldCenter
+      : null;
   const delta =
     intent.kind === "relative"
       ? intent.delta
       : {
-          x: (intent.targetCenter?.x ?? intent.baseline.worldCenter.x) - intent.baseline.worldCenter.x,
-          y: (intent.targetCenter?.y ?? intent.baseline.worldCenter.y) - intent.baseline.worldCenter.y,
+          x: (intent.targetCenter?.x ?? baselineCenter!.x) - baselineCenter!.x,
+          y: (intent.targetCenter?.y ?? baselineCenter!.y) - baselineCenter!.y,
         };
-  const scale =
-    intent.kind === "relative" ? intent.scale : intent.scale && { pivot: intent.baseline.worldCenter, ...intent.scale };
+  const scale = intent.kind === "relative" ? intent.scale : intent.scale && { pivot: baselineCenter!, ...intent.scale };
   return await parseVerifiedSceneIrBundleV1({
     ...bundle,
     scene: {
@@ -2669,6 +2688,9 @@ describe("compileStudioPreviewSceneV1", () => {
         version: 1,
       });
       if (command.intent.kind !== "from-baseline") throw new Error("MathTex used the wrong transform intent.");
+      if (command.intent.baseline.kind === "current-uniform-affine") {
+        throw new Error("Static MathTex unexpectedly used the current-transform baseline.");
+      }
       expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
       expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
       if (includeMove) {
@@ -2720,6 +2742,9 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
       throw new Error("Image move did not retain its target center.");
+    }
+    if (command.intent.baseline.kind === "current-uniform-affine") {
+      throw new Error("Static Image unexpectedly used the current-transform baseline.");
     }
     expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
     expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
@@ -2783,6 +2808,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const fixture = await mixedV7EditedMathTexPreviewInput();
     const baseScene = fixture.snapshot.snapshot.scene;
     let compilerCalls = 0;
+    let transformCommand: TransformSceneEntityWireCommandV1 | null = null;
     const result = await compileStudioPreviewSceneV1({
       frame: MIXED_V7_FRAME,
       mathTexOutlineCompiler: async () => {
@@ -2791,12 +2817,22 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
-      transformCompiler: testTransformCompiler,
+      transformCompiler: async (bundle, command) => {
+        transformCommand = command;
+        return await testTransformCompiler(bundle, command);
+      },
       workingRevision: "studio-working-v1:mixed-v7-mathtex-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
     expect(compilerCalls).toBe(0);
     if (result.kind !== "compiled") throw new Error(result.error);
+    expect(transformCommand).toMatchObject({
+      intent: {
+        baseline: { kind: "current-uniform-affine" },
+        kind: "from-baseline",
+        scale: { xFactor: 2, yFactor: 2 },
+      },
+    });
     const scene = result.scene.bundle.scene;
     expect(scene.sceneId).toBe(baseScene.sceneId);
     expect(scene.camera).toEqual(baseScene.camera);
@@ -2904,16 +2940,22 @@ describe("compileStudioPreviewSceneV1", () => {
     ["shear", { m11: 1, m12: 0.25, m21: 0, m22: 1, tx: 0, ty: 0 }],
     ["non-uniform scale", { m11: 1, m12: 0, m21: 0, m22: 1.25, tx: 0, ty: 0 }],
     ["reflection", { m11: -1, m12: 0, m21: 0, m22: -1, tx: 0, ty: 0 }],
-  ])("fails closed on a source transform with %s", async (_name, transform) => {
+  ])("delegates rejection of a source transform with %s to Rust", async (_name, transform) => {
     const fixture = await mixedV7EditedMathTexPreviewInput({ mathTexTransform: transform });
+    let compilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
       frame: MIXED_V7_FRAME,
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      transformCompiler: async () => {
+        compilerCalls += 1;
+        throw new Error("the expected transform baseline is invalid or does not match the installed Scene");
+      },
       workingRevision: "studio-working-v1:unsupported-source-transform",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
-    expect(result).toMatchObject({ error: expect.stringContaining("profile-unsupported"), kind: "unsupported" });
+    expect(result).toMatchObject({ error: expect.stringContaining("transform baseline"), kind: "unsupported" });
+    expect(compilerCalls).toBe(1);
   });
 
   it("rebases an initial Create target transform while preserving the imported channels", async () => {

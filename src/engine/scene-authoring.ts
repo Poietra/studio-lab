@@ -1,6 +1,6 @@
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 
-const POIETRA_ENGINE_ABI_VERSION = 4;
+const POIETRA_ENGINE_ABI_VERSION = 5;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -40,6 +40,7 @@ export type TransformSceneEntityWireCommandV1 = Readonly<{
     | Readonly<{
         baseline:
           | Readonly<{ kind: "center"; worldCenter: Readonly<{ x: number; y: number }> }>
+          | Readonly<{ kind: "current-uniform-affine" }>
           | Readonly<{
               kind: "uniform-affine";
               uniformScale: number;

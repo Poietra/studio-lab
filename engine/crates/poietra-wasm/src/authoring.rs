@@ -345,6 +345,7 @@ enum TransformSceneEntityExpectedBaselineJsonV1 {
     Center {
         world_center: PointV1,
     },
+    CurrentUniformAffine,
     UniformAffine {
         uniform_scale: f64,
         world_center: PointV1,
@@ -361,6 +362,9 @@ impl From<TransformSceneEntityExpectedBaselineJsonV1> for TransformSceneEntityEx
         match value {
             TransformSceneEntityExpectedBaselineJsonV1::Center { world_center } => {
                 Self::Center { world_center }
+            }
+            TransformSceneEntityExpectedBaselineJsonV1::CurrentUniformAffine => {
+                Self::CurrentUniformAffine
             }
             TransformSceneEntityExpectedBaselineJsonV1::UniformAffine {
                 uniform_scale,
@@ -875,6 +879,13 @@ mod tests {
         .unwrap()
     }
 
+    fn current_uniform_transform_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&baseline_transform_command_json(1.0)).unwrap();
+        command["intent"]["baseline"] = json!({ "kind": "current-uniform-affine" });
+        serde_json::to_vec(&command).unwrap()
+    }
+
     fn create_entities_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "entities": [{
@@ -1075,6 +1086,10 @@ mod tests {
                 TransformSceneEntityError::BaselineMismatch
             ))
         ));
+        assert!(
+            transform_scene_entity_json(&snapshot, &current_uniform_transform_command_json())
+                .is_ok()
+        );
 
         let mut centered = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
         let centered_target = centered

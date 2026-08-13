@@ -648,56 +648,6 @@ function isExactCreateChannel(channel: SceneIrV1["animationChannels"][number]) {
   );
 }
 
-function applyTransform(point: Point, transform: SceneEntityV1["transform"]): Point {
-  return {
-    x: transform.m11 * point.x + transform.m12 * point.y + transform.tx,
-    y: transform.m21 * point.x + transform.m22 * point.y + transform.ty,
-  };
-}
-
-function localBoundaryCenter(scene: SceneIrV1, entity: SceneEntityV1) {
-  const byId = new Map(scene.entities.map((candidate) => [candidate.id, candidate]));
-  const points = scene.entities.flatMap((candidate) => {
-    if (candidate.geometry.kind !== "cubic-path") return [];
-    const transforms: SceneEntityV1["transform"][] = [];
-    let cursor: SceneEntityV1 | undefined = candidate;
-    const seen = new Set<string>();
-    while (cursor.id !== entity.id) {
-      if (seen.has(cursor.id)) return [];
-      seen.add(cursor.id);
-      transforms.push(cursor.transform);
-      cursor = cursor.parentId === null ? undefined : byId.get(cursor.parentId);
-      if (!cursor) return [];
-    }
-    return candidate.geometry.path.subpaths.flatMap((subpath) =>
-      [subpath.start, ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end])].map(
-        (point) => transforms.reduce((transformed, transform) => applyTransform(transformed, transform), point),
-      ),
-    );
-  });
-  if (points.length === 0) return null;
-  return {
-    x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
-    y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
-  };
-}
-
-function uniformSourceTransform(entity: SceneEntityV1, localCenter: Point) {
-  const { m11, m12, m21, m22, tx, ty } = entity.transform;
-  const tolerance = Number.EPSILON * Math.max(1, Math.abs(m11), Math.abs(m22)) * 32;
-  if (
-    ![m11, m12, m21, m22, tx, ty].every(Number.isFinite) ||
-    m11 <= 0 ||
-    m12 !== 0 ||
-    m21 !== 0 ||
-    Math.abs(m11 - m22) > tolerance
-  ) {
-    return null;
-  }
-  const worldCenter = { x: m11 * localCenter.x + tx, y: m22 * localCenter.y + ty };
-  return Number.isFinite(worldCenter.x) && Number.isFinite(worldCenter.y) ? { scale: m11, worldCenter } : null;
-}
-
 function operationIssueCode(
   kind: ProposedState["programs"][number]["program"]["operations"][number]["kind"],
 ): StudioPreviewTemporalRebaseIssueCode {
@@ -963,43 +913,31 @@ export async function compileStudioPreviewImportedAnimationEdit(
   if (planned.kind !== "supported") return planned;
   const { edit } = planned;
   const target = scene.entities.find(({ id }) => id === edit.runtimeEntityId);
-  const center = target ? localBoundaryCenter(scene, target) : null;
-  if (!target || !center) {
-    return unsupported("geometry-edit-unsupported", "The imported animation target has no bounded cubic geometry.");
-  }
-  const sourceTransform = uniformSourceTransform(target, center);
-  if (!sourceTransform) {
+  if (
+    !target ||
+    target.parentId !== null ||
+    target.geometry.kind !== "cubic-path" ||
+    scene.entities.some(({ parentId }) => parentId === target.id)
+  ) {
     return unsupported(
-      "profile-unsupported",
-      "Imported animation entities must use a finite positive uniform transform without rotation or shear.",
+      "geometry-edit-unsupported",
+      "Imported animation editing requires one direct root cubic geometry.",
     );
   }
   const targetCenter = edit.position
     ? studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center)
-    : sourceTransform.worldCenter;
-  const delta = {
-    x: targetCenter.x - sourceTransform.worldCenter.x,
-    y: targetCenter.y - sourceTransform.worldCenter.y,
-  };
+    : undefined;
   const scaleFactor = edit.scaleFactor === null || edit.scaleFactor === 1 ? null : edit.scaleFactor;
-  if (
-    !Number.isFinite(delta.x) ||
-    !Number.isFinite(delta.y) ||
-    (scaleFactor === null && delta.x === 0 && delta.y === 0)
-  ) {
-    return unsupported("profile-unsupported", "The imported animation transform is not finite and positive.");
-  }
   const provenanceId = `studio-imported-animation-edit:${input.sourceRevisionHash}`;
   try {
     const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
       entityId: edit.runtimeEntityId,
       expectedBaseRevision: sceneIrSourceRevisionHash(scene),
       intent: {
-        delta,
-        kind: "relative",
-        ...(scaleFactor === null
-          ? {}
-          : { scale: { pivot: sourceTransform.worldCenter, xFactor: scaleFactor, yFactor: scaleFactor } }),
+        baseline: { kind: "current-uniform-affine" },
+        kind: "from-baseline",
+        ...(scaleFactor === null ? {} : { scale: { xFactor: scaleFactor, yFactor: scaleFactor } }),
+        ...(targetCenter ? { targetCenter } : {}),
       },
       nextRevision: input.sourceRevisionHash,
       provenance: {
