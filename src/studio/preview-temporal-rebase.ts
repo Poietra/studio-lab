@@ -2,16 +2,13 @@ import {
   compileRotateSceneEntity,
   compileSetSubtreeVectorPaintAlpha,
   compileTransformSceneEntity,
+  compileTransformSceneEntityAtTime,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
+  type TransformSceneEntityAtTimeCompiler,
   type TransformSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import { canonicalRuntimeTraceF64HexV3 } from "../render-pipeline/runtime-trace-v3-digest";
-import {
-  canonicalFastManimRuntimeTraceSampleTimeV3,
-  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
-} from "../render-pipeline/runtime-trace-v3-shared-contract";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
@@ -45,11 +42,11 @@ type AuthorizedImportedAnimationEdit = Readonly<{
 }>;
 
 /**
- * Source-bound Runtime Trace evidence for one bounded initial edit. Studio may
+ * Source-bound Runtime Trace evidence for one bounded endpoint edit. Studio may
  * expose only the operations declared by these capabilities; the server still
  * re-derives the source edit and verifies a fresh trace before export.
  */
-export type StudioPreviewGenericInitialEditCandidate = Readonly<{
+export type StudioPreviewRuntimeTraceEditCandidate = Readonly<{
   baseCenter: Point;
   /** Runtime endpoint dimensions in Scene units; never an assumed scale=1. */
   baseDimensions: Readonly<{ height: number; width: number }>;
@@ -57,51 +54,57 @@ export type StudioPreviewGenericInitialEditCandidate = Readonly<{
   baseOpacity: number | null;
   bindingId: string;
   duration: number;
-  capabilities: StudioPreviewInitialEditCapabilities;
-  initialEntityProjection: Readonly<{
+  capabilities: StudioPreviewRuntimeTraceEditCapabilities;
+  entityProjection: Readonly<{
     baseCenter: Point;
     kind: "source-position-and-lifetime";
-    lifetime: Readonly<{ end: number; start: 0 }>;
+    lifetime: Readonly<{ end: number; start: number }>;
   }>;
+  phase: "construction" | "settled";
   restrictionMessage: string;
   runtimeEntityId: string;
+  sourceAnchor: number;
   studioEntityId: string;
   studioSceneId: string;
   targetSourceName: string;
   targetType: string | null;
 }>;
 
-export type StudioPreviewInitialEditCapabilities = Readonly<{
+export type StudioPreviewRuntimeTraceEditCapabilities = Readonly<{
   paintOpacity: boolean;
   rotation: boolean;
   uniformScale: boolean;
 }>;
 
-const NO_INITIAL_EDIT_CAPABILITIES = {
+const NO_RUNTIME_TRACE_EDIT_CAPABILITIES = {
   paintOpacity: false,
   rotation: false,
   uniformScale: false,
-} as const satisfies StudioPreviewInitialEditCapabilities;
+} as const satisfies StudioPreviewRuntimeTraceEditCapabilities;
 
-export function studioPreviewInitialEditBaseCenter(authority: StudioPreviewGenericInitialEditCandidate): Point | null {
-  const projection = authority.initialEntityProjection;
+export function studioPreviewRuntimeTraceEditBaseCenter(
+  authority: StudioPreviewRuntimeTraceEditCandidate,
+): Point | null {
+  const projection = authority.entityProjection;
   return "baseCenter" in projection ? projection.baseCenter : null;
 }
 
-export type StudioPreviewGenericInitialEdit =
+export type StudioPreviewRuntimeTraceEdit =
   | Readonly<{ kind: "move"; position: Point }>
   | Readonly<{ kind: "opacity"; opacity: number }>
   | Readonly<{ kind: "resize"; scaleFactor: number }>
   | Readonly<{ angleRadians: number; kind: "rotation" }>;
 
-export type StudioPreviewGenericInitialEditProgramSet =
+export type StudioPreviewRuntimeTraceEditProgramSet =
   | Readonly<{ kind: "none" }>
   | Readonly<{
-      candidate: StudioPreviewGenericInitialEditCandidate;
-      edit: StudioPreviewGenericInitialEdit;
+      candidate: StudioPreviewRuntimeTraceEditCandidate;
+      edit: StudioPreviewRuntimeTraceEdit;
       kind: "authorized";
     }>
   | Readonly<{ kind: "unauthorized" }>;
+
+export type StudioPreviewRuntimeTraceProgramValidation = "authorized" | "not-applicable" | "rejected";
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCode, message: string) {
   return { issue: { code, message }, kind: "unsupported" } as const;
@@ -201,9 +204,11 @@ function genericRuntimeTraceSubtreePaintEvidence(scene: SceneIrV1, rootId: strin
  * candidate. Each candidate rechecks every fact it consumes. Updater-conflicted
  * or degenerate mappings mint no candidate, so their roots stay selection-only.
  */
-export function studioPreviewGenericInitialEditCandidates(
+export function studioPreviewRuntimeTraceEditCandidates(
   snapshot: StudioVerifiedPreviewSnapshotV1,
-): readonly StudioPreviewGenericInitialEditCandidate[] {
+  sourceAnchor: number,
+  sourceEvents: RuntimeSceneState["eventTrack"]["events"],
+): readonly StudioPreviewRuntimeTraceEditCandidate[] {
   if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return [];
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size === 0) return [];
@@ -221,7 +226,7 @@ export function studioPreviewGenericInitialEditCandidates(
   // that aliases one runtime root under two names is never edit evidence.
   const mappedEntityIds = [...identity.values()].map(({ entityId }) => entityId);
   if (new Set(mappedEntityIds).size !== mappedEntityIds.length) return [];
-  const candidates: StudioPreviewGenericInitialEditCandidate[] = [];
+  const candidates: StudioPreviewRuntimeTraceEditCandidate[] = [];
   for (const [sourceName, mapping] of identity) {
     const evidence = mapping.runtimeTraceEvidence;
     if (mapping.sourceName !== sourceName || !evidence || evidence.updaterStatus !== "none") continue;
@@ -233,15 +238,14 @@ export function studioPreviewGenericInitialEditCandidates(
       root.geometry.kind !== "group" ||
       root.lifetimes.length !== 1 ||
       !lifetime ||
-      lifetime.start !== 0 ||
+      !Number.isFinite(lifetime.start) ||
+      lifetime.start < 0 ||
       !Number.isFinite(lifetime.end) ||
-      lifetime.end <= 0
+      lifetime.end <= lifetime.start
     ) {
       continue;
     }
     const { initial, terminal } = evidence.endpoints;
-    const terminalEndFrameValue = lifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
-    const terminalFrame = Math.round(terminalEndFrameValue) - 1;
     const finiteEndpoint = (endpoint: typeof initial) =>
       [
         endpoint.center.x,
@@ -255,13 +259,8 @@ export function studioPreviewGenericInitialEditCandidates(
     if (
       !finiteEndpoint(initial) ||
       !finiteEndpoint(terminal) ||
-      initial.frameIndex !== 0 ||
-      initial.sampleTime !== 0 ||
-      terminalFrame < 0 ||
-      Math.abs(terminalEndFrameValue - (terminalFrame + 1)) > Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) ||
-      terminal.frameIndex !== terminalFrame ||
-      canonicalRuntimeTraceF64HexV3(terminal.sampleTime) !==
-        canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame))
+      terminal.frameIndex < initial.frameIndex ||
+      terminal.sampleTime < initial.sampleTime
     ) {
       continue;
     }
@@ -270,6 +269,34 @@ export function studioPreviewGenericInitialEditCandidates(
     // animation's partial frame-zero box is evidence-gated above but never
     // the manipulation anchor.
     const paintEvidence = genericRuntimeTraceSubtreePaintEvidence(snapshot.snapshot.scene, mapping.entityId);
+    const constructionEligible = initial.frameIndex === 0 && initial.sampleTime === 0 && lifetime.start === 0;
+    const settledWaits = sourceEvents.filter(
+      (event) =>
+        event.kind === "wait" &&
+        event.operationId === undefined &&
+        event.transactionId === undefined &&
+        event.interval !== undefined &&
+        Number.isFinite(event.interval.start) &&
+        Number.isFinite(event.interval.end) &&
+        closeEnough(event.interval.end, snapshot.duration) &&
+        event.interval.start <= terminal.sampleTime &&
+        terminal.sampleTime < event.interval.end &&
+        event.interval.start >= lifetime.start &&
+        event.interval.start < lifetime.end,
+    );
+    const settledWait = settledWaits.length === 1 ? settledWaits[0]!.interval! : null;
+    const settledSourceAnchor = settledWait?.start ?? null;
+    const playheadInsideSettledWait =
+      settledWait !== null && sourceAnchor >= settledWait.start && sourceAnchor < settledWait.end;
+    const phase = closeEnough(sourceAnchor, 0)
+      ? constructionEligible
+        ? "construction"
+        : null
+      : settledSourceAnchor !== null && playheadInsideSettledWait
+        ? "settled"
+        : null;
+    if (phase === null) continue;
+    const constructionEdit = phase === "construction";
     candidates.push({
       baseCenter: scenePointToStudioPoint(
         terminal.center,
@@ -280,24 +307,27 @@ export function studioPreviewGenericInitialEditCandidates(
       baseOpacity: paintEvidence.baseOpacity,
       bindingId: mapping.bindingId,
       capabilities: {
-        ...NO_INITIAL_EDIT_CAPABILITIES,
-        paintOpacity: paintEvidence.opacityEditable,
-        rotation: true,
+        ...NO_RUNTIME_TRACE_EDIT_CAPABILITIES,
+        paintOpacity: constructionEdit && paintEvidence.opacityEditable,
+        rotation: constructionEdit,
         uniformScale: true,
       },
       duration: snapshot.duration,
-      initialEntityProjection: {
+      entityProjection: {
         baseCenter: scenePointToStudioPoint(
           terminal.center,
           { height: camera.frameHeight, width: camera.frameWidth },
           camera.center,
         ),
         kind: "source-position-and-lifetime",
-        lifetime: { end: lifetime.end, start: 0 },
+        lifetime: { end: lifetime.end, start: lifetime.start },
       },
-      restrictionMessage:
-        "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only.",
+      phase,
+      restrictionMessage: constructionEdit
+        ? "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only."
+        : "The settled Runtime Trace target supports position and positive uniform scale at its verified terminal frame.",
       runtimeEntityId: mapping.entityId,
+      sourceAnchor: constructionEdit ? 0 : settledSourceAnchor!,
       studioEntityId: `source:${context.sourcePath}#${context.sceneName}:${sourceName}`,
       studioSceneId: `${context.sourcePath}#${context.sceneName}`,
       targetSourceName: sourceName,
@@ -307,10 +337,10 @@ export function studioPreviewGenericInitialEditCandidates(
   return candidates;
 }
 
-function genericInitialEditProgram(
+function runtimeTraceEditProgram(
   record: ProgramRecord,
-  candidate: StudioPreviewGenericInitialEditCandidate,
-): StudioPreviewGenericInitialEdit | null {
+  candidate: StudioPreviewRuntimeTraceEditCandidate,
+): StudioPreviewRuntimeTraceEdit | null {
   const program = record.program;
   const operation = program.operations[0];
   if (
@@ -325,17 +355,19 @@ function genericInitialEditProgram(
     program.schedule.edges.length !== 0 ||
     program.schedule.order.length !== 1 ||
     program.schedule.order[0] !== operation.id ||
-    program.anchor.capturedPlayhead !== 0 ||
-    program.anchor.resolvedSeconds !== 0 ||
+    !closeEnough(program.anchor.capturedPlayhead, candidate.sourceAnchor) ||
+    !closeEnough(program.anchor.resolvedSeconds, candidate.sourceAnchor) ||
     !(
-      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
-      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0)
+      (program.anchor.source.kind === "absolute" &&
+        closeEnough(program.anchor.source.seconds, candidate.sourceAnchor)) ||
+      (program.anchor.source.kind === "playhead" &&
+        closeEnough(program.anchor.source.referenceSeconds, candidate.sourceAnchor))
     ) ||
     !("entityId" in operation) ||
     operation.entityId !== candidate.studioEntityId ||
     operation.dependsOn.length !== 0 ||
-    operation.interval.start !== 0 ||
-    operation.interval.end !== 0 ||
+    !closeEnough(operation.interval.start, candidate.sourceAnchor) ||
+    !closeEnough(operation.interval.end, candidate.sourceAnchor) ||
     operation.provenance.origin !== "direct-manipulation"
   ) {
     return null;
@@ -358,6 +390,7 @@ function genericInitialEditProgram(
   if (
     operation.kind === "AnimateProperty" &&
     operation.key === "rotation" &&
+    candidate.capabilities.rotation &&
     operation.control === undefined &&
     typeof operation.from === "number" &&
     typeof operation.to === "number" &&
@@ -400,10 +433,10 @@ function genericInitialEditProgram(
  * it does not verify Python source authority; the fresh-source V3 lowerer
  * owns that decision and must reject independently.
  */
-export function studioPreviewGenericInitialEditProgramSet(
+export function studioPreviewRuntimeTraceEditProgramSet(
   records: readonly ProgramRecord[],
-  candidates: readonly StudioPreviewGenericInitialEditCandidate[],
-): StudioPreviewGenericInitialEditProgramSet {
+  candidates: readonly StudioPreviewRuntimeTraceEditCandidate[],
+): StudioPreviewRuntimeTraceEditProgramSet {
   if (records.length === 0) return { kind: "none" };
   if (records.length !== 1 || candidates.length === 0) return { kind: "unauthorized" };
   const record = records[0]!;
@@ -412,13 +445,33 @@ export function studioPreviewGenericInitialEditProgramSet(
   const matching = candidates.filter(({ studioEntityId }) => studioEntityId === targetEntityId);
   const candidate = matching[0];
   if (matching.length !== 1 || !candidate) return { kind: "unauthorized" };
-  const edit = genericInitialEditProgram(record, candidate);
+  const edit = runtimeTraceEditProgram(record, candidate);
   return edit ? { candidate, edit, kind: "authorized" } : { kind: "unauthorized" };
 }
 
-function studioInitialEditTargetMatches(
+/**
+ * Binds Runtime Trace validation to the staged Program and verified snapshot,
+ * rather than to the current playhead. Scrubbing away from an edit endpoint
+ * must never downgrade the same Program to ordinary source lowering.
+ */
+export function studioPreviewRuntimeTraceProgramValidation(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  records: readonly ProgramRecord[],
+  sourceEvents: RuntimeSceneState["eventTrack"]["events"],
+): StudioPreviewRuntimeTraceProgramValidation {
+  const source = snapshot.snapshot.scene.source;
+  if (source.kind !== "imported-manim-runtime-trace" || source.traceVersion !== 3 || records.length === 0) {
+    return "not-applicable";
+  }
+  const sourceAnchor = records[0]?.program.anchor.resolvedSeconds;
+  if (sourceAnchor === undefined) return "rejected";
+  const candidates = studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents);
+  return studioPreviewRuntimeTraceEditProgramSet(records, candidates).kind === "authorized" ? "authorized" : "rejected";
+}
+
+function studioRuntimeTraceEditTargetMatches(
   entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
-  authority: StudioPreviewGenericInitialEditCandidate,
+  authority: StudioPreviewRuntimeTraceEditCandidate,
 ) {
   return (
     entity?.id === authority.studioEntityId &&
@@ -431,25 +484,32 @@ function studioInitialEditTargetMatches(
 }
 
 /** Projects only the exact runtime-backed edit target into Studio's interaction UI. */
-export function projectStudioPreviewInitialEntityPresence(
+export function projectStudioPreviewRuntimeTraceEntityPresence(
   entities: readonly ProjectedEntity[],
-  authority: StudioPreviewGenericInitialEditCandidate | null,
+  authority: StudioPreviewRuntimeTraceEditCandidate | null,
   interactionGeometry: ReadonlyMap<string, unknown> | null,
   _sampleTime: number,
 ) {
   if (!authority || !interactionGeometry?.has(authority.runtimeEntityId)) {
     return entities;
   }
-  const projection = authority.initialEntityProjection;
+  const projection = authority.entityProjection;
   const target = entities.find(({ id }) => id === authority.studioEntityId);
-  if (!target || !studioInitialEditTargetMatches(target, authority)) return entities;
+  if (!target || !studioRuntimeTraceEditTargetMatches(target, authority)) return entities;
+  // One is a normalized basis for the candidate's relative scale factor, not
+  // a claim about the absolute scale computed by Python source.
   return entities.map((entity) =>
     entity.id === target.id
       ? {
           ...entity,
-          geometry: { ...entity.geometry, position: { kind: "known" as const, value: projection.baseCenter } },
+          geometry: {
+            ...entity.geometry,
+            position: { kind: "known" as const, value: projection.baseCenter },
+            ...(authority.capabilities.uniformScale ? { scale: { kind: "known" as const, value: 1 } } : {}),
+          },
           position: projection.baseCenter,
           present: true,
+          ...(authority.capabilities.uniformScale ? { scale: 1 } : {}),
         }
       : entity,
   );
@@ -457,19 +517,25 @@ export function projectStudioPreviewInitialEntityPresence(
 
 /**
  * Supplies runtime-proven lifetime evidence only to validation of the exact
- * initial edit. The imported base remains untouched.
+ * endpoint edit. The imported base remains untouched.
  */
-export function projectStudioPreviewInitialValidationScene(
+export function projectStudioPreviewRuntimeTraceValidationScene(
   scene: RuntimeSceneState,
-  authority: StudioPreviewGenericInitialEditCandidate | null,
+  authority: StudioPreviewRuntimeTraceEditCandidate | null,
 ) {
   if (!authority || scene.duration !== authority.duration || scene.sceneId !== authority.studioSceneId) return scene;
-  const projection = authority.initialEntityProjection;
+  const projection = authority.entityProjection;
   const target = scene.objectGraph.entities[authority.studioEntityId];
-  if (!studioInitialEditTargetMatches(target, authority) || !target.geometry) return scene;
+  if (!studioRuntimeTraceEditTargetMatches(target, authority) || !target.geometry) return scene;
+  // The server applies and verifies only the relative factor. Supply its
+  // normalized authoring basis inside this candidate-scoped validation copy.
   const projectedTarget: RuntimeSceneState["objectGraph"]["entities"][string] = {
     ...target,
-    geometry: { ...target.geometry, position: { kind: "known", value: projection.baseCenter } },
+    geometry: {
+      ...target.geometry,
+      position: { kind: "known", value: projection.baseCenter },
+      ...(authority.capabilities.uniformScale ? { scale: { kind: "known" as const, value: 1 } } : {}),
+    },
     lifetime: [projection.lifetime],
   };
   const propertyChannels = Object.fromEntries(
@@ -503,13 +569,16 @@ export function projectStudioPreviewInitialValidationScene(
   };
 }
 
-export function studioPreviewInitialEditTargetIsPresent(
+export function studioPreviewRuntimeTraceEditTargetIsPresent(
   scene: RuntimeSceneState,
   entityId: string,
   sourceTime: number,
-  authority: StudioPreviewGenericInitialEditCandidate | null,
+  authority: StudioPreviewRuntimeTraceEditCandidate | null,
 ) {
-  const projected = sourceTime === 0 ? projectStudioPreviewInitialValidationScene(scene, authority) : scene;
+  const projected =
+    authority && closeEnough(sourceTime, authority.sourceAnchor)
+      ? projectStudioPreviewRuntimeTraceValidationScene(scene, authority)
+      : scene;
   return (
     projected.objectGraph.entities[entityId]?.lifetime.some(
       (interval) => sourceTime >= interval.start - 0.0005 && sourceTime < interval.end,
@@ -517,9 +586,15 @@ export function studioPreviewInitialEditTargetIsPresent(
   );
 }
 
-/** Returns the synthetic t=0 authoring anchor minted by Runtime Trace evidence. */
-export function studioPreviewSyntheticInitialEditAnchor(snapshot: StudioVerifiedPreviewSnapshotV1) {
-  return studioPreviewGenericInitialEditCandidates(snapshot).length > 0 ? 0 : null;
+/** Returns the exact authoring anchor minted by Runtime Trace endpoint evidence. */
+export function studioPreviewRuntimeTraceEditAnchor(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  sourceAnchor: number,
+  sourceEvents: RuntimeSceneState["eventTrack"]["events"],
+) {
+  const candidates = studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents);
+  const candidateSourceAnchors = new Set(candidates.map((candidate) => candidate.sourceAnchor));
+  return candidateSourceAnchors.size === 1 ? candidates[0]!.sourceAnchor : null;
 }
 
 function studioPointToScenePoint(
@@ -945,11 +1020,11 @@ export async function compileStudioPreviewImportedAnimationEdit(
 }
 
 /**
- * Reprojects one authorized t=0 transform or absolute paint opacity onto the
- * verified Runtime Trace hierarchy. Transform edits stay on the root group;
- * opacity edits preserve every descendant paint style except color alpha.
+ * Reprojects one endpoint-authorized edit onto the verified Runtime Trace
+ * hierarchy. Construction edits mutate the root transform; settled edits add
+ * one exact-time root transform in Rust so every earlier frame stays intact.
  */
-export async function compileStudioPreviewGenericInitialEdit(
+export async function compileStudioPreviewRuntimeTraceEdit(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
@@ -958,11 +1033,20 @@ export async function compileStudioPreviewGenericInitialEdit(
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
     transformCompiler?: TransformSceneEntityCompiler;
+    transformAtTimeCompiler?: TransformSceneEntityAtTimeCompiler;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
-  const candidates = studioPreviewGenericInitialEditCandidates(input.snapshot);
+  const sourceAnchor = input.proposedState.programs[0]?.program.anchor.resolvedSeconds;
+  const candidates =
+    sourceAnchor === undefined
+      ? []
+      : studioPreviewRuntimeTraceEditCandidates(
+          input.snapshot,
+          sourceAnchor,
+          input.proposedState.base.runtimeSceneState.eventTrack.events,
+        );
   if (candidates.length === 0) {
-    return unsupported("source-correlation-invalid", "Runtime Trace initial-edit evidence is unavailable.");
+    return unsupported("source-correlation-invalid", "Runtime Trace edit evidence is unavailable at this time.");
   }
   const scene = input.snapshot.snapshot.scene;
   const context = input.snapshot.correlation.context;
@@ -981,14 +1065,14 @@ export async function compileStudioPreviewGenericInitialEdit(
   ) {
     return unsupported(
       "source-correlation-invalid",
-      "Studio state is not correlated with the Runtime Trace initial-edit evidence.",
+      "Studio state is not correlated with the Runtime Trace edit evidence.",
     );
   }
-  const programSet = studioPreviewGenericInitialEditProgramSet(input.proposedState.programs, candidates);
+  const programSet = studioPreviewRuntimeTraceEditProgramSet(input.proposedState.programs, candidates);
   if (programSet.kind !== "authorized") {
     return unsupported(
       "target-edit-unsupported",
-      "Runtime Trace permits exactly one initial position move, uniform resize, rotation, or static-paint opacity edit.",
+      "Runtime Trace permits one position move or uniform resize at this verified endpoint; construction-time evidence may also permit rotation or opacity.",
     );
   }
   const candidate = programSet.candidate;
@@ -998,19 +1082,19 @@ export async function compileStudioPreviewGenericInitialEdit(
     return unsupported("identity-unverified", "The Runtime Trace edit target is not its verified root group.");
   }
   const edit = programSet.edit;
-  const provenanceId = `studio-runtime-trace-initial-${edit.kind}:${input.sourceRevisionHash}`;
+  const provenanceId = `studio-runtime-trace-${candidate.phase}-${edit.kind}:${input.sourceRevisionHash}`;
   if (scene.provenance.some(({ id }) => id === provenanceId)) {
-    return unsupported("conflicting-edit-unsupported", "The initial-edit provenance identity already exists.");
+    return unsupported("conflicting-edit-unsupported", "The Runtime Trace edit provenance identity already exists.");
   }
   const provenance = {
     evidence: [
       edit.kind === "move"
-        ? "Studio t=0 position request projected onto one verified Runtime Trace root"
+        ? `Studio ${candidate.phase} position request projected onto one verified Runtime Trace root`
         : edit.kind === "opacity"
-          ? "Studio t=0 absolute opacity request projected onto static vector paints in one verified Runtime Trace root"
+          ? "Studio construction-time absolute opacity request projected onto static vector paints in one verified Runtime Trace root"
           : edit.kind === "resize"
-            ? "Studio t=0 uniform resize request projected onto one verified Runtime Trace root"
-            : "Studio t=0 planar rotation request projected onto one verified Runtime Trace root",
+            ? `Studio ${candidate.phase} uniform resize request projected onto one verified Runtime Trace root`
+            : "Studio construction-time planar rotation request projected onto one verified Runtime Trace root",
       `source binding ${candidate.bindingId}`,
       `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
     ],
@@ -1053,15 +1137,27 @@ export async function compileStudioPreviewGenericInitialEdit(
     const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
     const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
     try {
-      const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-        delta,
-        entityId: target.id,
-        expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-        nextRevision: input.sourceRevisionHash,
-        provenance,
-        schema: "poietra.transform-scene-entity",
-        version: 1,
-      });
+      const rebased =
+        candidate.phase === "construction"
+          ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
+              delta,
+              entityId: target.id,
+              expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+              nextRevision: input.sourceRevisionHash,
+              provenance,
+              schema: "poietra.transform-scene-entity",
+              version: 1,
+            })
+          : await (input.transformAtTimeCompiler ?? compileTransformSceneEntityAtTime)(input.snapshot.snapshot, {
+              at: candidate.sourceAnchor,
+              delta,
+              entityId: target.id,
+              expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+              nextRevision: input.sourceRevisionHash,
+              provenance,
+              schema: "poietra.transform-scene-entity-at-time",
+              version: 1,
+            });
       return { kind: "rebased", scene: rebased.scene };
     } catch (error) {
       return unsupported(
@@ -1091,16 +1187,26 @@ export async function compileStudioPreviewGenericInitialEdit(
     }
   }
   try {
-    const rebased = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
+    const command = {
       delta: { x: 0, y: 0 },
       entityId: target.id,
       expectedBaseRevision: sceneIrSourceRevisionHash(scene),
       nextRevision: input.sourceRevisionHash,
       provenance,
-      schema: "poietra.transform-scene-entity",
       scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
-      version: 1,
-    });
+      version: 1 as const,
+    };
+    const rebased =
+      candidate.phase === "construction"
+        ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
+            ...command,
+            schema: "poietra.transform-scene-entity",
+          })
+        : await (input.transformAtTimeCompiler ?? compileTransformSceneEntityAtTime)(input.snapshot.snapshot, {
+            ...command,
+            at: candidate.sourceAnchor,
+            schema: "poietra.transform-scene-entity-at-time",
+          });
     return { kind: "rebased", scene: rebased.scene };
   } catch (error) {
     return unsupported(

@@ -301,21 +301,7 @@ export function RenderPipelinePanel({
     activeMutationTarget.current = target;
     mutationRequest.current = controller;
     try {
-      const started = await startManimRender(
-        {
-          ...(targetCandidate.cameraCenter ? { cameraCenter: targetCandidate.cameraCenter } : {}),
-          destination: targetCandidate.destination,
-          program: targetCandidate.program,
-          programs: targetCandidate.programs,
-          projectId: targetCandidate.projectId,
-          sceneName: targetCandidate.sceneName,
-          sourceBindings: targetCandidate.sourceBindings,
-          sourceHash: targetCandidate.sourceHash,
-          sourcePath: targetCandidate.sourcePath,
-          viewport: targetCandidate.viewport,
-        },
-        controller.signal,
-      );
+      const started = await startManimRender(renderCandidateRequest(targetCandidate), controller.signal);
       if (!renderSessionMatchesCandidate(started, targetCandidate)) {
         const residualSession = await cleanUpStaleRenderSession(started);
         if (residualSession) {
@@ -360,21 +346,7 @@ export function RenderPipelinePanel({
     mutationRequest.current = controller;
     try {
       const exported = targetCandidate
-        ? await exportManimSource(
-            {
-              ...(targetCandidate.cameraCenter ? { cameraCenter: targetCandidate.cameraCenter } : {}),
-              destination: targetCandidate.destination,
-              program: targetCandidate.program,
-              programs: targetCandidate.programs,
-              projectId: targetCandidate.projectId,
-              sceneName: targetCandidate.sceneName,
-              sourceBindings: targetCandidate.sourceBindings,
-              sourceHash: targetCandidate.sourceHash,
-              sourcePath: targetCandidate.sourcePath,
-              viewport: targetCandidate.viewport,
-            },
-            controller.signal,
-          )
+        ? await exportManimSource(renderCandidateRequest(targetCandidate), controller.signal)
         : await exportOriginalManimSource(targetSourceExport!, controller.signal);
       if (!mutationIsCurrent(controller, target)) return;
       const desktopSaved = await savePythonSourceWithDesktop(exported.fileName, exported.source);

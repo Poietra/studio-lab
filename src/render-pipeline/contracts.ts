@@ -77,6 +77,10 @@ const programRenderRequestBaseSchema = z.object({
     .nullable(),
   projectId: manimProjectIdSchema,
   sceneName: manimSceneNameSchema,
+  // This is an untrusted request for a stricter server-side validation path,
+  // never proof that Runtime Trace authorized the edit. The server re-derives
+  // that authority from the current source and fresh producer evidence.
+  sourceValidation: z.literal("runtime-trace").optional(),
   sourceBindings: z
     .array(
       z

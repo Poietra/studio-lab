@@ -113,9 +113,9 @@ function policy(
 }
 
 describe("render pipeline lifecycle policy", () => {
-  it("uses an exact producer-backed t=0 authority without claiming a source marker", () => {
+  it("uses an exact Runtime Trace endpoint without claiming a source marker", () => {
     const withoutAuthority = candidate({ anchors: [] });
-    const withAuthority = candidate({ anchors: [], verifiedInitialEditAnchor: 0 });
+    const withAuthority = candidate({ anchors: [], sourceValidation: "runtime-trace" });
     const initialProgram = {
       ...withAuthority.program,
       anchor: {
@@ -129,71 +129,34 @@ describe("render pipeline lifecycle policy", () => {
 
     expect(renderCandidateMissingAnchor(withoutAuthority)).toBe(1);
     expect(renderCandidateMissingAnchor(exact)).toBeNull();
-    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedInitialEditAnchor");
+    expect(renderCandidateRequest(exact)).toHaveProperty("sourceValidation", "runtime-trace");
   });
 
-  it("uses only the exact correlated Updaters terminal authority without widening source anchors", () => {
-    const terminalProgram = {
+  it("uses the Canonical Program anchor as the requested Runtime Trace validation time", () => {
+    const endpointProgram = {
       ...program(),
       anchor: {
         ...program().anchor,
-        capturedPlayhead: 5,
-        resolvedSeconds: 5,
-        source: { kind: "playhead" as const, referenceSeconds: 5 },
+        capturedPlayhead: 5.75,
+        resolvedSeconds: 5.75,
+        source: { kind: "playhead" as const, referenceSeconds: 5.75 },
       },
     };
     const exact = candidate({
       anchors: [],
-      program: terminalProgram,
-      programs: [terminalProgram],
-      sceneName: "UpdatersExample",
-      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-      sourcePath: "example_scenes/basic.py",
-      verifiedRuntimeTraceTerminalEdit: { profile: "updaters-terminal-v1", sourceAnchor: 5 },
+      program: endpointProgram,
+      programs: [endpointProgram],
+      sourceValidation: "runtime-trace",
     });
     const otherTime = {
       ...exact,
-      program: { ...terminalProgram, anchor: { ...terminalProgram.anchor, resolvedSeconds: 4.99 } },
-      programs: [{ ...terminalProgram, anchor: { ...terminalProgram.anchor, resolvedSeconds: 4.99 } }],
+      program: { ...endpointProgram, anchor: { ...endpointProgram.anchor, resolvedSeconds: 5.7 } },
+      programs: [{ ...endpointProgram, anchor: { ...endpointProgram.anchor, resolvedSeconds: 5.7 } }],
     };
 
     expect(renderCandidateMissingAnchor(exact)).toBeNull();
-    expect(renderCandidateMissingAnchor(otherTime)).toBe(4.99);
-    expect(renderCandidateRequest(exact)).not.toHaveProperty("verifiedRuntimeTraceTerminalEdit");
-  });
-
-  it("binds the OpeningManim terminal proof to its exact Scene and t=14 anchor", () => {
-    const terminalProgram = {
-      ...program(),
-      anchor: {
-        ...program().anchor,
-        capturedPlayhead: 14,
-        resolvedSeconds: 14,
-        source: { kind: "playhead" as const, referenceSeconds: 14 },
-      },
-    };
-    const exact = candidate({
-      anchors: [],
-      program: terminalProgram,
-      programs: [terminalProgram],
-      sceneName: "OpeningManim",
-      sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-      sourcePath: "example_scenes/basic.py",
-      verifiedRuntimeTraceTerminalEdit: { profile: "opening-grid-title-terminal-v2", sourceAnchor: 14 },
-    });
-
-    expect(renderCandidateMissingAnchor(exact)).toBeNull();
-    expect(renderCandidateMissingAnchor({ ...exact, sceneName: "UpdatersExample" })).toBe(14);
-    expect(renderCandidateMissingAnchor({ ...exact, sourceHash: "b".repeat(64) })).toBe(14);
-    expect(
-      renderCandidateMissingAnchor({
-        ...exact,
-        verifiedRuntimeTraceTerminalEdit: {
-          profile: "updaters-terminal-v1",
-          sourceAnchor: 5,
-        },
-      }),
-    ).toBe(14);
+    expect(renderCandidateMissingAnchor(otherTime)).toBeNull();
+    expect(renderCandidateRequest(otherTime).program.anchor.resolvedSeconds).toBe(5.7);
   });
 
   it.each([

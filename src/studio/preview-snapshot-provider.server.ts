@@ -16,7 +16,6 @@ import {
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
 import {
-  FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER,
   FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2,
   fastManimRuntimeTraceRunViewSchema,
 } from "../render-pipeline/runtime-trace-preview-contract";
@@ -421,172 +420,92 @@ async function validateVerifiedRuntimeTraceRun(
     throw providerError("Runtime Trace must not publish unrelated asset payloads.");
   }
 
-  const expectedProfile =
-    identity.sceneName === "UpdatersExample" && source.traceVersion === 1 && bundle.scene.duration === 6
-      ? ({
-          roots: [
-            { bindingName: "square", role: "square" },
-            { bindingName: "decimal", role: "decimal" },
-          ],
-        } as const)
-      : identity.sceneName === "OpeningManim" && source.traceVersion === 2 && bundle.scene.duration === 15
-        ? ({
-            roots: [
-              { bindingName: "title", role: "title" },
-              { bindingName: "basel", role: "basel" },
-              { bindingName: "grid", role: "grid" },
-              { bindingName: "grid_title", role: "grid-title" },
-            ],
-          } as const)
-        : null;
+  if (source.traceVersion !== 3 || run.version !== 2) {
+    throw providerError("Studio requires the generic Runtime Trace authority response.");
+  }
   const entities = new Map(bundle.scene.entities.map((entity) => [entity.id, entity]));
-  if (source.traceVersion === 3) {
-    if (run.version === 1) {
-      if (
-        run.roots.length !== 0 ||
-        !bundle.scene.entities.some((entity) => entity.parentId === null && entity.geometry.kind === "group")
-      ) {
-        throw providerError("The generic Runtime Trace contains invalid preview-only roots.");
-      }
-      return {
-        bundle,
-        engineRevisionHash: run.traceDigest,
-        publicationRevision: null,
-        sourceLabel: "verified Runtime Trace (preview-only)",
-        sourceRuntimeIdentity: new Map(),
-      };
-    }
-
-    const correlatedBindings = run.roots.map((root) => ({
-      binding: root.binding,
-      endpoints: root.evidence.endpoints,
-      rootId: root.entityId,
-      updaterStatus: root.evidence.updaterStatus,
-    }));
-    const expectedCorrelationDigest = await digestRuntimeTraceDomainInBrowserV3(
-      "poietra.fast-manim-runtime-trace-source-bindings.v1",
-      {
-        sceneId: run.sceneId,
-        sourceBindings: correlatedBindings,
-        sourceHash: run.sourceHash,
-      },
-    );
-    assertEqual("source binding digest", run.producerEvidence.correlationSha256, expectedCorrelationDigest);
-    const expectedTraceDigest = await sha256Text(
-      canonicalJsonV1({
-        correlationSha256: run.producerEvidence.correlationSha256,
-        runtimeConfigHash: run.runtimeConfigHash,
-        sceneId: run.sceneId,
-        semanticsSha256: run.producerEvidence.semanticsSha256,
-        sourceHash: run.sourceHash,
-      }),
-    );
-    assertEqual("trace identity digest", run.traceDigest, expectedTraceDigest);
-
-    const sourceRuntimeIdentity = new Map<
-      string,
-      Readonly<{
-        bindingId: string;
-        entityId: string;
-        runtimeTraceEvidence: (typeof run.roots)[number]["evidence"];
-        sourceName: string;
-      }>
-    >();
-    const bindingIds = new Set<string>();
-    const runtimeEntityIds = new Set<string>();
-    for (const root of run.roots) {
-      const entity = entities.get(root.entityId);
-      const expectedBindingId = await expectedRuntimeTraceBindingIdV3(run.sourceHash, run.sceneId, root.binding);
-      if (root.binding.id !== expectedBindingId) {
-        throw providerError("The generic Runtime Trace source binding identity is stale.");
-      }
-      if (
-        sourceRuntimeIdentity.has(root.binding.name) ||
-        bindingIds.has(root.binding.id) ||
-        runtimeEntityIds.has(root.entityId)
-      ) {
-        throw providerError("The generic Runtime Trace source roots are not one-to-one.");
-      }
-      if (!entity || entity.parentId !== null || entity.geometry.kind !== "group" || entity.lifetimes.length === 0) {
-        throw providerError("The generic Runtime Trace source root is not one exact top-level runtime root.");
-      }
-      const initialLifetime = entity.lifetimes[0]!;
-      const terminalLifetime = entity.lifetimes.at(-1)!;
-      const initialFrameValue = initialLifetime.start * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
-      const terminalEndFrameValue = terminalLifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
-      const initialFrame = Math.round(initialFrameValue);
-      const terminalFrame = Math.round(terminalEndFrameValue) - 1;
-      const endpoints = root.evidence.endpoints;
-      const exactBoundary =
-        Math.abs(initialFrameValue - initialFrame) <= Number.EPSILON * 64 * Math.max(1, initialFrame) &&
-        Math.abs(terminalEndFrameValue - (terminalFrame + 1)) <= Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) &&
-        initialFrame >= 0 &&
-        terminalFrame >= initialFrame &&
-        endpoints.initial.frameIndex === initialFrame &&
-        endpoints.terminal.frameIndex === terminalFrame &&
-        canonicalRuntimeTraceF64HexV3(endpoints.initial.sampleTime) ===
-          canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(initialFrame)) &&
-        canonicalRuntimeTraceF64HexV3(endpoints.terminal.sampleTime) ===
-          canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame));
-      if (!exactBoundary) {
-        throw providerError("The generic Runtime Trace source endpoint is stale for its root lifetime.");
-      }
-      sourceRuntimeIdentity.set(root.binding.name, {
-        bindingId: root.binding.id,
-        entityId: root.entityId,
-        runtimeTraceEvidence: root.evidence,
-        sourceName: root.binding.name,
-      });
-      bindingIds.add(root.binding.id);
-      runtimeEntityIds.add(root.entityId);
-    }
-    return {
-      bundle,
-      engineRevisionHash: run.traceDigest,
-      publicationRevision: null,
-      sourceLabel: "verified Runtime Trace (preview-only)",
-      sourceRuntimeIdentity,
-    };
-  }
-  if (run.version !== 1) {
-    throw providerError("Reviewed Runtime Trace profiles must use the rolling-compatible wire V1 response.");
-  }
-  if (!expectedProfile) {
-    throw providerError("The Runtime Trace preview does not match a reviewed Scene profile.");
-  }
+  const correlatedBindings = run.roots.map((root) => ({
+    binding: root.binding,
+    endpoints: root.evidence.endpoints,
+    rootId: root.entityId,
+    updaterStatus: root.evidence.updaterStatus,
+  }));
+  const expectedCorrelationDigest = await digestRuntimeTraceDomainInBrowserV3(
+    "poietra.fast-manim-runtime-trace-source-bindings.v1",
+    {
+      sceneId: run.sceneId,
+      sourceBindings: correlatedBindings,
+      sourceHash: run.sourceHash,
+    },
+  );
+  assertEqual("source binding digest", run.producerEvidence.correlationSha256, expectedCorrelationDigest);
+  const expectedTraceDigest = await sha256Text(
+    canonicalJsonV1({
+      correlationSha256: run.producerEvidence.correlationSha256,
+      runtimeConfigHash: run.runtimeConfigHash,
+      sceneId: run.sceneId,
+      semanticsSha256: run.producerEvidence.semanticsSha256,
+      sourceHash: run.sourceHash,
+    }),
+  );
+  assertEqual("trace identity digest", run.traceDigest, expectedTraceDigest);
 
   const sourceRuntimeIdentity = new Map<
     string,
-    Readonly<{ bindingId: string; entityId: string; sourceName: string }>
+    Readonly<{
+      bindingId: string;
+      entityId: string;
+      runtimeTraceEvidence: (typeof run.roots)[number]["evidence"];
+      sourceName: string;
+    }>
   >();
-  let motionRootId: string | null = null;
-  if (run.roots.length !== expectedProfile.roots.length) {
-    throw providerError("The Runtime Trace source roots do not match the reviewed profile.");
-  }
-  for (const [index, expectedRoot] of expectedProfile.roots.entries()) {
-    const root = run.roots[index];
-    const entity = root ? entities.get(root.entityId) : undefined;
-    if (
-      !root ||
-      root.binding.name !== expectedRoot.bindingName ||
-      root.entityId !== `${canonicalSceneId}/runtime-root:${expectedRoot.role}` ||
-      !entity ||
-      entity.geometry.kind !== "group" ||
-      entity.parentId === null ||
-      (motionRootId !== null && entity.parentId !== motionRootId)
-    ) {
-      throw providerError("The Runtime Trace source roots do not name the exact reviewed nested groups.");
+  const bindingIds = new Set<string>();
+  const runtimeEntityIds = new Set<string>();
+  for (const root of run.roots) {
+    const entity = entities.get(root.entityId);
+    const expectedBindingId = await expectedRuntimeTraceBindingIdV3(run.sourceHash, run.sceneId, root.binding);
+    if (root.binding.id !== expectedBindingId) {
+      throw providerError("The generic Runtime Trace source binding identity is stale.");
     }
-    motionRootId = entity.parentId;
-    sourceRuntimeIdentity.set(expectedRoot.bindingName, {
+    if (
+      sourceRuntimeIdentity.has(root.binding.name) ||
+      bindingIds.has(root.binding.id) ||
+      runtimeEntityIds.has(root.entityId)
+    ) {
+      throw providerError("The generic Runtime Trace source roots are not one-to-one.");
+    }
+    if (!entity || entity.parentId !== null || entity.geometry.kind !== "group" || entity.lifetimes.length === 0) {
+      throw providerError("The generic Runtime Trace source root is not one exact top-level runtime root.");
+    }
+    const initialLifetime = entity.lifetimes[0]!;
+    const terminalLifetime = entity.lifetimes.at(-1)!;
+    const initialFrameValue = initialLifetime.start * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+    const terminalEndFrameValue = terminalLifetime.end * FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3;
+    const initialFrame = Math.round(initialFrameValue);
+    const terminalFrame = Math.round(terminalEndFrameValue) - 1;
+    const endpoints = root.evidence.endpoints;
+    const exactBoundary =
+      Math.abs(initialFrameValue - initialFrame) <= Number.EPSILON * 64 * Math.max(1, initialFrame) &&
+      Math.abs(terminalEndFrameValue - (terminalFrame + 1)) <= Number.EPSILON * 64 * Math.max(1, terminalFrame + 1) &&
+      initialFrame >= 0 &&
+      terminalFrame >= initialFrame &&
+      endpoints.initial.frameIndex === initialFrame &&
+      endpoints.terminal.frameIndex === terminalFrame &&
+      canonicalRuntimeTraceF64HexV3(endpoints.initial.sampleTime) ===
+        canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(initialFrame)) &&
+      canonicalRuntimeTraceF64HexV3(endpoints.terminal.sampleTime) ===
+        canonicalRuntimeTraceF64HexV3(canonicalFastManimRuntimeTraceSampleTimeV3(terminalFrame));
+    if (!exactBoundary) {
+      throw providerError("The generic Runtime Trace source endpoint is stale for its root lifetime.");
+    }
+    sourceRuntimeIdentity.set(root.binding.name, {
       bindingId: root.binding.id,
       entityId: root.entityId,
-      sourceName: expectedRoot.bindingName,
+      runtimeTraceEvidence: root.evidence,
+      sourceName: root.binding.name,
     });
-  }
-  const motionRoot = motionRootId === null ? undefined : entities.get(motionRootId);
-  if (!motionRoot || motionRoot.geometry.kind !== "group" || motionRoot.parentId !== null) {
-    throw providerError("The Runtime Trace source roots do not share one top-level motion group.");
+    bindingIds.add(root.binding.id);
+    runtimeEntityIds.add(root.entityId);
   }
   return {
     bundle,
@@ -624,7 +543,6 @@ export function createServerPreviewSnapshotProviderV1(
           headers: {
             accept: "application/json",
             "content-type": "application/json",
-            ...(endpoint === "runtime-traces" ? { [FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER]: "2" } : {}),
           },
           method: "POST",
           signal,
