@@ -500,22 +500,35 @@ const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, comma
   const intent = command.intent;
   const target = bundle.scene.entities.find(({ id }) => id === command.entityId);
   if (!target) throw new Error("The transform test target is missing.");
+  const currentCenter = () => {
+    const localCenter = (() => {
+      const geometry = target.geometry;
+      if (geometry.kind === "circle" || geometry.kind === "rectangle") return geometry.center;
+      if (geometry.kind === "image") {
+        return {
+          x: (geometry.localRect.left + geometry.localRect.right) / 2,
+          y: (geometry.localRect.bottom + geometry.localRect.top) / 2,
+        };
+      }
+      if (geometry.kind !== "cubic-path") throw new Error("The current-baseline fixture has no local bounds.");
+      const points = geometry.path.subpaths.flatMap((subpath) => [
+        subpath.start,
+        ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
+      ]);
+      return {
+        x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
+        y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
+      };
+    })();
+    return {
+      x: target.transform.m11 * localCenter.x + target.transform.m12 * localCenter.y + target.transform.tx,
+      y: target.transform.m21 * localCenter.x + target.transform.m22 * localCenter.y + target.transform.ty,
+    };
+  };
   const baselineCenter =
     intent.kind === "from-baseline"
-      ? intent.baseline.kind === "current-uniform-affine"
-        ? (() => {
-            if (target.geometry.kind !== "cubic-path") throw new Error("The current-baseline fixture is not cubic.");
-            const points = target.geometry.path.subpaths.flatMap((subpath) => [
-              subpath.start,
-              ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
-            ]);
-            const localX = (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2;
-            const localY = (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2;
-            return {
-              x: target.transform.m11 * localX + target.transform.m12 * localY + target.transform.tx,
-              y: target.transform.m21 * localX + target.transform.m22 * localY + target.transform.ty,
-            };
-          })()
+      ? intent.baseline.kind === "current-center" || intent.baseline.kind === "current-uniform-affine"
+        ? currentCenter()
         : intent.baseline.worldCenter
       : null;
   const delta =
@@ -2549,7 +2562,7 @@ describe("compileStudioPreviewSceneV1", () => {
         entityId: fixture.runtimeEntityId,
         expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
         intent: {
-          baseline: includeScale ? { kind: "uniform-affine", uniformScale: 1.5 } : { kind: "center" },
+          baseline: { kind: includeScale ? "current-uniform-affine" : "current-center" },
           kind: "from-baseline",
         },
         nextRevision: result.scene.engineRevisionHash,
@@ -2557,11 +2570,7 @@ describe("compileStudioPreviewSceneV1", () => {
         version: 1,
       });
       if (command.intent.kind !== "from-baseline") throw new Error("MathTex used the wrong transform intent.");
-      if (command.intent.baseline.kind === "current-uniform-affine") {
-        throw new Error("Static MathTex unexpectedly used the current-transform baseline.");
-      }
-      expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
-      expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
+      expect(command.intent.baseline).not.toHaveProperty("worldCenter");
       if (includeMove) {
         expect(command.intent.targetCenter?.x).toBeCloseTo(2 + delta.x, 12);
         expect(command.intent.targetCenter?.y).toBeCloseTo(-1 + delta.y, 12);
@@ -2604,7 +2613,11 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(command).toMatchObject({
       entityId: fixture.runtimeEntityId,
       expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      intent: { baseline: { kind: "center" }, kind: "from-baseline", scale: { xFactor: 2, yFactor: 2 } },
+      intent: {
+        baseline: { kind: "current-center" },
+        kind: "from-baseline",
+        scale: { xFactor: 2, yFactor: 2 },
+      },
       nextRevision: result.scene.engineRevisionHash,
       schema: "poietra.transform-scene-entity",
       version: 1,
@@ -2612,11 +2625,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
       throw new Error("Image move did not retain its target center.");
     }
-    if (command.intent.baseline.kind === "current-uniform-affine") {
-      throw new Error("Static Image unexpectedly used the current-transform baseline.");
-    }
-    expect(command.intent.baseline.worldCenter.x).toBeCloseTo(2, 12);
-    expect(command.intent.baseline.worldCenter.y).toBeCloseTo(-1, 12);
+    expect(command.intent.baseline).toEqual({ kind: "current-center" });
     expect(command.intent.targetCenter.x).toBeCloseTo(4, 12);
     expect(command.intent.targetCenter.y).toBeCloseTo(1, 12);
     expect(command.provenance.evidence.filter((entry) => entry.startsWith("authorized operation "))).toHaveLength(2);
@@ -2631,7 +2640,7 @@ describe("compileStudioPreviewSceneV1", () => {
   it.each([
     ["move", false],
     ["move and scale", true],
-  ])("delegates imported MathTex %s baseline validation to Rust", async (_label, includeScale) => {
+  ])("uses the current Rust MathTex baseline for %s despite stale Studio geometry", async (_label, includeScale) => {
     const fixture = await importedMathTexPreviewInput({ includeScale });
     const baseEntity = fixture.edited.base.runtimeSceneState.objectGraph.entities[fixture.entityId];
     if (!baseEntity?.geometry) throw new Error("Imported MathTex baseline fixture is incomplete.");
@@ -2654,23 +2663,24 @@ describe("compileStudioPreviewSceneV1", () => {
         },
       },
     };
-    let compilerCalls = 0;
+    const commands: TransformSceneEntityWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot: fixture.snapshot,
-      transformCompiler: async () => {
-        compilerCalls += 1;
-        throw new Error("the semantic transform baseline does not match verified geometry");
+      transformCompiler: async (bundle, command) => {
+        commands.push(command);
+        return testTransformCompiler(bundle, command);
       },
       workingRevision: "studio-working-v1:drifted-imported-affine",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
-    expect(result).toMatchObject({
-      error: expect.stringContaining("semantic transform baseline"),
-      kind: "unsupported",
+    expect(result.kind).toBe("compiled");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.intent).toMatchObject({
+      baseline: { kind: includeScale ? "current-uniform-affine" : "current-center" },
+      kind: "from-baseline",
     });
-    expect(compilerCalls).toBe(1);
   });
 
   it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {

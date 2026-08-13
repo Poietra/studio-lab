@@ -134,9 +134,7 @@ pub struct SceneEntityAxisFactors {
 /// Studio semantic baseline that must still match the installed Scene geometry.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TransformSceneEntityExpectedBaseline {
-    Center {
-        world_center: PointV1,
-    },
+    CurrentCenter,
     CurrentUniformAffine,
     UniformAffine {
         uniform_scale: f64,
@@ -494,16 +492,22 @@ fn transform_baseline_matches(
 ) -> bool {
     if matches!(
         expected,
+        TransformSceneEntityExpectedBaseline::CurrentCenter
+    ) {
+        return true;
+    }
+    if matches!(
+        expected,
         TransformSceneEntityExpectedBaseline::CurrentUniformAffine
     ) {
         return positive_axis_aligned_transform(entity)
             && transform_is_uniform(entity.transform.m11, entity.transform.m22);
     }
     let expected_center = match expected {
-        TransformSceneEntityExpectedBaseline::Center { world_center }
-        | TransformSceneEntityExpectedBaseline::UniformAffine { world_center, .. }
+        TransformSceneEntityExpectedBaseline::UniformAffine { world_center, .. }
         | TransformSceneEntityExpectedBaseline::WorldSize { world_center, .. } => world_center,
-        TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
+        TransformSceneEntityExpectedBaseline::CurrentCenter
+        | TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
     };
     if !expected_center.x.is_finite()
         || !expected_center.y.is_finite()
@@ -513,8 +517,8 @@ fn transform_baseline_matches(
         return false;
     }
     match expected {
-        TransformSceneEntityExpectedBaseline::Center { .. } => true,
-        TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
+        TransformSceneEntityExpectedBaseline::CurrentCenter
+        | TransformSceneEntityExpectedBaseline::CurrentUniformAffine => unreachable!(),
         TransformSceneEntityExpectedBaseline::UniformAffine { uniform_scale, .. } => {
             uniform_scale.is_finite()
                 && *uniform_scale > 0.0
@@ -2423,6 +2427,49 @@ mod tests {
     #[test]
     #[allow(
         clippy::float_cmp,
+        reason = "the current center produces one exact world-space translation"
+    )]
+    fn current_center_baseline_transforms_an_image_from_its_installed_geometry_center() {
+        let mut bundle = fixture_bundle("png-alpha-edge-camera.json");
+        bundle.scene.animation_channels.clear();
+        bundle.scene.required_capabilities.retain(|capability| {
+            !matches!(
+                capability,
+                SceneCapabilityV1::AffineTransformAnimation | SceneCapabilityV1::CameraAnimation
+            )
+        });
+        let target_id = bundle.scene.entities[0].id.clone();
+        let mut command = baseline_transform_command_for(&bundle, &target_id);
+        let TransformSceneEntityIntent::FromBaseline {
+            expected_baseline, ..
+        } = &mut command.intent
+        else {
+            unreachable!();
+        };
+        *expected_baseline = TransformSceneEntityExpectedBaseline::CurrentCenter;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.transform_scene_entity(command).unwrap();
+        let transformed = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == target_id)
+            .unwrap();
+
+        assert!(matches!(
+            transformed.geometry,
+            SceneGeometryV1::Image { .. }
+        ));
+        assert_eq!(transformed.transform.m11, 3.0);
+        assert_eq!(transformed.transform.m22, 3.0);
+        assert_eq!(transformed.transform.tx, 6.0);
+        assert_eq!(transformed.transform.ty, -3.0);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
         reason = "the current baseline applies exact finite factors around its derived center"
     )]
     fn current_uniform_baseline_derives_the_transform_and_rejects_non_uniform_affines() {
@@ -2510,9 +2557,7 @@ mod tests {
         let image_center = scene_entity_world_center(image, &image_bounds);
         assert!(transform_baseline_matches(
             image,
-            &TransformSceneEntityExpectedBaseline::Center {
-                world_center: image_center.clone(),
-            },
+            &TransformSceneEntityExpectedBaseline::CurrentCenter,
             &image_bounds,
             &image_center,
         ));

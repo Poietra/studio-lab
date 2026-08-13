@@ -1002,14 +1002,14 @@ function planStaticImportedRootTransform(
   const semanticScale =
     baseScale?.kind === "known" && Number.isFinite(baseScale.value) && baseScale.value > 0 ? baseScale.value : null;
   const primitiveTransform = primitiveType !== null && (scaleOperations.length === 1 || resizeOperations.length === 1);
+  const requiresSemanticPosition = !imageOrMathTex;
   if (
     !baseEntity ||
     baseEntity.provisional ||
     baseEntity.transactionId !== undefined ||
     baseEntity.sourceIdentity.kind !== "known" ||
-    basePosition?.kind !== "known" ||
-    !isFinitePoint(basePosition.value) ||
-    ((scaleOperations.length === 1 || resizeOperations.length === 1) && semanticScale === null) ||
+    (requiresSemanticPosition && (basePosition?.kind !== "known" || !isFinitePoint(basePosition.value))) ||
+    (primitiveTransform && semanticScale === null) ||
     (primitiveTransform &&
       (baseDimensions?.kind !== "known" || !positiveShapeDimensions(primitiveType, baseDimensions.value)))
   ) {
@@ -1046,17 +1046,21 @@ function planStaticImportedRootTransform(
   ) {
     return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
   }
-  const semanticCenter = studioPointToScenePoint(basePosition.value, input.frame, scene.camera.view.center);
+  const semanticCenter =
+    basePosition?.kind === "known" && isFinitePoint(basePosition.value)
+      ? studioPointToScenePoint(basePosition.value, input.frame, scene.camera.view.center)
+      : null;
   const resize = resizeOperations[0];
   const resizeBaselineMatches =
     !resize ||
     (primitiveType !== null &&
       baseDimensions?.kind === "known" &&
       semanticScale !== null &&
+      basePosition?.kind === "known" &&
       sameShapeDimensions(primitiveType, resize.from.dimensions, baseDimensions.value) &&
       sameStaticTransformPoint(resize.from.position, basePosition.value) &&
       closeStaticTransformValue(resize.scale, semanticScale));
-  if (!isFinitePoint(semanticCenter) || !resizeBaselineMatches) {
+  if (!resizeBaselineMatches) {
     return { kind: "unsupported", message: "The semantic transform baseline does not match verified geometry." };
   }
 
@@ -1077,13 +1081,11 @@ function planStaticImportedRootTransform(
       : resize.to.dimensions.height! / resize.from.dimensions.height!
     : scaleFactor;
   const hasScale = xFactor !== undefined && yFactor !== undefined && (xFactor !== 1 || yFactor !== 1);
-  const semanticDelta = { x: targetCenter.x - semanticCenter.x, y: targetCenter.y - semanticCenter.y };
   if (
-    !isFinitePoint(targetCenter) ||
-    !isFinitePoint(semanticDelta) ||
+    (targetCenter !== null && !isFinitePoint(targetCenter)) ||
     (xFactor !== undefined && (!Number.isFinite(xFactor) || xFactor <= 0)) ||
     (yFactor !== undefined && (!Number.isFinite(yFactor) || yFactor <= 0)) ||
-    (!hasScale && semanticDelta.x === 0 && semanticDelta.y === 0)
+    (!hasScale && targetPosition === null)
   ) {
     return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
   }
@@ -1091,13 +1093,25 @@ function planStaticImportedRootTransform(
   const geometryVerifiedTransform = imageOrMathTex || primitiveTransform;
   let effect: Extract<StaticImportedRootTransformPlan, { kind: "authorized" }>["effect"];
   if (!geometryVerifiedTransform) {
+    if (semanticCenter === null || targetCenter === null) {
+      return { kind: "unsupported", message: "The imported move has no stable semantic position." };
+    }
+    const semanticDelta = { x: targetCenter.x - semanticCenter.x, y: targetCenter.y - semanticCenter.y };
+    if (!isFinitePoint(semanticDelta) || (semanticDelta.x === 0 && semanticDelta.y === 0)) {
+      return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
+    }
     effect = { delta: semanticDelta, kind: "translate" };
   } else {
     let baseline: Extract<TransformSceneEntityWireCommandV1["intent"], { kind: "from-baseline" }>["baseline"] = {
-      kind: "center",
-      worldCenter: semanticCenter,
+      kind: "current-center",
     };
-    if (primitiveTransform && primitiveType !== null && baseDimensions?.kind === "known" && semanticScale !== null) {
+    if (
+      primitiveTransform &&
+      primitiveType !== null &&
+      baseDimensions?.kind === "known" &&
+      semanticScale !== null &&
+      semanticCenter !== null
+    ) {
       const width =
         primitiveType === "Circle"
           ? baseDimensions.value.radius! * semanticScale * 2
@@ -1107,14 +1121,14 @@ function planStaticImportedRootTransform(
           ? baseDimensions.value.radius! * semanticScale * 2
           : baseDimensions.value.height! * semanticScale;
       baseline = { height, kind: "world-size", width, worldCenter: semanticCenter };
-    } else if (baseEntity.type === "MathTex" && hasScale && semanticScale !== null) {
-      baseline = { kind: "uniform-affine", uniformScale: semanticScale, worldCenter: semanticCenter };
+    } else if (baseEntity.type === "MathTex" && hasScale) {
+      baseline = { kind: "current-uniform-affine" };
     }
     effect = {
       baseline,
       kind: "from-baseline",
       ...(!hasScale ? {} : { scale: { xFactor: xFactor!, yFactor: yFactor! } }),
-      ...(!targetPosition ? {} : { targetCenter }),
+      ...(targetPosition === null || targetCenter === null ? {} : { targetCenter }),
     };
   }
   return {
