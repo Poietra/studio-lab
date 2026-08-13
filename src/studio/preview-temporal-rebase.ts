@@ -1043,13 +1043,6 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     origin: "studio-edit-program" as const,
   };
   if (edit.kind === "opacity") {
-    const paintEvidence = genericRuntimeTraceSubtreePaintEvidence(scene, target.id);
-    if (!paintEvidence.opacityEditable || !candidate.capabilities.paintOpacity) {
-      return unsupported(
-        "target-edit-unsupported",
-        "Runtime Trace opacity edits require static vector paint throughout the selected subtree.",
-      );
-    }
     try {
       const rebased = await (input.subtreePaintAlphaCompiler ?? compileSetSubtreeVectorPaintAlpha)(
         input.snapshot.snapshot,
