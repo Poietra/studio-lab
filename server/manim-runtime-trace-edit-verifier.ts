@@ -1,8 +1,5 @@
 import { type ProgramRenderRequest, renderRequestId } from "../src/render-pipeline/contracts";
-import type {
-  LoweredProgramBatchSource,
-  RuntimeTraceInitialEditPreflight,
-} from "../src/render-pipeline/source-lowering";
+import type { LoweredProgramBatchSource, RuntimeTraceEditPreflight } from "../src/render-pipeline/source-lowering";
 import type { FastManimRuntimeTraceCandidateRunRequestV1 } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
@@ -39,12 +36,10 @@ export class ManimRuntimeTraceEditVerifier {
     if (!preflight) return;
     signal?.throwIfAborted();
     if (
-      preflight.kind === "fast-manim-updaters-terminal-v1" ||
-      preflight.kind === "fast-manim-opening-terminal-v2" ||
-      preflight.kind === "runtime-trace-initial-move" ||
-      preflight.kind === "runtime-trace-initial-opacity" ||
-      preflight.kind === "runtime-trace-initial-resize" ||
-      preflight.kind === "runtime-trace-initial-rotation"
+      preflight.kind === "runtime-trace-move-edit" ||
+      preflight.kind === "runtime-trace-opacity-edit" ||
+      preflight.kind === "runtime-trace-resize-edit" ||
+      preflight.kind === "runtime-trace-rotation-edit"
     ) {
       await this.#verifyRuntimeTraceCandidate(lowered, request, signal);
       return;
@@ -58,102 +53,99 @@ export class ManimRuntimeTraceEditVerifier {
     signal?: AbortSignal,
   ) {
     const preflight = lowered.preflight;
-    const opening = preflight?.kind === "fast-manim-opening-terminal-v2";
-    const initialMove = preflight?.kind === "runtime-trace-initial-move";
-    const initialOpacity = preflight?.kind === "runtime-trace-initial-opacity";
-    const initialResize = preflight?.kind === "runtime-trace-initial-resize";
-    const initialRotation = preflight?.kind === "runtime-trace-initial-rotation";
+    const moveEdit = preflight?.kind === "runtime-trace-move-edit";
+    const opacityEdit = preflight?.kind === "runtime-trace-opacity-edit";
+    const resizeEdit = preflight?.kind === "runtime-trace-resize-edit";
+    const rotationEdit = preflight?.kind === "runtime-trace-rotation-edit";
     const reject = (failure: string): never => {
       this.#logger.warn(
-        initialOpacity
-          ? "render.runtime_trace_initial_opacity_preflight_rejected"
-          : initialRotation
-            ? "render.runtime_trace_initial_rotation_preflight_rejected"
-            : initialResize
-              ? "render.runtime_trace_initial_resize_preflight_rejected"
-              : initialMove
-                ? "render.runtime_trace_initial_move_preflight_rejected"
-                : opening
-                  ? "render.opening_terminal_runtime_trace_candidate_preflight_rejected"
-                  : "render.updaters_terminal_runtime_trace_candidate_preflight_rejected",
+        opacityEdit
+          ? "render.runtime_trace_opacity_edit_preflight_rejected"
+          : rotationEdit
+            ? "render.runtime_trace_rotation_edit_preflight_rejected"
+            : resizeEdit
+              ? "render.runtime_trace_resize_edit_preflight_rejected"
+              : moveEdit
+                ? "render.runtime_trace_move_edit_preflight_rejected"
+                : "render.runtime_trace_candidate_preflight_rejected",
         {
           failure,
           sourcePath: request.sourcePath,
         },
       );
       throw new HttpError(
-        initialOpacity
-          ? "The edited Manim source could not be verified against its exact initial Runtime Trace opacity. Reimport and try again."
-          : initialRotation
-            ? "The edited Manim source could not be verified against its exact initial Runtime Trace rotation. Reimport and try again."
-            : initialResize
-              ? "The edited Manim source could not be verified against its exact initial Runtime Trace resize. Reimport and try again."
-              : initialMove
-                ? "The edited Manim source could not be verified against its exact initial Runtime Trace move. Reimport and try again."
-                : opening
-                  ? "The edited OpeningManim source could not be verified against its exact terminal execution. Reimport and try again."
-                  : "The edited UpdatersExample source could not be verified against its exact updater execution. Reimport and try again.",
+        opacityEdit
+          ? "The edited Manim source could not be verified against its exact Runtime Trace opacity edit. Reimport and try again."
+          : rotationEdit
+            ? "The edited Manim source could not be verified against its exact Runtime Trace rotation edit. Reimport and try again."
+            : resizeEdit
+              ? "The edited Manim source could not be verified against its exact Runtime Trace resize edit. Reimport and try again."
+              : moveEdit
+                ? "The edited Manim source could not be verified against its exact Runtime Trace move edit. Reimport and try again."
+                : "The edited Manim source could not be verified against its exact Runtime Trace execution. Reimport and try again.",
         409,
       );
     };
     const candidatePreflight = preflight ?? reject("runtime-trace-authority-unavailable");
-    const initialEditPreflight: RuntimeTraceInitialEditPreflight | null =
-      candidatePreflight.kind === "runtime-trace-initial-move" ||
-      candidatePreflight.kind === "runtime-trace-initial-opacity" ||
-      candidatePreflight.kind === "runtime-trace-initial-resize" ||
-      candidatePreflight.kind === "runtime-trace-initial-rotation"
-        ? (candidatePreflight as RuntimeTraceInitialEditPreflight)
+    const editPreflight: RuntimeTraceEditPreflight | null =
+      candidatePreflight.kind === "runtime-trace-move-edit" ||
+      candidatePreflight.kind === "runtime-trace-opacity-edit" ||
+      candidatePreflight.kind === "runtime-trace-resize-edit" ||
+      candidatePreflight.kind === "runtime-trace-rotation-edit"
+        ? (candidatePreflight as RuntimeTraceEditPreflight)
         : null;
     if (
-      (candidatePreflight.kind !== "fast-manim-updaters-terminal-v1" &&
-        candidatePreflight.kind !== "fast-manim-opening-terminal-v2" &&
-        candidatePreflight.kind !== "runtime-trace-initial-move" &&
-        candidatePreflight.kind !== "runtime-trace-initial-opacity" &&
-        candidatePreflight.kind !== "runtime-trace-initial-resize" &&
-        candidatePreflight.kind !== "runtime-trace-initial-rotation") ||
+      (candidatePreflight.kind !== "runtime-trace-move-edit" &&
+        candidatePreflight.kind !== "runtime-trace-opacity-edit" &&
+        candidatePreflight.kind !== "runtime-trace-resize-edit" &&
+        candidatePreflight.kind !== "runtime-trace-rotation-edit") ||
       request.sourceHash !== candidatePreflight.baseSourceHash
     ) {
       reject("runtime-trace-authority-unavailable");
     }
-    const preflightRequestBindings = initialEditPreflight
-      ? request.sourceBindings.filter(({ entityId }) => entityId === initialEditPreflight.entityId)
+    const preflightRequestBindings = editPreflight
+      ? request.sourceBindings.filter(({ entityId }) => entityId === editPreflight.entityId)
       : [];
     if (
-      initialEditPreflight !== null &&
+      editPreflight !== null &&
       (preflightRequestBindings.length !== 1 ||
-        preflightRequestBindings[0]?.sourceVariable !== initialEditPreflight.baseBinding.name ||
+        preflightRequestBindings[0]?.sourceVariable !== editPreflight.baseBinding.name ||
         // The gesture entity must BE the canonical Studio identity of the
         // selected binding; a request row aliasing another entity id could
         // otherwise cross-wire an authorized gesture into a different binding.
-        initialEditPreflight.entityId !==
-          `source:${request.sourcePath}#${request.sceneName}:${initialEditPreflight.baseBinding.name}` ||
-        (initialEditPreflight.kind === "runtime-trace-initial-move"
-          ? !Number.isFinite(initialEditPreflight.expectedWorldCenter.x) ||
-            !Number.isFinite(initialEditPreflight.expectedWorldCenter.y)
-          : initialEditPreflight.kind === "runtime-trace-initial-opacity"
-            ? !Number.isFinite(initialEditPreflight.expectedOpacity) ||
-              initialEditPreflight.expectedOpacity < 0 ||
-              initialEditPreflight.expectedOpacity > 1
-            : initialEditPreflight.kind === "runtime-trace-initial-resize"
-              ? !Number.isFinite(initialEditPreflight.expectedScaleFactor) ||
-                initialEditPreflight.expectedScaleFactor <= 0 ||
-                initialEditPreflight.expectedScaleFactor === 1
-              : !Number.isFinite(initialEditPreflight.expectedAngleRadians) ||
-                initialEditPreflight.expectedAngleRadians === 0))
+        editPreflight.entityId !==
+          `source:${request.sourcePath}#${request.sceneName}:${editPreflight.baseBinding.name}` ||
+        !Number.isFinite(editPreflight.sourceAnchor) ||
+        editPreflight.sourceAnchor < 0 ||
+        (editPreflight.kind === "runtime-trace-move-edit"
+          ? !Number.isFinite(editPreflight.expectedWorldCenter.x) ||
+            !Number.isFinite(editPreflight.expectedWorldCenter.y)
+          : editPreflight.kind === "runtime-trace-opacity-edit"
+            ? !Number.isFinite(editPreflight.expectedOpacity) ||
+              editPreflight.expectedOpacity < 0 ||
+              editPreflight.expectedOpacity > 1
+            : editPreflight.kind === "runtime-trace-resize-edit"
+              ? !Number.isFinite(editPreflight.expectedScaleFactor) ||
+                editPreflight.expectedScaleFactor <= 0 ||
+                editPreflight.expectedScaleFactor === 1
+              : !Number.isFinite(editPreflight.expectedAngleRadians) ||
+                editPreflight.expectedAngleRadians === 0 ||
+                editPreflight.sourceAnchor !== 0) ||
+        (editPreflight.kind === "runtime-trace-opacity-edit" && editPreflight.sourceAnchor !== 0))
     ) {
       reject("runtime-trace-authority-unavailable");
     }
     const runtimeTraceRunner = this.#runtimeTraceRunner ?? reject("runtime-trace-authority-unavailable");
     const candidateHash = sourceHash(lowered.source);
-    const runtimeTraceRequest: FastManimRuntimeTraceCandidateRunRequestV1 = initialEditPreflight
+    const runtimeTraceRequest: FastManimRuntimeTraceCandidateRunRequestV1 = editPreflight
       ? {
-          ...(initialEditPreflight.kind === "runtime-trace-initial-move"
-            ? { initialMove: initialEditPreflight }
-            : initialEditPreflight.kind === "runtime-trace-initial-opacity"
-              ? { initialOpacity: initialEditPreflight }
-              : initialEditPreflight.kind === "runtime-trace-initial-resize"
-                ? { initialResize: initialEditPreflight }
-                : { initialRotation: initialEditPreflight }),
+          ...(editPreflight.kind === "runtime-trace-move-edit"
+            ? { moveEdit: editPreflight }
+            : editPreflight.kind === "runtime-trace-opacity-edit"
+              ? { opacityEdit: editPreflight }
+              : editPreflight.kind === "runtime-trace-resize-edit"
+                ? { resizeEdit: editPreflight }
+                : { rotationEdit: editPreflight }),
           projectId: request.projectId,
           requestId: renderRequestId(request),
           sceneName: request.sceneName,

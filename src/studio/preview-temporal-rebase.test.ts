@@ -10,6 +10,7 @@ import type {
   TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
 import { type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
+import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import {
   type ProgramRecord,
@@ -25,14 +26,15 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
 } from "./preview-snapshot-provider";
 import {
-  compileStudioPreviewGenericInitialEdit,
-  projectStudioPreviewInitialEntityPresence,
-  projectStudioPreviewInitialValidationScene,
-  type StudioPreviewGenericInitialEditCandidate,
-  studioPreviewGenericInitialEditCandidates,
-  studioPreviewGenericInitialEditProgramSet,
-  studioPreviewInitialEditTargetIsPresent,
-  studioPreviewSyntheticInitialEditAnchor,
+  compileStudioPreviewRuntimeTraceEdit,
+  projectStudioPreviewRuntimeTraceEntityPresence,
+  projectStudioPreviewRuntimeTraceValidationScene,
+  type StudioPreviewRuntimeTraceEditCandidate,
+  studioPreviewRuntimeTraceEditAnchor,
+  studioPreviewRuntimeTraceEditCandidates,
+  studioPreviewRuntimeTraceEditProgramSet,
+  studioPreviewRuntimeTraceEditTargetIsPresent,
+  studioPreviewRuntimeTraceProgramValidation,
 } from "./preview-temporal-rebase";
 import {
   createDirectManipulationPositionProgram,
@@ -43,7 +45,7 @@ import {
   compileStudioPreviewSceneV1,
   studioPreviewInteractionAuthority,
   studioPreviewInteractionEntityIdsV1,
-  studioPreviewPresentedSyntheticInitialEditAnchor,
+  studioPreviewPresentedRuntimeTraceEditAnchor,
 } from "./use-preview-renderer";
 
 const FRAME = { height: 8, width: 14.222222222222221 } as const;
@@ -162,12 +164,12 @@ async function genericRuntimeTraceV3Snapshot(traceOverride?: ReturnType<typeof f
 
 async function genericRuntimeTraceV3MoveInput() {
   const { snapshot } = await genericRuntimeTraceV3Snapshot();
-  const candidate = studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
-  if (!candidate) throw new Error("The generic V3 fixture lost its initial-move candidate.");
+  const candidate = studioPreviewRuntimeTraceEditCandidates(snapshot, 0, [])[0] ?? null;
+  if (!candidate) throw new Error("The generic V3 fixture lost its construction edit candidate.");
   const entity: RuntimeEntity = {
     ...importedSquareEntity(),
     id: candidate.studioEntityId,
-    lifetime: [candidate.initialEntityProjection.lifetime],
+    lifetime: [candidate.entityProjection.lifetime],
   };
   const runtimeSceneState: RuntimeSceneState = {
     ...baseRuntimeScene(candidate.studioSceneId),
@@ -189,7 +191,7 @@ async function genericRuntimeTraceV3MoveInput() {
       version: STUDIO_STATE_VERSION,
     },
   };
-  const validationScene = projectStudioPreviewInitialValidationScene(runtimeSceneState, candidate);
+  const validationScene = projectStudioPreviewRuntimeTraceValidationScene(runtimeSceneState, candidate);
   const validation = createDirectManipulationPositionProgram({
     capturedPlayhead: 0,
     delta: { x: 64, y: -36 },
@@ -284,13 +286,17 @@ async function genericRuntimeTraceV3OpacityInput(opacity: number) {
   };
 }
 
-function candidateOf(snapshot: StudioVerifiedPreviewSnapshotV1) {
-  return studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
+function candidateOf(
+  snapshot: StudioVerifiedPreviewSnapshotV1,
+  sourceAnchor = 0,
+  sourceEvents: RuntimeSceneState["eventTrack"]["events"] = [],
+) {
+  return studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents)[0] ?? null;
 }
 
-type InitialEditCapability = keyof StudioPreviewGenericInitialEditCandidate["capabilities"];
+type RuntimeTraceEditCapability = keyof StudioPreviewRuntimeTraceEditCandidate["capabilities"];
 
-function capabilities(...enabled: readonly InitialEditCapability[]) {
+function capabilities(...enabled: readonly RuntimeTraceEditCapability[]) {
   return {
     paintOpacity: enabled.includes("paintOpacity"),
     rotation: enabled.includes("rotation"),
@@ -298,38 +304,67 @@ function capabilities(...enabled: readonly InitialEditCapability[]) {
   };
 }
 
-describe("studioPreviewGenericInitialEditCandidates", () => {
+describe("studioPreviewRuntimeTraceEditCandidates", () => {
+  it("keeps Runtime Trace validation bound to a staged Program after the playhead leaves its endpoint", async () => {
+    const { record, snapshot } = await genericRuntimeTraceV3MoveInput();
+
+    expect(studioPreviewRuntimeTraceEditCandidates(snapshot, snapshot.duration / 2, [])).toEqual([]);
+    expect(studioPreviewRuntimeTraceProgramValidation(snapshot, [record], [])).toBe("authorized");
+    expect(
+      studioPreviewRuntimeTraceProgramValidation(
+        snapshot,
+        [
+          {
+            ...record,
+            program: {
+              ...record.program,
+              anchor: {
+                ...record.program.anchor,
+                capturedPlayhead: snapshot.duration / 2,
+                resolvedSeconds: snapshot.duration / 2,
+                source: { kind: "absolute", seconds: snapshot.duration / 2 },
+              },
+            },
+          },
+        ],
+        [],
+      ),
+    ).toBe("rejected");
+  });
+
   it("projects one pristine source-bound V3 root without inventing a unit scale", async () => {
     const { mapping, snapshot } = await genericRuntimeTraceV3Snapshot();
-    const candidate = studioPreviewGenericInitialEditCandidates(snapshot)[0] ?? null;
+    const candidate = studioPreviewRuntimeTraceEditCandidates(snapshot, 0, [])[0] ?? null;
 
     expect(candidate).toEqual({
       baseCenter: { x: 320, y: 180 },
-      baseDimensions: mapping.endpoints.initial.dimensions,
+      baseDimensions: mapping.endpoints.terminal.dimensions,
       baseOpacity: null,
       bindingId: mapping.binding.id,
       capabilities: capabilities("uniformScale", "rotation", "paintOpacity"),
       duration: 1 / 60,
-      initialEntityProjection: {
+      entityProjection: {
         baseCenter: { x: 320, y: 180 },
         kind: "source-position-and-lifetime",
         lifetime: { end: 1 / 60, start: 0 },
       },
+      phase: "construction",
       restrictionMessage:
         "Use the dedicated Rotate and Opacity controls for those edits; these Inspector fields support position and uniform scale only.",
       runtimeEntityId: mapping.rootId,
+      sourceAnchor: 0,
       studioEntityId: `source:${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}:square`,
       studioSceneId: `${snapshot.correlation.context.sourcePath}#${snapshot.correlation.context.sceneName}`,
       targetSourceName: "square",
       targetType: null,
     });
     expect(candidate).not.toHaveProperty("relativeScale");
-    expect(studioPreviewSyntheticInitialEditAnchor(snapshot)).toBe(0);
-    const interactionAuthority = studioPreviewInteractionAuthority(snapshot);
+    expect(studioPreviewRuntimeTraceEditAnchor(snapshot, 0, [])).toBe(0);
+    const interactionAuthority = studioPreviewInteractionAuthority(snapshot, 0, []);
     expect(interactionAuthority).toEqual({
       editableRuntimeEntityIds: [mapping.rootId],
       kind: "bounded-interactive",
-      reason: "runtime-trace-initial-edit",
+      reason: "runtime-trace-edit",
       sourceAnchor: 0,
       verifiedRuntimeEntityIds: [mapping.rootId],
     });
@@ -341,7 +376,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
       ),
     ).toEqual([mapping.rootId]);
     expect(
-      studioPreviewPresentedSyntheticInitialEditAnchor(
+      studioPreviewPresentedRuntimeTraceEditAnchor(
         snapshot,
         {
           frame: {
@@ -353,13 +388,15 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
           phase: "presented",
         },
         interactionAuthority,
+        [],
       ),
     ).toBe(0);
     expect(
-      studioPreviewPresentedSyntheticInitialEditAnchor(
+      studioPreviewPresentedRuntimeTraceEditAnchor(
         snapshot,
         { detail: null, phase: "fallback", reason: "frame-pending" },
         interactionAuthority,
+        [],
       ),
     ).toBeNull();
   });
@@ -525,30 +562,52 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     if (!mapping) throw new Error("Generic V3 test mapping lost endpoint evidence.");
     const extraRoot = snapshot.snapshot.scene.entities.find(({ parentId }) => parentId !== null);
     if (!extraRoot) throw new Error("Generic V3 fixture needs one drawable child.");
-    const candidates = studioPreviewGenericInitialEditCandidates({
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          entities: snapshot.snapshot.scene.entities.map((entity) =>
-            entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
-          ),
+    const candidates = studioPreviewRuntimeTraceEditCandidates(
+      {
+        ...snapshot,
+        snapshot: {
+          ...snapshot.snapshot,
+          scene: {
+            ...snapshot.snapshot.scene,
+            entities: snapshot.snapshot.scene.entities.map((entity) =>
+              entity.id === extraRoot.id ? { ...entity, parentId: null } : entity,
+            ),
+          },
         },
       },
-    });
+      0,
+      [],
+    );
     expect(candidates.map(({ runtimeEntityId }) => runtimeEntityId)).toEqual([mapping.entityId]);
   });
 
-  it("anchors the candidate at the settled terminal endpoint when an entrance animation offsets frame zero", async () => {
+  it("mints construction and settled authority from the same verified terminal geometry", async () => {
     const { snapshot } = await genericRuntimeTraceV3Snapshot();
     const pristine = candidateOf(snapshot);
     const mapping = snapshot.sourceRuntimeIdentity?.get("square");
     if (!pristine || !mapping?.runtimeTraceEvidence) throw new Error("Generic V3 test mapping lost endpoint evidence.");
     const evidence = mapping.runtimeTraceEvidence;
     const terminal = evidence.endpoints.terminal;
-    const settled = candidateOf({
+    const settledSourceAnchor = canonicalFastManimRuntimeTraceSampleTimeV3(1);
+    const settledDuration = 2 / 60;
+    const modifiedSnapshot: StudioVerifiedPreviewSnapshotV1 = {
       ...snapshot,
+      correlation: {
+        ...snapshot.correlation,
+        context: { ...snapshot.correlation.context, sourceDuration: settledDuration },
+        sceneDuration: settledDuration,
+      },
+      duration: settledDuration,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          duration: settledDuration,
+          entities: snapshot.snapshot.scene.entities.map((entity) =>
+            entity.id === mapping.entityId ? { ...entity, lifetimes: [{ end: settledDuration, start: 0 }] } : entity,
+          ),
+        },
+      },
       sourceRuntimeIdentity: new Map([
         [
           "square",
@@ -562,22 +621,136 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
                   ...terminal,
                   center: { x: terminal.center.x + 0.5, y: terminal.center.y + 0.25 },
                   dimensions: { height: terminal.dimensions.height * 1.5, width: terminal.dimensions.width * 1.5 },
+                  frameIndex: 1,
+                  sampleTime: settledSourceAnchor,
                 },
               },
             },
           },
         ],
       ]),
+    };
+    const sourceEvents: RuntimeSceneState["eventTrack"]["events"] = [
+      {
+        id: "import:generic:wait:1",
+        interval: { end: settledDuration, start: settledSourceAnchor },
+        kind: "wait",
+        label: "wait",
+      },
+    ];
+    const construction = candidateOf(modifiedSnapshot, 0);
+    const settled = candidateOf(modifiedSnapshot, settledSourceAnchor + 0.01, sourceEvents);
+    if (!construction || !settled) throw new Error("Both verified endpoint candidates must mint.");
+    expect(construction).toMatchObject({ phase: "construction", sourceAnchor: 0 });
+    expect(settled).toMatchObject({
+      capabilities: capabilities("uniformScale"),
+      phase: "settled",
+      sourceAnchor: settledSourceAnchor,
     });
-    if (!settled) throw new Error("The settled-endpoint candidate must still mint.");
-    expect(settled.baseDimensions).toEqual({
+    expect(construction.baseDimensions).toEqual({
       height: terminal.dimensions.height * 1.5,
       width: terminal.dimensions.width * 1.5,
     });
     // 45 studio px per world unit at frame width 128/9 on the 640x360 studio
     // stage; studio y grows downward.
     expect(pristine.baseCenter).toEqual({ x: 320, y: 180 });
-    expect(settled.baseCenter).toEqual({ x: 320 + 0.5 * 45, y: 180 - 0.25 * 45 });
+    expect(construction.baseCenter).toEqual({ x: 320 + 0.5 * 45, y: 180 - 0.25 * 45 });
+    expect(settled.baseCenter).toEqual(construction.baseCenter);
+    expect(studioPreviewRuntimeTraceEditAnchor(modifiedSnapshot, settledSourceAnchor + 0.01, sourceEvents)).toBe(
+      settledSourceAnchor,
+    );
+    expect(candidateOf(modifiedSnapshot, settledSourceAnchor, sourceEvents)).toMatchObject({
+      phase: "settled",
+      sourceAnchor: settledSourceAnchor,
+    });
+    expect(candidateOf(modifiedSnapshot, settledSourceAnchor + 0.01, [])).toBeNull();
+    expect(
+      candidateOf(modifiedSnapshot, settledSourceAnchor + 0.01, [
+        sourceEvents[0]!,
+        { ...sourceEvents[0]!, id: "import:generic:wait:2" },
+      ]),
+    ).toBeNull();
+    expect(
+      candidateOf(modifiedSnapshot, settledSourceAnchor + 0.01, [
+        { ...sourceEvents[0]!, operationId: "studio-authored-wait" },
+      ]),
+    ).toBeNull();
+    expect(
+      candidateOf(modifiedSnapshot, settledSourceAnchor + 0.01, [
+        { ...sourceEvents[0]!, interval: { end: settledDuration - 0.001, start: settledSourceAnchor } },
+      ]),
+    ).toBeNull();
+    expect(
+      candidateOf(modifiedSnapshot, settledSourceAnchor + 0.005, [
+        { ...sourceEvents[0]!, interval: { end: settledDuration, start: settledSourceAnchor + 0.001 } },
+      ]),
+    ).toBeNull();
+  });
+
+  it("allows settled authority for a later root without construction evidence", async () => {
+    const { snapshot } = await genericRuntimeTraceV3Snapshot();
+    const mapping = snapshot.sourceRuntimeIdentity?.get("square");
+    if (!mapping?.runtimeTraceEvidence) throw new Error("Generic V3 test mapping lost endpoint evidence.");
+    const duration = 2 / 60;
+    const lifetime = { end: duration, start: 0.005 };
+    const laterRootSnapshot: StudioVerifiedPreviewSnapshotV1 = {
+      ...snapshot,
+      correlation: {
+        ...snapshot.correlation,
+        context: { ...snapshot.correlation.context, sourceDuration: duration },
+        sceneDuration: duration,
+      },
+      duration,
+      snapshot: {
+        ...snapshot.snapshot,
+        scene: {
+          ...snapshot.snapshot.scene,
+          duration,
+          entities: snapshot.snapshot.scene.entities.map((entity) =>
+            entity.id === mapping.entityId ? { ...entity, lifetimes: [lifetime] } : entity,
+          ),
+        },
+      },
+      sourceRuntimeIdentity: new Map([
+        [
+          "square",
+          {
+            ...mapping,
+            runtimeTraceEvidence: {
+              ...mapping.runtimeTraceEvidence,
+              endpoints: {
+                ...mapping.runtimeTraceEvidence.endpoints,
+                initial: {
+                  ...mapping.runtimeTraceEvidence.endpoints.initial,
+                  frameIndex: 1,
+                  sampleTime: canonicalFastManimRuntimeTraceSampleTimeV3(1),
+                },
+                terminal: {
+                  ...mapping.runtimeTraceEvidence.endpoints.terminal,
+                  frameIndex: 1,
+                  sampleTime: canonicalFastManimRuntimeTraceSampleTimeV3(1),
+                },
+              },
+            },
+          },
+        ],
+      ]),
+    };
+    const waitStart = 0.006;
+    const events: RuntimeSceneState["eventTrack"]["events"] = [
+      {
+        id: "import:later-root:wait:1",
+        interval: { end: duration, start: waitStart },
+        kind: "wait",
+        label: "wait",
+      },
+    ];
+
+    expect(candidateOf(laterRootSnapshot, 0, events)).toBeNull();
+    expect(candidateOf(laterRootSnapshot, 0.01, events)).toMatchObject({
+      phase: "settled",
+      sourceAnchor: waitStart,
+    });
   });
 
   it("mints one candidate per positively-dimensioned mapping from a Feynman-shaped multi-root trace", async () => {
@@ -621,7 +794,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
     const { snapshot } = await genericRuntimeTraceV3Snapshot(trace);
     expect(snapshot.sourceRuntimeIdentity?.size).toBe(4);
 
-    const candidates = studioPreviewGenericInitialEditCandidates(snapshot);
+    const candidates = studioPreviewRuntimeTraceEditCandidates(snapshot, 0, []);
     expect(candidates.map(({ targetSourceName }) => targetSourceName)).toEqual(["square", "photon"]);
     expect(candidates[0]!.runtimeEntityId).toBe(selected.rootId);
     expect(candidates[1]!.runtimeEntityId).toBe(`${selected.rootId.slice(0, -1)}3`);
@@ -629,7 +802,7 @@ describe("studioPreviewGenericInitialEditCandidates", () => {
   });
 });
 
-describe("generic Runtime Trace V3 initial move", () => {
+describe("generic Runtime Trace V3 construction edit", () => {
   it("projects only producer-backed position and lifetime evidence into Studio validation", async () => {
     const { candidate, validationScene } = await genericRuntimeTraceV3MoveInput();
     const target = validationScene.objectGraph.entities[candidate.studioEntityId];
@@ -639,9 +812,9 @@ describe("generic Runtime Trace V3 initial move", () => {
         position: { kind: "known", value: candidate.baseCenter },
         scale: { kind: "known", value: 1 },
       },
-      lifetime: [candidate.initialEntityProjection.lifetime],
+      lifetime: [candidate.entityProjection.lifetime],
     });
-    const projected = projectStudioPreviewInitialEntityPresence(
+    const projected = projectStudioPreviewRuntimeTraceEntityPresence(
       [
         {
           ...target!,
@@ -661,7 +834,80 @@ describe("generic Runtime Trace V3 initial move", () => {
       position: candidate.baseCenter,
       present: true,
     });
-    expect(studioPreviewInitialEditTargetIsPresent(validationScene, candidate.studioEntityId, 0, candidate)).toBe(true);
+    expect(studioPreviewRuntimeTraceEditTargetIsPresent(validationScene, candidate.studioEntityId, 0, candidate)).toBe(
+      true,
+    );
+  });
+
+  it("normalizes an unknown source scale only for the verified candidate's relative resize", async () => {
+    const { base, candidate } = await genericRuntimeTraceV3MoveInput();
+    const sourceEntity = base.runtimeSceneState.objectGraph.entities[candidate.studioEntityId];
+    if (!sourceEntity?.geometry) throw new Error("The Runtime Trace fixture lost its source-projected geometry.");
+    const unknownScale = { kind: "unknown" as const, reason: "Scale is computed by Python at runtime." };
+    const unknownScaleScene: RuntimeSceneState = {
+      ...base.runtimeSceneState,
+      objectGraph: {
+        ...base.runtimeSceneState.objectGraph,
+        entities: {
+          ...base.runtimeSceneState.objectGraph.entities,
+          [candidate.studioEntityId]: {
+            ...sourceEntity,
+            geometry: { ...sourceEntity.geometry, scale: unknownScale },
+          },
+        },
+      },
+    };
+    const resize = (scene: RuntimeSceneState) =>
+      createDirectManipulationScaleProgram({
+        capturedPlayhead: candidate.sourceAnchor,
+        interval: { end: candidate.sourceAnchor, start: candidate.sourceAnchor },
+        scales: { [candidate.studioEntityId]: { from: 1, to: 1.5 } },
+        scene,
+        targetEntityIds: [candidate.studioEntityId],
+        transactionId: "generic-runtime-trace-unknown-scale-resize",
+      });
+
+    expect(resize(unknownScaleScene).kind).toBe("invalid");
+    expect(projectStudioPreviewRuntimeTraceValidationScene(unknownScaleScene, null)).toBe(unknownScaleScene);
+    const positionOnlyCandidate: StudioPreviewRuntimeTraceEditCandidate = {
+      ...candidate,
+      capabilities: { ...candidate.capabilities, uniformScale: false },
+    };
+    const positionOnlyScene = projectStudioPreviewRuntimeTraceValidationScene(unknownScaleScene, positionOnlyCandidate);
+    expect(positionOnlyScene.objectGraph.entities[candidate.studioEntityId]?.geometry?.scale).toEqual(unknownScale);
+    expect(resize(positionOnlyScene).kind).toBe("invalid");
+
+    const candidateValidationScene = projectStudioPreviewRuntimeTraceValidationScene(unknownScaleScene, candidate);
+    expect(candidateValidationScene.objectGraph.entities[candidate.studioEntityId]?.geometry?.scale).toEqual({
+      kind: "known",
+      value: 1,
+    });
+    expect(resize(candidateValidationScene).kind).toBe("valid");
+
+    const sourceProjection = projectStudioPreviewRuntimeTraceEntityPresence(
+      [
+        {
+          ...(sourceEntity.content ? { content: sourceEntity.content } : {}),
+          geometry: { ...sourceEntity.geometry, scale: unknownScale },
+          id: sourceEntity.id,
+          opacity: 1,
+          position: candidate.baseCenter,
+          present: true,
+          provisional: sourceEntity.provisional,
+          scale: 2,
+          sourceIdentity: sourceEntity.sourceIdentity,
+          ...(sourceEntity.transactionId ? { transactionId: sourceEntity.transactionId } : {}),
+          type: sourceEntity.type,
+        },
+      ],
+      candidate,
+      new Map([[candidate.runtimeEntityId, {}]]),
+      candidate.sourceAnchor,
+    );
+    expect(sourceProjection[0]).toMatchObject({
+      geometry: { scale: { kind: "known", value: 1 } },
+      scale: 1,
+    });
   });
 
   it("authorizes the one candidate the staged Program targets and rejects absent or ambiguous targets", async () => {
@@ -673,26 +919,26 @@ describe("generic Runtime Trace V3 initial move", () => {
       sourceName: "circle",
       studioEntityId: candidate.studioEntityId.replace(/:square$/, ":circle"),
     };
-    expect(studioPreviewGenericInitialEditProgramSet([record], [sibling, candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [sibling, candidate])).toEqual({
       candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([record], [sibling])).toEqual({ kind: "unauthorized" });
-    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate, candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [sibling])).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [candidate, candidate])).toEqual({
       kind: "unauthorized",
     });
   });
 
   it("authorizes one direct t=0 position or uniform-resize Program and rejects every wider Program set", async () => {
     const { candidate, record, validationScene } = await genericRuntimeTraceV3MoveInput();
-    expect(studioPreviewGenericInitialEditProgramSet([], [candidate])).toEqual({ kind: "none" });
-    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([], [candidate])).toEqual({ kind: "none" });
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { kind: "move", position: { x: 384, y: 144 } },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([record, record], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record, record], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -706,12 +952,12 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (resize.kind !== "valid") throw new Error("Generic resize fixture did not validate.");
     const resizeRecord = programRecord(resize.program, resize);
-    expect(studioPreviewGenericInitialEditProgramSet([resizeRecord], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([resizeRecord], [candidate])).toEqual({
       candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([record, resizeRecord], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record, resizeRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
 
@@ -725,7 +971,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (rebasedResize.kind !== "valid") throw new Error("Generic rebased resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSet([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
+      studioPreviewRuntimeTraceEditProgramSet([programRecord(rebasedResize.program, rebasedResize)], [candidate]),
     ).toEqual({
       candidate,
       edit: { kind: "resize", scaleFactor: 1.5 },
@@ -742,10 +988,10 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     if (identityResize.kind !== "valid") throw new Error("Generic identity resize fixture did not validate.");
     expect(
-      studioPreviewGenericInitialEditProgramSet([programRecord(identityResize.program, identityResize)], [candidate]),
+      studioPreviewRuntimeTraceEditProgramSet([programRecord(identityResize.program, identityResize)], [candidate]),
     ).toEqual({ kind: "unauthorized" });
     expect(
-      studioPreviewGenericInitialEditProgramSet(
+      studioPreviewRuntimeTraceEditProgramSet(
         [
           {
             ...record,
@@ -762,7 +1008,7 @@ describe("generic Runtime Trace V3 initial move", () => {
 
   it("authorizes one bounded absolute opacity on static paint and rejects unsafe or no-op values", async () => {
     const { candidate, record } = await genericRuntimeTraceV3OpacityInput(0.25);
-    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { kind: "opacity", opacity: 0.25 },
       kind: "authorized",
@@ -774,17 +1020,17 @@ describe("generic Runtime Trace V3 initial move", () => {
       ...record,
       program: { ...record.program, operations: [{ ...operation, value }] },
     });
-    expect(studioPreviewGenericInitialEditProgramSet([withValue(Number.NaN)], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([withValue(Number.NaN)], [candidate])).toEqual({
       kind: "unauthorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([withValue(1.01)], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([withValue(1.01)], [candidate])).toEqual({
       kind: "unauthorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([record], [{ ...candidate, baseOpacity: 0.25 }])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [{ ...candidate, baseOpacity: 0.25 }])).toEqual({
       kind: "unauthorized",
     });
     expect(
-      studioPreviewGenericInitialEditProgramSet(
+      studioPreviewRuntimeTraceEditProgramSet(
         [record],
         [{ ...candidate, baseOpacity: null, capabilities: { ...candidate.capabilities, paintOpacity: false } }],
       ),
@@ -832,7 +1078,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       });
     };
 
-    const result = await compileStudioPreviewGenericInitialEdit({
+    const result = await compileStudioPreviewRuntimeTraceEdit({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -856,7 +1102,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     });
     expect(editedChild.appearance.opacity).toBe(child.appearance.opacity);
     expect(result.scene.animationChannels).toEqual(snapshot.snapshot.scene.animationChannels);
-    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-initial-opacity:${"b".repeat(64)}`);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-construction-opacity:${"b".repeat(64)}`);
     expect(commands).toEqual([
       {
         alpha: 0.25,
@@ -864,11 +1110,11 @@ describe("generic Runtime Trace V3 initial move", () => {
         nextRevision: "b".repeat(64),
         provenance: {
           evidence: [
-            "Studio t=0 absolute opacity request projected onto static vector paints in one verified Runtime Trace root",
+            "Studio construction-time absolute opacity request projected onto static vector paints in one verified Runtime Trace root",
             `source binding ${candidate.bindingId}`,
             `authorized operation ${operationId}`,
           ],
-          id: `studio-runtime-trace-initial-opacity:${"b".repeat(64)}`,
+          id: `studio-runtime-trace-construction-opacity:${"b".repeat(64)}`,
           origin: "studio-edit-program",
         },
         rootEntityId: root.id,
@@ -894,12 +1140,12 @@ describe("generic Runtime Trace V3 initial move", () => {
 
   it("authorizes one finite t=0 rotation and rejects non-finite or mismatched authority", async () => {
     const { base, candidate, proposedState, record, snapshot } = await genericRuntimeTraceV3RotationInput(Math.PI / 4);
-    expect(studioPreviewGenericInitialEditProgramSet([record], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [candidate])).toEqual({
       candidate,
       edit: { angleRadians: Math.PI / 4, kind: "rotation" },
       kind: "authorized",
     });
-    expect(studioPreviewGenericInitialEditProgramSet([record], [])).toEqual({ kind: "unauthorized" });
+    expect(studioPreviewRuntimeTraceEditProgramSet([record], [])).toEqual({ kind: "unauthorized" });
 
     const operation = record.program.operations[0];
     if (!operation || operation.kind !== "AnimateProperty") {
@@ -909,11 +1155,11 @@ describe("generic Runtime Trace V3 initial move", () => {
       ...record,
       program: { ...record.program, operations: [{ ...operation, relativeDelta: Number.NaN, to: Number.NaN }] },
     };
-    expect(studioPreviewGenericInitialEditProgramSet([forgedRecord], [candidate])).toEqual({
+    expect(studioPreviewRuntimeTraceEditProgramSet([forgedRecord], [candidate])).toEqual({
       kind: "unauthorized",
     });
     expect(
-      await compileStudioPreviewGenericInitialEdit({
+      await compileStudioPreviewRuntimeTraceEdit({
         frame: FRAME,
         proposedState: { ...proposedState, base, programs: [forgedRecord] },
         snapshot,
@@ -951,7 +1197,7 @@ describe("generic Runtime Trace V3 initial move", () => {
         },
       });
     };
-    const result = await compileStudioPreviewGenericInitialEdit({
+    const result = await compileStudioPreviewRuntimeTraceEdit({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -977,11 +1223,11 @@ describe("generic Runtime Trace V3 initial move", () => {
       nextRevision: "7".repeat(64),
       provenance: {
         evidence: [
-          "Studio t=0 position request projected onto one verified Runtime Trace root",
+          "Studio construction position request projected onto one verified Runtime Trace root",
           `source binding ${candidate.bindingId}`,
           `authorized operation ${operationId}`,
         ],
-        id: `studio-runtime-trace-initial-move:${"7".repeat(64)}`,
+        id: `studio-runtime-trace-construction-move:${"7".repeat(64)}`,
         origin: "studio-edit-program",
       },
       schema: "poietra.transform-scene-entity",
@@ -1006,7 +1252,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     );
   });
 
-  it("scales the verified root group about its initial center without flattening its children", async () => {
+  it("scales the verified root group about its construction center without flattening its children", async () => {
     const { candidate, proposedState, snapshot } = await genericRuntimeTraceV3ResizeInput(1.5);
     expect(candidate.baseCenter).toEqual({ x: 320, y: 180 });
     const root = snapshot.snapshot.scene.entities.find(({ id }) => id === candidate.runtimeEntityId);
@@ -1036,7 +1282,7 @@ describe("generic Runtime Trace V3 initial move", () => {
         },
       });
     };
-    const result = await compileStudioPreviewGenericInitialEdit({
+    const result = await compileStudioPreviewRuntimeTraceEdit({
       frame: FRAME,
       proposedState,
       snapshot,
@@ -1049,7 +1295,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
     expect(scaledRoot?.transform).toEqual(coreTransform);
     expect(retainedChild).toEqual(child);
-    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-initial-resize:${"8".repeat(64)}`);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-construction-resize:${"8".repeat(64)}`);
     expect(commands).toEqual([
       {
         delta: { x: 0, y: 0 },
@@ -1058,11 +1304,11 @@ describe("generic Runtime Trace V3 initial move", () => {
         nextRevision: "8".repeat(64),
         provenance: {
           evidence: [
-            "Studio t=0 uniform resize request projected onto one verified Runtime Trace root",
+            "Studio construction uniform resize request projected onto one verified Runtime Trace root",
             `source binding ${candidate.bindingId}`,
             `authorized operation ${operationId}`,
           ],
-          id: `studio-runtime-trace-initial-resize:${"8".repeat(64)}`,
+          id: `studio-runtime-trace-construction-resize:${"8".repeat(64)}`,
           origin: "studio-edit-program",
         },
         schema: "poietra.transform-scene-entity",
@@ -1118,7 +1364,7 @@ describe("generic Runtime Trace V3 initial move", () => {
       });
     };
 
-    const result = await compileStudioPreviewGenericInitialEdit({
+    const result = await compileStudioPreviewRuntimeTraceEdit({
       frame: FRAME,
       proposedState,
       rotationCompiler,
@@ -1131,7 +1377,7 @@ describe("generic Runtime Trace V3 initial move", () => {
     const retainedChild = result.scene.entities.find(({ id }) => id === child.id);
     expect(rotatedRoot?.transform).toEqual(coreTransform);
     expect(retainedChild).toEqual(child);
-    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-initial-rotation:${"a".repeat(64)}`);
+    expect(result.scene.provenance.at(-1)?.id).toBe(`studio-runtime-trace-construction-rotation:${"a".repeat(64)}`);
     expect(commands).toEqual([
       {
         angleRadians,
@@ -1141,11 +1387,11 @@ describe("generic Runtime Trace V3 initial move", () => {
         pivot: { x: 0, y: 0 },
         provenance: {
           evidence: [
-            "Studio t=0 planar rotation request projected onto one verified Runtime Trace root",
+            "Studio construction-time planar rotation request projected onto one verified Runtime Trace root",
             `source binding ${candidate.bindingId}`,
             `authorized operation ${operationId}`,
           ],
-          id: `studio-runtime-trace-initial-rotation:${"a".repeat(64)}`,
+          id: `studio-runtime-trace-construction-rotation:${"a".repeat(64)}`,
           origin: "studio-edit-program",
         },
         schema: "poietra.rotate-scene-entity",

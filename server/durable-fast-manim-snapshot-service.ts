@@ -298,13 +298,13 @@ export class DurableFastManimSnapshotServiceV1 {
     requestValue: FastManimRuntimeTraceCandidateRunRequestV1,
     signal?: AbortSignal,
   ) {
-    const { initialMove, initialOpacity, initialResize, initialRotation, ...requestFields } = requestValue;
+    const { moveEdit, opacityEdit, resizeEdit, rotationEdit, ...requestFields } = requestValue;
     const parsed = fastManimSnapshotRunRequestV1Schema.parse(requestFields);
     const request: FastManimRuntimeTraceCandidateRunRequestV1 = {
-      ...(initialMove === undefined ? {} : { initialMove }),
-      ...(initialOpacity === undefined ? {} : { initialOpacity }),
-      ...(initialResize === undefined ? {} : { initialResize }),
-      ...(initialRotation === undefined ? {} : { initialRotation }),
+      ...(moveEdit === undefined ? {} : { moveEdit }),
+      ...(opacityEdit === undefined ? {} : { opacityEdit }),
+      ...(resizeEdit === undefined ? {} : { resizeEdit }),
+      ...(rotationEdit === undefined ? {} : { rotationEdit }),
       projectId: parsed.projectId,
       requestId: parsed.requestId,
       sceneName: parsed.sceneName,

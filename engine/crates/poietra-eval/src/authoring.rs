@@ -113,6 +113,18 @@ pub struct TransformSceneEntityCommand {
     pub scale: Option<ScaleAboutPivot>,
 }
 
+/// One profile-free Studio transform that becomes active at an exact Scene time.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformSceneEntityAtTimeCommand {
+    pub at: f64,
+    pub delta: PointV1,
+    pub entity_id: String,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub provenance: ProvenanceRecordV1,
+    pub scale: Option<ScaleAboutPivot>,
+}
+
 /// One profile-free Studio command that sets vector-paint alpha in one root subtree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetSubtreeVectorPaintAlphaCommand {
@@ -205,8 +217,16 @@ pub enum TransformSceneEntityError {
     InvalidPivot,
     #[error("the transform must contain a non-zero translation or an axis scale")]
     NoOp,
+    #[error("the timed transform anchor must be finite, non-negative, and before Scene end")]
+    InvalidAnchor,
+    #[error("the timed transform scale must be uniform")]
+    NonUniformFactor,
     #[error("the transform target does not exist: {0}")]
     TargetMissing(String),
+    #[error("the timed world-space transform requires a root entity: {0}")]
+    TargetIsNotRoot(String),
+    #[error("the timed transform target is not active at its anchor: {0}")]
+    TargetInactive(String),
     #[error("world-space transform does not yet support an animated transform target: {0}")]
     AnimatedTransformUnsupported(String),
     #[error("world-space transform requires identity, transform-static ancestors: {0}")]
@@ -280,6 +300,59 @@ fn has_animated_transform(scene: &poietra_scene_ir::SceneIrV1, entity_id: &str) 
                 if animated_id == entity_id
         )
     })
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "exact equality defines uniform and identity scale in the authoring command"
+)]
+fn validate_timed_transform_command(
+    scene: &poietra_scene_ir::SceneIrV1,
+    command: &TransformSceneEntityAtTimeCommand,
+) -> Result<(), TransformSceneEntityError> {
+    if scene.source.revision_hash() != command.expected_base_revision {
+        return Err(TransformSceneEntityError::StaleBaseRevision);
+    }
+    if command.next_revision == command.expected_base_revision {
+        return Err(TransformSceneEntityError::RevisionDidNotAdvance);
+    }
+    if !command.at.is_finite() || command.at < 0.0 || command.at >= scene.duration {
+        return Err(TransformSceneEntityError::InvalidAnchor);
+    }
+    if !command.delta.x.is_finite() || !command.delta.y.is_finite() {
+        return Err(TransformSceneEntityError::InvalidDelta);
+    }
+    if let Some(scale) = &command.scale {
+        if !scale.x_factor.is_finite()
+            || scale.x_factor <= 0.0
+            || !scale.y_factor.is_finite()
+            || scale.y_factor <= 0.0
+            || scale.x_factor == 1.0
+        {
+            return Err(TransformSceneEntityError::InvalidFactor);
+        }
+        if scale.x_factor != scale.y_factor {
+            return Err(TransformSceneEntityError::NonUniformFactor);
+        }
+        if !scale.pivot.x.is_finite() || !scale.pivot.y.is_finite() {
+            return Err(TransformSceneEntityError::InvalidPivot);
+        }
+    } else if command.delta.x == 0.0 && command.delta.y == 0.0 {
+        return Err(TransformSceneEntityError::NoOp);
+    }
+    if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
+        return Err(TransformSceneEntityError::InvalidProvenanceOrigin);
+    }
+    if scene
+        .provenance
+        .iter()
+        .any(|record| record.id == command.provenance.id)
+    {
+        return Err(TransformSceneEntityError::ProvenanceConflict(
+            command.provenance.id.clone(),
+        ));
+    }
+    Ok(())
 }
 
 fn studio_white() -> RgbaColorV1 {
@@ -1022,6 +1095,100 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
+    /// Atomically applies a root transform from one exact Scene time onward.
+    ///
+    /// The target's static transform and every existing animation channel remain unchanged. A
+    /// new affine channel uses the static transform before `at` and the transformed value from
+    /// `at` onward. Uniform scale is applied about its world-space pivot before translation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
+    /// Scene and retained index.
+    pub fn transform_scene_entity_at_time(
+        &mut self,
+        command: TransformSceneEntityAtTimeCommand,
+    ) -> Result<SceneIrBundleV1, TransformSceneEntityError> {
+        validate_timed_transform_command(self.scene(), &command)?;
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: self.scene().clone(),
+        };
+        let target = candidate
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == command.entity_id)
+            .ok_or_else(|| TransformSceneEntityError::TargetMissing(command.entity_id.clone()))?;
+        if target.parent_id.is_some() {
+            return Err(TransformSceneEntityError::TargetIsNotRoot(
+                command.entity_id,
+            ));
+        }
+        if !target
+            .lifetimes
+            .iter()
+            .any(|lifetime| command.at >= lifetime.start && command.at < lifetime.end)
+        {
+            return Err(TransformSceneEntityError::TargetInactive(command.entity_id));
+        }
+        if has_animated_transform(&candidate.scene, &command.entity_id) {
+            return Err(TransformSceneEntityError::AnimatedTransformUnsupported(
+                command.entity_id,
+            ));
+        }
+
+        let mut transformed = target.transform.clone();
+        if let Some(scale) = &command.scale {
+            apply_world_axis_scale(
+                &mut transformed,
+                scale.x_factor,
+                scale.y_factor,
+                &scale.pivot,
+            );
+        }
+        apply_world_translation(&mut transformed, &command.delta);
+        let channel_id = unused_channel_id(&candidate.scene, "studio-transform-at-time");
+        candidate
+            .scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: command.entity_id,
+                id: channel_id,
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: command.at,
+                        easing_to_next: Some(EasingV1::Linear {}),
+                        value: transformed.clone(),
+                    },
+                    KeyframeV1 {
+                        at: candidate.scene.duration,
+                        easing_to_next: None,
+                        value: transformed,
+                    },
+                ],
+                provenance_id: command.provenance.id.clone(),
+            });
+        let mut capabilities = candidate
+            .scene
+            .required_capabilities
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        capabilities.insert(SceneCapabilityV1::AffineTransformAnimation);
+        candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        candidate.scene.provenance.push(command.provenance);
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: command.next_revision,
+        };
+
+        let result = candidate.clone();
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
     /// Atomically sets every static vector-paint alpha in one root subtree.
     ///
     /// # Errors
@@ -1280,6 +1447,29 @@ mod tests {
         }
     }
 
+    fn timed_transform_command_for(
+        bundle: &SceneIrBundleV1,
+        entity_id: &str,
+    ) -> TransformSceneEntityAtTimeCommand {
+        TransformSceneEntityAtTimeCommand {
+            at: 1.0,
+            delta: PointV1 { x: 2.0, y: -1.0 },
+            entity_id: entity_id.to_owned(),
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec!["authorized Studio endpoint transform".to_owned()],
+                id: "studio-endpoint-transform".to_owned(),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+            scale: Some(ScaleAboutPivot {
+                pivot: PointV1 { x: 1.0, y: -0.5 },
+                x_factor: 1.5,
+                y_factor: 1.5,
+            }),
+        }
+    }
+
     fn create_command(bundle: &SceneIrBundleV1) -> CreateSceneEntitiesCommand {
         let SceneGeometryV1::CubicPath { path } =
             fixture_bundle("mathtex-nested-radical-fraction.json")
@@ -1403,6 +1593,20 @@ mod tests {
         let expected_assets = bundle.assets.clone();
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let error = session.transform_scene_entity(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
+    fn rejected_timed_transform(
+        bundle: SceneIrBundleV1,
+        command: TransformSceneEntityAtTimeCommand,
+    ) -> TransformSceneEntityError {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.transform_scene_entity_at_time(command).unwrap_err();
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 1);
@@ -2000,6 +2204,171 @@ mod tests {
                 }
             );
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the endpoint command stores and samples exact affine values"
+    )]
+    fn timed_root_transform_is_inactive_before_its_anchor_and_preserves_existing_channels() {
+        let bundle = imported_bundle();
+        let original_channels = bundle.scene.animation_channels.clone();
+        let original_target = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .clone();
+        let command = timed_transform_command_for(&bundle, &original_target.id);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session
+            .transform_scene_entity_at_time(command.clone())
+            .unwrap();
+
+        assert_eq!(
+            &result.scene.animation_channels[..original_channels.len()],
+            original_channels
+        );
+        assert_eq!(
+            result
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == original_target.id)
+                .unwrap(),
+            &original_target
+        );
+        assert!(matches!(
+            result.scene.animation_channels.last(),
+            Some(AnimationChannelV1::AffineTransform {
+                entity_id,
+                keyframes,
+                provenance_id,
+                ..
+            }) if entity_id == "later"
+                && provenance_id == &command.provenance.id
+                && keyframes[0].at == 1.0
+                && keyframes[0].value.m11 == 1.5
+                && keyframes[0].value.m22 == 1.5
+                && keyframes[0].value.tx == 6.0
+                && keyframes[0].value.ty == -3.75
+                && keyframes[1].at == 2.0
+                && keyframes[1].value == keyframes[0].value
+        ));
+        assert!(
+            result
+                .scene
+                .required_capabilities
+                .contains(&SceneCapabilityV1::AffineTransformAnimation)
+        );
+
+        let sample_transform = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "timed-transform-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            match packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later")
+                .unwrap()
+            {
+                poietra_scene_ir::RenderDrawV1::Path { transform, .. } => transform.clone(),
+                _ => panic!("the endpoint target must remain a path draw"),
+            }
+        };
+        let before = sample_transform(0.999_999);
+        assert_eq!(
+            (before.m11, before.m22, before.tx, before.ty),
+            (1.0, 1.0, 3.0, -2.0)
+        );
+        let at = sample_transform(1.0);
+        assert_eq!((at.m11, at.m22, at.tx, at.ty), (1.5, 1.5, 6.0, -3.75));
+        assert_eq!(sample_transform(1.5), at);
+    }
+
+    #[test]
+    fn invalid_or_ambiguous_timed_transforms_preserve_the_retained_scene() {
+        let bundle = imported_bundle();
+        let mut non_uniform = timed_transform_command_for(&bundle, "later");
+        non_uniform.scale.as_mut().unwrap().y_factor = 1.25;
+        assert!(matches!(
+            rejected_timed_transform(bundle.clone(), non_uniform),
+            TransformSceneEntityError::NonUniformFactor
+        ));
+
+        let mut at_scene_end = timed_transform_command_for(&bundle, "later");
+        at_scene_end.at = bundle.scene.duration;
+        assert!(matches!(
+            rejected_timed_transform(bundle.clone(), at_scene_end),
+            TransformSceneEntityError::InvalidAnchor
+        ));
+
+        let mut animated = bundle.clone();
+        animated
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::AffineTransformAnimation);
+        animated.scene.required_capabilities.sort_unstable();
+        let target_transform = animated
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .transform
+            .clone();
+        animated
+            .scene
+            .animation_channels
+            .push(AnimationChannelV1::AffineTransform {
+                entity_id: "later".to_owned(),
+                id: "existing-root-transform".to_owned(),
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: 0.25,
+                        easing_to_next: Some(EasingV1::Linear {}),
+                        value: target_transform.clone(),
+                    },
+                    KeyframeV1 {
+                        at: 0.75,
+                        easing_to_next: None,
+                        value: target_transform,
+                    },
+                ],
+                provenance_id: animated.scene.provenance[0].id.clone(),
+            });
+        let animated_command = timed_transform_command_for(&animated, "later");
+        assert!(matches!(
+            rejected_timed_transform(animated, animated_command),
+            TransformSceneEntityError::AnimatedTransformUnsupported(id) if id == "later"
+        ));
+
+        let nested = fixture_bundle("real-line-joints-v10.json");
+        let child_id = nested
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_some())
+            .unwrap()
+            .id
+            .clone();
+        let mut nested_command = timed_transform_command_for(&nested, &child_id);
+        nested_command.at = 0.5;
+        assert!(matches!(
+            rejected_timed_transform(nested, nested_command),
+            TransformSceneEntityError::TargetIsNotRoot(id) if id == child_id
+        ));
     }
 
     #[test]

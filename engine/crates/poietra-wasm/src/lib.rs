@@ -20,7 +20,7 @@ use wasm_bindgen::prelude::*;
 
 pub use authoring::{
     create_scene_entities_v1, rotate_scene_entity_v1, set_subtree_vector_paint_alpha_v1,
-    transform_scene_entity_v1,
+    transform_scene_entity_at_time_v1, transform_scene_entity_v1,
 };
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
@@ -36,7 +36,7 @@ pub use protocol::{
 pub use canvas::PoietraCanvasEngineV1;
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION_V1: u32 = 1;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 2;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
 pub const POIETRA_CANVAS_ABI_VERSION_V4: u32 = 4;
 
@@ -44,7 +44,7 @@ pub const POIETRA_CANVAS_ABI_VERSION_V4: u32 = 4;
 #[must_use]
 #[wasm_bindgen(js_name = poietraEngineAbiVersion)]
 pub fn poietra_engine_abi_version() -> u32 {
-    POIETRA_ENGINE_ABI_VERSION_V1
+    POIETRA_ENGINE_ABI_VERSION
 }
 
 /// Returns the `OffscreenCanvas` ABI version before WebGPU initialization.
@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 1);
+        assert_eq!(poietra_engine_abi_version(), 2);
         assert_eq!(poietra_canvas_abi_version(), 4);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
     }

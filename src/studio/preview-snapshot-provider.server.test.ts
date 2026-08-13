@@ -1,12 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { lowerFastManimRuntimeTraceProducerJsonV1 } from "../../server/fast-manim-runtime-trace-lowering";
 import { lowerVerifiedFastManimRuntimeTraceV3 } from "../../server/fast-manim-runtime-trace-v3-lowering";
 import { fastManimRuntimeTraceV3Schema } from "../../server/fast-manim-runtime-trace-v3-result-contract";
-import {
-  runtimeTraceFixture,
-  runtimeTraceRequestFixture,
-  trustedRuntimeTraceProducer,
-} from "../../server/test-fixtures/fast-manim-runtime-trace-fixture";
 import genericRuntimeTraceFixture from "../../server/test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 import bundleFixture from "../../server/test-fixtures/fast-manim-static-bundle.json";
 import writeStuffCombinedFixture from "../../server/test-fixtures/fast-manim-write-stuff-v12-combined.json";
@@ -40,10 +34,6 @@ const runtimeTraceIdentity: StudioPreviewSceneIdentityV1 = {
   sceneName: "UpdatersExample",
   sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
   sourcePath: "example_scenes/basic.py",
-};
-const openingRuntimeTraceIdentity: StudioPreviewSceneIdentityV1 = {
-  ...runtimeTraceIdentity,
-  sceneName: "OpeningManim",
 };
 
 async function sceneIdFor(value: StudioPreviewSceneIdentityV1) {
@@ -251,117 +241,6 @@ async function verifiedWriteStuffRun() {
   };
 }
 
-async function verifiedRuntimeTraceRun() {
-  const trace = runtimeTraceFixture();
-  const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
-    JSON.stringify(trace),
-    runtimeTraceRequestFixture(),
-    trustedRuntimeTraceProducer(trace),
-  );
-  const source = bundle.scene.source;
-  if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
-  return {
-    bundle,
-    projectId: trace.projectId,
-    requestId: trace.requestId,
-    roots: trace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
-    runtimeConfigHash: trace.runtimeConfigHash,
-    sceneId: trace.sceneId,
-    sceneName: trace.sceneName,
-    schema: "poietra.fast-manim-runtime-trace-run",
-    sourceHash: trace.sourceHash,
-    sourcePath: trace.sourcePath,
-    status: "verified",
-    traceDigest: source.traceDigest,
-    version: 1,
-  } as const;
-}
-
-async function verifiedOpeningRuntimeTraceRun() {
-  const sceneId = await sceneIdFor(openingRuntimeTraceIdentity);
-  const traceDigest = "e".repeat(64);
-  const provenanceId = `${sceneId}/provenance:runtime-trace-v2`;
-  const rootId = `${sceneId}/runtime-trace-v2:root`;
-  const profiles = [
-    { line: 20, name: "title", ordinal: 1, role: "title" },
-    { line: 21, name: "basel", ordinal: 2, role: "basel" },
-    { line: 37, name: "grid", ordinal: 4, role: "grid" },
-    { line: 38, name: "grid_title", ordinal: 5, role: "grid-title" },
-  ] as const;
-  const roots = profiles.map(({ line, name, ordinal, role }, index) => ({
-    binding: {
-      id: `source-binding:${String(index + 1).repeat(64)}`,
-      name,
-      ordinal,
-      span: { endColumn: 13, endLine: line, startColumn: 8, startLine: line },
-    },
-    entityId: `${sceneId}/runtime-root:${role}`,
-  }));
-  const group = (id: string, parentId: string | null, sceneOrder: number) => ({
-    appearance: { kind: "group" as const, opacity: 1 },
-    geometry: { kind: "group" as const },
-    id,
-    lifetimes: [{ end: 15, start: 0 }],
-    parentId,
-    provenanceId,
-    sceneOrder,
-    sourceZIndex: 0,
-    transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
-  });
-  const leaves = roots.map((root, index) => ({
-    ...bundleFixture.scene.entities[index % bundleFixture.scene.entities.length]!,
-    id: `${root.entityId}/runtime-draw:0`,
-    lifetimes: [{ end: 15, start: 0 }],
-    parentId: root.entityId,
-    provenanceId,
-    sceneOrder: index + 5,
-  }));
-  const bundle = await parseVerifiedSceneIrBundleV1({
-    assets: bundleFixture.assets,
-    scene: {
-      ...bundleFixture.scene,
-      animationChannels: [],
-      duration: 15,
-      entities: [
-        group(rootId, null, 0),
-        ...roots.map((root, index) => group(root.entityId, rootId, index + 1)),
-        ...leaves,
-      ],
-      provenance: [
-        {
-          evidence: ["OpeningManim Runtime Trace V2 provider fixture"],
-          id: provenanceId,
-          origin: "fast-manim-runtime-trace",
-        },
-      ],
-      requiredCapabilities: ["cubic-path-geometry", "logical-group"],
-      sceneId,
-      source: {
-        kind: "imported-manim-runtime-trace",
-        runtimeConfigHash: RUNTIME_HASH,
-        sourceHash: openingRuntimeTraceIdentity.sourceHash,
-        traceDigest,
-        traceVersion: 2,
-      },
-    },
-  });
-  return {
-    bundle,
-    projectId: openingRuntimeTraceIdentity.projectId,
-    requestId: RUNTIME_TRACE_REQUEST_ID,
-    roots,
-    runtimeConfigHash: RUNTIME_HASH,
-    sceneId,
-    sceneName: openingRuntimeTraceIdentity.sceneName,
-    schema: "poietra.fast-manim-runtime-trace-run",
-    sourceHash: openingRuntimeTraceIdentity.sourceHash,
-    sourcePath: openingRuntimeTraceIdentity.sourcePath,
-    status: "verified",
-    traceDigest,
-    version: 1,
-  } as const;
-}
-
 async function verifiedGenericRuntimeTraceRunV2() {
   const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
   const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
@@ -423,82 +302,6 @@ function providerReturning(value: unknown) {
 }
 
 describe("createServerPreviewSnapshotProviderV1", () => {
-  it("requests and verifies Runtime Trace evidence for the exact UpdatersExample profile", async () => {
-    const run = await verifiedRuntimeTraceRun();
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
-    const provider = createServerPreviewSnapshotProviderV1({
-      fetcher,
-      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
-    });
-    const loaded = await provider.loadVerifiedSnapshot({ identity: runtimeTraceIdentity });
-
-    expect(fetcher).toHaveBeenCalledOnce();
-    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
-    expect(loaded).toMatchObject({
-      correlation: {
-        context: { ...runtimeTraceIdentity, sourceDuration: 6, workingRevision: "pristine" },
-        engineRevisionHash: run.traceDigest,
-        sceneDuration: 6,
-        serverPublicationRevision: null,
-      },
-      sourceLabel: "verified Runtime Trace",
-    });
-    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["square", "decimal"]);
-
-    const runtimeLeaf = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
-    if (!runtimeLeaf) throw new Error("Runtime Trace fixture has no drawable leaf.");
-    const substitutedRoot = {
-      ...run,
-      roots: run.roots.map((root, index) => (index === 0 ? { ...root, entityId: runtimeLeaf.id } : root)),
-    };
-    const rejected = createServerPreviewSnapshotProviderV1({
-      fetcher: vi.fn(async () => jsonResponse(substitutedRoot)),
-      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
-    });
-    await expect(rejected.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toThrow(
-      "exact reviewed nested groups",
-    );
-  });
-
-  it("retains rolling V1 generic V3 traces as preview-only without inventing identity", async () => {
-    const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
-    const bundle = await lowerVerifiedFastManimRuntimeTraceV3(trace);
-    const source = bundle.scene.source;
-    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
-    const run = {
-      bundle,
-      projectId: trace.projectId,
-      requestId: trace.requestId,
-      roots: [],
-      runtimeConfigHash: trace.runtimeConfigHash,
-      sceneId: trace.sceneId,
-      sceneName: trace.sceneName,
-      schema: "poietra.fast-manim-runtime-trace-run",
-      sourceHash: trace.sourceHash,
-      sourcePath: trace.sourcePath,
-      status: "verified",
-      traceDigest: source.traceDigest,
-      version: 1,
-    } as const;
-    const genericIdentity = {
-      projectId: trace.projectId,
-      sceneName: trace.sceneName,
-      sourceHash: trace.sourceHash,
-      sourcePath: trace.sourcePath,
-    };
-    const fetcher = vi.fn(async (_input: RequestInfo | URL) => jsonResponse(run));
-
-    const loaded = await createServerPreviewSnapshotProviderV1({
-      fetcher,
-      requestIdFactory: () => trace.requestId,
-    }).loadVerifiedSnapshot({ identity: genericIdentity });
-
-    expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/manim/projects/${trace.projectId}/runtime-traces`);
-    expect(loaded.sourceLabel).toBe("verified Runtime Trace (preview-only)");
-    expect(loaded.sourceRuntimeIdentity).toEqual(new Map());
-    expect(loaded.snapshot.scene.source).toMatchObject({ traceVersion: 3 });
-  });
-
   it("revalidates a source-bound generic V3 wire V2 response into browser-safe identity evidence", async () => {
     const run = await verifiedGenericRuntimeTraceRunV2();
     const genericIdentity = {
@@ -528,9 +331,10 @@ describe("createServerPreviewSnapshotProviderV1", () => {
         ],
       ]),
     );
-    expect(loaded.sourceLabel).toBe("verified Runtime Trace (preview-only)");
-    expect(fetcher.mock.calls[0]?.[1]?.headers).toMatchObject({
-      "x-poietra-runtime-trace-response-version": "2",
+    expect(loaded.sourceLabel).toBe("verified Runtime Trace");
+    expect(fetcher.mock.calls[0]?.[1]?.headers).toEqual({
+      accept: "application/json",
+      "content-type": "application/json",
     });
   });
 
@@ -580,38 +384,22 @@ describe("createServerPreviewSnapshotProviderV1", () => {
   });
 
   it("falls back to the snapshot endpoint only after a structured unsupported Runtime Trace result", async () => {
-    const verified = await verifiedRuntimeTraceRun();
-    const unsupported = {
-      failure: {
-        code: "unsupported-profile",
-        message: "Runtime Trace currently supports only its reviewed Scene profiles.",
-      },
-      projectId: verified.projectId,
-      requestId: verified.requestId,
-      runtimeConfigHash: verified.runtimeConfigHash,
-      sceneId: verified.sceneId,
-      sceneName: verified.sceneName,
-      schema: verified.schema,
-      sourceHash: verified.sourceHash,
-      sourcePath: verified.sourcePath,
-      status: "failed",
-      version: verified.version,
-    } as const;
+    const unsupported = unsupportedRuntimeTraceRun();
     const fetcher = vi.fn(async (input: RequestInfo | URL) =>
       String(input).endsWith("/runtime-traces") ? jsonResponse(unsupported) : jsonResponse({ status: "unsupported" }),
     );
     const provider = createServerPreviewSnapshotProviderV1({
       fetcher,
-      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
+      requestIdFactory: () => REQUEST_ID,
     });
 
-    await expect(provider.loadVerifiedSnapshot({ identity: runtimeTraceIdentity })).rejects.toMatchObject({
+    await expect(provider.loadVerifiedSnapshot({ identity })).rejects.toMatchObject({
       failureKind: "unsupported",
       name: StudioPreviewSnapshotLoadErrorV1.name,
     });
     expect(fetcher.mock.calls.map(([input]) => String(input))).toEqual([
-      "/api/manim/projects/demo/runtime-traces",
-      "/api/manim/projects/demo/scene-snapshots",
+      "/api/manim/projects/default/runtime-traces",
+      "/api/manim/projects/default/scene-snapshots",
     ]);
   });
 
@@ -634,68 +422,6 @@ describe("createServerPreviewSnapshotProviderV1", () => {
       "/api/manim/projects/demo/runtime-traces",
       "/api/manim/projects/demo/scene-snapshots",
     ]);
-  });
-
-  it("accepts the reviewed fifteen-second OpeningManim V2 profile and all four source roots", async () => {
-    const run = await verifiedOpeningRuntimeTraceRun();
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse(run));
-    const loaded = await createServerPreviewSnapshotProviderV1({
-      fetcher,
-      requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
-    }).loadVerifiedSnapshot({ identity: openingRuntimeTraceIdentity });
-
-    expect(fetcher.mock.calls[0]?.[0]).toBe("/api/manim/projects/demo/runtime-traces");
-    expect(loaded).toMatchObject({
-      correlation: {
-        context: { ...openingRuntimeTraceIdentity, sourceDuration: 15, workingRevision: "pristine" },
-        engineRevisionHash: run.traceDigest,
-        sceneDuration: 15,
-        serverPublicationRevision: null,
-      },
-      duration: 15,
-      sourceLabel: "verified Runtime Trace",
-    });
-    expect([...loaded.sourceRuntimeIdentity!.keys()]).toEqual(["title", "basel", "grid", "grid_title"]);
-  });
-
-  it("rejects downgraded, mistimed, reordered, or substituted OpeningManim V2 evidence", async () => {
-    const run = await verifiedOpeningRuntimeTraceRun();
-    const source = run.bundle.scene.source;
-    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
-    const load = (value: unknown) =>
-      createServerPreviewSnapshotProviderV1({
-        fetcher: vi.fn(async () => jsonResponse(value)),
-        requestIdFactory: () => RUNTIME_TRACE_REQUEST_ID,
-      }).loadVerifiedSnapshot({ identity: openingRuntimeTraceIdentity });
-
-    await expect(
-      load({
-        ...run,
-        bundle: {
-          ...run.bundle,
-          scene: { ...run.bundle.scene, source: { ...source, traceVersion: 1 } },
-        },
-      }),
-    ).rejects.toThrow("invalid Scene IR bundle");
-    await expect(
-      load({
-        ...run,
-        bundle: { ...run.bundle, scene: { ...run.bundle.scene, duration: 16 } },
-      }),
-    ).rejects.toThrow("reviewed Scene profile");
-    await expect(load({ ...run, roots: run.roots.slice(0, 3) })).rejects.toThrow("malformed evidence");
-    await expect(load({ ...run, roots: [run.roots[1], run.roots[0], ...run.roots.slice(2)] })).rejects.toThrow(
-      "exact reviewed nested groups",
-    );
-
-    const runtimeLeaf = run.bundle.scene.entities.find(({ geometry }) => geometry.kind !== "group");
-    if (!runtimeLeaf) throw new Error("OpeningManim V2 provider fixture has no drawable leaf.");
-    await expect(
-      load({
-        ...run,
-        roots: run.roots.map((root, index) => (index === 0 ? { ...root, entityId: runtimeLeaf.id } : root)),
-      }),
-    ).rejects.toThrow("exact reviewed nested groups");
   });
 
   it("posts the full request identity and returns independently correlated engine and publication revisions", async () => {

@@ -26,11 +26,12 @@ import {
   MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3,
 } from "./runtime-trace-v3-shared-contract";
 import {
-  composeSourceRuntimeOperationCapabilityV1,
   insertAtSourceBoundaryV1,
   removeDirectSourceStatementsV1,
   SourceAnalysisError,
   type SourceBindingFactV1,
+  type SourceInsertionBoundaryV1,
+  type SourceStatementFactV1,
   type StudioSourceAnalysisV1,
   studioSourceAnalysisProviderV1,
 } from "./source-analysis";
@@ -79,54 +80,53 @@ export type RuntimeTraceSourceBindingEvidence = Readonly<{
   }>;
 }>;
 
-export type RuntimeTraceInitialMovePreflight = Readonly<{
+export type RuntimeTraceMoveEditPreflight = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSourceHash: string;
   entityId: string;
   expectedWorldCenter: Readonly<{ x: number; y: number }>;
-  kind: "runtime-trace-initial-move";
+  kind: "runtime-trace-move-edit";
+  sourceAnchor: number;
 }>;
 
-export type RuntimeTraceInitialResizePreflight = Readonly<{
+export type RuntimeTraceResizeEditPreflight = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSourceHash: string;
   entityId: string;
   expectedScaleFactor: number;
-  kind: "runtime-trace-initial-resize";
+  kind: "runtime-trace-resize-edit";
+  sourceAnchor: number;
 }>;
 
-export type RuntimeTraceInitialRotationPreflight = Readonly<{
+export type RuntimeTraceRotationEditPreflight = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSourceHash: string;
   entityId: string;
   expectedAngleRadians: number;
-  kind: "runtime-trace-initial-rotation";
+  kind: "runtime-trace-rotation-edit";
+  sourceAnchor: 0;
 }>;
 
-export type RuntimeTraceInitialOpacityPreflight = Readonly<{
+export type RuntimeTraceOpacityEditPreflight = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSourceHash: string;
   entityId: string;
   expectedOpacity: number;
-  kind: "runtime-trace-initial-opacity";
+  kind: "runtime-trace-opacity-edit";
+  sourceAnchor: 0;
 }>;
 
-export type RuntimeTraceInitialEditPreflight =
-  | RuntimeTraceInitialMovePreflight
-  | RuntimeTraceInitialOpacityPreflight
-  | RuntimeTraceInitialResizePreflight
-  | RuntimeTraceInitialRotationPreflight;
-
-type PinnedCandidatePreflight = Readonly<{
-  baseSourceHash: typeof UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1;
-  kind: "fast-manim-opening-terminal-v2" | "fast-manim-updaters-terminal-v1";
-}>;
+export type RuntimeTraceEditPreflight =
+  | RuntimeTraceMoveEditPreflight
+  | RuntimeTraceOpacityEditPreflight
+  | RuntimeTraceResizeEditPreflight
+  | RuntimeTraceRotationEditPreflight;
 
 export type LoweredProgramBatchSource = Readonly<{
   anchorLine: number;
   anchorLines: readonly number[];
   insertedCode: string;
-  preflight?: RuntimeTraceInitialEditPreflight | PinnedCandidatePreflight;
+  preflight?: RuntimeTraceEditPreflight;
   source: string;
 }>;
 
@@ -168,16 +168,6 @@ const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
-const UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1 = "example_scenes/basic.py";
-const UPDATERS_TERMINAL_SCENE_NAME_V1 = "UpdatersExample";
-const UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1 =
-  "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f" as const;
-const UPDATERS_TERMINAL_SOURCE_TIME_V1 = 5;
-const OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2 = "example_scenes/basic.py";
-const OPENING_TERMINAL_SCENE_NAME_V2 = "OpeningManim";
-const OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2 = UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1;
-const OPENING_TERMINAL_SOURCE_TIME_V2 = 14;
-
 type TemporalSourceMarker =
   | Readonly<{
       kind: "anchor" | "cursor";
@@ -2011,43 +2001,47 @@ type ProjectedRuntimeTraceSourceBinding = Readonly<{
   evidence: RuntimeTraceSourceBindingEvidence;
 }>;
 
-export type RuntimeTraceInitialMoveSourceEditPlan = Readonly<{
+export type RuntimeTraceMoveSourceEditPlan = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSource: string;
   baseSourceHash: string;
   candidateBinding: RuntimeTraceSourceBindingEvidence;
   expectedWorldCenter: Readonly<{ x: number; y: number }>;
+  sourceAnchor: number;
 }>;
 
-export type RuntimeTraceInitialResizeSourceEditPlan = Readonly<{
+export type RuntimeTraceResizeSourceEditPlan = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSource: string;
   baseSourceHash: string;
   candidateBinding: RuntimeTraceSourceBindingEvidence;
   expectedScaleFactor: number;
+  sourceAnchor: number;
 }>;
 
-export type RuntimeTraceInitialRotationSourceEditPlan = Readonly<{
+export type RuntimeTraceRotationSourceEditPlan = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSource: string;
   baseSourceHash: string;
   candidateBinding: RuntimeTraceSourceBindingEvidence;
   expectedAngleRadians: number;
+  sourceAnchor: 0;
 }>;
 
-export type RuntimeTraceInitialOpacitySourceEditPlan = Readonly<{
+export type RuntimeTraceOpacitySourceEditPlan = Readonly<{
   baseBinding: RuntimeTraceSourceBindingEvidence;
   baseSource: string;
   baseSourceHash: string;
   candidateBinding: RuntimeTraceSourceBindingEvidence;
   expectedOpacity: number;
+  sourceAnchor: 0;
 }>;
 
-function runtimeTraceInitialEditLoweringError(message: string): never {
-  throw new ProgramLoweringError("operation-unsupported", `Runtime Trace initial edit: ${message}`);
+function runtimeTraceEditLoweringError(message: string): never {
+  throw new ProgramLoweringError("operation-unsupported", `Runtime Trace edit: ${message}`);
 }
 
-function analyzeRuntimeTraceInitialEditSource(source: string, sceneName: string, sourcePath: string) {
+function analyzeRuntimeTraceEditSource(source: string, sceneName: string, sourcePath: string) {
   const sourceHash = createHash("sha256").update(source, "utf8").digest("hex");
   try {
     return studioSourceAnalysisProviderV1.analyze({
@@ -2057,7 +2051,7 @@ function analyzeRuntimeTraceInitialEditSource(source: string, sceneName: string,
       sourceText: source,
     });
   } catch (error) {
-    runtimeTraceInitialEditLoweringError(
+    runtimeTraceEditLoweringError(
       `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
     );
   }
@@ -2111,7 +2105,7 @@ function escapeRegularExpression(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-function parseCanonicalRuntimeTraceInitialMove(statement: string, bindingName: string) {
+function parseCanonicalRuntimeTraceMoveEdit(statement: string, bindingName: string) {
   const match = statement.match(
     new RegExp(`^${escapeRegularExpression(bindingName)}\\.move_to\\(\\(([^,]+), ([^,]+), 0\\)\\)$`, "u"),
   );
@@ -2131,7 +2125,7 @@ function parseCanonicalRuntimeTraceInitialMove(statement: string, bindingName: s
   return { x, y } as const;
 }
 
-function parseCanonicalRuntimeTraceInitialResize(statement: string, bindingName: string) {
+function parseCanonicalRuntimeTraceResizeEdit(statement: string, bindingName: string) {
   const match = statement.match(new RegExp(`^${escapeRegularExpression(bindingName)}\\.scale\\(([^()]+)\\)$`, "u"));
   if (!match) return null;
   const factor = Number(match[1]);
@@ -2147,51 +2141,46 @@ function parseCanonicalRuntimeTraceInitialResize(statement: string, bindingName:
   return factor;
 }
 
-function formatRuntimeTraceInitialRotationAngle(angleRadians: number) {
+function formatRuntimeTraceRotationAngle(angleRadians: number) {
   return Number(angleRadians.toPrecision(12)).toString();
 }
 
-function runtimeTraceInitialRotationIsNoop(angleRadians: number) {
+function runtimeTraceRotationIsNoop(angleRadians: number) {
   return Math.abs(Math.atan2(Math.sin(angleRadians), Math.cos(angleRadians))) <= 1e-12;
 }
 
-function parseCanonicalRuntimeTraceInitialRotation(statement: string, bindingName: string) {
+function parseCanonicalRuntimeTraceRotationEdit(statement: string, bindingName: string) {
   const match = statement.match(new RegExp(`^${escapeRegularExpression(bindingName)}\\.rotate\\(([^()]+)\\)$`, "u"));
   if (!match) return null;
   const angleRadians = Number(match[1]);
   if (
     !Number.isFinite(angleRadians) ||
-    runtimeTraceInitialRotationIsNoop(angleRadians) ||
+    runtimeTraceRotationIsNoop(angleRadians) ||
     Math.abs(angleRadians) > MAX_COORDINATE ||
-    formatRuntimeTraceInitialRotationAngle(angleRadians) !== match[1]
+    formatRuntimeTraceRotationAngle(angleRadians) !== match[1]
   ) {
     return null;
   }
   return angleRadians;
 }
 
-function formatRuntimeTraceInitialOpacity(opacity: number) {
+function formatRuntimeTraceOpacity(opacity: number) {
   return Number(opacity.toPrecision(12)).toString();
 }
 
-function parseCanonicalRuntimeTraceInitialOpacity(statement: string, bindingName: string) {
+function parseCanonicalRuntimeTraceOpacityEdit(statement: string, bindingName: string) {
   const match = statement.match(
     new RegExp(`^${escapeRegularExpression(bindingName)}\\.set_opacity\\(([^()]+)\\)$`, "u"),
   );
   if (!match) return null;
   const opacity = Number(match[1]);
-  if (
-    !Number.isFinite(opacity) ||
-    opacity < 0 ||
-    opacity > 1 ||
-    formatRuntimeTraceInitialOpacity(opacity) !== match[1]
-  ) {
+  if (!Number.isFinite(opacity) || opacity < 0 || opacity > 1 || formatRuntimeTraceOpacity(opacity) !== match[1]) {
     return null;
   }
   return opacity;
 }
 
-function contiguousCanonicalRuntimeTraceInitialEditStatements(
+function contiguousCanonicalRuntimeTraceEditStatements(
   analysis: StudioSourceAnalysisV1,
   assignmentIndex: number,
   bindingName: string,
@@ -2204,10 +2193,10 @@ function contiguousCanonicalRuntimeTraceInitialEditStatements(
       !statement ||
       statement.line !== previous.span.endLine + 1 ||
       statement.indentation !== previous.indentation ||
-      (parseCanonicalRuntimeTraceInitialMove(statement.text, bindingName) === null &&
-        parseCanonicalRuntimeTraceInitialResize(statement.text, bindingName) === null &&
-        parseCanonicalRuntimeTraceInitialRotation(statement.text, bindingName) === null &&
-        parseCanonicalRuntimeTraceInitialOpacity(statement.text, bindingName) === null)
+      (parseCanonicalRuntimeTraceMoveEdit(statement.text, bindingName) === null &&
+        parseCanonicalRuntimeTraceResizeEdit(statement.text, bindingName) === null &&
+        parseCanonicalRuntimeTraceRotationEdit(statement.text, bindingName) === null &&
+        parseCanonicalRuntimeTraceOpacityEdit(statement.text, bindingName) === null)
     ) {
       break;
     }
@@ -2225,20 +2214,99 @@ function selectedRuntimeTraceSourceBinding(
   const matching = bindings.filter(({ evidence }) => evidence.name === bindingName);
   const selected = matching[0];
   if (matching.length !== 1 || !selected) {
-    runtimeTraceInitialEditLoweringError(
+    runtimeTraceEditLoweringError(
       `${side} SourceAnalysis must project exactly one unambiguous top-level binding named by the request.`,
     );
   }
   return selected;
 }
 
+type RuntimeTraceSourceEditBoundary = Readonly<{
+  insertionBoundary: SourceInsertionBoundaryV1;
+  statement: SourceStatementFactV1;
+  side: "after-assignment" | "before-wait";
+}>;
+
+/**
+ * Source time zero is the binding assignment boundary. A later Runtime Trace
+ * edit is only source-authoritative when the conservative importer proves one
+ * static wait beginning at that exact time and SourceAnalysis proves the
+ * matching construct-level boundary before it.
+ */
+function runtimeTraceSourceEditBoundary(
+  source: string,
+  analysis: StudioSourceAnalysisV1,
+  binding: ProjectedRuntimeTraceSourceBinding,
+  sourceAnchor: number,
+  frame: Readonly<{ height: number; width: number }> = { height: 8, width: 128 / 9 },
+): RuntimeTraceSourceEditBoundary {
+  if (!Number.isFinite(sourceAnchor) || sourceAnchor < 0) {
+    runtimeTraceEditLoweringError("source time must be one finite non-negative value.");
+  }
+  const assignment = analysis.scene.statements.find(({ id }) => id === binding.binding.statementId);
+  if (!assignment) {
+    runtimeTraceEditLoweringError("SourceAnalysis could not recover the projected assignment statement.");
+  }
+  if (sourceAnchor === 0) {
+    const insertionBoundary = assignment.insertionAfter;
+    if (!insertionBoundary || insertionBoundary.indentation !== assignment.indentation) {
+      runtimeTraceEditLoweringError(
+        "SourceAnalysis could not prove the direct insertion boundary after the projected assignment.",
+      );
+    }
+    return { insertionBoundary, side: "after-assignment", statement: assignment };
+  }
+
+  const imported = importManimScene(source, analysis.sourcePath, analysis.scene.name, frame);
+  if (!imported || imported.sourceHash !== analysis.sourceHash) {
+    runtimeTraceEditLoweringError("the static source importer could not prove the selected Scene generation.");
+  }
+  const staticWaits = imported.runtimeSceneState.eventTrack.events.filter(
+    (event) =>
+      event.kind === "wait" &&
+      event.interval !== undefined &&
+      Number.isFinite(event.interval.start) &&
+      Number.isFinite(event.interval.end) &&
+      event.interval.end > event.interval.start &&
+      Math.abs(event.interval.end - imported.runtimeSceneState.duration) < EPSILON,
+  );
+  const matchingWaits = staticWaits.filter(
+    (event) => event.interval && Math.abs(event.interval.start - sourceAnchor) < EPSILON,
+  );
+  const waitEvent = matchingWaits[0];
+  const waitLine = waitEvent?.id.match(/:wait:([0-9]+)$/u)?.[1];
+  const matchingStatements =
+    waitLine === undefined ? [] : analysis.scene.statements.filter(({ line }) => line === Number(waitLine) + 1);
+  const waitStatement = matchingStatements[0];
+  const insertionBoundary = waitStatement?.insertionBefore;
+  if (
+    matchingWaits.length !== 1 ||
+    !waitEvent?.interval ||
+    matchingStatements.length !== 1 ||
+    !waitStatement ||
+    !insertionBoundary ||
+    insertionBoundary.indentation !== assignment.indentation ||
+    waitStatement.indentation !== assignment.indentation ||
+    assignment.span.endByte >= insertionBoundary.span.startByte
+  ) {
+    runtimeTraceEditLoweringError(
+      "source time must equal the start of the final statically imported construct-level wait after the projected assignment.",
+    );
+  }
+  return {
+    insertionBoundary,
+    side: "before-wait",
+    statement: waitStatement,
+  };
+}
+
 /**
  * Re-derives one Runtime Trace source edit from candidate bytes and the edited
  * binding name. The candidate may project several top-level bindings; exactly
  * one canonical edit statement must be recoverable from the named binding's
- * direct initial-edit prefix, and removing it must recover exact base evidence.
+ * direct edit prefix, and removing it must recover exact base evidence.
  */
-function deriveRuntimeTraceInitialSourceEditPlan<Value>(
+function deriveRuntimeTraceSourceEditPlan<Value>(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
@@ -2248,18 +2316,35 @@ function deriveRuntimeTraceInitialSourceEditPlan<Value>(
     malformed: string;
     parse: (statement: string, bindingName: string) => Value | null;
   }>,
+  sourceAnchor: number,
 ) {
-  const candidateAnalysis = analyzeRuntimeTraceInitialEditSource(candidateSource, sceneName, sourcePath);
+  const candidateAnalysis = analyzeRuntimeTraceEditSource(candidateSource, sceneName, sourcePath);
   const candidateBindings = projectedRuntimeTraceSourceBindings(candidateAnalysis);
   const candidateBinding = selectedRuntimeTraceSourceBinding(candidateBindings, bindingName, "candidate");
+  if ((edit.label === "opacity" || edit.label === "rotation") && sourceAnchor !== 0) {
+    runtimeTraceEditLoweringError(`${edit.label} remains restricted to source time zero.`);
+  }
+  const candidateBoundary = runtimeTraceSourceEditBoundary(
+    candidateSource,
+    candidateAnalysis,
+    candidateBinding,
+    sourceAnchor,
+  );
   const assignmentIndex = candidateAnalysis.scene.statements.findIndex(
     ({ id }) => id === candidateBinding.binding.statementId,
   );
   const assignment = candidateAnalysis.scene.statements[assignmentIndex];
-  const directStatement = candidateAnalysis.scene.statements[assignmentIndex + 1];
-  const appendedEdit = edit.label === "opacity" || edit.label === "rotation";
+  const boundaryStatementIndex = candidateAnalysis.scene.statements.findIndex(
+    ({ id }) => id === candidateBoundary.statement.id,
+  );
+  const directStatement =
+    candidateBoundary.side === "after-assignment"
+      ? candidateAnalysis.scene.statements[assignmentIndex + 1]
+      : candidateAnalysis.scene.statements[boundaryStatementIndex - 1];
+  const appendedEdit =
+    edit.label === "opacity" || edit.label === "rotation" || (edit.label === "move" && sourceAnchor === 0);
   const statement = appendedEdit
-    ? (contiguousCanonicalRuntimeTraceInitialEditStatements(
+    ? (contiguousCanonicalRuntimeTraceEditStatements(
         candidateAnalysis,
         assignmentIndex,
         candidateBinding.evidence.name,
@@ -2274,15 +2359,18 @@ function deriveRuntimeTraceInitialSourceEditPlan<Value>(
     !assignment ||
     !statement ||
     (!appendedEdit &&
-      (statement.line !== assignment.span.endLine + 1 || statement.indentation !== assignment.indentation))
+      (statement.indentation !== assignment.indentation ||
+        (candidateBoundary.side === "after-assignment"
+          ? statement.line !== assignment.span.endLine + 1
+          : boundaryStatementIndex < 1 || statement.span.endLine + 1 !== candidateBoundary.statement.line)))
   ) {
-    runtimeTraceInitialEditLoweringError(
-      `candidate ${edit.label} must be one canonical statement in the direct initial-edit prefix.`,
+    runtimeTraceEditLoweringError(
+      `candidate ${edit.label} must be one canonical statement at the proven source-time boundary.`,
     );
   }
   const value = edit.parse(statement.text, candidateBinding.evidence.name);
   if (value === null) {
-    runtimeTraceInitialEditLoweringError(`candidate ${edit.label} is not ${edit.malformed}.`);
+    runtimeTraceEditLoweringError(`candidate ${edit.label} is not ${edit.malformed}.`);
   }
 
   let baseSource: string;
@@ -2291,17 +2379,19 @@ function deriveRuntimeTraceInitialSourceEditPlan<Value>(
       { expectedText: statement.text, statementId: statement.id },
     ]);
   } catch {
-    runtimeTraceInitialEditLoweringError(`candidate ${edit.label} does not have one canonical removable source span.`);
+    runtimeTraceEditLoweringError(`candidate ${edit.label} does not have one canonical removable source span.`);
   }
-  const baseAnalysis = analyzeRuntimeTraceInitialEditSource(baseSource, sceneName, sourcePath);
+  const baseAnalysis = analyzeRuntimeTraceEditSource(baseSource, sceneName, sourcePath);
   const baseBindings = projectedRuntimeTraceSourceBindings(baseAnalysis);
   const baseBinding = selectedRuntimeTraceSourceBinding(baseBindings, bindingName, "base");
+  const baseBoundary = runtimeTraceSourceEditBoundary(baseSource, baseAnalysis, baseBinding, sourceAnchor);
   if (
     baseBinding.evidence.name !== candidateBinding.evidence.name ||
     baseBinding.evidence.ordinal !== candidateBinding.evidence.ordinal ||
-    JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span)
+    JSON.stringify(baseBinding.evidence.span) !== JSON.stringify(candidateBinding.evidence.span) ||
+    baseBoundary.side !== candidateBoundary.side
   ) {
-    runtimeTraceInitialEditLoweringError(
+    runtimeTraceEditLoweringError(
       `removing the candidate ${edit.label} must recover the same one exact base binding occurrence.`,
     );
   }
@@ -2317,7 +2407,7 @@ function deriveRuntimeTraceInitialSourceEditPlan<Value>(
         baseSiblings[index]?.evidence.ordinal !== sibling.evidence.ordinal,
     )
   ) {
-    runtimeTraceInitialEditLoweringError(
+    runtimeTraceEditLoweringError(
       `removing the candidate ${edit.label} must leave every sibling binding occurrence unchanged.`,
     );
   }
@@ -2326,122 +2416,171 @@ function deriveRuntimeTraceInitialSourceEditPlan<Value>(
     baseSource,
     baseSourceHash: baseAnalysis.sourceHash,
     candidateBinding: candidateBinding.evidence,
+    sourceAnchor,
     value,
   };
 }
 
-export function deriveRuntimeTraceInitialMoveSourceEditPlan(
+export function deriveRuntimeTraceMoveSourceEditPlan(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
   bindingName: string,
-): RuntimeTraceInitialMoveSourceEditPlan {
-  const derived = deriveRuntimeTraceInitialSourceEditPlan(candidateSource, sceneName, sourcePath, bindingName, {
-    label: "move",
-    malformed: "one canonical finite bounded move_to call",
-    parse: parseCanonicalRuntimeTraceInitialMove,
-  });
+  sourceAnchor = 0,
+): RuntimeTraceMoveSourceEditPlan {
+  const derived = deriveRuntimeTraceSourceEditPlan(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "move",
+      malformed: "one canonical finite bounded move_to call",
+      parse: parseCanonicalRuntimeTraceMoveEdit,
+    },
+    sourceAnchor,
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
     baseSourceHash: derived.baseSourceHash,
     candidateBinding: derived.candidateBinding,
     expectedWorldCenter: derived.value,
+    sourceAnchor: derived.sourceAnchor,
   };
 }
 
-export function deriveRuntimeTraceInitialResizeSourceEditPlan(
+export function deriveRuntimeTraceResizeSourceEditPlan(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
   bindingName: string,
-): RuntimeTraceInitialResizeSourceEditPlan {
-  const derived = deriveRuntimeTraceInitialSourceEditPlan(candidateSource, sceneName, sourcePath, bindingName, {
-    label: "resize",
-    malformed: "one canonical positive non-identity bounded scale call",
-    parse: parseCanonicalRuntimeTraceInitialResize,
-  });
+  sourceAnchor = 0,
+): RuntimeTraceResizeSourceEditPlan {
+  const derived = deriveRuntimeTraceSourceEditPlan(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "resize",
+      malformed: "one canonical positive non-identity bounded scale call",
+      parse: parseCanonicalRuntimeTraceResizeEdit,
+    },
+    sourceAnchor,
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
     baseSourceHash: derived.baseSourceHash,
     candidateBinding: derived.candidateBinding,
     expectedScaleFactor: derived.value,
+    sourceAnchor: derived.sourceAnchor,
   };
 }
 
-export function deriveRuntimeTraceInitialRotationSourceEditPlan(
+export function deriveRuntimeTraceRotationSourceEditPlan(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
   bindingName: string,
-): RuntimeTraceInitialRotationSourceEditPlan {
-  const derived = deriveRuntimeTraceInitialSourceEditPlan(candidateSource, sceneName, sourcePath, bindingName, {
-    label: "rotation",
-    malformed: "one canonical finite non-noop bounded rotate call",
-    parse: parseCanonicalRuntimeTraceInitialRotation,
-  });
+  sourceAnchor: 0 = 0,
+): RuntimeTraceRotationSourceEditPlan {
+  const derived = deriveRuntimeTraceSourceEditPlan(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "rotation",
+      malformed: "one canonical finite non-noop bounded rotate call",
+      parse: parseCanonicalRuntimeTraceRotationEdit,
+    },
+    sourceAnchor,
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
     baseSourceHash: derived.baseSourceHash,
     candidateBinding: derived.candidateBinding,
     expectedAngleRadians: derived.value,
+    sourceAnchor: 0,
   };
 }
 
-export function deriveRuntimeTraceInitialOpacitySourceEditPlan(
+export function deriveRuntimeTraceOpacitySourceEditPlan(
   candidateSource: string,
   sceneName: string,
   sourcePath: string,
   bindingName: string,
-): RuntimeTraceInitialOpacitySourceEditPlan {
-  const derived = deriveRuntimeTraceInitialSourceEditPlan(candidateSource, sceneName, sourcePath, bindingName, {
-    label: "opacity",
-    malformed: "one canonical finite opacity between zero and one",
-    parse: parseCanonicalRuntimeTraceInitialOpacity,
-  });
+  sourceAnchor: 0 = 0,
+): RuntimeTraceOpacitySourceEditPlan {
+  const derived = deriveRuntimeTraceSourceEditPlan(
+    candidateSource,
+    sceneName,
+    sourcePath,
+    bindingName,
+    {
+      label: "opacity",
+      malformed: "one canonical finite opacity between zero and one",
+      parse: parseCanonicalRuntimeTraceOpacityEdit,
+    },
+    sourceAnchor,
+  );
   return {
     baseBinding: derived.baseBinding,
     baseSource: derived.baseSource,
     baseSourceHash: derived.baseSourceHash,
     candidateBinding: derived.candidateBinding,
     expectedOpacity: derived.value,
+    sourceAnchor: 0,
   };
 }
 
-type RuntimeTraceInitialEditOperation =
-  | Readonly<{ entityId: string; kind: "move"; value: Readonly<{ x: number; y: number }> }>
-  | Readonly<{ entityId: string; kind: "opacity"; value: number }>
-  | Readonly<{ entityId: string; factor: number; kind: "resize" }>
-  | Readonly<{ angleRadians: number; entityId: string; kind: "rotation" }>;
+type RuntimeTraceEditOperation =
+  | Readonly<{
+      entityId: string;
+      kind: "move";
+      sourceAnchor: number;
+      value: Readonly<{ x: number; y: number }>;
+    }>
+  | Readonly<{ entityId: string; kind: "opacity"; sourceAnchor: 0; value: number }>
+  | Readonly<{ entityId: string; factor: number; kind: "resize"; sourceAnchor: number }>
+  | Readonly<{ angleRadians: number; entityId: string; kind: "rotation"; sourceAnchor: 0 }>;
 
-function runtimeTraceInitialEditOperation(
+function runtimeTraceEditOperation(
   request: ProgramRenderRequest,
   entries: readonly LoweredProgramBatchEntry[],
-): RuntimeTraceInitialEditOperation | null {
+): RuntimeTraceEditOperation | null {
   const programs = renderRequestPrograms(request);
-  if (!entries.some(({ sourceAnchor }) => sourceAnchor === 0)) return null;
   const fail: () => never = () =>
-    runtimeTraceInitialEditLoweringError(
-      "only one exact direct-manipulation position move, opacity, uniform resize, or rotation Program at source time zero is accepted.",
+    runtimeTraceEditLoweringError(
+      "only one exact direct-manipulation position move or uniform resize at a finite source time is accepted; opacity and rotation remain restricted to source time zero.",
     );
   const program = programs[0];
   const entry = entries[0];
   const operation = program?.operations[0];
+  const runtimeTraceOperation =
+    operation?.kind === "SetProperty" || operation?.kind === "ResizeEntity"
+      ? true
+      : operation?.kind === "AnimateProperty";
+  if (!runtimeTraceOperation) return null;
+  const sourceAnchor = entry?.sourceAnchor;
   if (
     programs.length !== 1 ||
     entries.length !== 1 ||
     !program ||
     !entry ||
     JSON.stringify(program) !== JSON.stringify(entry.program) ||
-    entry.sourceAnchor !== 0 ||
+    typeof sourceAnchor !== "number" ||
+    !Number.isFinite(sourceAnchor) ||
+    sourceAnchor < 0 ||
     program.version !== EDIT_OPERATION_VERSION ||
-    program.anchor.capturedPlayhead !== 0 ||
-    program.anchor.resolvedSeconds !== 0 ||
+    program.anchor.capturedPlayhead !== sourceAnchor ||
+    program.anchor.resolvedSeconds !== sourceAnchor ||
     !(
-      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === 0) ||
-      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === 0)
+      (program.anchor.source.kind === "absolute" && program.anchor.source.seconds === sourceAnchor) ||
+      (program.anchor.source.kind === "playhead" && program.anchor.source.referenceSeconds === sourceAnchor)
     ) ||
     program.intentCount !== 1 ||
     program.loweringStatus !== "supported" ||
@@ -2450,8 +2589,8 @@ function runtimeTraceInitialEditOperation(
     program.operations.length !== 1 ||
     !operation ||
     operation.dependsOn.length !== 0 ||
-    operation.interval.start !== 0 ||
-    operation.interval.end !== 0 ||
+    operation.interval.start !== sourceAnchor ||
+    operation.interval.end !== sourceAnchor ||
     operation.provenance.origin !== "direct-manipulation" ||
     program.schedule.mode !== "parallel" ||
     program.schedule.edges.length !== 0 ||
@@ -2465,7 +2604,7 @@ function runtimeTraceInitialEditOperation(
       fail();
     }
     const value = operation.value as Readonly<{ x: number; y: number }>;
-    return { entityId: operation.entityId, kind: "move", value: { x: value.x, y: value.y } };
+    return { entityId: operation.entityId, kind: "move", sourceAnchor, value: { x: value.x, y: value.y } };
   }
   if (
     operation.kind === "SetProperty" &&
@@ -2475,7 +2614,8 @@ function runtimeTraceInitialEditOperation(
     operation.value >= 0 &&
     operation.value <= 1
   ) {
-    return { entityId: operation.entityId, kind: "opacity", value: operation.value };
+    if (sourceAnchor !== 0) fail();
+    return { entityId: operation.entityId, kind: "opacity", sourceAnchor: 0, value: operation.value };
   }
   if (
     operation.kind === "AnimateProperty" &&
@@ -2490,7 +2630,8 @@ function runtimeTraceInitialEditOperation(
     operation.from === 0 &&
     operation.to === operation.relativeDelta
   ) {
-    return { angleRadians: operation.relativeDelta, entityId: operation.entityId, kind: "rotation" };
+    if (sourceAnchor !== 0) fail();
+    return { angleRadians: operation.relativeDelta, entityId: operation.entityId, kind: "rotation", sourceAnchor: 0 };
   }
   if (
     operation.kind === "AnimateProperty" &&
@@ -2507,35 +2648,32 @@ function runtimeTraceInitialEditOperation(
     operation.relativeFactor > 0 &&
     Math.abs(operation.to / operation.from - operation.relativeFactor) < 0.000001
   ) {
-    return { entityId: operation.entityId, factor: operation.relativeFactor, kind: "resize" };
+    return {
+      entityId: operation.entityId,
+      factor: operation.relativeFactor,
+      kind: "resize",
+      sourceAnchor,
+    };
   }
   fail();
 }
 
 /**
- * Promotes Runtime Trace initial move, opacity, uniform resize, and rotation.
+ * Promotes Runtime Trace move, opacity, uniform-resize, and rotation edits.
  * Browser evidence is correlation only: current source bytes and canonical
  * SourceAnalysis independently choose the one rewritable binding occurrence.
  */
-export function lowerRuntimeTraceInitialEditSource(
+export function lowerRuntimeTraceEditSource(
   source: string,
   request: ProgramRenderRequest,
   entries: readonly LoweredProgramBatchEntry[],
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
 ): LoweredProgramBatchSource | null {
-  // Explicit source anchors remain owned by the established general lowerer.
-  if (
-    findSceneMotionAnchors(source, request.sceneName, request.sourcePath).some(
-      ({ seconds }) => Math.abs(seconds) < EPSILON,
-    )
-  ) {
-    return null;
-  }
-  const operation = runtimeTraceInitialEditOperation(request, entries);
+  const operation = runtimeTraceEditOperation(request, entries);
   if (!operation) return null;
   if (incoming !== null || request.destination !== null) {
-    runtimeTraceInitialEditLoweringError("Scene transitions are outside bounded initial editing.");
+    runtimeTraceEditLoweringError("Scene transitions are outside bounded Runtime Trace editing.");
   }
   if (
     !Number.isFinite(frame.height) ||
@@ -2547,16 +2685,16 @@ export function lowerRuntimeTraceInitialEditSource(
     request.viewport.height <= 0 ||
     request.viewport.width <= 0
   ) {
-    runtimeTraceInitialEditLoweringError("the Studio frame and viewport must be finite and positive.");
+    runtimeTraceEditLoweringError("the Studio frame and viewport must be finite and positive.");
   }
   const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
   if (!Number.isFinite(cameraCenter.x) || !Number.isFinite(cameraCenter.y)) {
-    runtimeTraceInitialEditLoweringError("the Studio camera center must be finite.");
+    runtimeTraceEditLoweringError("the Studio camera center must be finite.");
   }
 
-  const analysis = analyzeRuntimeTraceInitialEditSource(source, request.sceneName, request.sourcePath);
+  const analysis = analyzeRuntimeTraceEditSource(source, request.sceneName, request.sourcePath);
   if (analysis.sourceHash !== request.sourceHash) {
-    runtimeTraceInitialEditLoweringError("the edit must be rebased from the current source generation.");
+    runtimeTraceEditLoweringError("the edit must be rebased from the current source generation.");
   }
   const projectedBindings = projectedRuntimeTraceSourceBindings(analysis);
   const requestBindings = request.sourceBindings.filter(({ entityId }) => entityId === operation.entityId);
@@ -2566,9 +2704,7 @@ export function lowerRuntimeTraceInitialEditSource(
     : [];
   const projected = matchingBindings[0];
   if (requestBindings.length !== 1 || !requestBinding || matchingBindings.length !== 1 || !projected) {
-    runtimeTraceInitialEditLoweringError(
-      "one exact request binding must match one projected top-level source occurrence.",
-    );
+    runtimeTraceEditLoweringError("one exact request binding must match one projected top-level source occurrence.");
   }
   // Runtime Trace candidates only ever mint the canonical Studio identity of their
   // binding, so the gesture entity must resolve to that exact identity here.
@@ -2576,23 +2712,23 @@ export function lowerRuntimeTraceInitialEditSource(
   // imported entity marker) could otherwise cross-wire a gesture authorized
   // against one binding into a lowered edit of another.
   if (operation.entityId !== `source:${request.sourcePath}#${request.sceneName}:${projected.evidence.name}`) {
-    runtimeTraceInitialEditLoweringError(
-      "the gesture entity must be the canonical Studio identity of the selected binding.",
-    );
+    runtimeTraceEditLoweringError("the gesture entity must be the canonical Studio identity of the selected binding.");
   }
   const assignment = analysis.scene.statements.find(({ id }) => id === projected.binding.statementId);
-  const insertionBoundary = assignment?.insertionAfter;
-  if (!assignment || !insertionBoundary || insertionBoundary.indentation !== assignment.indentation) {
-    runtimeTraceInitialEditLoweringError(
-      "SourceAnalysis could not prove the direct insertion boundary after the projected assignment.",
-    );
-  }
+  if (!assignment) runtimeTraceEditLoweringError("SourceAnalysis could not recover the projected assignment.");
+  const { insertionBoundary } = runtimeTraceSourceEditBoundary(
+    source,
+    analysis,
+    projected,
+    operation.sourceAnchor,
+    frame,
+  );
 
   const emitLoweredSource = (insertedCode: string, boundary = insertionBoundary) => {
     try {
       return insertAtSourceBoundaryV1(source, analysis, boundary, [insertedCode]);
     } catch {
-      runtimeTraceInitialEditLoweringError("SourceAnalysis rejected the canonical assignment insertion.");
+      runtimeTraceEditLoweringError("SourceAnalysis rejected the canonical source-time insertion.");
     }
   };
 
@@ -2604,82 +2740,105 @@ export function lowerRuntimeTraceInitialEditSource(
       Math.abs(expectedWorldCenter.x) > MAX_COORDINATE ||
       Math.abs(expectedWorldCenter.y) > MAX_COORDINATE
     ) {
-      runtimeTraceInitialEditLoweringError(
+      runtimeTraceEditLoweringError(
         `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
       );
     }
-    const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.move_to((${formatPointCoordinate(expectedWorldCenter.x)}, ${formatPointCoordinate(expectedWorldCenter.y)}, 0))`;
-    const loweredSource = emitLoweredSource(insertedCode);
-    const derived = deriveRuntimeTraceInitialMoveSourceEditPlan(
+    const assignmentIndex = analysis.scene.statements.findIndex(({ id }) => id === assignment.id);
+    const directEdits = contiguousCanonicalRuntimeTraceEditStatements(
+      analysis,
+      assignmentIndex,
+      projected.evidence.name,
+    );
+    const priorMove =
+      operation.sourceAnchor === 0
+        ? directEdits.reduce<(typeof directEdits)[number] | undefined>(
+            (selected, statement) =>
+              parseCanonicalRuntimeTraceMoveEdit(statement.text, projected.evidence.name) === null
+                ? selected
+                : statement,
+            undefined,
+          )
+        : undefined;
+    const moveBoundary = priorMove?.insertionAfter ?? insertionBoundary;
+    if (!moveBoundary || moveBoundary.indentation !== assignment.indentation) {
+      runtimeTraceEditLoweringError("SourceAnalysis could not append the absolute move edit.");
+    }
+    const insertedCode = `${moveBoundary.indentation}${projected.evidence.name}.move_to((${formatPointCoordinate(expectedWorldCenter.x)}, ${formatPointCoordinate(expectedWorldCenter.y)}, 0))`;
+    const loweredSource = emitLoweredSource(insertedCode, moveBoundary);
+    const derived = deriveRuntimeTraceMoveSourceEditPlan(
       loweredSource,
       request.sceneName,
       request.sourcePath,
       projected.evidence.name,
+      operation.sourceAnchor,
     );
     if (
       derived.baseSource !== source ||
       derived.baseSourceHash !== request.sourceHash ||
       JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
       derived.expectedWorldCenter.x !== expectedWorldCenter.x ||
-      derived.expectedWorldCenter.y !== expectedWorldCenter.y
+      derived.expectedWorldCenter.y !== expectedWorldCenter.y ||
+      derived.sourceAnchor !== operation.sourceAnchor
     ) {
-      runtimeTraceInitialEditLoweringError(
+      runtimeTraceEditLoweringError(
         "the emitted source does not re-derive the exact base binding and requested world center.",
       );
     }
     return {
-      anchorLine: insertionBoundary.line,
-      anchorLines: [insertionBoundary.line],
+      anchorLine: moveBoundary.line,
+      anchorLines: [moveBoundary.line],
       insertedCode,
       preflight: {
         baseBinding: derived.baseBinding,
         baseSourceHash: derived.baseSourceHash,
         entityId: operation.entityId,
         expectedWorldCenter: derived.expectedWorldCenter,
-        kind: "runtime-trace-initial-move",
+        kind: "runtime-trace-move-edit",
+        sourceAnchor: derived.sourceAnchor,
       },
       source: loweredSource,
     };
   }
 
   if (operation.kind === "opacity") {
-    const formattedOpacity = formatRuntimeTraceInitialOpacity(operation.value);
+    const formattedOpacity = formatRuntimeTraceOpacity(operation.value);
     const expectedOpacity = Number(formattedOpacity);
     if (!Number.isFinite(expectedOpacity) || expectedOpacity < 0 || expectedOpacity > 1) {
-      runtimeTraceInitialEditLoweringError("opacity must lower to one finite value between zero and one.");
+      runtimeTraceEditLoweringError("opacity must lower to one finite value between zero and one.");
     }
     const assignmentIndex = analysis.scene.statements.findIndex(({ id }) => id === assignment.id);
-    const directInitialEdits = contiguousCanonicalRuntimeTraceInitialEditStatements(
+    const directEdits = contiguousCanonicalRuntimeTraceEditStatements(
       analysis,
       assignmentIndex,
       projected.evidence.name,
     );
-    const priorOpacity = directInitialEdits.reduce<(typeof directInitialEdits)[number] | undefined>(
+    const priorOpacity = directEdits.reduce<(typeof directEdits)[number] | undefined>(
       (selected, statement) =>
-        parseCanonicalRuntimeTraceInitialOpacity(statement.text, projected.evidence.name) === null
-          ? selected
-          : statement,
+        parseCanonicalRuntimeTraceOpacityEdit(statement.text, projected.evidence.name) === null ? selected : statement,
       undefined,
     );
     const opacityBoundary = priorOpacity?.insertionAfter ?? insertionBoundary;
     if (!opacityBoundary || opacityBoundary.indentation !== assignment.indentation) {
-      runtimeTraceInitialEditLoweringError("SourceAnalysis could not append the opacity edit.");
+      runtimeTraceEditLoweringError("SourceAnalysis could not append the opacity edit.");
     }
     const insertedCode = `${opacityBoundary.indentation}${projected.evidence.name}.set_opacity(${formattedOpacity})`;
     const loweredSource = emitLoweredSource(insertedCode, opacityBoundary);
-    const derived = deriveRuntimeTraceInitialOpacitySourceEditPlan(
+    const derived = deriveRuntimeTraceOpacitySourceEditPlan(
       loweredSource,
       request.sceneName,
       request.sourcePath,
       projected.evidence.name,
+      operation.sourceAnchor,
     );
     if (
       derived.baseSource !== source ||
       derived.baseSourceHash !== request.sourceHash ||
       JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
-      derived.expectedOpacity !== expectedOpacity
+      derived.expectedOpacity !== expectedOpacity ||
+      derived.sourceAnchor !== operation.sourceAnchor
     ) {
-      runtimeTraceInitialEditLoweringError(
+      runtimeTraceEditLoweringError(
         "the emitted source does not re-derive the exact base binding and requested opacity.",
       );
     }
@@ -2692,54 +2851,55 @@ export function lowerRuntimeTraceInitialEditSource(
         baseSourceHash: derived.baseSourceHash,
         entityId: operation.entityId,
         expectedOpacity: derived.expectedOpacity,
-        kind: "runtime-trace-initial-opacity",
+        kind: "runtime-trace-opacity-edit",
+        sourceAnchor: 0,
       },
       source: loweredSource,
     };
   }
 
   if (operation.kind === "rotation") {
-    const formattedAngleRadians = formatRuntimeTraceInitialRotationAngle(operation.angleRadians);
+    const formattedAngleRadians = formatRuntimeTraceRotationAngle(operation.angleRadians);
     const expectedAngleRadians = Number(formattedAngleRadians);
     if (
       !Number.isFinite(expectedAngleRadians) ||
-      runtimeTraceInitialRotationIsNoop(expectedAngleRadians) ||
+      runtimeTraceRotationIsNoop(expectedAngleRadians) ||
       Math.abs(expectedAngleRadians) > MAX_COORDINATE
     ) {
-      runtimeTraceInitialEditLoweringError("rotation must lower to one finite non-noop bounded angle in radians.");
+      runtimeTraceEditLoweringError("rotation must lower to one finite non-noop bounded angle in radians.");
     }
     const assignmentIndex = analysis.scene.statements.findIndex(({ id }) => id === assignment.id);
-    const directInitialEdits = contiguousCanonicalRuntimeTraceInitialEditStatements(
+    const directEdits = contiguousCanonicalRuntimeTraceEditStatements(
       analysis,
       assignmentIndex,
       projected.evidence.name,
     );
-    const priorRotation = directInitialEdits.reduce<(typeof directInitialEdits)[number] | undefined>(
+    const priorRotation = directEdits.reduce<(typeof directEdits)[number] | undefined>(
       (selected, statement) =>
-        parseCanonicalRuntimeTraceInitialRotation(statement.text, projected.evidence.name) === null
-          ? selected
-          : statement,
+        parseCanonicalRuntimeTraceRotationEdit(statement.text, projected.evidence.name) === null ? selected : statement,
       undefined,
     );
     const rotationBoundary = priorRotation?.insertionAfter ?? insertionBoundary;
     if (!rotationBoundary || rotationBoundary.indentation !== assignment.indentation) {
-      runtimeTraceInitialEditLoweringError("SourceAnalysis could not append the relative rotation.");
+      runtimeTraceEditLoweringError("SourceAnalysis could not append the relative rotation.");
     }
     const insertedCode = `${rotationBoundary.indentation}${projected.evidence.name}.rotate(${formattedAngleRadians})`;
     const loweredSource = emitLoweredSource(insertedCode, rotationBoundary);
-    const derived = deriveRuntimeTraceInitialRotationSourceEditPlan(
+    const derived = deriveRuntimeTraceRotationSourceEditPlan(
       loweredSource,
       request.sceneName,
       request.sourcePath,
       projected.evidence.name,
+      operation.sourceAnchor,
     );
     if (
       derived.baseSource !== source ||
       derived.baseSourceHash !== request.sourceHash ||
       JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
-      derived.expectedAngleRadians !== expectedAngleRadians
+      derived.expectedAngleRadians !== expectedAngleRadians ||
+      derived.sourceAnchor !== operation.sourceAnchor
     ) {
-      runtimeTraceInitialEditLoweringError(
+      runtimeTraceEditLoweringError(
         "the emitted source does not re-derive the exact base binding and requested rotation angle.",
       );
     }
@@ -2752,7 +2912,8 @@ export function lowerRuntimeTraceInitialEditSource(
         baseSourceHash: derived.baseSourceHash,
         entityId: operation.entityId,
         expectedAngleRadians: derived.expectedAngleRadians,
-        kind: "runtime-trace-initial-rotation",
+        kind: "runtime-trace-rotation-edit",
+        sourceAnchor: 0,
       },
       source: loweredSource,
     };
@@ -2768,25 +2929,25 @@ export function lowerRuntimeTraceInitialEditSource(
     expectedScaleFactor === 1 ||
     expectedScaleFactor > MAX_COORDINATE
   ) {
-    runtimeTraceInitialEditLoweringError(
-      "uniform resize must lower to one positive non-identity bounded scale factor.",
-    );
+    runtimeTraceEditLoweringError("uniform resize must lower to one positive non-identity bounded scale factor.");
   }
   const insertedCode = `${insertionBoundary.indentation}${projected.evidence.name}.scale(${formattedFactor})`;
   const loweredSource = emitLoweredSource(insertedCode);
-  const derived = deriveRuntimeTraceInitialResizeSourceEditPlan(
+  const derived = deriveRuntimeTraceResizeSourceEditPlan(
     loweredSource,
     request.sceneName,
     request.sourcePath,
     projected.evidence.name,
+    operation.sourceAnchor,
   );
   if (
     derived.baseSource !== source ||
     derived.baseSourceHash !== request.sourceHash ||
     JSON.stringify(derived.baseBinding) !== JSON.stringify(projected.evidence) ||
-    derived.expectedScaleFactor !== expectedScaleFactor
+    derived.expectedScaleFactor !== expectedScaleFactor ||
+    derived.sourceAnchor !== operation.sourceAnchor
   ) {
-    runtimeTraceInitialEditLoweringError(
+    runtimeTraceEditLoweringError(
       "the emitted source does not re-derive the exact base binding and requested scale factor.",
     );
   }
@@ -2799,745 +2960,8 @@ export function lowerRuntimeTraceInitialEditSource(
       baseSourceHash: derived.baseSourceHash,
       entityId: operation.entityId,
       expectedScaleFactor: derived.expectedScaleFactor,
-      kind: "runtime-trace-initial-resize",
-    },
-    source: loweredSource,
-  };
-}
-
-function openingTerminalV2LoweringError(message: string): never {
-  throw new ProgramLoweringError("operation-unsupported", `OpeningManim terminal position V2: ${message}`);
-}
-
-export type OpeningManimTerminalPositionSourceEditPlanV2 = Readonly<{
-  anchorLine: number;
-  binding: Readonly<{ name: "grid_title"; sourceLine: 38 }>;
-  sourceTime: typeof OPENING_TERMINAL_SOURCE_TIME_V2;
-  translation: Readonly<{ x: number; y: number; z: 0 }> | null;
-}>;
-
-function parseCanonicalOpeningTranslationV2(statement: string) {
-  const match = statement.match(/^grid_title\.shift\(\(([^,()]+), ([^,()]+), 0\)\)$/);
-  if (!match) return null;
-  const x = Number(match[1]);
-  const y = Number(match[2]);
-  if (
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    (x === 0 && y === 0) ||
-    Math.abs(x) > MAX_COORDINATE ||
-    Math.abs(y) > MAX_COORDINATE ||
-    formatPointCoordinate(x) !== match[1] ||
-    formatPointCoordinate(y) !== match[2]
-  ) {
-    return null;
-  }
-  return { x, y, z: 0 as const };
-}
-
-function inspectOpeningManimTerminalPositionSourceV2(candidateSource: string, sceneName: string) {
-  if (sceneName !== OPENING_TERMINAL_SCENE_NAME_V2) {
-    openingTerminalV2LoweringError("candidate Scene identity is outside the pinned profile.");
-  }
-  const candidateHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
-  let sourceAnalysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
-  try {
-    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
-      expectedSourceHash: candidateHash,
-      sceneName: OPENING_TERMINAL_SCENE_NAME_V2,
-      sourcePath: OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
-      sourceText: candidateSource,
-    });
-  } catch (error) {
-    openingTerminalV2LoweringError(
-      `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
-    );
-  }
-  const statements = sourceAnalysis.scene.statements;
-  const assignments = statements.filter(({ text }) => text === 'grid_title = Tex("This is a grid", font_size=72)');
-  const transforms = statements.filter(({ text }) => text === "self.play(Transform(grid_title, grid_transform_title))");
-  const assignment = assignments[0];
-  const transform = transforms[0];
-  const transformIndex = transform ? statements.indexOf(transform) : -1;
-  const trailing = transformIndex < 0 ? [] : statements.slice(transformIndex + 1);
-  const wait = trailing.at(-1);
-  const translationStatement = trailing.length === 2 ? trailing[0] : undefined;
-  const sourceBinding = sourceAnalysis.bindings.filter(
-    ({ kind, name, scopeId }) =>
-      kind === "assignment" && name === "grid_title" && scopeId === sourceAnalysis.scene.construct.scopeId,
-  );
-  if (
-    sourceAnalysis.scene.classLine !== 18 ||
-    assignments.length !== 1 ||
-    transforms.length !== 1 ||
-    sourceBinding.length !== 1 ||
-    sourceBinding[0]?.capabilities.move.status !== "source-eligible" ||
-    !assignment ||
-    assignment.line !== 38 ||
-    !transform ||
-    transform.line !== 68 ||
-    trailing.length < 1 ||
-    trailing.length > 2 ||
-    wait?.text !== "self.wait()" ||
-    transform.line + 1 !== (translationStatement?.line ?? wait.line) ||
-    (translationStatement !== undefined && translationStatement.line + 1 !== wait.line) ||
-    assignment.indentation !== "        " ||
-    transform.rawText !== `        ${transform.text}` ||
-    wait.rawText !== `        ${wait.text}` ||
-    !wait.insertionBefore ||
-    wait.insertionBefore.indentation !== "        "
-  ) {
-    openingTerminalV2LoweringError(
-      "SourceAnalysis could not prove the grid_title occurrence and direct final-Transform-to-wait boundary.",
-    );
-  }
-
-  const translation = translationStatement ? parseCanonicalOpeningTranslationV2(translationStatement.text) : null;
-  if (translationStatement && !translation) {
-    openingTerminalV2LoweringError("candidate edit must be one canonical finite bounded grid_title translation.");
-  }
-  let officialSource = candidateSource;
-  if (translationStatement) {
-    try {
-      officialSource = removeDirectSourceStatementsV1(candidateSource, sourceAnalysis, [
-        { expectedText: translationStatement.text, statementId: translationStatement.id },
-      ]);
-    } catch {
-      openingTerminalV2LoweringError("candidate edit does not have one canonical removable statement span.");
-    }
-  }
-  const imported = importManimScene(
-    officialSource,
-    OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2,
-    OPENING_TERMINAL_SCENE_NAME_V2,
-  );
-  const bindingEntries = Object.entries(imported?.sourceVariables ?? {}).filter(([, name]) => name === "grid_title");
-  if (!imported || imported.sourceHash !== OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2 || bindingEntries.length !== 1) {
-    openingTerminalV2LoweringError("candidate bytes do not reduce to the pinned source occurrence and binding.");
-  }
-  return {
-    bindingEntityId: bindingEntries[0]![0],
-    importedSourceVariables: imported.sourceVariables,
-    insertionBoundary: wait.insertionBefore,
-    officialSource,
-    plan: {
-      anchorLine: wait.line - 1 - Number(translationStatement !== undefined),
-      binding: { name: "grid_title", sourceLine: 38 },
-      sourceTime: OPENING_TERMINAL_SOURCE_TIME_V2,
-      translation,
-    } satisfies OpeningManimTerminalPositionSourceEditPlanV2,
-    sourceAnalysis,
-  } as const;
-}
-
-export function deriveOpeningManimTerminalPositionSourceEditPlanV2(
-  candidateSource: string,
-  sceneName: string,
-): OpeningManimTerminalPositionSourceEditPlanV2 {
-  return inspectOpeningManimTerminalPositionSourceV2(candidateSource, sceneName).plan;
-}
-
-export function recoverOpeningManimOfficialSourceV2(candidateSource: string, sceneName: string) {
-  const inspected = inspectOpeningManimTerminalPositionSourceV2(candidateSource, sceneName);
-  if (!inspected.plan.translation) openingTerminalV2LoweringError("candidate source contains no terminal translation.");
-  return inspected.officialSource;
-}
-
-/**
- * SourceAnalysis half of the OpeningManim V2 edit slice. The caller must pass
- * the grid_title center from separately verified and fully correlated Runtime
- * Trace evidence; that runtime position cannot authorize a rewrite by itself.
- */
-export function lowerOpeningManimTerminalPositionSourceV2(
-  source: string,
-  request: ProgramRenderRequest,
-  entries: readonly LoweredProgramBatchEntry[],
-  frame: Readonly<{ height: number; width: number }>,
-  incoming: IncomingSceneSetup | null,
-  runtimeSourceCenter: Readonly<{ x: number; y: number }> | null,
-): LoweredProgramBatchSource | null {
-  if (
-    request.sourcePath !== OPENING_TERMINAL_OFFICIAL_SOURCE_PATH_V2 ||
-    request.sceneName !== OPENING_TERMINAL_SCENE_NAME_V2
-  ) {
-    return null;
-  }
-  if (request.sourceHash !== OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2) {
-    openingTerminalV2LoweringError("the edit must be rebased from the pinned official source generation.");
-  }
-  if (
-    incoming !== null ||
-    request.destination !== null ||
-    frame.height !== 8 ||
-    frame.width !== 128 / 9 ||
-    !Number.isFinite(request.viewport.height) ||
-    !Number.isFinite(request.viewport.width) ||
-    request.viewport.height <= 0 ||
-    request.viewport.width <= 0 ||
-    (request.cameraCenter?.x ?? 0) !== 0 ||
-    (request.cameraCenter?.y ?? 0) !== 0
-  ) {
-    openingTerminalV2LoweringError("the exact terminal Scene and default Runtime Trace camera are required.");
-  }
-  const base = inspectOpeningManimTerminalPositionSourceV2(source, request.sceneName);
-  if (base.plan.translation) openingTerminalV2LoweringError("the pinned base source must not contain a prior edit.");
-  const capability = composeSourceRuntimeOperationCapabilityV1(
-    base.sourceAnalysis,
-    "grid_title",
-    "move",
-    request.sourceBindings,
-    base.importedSourceVariables,
-  );
-  if (request.sourceBindings.length !== 1 || !capability || capability.entityId !== base.bindingEntityId) {
-    openingTerminalV2LoweringError("one exact SourceAnalysis grid_title binding is required.");
-  }
-  const programs = renderRequestPrograms(request);
-  const entry = entries[0];
-  const program = programs[0];
-  const operation = program?.operations[0];
-  const anchorSource = program?.anchor.source;
-  if (
-    programs.length !== 1 ||
-    entries.length !== 1 ||
-    !entry ||
-    !program ||
-    JSON.stringify(entry.program) !== JSON.stringify(program) ||
-    entry.sourceAnchor !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
-    program.version !== EDIT_OPERATION_VERSION ||
-    program.anchor.capturedPlayhead !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
-    program.anchor.resolvedSeconds !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
-    !anchorSource ||
-    !(
-      (anchorSource.kind === "absolute" && anchorSource.seconds === OPENING_TERMINAL_SOURCE_TIME_V2) ||
-      (anchorSource.kind === "playhead" && anchorSource.referenceSeconds === OPENING_TERMINAL_SOURCE_TIME_V2)
-    ) ||
-    program.intentCount !== 1 ||
-    program.loweringStatus !== "supported" ||
-    program.provenance.origin !== "direct-manipulation" ||
-    program.requestedExecution !== "parallel" ||
-    program.operations.length !== 1 ||
-    !operation ||
-    operation.kind !== "SetProperty" ||
-    operation.key !== "position" ||
-    operation.entityId !== base.bindingEntityId ||
-    operation.dependsOn.length !== 0 ||
-    operation.provenance.origin !== "direct-manipulation" ||
-    operation.interval.start !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
-    operation.interval.end !== OPENING_TERMINAL_SOURCE_TIME_V2 ||
-    program.schedule.mode !== "parallel" ||
-    program.schedule.edges.length !== 0 ||
-    program.schedule.order.length !== 1 ||
-    program.schedule.order[0] !== operation.id ||
-    !isPoint(operation.value) ||
-    !Number.isFinite(operation.value.x) ||
-    !Number.isFinite(operation.value.y)
-  ) {
-    openingTerminalV2LoweringError("one exact grid_title position Program at source time fourteen is required.");
-  }
-  if (
-    !runtimeSourceCenter ||
-    !Number.isFinite(runtimeSourceCenter.x) ||
-    !Number.isFinite(runtimeSourceCenter.y) ||
-    Math.abs(runtimeSourceCenter.x) > MAX_COORDINATE ||
-    Math.abs(runtimeSourceCenter.y) > MAX_COORDINATE
-  ) {
-    openingTerminalV2LoweringError("a finite bounded correlated Runtime Trace grid_title center is required.");
-  }
-  const target = {
-    x: (operation.value.x / request.viewport.width - 0.5) * frame.width,
-    y: (0.5 - operation.value.y / request.viewport.height) * frame.height,
-  };
-  const translation = { x: target.x - runtimeSourceCenter.x, y: target.y - runtimeSourceCenter.y };
-  if (
-    !Number.isFinite(translation.x) ||
-    !Number.isFinite(translation.y) ||
-    (nearlyEqual(translation.x, 0) && nearlyEqual(translation.y, 0)) ||
-    Math.abs(translation.x) > MAX_COORDINATE ||
-    Math.abs(translation.y) > MAX_COORDINATE
-  ) {
-    openingTerminalV2LoweringError("the correlated position must produce one finite nonzero bounded translation.");
-  }
-  const indentation = base.insertionBoundary.indentation;
-  if (indentation !== "        ") openingTerminalV2LoweringError("the pinned final-wait indentation changed.");
-  const insertedCode = `${indentation}grid_title.shift((${formatPointCoordinate(translation.x)}, ${formatPointCoordinate(translation.y)}, 0))`;
-  const loweredSource = insertAtSourceBoundaryV1(source, base.sourceAnalysis, base.insertionBoundary, [insertedCode]);
-  const derived = deriveOpeningManimTerminalPositionSourceEditPlanV2(loweredSource, request.sceneName);
-  if (
-    !derived.translation ||
-    !nearlyEqual(derived.translation.x, translation.x) ||
-    !nearlyEqual(derived.translation.y, translation.y)
-  ) {
-    openingTerminalV2LoweringError("the emitted source does not re-derive the correlated translation.");
-  }
-  return {
-    anchorLine: base.plan.anchorLine,
-    anchorLines: [base.plan.anchorLine],
-    insertedCode,
-    preflight: {
-      baseSourceHash: OPENING_TERMINAL_OFFICIAL_SOURCE_SHA256_V2,
-      kind: "fast-manim-opening-terminal-v2",
-    },
-    source: loweredSource,
-  };
-}
-
-function updatersTerminalV1LoweringError(message: string): never {
-  throw new ProgramLoweringError("operation-unsupported", `UpdatersExample terminal edit V1: ${message}`);
-}
-
-function nearlyEqual(left: number, right: number) {
-  return Math.abs(left - right) <= 0.000001 * Math.max(1, Math.abs(left), Math.abs(right));
-}
-
-function exactUpdatersTerminalAnchor(program: CanonicalEditProgram) {
-  const source = program.anchor.source;
-  return (
-    (source.kind === "absolute" && source.seconds === UPDATERS_TERMINAL_SOURCE_TIME_V1) ||
-    (source.kind === "playhead" && source.referenceSeconds === UPDATERS_TERMINAL_SOURCE_TIME_V1)
-  );
-}
-
-function boundedUpdatersTerminalEditPlan(
-  request: ProgramRenderRequest,
-  entries: readonly LoweredProgramBatchEntry[],
-  squareEntityId: string,
-) {
-  const programs = renderRequestPrograms(request);
-  if (
-    programs.length < 1 ||
-    programs.length > 2 ||
-    entries.length !== programs.length ||
-    programs.some((program, index) => JSON.stringify(program) !== JSON.stringify(entries[index]?.program))
-  ) {
-    updatersTerminalV1LoweringError("one or two correlated terminal Programs are accepted.");
-  }
-
-  let position: Readonly<{ x: number; y: number }> | null = null;
-  let scale: number | null = null;
-  for (const { program, sourceAnchor } of entries) {
-    const operation = program.operations[0];
-    const expectedMode = operation?.kind === "ResizeEntity" ? "sequence" : "parallel";
-    if (
-      sourceAnchor !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
-      program.version !== EDIT_OPERATION_VERSION ||
-      program.anchor.capturedPlayhead !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
-      program.anchor.resolvedSeconds !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
-      !exactUpdatersTerminalAnchor(program) ||
-      program.intentCount !== 1 ||
-      program.loweringStatus !== "supported" ||
-      program.provenance.origin !== "direct-manipulation" ||
-      program.requestedExecution !== expectedMode ||
-      program.operations.length !== 1 ||
-      !operation ||
-      operation.dependsOn.length !== 0 ||
-      operation.provenance.origin !== "direct-manipulation" ||
-      program.schedule.mode !== expectedMode ||
-      program.schedule.edges.length !== 0 ||
-      program.schedule.order.length !== 1 ||
-      program.schedule.order[0] !== operation.id ||
-      operation.interval.start !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
-      operation.interval.end !== UPDATERS_TERMINAL_SOURCE_TIME_V1 ||
-      !("entityId" in operation) ||
-      operation.entityId !== squareEntityId
-    ) {
-      updatersTerminalV1LoweringError(
-        "each edit must be one exact direct-manipulation operation on `square` at source time five.",
-      );
-    }
-
-    if (operation.kind === "SetProperty" && operation.key === "position") {
-      if (
-        position !== null ||
-        !isPoint(operation.value) ||
-        !Number.isFinite(operation.value.x) ||
-        !Number.isFinite(operation.value.y)
-      ) {
-        updatersTerminalV1LoweringError("position must be one finite absolute point.");
-      }
-      position = { x: operation.value.x, y: operation.value.y };
-      continue;
-    }
-
-    if (operation.kind === "ResizeEntity") {
-      const from = operation.from.dimensions;
-      const to = operation.to.dimensions;
-      const fromWidth = from.width;
-      const fromHeight = from.height;
-      const toWidth = to.width;
-      const toHeight = to.height;
-      const sameCenter =
-        Number.isFinite(operation.from.position.x) &&
-        Number.isFinite(operation.from.position.y) &&
-        Number.isFinite(operation.to.position.x) &&
-        Number.isFinite(operation.to.position.y) &&
-        nearlyEqual(operation.from.position.x, operation.to.position.x) &&
-        nearlyEqual(operation.from.position.y, operation.to.position.y);
-      if (
-        scale !== null ||
-        operation.shape !== "rectangle" ||
-        operation.scale !== 1 ||
-        from.radius !== undefined ||
-        to.radius !== undefined ||
-        typeof fromWidth !== "number" ||
-        typeof fromHeight !== "number" ||
-        typeof toWidth !== "number" ||
-        typeof toHeight !== "number" ||
-        !Number.isFinite(fromWidth) ||
-        !Number.isFinite(fromHeight) ||
-        !Number.isFinite(toWidth) ||
-        !Number.isFinite(toHeight) ||
-        fromWidth <= 0 ||
-        fromHeight <= 0 ||
-        toWidth <= 0 ||
-        toHeight <= 0 ||
-        !nearlyEqual(fromWidth, 2) ||
-        !nearlyEqual(fromHeight, 2) ||
-        !nearlyEqual(fromWidth, fromHeight) ||
-        !nearlyEqual(toWidth, toHeight) ||
-        !sameCenter
-      ) {
-        updatersTerminalV1LoweringError(
-          "resize must be one center-preserving positive uniform resize from the pinned 2x2 Square.",
-        );
-      }
-      const widthFactor = toWidth / fromWidth;
-      const heightFactor = toHeight / fromHeight;
-      if (
-        !Number.isFinite(widthFactor) ||
-        widthFactor <= 0 ||
-        widthFactor > MAX_COORDINATE ||
-        !nearlyEqual(widthFactor, heightFactor)
-      ) {
-        updatersTerminalV1LoweringError(
-          `resize must have one finite positive uniform scale factor at most ${MAX_COORDINATE}.`,
-        );
-      }
-      scale = widthFactor;
-      continue;
-    }
-
-    updatersTerminalV1LoweringError("only canonical position and positive uniform resize operations are accepted.");
-  }
-
-  if (position === null && scale === null) {
-    updatersTerminalV1LoweringError("the Programs contain no supported terminal edit.");
-  }
-  return { position, scale } as const;
-}
-
-export type UpdatersTerminalSourceEditPlanV1 = Readonly<{
-  anchorLine: number;
-  moveTo: Readonly<{ x: number; y: number; z: 0 }> | null;
-  refreshDependentUpdater: boolean;
-  scale: number | null;
-  sourceTime: typeof UPDATERS_TERMINAL_SOURCE_TIME_V1;
-}>;
-
-const UPDATERS_TERMINAL_BASE_STATEMENTS_V1 = [
-  "decimal = DecimalNumber(\n0,\nshow_ellipsis=True,\nnum_decimal_places=3,\ninclude_sign=True,\n)",
-  "square = Square().to_edge(UP)",
-  "decimal.add_updater(lambda d: d.next_to(square, RIGHT))",
-  "decimal.add_updater(lambda d: d.set_value(square.get_center()[1]))",
-  "self.add(square, decimal)",
-  "self.play(\nsquare.animate.to_edge(DOWN),\nrate_func=there_and_back,\nrun_time=5,\n)",
-] as const;
-
-function parseCanonicalUpdatersMoveV1(statement: string) {
-  const match = statement.match(/^square\.move_to\(\(([^,()]+), ([^,()]+), 0\)\)$/);
-  if (!match) return null;
-  const x = Number(match[1]);
-  const y = Number(match[2]);
-  if (
-    !Number.isFinite(x) ||
-    !Number.isFinite(y) ||
-    Math.abs(x) > MAX_COORDINATE ||
-    Math.abs(y) > MAX_COORDINATE ||
-    formatPointCoordinate(x) !== match[1] ||
-    formatPointCoordinate(y) !== match[2]
-  ) {
-    return null;
-  }
-  return { x, y, z: 0 as const };
-}
-
-function parseCanonicalUpdatersScaleV1(statement: string) {
-  const match = statement.match(/^square\.scale\(([^()]+)\)$/);
-  if (!match) return null;
-  const scale = Number(match[1]);
-  if (!Number.isFinite(scale) || scale <= 0 || scale > MAX_COORDINATE || formatPositiveAmount(scale) !== match[1]) {
-    return null;
-  }
-  return scale;
-}
-
-/**
- * Independently derives the only edited-source plan admitted for the pinned
- * UpdatersExample family. Removing the optional canonical statements must
- * reproduce the exact official source bytes, so aliases, control flow,
- * updater changes, reordered statements, and any unrelated edit fail closed.
- */
-function inspectUpdatersTerminalSourceV1(candidateSource: string, sceneName: string) {
-  if (sceneName !== UPDATERS_TERMINAL_SCENE_NAME_V1) {
-    updatersTerminalV1LoweringError("candidate Scene identity is outside the pinned profile.");
-  }
-  const candidateHash = createHash("sha256").update(candidateSource, "utf8").digest("hex");
-  let sourceAnalysis: ReturnType<typeof studioSourceAnalysisProviderV1.analyze>;
-  try {
-    sourceAnalysis = studioSourceAnalysisProviderV1.analyze({
-      expectedSourceHash: candidateHash,
-      sceneName: UPDATERS_TERMINAL_SCENE_NAME_V1,
-      sourcePath: UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
-      sourceText: candidateSource,
-    });
-  } catch (error) {
-    updatersTerminalV1LoweringError(
-      `SourceAnalysis rejected the selected Scene${error instanceof SourceAnalysisError ? ` (${error.code})` : ""}.`,
-    );
-  }
-  const statements = sourceAnalysis.scene.statements;
-  const play = statements[UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length - 1];
-  const wait = statements.at(-1);
-  const editStatements = statements.slice(UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length, -1);
-  const squareBinding = sourceAnalysis.bindings.filter(
-    ({ kind, name, scopeId }) =>
-      kind === "assignment" && name === "square" && scopeId === sourceAnalysis.scene.construct.scopeId,
-  );
-  if (
-    sourceAnalysis.scene.classLine !== 112 ||
-    squareBinding.length !== 1 ||
-    squareBinding[0]?.capabilities.move.status !== "source-eligible" ||
-    squareBinding[0]?.capabilities.uniformResize.status !== "source-eligible" ||
-    statements.length < UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 1 ||
-    statements.length > UPDATERS_TERMINAL_BASE_STATEMENTS_V1.length + 4 ||
-    UPDATERS_TERMINAL_BASE_STATEMENTS_V1.some((text, index) => statements[index]?.text !== text) ||
-    wait?.text !== "self.wait()" ||
-    !play ||
-    !wait ||
-    play.span.endLine + 1 !== (editStatements[0]?.line ?? wait.line) ||
-    editStatements.some((statement, index) => statement.line + 1 !== (editStatements[index + 1]?.line ?? wait.line)) ||
-    play.indentation !== "        " ||
-    wait.rawText !== `        ${wait.text}` ||
-    !wait.insertionBefore ||
-    wait.insertionBefore.indentation !== "        "
-  ) {
-    updatersTerminalV1LoweringError(
-      "SourceAnalysis could not prove the direct boundary after the five-second play and before the final wait.",
-    );
-  }
-
-  const refreshDependentUpdater = editStatements.length > 0;
-  const transformStatements = refreshDependentUpdater ? editStatements.slice(0, -1) : editStatements;
-  if (refreshDependentUpdater && editStatements.at(-1)?.text !== "decimal.update(0)") {
-    updatersTerminalV1LoweringError(
-      "candidate edits must end with the exact `decimal.update(0)` dependent-updater refresh.",
-    );
-  }
-
-  let moveTo: Readonly<{ x: number; y: number; z: 0 }> | null = null;
-  let scale: number | null = null;
-  for (const [index, statement] of transformStatements.entries()) {
-    const parsedMove = parseCanonicalUpdatersMoveV1(statement.text);
-    if (parsedMove && moveTo === null && scale === null && index === 0) {
-      moveTo = parsedMove;
-      continue;
-    }
-    const parsedScale = parseCanonicalUpdatersScaleV1(statement.text);
-    if (parsedScale !== null && scale === null && (index === 0 || (index === 1 && moveTo !== null))) {
-      scale = parsedScale;
-      continue;
-    }
-    updatersTerminalV1LoweringError("candidate edits must be one canonical move followed by one canonical scale.");
-  }
-  if (refreshDependentUpdater && moveTo === null && scale === null) {
-    updatersTerminalV1LoweringError("the dependent-updater refresh requires one preceding terminal Square edit.");
-  }
-
-  let baseSource = candidateSource;
-  if (editStatements.length > 0) {
-    try {
-      baseSource = removeDirectSourceStatementsV1(
-        candidateSource,
-        sourceAnalysis,
-        editStatements.map((statement) => ({ expectedText: statement.text, statementId: statement.id })),
-      );
-    } catch {
-      updatersTerminalV1LoweringError("candidate edits do not have canonical removable statement spans.");
-    }
-  }
-  const importedBase = importManimScene(
-    baseSource,
-    UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1,
-    UPDATERS_TERMINAL_SCENE_NAME_V1,
-  );
-  if (
-    !importedBase ||
-    importedBase.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1 ||
-    Object.keys(importedBase.sourceVariables).length !== 1 ||
-    !Object.values(importedBase.sourceVariables).includes("square")
-  ) {
-    updatersTerminalV1LoweringError("candidate bytes do not reduce to the pinned official source generation.");
-  }
-  return {
-    importedSourceVariables: importedBase.sourceVariables,
-    insertionBoundary: wait.insertionBefore,
-    officialSource: baseSource,
-    plan: {
-      anchorLine: wait.line - 1 - editStatements.length,
-      moveTo,
-      refreshDependentUpdater,
-      scale,
-      sourceTime: UPDATERS_TERMINAL_SOURCE_TIME_V1,
-    } satisfies UpdatersTerminalSourceEditPlanV1,
-    sourceAnalysis,
-  } as const;
-}
-
-export function deriveUpdatersTerminalSourceEditPlanV1(
-  candidateSource: string,
-  sceneName: string,
-): UpdatersTerminalSourceEditPlanV1 {
-  return inspectUpdatersTerminalSourceV1(candidateSource, sceneName).plan;
-}
-
-/** Recovers only the exact pinned generation after the candidate family has
- * passed the same SourceAnalysis proof used by lowering. */
-export function recoverUpdatersTerminalOfficialSourceV1(candidateSource: string, sceneName: string) {
-  const inspected = inspectUpdatersTerminalSourceV1(candidateSource, sceneName);
-  if ((inspected.plan.moveTo === null && inspected.plan.scale === null) || !inspected.plan.refreshDependentUpdater) {
-    updatersTerminalV1LoweringError("candidate source must contain one supported terminal edit.");
-  }
-  return inspected.officialSource;
-}
-
-/**
- * Lowers the first bounded dynamic-Python edit family. SourceAnalysis owns the
- * rewrite boundary; Runtime Trace evidence may identify the terminal Square,
- * but it never authorizes source mutation by itself.
- */
-export function lowerUpdatersTerminalTransformSourceV1(
-  source: string,
-  request: ProgramRenderRequest,
-  entries: readonly LoweredProgramBatchEntry[],
-  frame: Readonly<{ height: number; width: number }>,
-  incoming: IncomingSceneSetup | null,
-): LoweredProgramBatchSource | null {
-  if (
-    request.sourcePath !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_PATH_V1 ||
-    request.sceneName !== UPDATERS_TERMINAL_SCENE_NAME_V1
-  ) {
-    return null;
-  }
-  if (request.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1) {
-    updatersTerminalV1LoweringError("the edit must be rebased from the pinned official source generation.");
-  }
-  const imported = importManimScene(source, request.sourcePath, request.sceneName, frame);
-  if (!imported || imported.sourceHash !== UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1) {
-    updatersTerminalV1LoweringError("the current source bytes are not the pinned official source generation.");
-  }
-  if (incoming !== null || request.destination !== null) {
-    updatersTerminalV1LoweringError("Scene transitions are outside this bounded round-trip profile.");
-  }
-  if (
-    !Number.isFinite(frame.height) ||
-    !Number.isFinite(frame.width) ||
-    frame.height <= 0 ||
-    frame.width <= 0 ||
-    !Number.isFinite(request.viewport.height) ||
-    !Number.isFinite(request.viewport.width) ||
-    request.viewport.height <= 0 ||
-    request.viewport.width <= 0
-  ) {
-    updatersTerminalV1LoweringError("the Studio frame and viewport must be finite and positive.");
-  }
-  const cameraCenter = request.cameraCenter ?? { x: 0, y: 0 };
-  if (
-    !Number.isFinite(cameraCenter.x) ||
-    !Number.isFinite(cameraCenter.y) ||
-    cameraCenter.x !== 0 ||
-    cameraCenter.y !== 0
-  ) {
-    updatersTerminalV1LoweringError("the pinned static camera must remain centered.");
-  }
-
-  const base = inspectUpdatersTerminalSourceV1(source, request.sceneName);
-  if (base.plan.moveTo !== null || base.plan.scale !== null || base.plan.refreshDependentUpdater) {
-    updatersTerminalV1LoweringError("the pinned base source must not contain a prior terminal edit.");
-  }
-  const moveCapability = composeSourceRuntimeOperationCapabilityV1(
-    base.sourceAnalysis,
-    "square",
-    "move",
-    request.sourceBindings,
-    imported.sourceVariables,
-  );
-  const resizeCapability = composeSourceRuntimeOperationCapabilityV1(
-    base.sourceAnalysis,
-    "square",
-    "uniformResize",
-    request.sourceBindings,
-    imported.sourceVariables,
-  );
-  if (
-    Object.keys(imported.sourceVariables).length !== 1 ||
-    request.sourceBindings.length !== 1 ||
-    !moveCapability ||
-    !resizeCapability ||
-    moveCapability.entityId !== resizeCapability.entityId
-  ) {
-    updatersTerminalV1LoweringError("the one exact imported `square` source binding is required.");
-  }
-  const { position, scale } = boundedUpdatersTerminalEditPlan(request, entries, moveCapability.entityId);
-  const expectedMove =
-    position === null
-      ? null
-      : {
-          x: (request.cameraCenter?.x ?? 0) + (position.x / request.viewport.width - 0.5) * frame.width,
-          y: (request.cameraCenter?.y ?? 0) + (0.5 - position.y / request.viewport.height) * frame.height,
-          z: 0 as const,
-        };
-  if (
-    expectedMove !== null &&
-    (!Number.isFinite(expectedMove.x) ||
-      !Number.isFinite(expectedMove.y) ||
-      Math.abs(expectedMove.x) > MAX_COORDINATE ||
-      Math.abs(expectedMove.y) > MAX_COORDINATE)
-  ) {
-    updatersTerminalV1LoweringError(
-      `position must lower to finite Manim coordinates between -${MAX_COORDINATE} and ${MAX_COORDINATE}.`,
-    );
-  }
-
-  const indentation = base.insertionBoundary.indentation;
-  if (indentation !== "        ") {
-    updatersTerminalV1LoweringError("the pinned final-wait indentation changed.");
-  }
-  const insertedLines = [
-    ...(position === null
-      ? []
-      : [`${indentation}square.move_to(${pointExpression(position, frame, request.viewport)})`]),
-    ...(scale === null ? [] : [`${indentation}square.scale(${formatPositiveAmount(scale)})`]),
-    `${indentation}decimal.update(0)`,
-  ];
-  const loweredSource = insertAtSourceBoundaryV1(source, base.sourceAnalysis, base.insertionBoundary, insertedLines);
-  const derivedPlan = deriveUpdatersTerminalSourceEditPlanV1(loweredSource, request.sceneName);
-  if (
-    (expectedMove === null) !== (derivedPlan.moveTo === null) ||
-    (expectedMove !== null &&
-      derivedPlan.moveTo !== null &&
-      (!nearlyEqual(expectedMove.x, derivedPlan.moveTo.x) || !nearlyEqual(expectedMove.y, derivedPlan.moveTo.y))) ||
-    (scale === null) !== (derivedPlan.scale === null) ||
-    (scale !== null && derivedPlan.scale !== null && !nearlyEqual(scale, derivedPlan.scale)) ||
-    !derivedPlan.refreshDependentUpdater
-  ) {
-    updatersTerminalV1LoweringError("the emitted source does not re-derive the requested terminal edit plan.");
-  }
-  return {
-    anchorLine: base.plan.anchorLine,
-    anchorLines: [base.plan.anchorLine],
-    insertedCode: insertedLines.join(base.insertionBoundary.newline),
-    preflight: {
-      baseSourceHash: UPDATERS_TERMINAL_OFFICIAL_SOURCE_SHA256_V1,
-      kind: "fast-manim-updaters-terminal-v1",
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: derived.sourceAnchor,
     },
     source: loweredSource,
   };
@@ -3556,8 +2980,6 @@ export function lowerCanonicalProgramBatchSource(
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
 ): LoweredProgramBatchSource {
-  const updatersTerminalV1 = lowerUpdatersTerminalTransformSourceV1(source, request, entries, frame, incoming);
-  if (updatersTerminalV1) return updatersTerminalV1;
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
   }

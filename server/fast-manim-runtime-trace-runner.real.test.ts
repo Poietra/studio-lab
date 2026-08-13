@@ -8,13 +8,12 @@ import { describe, expect, it } from "vitest";
 
 import { parseVerifiedSceneIrBundleV1 } from "../src/engine/contracts";
 import {
-  deriveRuntimeTraceInitialMoveSourceEditPlan,
-  deriveRuntimeTraceInitialResizeSourceEditPlan,
-  deriveRuntimeTraceInitialRotationSourceEditPlan,
+  deriveRuntimeTraceMoveSourceEditPlan,
+  deriveRuntimeTraceResizeSourceEditPlan,
+  deriveRuntimeTraceRotationSourceEditPlan,
 } from "../src/render-pipeline/source-lowering";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { fastManimRuntimeTraceProducerEnvironment } from "./fast-manim-runtime-trace-producer-identity";
-import { FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1 } from "./fast-manim-runtime-trace-profile";
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { parseFastManimSnapshotProducerCommand } from "./manim-render-config";
 import { ManimRenderManager } from "./manim-render-manager";
@@ -26,6 +25,7 @@ const GENERIC_STATIC_SQUARE_SOURCE = readFileSync(
   new URL("../fixtures/real-preview-harness/scene_runtime_trace_v3.py", import.meta.url),
   "utf8",
 );
+const UPDATERS_SOURCE_HASH = createHash("sha256").update(RUNTIME_TRACE_SOURCE_TEXT, "utf8").digest("hex");
 
 describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
   "real fast-manim Runtime Trace runner",
@@ -49,7 +49,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
           projectId: "demo",
           requestId: "runtime-trace-real-1",
           sceneName: "UpdatersExample",
-          sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1,
+          sourceHash: UPDATERS_SOURCE_HASH,
           sourcePath: "example_scenes/basic.py",
         });
         expect(view.status).toBe("verified");
@@ -82,7 +82,6 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         const view = await manager.runRuntimeTrace({
           projectId: "demo",
           requestId: "runtime-trace-v3-authority-real-1",
-          responseVersion: 2,
           sceneName: "StaticSquare",
           sourceHash: createHash("sha256").update(GENERIC_STATIC_SQUARE_SOURCE).digest("hex"),
           sourcePath: "scenes/static_square.py",
@@ -112,7 +111,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       }
     });
 
-    it("verifies one real generic initial move as a fresh V3 base/candidate pair", { timeout: 60_000 }, async () => {
+    it("verifies one real generic move edit as a fresh V3 base/candidate pair", { timeout: 60_000 }, async () => {
       const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-candidate-real-"));
       await mkdir(join(root, "scenes"));
       const sourcePath = "scenes/static_square.py";
@@ -121,7 +120,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveRuntimeTraceInitialMoveSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
+      const plan = deriveRuntimeTraceMoveSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -139,12 +138,13 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          initialMove: {
+          moveEdit: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticSquare:square`,
             expectedWorldCenter: plan.expectedWorldCenter,
-            kind: "runtime-trace-initial-move",
+            kind: "runtime-trace-move-edit",
+            sourceAnchor: plan.sourceAnchor,
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-candidate-real-1",
@@ -161,7 +161,6 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         const preview = await runner.runRuntimeTrace({
           projectId: "demo",
           requestId: "runtime-trace-v3-candidate-preview-real-1",
-          responseVersion: 2,
           sceneName: "StaticSquare",
           sourceHash: preflight.sourceHash,
           sourcePath,
@@ -189,7 +188,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       }
     });
 
-    it("verifies one real generic initial uniform resize as a fresh V3 base/candidate pair", {
+    it("verifies one real generic uniform-resize edit as a fresh V3 base/candidate pair", {
       timeout: 60_000,
     }, async () => {
       const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-resize-real-"));
@@ -200,7 +199,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         "        square.set_stroke(WHITE, width=2)\n",
         "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
       );
-      const plan = deriveRuntimeTraceInitialResizeSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
+      const plan = deriveRuntimeTraceResizeSourceEditPlan(candidateSource, "StaticSquare", sourcePath, "square");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -218,12 +217,13 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          initialResize: {
+          resizeEdit: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticSquare:square`,
             expectedScaleFactor: plan.expectedScaleFactor,
-            kind: "runtime-trace-initial-resize",
+            kind: "runtime-trace-resize-edit",
+            sourceAnchor: plan.sourceAnchor,
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-resize-real-1",
@@ -240,7 +240,6 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
         const preview = await runner.runRuntimeTrace({
           projectId: "demo",
           requestId: "runtime-trace-v3-resize-preview-real-1",
-          responseVersion: 2,
           sceneName: "StaticSquare",
           sourceHash: preflight.sourceHash,
           sourcePath,
@@ -259,7 +258,7 @@ describe.skipIf(!producerCommand || !ManimSourceStore.supportsVerifiedRead)(
       }
     });
 
-    it("verifies one real generic initial rotation as a fresh V3 base/candidate pair", {
+    it("verifies one real generic rotation edit as a fresh V3 base/candidate pair", {
       timeout: 60_000,
     }, async () => {
       const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-rotation-real-"));
@@ -280,12 +279,7 @@ class StaticTriangle(Scene):
         "        triangle.rotate(0.3)\n",
         "        triangle.rotate(0.3)\n        triangle.rotate(0.261799387799)\n",
       );
-      const plan = deriveRuntimeTraceInitialRotationSourceEditPlan(
-        candidateSource,
-        "StaticTriangle",
-        sourcePath,
-        "triangle",
-      );
+      const plan = deriveRuntimeTraceRotationSourceEditPlan(candidateSource, "StaticTriangle", sourcePath, "triangle");
       const runner = new FastManimSnapshotRunner({
         backend: createConfiguredFastManimSandboxBackendV1({
           command: producerCommand,
@@ -303,12 +297,13 @@ class StaticTriangle(Scene):
       });
       try {
         const preflight = await runner.runRuntimeTraceCandidateUnpublished(candidateSource, {
-          initialRotation: {
+          rotationEdit: {
             baseBinding: plan.baseBinding,
             baseSourceHash: plan.baseSourceHash,
             entityId: `source:${sourcePath}#StaticTriangle:triangle`,
             expectedAngleRadians: plan.expectedAngleRadians,
-            kind: "runtime-trace-initial-rotation",
+            kind: "runtime-trace-rotation-edit",
+            sourceAnchor: plan.sourceAnchor,
           },
           projectId: "demo",
           requestId: "runtime-trace-v3-rotation-real-1",
@@ -325,7 +320,6 @@ class StaticTriangle(Scene):
         const preview = await runner.runRuntimeTrace({
           projectId: "demo",
           requestId: "runtime-trace-v3-rotation-preview-real-1",
-          responseVersion: 2,
           sceneName: "StaticTriangle",
           sourceHash: preflight.sourceHash,
           sourcePath,
@@ -378,7 +372,7 @@ class StaticTriangle(Scene):
           sourcePath: "example_scenes/basic.py",
         });
         expect(preflight).toMatchObject({
-          sourceHash: expect.not.stringMatching(FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V1),
+          sourceHash: expect.not.stringMatching(UPDATERS_SOURCE_HASH),
           status: "verified",
           traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
         });

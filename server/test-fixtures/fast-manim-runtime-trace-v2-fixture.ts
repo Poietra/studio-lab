@@ -1,11 +1,20 @@
+import { createHash } from "node:crypto";
+
 import { applyEngineEasingV1 } from "../../src/engine/easing";
+import { fastManimRuntimeTraceSceneIdV1 } from "../fast-manim-runtime-trace-contract";
 import {
-  createFastManimRuntimeTraceConfigV2,
-  FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-} from "../fast-manim-runtime-trace-v2-profile";
+  digestFastManimRuntimeTraceConfigV2,
+  FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V2,
+  FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V2,
+  FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
+  FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
+  FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2,
+  FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
+  FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V2,
+  FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
+  fastManimRuntimeTraceConfigV2Schema,
+  fastManimRuntimeTraceProducerRequestV2Schema,
+} from "../fast-manim-runtime-trace-v2-contract";
 import {
   canonicalFastManimRuntimeTraceCoordinateV2,
   digestFastManimRuntimeTraceAppearanceV2,
@@ -22,6 +31,59 @@ import {
   fastManimRuntimeTraceV2Schema,
   type SelfSealedFastManimRuntimeTraceV2,
 } from "../fast-manim-runtime-trace-v2-result-contract";
+import { RUNTIME_TRACE_SOURCE_TEXT } from "./fast-manim-runtime-trace-fixture";
+
+export const RUNTIME_TRACE_V2_SOURCE_PATH = "example_scenes/basic.py" as const;
+export const RUNTIME_TRACE_V2_SCENE_NAME = "OpeningManim" as const;
+export const RUNTIME_TRACE_V2_SOURCE_HASH = createHash("sha256")
+  .update(RUNTIME_TRACE_SOURCE_TEXT, "utf8")
+  .digest("hex");
+export const RUNTIME_TRACE_V2_SCENE_OCCURRENCE = Object.freeze({
+  constructStartLine: 19,
+  definitionOrdinal: 1,
+});
+
+export function runtimeTraceV2ConfigFixture() {
+  return fastManimRuntimeTraceConfigV2Schema.parse({
+    camera: {
+      background: { alpha: 1, blue: 0, green: 0, red: 0 },
+      center: { x: 0, y: 0 },
+      frameHeight: 8,
+      frameWidth: 128 / 9,
+    },
+    compositing: "manim-cairo-srgb",
+    coordinatePrecisionDigits: FAST_MANIM_RUNTIME_TRACE_COORDINATE_PRECISION_DIGITS_V2,
+    durationSeconds: FAST_MANIM_RUNTIME_TRACE_DURATION_SECONDS_V2,
+    frameRate: FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V2,
+    profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
+    randomSeed: 0,
+    samplePhase: FAST_MANIM_RUNTIME_TRACE_SAMPLE_PHASE_V2,
+    schema: FAST_MANIM_RUNTIME_TRACE_CONFIG_SCHEMA_V2,
+    version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
+  });
+}
+
+export const RUNTIME_TRACE_V2_CONFIG_HASH = digestFastManimRuntimeTraceConfigV2(runtimeTraceV2ConfigFixture());
+
+export function runtimeTraceV2RequestFixture(sourceText = RUNTIME_TRACE_SOURCE_TEXT) {
+  const runtimeConfig = runtimeTraceV2ConfigFixture();
+  const sourceHash = createHash("sha256").update(sourceText, "utf8").digest("hex");
+  return fastManimRuntimeTraceProducerRequestV2Schema.parse({
+    profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
+    projectId: "demo",
+    requestId: "req-opening-runtime-trace-v2",
+    runtimeConfig,
+    runtimeConfigHash: digestFastManimRuntimeTraceConfigV2(runtimeConfig),
+    sceneId: fastManimRuntimeTraceSceneIdV1(RUNTIME_TRACE_V2_SOURCE_PATH, RUNTIME_TRACE_V2_SCENE_NAME),
+    sceneName: RUNTIME_TRACE_V2_SCENE_NAME,
+    sceneOccurrence: RUNTIME_TRACE_V2_SCENE_OCCURRENCE,
+    schema: FAST_MANIM_RUNTIME_TRACE_PRODUCER_REQUEST_SCHEMA_V2,
+    sourceHash,
+    sourcePath: RUNTIME_TRACE_V2_SOURCE_PATH,
+    sourceText,
+    version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
+  });
+}
 
 export const RUNTIME_TRACE_V2_SCENE_ID =
   "scene:8b27b13ce1d003ec4436921829dfc1393663b5503f7c7b1a686c271ea569efe6" as const;
@@ -120,7 +182,7 @@ const gridStrokeAppearance = {
 };
 
 function buildFastManimRuntimeTraceV2Fixture() {
-  const runtimeConfig = createFastManimRuntimeTraceConfigV2({ height: 8, width: 128 / 9 });
+  const runtimeConfig = runtimeTraceV2ConfigFixture();
   const paths = Array.from({ length: 24 }, (_, index) => {
     const value = path(index);
     return { id: `path:${digestFastManimRuntimeTracePathV2(value)}`, path: value };
@@ -220,14 +282,14 @@ function buildFastManimRuntimeTraceV2Fixture() {
       ...root,
       binding: { ...root.binding, span: { ...root.binding.span } },
     })),
-    runtimeConfigHash: FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
+    runtimeConfigHash: RUNTIME_TRACE_V2_CONFIG_HASH,
     samplePhase: runtimeConfig.samplePhase,
     sceneId: RUNTIME_TRACE_V2_SCENE_ID,
-    sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-    sceneOccurrence: { constructStartLine: 19, definitionOrdinal: 1 },
+    sceneName: RUNTIME_TRACE_V2_SCENE_NAME,
+    sceneOccurrence: RUNTIME_TRACE_V2_SCENE_OCCURRENCE,
     schema: FAST_MANIM_RUNTIME_TRACE_SCHEMA_V2,
-    sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-    sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
+    sourceHash: RUNTIME_TRACE_V2_SOURCE_HASH,
+    sourcePath: RUNTIME_TRACE_V2_SOURCE_PATH,
     version: 2 as const,
   };
   trace.producer.semanticsSha256 = digestFastManimRuntimeTraceVisualSemanticsV2(trace);

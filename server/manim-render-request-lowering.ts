@@ -2,19 +2,11 @@ import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-
 import {
   type LoweredProgramBatchSource,
   lowerCanonicalProgramBatchSource,
-  lowerOpeningManimTerminalPositionSourceV2,
-  lowerRuntimeTraceInitialEditSource,
-  lowerUpdatersTerminalTransformSourceV1,
+  lowerRuntimeTraceEditSource,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
-import {
-  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-} from "./fast-manim-runtime-trace-v2-profile";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
@@ -58,41 +50,23 @@ export function lowerManimRenderRequest({
   if (orderedPrograms.some(({ program }) => program.loweringStatus !== "supported")) {
     throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
   }
-  try {
-    const updatersTerminalV1 = lowerUpdatersTerminalTransformSourceV1(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (updatersTerminalV1) return { lowered: updatersTerminalV1, renderRequest: request };
-    if (
-      request.sourcePath === FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2 &&
-      request.sceneName === FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2 &&
-      request.sourceHash === FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2
-    ) {
-      const openingTerminalV2 = lowerOpeningManimTerminalPositionSourceV2(
+  if (request.sourceValidation === "runtime-trace") {
+    try {
+      const runtimeTraceEdit = lowerRuntimeTraceEditSource(
         originalSource,
         request,
         orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
         frame,
         null,
-        FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
       );
-      if (openingTerminalV2) return { lowered: openingTerminalV2, renderRequest: request };
+      if (!runtimeTraceEdit) {
+        throw new HttpError("The requested Runtime Trace validation does not support this edit.", 400);
+      }
+      return { lowered: runtimeTraceEdit, renderRequest: request };
+    } catch (error) {
+      if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
+      throw error;
     }
-    const runtimeTraceInitialEdit = lowerRuntimeTraceInitialEditSource(
-      originalSource,
-      request,
-      orderedPrograms.map(({ program, sourceAnchor }) => ({ program, sourceAnchor })),
-      frame,
-      null,
-    );
-    if (runtimeTraceInitialEdit) return { lowered: runtimeTraceInitialEdit, renderRequest: request };
-  } catch (error) {
-    if (error instanceof ProgramLoweringError) throw new HttpError(error.message, 400);
-    throw error;
   }
   const evaluated = evaluateWorkingState({
     appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),

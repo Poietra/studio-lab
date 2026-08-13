@@ -10,19 +10,11 @@ import {
   materializeFastManimSandboxPngV2,
 } from "./fast-manim-local-process-sandbox-backend";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
-import {
-  createFastManimRuntimeTraceProducerRequestV2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-} from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { FastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
 import { FastManimSnapshotAdmissionController } from "./fast-manim-snapshot-publication";
-import {
-  RUNTIME_TRACE_SOURCE_TEXT,
-  runtimeTraceRequestFixture,
-} from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import { runtimeTraceV2RequestFixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import { sandboxPngBytes, sandboxPngProducerRequest } from "./test-fixtures/fast-manim-sandbox-png-fixture";
 
 const roots: string[] = [];
@@ -239,17 +231,7 @@ describe("local-process producer admission release", () => {
 
 describe("local-process Runtime Trace output bounds", () => {
   function runtimeTraceRequestV2() {
-    return createFastManimRuntimeTraceProducerRequestV2(
-      {
-        projectId: "demo",
-        requestId: "req-opening-runtime-trace-v2",
-        sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-        sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-        sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-      },
-      RUNTIME_TRACE_SOURCE_TEXT,
-      { height: 8, width: 128 / 9 },
-    );
+    return runtimeTraceV2RequestFixture();
   }
 
   async function produce(

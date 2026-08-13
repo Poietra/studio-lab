@@ -18,16 +18,6 @@ import type {
   FastManimRuntimeTraceRunViewV2,
 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import {
-  canonicalFastManimRuntimeTraceCoordinateV1,
-  MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
-} from "./fast-manim-runtime-trace-contract";
-import {
-  lowerFastManimRuntimeTraceProducerJsonV1,
-  lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1,
-} from "./fast-manim-runtime-trace-lowering";
-import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
-import { MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
-import {
   digestFastManimRuntimeTraceIdentityV3,
   lowerVerifiedFastManimRuntimeTraceV3,
 } from "./fast-manim-runtime-trace-v3-lowering";
@@ -39,14 +29,6 @@ import { fastManimSourceBindingIdentifierV1 } from "./fast-manim-source-runtime-
 import { createStructuredLogger, type StructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { createTrustedLocalManimRequestContext } from "./manim-local-request-context";
 import { handleManimRequest, type ManimApi, type ManimRequestPolicy, resolveByteRange } from "./manim-render-http";
-import {
-  RUNTIME_TRACE_SOURCE_TEXT,
-  runtimeTraceFixture,
-  runtimeTraceRequestFixture,
-  sealRuntimeTraceFixture,
-  trustedRuntimeTraceProducer,
-} from "./test-fixtures/fast-manim-runtime-trace-fixture";
-import { fastManimRuntimeTraceV2Fixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import genericRuntimeTraceFixture from "./test-fixtures/fast-manim-runtime-trace-v3-generic.json";
 
 type FastManimRuntimeTraceRunViewV2WithBundle = Omit<FastManimRuntimeTraceRunViewV2, "bundle"> & {
@@ -601,7 +583,7 @@ describe("async Manim API port", () => {
 });
 
 describe("Runtime Trace preview routing", () => {
-  const trace = runtimeTraceFixture();
+  const trace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
   const requestBody = {
     projectId: trace.projectId,
     requestId: trace.requestId,
@@ -609,53 +591,6 @@ describe("Runtime Trace preview routing", () => {
     sourceHash: trace.sourceHash,
     sourcePath: trace.sourcePath,
   } as const;
-
-  async function verifiedView() {
-    const bundle = await lowerFastManimRuntimeTraceProducerJsonV1(
-      JSON.stringify(trace),
-      runtimeTraceRequestFixture(),
-      trustedRuntimeTraceProducer(trace),
-    );
-    const source = bundle.scene.source;
-    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
-    return {
-      bundle,
-      projectId: trace.projectId,
-      requestId: trace.requestId,
-      roots: trace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
-      runtimeConfigHash: trace.runtimeConfigHash,
-      sceneId: trace.sceneId,
-      sceneName: trace.sceneName,
-      schema: "poietra.fast-manim-runtime-trace-run",
-      sourceHash: trace.sourceHash,
-      sourcePath: trace.sourcePath,
-      status: "verified",
-      traceDigest: source.traceDigest,
-      version: 1,
-    } as const satisfies FastManimRuntimeTraceRunViewV1;
-  }
-
-  async function verifiedOpeningView() {
-    const openingTrace = fastManimRuntimeTraceV2Fixture();
-    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(openingTrace);
-    const source = bundle.scene.source;
-    if (source.kind !== "imported-manim-runtime-trace") throw new Error("Expected Runtime Trace source evidence.");
-    return {
-      bundle,
-      projectId: openingTrace.projectId,
-      requestId: openingTrace.requestId,
-      roots: openingTrace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
-      runtimeConfigHash: openingTrace.runtimeConfigHash,
-      sceneId: openingTrace.sceneId,
-      sceneName: openingTrace.sceneName,
-      schema: "poietra.fast-manim-runtime-trace-run",
-      sourceHash: openingTrace.sourceHash,
-      sourcePath: openingTrace.sourcePath,
-      status: "verified",
-      traceDigest: source.traceDigest,
-      version: 1,
-    } as const satisfies FastManimRuntimeTraceRunViewV1;
-  }
 
   async function verifiedGenericView(): Promise<FastManimRuntimeTraceRunViewV2WithBundle> {
     const genericTrace = fastManimRuntimeTraceV3Schema.parse(genericRuntimeTraceFixture);
@@ -713,11 +648,7 @@ describe("Runtime Trace preview routing", () => {
     return view;
   }
 
-  async function postGenericBackendValue(
-    value: unknown,
-    correlatedView: FastManimRuntimeTraceRunViewV2,
-    responseVersion: "2" | null = "2",
-  ) {
+  async function postGenericBackendValue(value: unknown, correlatedView: FastManimRuntimeTraceRunViewV2) {
     const server = await listen({
       runRuntimeTrace: async () => value,
       storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v3-authority" },
@@ -735,10 +666,7 @@ describe("Runtime Trace preview routing", () => {
             sourceHash: correlatedView.sourceHash,
             sourcePath: correlatedView.sourcePath,
           }),
-          headers: {
-            "content-type": "application/json",
-            ...(responseVersion === null ? {} : { "x-poietra-runtime-trace-response-version": responseVersion }),
-          },
+          headers: { "content-type": "application/json" },
           method: "POST",
         },
       );
@@ -747,50 +675,15 @@ describe("Runtime Trace preview routing", () => {
     }
   }
 
-  async function verifiedEditedView() {
-    const source = RUNTIME_TRACE_SOURCE_TEXT.replace(
-      "            run_time=5,\n        )\n        self.wait()\n",
-      "            run_time=5,\n        )\n        square.move_to((1.25, 2.5, 0))\n        decimal.update(0)\n        self.wait()\n",
-    );
-    const producerRequest = runtimeTraceRequestFixture(source);
-    const editedTrace = structuredClone(runtimeTraceFixture());
-    editedTrace.sourceHash = producerRequest.sourceHash;
-    editedTrace.roots.forEach((root) => {
-      root.binding.id = fastManimSourceBindingIdentifierV1(editedTrace.sourceHash, editedTrace.sceneId, root.binding);
-    });
-    for (let frameIndex = 300; frameIndex < editedTrace.frames.length; frameIndex += 1) {
-      const frame = editedTrace.frames[frameIndex];
-      frame.motionY = 2.5;
-      frame.draws[0].localPosition.x = 1.25;
-      for (const draw of frame.draws.slice(1)) {
-        draw.localPosition.x = canonicalFastManimRuntimeTraceCoordinateV1(draw.localPosition.x + 1.25);
-      }
-    }
-    sealRuntimeTraceFixture(editedTrace);
-    const bundle = await lowerVerifiedFastManimRuntimeTraceTerminalCandidateV1(editedTrace);
-    const evidence = bundle.scene.source;
-    if (evidence.kind !== "imported-manim-runtime-trace") {
-      throw new Error("Expected edited Runtime Trace source evidence.");
-    }
-    return {
-      bundle,
-      projectId: editedTrace.projectId,
-      requestId: editedTrace.requestId,
-      roots: editedTrace.roots.map((root) => ({ binding: root.binding, entityId: root.id })),
-      runtimeConfigHash: editedTrace.runtimeConfigHash,
-      sceneId: editedTrace.sceneId,
-      sceneName: editedTrace.sceneName,
-      schema: "poietra.fast-manim-runtime-trace-run",
-      sourceHash: editedTrace.sourceHash,
-      sourcePath: editedTrace.sourcePath,
-      status: "verified",
-      traceDigest: evidence.traceDigest,
-      version: 1,
-    } as const satisfies FastManimRuntimeTraceRunViewV1;
-  }
-
   it("routes one correlated POST and leaves the endpoint unpublished", async () => {
-    const view = await verifiedView();
+    const view = await verifiedGenericView();
+    const genericRequestBody = {
+      projectId: view.projectId,
+      requestId: view.requestId,
+      sceneName: view.sceneName,
+      sourceHash: view.sourceHash,
+      sourcePath: view.sourcePath,
+    } as const;
     const runRuntimeTrace = vi.fn(async () => view);
     const api = {
       runRuntimeTrace,
@@ -800,15 +693,15 @@ describe("Runtime Trace preview routing", () => {
     const server = await listen(api);
     try {
       const port = (server.address() as AddressInfo).port;
-      const path = "/api/manim/projects/demo/runtime-traces";
+      const path = `/api/manim/projects/${view.projectId}/runtime-traces`;
       const posted = await send(port, path, {
-        body: JSON.stringify(requestBody),
+        body: JSON.stringify(genericRequestBody),
         headers: { "content-type": "application/json" },
         method: "POST",
       });
       expect(posted.status).toBe(200);
       expect(JSON.parse(posted.body.toString("utf8"))).toEqual(view);
-      expect(runRuntimeTrace).toHaveBeenCalledWith(requestBody, expect.any(AbortSignal));
+      expect(runRuntimeTrace).toHaveBeenCalledWith(genericRequestBody, expect.any(AbortSignal));
 
       const get = await send(port, path);
       expect(get.status).toBe(405);
@@ -827,19 +720,11 @@ describe("Runtime Trace preview routing", () => {
     expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
   });
 
-  it("keeps the rootless generic V3 wire V1 response available during rolling deployment", async () => {
+  it("rejects the retired rootless generic wire V1 response", async () => {
     const authorityView = await verifiedGenericView();
     const { producerEvidence: _producerEvidence, ...withoutProducerEvidence } = authorityView;
     const legacyView = { ...withoutProducerEvidence, roots: [], version: 1 } as const;
     const response = await postGenericBackendValue(legacyView, authorityView);
-
-    expect(response.status).toBe(200);
-    expect(JSON.parse(response.body.toString("utf8"))).toEqual(legacyView);
-  });
-
-  it("rejects wire V2 when an older client did not advertise it", async () => {
-    const view = await verifiedGenericView();
-    const response = await postGenericBackendValue(view, view, null);
 
     expect(response.status).toBe(502);
   });
@@ -944,178 +829,35 @@ describe("Runtime Trace preview routing", () => {
     expect(JSON.parse(response.body.toString("utf8"))).toEqual(view);
   });
 
-  it("accepts an edited verified view but rejects an official bundle relabeled as that edit", async () => {
-    const [editedView, officialView] = await Promise.all([verifiedEditedView(), verifiedView()]);
-    const editedRequest = {
-      projectId: editedView.projectId,
-      requestId: editedView.requestId,
-      sceneName: editedView.sceneName,
-      sourceHash: editedView.sourceHash,
-      sourcePath: editedView.sourcePath,
-    };
-    const acceptedServer = await listen({
-      runRuntimeTrace: async () => editedView,
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-edited" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    const staleServer = await listen({
-      runRuntimeTrace: async () => ({ ...editedView, bundle: officialView.bundle }),
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-edited-stale" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    const post = (port: number) =>
-      send(port, "/api/manim/projects/demo/runtime-traces", {
-        body: JSON.stringify(editedRequest),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
-    try {
-      const [accepted, rejected] = await Promise.all([
-        post((acceptedServer.address() as AddressInfo).port),
-        post((staleServer.address() as AddressInfo).port),
-      ]);
-      expect(accepted.status).toBe(200);
-      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(editedView);
-      expect(rejected.status).toBe(502);
-    } finally {
-      await Promise.all(
-        [acceptedServer, staleServer].map(
-          (server) =>
-            new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
-        ),
-      );
-    }
-  });
-
-  it("validates the sealed fifteen-second OpeningManim V2 duration, trace version, and four source roots", {
-    timeout: 15_000,
-  }, async () => {
-    const view = await verifiedOpeningView();
-    expect(view.bundle.scene.duration).toBe(15);
-    expect(view.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
-    const request = {
-      projectId: view.projectId,
-      requestId: view.requestId,
-      sceneName: view.sceneName,
-      sourceHash: view.sourceHash,
-      sourcePath: view.sourcePath,
-    };
-    const valid = await listen({
-      runRuntimeTrace: async () => view,
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    const staleVersion = await listen({
-      runRuntimeTrace: async () => ({
-        ...view,
-        bundle: {
-          ...view.bundle,
-          scene: {
-            ...view.bundle.scene,
-            source: { ...view.bundle.scene.source, traceVersion: 1 },
+  it("does not expose legacy profile selection through public requests", async () => {
+    for (const [index, sceneName] of ["UpdatersExample", "OpeningManim"].entries()) {
+      const runRuntimeTrace = vi.fn(async () => ({}));
+      const server = await listen({
+        runRuntimeTrace,
+        storageBoundary: { kind: "shared-durable", namespace: `http-runtime-trace-legacy-${index}` },
+        tenantId: "tenant-runtime-trace",
+      } as unknown as ManimApi);
+      const body = { ...requestBody, sceneName };
+      try {
+        const response = await send(
+          (server.address() as AddressInfo).port,
+          `/api/manim/projects/${requestBody.projectId}/runtime-traces`,
+          {
+            body: JSON.stringify(body),
+            headers: { "content-type": "application/json" },
+            method: "POST",
           },
-        },
-      }),
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2-stale" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    try {
-      const post = (port: number) =>
-        send(port, "/api/manim/projects/demo/runtime-traces", {
-          body: JSON.stringify(request),
-          headers: { "content-type": "application/json" },
-          method: "POST",
-        });
-      const accepted = await post((valid.address() as AddressInfo).port);
-      const rejected = await post((staleVersion.address() as AddressInfo).port);
-
-      expect(Buffer.byteLength(JSON.stringify(view), "utf8")).toBeLessThan(
-        MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V1,
-      );
-      expect(accepted.status).toBe(200);
-      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(view);
-      expect(rejected.status).toBe(502);
-    } finally {
-      await Promise.all(
-        [valid, staleVersion].map(
-          (server) =>
-            new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve()))),
-        ),
-      );
-    }
-  });
-
-  it("fails closed when a verified V2 HTTP view exceeds its profile-specific envelope", {
-    timeout: 15_000,
-  }, async () => {
-    const view = await verifiedOpeningView();
-    const evidence = Array.from({ length: 64 }, (_, index) => {
-      const prefix = `${index}:`;
-      return `${prefix}${"x".repeat(500 - prefix.length)}`;
-    });
-    const nextSceneOrder = Math.max(...view.bundle.scene.entities.map(({ sceneOrder }) => sceneOrder)) + 1;
-    const paddingEntities = Array.from({ length: 100 }, (_, index) => ({
-      appearance: { kind: "group" as const, opacity: 1 },
-      geometry: { kind: "group" as const },
-      id: `${view.sceneId}/http-padding:${index}`,
-      lifetimes: [{ end: view.bundle.scene.duration, start: 0 }],
-      parentId: null,
-      provenanceId: view.bundle.scene.provenance[0].id,
-      sceneOrder: nextSceneOrder + index,
-      sourceZIndex: 0,
-      transform: { m11: 1, m12: 0, m21: 0, m22: 1, tx: 0, ty: 0 },
-    }));
-    const entities = [...view.bundle.scene.entities, ...paddingEntities];
-    const provenanceLimit = entities.length + view.bundle.scene.animationChannels.length;
-    const provenance = [
-      ...view.bundle.scene.provenance.map((record) => ({ ...record, evidence })),
-      ...Array.from({ length: provenanceLimit - view.bundle.scene.provenance.length }, (_, index) => ({
-        evidence,
-        id: `${view.sceneId}/http-padding-provenance:${index}`,
-        origin: "fast-manim-runtime-trace" as const,
-      })),
-    ];
-    const oversizedView = {
-      ...view,
-      bundle: {
-        ...view.bundle,
-        scene: {
-          ...view.bundle.scene,
-          entities,
-          provenance,
-        },
-      },
-    };
-    expect(Buffer.byteLength(JSON.stringify(oversizedView), "utf8")).toBeGreaterThan(
-      MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2 + 64 * 1024,
-    );
-    const server = await listen({
-      runRuntimeTrace: async () => oversizedView,
-      storageBoundary: { kind: "shared-durable", namespace: "http-runtime-trace-v2-overflow" },
-      tenantId: "tenant-runtime-trace",
-    } as unknown as ManimApi);
-    try {
-      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
-        body: JSON.stringify({
-          projectId: view.projectId,
-          requestId: view.requestId,
-          sceneName: view.sceneName,
-          sourceHash: view.sourceHash,
-          sourcePath: view.sourcePath,
-        }),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
-
-      expect(response.status).toBe(502);
-      expect(response.body.toString("utf8")).toContain("too large");
-    } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+        );
+        expect(response.status).toBe(502);
+        expect(runRuntimeTrace).toHaveBeenCalledWith(body, expect.any(AbortSignal));
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      }
     }
   });
 
   it("rejects path mismatch and an unconfigured API before execution", async () => {
-    const view = await verifiedView();
+    const view = await verifiedGenericView();
     const runRuntimeTrace = vi.fn(async () => view);
     const configured = await listen({
       runRuntimeTrace,
@@ -1141,7 +883,7 @@ describe("Runtime Trace preview routing", () => {
 
       const missing = await send(
         (unavailable.address() as AddressInfo).port,
-        "/api/manim/projects/demo/runtime-traces",
+        `/api/manim/projects/${requestBody.projectId}/runtime-traces`,
         {
           body: JSON.stringify(requestBody),
           headers: { "content-type": "application/json" },
@@ -1179,11 +921,15 @@ describe("Runtime Trace preview routing", () => {
       tenantId: "tenant-runtime-trace",
     } as unknown as ManimApi);
     try {
-      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
-        body: JSON.stringify(requestBody),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const response = await send(
+        (server.address() as AddressInfo).port,
+        `/api/manim/projects/${requestBody.projectId}/runtime-traces`,
+        {
+          body: JSON.stringify(requestBody),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
 
       expect(response.status).toBe(200);
       expect(JSON.parse(response.body.toString("utf8"))).toEqual(failed);
@@ -1193,7 +939,7 @@ describe("Runtime Trace preview routing", () => {
   });
 
   it("rejects malformed verified evidence without returning backend-controlled data", async () => {
-    const view = await verifiedView();
+    const view = await verifiedGenericView();
     const leakedSource = "private source text must not cross the HTTP boundary";
     const runRuntimeTrace = vi.fn(async () => ({
       ...view,
@@ -1205,11 +951,15 @@ describe("Runtime Trace preview routing", () => {
       tenantId: "tenant-runtime-trace",
     } as unknown as ManimApi);
     try {
-      const response = await send((server.address() as AddressInfo).port, "/api/manim/projects/demo/runtime-traces", {
-        body: JSON.stringify(requestBody),
-        headers: { "content-type": "application/json" },
-        method: "POST",
-      });
+      const response = await send(
+        (server.address() as AddressInfo).port,
+        `/api/manim/projects/${requestBody.projectId}/runtime-traces`,
+        {
+          body: JSON.stringify(requestBody),
+          headers: { "content-type": "application/json" },
+          method: "POST",
+        },
+      );
 
       expect(response.status).toBe(502);
       expect(response.body.toString("utf8")).not.toContain(leakedSource);

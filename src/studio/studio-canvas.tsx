@@ -268,20 +268,19 @@ export function StudioCanvas({
   // overlays. A renderer failure or unsupported Scene is explicit and never
   // resurrects a second DOM renderer.
   const presentingCanvasPixels = preview?.state.phase === "presented";
-  const retainingRuntimeTraceBasePixels = preview?.runtimeTraceBaseFrameRetained === true;
-  const showingCanvasPixels = presentingCanvasPixels || retainingRuntimeTraceBasePixels;
+  const showingCanvasPixels = presentingCanvasPixels;
   const displayOnlyPreview = preview?.interactionAuthority.kind === "display-only";
   const selectionOnlyPreview = preview?.interactionAuthority.kind === "selection-only";
-  const genericInitialEditCandidates = preview?.genericInitialEditCandidates ?? [];
-  const genericInitialEditCandidatesByStudioEntityId = new Map(
-    genericInitialEditCandidates.map((candidate) => [candidate.studioEntityId, candidate]),
+  const runtimeTraceEditActive =
+    presentingCanvasPixels &&
+    preview?.interactionAuthority.kind === "bounded-interactive" &&
+    preview.interactionAuthority.reason === "runtime-trace-edit" &&
+    preview.runtimeTraceEditAnchor !== null;
+  const runtimeTraceEditCandidates = runtimeTraceEditActive ? preview.runtimeTraceEditCandidates : [];
+  const runtimeTraceEditCandidatesByStudioEntityId = new Map(
+    runtimeTraceEditCandidates.map((candidate) => [candidate.studioEntityId, candidate]),
   );
-  const terminalEditCapabilities = preview?.runtimeTraceTerminalEdit?.capabilities ?? null;
-  const terminalPendingPresentation = preview?.runtimeTracePendingPresentation ?? null;
-  const boundedRuntimeEditTargetIds = new Set([
-    ...genericInitialEditCandidates.map(({ studioEntityId }) => studioEntityId),
-    ...(preview?.runtimeTraceTerminalEdit ? [preview.runtimeTraceTerminalEdit.studioEntityId] : []),
-  ]);
+  const boundedRuntimeEditTargetIds = new Set(runtimeTraceEditCandidates.map(({ studioEntityId }) => studioEntityId));
   const boundedRuntimeEditActive = boundedRuntimeEditTargetIds.size > 0;
   const remotePeers = orderedStudioPeersV1(presenceParticipants);
   const remoteSelectorOrdinalsByEntityId = new Map<string, number[]>();
@@ -382,41 +381,24 @@ export function StudioCanvas({
             />
           ) : null}
           {entities.map((entity) => {
-            const pendingRuntimeTraceTargetId = preview?.runtimeTracePendingPresentation?.studioEntityId ?? null;
-            if (pendingRuntimeTraceTargetId !== null && !retainingRuntimeTraceBasePixels) return null;
-            const genericInitialEditCandidate = genericInitialEditCandidatesByStudioEntityId.get(entity.id);
-            const genericInitialEditIdentity: ReturnType<typeof verifiedPreviewGeometryForStudioEntity> =
-              preview?.interactionAuthority.kind === "bounded-interactive" &&
-              preview.interactionAuthority.reason === "runtime-trace-initial-edit" &&
-              genericInitialEditCandidate
+            const runtimeTraceEditCandidate = runtimeTraceEditCandidatesByStudioEntityId.get(entity.id);
+            const runtimeTraceEditIdentity: ReturnType<typeof verifiedPreviewGeometryForStudioEntity> =
+              runtimeTraceEditCandidate
                 ? {
-                    bindingId: genericInitialEditCandidate.bindingId,
+                    bindingId: runtimeTraceEditCandidate.bindingId,
                     geometry: {
-                      dimensions: genericInitialEditCandidate.baseDimensions,
-                      position: genericInitialEditCandidate.baseCenter,
+                      dimensions: runtimeTraceEditCandidate.baseDimensions,
+                      position: runtimeTraceEditCandidate.baseCenter,
                     },
-                    runtimeEntityId: genericInitialEditCandidate.runtimeEntityId,
+                    runtimeEntityId: runtimeTraceEditCandidate.runtimeEntityId,
                   }
                 : null;
             const verifiedIdentity =
               showingCanvasPixels && preview
                 ? (verifiedPreviewGeometryForStudioEntity(preview, studioEntityIdByUniqueSourceName, entity) ??
-                  genericInitialEditIdentity)
+                  runtimeTraceEditIdentity)
                 : null;
-            const pendingIdentity =
-              terminalPendingPresentation?.studioEntityId === entity.id &&
-              (terminalPendingPresentation.dimensions !== null || verifiedIdentity?.geometry.dimensions != null)
-                ? {
-                    bindingId: verifiedIdentity?.bindingId ?? null,
-                    geometry: {
-                      dimensions:
-                        terminalPendingPresentation.dimensions ?? verifiedIdentity?.geometry.dimensions ?? null,
-                      position: terminalPendingPresentation.position,
-                    },
-                    runtimeEntityId: verifiedIdentity?.runtimeEntityId ?? null,
-                  }
-                : null;
-            const preparedIdentity = pendingIdentity ?? verifiedIdentity;
+            const preparedIdentity = verifiedIdentity;
             // Source projection does not expand a directly-added VGroup into
             // present child rows. A correlated selection-only frame does: its
             // runtime identity plus prepared bounds are sufficient to expose
@@ -455,18 +437,12 @@ export function StudioCanvas({
             const compensatedRuntimeGeometry = runtimeGeometry
               ? compensatePreparedGeometryForOverlayScales(runtimeGeometry, cameraScale, entity.scale)
               : null;
-            // A pending Runtime Trace edit moves only this paint-free outline,
-            // while the retained base pixels stay fixed until validation.
-            const terminalPositionOnly =
-              (preview?.runtimeTraceTerminalEdit?.studioEntityId === entity.id &&
-                terminalEditCapabilities?.uniformScale === false) ||
-              (terminalPendingPresentation?.studioEntityId === entity.id &&
-                terminalPendingPresentation.draftGhost === "position-only");
+            const runtimePositionOnly = runtimeTraceEditCandidate?.capabilities.uniformScale === false;
             const gestureGeometry = entityPreviewGeometry(geometryPreview, entity);
             const previewGeometry =
               geometryPreview?.entityId === entity.id
                 ? {
-                    dimensions: terminalPositionOnly
+                    dimensions: runtimePositionOnly
                       ? (compensatedRuntimeGeometry?.dimensions ?? null)
                       : gestureGeometry.dimensions,
                     position: gestureGeometry.position,
@@ -478,8 +454,7 @@ export function StudioCanvas({
               y: previewGeometry.position.y + localDelta.y,
             };
             const shape = resizeKindForType(entity.type);
-            const runtimeUniformScaleOnly = boundedRuntimeEditTargetIds.has(entity.id);
-            const runtimePositionOnly = terminalPositionOnly;
+            const runtimeUniformScaleOnly = runtimeTraceEditCandidate !== undefined;
             // Runtime AABBs position and size the hit target, but are not
             // authoring evidence for a Circle radius or Rectangle dimensions.
             // Shape resizing remains gated by the source projection.
@@ -598,21 +573,17 @@ export function StudioCanvas({
             data-studio-preview-status={preview.state.phase}
             title={preview.state.phase === "fallback" ? (preview.state.detail ?? undefined) : undefined}
           >
-            {preview.runtimeTracePendingPresentation
-              ? terminalPendingPresentation?.validationStatusLabel
-              : preview.state.phase === "presented"
-                ? `WebGPU preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
-                    displayOnlyPreview
-                      ? "display only"
-                      : selectionOnlyPreview
-                        ? "selection only"
-                        : preview.interactionAuthority.kind === "bounded-interactive"
-                          ? preview.interactionAuthority.reason === "runtime-trace-initial-edit"
-                            ? "Runtime Trace initial move / uniform resize"
-                            : preview.runtimeTraceTerminalEdit?.controlLabel
-                          : "editing preview only"
-                  }`
-                : `WebGPU preview unavailable · ${describeStudioPreviewFallback(preview.state.reason)}`}
+            {preview.state.phase === "presented"
+              ? `WebGPU preview · ${preview.sourceLabel ?? "verified snapshot"} · ${
+                  displayOnlyPreview
+                    ? "display only"
+                    : selectionOnlyPreview
+                      ? "selection only"
+                      : preview.interactionAuthority.kind === "bounded-interactive"
+                        ? "Runtime Trace bounded editing"
+                        : "editing preview only"
+                }`
+              : `WebGPU preview unavailable · ${describeStudioPreviewFallback(preview.state.reason)}`}
           </div>
         ) : null}
         <StudioPresenceOverlay participants={presenceParticipants} />

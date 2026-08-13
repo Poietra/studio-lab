@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -232,38 +231,6 @@ describe("real-preview run state reclamation", () => {
         temporaryRoot,
       }),
     ).toEqual({ failures: [], removed: [], retainedEvidencePath: null });
-  });
-
-  it("reclaims a mutable harness when config setup fails immediately after mkdtemp", () => {
-    const { root } = sandbox();
-    const prefix = `${REAL_PREVIEW_HARNESS_PREFIX_V1}runtime-trace-opening-`;
-    const before = new Set(readdirSync(tmpdir()).filter((name) => name.startsWith(prefix)));
-    const executable = join(
-      process.cwd(),
-      "node_modules",
-      ".bin",
-      process.platform === "win32" ? "playwright.cmd" : "playwright",
-    );
-    const environment = {
-      ...process.env,
-      POIETRA_E2E_EXTERNAL_BASE_URL: "http://127.0.0.1:41999",
-      POIETRA_E2E_REAL_PREVIEW_PROFILE: "runtime-trace-opening",
-      POIETRA_FAST_MANIM_RUNTIME_TRACE_COMMAND: '["node","-e",""]',
-      POIETRA_MANIM_COMMAND: '["node","-e",""]',
-    };
-    delete environment.POIETRA_E2E_REAL_PREVIEW_DATA_ROOT;
-    delete environment.POIETRA_E2E_REAL_PREVIEW_HARNESS_ROOT;
-
-    const result = spawnSync(
-      executable,
-      ["test", "--config", join(process.cwd(), "playwright.real-preview.config.ts"), "--list"],
-      { cwd: root, encoding: "utf8", env: environment },
-    );
-    const leaked = readdirSync(tmpdir()).filter((name) => name.startsWith(prefix) && !before.has(name));
-
-    expect(result.status).not.toBe(0);
-    expect(`${result.stderr}${result.stdout}`).toContain("ENOENT");
-    expect(leaked).toEqual([]);
   });
 
   it("reclaims through the Playwright reporter on both run outcomes without rewriting the run status", async () => {

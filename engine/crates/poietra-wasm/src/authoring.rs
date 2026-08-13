@@ -4,7 +4,7 @@ use poietra_eval::{
     EditSceneTimelineCommand, EditSceneTimelineError, EngineSessionV1, EvaluationError,
     RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit,
     SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    TransformSceneEntityCommand, TransformSceneEntityError,
+    TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
@@ -19,6 +19,12 @@ const MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1: usize = 64 * 1024;
 enum TransformSceneEntitySchemaV1 {
     #[serde(rename = "poietra.transform-scene-entity")]
     TransformSceneEntity,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum TransformSceneEntityAtTimeSchemaV1 {
+    #[serde(rename = "poietra.transform-scene-entity-at-time")]
+    TransformSceneEntityAtTime,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -293,6 +299,36 @@ impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TransformSceneEntityAtTimeCommandJsonV1 {
+    at: f64,
+    delta: PointV1,
+    entity_id: String,
+    expected_base_revision: String,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    #[serde(rename = "schema")]
+    _schema: TransformSceneEntityAtTimeSchemaV1,
+    scale: Option<ScaleAboutPivotJsonV1>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<TransformSceneEntityAtTimeCommandJsonV1> for TransformSceneEntityAtTimeCommand {
+    fn from(value: TransformSceneEntityAtTimeCommandJsonV1) -> Self {
+        Self {
+            at: value.at,
+            delta: value.delta,
+            entity_id: value.entity_id,
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            provenance: value.provenance,
+            scale: value.scale.map(Into::into),
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
     #[error("{command} command contains {actual_bytes} bytes; maximum is {maximum_bytes}")]
@@ -386,6 +422,17 @@ fn transform_scene_entity_json(
     scene_authoring_response(&result)
 }
 
+fn transform_scene_entity_at_time_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: TransformSceneEntityAtTimeCommandJsonV1 =
+        parse_scene_authoring_command("transform at time", command_json)?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.transform_scene_entity_at_time(command.into())?;
+    scene_authoring_response(&result)
+}
+
 fn create_scene_entities_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -450,6 +497,20 @@ pub fn transform_scene_entity_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     transform_scene_entity_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Applies one root transform from an exact Scene time through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or transformed result.
+#[wasm_bindgen(js_name = transformSceneEntityAtTimeV1)]
+pub fn transform_scene_entity_at_time_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    transform_scene_entity_at_time_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -574,6 +635,29 @@ mod tests {
                 "origin": "studio-edit-program"
             },
             "schema": "poietra.rotate-scene-entity",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn timed_transform_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "at": 1.0,
+            "delta": { "x": 2.0, "y": -1.0 },
+            "entityId": "later",
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "provenance": {
+                "evidence": ["WASM adapter endpoint transform test"],
+                "id": "wasm-endpoint-transform",
+                "origin": "studio-edit-program"
+            },
+            "scale": {
+                "pivot": { "x": 1.0, "y": 0.0 },
+                "xFactor": 1.5,
+                "yFactor": 1.5
+            },
+            "schema": "poietra.transform-scene-entity-at-time",
             "version": 1
         }))
         .unwrap()
@@ -726,6 +810,68 @@ mod tests {
             assert!(
                 (f64::from(after_edge) - expected).abs() < 1e-5,
                 "edge {edge} moved to {after_edge}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the adapter must preserve prior prepared bounds and exact stored affine values"
+    )]
+    fn timed_transform_wire_preserves_prior_frames_and_existing_channels() {
+        let snapshot = fixture_json();
+        let original = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
+        let original_channels = original.scene.animation_channels.clone();
+        let (before_original, _, _) = interaction_clip_bounds(&snapshot, "later", 0.5);
+
+        let response =
+            transform_scene_entity_at_time_json(&snapshot, &timed_transform_command_json())
+                .unwrap();
+        let authored = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let (before_authored, _, _) = interaction_clip_bounds(&response, "later", 0.5);
+        let (at_authored, camera_width, camera_height) =
+            interaction_clip_bounds(&response, "later", 1.0);
+
+        assert_eq!(before_authored, before_original);
+        assert_eq!(
+            &authored.scene.animation_channels[..original_channels.len()],
+            original_channels
+        );
+        assert!(matches!(
+            authored.scene.animation_channels.last(),
+            Some(AnimationChannelV1::AffineTransform {
+                entity_id,
+                keyframes,
+                provenance_id,
+                ..
+            }) if entity_id == "later"
+                && provenance_id == "wasm-endpoint-transform"
+                && keyframes[0].at == 1.0
+                && keyframes[0].value.m11 == 1.5
+                && keyframes[0].value.m22 == 1.5
+                && keyframes[0].value.tx == 1.5
+                && keyframes[0].value.ty == -1.0
+                && keyframes[1].value == keyframes[0].value
+        ));
+        let before_width = before_original[2] - before_original[0];
+        let before_height = before_original[3] - before_original[1];
+        assert!(((at_authored[2] - at_authored[0]) / before_width - 1.5).abs() < 1e-5);
+        assert!(((at_authored[3] - at_authored[1]) / before_height - 1.5).abs() < 1e-5);
+        let expected_clip_delta = [4.0 / camera_width, -2.0 / camera_height];
+        let before_center = [
+            before_original[0].midpoint(before_original[2]),
+            before_original[1].midpoint(before_original[3]),
+        ];
+        let at_center = [
+            at_authored[0].midpoint(at_authored[2]),
+            at_authored[1].midpoint(at_authored[3]),
+        ];
+        for axis in 0..2 {
+            assert!(
+                (f64::from(at_center[axis] - before_center[axis]) - expected_clip_delta[axis])
+                    .abs()
+                    < 1e-5
             );
         }
     }

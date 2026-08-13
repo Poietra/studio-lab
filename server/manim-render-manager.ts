@@ -714,10 +714,10 @@ export class ManimRenderManager {
       this.assertRequestProject(request);
       const prepared = await this.lowerRequest(request, signal);
       if (
-        prepared.lowered.preflight?.kind === "runtime-trace-initial-move" ||
-        prepared.lowered.preflight?.kind === "runtime-trace-initial-opacity" ||
-        prepared.lowered.preflight?.kind === "runtime-trace-initial-resize" ||
-        prepared.lowered.preflight?.kind === "runtime-trace-initial-rotation"
+        prepared.lowered.preflight?.kind === "runtime-trace-move-edit" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-opacity-edit" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-resize-edit" ||
+        prepared.lowered.preflight?.kind === "runtime-trace-rotation-edit"
       ) {
         await this.runtimeTraceEditVerifier.verify(prepared.lowered, prepared.renderRequest, signal);
       }

@@ -14,7 +14,7 @@ import {
   fastManimRuntimeTraceV3Schema,
 } from "./fast-manim-runtime-trace-v3-result-contract";
 
-export type FastManimRuntimeTraceInitialEditCandidateErrorCodeV3 =
+export type FastManimRuntimeTraceEditCandidateErrorCodeV3 =
   | "base-binding"
   | "candidate-binding"
   | "candidate-correlation"
@@ -25,18 +25,18 @@ export type FastManimRuntimeTraceInitialEditCandidateErrorCodeV3 =
   | "candidate-root"
   | "candidate-semantic";
 
-export class FastManimRuntimeTraceInitialEditCandidateErrorV3 extends Error {
+export class FastManimRuntimeTraceEditCandidateErrorV3 extends Error {
   constructor(
-    readonly code: FastManimRuntimeTraceInitialEditCandidateErrorCodeV3,
+    readonly code: FastManimRuntimeTraceEditCandidateErrorCodeV3,
     message: string,
   ) {
     super(message);
-    this.name = "FastManimRuntimeTraceInitialEditCandidateErrorV3";
+    this.name = "FastManimRuntimeTraceEditCandidateErrorV3";
   }
 }
 
-function reject(code: FastManimRuntimeTraceInitialEditCandidateErrorCodeV3, message: string): never {
-  throw new FastManimRuntimeTraceInitialEditCandidateErrorV3(code, message);
+function reject(code: FastManimRuntimeTraceEditCandidateErrorCodeV3, message: string): never {
+  throw new FastManimRuntimeTraceEditCandidateErrorV3(code, message);
 }
 
 function same(left: unknown, right: unknown) {
@@ -179,7 +179,7 @@ function verifySiblingMappingsUnchanged(
         !same(siblingMappingSummary(sibling), siblingMappingSummary(candidateSiblings[index]!)),
     )
   ) {
-    reject("candidate-binding", "A generic initial edit changed a sibling source binding it did not select.");
+    reject("candidate-binding", "A generic edit changed a sibling source binding it did not select.");
   }
 }
 
@@ -220,11 +220,56 @@ function fixedState(state: FastManimRuntimeTraceV3["frames"][number]["states"][n
   };
 }
 
+function verifiedRuntimeTraceEditSourceAnchorV3(
+  sourceAnchor: number,
+  base: FastManimRuntimeTraceV3,
+  selectedRoot: FastManimRuntimeTraceV3["roots"][number],
+  allowSettledEdit: boolean,
+) {
+  if (
+    !Number.isFinite(sourceAnchor) ||
+    sourceAnchor < 0 ||
+    (!allowSettledEdit && sourceAnchor !== 0) ||
+    sourceAnchor > base.sampleSchedule.durationSeconds
+  ) {
+    reject("candidate-correlation", "A generic Runtime Trace edit has invalid source-time authority.");
+  }
+  if (
+    sourceAnchor > 0 &&
+    (!base.frames.some(({ sampleTime }) => sampleTime < sourceAnchor) ||
+      !base.frames.some(({ sampleTime }) => sampleTime >= sourceAnchor))
+  ) {
+    reject("candidate-correlation", "A settled Runtime Trace edit must divide an exact trace prefix and suffix.");
+  }
+  const firstAffectedFrame = base.frames.find(({ sampleTime }) => sampleTime >= sourceAnchor);
+  const selectedRootIsActive =
+    firstAffectedFrame !== undefined &&
+    selectedRoot.lifetimes.some(
+      ({ endFrame, startFrame }) =>
+        startFrame <= firstAffectedFrame.frameIndex && firstAffectedFrame.frameIndex < endFrame,
+    );
+  if (
+    !firstAffectedFrame ||
+    !selectedRootIsActive ||
+    (sourceAnchor === 0 && selectedRoot.lifetimes[0]?.startFrame !== 0)
+  ) {
+    reject(
+      "candidate-root",
+      "A generic Runtime Trace edit requires its selected root to be active at the source anchor.",
+    );
+  }
+  return sourceAnchor;
+}
+
+function frameIsAtOrAfterSourceAnchor(sampleTime: number, sourceAnchor: number) {
+  return sampleTime >= sourceAnchor;
+}
+
 /**
  * Verifies the request/trace correlation, producer identity, exact binding,
- * and single stable root shared by every generic initial-edit candidate pair.
+ * and single stable root shared by every generic edit candidate pair.
  */
-function verifiedGenericInitialCandidatePairV3(
+function verifiedGenericEditCandidatePairV3(
   input: Readonly<{
     base: FastManimRuntimeTraceV3;
     baseRequest: FastManimRuntimeTraceProducerRequestV3;
@@ -263,10 +308,10 @@ function verifiedGenericInitialCandidatePairV3(
       version: baseRequest.version,
     })
   ) {
-    reject("candidate-correlation", "A generic initial-edit pair is not correlated to one exact Scene request.");
+    reject("candidate-correlation", "A generic edit pair is not correlated to one exact Scene request.");
   }
   if (!same(producerIdentity(base.producer), producerIdentity(candidate.producer))) {
-    reject("candidate-producer", "A generic initial-edit pair was produced by different toolchains.");
+    reject("candidate-producer", "A generic edit pair was produced by different toolchains.");
   }
 
   exactRequestedBinding(baseRequest, binding, "base");
@@ -280,19 +325,18 @@ function verifiedGenericInitialCandidatePairV3(
     !same(base.roots, candidate.roots) ||
     !selectedRoot ||
     candidateMapping.rootId !== baseMapping.rootId ||
-    selectedRoot.lifetimes.length !== 1 ||
-    selectedRoot.lifetimes[0]!.startFrame !== 0
+    selectedRoot.lifetimes.length !== 1
   ) {
-    reject("candidate-root", "A generic initial edit requires one stable selected top-level root from frame zero.");
+    reject("candidate-root", "A generic Runtime Trace edit requires one stable selected top-level root.");
   }
   if (!same(base.draws, candidate.draws)) {
-    reject("candidate-root", "A generic initial edit changed its root draw identity or lifetime topology.");
+    reject("candidate-root", "A generic edit changed its root draw identity or lifetime topology.");
   }
-  return { base, baseMapping, candidate, candidateMapping };
+  return { base, baseMapping, candidate, candidateMapping, selectedRoot };
 }
 
 /**
- * Proves one generic initial move after both documents have independently
+ * Proves one generic move edit after both documents have independently
  * crossed the closed V3 producer contract. The source lowerer owns the exact
  * `move_to` rewrite; this verifier owns the runtime claim that the one
  * source-bound root and every presented draw are only translated. `move_to`
@@ -301,7 +345,7 @@ function verifiedGenericInitialCandidatePairV3(
  * land exactly on the requested world center; a Scene whose settled endpoint
  * is not that constructed placement fails closed here.
  */
-export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
+export function verifyFastManimRuntimeTraceMoveEditCandidateV3(
   input: Readonly<{
     base: FastManimRuntimeTraceV3;
     baseRequest: FastManimRuntimeTraceProducerRequestV3;
@@ -309,15 +353,17 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     candidate: FastManimRuntimeTraceV3;
     candidateRequest: FastManimRuntimeTraceProducerRequestV3;
     expectedWorldCenter: Readonly<{ x: number; y: number }>;
+    sourceAnchor: number;
   }>,
 ) {
   const expectedWorldCenter = {
     x: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedWorldCenter.x),
     y: fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedWorldCenter.y),
   };
-  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  const { base, baseMapping, candidate, candidateMapping, selectedRoot } = verifiedGenericEditCandidatePairV3(input);
+  const sourceAnchor = verifiedRuntimeTraceEditSourceAnchorV3(input.sourceAnchor, base, selectedRoot, true);
   if (!same(base.resources, candidate.resources)) {
-    reject("candidate-resource", "A generic initial move changed visual resources.");
+    reject("candidate-resource", "A generic move edit changed visual resources.");
   }
 
   const baseInitial = baseMapping.endpoints.initial;
@@ -328,13 +374,12 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
     y: candidateTerminal.center.y - baseTerminal.center.y,
   };
   if (
-    baseInitial.frameIndex !== 0 ||
-    baseInitial.sampleTime !== 0 ||
+    (sourceAnchor === 0 && (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0)) ||
     !Number.isFinite(delta.x) ||
     !Number.isFinite(delta.y) ||
     (coordinateMatches(delta.x, 0) && coordinateMatches(delta.y, 0))
   ) {
-    reject("candidate-noop", "A generic initial move must produce one finite non-zero full-trace translation.");
+    reject("candidate-noop", "A generic Runtime Trace move must produce one finite non-zero suffix translation.");
   }
   if (
     !coordinateMatches(candidateTerminal.center.x, expectedWorldCenter.x) ||
@@ -346,23 +391,29 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
   for (const endpointName of ["initial", "terminal"] as const) {
     const baseEndpoint = baseMapping.endpoints[endpointName];
     const candidateEndpoint = candidateMapping.endpoints[endpointName];
+    const affected = frameIsAtOrAfterSourceAnchor(baseEndpoint.sampleTime, sourceAnchor);
     if (
       baseEndpoint.frameIndex !== candidateEndpoint.frameIndex ||
       baseEndpoint.sampleTime !== candidateEndpoint.sampleTime ||
-      !same(baseEndpoint.dimensions, candidateEndpoint.dimensions) ||
       baseEndpoint.dimensions.height <= 0 ||
       baseEndpoint.dimensions.width <= 0 ||
-      !coordinateMatches(candidateEndpoint.center.x, baseEndpoint.center.x + delta.x) ||
-      !coordinateMatches(candidateEndpoint.center.y, baseEndpoint.center.y + delta.y)
+      (affected
+        ? !same(baseEndpoint.dimensions, candidateEndpoint.dimensions) ||
+          !coordinateMatches(candidateEndpoint.center.x, baseEndpoint.center.x + delta.x) ||
+          !coordinateMatches(candidateEndpoint.center.y, baseEndpoint.center.y + delta.y)
+        : !same(baseEndpoint, candidateEndpoint))
     ) {
-      reject("candidate-endpoint", `The candidate ${endpointName} endpoint is not the exact translated base geometry.`);
+      reject(
+        "candidate-endpoint",
+        `The candidate ${endpointName} endpoint is not the exact source-anchored move geometry.`,
+      );
     }
   }
 
   const drawById = new Map(base.draws.map((draw) => [draw.id, draw] as const));
   let changedStates = 0;
   if (base.frames.length !== candidate.frames.length) {
-    reject("candidate-semantic", "A generic initial move changed its frame count.");
+    reject("candidate-semantic", "A generic move edit changed its frame count.");
   }
   base.frames.forEach((baseFrame, frameIndex) => {
     const candidateFrame = candidate.frames[frameIndex];
@@ -372,7 +423,7 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
       baseFrame.sampleTime !== candidateFrame.sampleTime ||
       baseFrame.states.length !== candidateFrame.states.length
     ) {
-      reject("candidate-semantic", `A generic initial move changed frame ${frameIndex} structure.`);
+      reject("candidate-semantic", `A generic move edit changed frame ${frameIndex} structure.`);
     }
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
@@ -380,7 +431,7 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
       if (!candidateState || !draw) {
         reject(
           "candidate-semantic",
-          `A generic initial move changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic move edit changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       if (draw.rootId !== baseMapping.rootId) {
@@ -388,7 +439,16 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
         if (!same(baseState, candidateState)) {
           reject(
             "candidate-semantic",
-            `A generic initial move disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+            `A generic move edit disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        return;
+      }
+      if (!frameIsAtOrAfterSourceAnchor(baseFrame.sampleTime, sourceAnchor)) {
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic Runtime Trace move changed its protected prefix in frame ${frameIndex}, state ${stateIndex}.`,
           );
         }
         return;
@@ -400,7 +460,7 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial move changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic move edit changed non-translation semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       if (
@@ -411,7 +471,7 @@ export function verifyFastManimRuntimeTraceInitialMoveCandidateV3(
       }
     });
   });
-  if (changedStates === 0) reject("candidate-noop", "A generic initial move did not translate any presented state.");
+  if (changedStates === 0) reject("candidate-noop", "A generic move edit did not translate any presented state.");
   return candidate;
 }
 
@@ -451,7 +511,7 @@ function pathResourcesById(
 ) {
   const paths = new Map(trace.resources.paths.map((resource) => [resource.id, resource] as const));
   if (paths.size !== trace.resources.paths.length) {
-    reject("candidate-resource", `A generic initial ${edit} ${side} repeats a path resource identity.`);
+    reject("candidate-resource", `A generic ${edit} edit ${side} repeats a path resource identity.`);
   }
   return paths;
 }
@@ -506,14 +566,14 @@ function rotatedWorldPathMatches(
 }
 
 /**
- * Proves one generic initial uniform resize after both documents have
+ * Proves one generic uniform-resize edit after both documents have
  * independently crossed the closed V3 producer contract. The producer bakes a
  * scale into localized path bytes while keeping translation-only state
  * transforms, so this verifier proves that every presented draw keeps its
  * appearance, that each draw anchor conjugates about the preserved settled
  * (terminal) center, and that its path geometry is uniformly scaled.
  */
-export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
+export function verifyFastManimRuntimeTraceResizeEditCandidateV3(
   input: Readonly<{
     base: FastManimRuntimeTraceV3;
     baseRequest: FastManimRuntimeTraceProducerRequestV3;
@@ -521,23 +581,25 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
     candidate: FastManimRuntimeTraceV3;
     candidateRequest: FastManimRuntimeTraceProducerRequestV3;
     expectedScaleFactor: number;
+    sourceAnchor: number;
   }>,
 ) {
   const factor = fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedScaleFactor);
   if (factor <= 0) {
-    reject("candidate-endpoint", "A generic initial resize requires one positive server-derived scale factor.");
+    reject("candidate-endpoint", "A generic resize edit requires one positive server-derived scale factor.");
   }
   if (coordinateMatches(factor, 1)) {
-    reject("candidate-noop", "A generic initial resize must change the verified dimensions.");
+    reject("candidate-noop", "A generic resize edit must change the verified dimensions.");
   }
-  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  const { base, baseMapping, candidate, candidateMapping, selectedRoot } = verifiedGenericEditCandidatePairV3(input);
+  const sourceAnchor = verifiedRuntimeTraceEditSourceAnchorV3(input.sourceAnchor, base, selectedRoot, true);
   if (!same(base.resources.appearances, candidate.resources.appearances)) {
-    reject("candidate-resource", "A generic initial resize changed paint appearances.");
+    reject("candidate-resource", "A generic resize edit changed paint appearances.");
   }
 
   const baseInitial = baseMapping.endpoints.initial;
-  if (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0) {
-    reject("candidate-noop", "A generic initial resize requires one frame-zero base endpoint.");
+  if (sourceAnchor === 0 && (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0)) {
+    reject("candidate-noop", "A generic resize edit requires one frame-zero base endpoint.");
   }
   // `scale` conjugates about the constructed object center, which the settled
   // (terminal) endpoint observes; an entrance animation's partial frame-zero
@@ -546,6 +608,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   for (const endpointName of ["initial", "terminal"] as const) {
     const baseEndpoint = baseMapping.endpoints[endpointName];
     const candidateEndpoint = candidateMapping.endpoints[endpointName];
+    const affected = frameIsAtOrAfterSourceAnchor(baseEndpoint.sampleTime, sourceAnchor);
     if (
       baseEndpoint.frameIndex !== candidateEndpoint.frameIndex ||
       baseEndpoint.sampleTime !== candidateEndpoint.sampleTime ||
@@ -553,18 +616,24 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       baseEndpoint.dimensions.width <= 0 ||
       candidateEndpoint.dimensions.height <= 0 ||
       candidateEndpoint.dimensions.width <= 0 ||
-      !scaledCoordinateMatches(
-        candidateEndpoint.center.x,
-        pivot.x + (baseEndpoint.center.x - pivot.x) * factor,
-        factor,
-      ) ||
-      !scaledCoordinateMatches(
-        candidateEndpoint.center.y,
-        pivot.y + (baseEndpoint.center.y - pivot.y) * factor,
-        factor,
-      ) ||
-      !scaledCoordinateMatches(candidateEndpoint.dimensions.height, baseEndpoint.dimensions.height * factor, factor) ||
-      !scaledCoordinateMatches(candidateEndpoint.dimensions.width, baseEndpoint.dimensions.width * factor, factor)
+      (affected
+        ? !scaledCoordinateMatches(
+            candidateEndpoint.center.x,
+            pivot.x + (baseEndpoint.center.x - pivot.x) * factor,
+            factor,
+          ) ||
+          !scaledCoordinateMatches(
+            candidateEndpoint.center.y,
+            pivot.y + (baseEndpoint.center.y - pivot.y) * factor,
+            factor,
+          ) ||
+          !scaledCoordinateMatches(
+            candidateEndpoint.dimensions.height,
+            baseEndpoint.dimensions.height * factor,
+            factor,
+          ) ||
+          !scaledCoordinateMatches(candidateEndpoint.dimensions.width, baseEndpoint.dimensions.width * factor, factor)
+        : !same(baseEndpoint, candidateEndpoint))
     ) {
       reject(
         "candidate-endpoint",
@@ -579,7 +648,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   const referencedCandidatePathIds = new Set<string>();
   const basePathIdByCandidatePathId = new Map<string, string>();
   if (base.frames.length !== candidate.frames.length) {
-    reject("candidate-semantic", "A generic initial resize changed its frame count.");
+    reject("candidate-semantic", "A generic resize edit changed its frame count.");
   }
   // Producer states anchor each draw at its own localized-path center, so a
   // uniform scale about the preserved constructed center conjugates every
@@ -593,7 +662,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       baseFrame.sampleTime !== candidateFrame.sampleTime ||
       baseFrame.states.length !== candidateFrame.states.length
     ) {
-      reject("candidate-semantic", `A generic initial resize changed frame ${frameIndex} structure.`);
+      reject("candidate-semantic", `A generic resize edit changed frame ${frameIndex} structure.`);
     }
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
@@ -601,7 +670,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       if (!candidateState || !draw) {
         reject(
           "candidate-semantic",
-          `A generic initial resize changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic resize edit changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       if (draw.rootId !== baseMapping.rootId) {
@@ -609,7 +678,18 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
         if (!same(baseState, candidateState)) {
           reject(
             "candidate-semantic",
-            `A generic initial resize disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+            `A generic resize edit disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+          );
+        }
+        referencedBasePathIds.add(baseState.pathId);
+        referencedCandidatePathIds.add(candidateState.pathId);
+        return;
+      }
+      if (!frameIsAtOrAfterSourceAnchor(baseFrame.sampleTime, sourceAnchor)) {
+        if (!same(baseState, candidateState)) {
+          reject(
+            "candidate-semantic",
+            `A generic Runtime Trace resize changed its protected prefix in frame ${frameIndex}, state ${stateIndex}.`,
           );
         }
         referencedBasePathIds.add(baseState.pathId);
@@ -640,7 +720,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial resize changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic resize edit changed non-scale semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       const mappedCandidatePathId = candidatePathIdByBasePathId.get(baseState.pathId);
@@ -651,7 +731,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial resize broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic resize edit broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       candidatePathIdByBasePathId.set(baseState.pathId, candidateState.pathId);
@@ -669,7 +749,7 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
     ![...basePaths.keys()].every((pathId) => referencedBasePathIds.has(pathId)) ||
     ![...candidatePaths.keys()].every((pathId) => referencedCandidatePathIds.has(pathId))
   ) {
-    reject("candidate-resource", "A generic initial resize carries path resources outside its presented states.");
+    reject("candidate-resource", "A generic resize edit carries path resources outside its presented states.");
   }
   // A path shared between the selected and a non-selected root keeps its
   // original bytes for the non-selected usage; identical ids must stay
@@ -677,29 +757,29 @@ export function verifyFastManimRuntimeTraceInitialResizeCandidateV3(
   for (const [pathId, basePath] of basePaths) {
     const candidatePath = candidatePaths.get(pathId);
     if (candidatePath && !same(basePath.path, candidatePath.path)) {
-      reject("candidate-resource", "A generic initial resize changed a retained path resource in place.");
+      reject("candidate-resource", "A generic resize edit changed a retained path resource in place.");
     }
   }
   for (const [basePathId, candidatePathId] of candidatePathIdByBasePathId) {
     const basePath = basePaths.get(basePathId);
     const candidatePath = candidatePaths.get(candidatePathId);
     if (!basePath || !candidatePath || !scaledPathMatches(basePath.path, candidatePath.path, factor)) {
-      reject("candidate-resource", "A generic initial resize path is not the exact uniformly scaled base path.");
+      reject("candidate-resource", "A generic resize edit path is not the exact uniformly scaled base path.");
     }
   }
   if ([...candidatePathIdByBasePathId].every(([basePathId, candidatePathId]) => basePathId === candidatePathId)) {
-    reject("candidate-noop", "A generic initial resize did not scale any presented path.");
+    reject("candidate-noop", "A generic resize edit did not scale any presented path.");
   }
   return candidate;
 }
 
 /**
- * Proves one generic initial planar rotation in world space. Runtime Trace V3
+ * Proves one generic planar-rotation edit in world space. Runtime Trace V3
  * localizes each path around its axis-aligned bounds, whose center can move
  * when asymmetric geometry rotates, so path bytes and anchors cannot be
  * checked independently.
  */
-export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
+export function verifyFastManimRuntimeTraceRotationEditCandidateV3(
   input: Readonly<{
     base: FastManimRuntimeTraceV3;
     baseRequest: FastManimRuntimeTraceProducerRequestV3;
@@ -707,21 +787,23 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
     candidate: FastManimRuntimeTraceV3;
     candidateRequest: FastManimRuntimeTraceProducerRequestV3;
     expectedAngleRadians: number;
+    sourceAnchor: number;
   }>,
 ) {
   const angleRadians = fastManimRuntimeTraceCoordinateV3Schema.parse(input.expectedAngleRadians);
   const normalizedAngle = Math.atan2(Math.sin(angleRadians), Math.cos(angleRadians));
   if (coordinateMatches(normalizedAngle, 0)) {
-    reject("candidate-noop", "A generic initial rotation requires one finite non-zero planar angle.");
+    reject("candidate-noop", "A generic rotation edit requires one finite non-zero planar angle.");
   }
-  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  const { base, baseMapping, candidate, candidateMapping, selectedRoot } = verifiedGenericEditCandidatePairV3(input);
+  verifiedRuntimeTraceEditSourceAnchorV3(input.sourceAnchor, base, selectedRoot, false);
   if (!same(base.resources.appearances, candidate.resources.appearances)) {
-    reject("candidate-resource", "A generic initial rotation changed paint appearances.");
+    reject("candidate-resource", "A generic rotation edit changed paint appearances.");
   }
 
   const baseInitial = baseMapping.endpoints.initial;
   if (baseInitial.frameIndex !== 0 || baseInitial.sampleTime !== 0) {
-    reject("candidate-noop", "A generic initial rotation requires one frame-zero base endpoint.");
+    reject("candidate-noop", "A generic rotation edit requires one frame-zero base endpoint.");
   }
   const pivot = baseMapping.endpoints.terminal.center;
   for (const endpointName of ["initial", "terminal"] as const) {
@@ -747,7 +829,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
   const referencedBasePathIds = new Set<string>();
   const referencedCandidatePathIds = new Set<string>();
   if (base.frames.length !== candidate.frames.length) {
-    reject("candidate-semantic", "A generic initial rotation changed its frame count.");
+    reject("candidate-semantic", "A generic rotation edit changed its frame count.");
   }
   base.frames.forEach((baseFrame, frameIndex) => {
     const candidateFrame = candidate.frames[frameIndex];
@@ -757,7 +839,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
       baseFrame.sampleTime !== candidateFrame.sampleTime ||
       baseFrame.states.length !== candidateFrame.states.length
     ) {
-      reject("candidate-semantic", `A generic initial rotation changed frame ${frameIndex} structure.`);
+      reject("candidate-semantic", `A generic rotation edit changed frame ${frameIndex} structure.`);
     }
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
@@ -765,7 +847,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
       if (!candidateState || !draw) {
         reject(
           "candidate-semantic",
-          `A generic initial rotation changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic rotation edit changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       referencedBasePathIds.add(baseState.pathId);
@@ -774,7 +856,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
         if (!same(baseState, candidateState)) {
           reject(
             "candidate-semantic",
-            `A generic initial rotation disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+            `A generic rotation edit disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
           );
         }
         return;
@@ -794,7 +876,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial rotation changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic rotation edit changed non-rotation semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       const mappedCandidatePathId = candidatePathIdByBasePathId.get(baseState.pathId);
@@ -805,7 +887,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial rotation broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic rotation edit broke its path correspondence in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
       candidatePathIdByBasePathId.set(baseState.pathId, candidateState.pathId);
@@ -826,7 +908,7 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial rotation did not exactly rotate the selected world geometry in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic rotation edit did not exactly rotate the selected world geometry in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
     });
@@ -838,12 +920,12 @@ export function verifyFastManimRuntimeTraceInitialRotationCandidateV3(
     ![...basePaths.keys()].every((pathId) => referencedBasePathIds.has(pathId)) ||
     ![...candidatePaths.keys()].every((pathId) => referencedCandidatePathIds.has(pathId))
   ) {
-    reject("candidate-resource", "A generic initial rotation carries path resources outside its presented states.");
+    reject("candidate-resource", "A generic rotation edit carries path resources outside its presented states.");
   }
   for (const [pathId, basePath] of basePaths) {
     const candidatePath = candidatePaths.get(pathId);
     if (candidatePath && !same(basePath.path, candidatePath.path)) {
-      reject("candidate-resource", "A generic initial rotation changed a retained path resource in place.");
+      reject("candidate-resource", "A generic rotation edit changed a retained path resource in place.");
     }
   }
   return candidate;
@@ -854,7 +936,7 @@ type FastManimRuntimeTraceAppearanceResourceV3 = FastManimRuntimeTraceV3["resour
 function appearanceResourcesById(trace: FastManimRuntimeTraceV3, side: "base" | "candidate") {
   const appearances = new Map(trace.resources.appearances.map((resource) => [resource.id, resource] as const));
   if (appearances.size !== trace.resources.appearances.length) {
-    reject("candidate-resource", `A generic initial opacity ${side} repeats an appearance resource identity.`);
+    reject("candidate-resource", `A generic opacity edit ${side} repeats an appearance resource identity.`);
   }
   return appearances;
 }
@@ -902,7 +984,7 @@ function stateWithoutAppearanceId(state: FastManimRuntimeTraceV3["frames"][numbe
  * its lifetime. The only admitted visual delta is replacing every existing
  * fill/stroke alpha in that selected subtree with the server-derived value.
  */
-export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
+export function verifyFastManimRuntimeTraceOpacityEditCandidateV3(
   input: Readonly<{
     base: FastManimRuntimeTraceV3;
     baseRequest: FastManimRuntimeTraceProducerRequestV3;
@@ -910,23 +992,25 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
     candidate: FastManimRuntimeTraceV3;
     candidateRequest: FastManimRuntimeTraceProducerRequestV3;
     expectedOpacity: number;
+    sourceAnchor: number;
   }>,
 ) {
   if (!Number.isFinite(input.expectedOpacity) || input.expectedOpacity < 0 || input.expectedOpacity > 1) {
-    reject("candidate-endpoint", "A generic initial opacity requires one finite value between zero and one.");
+    reject("candidate-endpoint", "A generic opacity edit requires one finite value between zero and one.");
   }
   const expectedOpacity = input.expectedOpacity;
-  const { base, baseMapping, candidate, candidateMapping } = verifiedGenericInitialCandidatePairV3(input);
+  const { base, baseMapping, candidate, candidateMapping, selectedRoot } = verifiedGenericEditCandidatePairV3(input);
+  verifiedRuntimeTraceEditSourceAnchorV3(input.sourceAnchor, base, selectedRoot, false);
   if (!same(baseMapping.endpoints, candidateMapping.endpoints)) {
-    reject("candidate-endpoint", "A generic initial opacity changed the selected root geometry endpoints.");
+    reject("candidate-endpoint", "A generic opacity edit changed the selected root geometry endpoints.");
   }
   if (!same(base.resources.paths, candidate.resources.paths)) {
-    reject("candidate-resource", "A generic initial opacity changed path resources.");
+    reject("candidate-resource", "A generic opacity edit changed path resources.");
   }
 
   const selectedDrawIds = new Set(base.draws.filter(({ rootId }) => rootId === baseMapping.rootId).map(({ id }) => id));
   if (selectedDrawIds.size === 0) {
-    reject("candidate-root", "A generic initial opacity selected a root without presented draws.");
+    reject("candidate-root", "A generic opacity edit selected a root without presented draws.");
   }
   const selectedAppearanceIdByDraw = new Map<string, string>();
   const candidateAppearanceIdByDraw = new Map<string, string>();
@@ -938,7 +1022,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
   const referencedCandidateAppearanceIds = new Set<string>();
 
   if (base.frames.length !== candidate.frames.length) {
-    reject("candidate-semantic", "A generic initial opacity changed its frame count.");
+    reject("candidate-semantic", "A generic opacity edit changed its frame count.");
   }
   base.frames.forEach((baseFrame, frameIndex) => {
     const candidateFrame = candidate.frames[frameIndex];
@@ -948,12 +1032,12 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
       baseFrame.sampleTime !== candidateFrame.sampleTime ||
       baseFrame.states.length !== candidateFrame.states.length
     ) {
-      reject("candidate-semantic", `A generic initial opacity changed frame ${frameIndex} structure.`);
+      reject("candidate-semantic", `A generic opacity edit changed frame ${frameIndex} structure.`);
     }
     baseFrame.states.forEach((baseState, stateIndex) => {
       const candidateState = candidateFrame.states[stateIndex];
       if (!candidateState) {
-        reject("candidate-semantic", `A generic initial opacity removed frame ${frameIndex}, state ${stateIndex}.`);
+        reject("candidate-semantic", `A generic opacity edit removed frame ${frameIndex}, state ${stateIndex}.`);
       }
       referencedBaseAppearanceIds.add(baseState.appearanceId);
       referencedCandidateAppearanceIds.add(candidateState.appearanceId);
@@ -961,7 +1045,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
         if (!same(baseState, candidateState)) {
           reject(
             "candidate-semantic",
-            `A generic initial opacity disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
+            `A generic opacity edit disturbed a non-selected root in frame ${frameIndex}, state ${stateIndex}.`,
           );
         }
         untouchedAppearanceIds.add(baseState.appearanceId);
@@ -973,7 +1057,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
       ) {
         reject(
           "candidate-semantic",
-          `A generic initial opacity changed non-appearance semantics in frame ${frameIndex}, state ${stateIndex}.`,
+          `A generic opacity edit changed non-appearance semantics in frame ${frameIndex}, state ${stateIndex}.`,
         );
       }
 
@@ -987,7 +1071,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
         (baseDrawOpacity !== undefined && baseDrawOpacity !== baseState.opacity) ||
         (candidateDrawOpacity !== undefined && candidateDrawOpacity !== candidateState.opacity)
       ) {
-        reject("candidate-semantic", "A generic initial opacity does not accept dynamic appearance or opacity.");
+        reject("candidate-semantic", "A generic opacity edit does not accept dynamic appearance or opacity.");
       }
       selectedAppearanceIdByDraw.set(baseState.drawId, baseState.appearanceId);
       candidateAppearanceIdByDraw.set(baseState.drawId, candidateState.appearanceId);
@@ -996,7 +1080,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
 
       const mappedCandidateId = candidateAppearanceIdByBaseId.get(baseState.appearanceId);
       if (mappedCandidateId !== undefined && mappedCandidateId !== candidateState.appearanceId) {
-        reject("candidate-semantic", "A generic initial opacity mapped one base appearance inconsistently.");
+        reject("candidate-semantic", "A generic opacity edit mapped one base appearance inconsistently.");
       }
       candidateAppearanceIdByBaseId.set(baseState.appearanceId, candidateState.appearanceId);
     });
@@ -1005,7 +1089,7 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
     selectedAppearanceIdByDraw.size !== selectedDrawIds.size ||
     candidateAppearanceIdByDraw.size !== selectedDrawIds.size
   ) {
-    reject("candidate-semantic", "A generic initial opacity did not preserve every selected draw lifetime.");
+    reject("candidate-semantic", "A generic opacity edit did not preserve every selected draw lifetime.");
   }
 
   const baseAppearances = appearanceResourcesById(base, "base");
@@ -1016,13 +1100,13 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
     [...baseAppearances.keys()].some((id) => !referencedBaseAppearanceIds.has(id)) ||
     [...candidateAppearances.keys()].some((id) => !referencedCandidateAppearanceIds.has(id))
   ) {
-    reject("candidate-resource", "A generic initial opacity carries appearance resources outside presented states.");
+    reject("candidate-resource", "A generic opacity edit carries appearance resources outside presented states.");
   }
   for (const appearanceId of untouchedAppearanceIds) {
     const baseAppearance = baseAppearances.get(appearanceId);
     const candidateAppearance = candidateAppearances.get(appearanceId);
     if (!baseAppearance || !candidateAppearance || !same(baseAppearance, candidateAppearance)) {
-      reject("candidate-resource", "A generic initial opacity changed a non-selected appearance resource.");
+      reject("candidate-resource", "A generic opacity edit changed a non-selected appearance resource.");
     }
   }
 
@@ -1035,12 +1119,12 @@ export function verifyFastManimRuntimeTraceInitialOpacityCandidateV3(
       !candidateAppearance ||
       !appearanceAlphaReplacementMatches(baseAppearance, candidateAppearance, expectedOpacity)
     ) {
-      reject("candidate-resource", "A generic initial opacity changed paint semantics other than fill/stroke alpha.");
+      reject("candidate-resource", "A generic opacity edit changed paint semantics other than fill/stroke alpha.");
     }
     if (appearanceHasDifferentAlpha(baseAppearance, expectedOpacity)) changedAppearanceCount += 1;
   }
   if (changedAppearanceCount === 0) {
-    reject("candidate-noop", "A generic initial opacity did not change any selected fill or stroke alpha.");
+    reject("candidate-noop", "A generic opacity edit did not change any selected fill or stroke alpha.");
   }
   return candidate;
 }

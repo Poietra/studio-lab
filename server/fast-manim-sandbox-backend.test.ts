@@ -4,12 +4,6 @@ import { describe, expect, it } from "vitest";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { createConfiguredFastManimSandboxBackendV1 } from "./fast-manim-local-process-sandbox-backend";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V1 } from "./fast-manim-runtime-trace-contract";
-import {
-  createFastManimRuntimeTraceProducerRequestV2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-} from "./fast-manim-runtime-trace-v2-profile";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V2 } from "./fast-manim-runtime-trace-v2-result-contract";
 import { createFastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { MAX_FAST_MANIM_RUNTIME_TRACE_JSON_BYTES_V3 } from "./fast-manim-runtime-trace-v3-result-contract";
@@ -33,10 +27,8 @@ import {
   createFastManimSnapshotProfileSelectionRequestV1,
 } from "./fast-manim-snapshot-profile-selection";
 import { MAX_PROJECT_PNG_BYTES_V1 } from "./storage/project-png-storage";
-import {
-  RUNTIME_TRACE_SOURCE_TEXT,
-  runtimeTraceRequestFixture,
-} from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import { runtimeTraceRequestFixture } from "./test-fixtures/fast-manim-runtime-trace-fixture";
+import { runtimeTraceV2RequestFixture } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 import {
   localSandboxReadyStatus,
   productionSandboxReadyStatus,
@@ -125,17 +117,7 @@ describe("fast-manim sandbox request bundle", () => {
       sourcePath: snapshot.sourcePath,
       sourceText: snapshot.sourceText,
     });
-    const runtimeTraceV2 = createFastManimRuntimeTraceProducerRequestV2(
-      {
-        projectId: "demo",
-        requestId: "req-opening-runtime-trace-v2",
-        sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-        sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-        sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-      },
-      RUNTIME_TRACE_SOURCE_TEXT,
-      { height: 8, width: 128 / 9 },
-    );
+    const runtimeTraceV2 = runtimeTraceV2RequestFixture();
     const runtimeTraceV3Source =
       "from manim import *\nclass Generic(Scene):\n    def construct(self):\n        self.add(Square())\n";
     const runtimeTraceV3 = createFastManimRuntimeTraceProducerRequestV3(
