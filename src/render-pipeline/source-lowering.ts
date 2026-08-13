@@ -36,7 +36,6 @@ import {
   studioSourceAnalysisProviderV1,
 } from "./source-analysis";
 import {
-  findSourceComments,
   findSourceSceneBlock,
   findSourceSceneComments,
   findSourceSceneStatements,
@@ -186,13 +185,6 @@ type SourceTimeInsertion = Readonly<{
   duration: number;
   sourceAnchor: number;
 }>;
-
-export function findMotionAnchors(source: string): readonly MotionAnchor[] {
-  return findSourceComments(source).flatMap((comment) => {
-    const match = comment.text.match(ANCHOR_PATTERN);
-    return match ? [{ line: comment.line, seconds: Number(match[1]) }] : [];
-  });
-}
 
 export function findSceneMotionAnchors(
   source: string,

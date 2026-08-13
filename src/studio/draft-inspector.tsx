@@ -423,10 +423,6 @@ export function DraftInspector({
 
       <dl className="mt-3 grid grid-cols-2 gap-2 text-[10px]">
         <div>
-          <dt className="text-zinc-600">Preview</dt>
-          <dd className="mt-0.5 text-zinc-300">{execution.preview}</dd>
-        </div>
-        <div>
           <dt className="text-zinc-600">Apply</dt>
           <dd className={cn("mt-0.5", applyStatus === "supported" ? "text-zinc-300" : "text-red-300")}>
             {applyStatus}

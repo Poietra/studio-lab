@@ -28,10 +28,7 @@ export type TimeResolutionResult =
 
 const EPSILON = 0.001;
 
-export function resolveTimeAnchorOnce(
-  source: TimeAnchor,
-  context: TimeResolutionContext,
-): TimeResolutionResult {
+export function resolveTimeAnchorOnce(source: TimeAnchor, context: TimeResolutionContext): TimeResolutionResult {
   let resolvedSeconds: number;
   const evidence: string[] = [`captured-playhead:${context.capturedPlayhead.toFixed(3)}`];
 
@@ -40,20 +37,32 @@ export function resolveTimeAnchorOnce(
     evidence.push(`absolute:${source.seconds.toFixed(3)}`);
   } else if (source.kind === "playhead") {
     if (Math.abs(source.referenceSeconds - context.capturedPlayhead) >= EPSILON) {
-      return { field: "anchor", kind: "invalid", message: "anchor.referenceSeconds does not match the captured playhead." };
+      return {
+        field: "anchor",
+        kind: "invalid",
+        message: "anchor.referenceSeconds does not match the captured playhead.",
+      };
     }
     resolvedSeconds = source.referenceSeconds;
     evidence.push(`playhead:${source.referenceSeconds.toFixed(3)}`);
   } else if (source.kind === "playhead-offset") {
     if (Math.abs(source.referenceSeconds - context.capturedPlayhead) >= EPSILON) {
-      return { field: "anchor", kind: "invalid", message: "anchor.referenceSeconds does not match the captured playhead." };
+      return {
+        field: "anchor",
+        kind: "invalid",
+        message: "anchor.referenceSeconds does not match the captured playhead.",
+      };
     }
     resolvedSeconds = source.referenceSeconds + source.offsetSeconds;
     evidence.push(`playhead-offset:${source.offsetSeconds.toFixed(3)}`);
   } else {
     const boundary = context.structuralBoundaries?.[source.eventId];
     if (boundary === undefined) {
-      return { field: "anchor", kind: "invalid", message: `anchor.eventId ${source.eventId} is not a known structural boundary.` };
+      return {
+        field: "anchor",
+        kind: "invalid",
+        message: `anchor.eventId ${source.eventId} is not a known structural boundary.`,
+      };
     }
     resolvedSeconds = boundary + (source.offsetSeconds ?? 0);
     evidence.push(`structural:${source.boundary}:${source.eventId}`);
@@ -72,15 +81,4 @@ export function resolveTimeAnchorOnce(
     },
     kind: "resolved",
   };
-}
-
-export function timeAnchorLabel(anchor: ResolvedTimeAnchor | TimeAnchor) {
-  const source = "source" in anchor ? anchor.source : anchor;
-  const resolved = "resolvedSeconds" in anchor ? ` → ${anchor.resolvedSeconds.toFixed(2)}s` : "";
-  if (source.kind === "absolute") return `absolute ${source.seconds.toFixed(2)}s${resolved}`;
-  if (source.kind === "playhead") return `captured playhead ${source.referenceSeconds.toFixed(2)}s${resolved}`;
-  if (source.kind === "playhead-offset") {
-    return `playhead ${source.referenceSeconds.toFixed(2)}s ${source.offsetSeconds.toFixed(2)}s${resolved}`;
-  }
-  return `${source.boundary} (${source.eventId})${source.offsetSeconds ? ` ${source.offsetSeconds.toFixed(2)}s` : ""}${resolved}`;
 }

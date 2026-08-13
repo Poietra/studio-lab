@@ -81,7 +81,7 @@ Changing the editor playhead later cannot mutate that record.
 
 The IR uses the bounded vocabulary in `src/studio/operations.ts`, including
 `CreateEntity`, `SetProperty`, `AnimateProperty`, `CreateMotion`,
-`ModifyMotion`, `TransformContent`, `SetRelation`, `ChangePresence`,
+`TransformContent`, `SetRelation`, `ChangePresence`,
 `InsertTimelineEvent`, and `InsertSceneBoundary`.
 
 UX macros expand before validation:

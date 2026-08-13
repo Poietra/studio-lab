@@ -1,8 +1,5 @@
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type StaticSemanticState, type WorkingState } from "./model";
-import { type CanonicalEditOperation, EDIT_OPERATION_VERSION, operationId } from "./operations";
-import { validateAndScheduleProgram } from "./program-validation";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
-import { resolveTimeAnchorOnce } from "./time";
 
 const duration = 12;
 
@@ -177,45 +174,6 @@ export function validateMotionProgramFixture(
       scene: input.scene,
       transactionId: input.transactionId,
     },
-  );
-}
-
-export function validateModifyMotionProgramFixture(transactionId: string) {
-  const interval = { end: 7, start: 4 };
-  const resolution = resolveTimeAnchorOnce(
-    { kind: "absolute", seconds: interval.start },
-    {
-      capturedPlayhead: 5,
-      sceneDuration: STUDIO_FIXTURE_SCENE.duration,
-    },
-  );
-  if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: CanonicalEditOperation = {
-    controlOffset: { x: 0, y: -32 },
-    dependsOn: [],
-    id: operationId(transactionId, "modify-motion"),
-    interval,
-    kind: "ModifyMotion",
-    motionId: "move-equation",
-    preserve: ["start", "end", "duration"],
-    provenance: {
-      evidence: ["path bend gesture", "endpoints preserved"],
-      origin: "direct-manipulation",
-    },
-  };
-  return validateAndScheduleProgram(
-    {
-      anchor: resolution.anchor,
-      intentCount: 1,
-      loweringStatus: "illustrative",
-      operations: [operation],
-      provenance: { evidence: ["gesture constraint"], origin: "direct-manipulation" },
-      requestedExecution: "sequence",
-      schedule: { edges: [], mode: "sequence", order: [operation.id] },
-      transactionId,
-      version: EDIT_OPERATION_VERSION,
-    },
-    STUDIO_FIXTURE_SCENE,
   );
 }
 

@@ -177,8 +177,6 @@ function remapOperation(operation: CanonicalEditOperation, offset: number, maps:
         ...base,
         targetEntityIds: operation.targetEntityIds.map((id) => remapEntity(id, maps)),
       };
-    case "ModifyMotion":
-      return { ...operation, ...base, motionId: remapOperationId(operation.motionId, maps) };
     case "TransformContent":
       return {
         ...operation,
@@ -196,7 +194,6 @@ function remapOperation(operation: CanonicalEditOperation, offset: number, maps:
     case "InsertSceneBoundary":
       return { ...operation, ...base, at: operation.at + offset };
     case "InsertTimelineEvent":
-    case "ChangeConstraint":
     case "ChangeCamera":
       return { ...operation, ...base };
     case "TrimSceneDuration":

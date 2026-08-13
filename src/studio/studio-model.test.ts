@@ -8,12 +8,7 @@ import type {
   MathTexSuggestionTarget,
 } from "../ai/edit-suggestions";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import {
-  createFixtureWorkingState,
-  STUDIO_FIXTURE_SCENE,
-  validateModifyMotionProgramFixture,
-  validateMotionProgramFixture,
-} from "./fixture";
+import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import { type CanonicalEditProgram, EDIT_OPERATION_VERSION, operationId } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
@@ -736,18 +731,6 @@ describe("canonical operation expansion and DAG validation", () => {
         to: first.id,
       }),
     );
-  });
-
-  it("evaluates a ModifyMotion gesture into the shared position channel", () => {
-    const validation = validateModifyMotionProgramFixture("modify-motion-projection");
-    expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const equation = projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1");
-    expect(equation?.position).toEqual({ x: 352, y: 120 });
   });
 
   it("revalidates later programs against identities changed by earlier programs", () => {

@@ -912,33 +912,6 @@ export const studioSourceAnalysisProviderV1: StudioSourceAnalysisProviderV1 = Ob
   version: STUDIO_SOURCE_ANALYSIS_VERSION_V1,
 });
 
-/**
- * Intersects source-side structural eligibility with the two independent
- * runtime identity views used by lowering. A source fact alone never chooses
- * an entity, and a runtime label alone never authorizes a rewrite.
- */
-export function composeSourceRuntimeOperationCapabilityV1(
-  analysis: StudioSourceAnalysisV1,
-  bindingName: string,
-  operation: "move" | "uniformResize",
-  requestBindings: readonly Readonly<{ entityId: string; sourceVariable: string }>[],
-  runtimeSourceVariables: Readonly<Record<string, string>>,
-) {
-  const candidates = analysis.bindings.filter(
-    (binding) =>
-      binding.scopeId === analysis.scene.construct.scopeId &&
-      binding.kind === "assignment" &&
-      binding.name === bindingName &&
-      binding.capabilities[operation].status === "source-eligible",
-  );
-  const runtime = requestBindings.filter(
-    ({ entityId, sourceVariable }) =>
-      sourceVariable === bindingName && runtimeSourceVariables[entityId] === bindingName,
-  );
-  if (candidates.length !== 1 || runtime.length !== 1) return null;
-  return { binding: candidates[0]!, entityId: runtime[0]!.entityId } as const;
-}
-
 function canonicalAnalysisForPatch(source: string, analysis: StudioSourceAnalysisV1) {
   if (hashSource(source) !== analysis.sourceHash) {
     throw new SourceAnalysisError("stale-source", "A stale source boundary cannot authorize a patch.");

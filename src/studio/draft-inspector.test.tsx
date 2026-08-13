@@ -1,13 +1,32 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
 import { DraftInspector } from "./draft-inspector";
 import { programRecord } from "./evaluator";
-import { validateModifyMotionProgramFixture } from "./fixture";
+import { STUDIO_FIXTURE_SCENE } from "./fixture";
+import { canonicalizeSuggestionProgram } from "./suggestion-program";
+
+const CAMERA_FOCUS: CreateCameraFocusSuggestion = {
+  anchor: { kind: "playhead", referenceSeconds: 4.42 },
+  easing: "smooth",
+  emphasisScale: 1.12,
+  end: 5.92,
+  kind: "create-camera-focus",
+  start: 4.42,
+  targetObjectIds: ["equation_1"],
+  zoomScale: 1.35,
+};
 
 describe("DraftInspector execution capabilities", () => {
-  it("shows the shared preview/apply/lowering contract and disables blocked Apply", () => {
-    const validation = validateModifyMotionProgramFixture("modify-motion-inspector");
+  it("shows the shared apply/lowering contract and disables blocked Apply", () => {
+    const validation = canonicalizeSuggestionProgram(CAMERA_FOCUS, {
+      capturedPlayhead: 4.42,
+      origin: "remote-model",
+      scene: STUDIO_FIXTURE_SCENE,
+      transactionId: "camera-focus-inspector",
+    });
+    expect(validation.kind).toBe("valid");
     const markup = renderToStaticMarkup(
       <DraftInspector
         error="A newer transient error."
@@ -20,10 +39,11 @@ describe("DraftInspector execution capabilities", () => {
       />,
     );
 
-    expect(markup).toContain("Preview");
     expect(markup).toContain("Apply");
     expect(markup).toContain("Lowering");
-    expect(markup).toContain("ModifyMotion has no truthful source lowering yet.");
+    expect(markup).toContain(
+      "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
+    );
     expect(markup).not.toContain("A newer transient error.");
     expect(markup).toMatch(/<button[^>]*disabled=""[^>]*>Apply program<\/button>/);
 

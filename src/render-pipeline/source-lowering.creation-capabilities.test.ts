@@ -225,19 +225,6 @@ describe("Canonical EditProgram source lowering", () => {
     expect(tiny.insertedCode).toContain("equation.animate.shift(0.00002222 * RIGHT)");
   });
 
-  it("rejects operations that do not have truthful source lowering instead of dropping them", () => {
-    const unsupported: CanonicalEditOperation = {
-      ...operationBase("modify", 7, 8),
-      controlOffset: { x: 0, y: 10 },
-      kind: "ModifyMotion",
-      motionId: "source-motion",
-      preserve: ["start", "end", "duration"],
-    };
-    expect(() =>
-      lowerCanonicalProgramSource(source, request(canonicalProgram([unsupported])), { height: 8, width: 14.222 }, null),
-    ).toThrow(/ModifyMotion has no truthful source lowering/);
-  });
-
   it("rejects CameraFocus camera changes through the shared capability contract", () => {
     const cameraFocus: CanonicalEditOperation = {
       ...operationBase("camera-focus", 7, 8),

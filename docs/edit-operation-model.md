@@ -137,12 +137,10 @@ type EditCandidate = {
 type EditOperation =
   | SetStateOperation
   | CreateMotionOperation
-  | ModifyMotionOperation
   | CreateTransformOperation
   | CreateExplanationOperation
   | CreateSceneTransitionOperation
   | EditProgramOperation
-  | ChangeConstraintOperation
   | ChangePresenceOperation
   | ChangeCameraOperation;
 ```
@@ -285,7 +283,6 @@ They should return as semantic thumbnails generated from the candidate itself:
 
 - SetState: before and after states plus the real temporal boundary
 - CreateMotion: sampled spatial path, start/end markers and motion interval
-- ModifyMotion: current path and proposed path from the identified MotionRecord
 - CreateTransform: source and target content, exact interval, matching strategy and
   source-to-target runtime identity edge
 - CreateExplanation: new Text identity, target-relative placement, appearance
