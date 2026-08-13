@@ -6,8 +6,7 @@ import {
   countLoweredSceneGeometrySegmentsV1,
   digestAssetManifestV1,
   parseVerifiedSceneIrBundleV1,
-  renderPacketCompositingV1,
-  renderPacketV1Schema,
+  renderViewportV1Schema,
   type SceneIrV1,
   sceneEvaluationSampleTimeV1,
   sceneIrBundleV1Schema,
@@ -15,7 +14,6 @@ import {
   sceneSourceRenderCompositingV1,
   sceneSourceV1Schema,
 } from "./contracts";
-import { isSingularAffineTransform, MIN_AFFINE_DETERMINANT } from "./primitives";
 
 const ZERO_HASH = "0".repeat(64);
 const SCENE_HASH = "b".repeat(64);
@@ -164,77 +162,6 @@ function scene(assets: AssetManifestV1): SceneIrV1 {
   });
 }
 
-function packet(sceneIr: SceneIrV1, assets: AssetManifestV1) {
-  return {
-    assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
-    camera: {
-      bottom: -4.5,
-      clearColor: { ...white, blue: 0, green: 0, red: 0 },
-      kind: "orthographic-2d",
-      left: -8,
-      right: 8,
-      top: 4.5,
-    },
-    coordinateSpace: {
-      cpuPrecision: "f64",
-      kind: "cartesian-2d",
-      origin: "center",
-      unit: "scene-unit",
-      xAxis: "right",
-      yAxis: "up",
-    },
-    draws: [
-      {
-        drawId: "circle-fill",
-        entityId: "circle",
-        fill: { color: white, rule: "nonzero" },
-        kind: "path",
-        opacity: 1,
-        paintOrder: 0,
-        path,
-        sourceZIndex: 0,
-        stroke: null,
-        transform: identity,
-      },
-      {
-        drawId: "curve-stroke",
-        entityId: "curve",
-        fill: null,
-        kind: "path",
-        opacity: 1,
-        paintOrder: 1,
-        path,
-        sourceZIndex: 0,
-        stroke: { cap: "round", color: white, join: "round", miterLimit: 4, widthWorld: 0.05 },
-        transform: identity,
-      },
-      {
-        asset: { assetId: "image-asset", sha256: ASSET_HASH },
-        drawId: "image",
-        entityId: "image",
-        kind: "image",
-        localRect: { bottom: -1, left: -1.5, right: 1.5, top: 1 },
-        opacity: 0.75,
-        paintOrder: 2,
-        sampler: "linear",
-        sourceZIndex: 1,
-        transform: identity,
-      },
-    ],
-    evidence: ["sampled from Scene IR v1"],
-    packetId: "scene@1",
-    requiredCapabilities: ["cubic-path-fill", "cubic-path-stroke", "png-image"],
-    sampleTime: 1,
-    sceneContractVersion: 1,
-    sceneDuration: sceneIr.duration,
-    sceneId: sceneIr.sceneId,
-    sceneRevisionHash: SCENE_HASH,
-    schema: "poietra.render-packet",
-    version: 1,
-    viewport: { heightPx: 1_080, widthPx: 1_920 },
-  };
-}
-
 describe("Poietra Engine v1 contracts", () => {
   it("admits Runtime Trace V2/V3 whole-frame durations without widening the sealed V1 grid", async () => {
     const assets = await manifest();
@@ -344,36 +271,6 @@ describe("Poietra Engine v1 contracts", () => {
     }
   });
 
-  it("keeps linear-light optional on the TypeScript wire without parse-time completion", async () => {
-    const assets = await manifest();
-    const renderPacket = packet(scene(assets), assets);
-    const parsed = renderPacketV1Schema.parse(renderPacket);
-
-    expect("compositing" in parsed).toBe(false);
-    expect(renderPacketCompositingV1(parsed)).toBe("linear-light");
-    const explicitLinear = renderPacketV1Schema.parse({ ...renderPacket, compositing: "linear-light" });
-    expect("compositing" in explicitLinear).toBe(false);
-    expect(renderPacketCompositingV1(explicitLinear)).toBe("linear-light");
-    expect(explicitLinear).toEqual(parsed);
-    expect(JSON.stringify(explicitLinear)).toBe(JSON.stringify(parsed));
-  });
-
-  it("rejects image draws under Manim Cairo compositing", async () => {
-    const assets = await manifest();
-    const renderPacket = packet(scene(assets), assets);
-    const result = renderPacketV1Schema.safeParse({ ...renderPacket, compositing: "manim-cairo-srgb" });
-
-    expect(result.success).toBe(false);
-    if (!result.success) {
-      expect(result.error.issues).toContainEqual(
-        expect.objectContaining({
-          message: "manim-cairo-srgb compositing does not support image draws",
-          path: ["draws", 2, "kind"],
-        }),
-      );
-    }
-  });
-
   it("accepts and integrity-checks a complete Scene IR bundle", async () => {
     const assets = await manifest();
     const sceneIr = scene(assets);
@@ -381,46 +278,6 @@ describe("Poietra Engine v1 contracts", () => {
 
     expect(sceneIrBundleV1Schema.safeParse(bundle).success).toBe(true);
     await expect(parseVerifiedSceneIrBundleV1(JSON.parse(JSON.stringify(bundle)))).resolves.toEqual(bundle);
-  });
-
-  it("accepts a near-singular empty transform and pins the threshold", async () => {
-    // Parity with `affine_transform_is_singular` in poietra-scene-ir: the
-    // predicate rounds entries to f32 first, so an entry that underflows on
-    // its own counts even when the f64 determinant does not.
-    const assets = await manifest();
-    const validScene = scene(assets);
-    const validPacket = packet(validScene, assets);
-    const sourceDraw = validPacket.draws[0];
-    const emptyDraw = (transform: Record<string, number>) => ({
-      ...validPacket,
-      draws: [
-        {
-          drawId: sourceDraw.drawId,
-          entityId: sourceDraw.entityId,
-          kind: "empty" as const,
-          opacity: sourceDraw.opacity,
-          paintOrder: sourceDraw.paintOrder,
-          reason: "singular-affine-sample" as const,
-          sourceZIndex: sourceDraw.sourceZIndex,
-          transform,
-        },
-        ...validPacket.draws.slice(1),
-      ],
-      requiredCapabilities: ["cubic-path-stroke", "png-image"],
-    });
-
-    // Exactly singular, and a determinant under the smallest normal f32.
-    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 0 })).success).toBe(true);
-    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-50 })).success).toBe(true);
-    // One entry underflowing in f32 counts even though det(f64) is 1e-20.
-    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-50, m22: 1e30 })).success).toBe(true);
-    // A renderable scale must not claim the singular reason.
-    expect(renderPacketV1Schema.safeParse(emptyDraw({ ...identity, m11: 1e-3, m22: 1e-3 })).success).toBe(false);
-
-    expect(MIN_AFFINE_DETERMINANT).toBe(1.1754943508222875e-38);
-    expect(isSingularAffineTransform({ m11: 1, m12: 0, m21: 0, m22: MIN_AFFINE_DETERMINANT })).toBe(false);
-    expect(isSingularAffineTransform({ m11: 1, m12: 0, m21: 0, m22: MIN_AFFINE_DETERMINANT / 2 })).toBe(true);
-    expect(isSingularAffineTransform({ m11: Number.NaN, m12: 0, m21: 0, m22: 1 })).toBe(true);
   });
 
   it("rejects newer versions, unknown fields, and padded identities", async () => {
@@ -656,33 +513,14 @@ describe("Poietra Engine v1 contracts", () => {
     expect(assetManifestV1Schema.safeParse(oversized).success).toBe(false);
   });
 
-  it("uses a single back-to-front paint order and exact renderer capabilities", async () => {
-    const assets = await manifest();
-    const validPacket = packet(scene(assets), assets);
-    expect(
-      renderPacketV1Schema.safeParse({
-        ...validPacket,
-        draws: [validPacket.draws[1], validPacket.draws[0], validPacket.draws[2]],
-      }).success,
-    ).toBe(false);
-    expect(
-      renderPacketV1Schema.safeParse({ ...validPacket, requiredCapabilities: ["cubic-path-fill", "png-image"] })
-        .success,
-    ).toBe(false);
-    expect(
-      renderPacketV1Schema.safeParse({
-        ...validPacket,
-        draws: [{ ...validPacket.draws[0], fill: null, stroke: null }, ...validPacket.draws.slice(1)],
-      }).success,
-    ).toBe(false);
-  });
-
-  it("rejects non-finite time and non-matching viewport aspect ratios", async () => {
-    const assets = await manifest();
-    const validPacket = packet(scene(assets), assets);
-    expect(renderPacketV1Schema.safeParse({ ...validPacket, sampleTime: Number.NaN }).success).toBe(false);
-    expect(
-      renderPacketV1Schema.safeParse({ ...validPacket, viewport: { heightPx: 1_000, widthPx: 1_000 } }).success,
-    ).toBe(false);
+  it("bounds render viewports used by the Canvas protocol", () => {
+    expect(renderViewportV1Schema.parse({ heightPx: 1_080, widthPx: 1_920 })).toEqual({
+      heightPx: 1_080,
+      widthPx: 1_920,
+    });
+    expect(renderViewportV1Schema.safeParse({ heightPx: 4_096, widthPx: 8_192 }).success).toBe(true);
+    expect(renderViewportV1Schema.safeParse({ heightPx: 4_096, widthPx: 8_193 }).success).toBe(false);
+    expect(renderViewportV1Schema.safeParse({ heightPx: 0, widthPx: 1_920 }).success).toBe(false);
+    expect(renderViewportV1Schema.safeParse({ heightPx: 1_080, widthPx: 1_920.5 }).success).toBe(false);
   });
 });

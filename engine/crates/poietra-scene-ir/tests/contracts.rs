@@ -94,8 +94,35 @@ fn empty_packet() -> RenderPacketV1 {
     }
 }
 
+fn filled_path_draw(paint_order: u32) -> RenderDrawV1 {
+    RenderDrawV1::Path {
+        draw_id: "draw:path".to_owned(),
+        entity_id: "path".to_owned(),
+        fill: Some(FillStyleV1 {
+            color: black(),
+            rule: FillRuleV1::NonZero,
+        }),
+        opacity: 1.0,
+        paint_order,
+        path: CubicPathV1 {
+            subpaths: vec![CubicSubpathV1 {
+                closed: true,
+                segments: vec![CubicSegmentV1 {
+                    control1: PointV1 { x: 1.0, y: 0.0 },
+                    control2: PointV1 { x: 1.0, y: 1.0 },
+                    end: PointV1 { x: 0.0, y: 1.0 },
+                }],
+                start: PointV1 { x: 0.0, y: 0.0 },
+            }],
+        },
+        source_z_index: 0.0,
+        stroke: None,
+        transform: AffineTransformV1::identity(),
+    }
+}
+
 #[test]
-fn canonical_empty_manifest_matches_the_typescript_wire_digest() {
+fn canonical_empty_manifest_digest_is_stable() {
     let manifest = empty_manifest();
     assert_eq!(
         canonical_asset_manifest_v1(&manifest).unwrap(),
@@ -549,6 +576,61 @@ fn cairo_compositing_rejects_image_draws() {
 }
 
 #[test]
+fn render_packet_rejects_invalid_time_and_camera_aspect() {
+    let mut late_sample = empty_packet();
+    late_sample.sample_time = late_sample.scene_duration + 1.0;
+    assert!(
+        validate_render_packet_v1(&late_sample)
+            .unwrap_err()
+            .contains_message("must not exceed sceneDuration")
+    );
+
+    let mut wrong_aspect = empty_packet();
+    wrong_aspect.viewport.width_px = wrong_aspect.viewport.height_px;
+    assert!(
+        validate_render_packet_v1(&wrong_aspect)
+            .unwrap_err()
+            .contains_message("camera and viewport aspect ratios must match")
+    );
+}
+
+#[test]
+fn render_packet_enforces_draw_order_paint_and_capabilities() {
+    let mut packet = empty_packet();
+    packet.draws.push(filled_path_draw(0));
+    packet.required_capabilities = vec![RenderCapabilityV1::CubicPathFill];
+    validate_render_packet_v1(&packet).unwrap();
+
+    let mut wrong_order = packet.clone();
+    wrong_order.draws[0] = filled_path_draw(1);
+    assert!(
+        validate_render_packet_v1(&wrong_order)
+            .unwrap_err()
+            .contains_message("must equal the back-to-front array index")
+    );
+
+    let mut wrong_capabilities = packet.clone();
+    wrong_capabilities.required_capabilities.clear();
+    assert!(
+        validate_render_packet_v1(&wrong_capabilities)
+            .unwrap_err()
+            .contains_message("must exactly equal the capabilities derived from packet draws")
+    );
+
+    let mut unpainted = packet;
+    let RenderDrawV1::Path { fill, .. } = &mut unpainted.draws[0] else {
+        unreachable!()
+    };
+    *fill = None;
+    unpainted.required_capabilities.clear();
+    assert!(
+        validate_render_packet_v1(&unpainted)
+            .unwrap_err()
+            .contains_message("path draws require a fill or stroke")
+    );
+}
+
+#[test]
 fn representative_scene_semantics_are_fail_closed() {
     let scene = empty_scene();
     validate_scene_ir_v1(&scene).unwrap();
@@ -721,11 +803,9 @@ fn singular_affine_empty_draw_requires_a_singular_transform_and_matching_channel
 
 #[test]
 fn near_singular_affine_empty_draws_are_accepted_at_the_f32_threshold() {
-    // Parity with `isSingularAffineTransform` in src/engine/primitives.ts.
     // The production snapshot profile seals every finite, bounded, non-zero
-    // matrix, so a sample that only collapses once rounded to the renderer's
-    // f32 geometry has to classify as singular here rather than reaching
-    // WGPU preparation and failing the complete frame.
+    // matrix. The canonical Rust predicate therefore classifies a sample that
+    // only collapses in f32 before WGPU preparation can fail the complete frame.
     let empty_packet_with = |transform: AffineTransformV1| {
         let mut packet = empty_packet();
         packet.draws.push(RenderDrawV1::Empty {
@@ -746,7 +826,7 @@ fn near_singular_affine_empty_draws_are_accepted_at_the_f32_threshold() {
     };
 
     // Bit equality: the threshold is an exact IEEE-754 quantity, not a
-    // tolerance, and src/engine/primitives.ts spells the same literal.
+    // tolerance chosen independently by an adapter.
     assert_eq!(
         MIN_AFFINE_DETERMINANT_V1.to_bits(),
         1.175_494_350_822_287_5e-38_f64.to_bits()
