@@ -813,12 +813,6 @@ function planImportedMotion(
   ) {
     return { kind: "unsupported", message: "The motion target is not one exact imported Scene." };
   }
-  if (scene.animationChannels.some((channel) => channel.kind !== "opacity")) {
-    return {
-      kind: "unsupported",
-      message: "Motion authoring requires a static camera and geometry; existing opacity animation is supported.",
-    };
-  }
   if (
     base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
     base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||

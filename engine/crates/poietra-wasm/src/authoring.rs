@@ -347,10 +347,6 @@ impl From<SceneEntityAxisFactorsJsonV1> for SceneEntityAxisFactors {
 enum TransformSceneEntityExpectedBaselineJsonV1 {
     CurrentCenter,
     CurrentUniformAffine,
-    UniformAffine {
-        uniform_scale: f64,
-        world_center: PointV1,
-    },
     WorldSize {
         height: f64,
         width: f64,
@@ -365,13 +361,6 @@ impl From<TransformSceneEntityExpectedBaselineJsonV1> for TransformSceneEntityEx
             TransformSceneEntityExpectedBaselineJsonV1::CurrentUniformAffine => {
                 Self::CurrentUniformAffine
             }
-            TransformSceneEntityExpectedBaselineJsonV1::UniformAffine {
-                uniform_scale,
-                world_center,
-            } => Self::UniformAffine {
-                uniform_scale,
-                world_center,
-            },
             TransformSceneEntityExpectedBaselineJsonV1::WorldSize {
                 height,
                 width,
