@@ -11,7 +11,7 @@
   "scripts": {
     "test": "vitest run",
     "test:unit": "vitest run src/accounts src/ai src/billing src/collaboration src/engine src/studio e2e/benchmark-support.test.ts e2e/fourier-v3-cairo-reference.test.ts e2e/real-preview-run-state.test.ts e2e/spiral-in-cairo-reference.test.ts e2e/square-to-circle-cairo-reference.test.ts e2e/write-stuff-cairo-reference.test.ts e2e/visual-parity.test.ts --exclude src/studio/workspace-projection.test.ts",
-    "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/derive-mathtex-artifact.test.ts scripts/real-manim-editability-census-report.test.ts scripts/rollout-billing-entitlement.test.ts",
+    "test:integration": "vitest run server src/render-pipeline src/studio/workspace-projection.test.ts scripts/derive-mathtex-artifact.test.ts scripts/rollout-billing-entitlement.test.ts",
     "conformance:sandbox:isolation": "vitest run server/fast-manim-sandbox-isolation-conformance.test.ts",
     "test:billing:stripe:required": "POIETRA_STRIPE_E2E_REQUIRED=1 vitest run server/billing/stripe-sandbox.real.test.ts",
     "test:storage:e2e": "node scripts/run-workspace-source-storage-e2e.mjs",
@@ -35,8 +35,6 @@
     "test:e2e:preview:webgpu": "playwright test --config playwright.preview.config.ts --project preview-webgpu --workers 1",
     "test:e2e:preview:real": "playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:runtime-trace": "PATH=\"${POIETRA_CAIRO_TEX_BIN:-$HOME/.TinyTeX/bin/x86_64-linux}:$PATH\" POIETRA_E2E_REAL_PREVIEW_PROFILE=runtime-trace playwright test --config playwright.real-preview.config.ts",
-    "test:e2e:preview:real:runtime-trace:cairo-parity": "PATH=\"${POIETRA_CAIRO_TEX_BIN:-$HOME/.TinyTeX/bin/x86_64-linux}:$PATH\" POIETRA_E2E_REAL_PREVIEW_PROFILE=runtime-trace POIETRA_RUNTIME_TRACE_CAIRO_PARITY_REQUIRED=1 playwright test --config playwright.real-preview.config.ts",
-    "test:e2e:preview:real:runtime-trace:opening:cairo-parity": "PATH=\"${POIETRA_CAIRO_TEX_BIN:-$HOME/.TinyTeX/bin/x86_64-linux}:$PATH\" POIETRA_E2E_REAL_PREVIEW_PROFILE=runtime-trace-opening POIETRA_RUNTIME_TRACE_CAIRO_PARITY_REQUIRED=1 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mathtex": "POIETRA_E2E_REAL_PREVIEW_PROFILE=3 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:mathtex-morph": "POIETRA_E2E_REAL_PREVIEW_PROFILE=5 playwright test --config playwright.real-preview.config.ts",
     "test:e2e:preview:real:image": "POIETRA_E2E_REAL_PREVIEW_PROFILE=4 playwright test --config playwright.real-preview.config.ts",

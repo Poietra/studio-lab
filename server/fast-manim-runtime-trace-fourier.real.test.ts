@@ -166,7 +166,6 @@ describe.skipIf(!producerCommand || !sourceRoot || !ManimSourceStore.supportsVer
         const view = await runner.runRuntimeTrace({
           projectId: "fourier-evidence",
           requestId: "fourier-v3-runtime-trace-evidence-1",
-          responseVersion: 2,
           sceneName: SCENE_NAME,
           sourceHash,
           sourcePath: SOURCE_PATH,

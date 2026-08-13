@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
-  deriveRuntimeTraceInitialMoveSourceEditPlan,
-  deriveRuntimeTraceInitialOpacitySourceEditPlan,
-  deriveRuntimeTraceInitialResizeSourceEditPlan,
-  deriveRuntimeTraceInitialRotationSourceEditPlan,
+  deriveRuntimeTraceMoveSourceEditPlan,
+  deriveRuntimeTraceOpacitySourceEditPlan,
+  deriveRuntimeTraceResizeSourceEditPlan,
+  deriveRuntimeTraceRotationSourceEditPlan,
 } from "../src/render-pipeline/source-lowering";
 import type { FastManimRuntimeTraceProducerRequestV3 } from "./fast-manim-runtime-trace-v3-contract";
 import { digestFastManimRuntimeTraceDomainV3 } from "./fast-manim-runtime-trace-v3-contract";
@@ -43,22 +43,17 @@ const CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.move_to((1.25, -0.5, 0))\n        square.set_stroke(WHITE, width=2)\n",
 );
-const PLAN = deriveRuntimeTraceInitialMoveSourceEditPlan(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
+const PLAN = deriveRuntimeTraceMoveSourceEditPlan(CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
 const RESIZE_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.scale(1.5)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const RESIZE_PLAN = deriveRuntimeTraceInitialResizeSourceEditPlan(
-  RESIZE_CANDIDATE_SOURCE,
-  SCENE_NAME,
-  SOURCE_PATH,
-  "square",
-);
+const RESIZE_PLAN = deriveRuntimeTraceResizeSourceEditPlan(RESIZE_CANDIDATE_SOURCE, SCENE_NAME, SOURCE_PATH, "square");
 const ROTATION_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.rotate(0.5)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const ROTATION_PLAN = deriveRuntimeTraceInitialRotationSourceEditPlan(
+const ROTATION_PLAN = deriveRuntimeTraceRotationSourceEditPlan(
   ROTATION_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
@@ -68,11 +63,26 @@ const OPACITY_CANDIDATE_SOURCE = BASE_SOURCE.replace(
   "        square.set_stroke(WHITE, width=2)\n",
   "        square.set_opacity(0.35)\n        square.set_stroke(WHITE, width=2)\n",
 );
-const OPACITY_PLAN = deriveRuntimeTraceInitialOpacitySourceEditPlan(
+const OPACITY_PLAN = deriveRuntimeTraceOpacitySourceEditPlan(
   OPACITY_CANDIDATE_SOURCE,
   SCENE_NAME,
   SOURCE_PATH,
   "square",
+);
+const TEMPORAL_BASE_SOURCE = BASE_SOURCE.replace(
+  "        self.wait(1 / 60)",
+  "        self.wait(5)\n        self.wait(2)",
+);
+const TEMPORAL_CANDIDATE_SOURCE = TEMPORAL_BASE_SOURCE.replace(
+  "        self.wait(2)",
+  "        square.move_to((1.25, -0.5, 0))\n        self.wait(2)",
+);
+const TEMPORAL_PLAN = deriveRuntimeTraceMoveSourceEditPlan(
+  TEMPORAL_CANDIDATE_SOURCE,
+  SCENE_NAME,
+  SOURCE_PATH,
+  "square",
+  5,
 );
 
 function visualSemanticsDigest(trace: FastManimRuntimeTraceV3) {
@@ -286,11 +296,11 @@ afterEach(async () => {
   await Promise.all(projectRoots.splice(0).map((root) => rm(root, { force: true, recursive: true })));
 });
 
-async function projectRoot() {
+async function projectRoot(source = BASE_SOURCE) {
   const root = await mkdtemp(join(tmpdir(), "poietra-runtime-trace-v3-candidate-"));
   projectRoots.push(root);
   await mkdir(join(root, "scenes"));
-  await writeFile(join(root, SOURCE_PATH), BASE_SOURCE, "utf8");
+  await writeFile(join(root, SOURCE_PATH), source, "utf8");
   return root;
 }
 
@@ -310,15 +320,16 @@ function runner(root: string, backend: FastManimSandboxBackendV1) {
 
 function candidateRequest() {
   return {
-    initialMove: {
+    moveEdit: {
       baseBinding: PLAN.baseBinding,
       baseSourceHash: PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedWorldCenter: PLAN.expectedWorldCenter,
-      kind: "runtime-trace-initial-move" as const,
+      kind: "runtime-trace-move-edit" as const,
+      sourceAnchor: PLAN.sourceAnchor,
     },
     projectId: "generic-preview",
-    requestId: "generic-initial-move-v3-candidate",
+    requestId: "generic-move-edit-v3-candidate",
     sceneName: SCENE_NAME,
     sourcePath: SOURCE_PATH,
   };
@@ -326,15 +337,16 @@ function candidateRequest() {
 
 function resizeCandidateRequest() {
   return {
-    initialResize: {
+    resizeEdit: {
       baseBinding: RESIZE_PLAN.baseBinding,
       baseSourceHash: RESIZE_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedScaleFactor: RESIZE_PLAN.expectedScaleFactor,
-      kind: "runtime-trace-initial-resize" as const,
+      kind: "runtime-trace-resize-edit" as const,
+      sourceAnchor: RESIZE_PLAN.sourceAnchor,
     },
     projectId: "generic-preview",
-    requestId: "generic-initial-resize-v3-candidate",
+    requestId: "generic-resize-edit-v3-candidate",
     sceneName: SCENE_NAME,
     sourcePath: SOURCE_PATH,
   };
@@ -342,15 +354,16 @@ function resizeCandidateRequest() {
 
 function rotationCandidateRequest() {
   return {
-    initialRotation: {
+    rotationEdit: {
       baseBinding: ROTATION_PLAN.baseBinding,
       baseSourceHash: ROTATION_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedAngleRadians: ROTATION_PLAN.expectedAngleRadians,
-      kind: "runtime-trace-initial-rotation" as const,
+      kind: "runtime-trace-rotation-edit" as const,
+      sourceAnchor: ROTATION_PLAN.sourceAnchor,
     },
     projectId: "generic-preview",
-    requestId: "generic-initial-rotation-v3-candidate",
+    requestId: "generic-rotation-edit-v3-candidate",
     sceneName: SCENE_NAME,
     sourcePath: SOURCE_PATH,
   };
@@ -358,172 +371,194 @@ function rotationCandidateRequest() {
 
 function opacityCandidateRequest() {
   return {
-    initialOpacity: {
+    opacityEdit: {
       baseBinding: OPACITY_PLAN.baseBinding,
       baseSourceHash: OPACITY_PLAN.baseSourceHash,
       entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
       expectedOpacity: OPACITY_PLAN.expectedOpacity,
-      kind: "runtime-trace-initial-opacity" as const,
+      kind: "runtime-trace-opacity-edit" as const,
+      sourceAnchor: OPACITY_PLAN.sourceAnchor,
     },
     projectId: "generic-preview",
-    requestId: "generic-initial-opacity-v3-candidate",
+    requestId: "generic-opacity-edit-v3-candidate",
     sceneName: SCENE_NAME,
     sourcePath: SOURCE_PATH,
   };
 }
 
-describe.skipIf(!ManimSourceStore.supportsVerifiedRead)(
-  "generic Runtime Trace V3 initial-move candidate runner",
-  () => {
-    it("executes fresh base and candidate V3 traces without publishing either raw artifact", async () => {
-      const backend = new GenericCandidateArtifactBackend();
-      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
-        CANDIDATE_SOURCE,
-        candidateRequest(),
-      );
+describe.skipIf(!ManimSourceStore.supportsVerifiedRead)("generic Runtime Trace V3 edit candidate runner", () => {
+  it("executes fresh base and candidate V3 traces without publishing either raw artifact", async () => {
+    const backend = new GenericCandidateArtifactBackend();
+    const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+      CANDIDATE_SOURCE,
+      candidateRequest(),
+    );
 
-      expect(result).toMatchObject({
-        sourceHash: expect.not.stringMatching(PLAN.baseSourceHash),
-        status: "verified",
-        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      });
-      expect(backend.requests).toHaveLength(2);
-      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
-        { sourceHash: PLAN.baseSourceHash, version: 3 },
-        { sourceHash: result.sourceHash, version: 3 },
-      ]);
-      expect(backend.requests.map(({ sourceBindings }) => sourceBindings[0]?.name)).toEqual(["square", "square"]);
-      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(PLAN.baseBinding.id);
-      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(PLAN.candidateBinding.id);
+    expect(result).toMatchObject({
+      sourceHash: expect.not.stringMatching(PLAN.baseSourceHash),
+      status: "verified",
+      traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
     });
+    expect(backend.requests).toHaveLength(2);
+    expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+      { sourceHash: PLAN.baseSourceHash, version: 3 },
+      { sourceHash: result.sourceHash, version: 3 },
+    ]);
+    expect(backend.requests.map(({ sourceBindings }) => sourceBindings[0]?.name)).toEqual(["square", "square"]);
+    expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(PLAN.baseBinding.id);
+    expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(PLAN.candidateBinding.id);
+  });
 
-    it("executes fresh base and resize-candidate V3 traces and verifies the scaled pair", async () => {
-      const backend = new GenericCandidateArtifactBackend(false, undefined, "resize");
-      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+  it("executes fresh base and resize-candidate V3 traces and verifies the scaled pair", async () => {
+    const backend = new GenericCandidateArtifactBackend(false, undefined, "resize");
+    const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+      RESIZE_CANDIDATE_SOURCE,
+      resizeCandidateRequest(),
+    );
+
+    expect(result).toMatchObject({
+      sourceHash: expect.not.stringMatching(RESIZE_PLAN.baseSourceHash),
+      status: "verified",
+      traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(backend.requests).toHaveLength(2);
+    expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+      { sourceHash: RESIZE_PLAN.baseSourceHash, version: 3 },
+      { sourceHash: result.sourceHash, version: 3 },
+    ]);
+    expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.baseBinding.id);
+    expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.candidateBinding.id);
+  });
+
+  it("derives the rotation plan and verifies the rotated V3 pair", async () => {
+    const backend = new GenericCandidateArtifactBackend(false, undefined, "rotation");
+    const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+      ROTATION_CANDIDATE_SOURCE,
+      rotationCandidateRequest(),
+    );
+
+    expect(result).toMatchObject({
+      sourceHash: expect.not.stringMatching(ROTATION_PLAN.baseSourceHash),
+      status: "verified",
+      traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(backend.requests).toHaveLength(2);
+    expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
+      { sourceHash: ROTATION_PLAN.baseSourceHash, version: 3 },
+      { sourceHash: result.sourceHash, version: 3 },
+    ]);
+    expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.baseBinding.id);
+    expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.candidateBinding.id);
+  });
+
+  it("derives the opacity plan and verifies the appearance-only V3 pair", async () => {
+    const backend = new GenericCandidateArtifactBackend(false, undefined, "opacity");
+    const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
+      OPACITY_CANDIDATE_SOURCE,
+      opacityCandidateRequest(),
+    );
+
+    expect(result).toMatchObject({
+      sourceHash: expect.not.stringMatching(OPACITY_PLAN.baseSourceHash),
+      status: "verified",
+      traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
+    });
+    expect(backend.requests).toHaveLength(2);
+    expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.baseBinding.id);
+    expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.candidateBinding.id);
+  });
+
+  it("rejects a request carrying both generic edit authorities", async () => {
+    const backend = new GenericCandidateArtifactBackend();
+    await expect(
+      runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(ROTATION_CANDIDATE_SOURCE, {
+        ...rotationCandidateRequest(),
+        moveEdit: candidateRequest().moveEdit,
+      }),
+    ).rejects.toThrow(/exactly one edit authority/i);
+    expect(backend.requests).toHaveLength(0);
+  });
+
+  it("rejects a resize candidate whose producer pair did not actually scale", async () => {
+    // The fake backend replays the base artifact for the candidate, so the
+    // scaled-path proof must fail closed instead of trusting the preflight.
+    const backend = new GenericCandidateArtifactBackend(false, undefined, "move");
+    await expect(
+      runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
         RESIZE_CANDIDATE_SOURCE,
         resizeCandidateRequest(),
-      );
+      ),
+    ).rejects.toMatchObject({ code: "candidate-endpoint" });
+  });
 
-      expect(result).toMatchObject({
-        sourceHash: expect.not.stringMatching(RESIZE_PLAN.baseSourceHash),
-        status: "verified",
-        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      });
-      expect(backend.requests).toHaveLength(2);
-      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
-        { sourceHash: RESIZE_PLAN.baseSourceHash, version: 3 },
-        { sourceHash: result.sourceHash, version: 3 },
-      ]);
-      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.baseBinding.id);
-      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(RESIZE_PLAN.candidateBinding.id);
-    });
-
-    it("derives the rotation plan and verifies the rotated V3 pair", async () => {
-      const backend = new GenericCandidateArtifactBackend(false, undefined, "rotation");
-      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
-        ROTATION_CANDIDATE_SOURCE,
-        rotationCandidateRequest(),
-      );
-
-      expect(result).toMatchObject({
-        sourceHash: expect.not.stringMatching(ROTATION_PLAN.baseSourceHash),
-        status: "verified",
-        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      });
-      expect(backend.requests).toHaveLength(2);
-      expect(backend.requests.map(({ sourceHash, version }) => ({ sourceHash, version }))).toEqual([
-        { sourceHash: ROTATION_PLAN.baseSourceHash, version: 3 },
-        { sourceHash: result.sourceHash, version: 3 },
-      ]);
-      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.baseBinding.id);
-      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(ROTATION_PLAN.candidateBinding.id);
-    });
-
-    it("derives the opacity plan and verifies the appearance-only V3 pair", async () => {
-      const backend = new GenericCandidateArtifactBackend(false, undefined, "opacity");
-      const result = await runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
-        OPACITY_CANDIDATE_SOURCE,
-        opacityCandidateRequest(),
-      );
-
-      expect(result).toMatchObject({
-        sourceHash: expect.not.stringMatching(OPACITY_PLAN.baseSourceHash),
-        status: "verified",
-        traceDigest: expect.stringMatching(/^[0-9a-f]{64}$/u),
-      });
-      expect(backend.requests).toHaveLength(2);
-      expect(backend.requests[0]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.baseBinding.id);
-      expect(backend.requests[1]?.sourceBindings[0]?.id).toBe(OPACITY_PLAN.candidateBinding.id);
-    });
-
-    it("rejects a request carrying both generic initial-edit authorities", async () => {
-      const backend = new GenericCandidateArtifactBackend();
-      await expect(
-        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(ROTATION_CANDIDATE_SOURCE, {
-          ...rotationCandidateRequest(),
-          initialMove: candidateRequest().initialMove,
-        }),
-      ).rejects.toThrow(/exactly one initial-edit authority/i);
-      expect(backend.requests).toHaveLength(0);
-    });
-
-    it("rejects a resize candidate whose producer pair did not actually scale", async () => {
-      // The fake backend replays the base artifact for the candidate, so the
-      // scaled-path proof must fail closed instead of trusting the preflight.
-      const backend = new GenericCandidateArtifactBackend(false, undefined, "move");
-      await expect(
-        runner(await projectRoot(), backend).runRuntimeTraceCandidateUnpublished(
-          RESIZE_CANDIDATE_SOURCE,
-          resizeCandidateRequest(),
-        ),
-      ).rejects.toMatchObject({ code: "candidate-endpoint" });
-    });
-
-    it("fails closed on stale authority, semantic drift, and a base source changed during execution", async () => {
-      const staleBackend = new GenericCandidateArtifactBackend();
-      await expect(
-        runner(await projectRoot(), staleBackend).runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, {
-          ...candidateRequest(),
-          initialMove: { ...candidateRequest().initialMove, baseSourceHash: "f".repeat(64) },
-        }),
-      ).rejects.toMatchObject({ status: 409 });
-      expect(staleBackend.requests).toHaveLength(0);
-
-      await expect(
-        runner(await projectRoot(), new GenericCandidateArtifactBackend(true)).runRuntimeTraceCandidateUnpublished(
-          CANDIDATE_SOURCE,
-          candidateRequest(),
-        ),
-      ).rejects.toMatchObject({ code: "candidate-semantic" });
-
-      const changingRoot = await projectRoot();
-      const changingBackend = new GenericCandidateArtifactBackend(false, async (count) => {
-        if (count === 2) await writeFile(join(changingRoot, SOURCE_PATH), `${BASE_SOURCE}\n`, "utf8");
-      });
-      await expect(
-        runner(changingRoot, changingBackend).runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, candidateRequest()),
-      ).rejects.toMatchObject({ status: 409 });
-    });
-
-    it("reserves the full producer capacity while the V3 pair is in flight", async () => {
-      const backend = new BlockingStatusBackend();
-      const instance = runner(await projectRoot(), backend);
-      const abort = new AbortController();
-      const pair = instance.runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, candidateRequest(), abort.signal);
-      pair.catch(() => undefined);
-      await backend.waitForStatusCall();
-
-      await expect(
-        instance.runRuntimeTrace({
+  it("rejects a nonzero-time candidate whose static-wait anchor does not re-derive", async () => {
+    const backend = new GenericCandidateArtifactBackend();
+    await expect(
+      runner(await projectRoot(TEMPORAL_BASE_SOURCE), backend).runRuntimeTraceCandidateUnpublished(
+        TEMPORAL_CANDIDATE_SOURCE,
+        {
+          moveEdit: {
+            baseBinding: TEMPORAL_PLAN.baseBinding,
+            baseSourceHash: TEMPORAL_PLAN.baseSourceHash,
+            entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
+            expectedWorldCenter: TEMPORAL_PLAN.expectedWorldCenter,
+            kind: "runtime-trace-move-edit",
+            sourceAnchor: TEMPORAL_PLAN.sourceAnchor + 0.5,
+          },
           projectId: "generic-preview",
-          requestId: "concurrent-preview",
+          requestId: "generic-temporal-move-v3-candidate",
           sceneName: SCENE_NAME,
-          sourceHash: PLAN.baseSourceHash,
           sourcePath: SOURCE_PATH,
-        }),
-      ).rejects.toMatchObject({ status: 429 });
-      abort.abort();
-      await expect(pair).rejects.toMatchObject({ name: "AbortError" });
+        },
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(backend.requests).toHaveLength(0);
+  });
+
+  it("fails closed on stale authority, semantic drift, and a base source changed during execution", async () => {
+    const staleBackend = new GenericCandidateArtifactBackend();
+    await expect(
+      runner(await projectRoot(), staleBackend).runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, {
+        ...candidateRequest(),
+        moveEdit: { ...candidateRequest().moveEdit, baseSourceHash: "f".repeat(64) },
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(staleBackend.requests).toHaveLength(0);
+
+    await expect(
+      runner(await projectRoot(), new GenericCandidateArtifactBackend(true)).runRuntimeTraceCandidateUnpublished(
+        CANDIDATE_SOURCE,
+        candidateRequest(),
+      ),
+    ).rejects.toMatchObject({ code: "candidate-semantic" });
+
+    const changingRoot = await projectRoot();
+    const changingBackend = new GenericCandidateArtifactBackend(false, async (count) => {
+      if (count === 2) await writeFile(join(changingRoot, SOURCE_PATH), `${BASE_SOURCE}\n`, "utf8");
     });
-  },
-);
+    await expect(
+      runner(changingRoot, changingBackend).runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, candidateRequest()),
+    ).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("reserves the full producer capacity while the V3 pair is in flight", async () => {
+    const backend = new BlockingStatusBackend();
+    const instance = runner(await projectRoot(), backend);
+    const abort = new AbortController();
+    const pair = instance.runRuntimeTraceCandidateUnpublished(CANDIDATE_SOURCE, candidateRequest(), abort.signal);
+    pair.catch(() => undefined);
+    await backend.waitForStatusCall();
+
+    await expect(
+      instance.runRuntimeTrace({
+        projectId: "generic-preview",
+        requestId: "concurrent-preview",
+        sceneName: SCENE_NAME,
+        sourceHash: PLAN.baseSourceHash,
+        sourcePath: SOURCE_PATH,
+      }),
+    ).rejects.toMatchObject({ status: 429 });
+    abort.abort();
+    await expect(pair).rejects.toMatchObject({ name: "AbortError" });
+  });
+});

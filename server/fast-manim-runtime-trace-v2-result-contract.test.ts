@@ -1,21 +1,10 @@
-import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync } from "node:fs";
-import { gzipSync, gunzipSync } from "node:zlib";
-
 import { describe, expect, it } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import { lowerVerifiedFastManimRuntimeTraceV2 } from "./fast-manim-runtime-trace-v2-lowering";
 import {
-  createFastManimRuntimeTraceProducerRequestV2,
-  FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2,
-} from "./fast-manim-runtime-trace-v2-profile";
-import {
-  canonicalFastManimRuntimeTraceCoordinateV2,
   digestFastManimRuntimeTraceAppearanceV2,
   digestFastManimRuntimeTracePathV2,
   digestFastManimRuntimeTraceV2,
-  expectedFastManimRuntimeTraceCorrelationFromRequestV2,
   FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_EXTENSION_SLOTS_V2,
   FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_UNION_IDENTITY_ORDERS_V2,
   FastManimRuntimeTraceV2ContractError,
@@ -33,184 +22,17 @@ import {
   MAX_FAST_MANIM_RUNTIME_TRACE_STRUCTURE_VALUES_V2,
   parseFastManimRuntimeTraceProducerJsonV2,
 } from "./fast-manim-runtime-trace-v2-result-contract";
-import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
 import {
   expectedRuntimeTraceV2Correlation,
   fastManimRuntimeTraceV2Fixture,
   sealFastManimRuntimeTraceV2Fixture,
 } from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
-const artifactBytes = gunzipSync(
-  readFileSync(new URL("./test-fixtures/fast-manim-runtime-trace-opening-v2.json.gz", import.meta.url)),
-);
-const artifactJson = artifactBytes.toString("utf8");
-const loweredBundleFixtureUrl = new URL("../fixtures/engine-v1/real-opening-runtime-v2.json.gz", import.meta.url);
-
 function clone<T>(value: T): T {
   return structuredClone(value);
 }
 
-function expectCompactedPlateausToRemainExact(
-  bundle: Awaited<ReturnType<typeof lowerVerifiedFastManimRuntimeTraceV2>>,
-) {
-  const channel = bundle.scene.animationChannels.find(
-    (candidate) =>
-      candidate.kind === "vector-appearance" &&
-      candidate.entityId.endsWith("/runtime-root:title/runtime-draw:0/paint:fill"),
-  );
-  if (!channel) throw new Error("Expected the title fill appearance channel.");
-  const plateauEdges = channel.keyframes.slice(1).flatMap((current, index) => {
-    const previous = channel.keyframes[index]!;
-    return current.at - previous.at > 1 / 60 + 1e-12 ? [{ current, previous }] : [];
-  });
-  expect(plateauEdges.length).toBeGreaterThanOrEqual(2);
-  for (const { current, previous } of plateauEdges) {
-    expect(current.value).toEqual(previous.value);
-  }
-}
-
 describe("fast-manim Runtime Trace V2 result contract", () => {
-  it("accepts and lowers the real OpeningManim producer artifact", { timeout: 60_000 }, async () => {
-    expect(createHash("sha256").update(artifactBytes).digest("hex")).toBe(
-      "c0f49e7fc1fba4e40be5b4b164e817cf74837fc1cb81ca2188bc1db57ee45792",
-    );
-    const untrusted = JSON.parse(artifactJson) as ReturnType<typeof fastManimRuntimeTraceV2Fixture>;
-    expect(untrusted.producer).toMatchObject({
-      fastManimCommit: "365345c2cbb673ab0e9fe22d33353fcbcd43b58c",
-      fastManimTree: "f6cae74330644d19bd0a5bf12a092c9840a83e90",
-      semanticsSha256: "b8c727a2a1949d051c1491f7e5198ed7721ca868629f7e23597a060ef1e9d498",
-    });
-    const request = createFastManimRuntimeTraceProducerRequestV2(
-      {
-        projectId: untrusted.projectId,
-        requestId: untrusted.requestId,
-        sceneName: untrusted.sceneName,
-        sourceHash: untrusted.sourceHash,
-        sourcePath: untrusted.sourcePath,
-      },
-      RUNTIME_TRACE_SOURCE_TEXT,
-      { height: 8, width: 128 / 9 },
-    );
-    const expected = expectedFastManimRuntimeTraceCorrelationFromRequestV2(request, {
-      producer: untrusted.producer,
-      roots: untrusted.roots,
-    });
-    const trace = parseFastManimRuntimeTraceProducerJsonV2(artifactBytes, expected);
-
-    const gridTitleRoot = trace.roots.find(({ role }) => role === "grid-title");
-    const terminalFrame = trace.frames[840];
-    if (!gridTitleRoot || !terminalFrame) throw new Error("Expected the sealed grid_title terminal frame.");
-    const terminalDraws = terminalFrame.draws.filter(({ present, rootId }) => present && rootId === gridTitleRoot.id);
-    expect(terminalFrame.frameIndex).toBe(840);
-    expect(terminalDraws).toHaveLength(42);
-    const paths = new Map(trace.resources.paths.map(({ id, path }) => [id, path]));
-    const terminalPoints = terminalDraws.flatMap((draw) => {
-      const path = paths.get(draw.pathId);
-      if (!path) throw new Error(`Expected sealed path ${draw.pathId}.`);
-      return path.subpaths.flatMap((subpath) =>
-        [subpath.start, ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end])].map(
-          ({ x, y }) => ({ x: x + draw.translation.x, y: y + draw.translation.y }),
-        ),
-      );
-    });
-    const xs = terminalPoints.map(({ x }) => x);
-    const ys = terminalPoints.map(({ y }) => y);
-    expect({
-      x: canonicalFastManimRuntimeTraceCoordinateV2((Math.min(...xs) + Math.max(...xs)) / 2),
-      y: canonicalFastManimRuntimeTraceCoordinateV2((Math.min(...ys) + Math.max(...ys)) / 2),
-    }).toEqual(FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2);
-
-    expect(trace.frames).toHaveLength(900);
-    expect(trace.frames.every((frame) => frame.draws.length === 97)).toBe(true);
-    expect(trace.resources.paths).toHaveLength(6_566);
-    expect(trace.resources.appearances).toHaveLength(349);
-
-    const bundle = await lowerVerifiedFastManimRuntimeTraceV2(trace);
-    const canonicalBundle = canonicalJsonV1(bundle);
-    expect(Buffer.byteLength(canonicalBundle, "utf8")).toBe(5_488_665);
-    expect(Buffer.byteLength(canonicalBundle, "utf8")).toBeLessThan(
-      MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V2,
-    );
-    if (process.env.POIETRA_UPDATE_OPENING_RUNTIME_V2_ENGINE_FIXTURE === "1") {
-      writeFileSync(loweredBundleFixtureUrl, gzipSync(canonicalBundle, { level: 9 }));
-    }
-    expect(gunzipSync(readFileSync(loweredBundleFixtureUrl)).toString("utf8")).toBe(canonicalBundle);
-    expect(bundle.scene.entities).toHaveLength(194);
-    expect(bundle.scene.animationChannels).toHaveLength(269);
-    expect(bundle.scene.animationChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(12_551);
-    const morphChannels = bundle.scene.animationChannels.filter((channel) => channel.kind === "path-morph");
-    expect(morphChannels.reduce((total, channel) => total + channel.keyframes.length, 0)).toBe(509);
-    for (const role of ["title", "grid", "grid-title"] as const) {
-      expect(
-        morphChannels.some(
-          (channel) =>
-            channel.entityId.includes(`/runtime-root:${role}/`) &&
-            channel.keyframes.some(({ easingToNext }) => easingToNext?.kind === "manim-smooth"),
-        ),
-      ).toBe(true);
-    }
-    expect(bundle.scene.entities.slice(5, 7).map(({ id }) => id)).toEqual([
-      expect.stringMatching(/runtime-draw:0\/paint:fill$/),
-      expect.stringMatching(/runtime-draw:0\/paint:stroke$/),
-    ]);
-    expect(
-      bundle.scene.animationChannels
-        .filter((channel) => channel.kind === "path-trim")
-        .every((channel) => channel.parameterization === "uniform-cubic-parameter-v1"),
-    ).toBe(true);
-    expectCompactedPlateausToRemainExact(bundle);
-    const pathEntities = bundle.scene.entities.filter(({ geometry }) => geometry.kind === "cubic-path");
-    expect(pathEntities).toHaveLength(189);
-    expect(pathEntities.every(({ lifetimes }) => lifetimes.length === 1)).toBe(true);
-    expect(
-      [0, 3, 181 / 60, 4, 5, 9, 13, 781 / 60, 14].map((at) => ({
-        at,
-        count: pathEntities.filter(({ lifetimes }) => lifetimes[0]?.start === at).length,
-      })),
-    ).toEqual([
-      { at: 0, count: 44 },
-      { at: 3, count: 12 },
-      { at: 181 / 60, count: 4 },
-      { at: 4, count: 6 },
-      { at: 5, count: 35 },
-      { at: 9, count: 24 },
-      { at: 13, count: 38 },
-      { at: 781 / 60, count: 10 },
-      { at: 14, count: 16 },
-    ]);
-    expect(
-      [3, 181 / 60, 4, 8, 9, 13, 781 / 60, 14, 15].map((at) => ({
-        at,
-        count: pathEntities.filter(({ lifetimes }) => lifetimes[0]?.end === at).length,
-      })),
-    ).toEqual([
-      { at: 3, count: 20 },
-      { at: 181 / 60, count: 5 },
-      { at: 4, count: 20 },
-      { at: 8, count: 21 },
-      { at: 9, count: 24 },
-      { at: 13, count: 7 },
-      { at: 781 / 60, count: 10 },
-      { at: 14, count: 16 },
-      { at: 15, count: 66 },
-    ]);
-    expect(
-      ["affine-transform", "path-morph", "path-trim", "vector-appearance"].map((kind) => {
-        const channels = bundle.scene.animationChannels.filter((channel) => channel.kind === kind);
-        return {
-          channels: channels.length,
-          keyframes: channels.reduce((total, channel) => total + channel.keyframes.length, 0),
-          kind,
-        };
-      }),
-    ).toEqual([
-      { channels: 21, keyframes: 2_128, kind: "affine-transform" },
-      { channels: 87, keyframes: 509, kind: "path-morph" },
-      { channels: 39, keyframes: 1_696, kind: "path-trim" },
-      { channels: 122, keyframes: 8_218, kind: "vector-appearance" },
-    ]);
-  });
-
   it("accepts a compact sealed fixture and produces a stable trace digest", { timeout: 15_000 }, () => {
     const trace = fastManimRuntimeTraceV2Fixture();
     const parsed = parseFastManimRuntimeTraceProducerJsonV2(

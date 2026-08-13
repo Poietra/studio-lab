@@ -50,7 +50,7 @@ const request = {
   sourcePath: SOURCE_PATH,
 } as const;
 const runtimeTraceCandidateRequest = {
-  initialMove: {
+  moveEdit: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -60,12 +60,13 @@ const runtimeTraceCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedWorldCenter: { x: 1.25, y: -0.5 },
-    kind: "runtime-trace-initial-move",
+    kind: "runtime-trace-move-edit",
+    sourceAnchor: 0,
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
 const runtimeTraceResizeCandidateRequest = {
-  initialResize: {
+  resizeEdit: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -75,12 +76,13 @@ const runtimeTraceResizeCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedScaleFactor: 1.5,
-    kind: "runtime-trace-initial-resize",
+    kind: "runtime-trace-resize-edit",
+    sourceAnchor: 0,
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
 const runtimeTraceOpacityCandidateRequest = {
-  initialOpacity: {
+  opacityEdit: {
     baseBinding: {
       id: `source-binding:${"1".repeat(64)}`,
       name: "square",
@@ -90,7 +92,8 @@ const runtimeTraceOpacityCandidateRequest = {
     baseSourceHash: "2".repeat(64),
     entityId: `source:${SOURCE_PATH}#${SCENE_NAME}:square`,
     expectedOpacity: 0.35,
-    kind: "runtime-trace-initial-opacity",
+    kind: "runtime-trace-opacity-edit",
+    sourceAnchor: 0,
   },
   ...request,
 } as const satisfies FastManimRuntimeTraceCandidateRunRequestV1;
@@ -534,7 +537,6 @@ describe("DurableFastManimSnapshotServiceV1", () => {
     const runtimeTraceRequest = {
       ...request,
       requestId: "runtime-trace-request-a",
-      responseVersion: 2 as const,
       sourceHash: SOURCE_DIGEST,
     };
 

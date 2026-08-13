@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
-import { FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2 } from "./fast-manim-runtime-trace-v2-profile";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
@@ -138,7 +137,7 @@ describe("Manim render request lowering", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId: staticSquareEntityId,
-      id: "generic-v3-initial-position",
+      id: "generic-v3-position-edit",
       interval: { end: 0, start: 0 },
       key: "position",
       kind: "SetProperty",
@@ -155,10 +154,10 @@ describe("Manim render request lowering", () => {
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["Runtime Trace initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "generic-v3-initial-move",
+      transactionId: "generic-v3-move-edit",
       version: 1,
     };
 
@@ -172,6 +171,7 @@ describe("Manim render request lowering", () => {
         program: editProgram,
         projectId: "generic-preview",
         sceneName: staticSquareSceneName,
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId: staticSquareEntityId, sourceVariable: "square" }],
         sourceHash: createHash("sha256").update(staticSquareSource, "utf8").digest("hex"),
         sourcePath: staticSquareSourcePath,
@@ -184,7 +184,7 @@ describe("Manim render request lowering", () => {
       baseBinding: { name: "square", ordinal: 1 },
       entityId: staticSquareEntityId,
       expectedWorldCenter: { x: 2, y: 1 },
-      kind: "runtime-trace-initial-move",
+      kind: "runtime-trace-move-edit",
     });
     expect(result.lowered.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.move_to((2, 1, 0))",
@@ -197,7 +197,7 @@ describe("Manim render request lowering", () => {
       easing: "smooth",
       entityId: staticSquareEntityId,
       from: 1,
-      id: "generic-v3-initial-scale",
+      id: "generic-v3-scale-edit",
       interval: { end: 0, start: 0 },
       key: "scale",
       kind: "AnimateProperty",
@@ -215,10 +215,10 @@ describe("Manim render request lowering", () => {
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["Runtime Trace initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["Runtime Trace edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "generic-v3-initial-resize",
+      transactionId: "generic-v3-resize-edit",
       version: 1,
     };
 
@@ -232,6 +232,7 @@ describe("Manim render request lowering", () => {
         program: editProgram,
         projectId: "generic-preview",
         sceneName: staticSquareSceneName,
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId: staticSquareEntityId, sourceVariable: "square" }],
         sourceHash: createHash("sha256").update(staticSquareSource, "utf8").digest("hex"),
         sourcePath: staticSquareSourcePath,
@@ -244,7 +245,7 @@ describe("Manim render request lowering", () => {
       baseBinding: { name: "square", ordinal: 1 },
       entityId: staticSquareEntityId,
       expectedScaleFactor: 1.5,
-      kind: "runtime-trace-initial-resize",
+      kind: "runtime-trace-resize-edit",
     });
     expect(result.lowered.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n        square.scale(1.5)",
@@ -272,10 +273,10 @@ describe("Manim render request lowering", () => {
       intentCount: 1,
       loweringStatus: "supported",
       operations: [operation],
-      provenance: { evidence: ["generic Runtime Trace initial edit"], origin: "direct-manipulation" },
+      provenance: { evidence: ["generic Runtime Trace edit"], origin: "direct-manipulation" },
       requestedExecution: "parallel",
       schedule: { edges: [], mode: "parallel", order: [operation.id] },
-      transactionId: "generic-warp-square-initial-transform",
+      transactionId: "generic-warp-square-transform-edit",
       version: 1,
     };
     const result = lowerManimRenderRequest({
@@ -288,6 +289,7 @@ describe("Manim render request lowering", () => {
         program: editProgram,
         projectId: "default",
         sceneName: "WarpSquare",
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId: warpSquareEntityId, sourceVariable: "square" }],
         sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
         sourcePath: exampleScenesSourcePath,
@@ -295,22 +297,23 @@ describe("Manim render request lowering", () => {
       },
     });
 
-    expect(result.lowered.preflight?.kind).toBe("runtime-trace-initial-move");
+    expect(result.lowered.preflight?.kind).toBe("runtime-trace-move-edit");
     expect(result.lowered.source).toContain("        square.move_to((2, 1, 0))\n        self.play(");
   });
 
-  it("routes one five-second UpdatersExample resize through the bounded early lowerer", () => {
+  it("routes a former Updaters profile resize through the generic five-second wait boundary", () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
+      easing: "smooth",
       entityId: updatersSquareEntityId,
-      from: { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 45 } },
+      from: 1,
       id: "updaters-terminal-resize",
       interval: { end: 5, start: 5 },
-      kind: "ResizeEntity",
+      key: "scale",
+      kind: "AnimateProperty",
       provenance: { evidence: ["verified UpdatersExample terminal boundary"], origin: "direct-manipulation" },
-      scale: 1,
-      shape: "rectangle",
-      to: { dimensions: { height: 3, width: 3 }, position: { x: 320, y: 45 } },
+      relativeFactor: 1.5,
+      to: 1.5,
     };
     const editProgram: CanonicalEditProgram = {
       anchor: {
@@ -323,8 +326,8 @@ describe("Manim render request lowering", () => {
       loweringStatus: "supported",
       operations: [operation],
       provenance: { evidence: ["UpdatersExample terminal edit"], origin: "direct-manipulation" },
-      requestedExecution: "sequence",
-      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [operation.id] },
       transactionId: "updaters-terminal-v1-resize",
       version: 1,
     };
@@ -338,6 +341,7 @@ describe("Manim render request lowering", () => {
         program: editProgram,
         projectId: "default",
         sceneName: updatersSceneName,
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId: updatersSquareEntityId, sourceVariable: "square" }],
         sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
         sourcePath: exampleScenesSourcePath,
@@ -345,23 +349,26 @@ describe("Manim render request lowering", () => {
       },
     });
 
-    expect(result.lowered.preflight?.kind).toBe("fast-manim-updaters-terminal-v1");
+    expect(result.lowered.preflight).toMatchObject({
+      baseBinding: { name: "square" },
+      entityId: updatersSquareEntityId,
+      expectedScaleFactor: 1.5,
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 5,
+    });
     expect(result.lowered.source).toContain(
-      "            run_time=5,\n        )\n        square.scale(1.5)\n        decimal.update(0)\n        self.wait()",
+      "            run_time=5,\n        )\n        square.scale(1.5)\n        self.wait()",
     );
   });
 
-  it("routes the exact OpeningManim terminal position through its server-owned V2 center", () => {
-    const targetWorld = {
-      x: FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2.x + 1.25,
-      y: FAST_MANIM_RUNTIME_TRACE_GRID_TITLE_TERMINAL_CENTER_V2.y - 0.5,
-    };
+  it("routes a former Opening profile move through its generic terminal wait boundary", () => {
+    const targetWorld = { x: 1.25, y: -0.5 };
     const viewport = { height: 360, width: 640 } as const;
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId: openingGridTitleEntityId,
       id: "opening-terminal-position",
-      interval: { end: 14, start: 14 },
+      interval: { end: 13, start: 13 },
       key: "position",
       kind: "SetProperty",
       provenance: { evidence: ["verified OpeningManim terminal root"], origin: "direct-manipulation" },
@@ -372,10 +379,10 @@ describe("Manim render request lowering", () => {
     };
     const editProgram: CanonicalEditProgram = {
       anchor: {
-        capturedPlayhead: 14,
-        evidence: ["verified final Transform play-end"],
-        resolvedSeconds: 14,
-        source: { kind: "playhead", referenceSeconds: 14 },
+        capturedPlayhead: 13,
+        evidence: ["verified final static wait start"],
+        resolvedSeconds: 13,
+        source: { kind: "playhead", referenceSeconds: 13 },
       },
       intentCount: 1,
       loweringStatus: "supported",
@@ -397,6 +404,7 @@ describe("Manim render request lowering", () => {
         program: editProgram,
         projectId: "default",
         sceneName: openingSceneName,
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId: openingGridTitleEntityId, sourceVariable: "grid_title" }],
         sourceHash: createHash("sha256").update(exampleScenesSource).digest("hex"),
         sourcePath: exampleScenesSourcePath,
@@ -404,12 +412,19 @@ describe("Manim render request lowering", () => {
       },
     });
 
-    expect(result.lowered.preflight).toEqual({
-      baseSourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-      kind: "fast-manim-opening-terminal-v2",
+    expect(result.lowered.preflight).toMatchObject({
+      baseBinding: { name: "grid_title" },
+      entityId: openingGridTitleEntityId,
+      expectedWorldCenter: targetWorld,
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 13,
     });
-    expect(result.lowered.insertedCode).toBe("        grid_title.shift((1.25, -0.5, 0))");
-    expect(result.lowered.source.match(/grid_title\.shift\(/gu)).toHaveLength(1);
+    expect(result.lowered.insertedCode).toBe("        grid_title.move_to((1.25, -0.5, 0))");
+    expect(result.lowered.source).toContain(
+      "        self.play(Transform(grid_title, grid_transform_title))\n" +
+        "        grid_title.move_to((1.25, -0.5, 0))\n" +
+        "        self.wait()",
+    );
   });
 
   it("evaluates an out-of-order batch in source-anchor order without mutating the input", () => {
@@ -504,6 +519,20 @@ describe("Manim render request lowering", () => {
     expect(() => lower(renderRequest)).toThrow(
       expect.objectContaining({
         message: expect.stringMatching(/No # poietra:anchor 6\.000 .*marker exists/),
+        status: 400,
+      }),
+    );
+  });
+
+  it("fails closed when an untrusted Runtime Trace validation request names an unsupported edit", () => {
+    const renderRequest: ProgramRenderRequest = {
+      ...request(motionProgram(7, "unsupported-runtime-trace-validation")),
+      sourceValidation: "runtime-trace",
+    };
+
+    expect(() => lower(renderRequest)).toThrow(
+      expect.objectContaining({
+        message: "The requested Runtime Trace validation does not support this edit.",
         status: 400,
       }),
     );

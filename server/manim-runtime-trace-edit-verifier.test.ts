@@ -20,87 +20,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     await expect(verifier.verify(unsupported, renderRequest)).rejects.toMatchObject({ status: 409 });
   });
 
-  it("delegates UpdatersExample terminal edits to exact Runtime Trace execution", async () => {
-    const fixtureRequest = request();
-    const candidateSource = "from manim import *\nclass UpdatersExample(Scene):\n    pass\n";
-    const lowered = {
-      anchorLine: 129,
-      anchorLines: [129],
-      insertedCode: "        square.move_to((2, 1, 0))",
-      preflight: {
-        baseSourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-        kind: "fast-manim-updaters-terminal-v1" as const,
-      },
-      source: candidateSource,
-    } satisfies LoweredProgramBatchSource;
-    const renderRequest = {
-      ...fixtureRequest,
-      sceneName: "UpdatersExample",
-      sourceHash: lowered.preflight.baseSourceHash,
-      sourcePath: "example_scenes/basic.py",
-    };
-    const runRuntimeTraceCandidateUnpublished = vi.fn().mockResolvedValue({
-      sourceHash: sourceHash(candidateSource),
-      status: "verified",
-      traceDigest: "a".repeat(64),
-    });
-    const verifier = new ManimRuntimeTraceEditVerifier({
-      runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
-    });
-
-    await expect(verifier.verify(lowered, renderRequest)).resolves.toBeUndefined();
-    expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
-      candidateSource,
-      expect.objectContaining({
-        projectId: renderRequest.projectId,
-        sceneName: "UpdatersExample",
-        sourcePath: "example_scenes/basic.py",
-      }),
-      undefined,
-    );
-  });
-
-  it("delegates OpeningManim terminal position edits to exact Runtime Trace V2 execution", async () => {
-    const fixtureRequest = request();
-    const candidateSource = "from manim import *\nclass OpeningManim(Scene):\n    pass\n";
-    const lowered = {
-      anchorLine: 68,
-      anchorLines: [68],
-      insertedCode: "        grid_title.shift((1.25, -0.5, 0))",
-      preflight: {
-        baseSourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-        kind: "fast-manim-opening-terminal-v2" as const,
-      },
-      source: candidateSource,
-    } satisfies LoweredProgramBatchSource;
-    const renderRequest = {
-      ...fixtureRequest,
-      sceneName: "OpeningManim",
-      sourceHash: lowered.preflight.baseSourceHash,
-      sourcePath: "example_scenes/basic.py",
-    };
-    const runRuntimeTraceCandidateUnpublished = vi.fn().mockResolvedValue({
-      sourceHash: sourceHash(candidateSource),
-      status: "verified",
-      traceDigest: "b".repeat(64),
-    });
-    const verifier = new ManimRuntimeTraceEditVerifier({
-      runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
-    });
-
-    await expect(verifier.verify(lowered, renderRequest)).resolves.toBeUndefined();
-    expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
-      candidateSource,
-      expect.objectContaining({
-        projectId: renderRequest.projectId,
-        sceneName: "OpeningManim",
-        sourcePath: "example_scenes/basic.py",
-      }),
-      undefined,
-    );
-  });
-
-  it("delegates one source-bound generic initial move with its server-derived target evidence", async () => {
+  it("delegates one source-bound generic move edit with its server-derived target evidence", async () => {
     const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
@@ -119,7 +39,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
         baseSourceHash,
         entityId,
         expectedWorldCenter: { x: 1.25, y: -0.5 },
-        kind: "runtime-trace-initial-move" as const,
+        kind: "runtime-trace-move-edit" as const,
+        sourceAnchor: 0,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -143,7 +64,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        initialMove: lowered.preflight,
+        moveEdit: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -152,7 +73,55 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     );
   });
 
-  it("delegates one source-bound generic initial resize with its server-derived factor evidence", async () => {
+  it("forwards a nonzero static-wait source anchor to the generic candidate runner", async () => {
+    const fixtureRequest = request();
+    const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
+    const entityId = "source:scenes/static_square.py#StaticSquare:square";
+    const baseSourceHash = "c".repeat(64);
+    const lowered = {
+      anchorLine: 9,
+      anchorLines: [9],
+      insertedCode: "        square.move_to((1.25, -0.5, 0))",
+      preflight: {
+        baseBinding: {
+          id: `source-binding:${"d".repeat(64)}`,
+          name: "square",
+          ordinal: 1,
+          span: { endColumn: 14, endLine: 5, startColumn: 8, startLine: 5 },
+        },
+        baseSourceHash,
+        entityId,
+        expectedWorldCenter: { x: 1.25, y: -0.5 },
+        kind: "runtime-trace-move-edit" as const,
+        sourceAnchor: 5,
+      },
+      source: candidateSource,
+    } satisfies LoweredProgramBatchSource;
+    const renderRequest = {
+      ...fixtureRequest,
+      sceneName: "StaticSquare",
+      sourceBindings: [{ entityId, sourceVariable: "square" }],
+      sourceHash: baseSourceHash,
+      sourcePath: "scenes/static_square.py",
+    };
+    const runRuntimeTraceCandidateUnpublished = vi.fn().mockResolvedValue({
+      sourceHash: sourceHash(candidateSource),
+      status: "verified",
+      traceDigest: "e".repeat(64),
+    });
+    const verifier = new ManimRuntimeTraceEditVerifier({
+      runtimeTraceRunner: { runRuntimeTraceCandidateUnpublished },
+    });
+
+    await expect(verifier.verify(lowered, renderRequest)).resolves.toBeUndefined();
+    expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
+      candidateSource,
+      expect.objectContaining({ moveEdit: lowered.preflight }),
+      undefined,
+    );
+  });
+
+  it("delegates one source-bound generic resize edit with its server-derived factor evidence", async () => {
     const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
@@ -171,7 +140,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
         baseSourceHash,
         entityId,
         expectedScaleFactor: 1.5,
-        kind: "runtime-trace-initial-resize" as const,
+        kind: "runtime-trace-resize-edit" as const,
+        sourceAnchor: 0,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -195,7 +165,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        initialResize: lowered.preflight,
+        resizeEdit: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -204,7 +174,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     );
   });
 
-  it("delegates one source-bound generic initial opacity with its server-derived value", async () => {
+  it("delegates one source-bound generic opacity edit with its server-derived value", async () => {
     const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
@@ -223,7 +193,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
         baseSourceHash,
         entityId,
         expectedOpacity: 0.35,
-        kind: "runtime-trace-initial-opacity" as const,
+        kind: "runtime-trace-opacity-edit" as const,
+        sourceAnchor: 0,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -247,7 +218,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        initialOpacity: lowered.preflight,
+        opacityEdit: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -256,7 +227,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     );
   });
 
-  it("delegates one source-bound generic initial rotation with its server-derived angle evidence", async () => {
+  it("delegates one source-bound generic rotation edit with its server-derived angle evidence", async () => {
     const fixtureRequest = request();
     const candidateSource = "from manim import *\nclass StaticSquare(Scene):\n    pass\n";
     const entityId = "source:scenes/static_square.py#StaticSquare:square";
@@ -275,7 +246,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
         baseSourceHash,
         entityId,
         expectedAngleRadians: 0.5,
-        kind: "runtime-trace-initial-rotation" as const,
+        kind: "runtime-trace-rotation-edit" as const,
+        sourceAnchor: 0,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -299,7 +271,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).toHaveBeenCalledWith(
       candidateSource,
       expect.objectContaining({
-        initialRotation: lowered.preflight,
+        rotationEdit: lowered.preflight,
         projectId: renderRequest.projectId,
         sceneName: "StaticSquare",
         sourcePath: "scenes/static_square.py",
@@ -308,7 +280,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     );
   });
 
-  it("rejects a generic initial resize whose factor is not a positive non-identity number", async () => {
+  it("rejects a generic resize edit whose factor is not a positive non-identity number", async () => {
     const candidateSource = "candidate";
     const entityId = "source:scene.py#StaticSquare:square";
     const runRuntimeTraceCandidateUnpublished = vi.fn();
@@ -330,7 +302,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
           baseSourceHash: "c".repeat(64),
           entityId,
           expectedScaleFactor,
-          kind: "runtime-trace-initial-resize" as const,
+          kind: "runtime-trace-resize-edit" as const,
+          sourceAnchor: 0,
         },
         source: candidateSource,
       } satisfies LoweredProgramBatchSource;
@@ -346,7 +319,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).not.toHaveBeenCalled();
   });
 
-  it("rejects a generic initial opacity outside the closed unit interval", async () => {
+  it("rejects a generic opacity edit outside the closed unit interval", async () => {
     const entityId = "source:scene.py#StaticSquare:square";
     const runRuntimeTraceCandidateUnpublished = vi.fn();
     const verifier = new ManimRuntimeTraceEditVerifier({
@@ -367,7 +340,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
           baseSourceHash: "c".repeat(64),
           entityId,
           expectedOpacity,
-          kind: "runtime-trace-initial-opacity" as const,
+          kind: "runtime-trace-opacity-edit" as const,
+          sourceAnchor: 0,
         },
         source: "candidate",
       } satisfies LoweredProgramBatchSource;
@@ -384,7 +358,7 @@ describe("ManimRuntimeTraceEditVerifier", () => {
     expect(runRuntimeTraceCandidateUnpublished).not.toHaveBeenCalled();
   });
 
-  it("rejects a generic initial move whose request binding does not match its server preflight", async () => {
+  it("rejects a generic move edit whose request binding does not match its server preflight", async () => {
     const candidateSource = "candidate";
     const entityId = "source:scene.py#StaticSquare:square";
     const lowered = {
@@ -401,7 +375,8 @@ describe("ManimRuntimeTraceEditVerifier", () => {
         baseSourceHash: "b".repeat(64),
         entityId,
         expectedWorldCenter: { x: 1, y: 1 },
-        kind: "runtime-trace-initial-move" as const,
+        kind: "runtime-trace-move-edit" as const,
+        sourceAnchor: 0,
       },
       source: candidateSource,
     } satisfies LoweredProgramBatchSource;
@@ -418,22 +393,5 @@ describe("ManimRuntimeTraceEditVerifier", () => {
       }),
     ).rejects.toMatchObject({ status: 409 });
     expect(runRuntimeTraceCandidateUnpublished).not.toHaveBeenCalled();
-  });
-
-  it("fails UpdatersExample edits closed without Runtime Trace authority", async () => {
-    const renderRequest = request();
-    const lowered = {
-      anchorLine: 129,
-      anchorLines: [129],
-      insertedCode: "        square.scale(1.5)",
-      preflight: {
-        baseSourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
-        kind: "fast-manim-updaters-terminal-v1" as const,
-      },
-      source: "candidate",
-    } satisfies LoweredProgramBatchSource;
-    const verifier = new ManimRuntimeTraceEditVerifier({});
-
-    await expect(verifier.verify(lowered, renderRequest)).rejects.toMatchObject({ status: 409 });
   });
 });

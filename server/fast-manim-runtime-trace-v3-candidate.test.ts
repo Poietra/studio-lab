@@ -5,11 +5,11 @@ import { studioSourceAnalysisProviderV1 } from "../src/render-pipeline/source-an
 import { fastManimSourceBindingIdentifierV1 } from "../src/render-pipeline/source-runtime-identity-digest";
 import { fastManimRuntimeTraceSceneIdV1 } from "./fast-manim-runtime-trace-contract";
 import {
-  type FastManimRuntimeTraceInitialEditCandidateErrorV3,
-  verifyFastManimRuntimeTraceInitialMoveCandidateV3,
-  verifyFastManimRuntimeTraceInitialOpacityCandidateV3,
-  verifyFastManimRuntimeTraceInitialResizeCandidateV3,
-  verifyFastManimRuntimeTraceInitialRotationCandidateV3,
+  type FastManimRuntimeTraceEditCandidateErrorV3,
+  verifyFastManimRuntimeTraceMoveEditCandidateV3,
+  verifyFastManimRuntimeTraceOpacityEditCandidateV3,
+  verifyFastManimRuntimeTraceResizeEditCandidateV3,
+  verifyFastManimRuntimeTraceRotationEditCandidateV3,
 } from "./fast-manim-runtime-trace-v3-candidate";
 import {
   createFastManimRuntimeTraceProducerRequestV3,
@@ -89,7 +89,46 @@ function fixture() {
     candidate,
     candidateRequest,
     expectedWorldCenter: TARGET,
+    sourceAnchor: 0,
   };
+}
+
+function settledMoveFixture() {
+  const input = fixture();
+  const sampleTime = (frameIndex: number) => Number((frameIndex / 60).toFixed(13));
+  const sourceAnchor = sampleTime(2);
+  for (const trace of [input.base, input.candidate]) {
+    trace.sampleSchedule = { ...trace.sampleSchedule, durationSeconds: sampleTime(3), frameCount: 3 };
+    trace.roots[0]!.lifetimes = [{ endFrame: 3, startFrame: 1 }];
+    trace.draws[0]!.lifetimes = [{ endFrame: 3, startFrame: 1 }];
+  }
+  const baseState = structuredClone(input.base.frames[0]!.states[0]!);
+  input.base.frames = [
+    { frameIndex: 0, sampleTime: sampleTime(0), states: [] },
+    { frameIndex: 1, sampleTime: sampleTime(1), states: [structuredClone(baseState)] },
+    { frameIndex: 2, sampleTime: sourceAnchor, states: [structuredClone(baseState)] },
+  ];
+  input.candidate.frames = structuredClone(input.base.frames);
+  input.candidate.frames[2]!.states[0]!.transform.tx += TARGET.x;
+  input.candidate.frames[2]!.states[0]!.transform.ty += TARGET.y;
+  const baseEndpoints = input.base.sourceBindings[0]!.endpoints;
+  baseEndpoints.initial = {
+    ...baseEndpoints.initial,
+    frameIndex: 1,
+    sampleTime: sampleTime(1),
+  };
+  baseEndpoints.terminal = {
+    ...baseEndpoints.terminal,
+    frameIndex: 2,
+    sampleTime: sourceAnchor,
+  };
+  input.candidate.sourceBindings[0]!.endpoints.initial = structuredClone(baseEndpoints.initial);
+  input.candidate.sourceBindings[0]!.endpoints.terminal = {
+    ...structuredClone(baseEndpoints.terminal),
+    center: { ...TARGET },
+  };
+  input.sourceAnchor = sourceAnchor;
+  return input;
 }
 
 function withSiblingRoot(input: Readonly<{ base: TraceDocument; candidate: TraceDocument }>) {
@@ -138,23 +177,35 @@ function withSiblingRoot(input: Readonly<{ base: TraceDocument; candidate: Trace
 
 function rejectCode(
   mutate: (input: ReturnType<typeof fixture>) => void,
-  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+  code: FastManimRuntimeTraceEditCandidateErrorV3["code"],
 ) {
   const input = fixture();
   mutate(input);
-  expect(() => verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toThrowError(
-    expect.objectContaining({ code }),
-  );
+  expect(() => verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toThrowError(expect.objectContaining({ code }));
 }
 
-describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
+describe("verifyFastManimRuntimeTraceMoveEditCandidateV3", () => {
   it("accepts one exact full-trace translation and returns only the verified candidate document", () => {
     const input = fixture();
 
-    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.base.roots).toEqual(input.candidate.roots);
     expect(input.base.resources).toEqual(input.candidate.resources);
     expect(input.base.draws).toEqual(input.candidate.draws);
+  });
+
+  it("accepts a suffix-only translation for a root with a later lifetime and protects the prefix", () => {
+    const input = settledMoveFixture();
+
+    expect(verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.frames[1]).toEqual(input.base.frames[1]);
+    expect(input.candidate.frames[2]).not.toEqual(input.base.frames[2]);
+
+    const drifted = settledMoveFixture();
+    drifted.candidate.frames[1]!.states[0]!.transform.tx += 0.1;
+    expect(() => verifyFastManimRuntimeTraceMoveEditCandidateV3(drifted)).toThrowError(
+      expect.objectContaining({ code: "candidate-semantic" }),
+    );
   });
 
   it("rejects stale SourceAnalysis binding evidence and changed runtime roots", () => {
@@ -194,7 +245,7 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
     entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
     entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.5 + TARGET.x, y: 0.25 + TARGET.y };
 
-    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(entrance)).toEqual(entrance.candidate);
+    expect(verifyFastManimRuntimeTraceMoveEditCandidateV3(entrance)).toEqual(entrance.candidate);
 
     // The old initial-center anchoring is a wrong accept here: a candidate
     // landing its transient frame-zero center on the target while the settled
@@ -210,7 +261,7 @@ describe("verifyFastManimRuntimeTraceInitialMoveCandidateV3", () => {
     const input = fixture();
     withSiblingRoot(input);
 
-    expect(verifyFastManimRuntimeTraceInitialMoveCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceMoveEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.candidate.roots).toHaveLength(2);
     expect(input.candidate.sourceBindings).toHaveLength(2);
   });
@@ -311,29 +362,85 @@ function resizeFixture() {
     candidate,
     candidateRequest,
     expectedScaleFactor: RESIZE_FACTOR,
+    sourceAnchor: 0,
   };
+}
+
+function settledResizeFixture() {
+  const input = resizeFixture();
+  const sampleTime = (frameIndex: number) => Number((frameIndex / 60).toFixed(13));
+  const sourceAnchor = sampleTime(2);
+  for (const trace of [input.base, input.candidate]) {
+    trace.sampleSchedule = { ...trace.sampleSchedule, durationSeconds: sampleTime(3), frameCount: 3 };
+    trace.roots[0]!.lifetimes = [{ endFrame: 3, startFrame: 1 }];
+    trace.draws[0]!.lifetimes = [{ endFrame: 3, startFrame: 1 }];
+  }
+  const baseState = structuredClone(input.base.frames[0]!.states[0]!);
+  input.base.frames = [
+    { frameIndex: 0, sampleTime: sampleTime(0), states: [] },
+    { frameIndex: 1, sampleTime: sampleTime(1), states: [structuredClone(baseState)] },
+    { frameIndex: 2, sampleTime: sourceAnchor, states: [structuredClone(baseState)] },
+  ];
+  input.candidate.frames = structuredClone(input.base.frames);
+  input.candidate.frames[2]!.states[0]!.pathId = SCALED_PATH_ID;
+  const scaledPath = structuredClone(input.candidate.resources.paths[0]!);
+  input.candidate.resources.paths = [structuredClone(input.base.resources.paths[0]!), scaledPath];
+  const baseEndpoints = input.base.sourceBindings[0]!.endpoints;
+  baseEndpoints.initial = {
+    ...baseEndpoints.initial,
+    frameIndex: 1,
+    sampleTime: sampleTime(1),
+  };
+  baseEndpoints.terminal = {
+    ...baseEndpoints.terminal,
+    frameIndex: 2,
+    sampleTime: sourceAnchor,
+  };
+  input.candidate.sourceBindings[0]!.endpoints.initial = structuredClone(baseEndpoints.initial);
+  input.candidate.sourceBindings[0]!.endpoints.terminal = {
+    ...structuredClone(baseEndpoints.terminal),
+    dimensions: {
+      height: Number((baseEndpoints.terminal.dimensions.height * RESIZE_FACTOR).toFixed(13)),
+      width: Number((baseEndpoints.terminal.dimensions.width * RESIZE_FACTOR).toFixed(13)),
+    },
+  };
+  input.sourceAnchor = sourceAnchor;
+  return input;
 }
 
 function rejectResizeCode(
   mutate: (input: ResizeFixture) => void,
-  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+  code: FastManimRuntimeTraceEditCandidateErrorV3["code"],
 ) {
   const input = resizeFixture();
   mutate(input);
-  expect(() => verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toThrowError(
-    expect.objectContaining({ code }),
-  );
+  expect(() => verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toThrowError(expect.objectContaining({ code }));
 }
 
-describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
+describe("verifyFastManimRuntimeTraceResizeEditCandidateV3", () => {
   it("accepts one exact center-preserving path scaling and returns only the verified candidate document", () => {
     const input = resizeFixture();
 
-    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.base.roots).toEqual(input.candidate.roots);
     expect(input.base.draws).toEqual(input.candidate.draws);
     expect(input.base.resources.appearances).toEqual(input.candidate.resources.appearances);
     expect(input.base.resources.paths).not.toEqual(input.candidate.resources.paths);
+  });
+
+  it("accepts suffix-only scaling while retaining the original path for a later-lifetime prefix", () => {
+    const input = settledResizeFixture();
+
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toEqual(input.candidate);
+    expect(input.candidate.frames[1]).toEqual(input.base.frames[1]);
+    expect(input.candidate.frames[2]).not.toEqual(input.base.frames[2]);
+    expect(input.candidate.resources.paths.map(({ id }) => id)).toContain(input.base.resources.paths[0]!.id);
+
+    const drifted = settledResizeFixture();
+    drifted.candidate.frames[1]!.states[0]!.pathId = SCALED_PATH_ID;
+    expect(() => verifyFastManimRuntimeTraceResizeEditCandidateV3(drifted)).toThrowError(
+      expect.objectContaining({ code: "candidate-semantic" }),
+    );
   });
 
   it("rejects endpoint drift, moved placement, and unscaled or foreign path resources", () => {
@@ -389,7 +496,7 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
     entrance.base.sourceBindings[0]!.endpoints.initial.center = { x: -0.5, y: 0.25 };
     entrance.candidate.sourceBindings[0]!.endpoints.initial.center = { x: -0.75, y: 0.375 };
 
-    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(entrance)).toEqual(entrance.candidate);
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(entrance)).toEqual(entrance.candidate);
 
     // A candidate preserving the transient frame-zero center (the old
     // initial-center anchoring) is a wrong accept and must reject.
@@ -404,7 +511,7 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
     withSiblingRoot(input);
     input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
 
-    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.candidate.resources.paths.map(({ id }) => id).sort()).toEqual(
       [input.base.resources.paths[0]!.id, SCALED_PATH_ID].sort(),
     );
@@ -461,7 +568,7 @@ describe("verifyFastManimRuntimeTraceInitialResizeCandidateV3", () => {
 
     const conjugated = resizeFixture();
     offCenter(conjugated, { x: 1.5, y: 0.375 });
-    expect(verifyFastManimRuntimeTraceInitialResizeCandidateV3(conjugated)).toEqual(conjugated.candidate);
+    expect(verifyFastManimRuntimeTraceResizeEditCandidateV3(conjugated)).toEqual(conjugated.candidate);
 
     rejectResizeCode((input) => offCenter(input, { x: 1, y: 0.25 }), "candidate-semantic");
     rejectResizeCode((input) => offCenter(input, { x: 2, y: 0.5 }), "candidate-semantic");
@@ -525,6 +632,7 @@ function rotationFixture() {
     candidate,
     candidateRequest,
     expectedAngleRadians: ROTATION_ANGLE_RADIANS,
+    sourceAnchor: 0,
   };
 }
 
@@ -595,20 +703,20 @@ type RotationFixture = ReturnType<typeof rotationFixture>;
 
 function rejectRotationCode(
   mutate: (input: RotationFixture) => void,
-  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+  code: FastManimRuntimeTraceEditCandidateErrorV3["code"],
 ) {
   const input = rotationFixture();
   mutate(input);
-  expect(() => verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toThrowError(
+  expect(() => verifyFastManimRuntimeTraceRotationEditCandidateV3(input)).toThrowError(
     expect.objectContaining({ code }),
   );
 }
 
-describe("verifyFastManimRuntimeTraceInitialRotationCandidateV3", () => {
+describe("verifyFastManimRuntimeTraceRotationEditCandidateV3", () => {
   it("accepts one exact center-preserving path rotation", () => {
     const input = rotationFixture();
 
-    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceRotationEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.base.resources.paths).not.toEqual(input.candidate.resources.paths);
     expect(input.base.resources.appearances).toEqual(input.candidate.resources.appearances);
   });
@@ -617,7 +725,7 @@ describe("verifyFastManimRuntimeTraceInitialRotationCandidateV3", () => {
     const input = asymmetricRotationFixture();
 
     expect(input.candidate.sourceBindings[0]!.endpoints.initial.center).not.toEqual({ x: 0, y: 0 });
-    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceRotationEditCandidateV3(input)).toEqual(input.candidate);
   });
 
   it("rejects a selected path or draw anchor that does not match the requested rotation", () => {
@@ -635,7 +743,7 @@ describe("verifyFastManimRuntimeTraceInitialRotationCandidateV3", () => {
     withSiblingRoot(input);
     input.candidate.resources.paths.push(structuredClone(input.base.resources.paths[0]!));
 
-    expect(verifyFastManimRuntimeTraceInitialRotationCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceRotationEditCandidateV3(input)).toEqual(input.candidate);
 
     rejectRotationCode((changed) => {
       withSiblingRoot(changed);
@@ -681,25 +789,26 @@ function opacityFixture() {
     candidate,
     candidateRequest,
     expectedOpacity: OPACITY,
+    sourceAnchor: 0,
   };
 }
 
 function rejectOpacityCode(
   mutate: (input: OpacityFixture) => void,
-  code: FastManimRuntimeTraceInitialEditCandidateErrorV3["code"],
+  code: FastManimRuntimeTraceEditCandidateErrorV3["code"],
 ) {
   const input = opacityFixture();
   mutate(input);
-  expect(() => verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toThrowError(
+  expect(() => verifyFastManimRuntimeTraceOpacityEditCandidateV3(input)).toThrowError(
     expect.objectContaining({ code }),
   );
 }
 
-describe("verifyFastManimRuntimeTraceInitialOpacityCandidateV3", () => {
+describe("verifyFastManimRuntimeTraceOpacityEditCandidateV3", () => {
   it("accepts an exact selected-subtree fill/stroke alpha replacement", () => {
     const input = opacityFixture();
 
-    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceOpacityEditCandidateV3(input)).toEqual(input.candidate);
     expect(input.candidate.sourceBindings[0]!.endpoints).toEqual(input.base.sourceBindings[0]!.endpoints);
     expect(input.candidate.resources.paths).toEqual(input.base.resources.paths);
     expect(input.candidate.draws).toEqual(input.base.draws);
@@ -729,7 +838,7 @@ describe("verifyFastManimRuntimeTraceInitialOpacityCandidateV3", () => {
     input.base.frames[0]!.states.push(baseState);
     input.candidate.frames[0]!.states.push(candidateState);
 
-    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceOpacityEditCandidateV3(input)).toEqual(input.candidate);
   });
 
   it("rejects values outside zero-to-one and a source-level no-op", () => {
@@ -810,7 +919,7 @@ describe("verifyFastManimRuntimeTraceInitialOpacityCandidateV3", () => {
     withSiblingRoot(input);
     input.candidate.resources.appearances.push(structuredClone(input.base.resources.appearances[0]!));
 
-    expect(verifyFastManimRuntimeTraceInitialOpacityCandidateV3(input)).toEqual(input.candidate);
+    expect(verifyFastManimRuntimeTraceOpacityEditCandidateV3(input)).toEqual(input.candidate);
 
     rejectOpacityCode((changed) => {
       withSiblingRoot(changed);

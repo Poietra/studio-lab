@@ -164,7 +164,7 @@ class GroupedEquation(Scene):
     await expect(readFile(join(projectRoot, "scene.py"), "utf8")).resolves.toBe(exported.source);
   });
 
-  it("fails generic initial-move source export closed without Runtime Trace authority", async () => {
+  it("fails generic move-edit source export closed without Runtime Trace authority", async () => {
     const { manager, projectRoot } = await fixture();
     const staticSquareSource = `from manim import *
 
@@ -212,6 +212,7 @@ class StaticSquare(Scene):
         program,
         projectId: "default",
         sceneName: "StaticSquare",
+        sourceValidation: "runtime-trace",
         sourceBindings: [{ entityId, sourceVariable: "square" }],
         sourceHash: createHash("sha256").update(staticSquareSource).digest("hex"),
         sourcePath: "scene.py",

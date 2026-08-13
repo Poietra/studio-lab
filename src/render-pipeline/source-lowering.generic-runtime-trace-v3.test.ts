@@ -6,12 +6,12 @@ import type { CanonicalEditOperation, CanonicalEditProgram } from "../studio/ope
 import type { ProgramRenderRequest } from "./contracts";
 import { importManimScene } from "./source-import";
 import {
-  deriveRuntimeTraceInitialMoveSourceEditPlan,
-  deriveRuntimeTraceInitialOpacitySourceEditPlan,
-  deriveRuntimeTraceInitialResizeSourceEditPlan,
-  deriveRuntimeTraceInitialRotationSourceEditPlan,
+  deriveRuntimeTraceMoveSourceEditPlan,
+  deriveRuntimeTraceOpacitySourceEditPlan,
+  deriveRuntimeTraceResizeSourceEditPlan,
+  deriveRuntimeTraceRotationSourceEditPlan,
   lowerCanonicalProgramBatchSource,
-  lowerRuntimeTraceInitialEditSource,
+  lowerRuntimeTraceEditSource,
 } from "./source-lowering";
 
 const sourcePath = "scene_runtime_trace_v3.py";
@@ -23,99 +23,99 @@ const source = readFileSync(
   "utf8",
 );
 
-function initialMoveProgram(value = { x: 410, y: 135 }): CanonicalEditProgram {
+function moveEditProgram(value = { x: 410, y: 135 }, sourceAnchor = 0): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     entityId,
-    id: "runtime-trace-initial-position",
-    interval: { end: 0, start: 0 },
+    id: "runtime-trace-position-edit",
+    interval: { end: sourceAnchor, start: sourceAnchor },
     key: "position",
     kind: "SetProperty",
-    provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+    provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
     value,
   };
   return {
     anchor: {
-      capturedPlayhead: 0,
-      evidence: ["source-time zero"],
-      resolvedSeconds: 0,
-      source: { kind: "absolute", seconds: 0 },
+      capturedPlayhead: sourceAnchor,
+      evidence: [`source-time ${sourceAnchor}`],
+      resolvedSeconds: sourceAnchor,
+      source: { kind: "absolute", seconds: sourceAnchor },
     },
     intentCount: 1,
     loweringStatus: "supported",
     operations: [operation],
-    provenance: { evidence: ["Runtime Trace initial edit"], origin: "direct-manipulation" },
+    provenance: { evidence: ["Runtime Trace edit"], origin: "direct-manipulation" },
     requestedExecution: "parallel",
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
-    transactionId: "runtime-trace-initial-move",
+    transactionId: "runtime-trace-move-edit",
     version: 1,
   };
 }
 
-function initialResizeProgram(relativeFactor = 1.5, from = 1): CanonicalEditProgram {
+function resizeEditProgram(relativeFactor = 1.5, from = 1, sourceAnchor = 0): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     easing: "smooth",
     entityId,
     from,
-    id: "runtime-trace-initial-scale",
-    interval: { end: 0, start: 0 },
+    id: "runtime-trace-scale-edit",
+    interval: { end: sourceAnchor, start: sourceAnchor },
     key: "scale",
     kind: "AnimateProperty",
-    provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+    provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
     relativeFactor,
     to: from * relativeFactor,
   };
   return {
-    ...initialMoveProgram(),
+    ...moveEditProgram(undefined, sourceAnchor),
     operations: [operation],
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
-    transactionId: "runtime-trace-initial-resize",
+    transactionId: "runtime-trace-resize-edit",
   };
 }
 
-function initialRotationProgram(angleRadians = 0.5): CanonicalEditProgram {
+function rotationEditProgram(angleRadians = 0.5, sourceAnchor = 0): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     easing: "smooth",
     entityId,
     from: 0,
-    id: "runtime-trace-initial-rotation",
-    interval: { end: 0, start: 0 },
+    id: "runtime-trace-rotation-edit",
+    interval: { end: sourceAnchor, start: sourceAnchor },
     key: "rotation",
     kind: "AnimateProperty",
-    provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+    provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
     relativeDelta: angleRadians,
     to: angleRadians,
   };
   return {
-    ...initialMoveProgram(),
+    ...moveEditProgram(undefined, sourceAnchor),
     operations: [operation],
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
-    transactionId: "runtime-trace-initial-rotation",
+    transactionId: "runtime-trace-rotation-edit",
   };
 }
 
-function initialOpacityProgram(opacity: number | string = 0.25): CanonicalEditProgram {
+function opacityEditProgram(opacity: number | string = 0.25, sourceAnchor = 0): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     entityId,
-    id: "runtime-trace-initial-opacity",
-    interval: { end: 0, start: 0 },
+    id: "runtime-trace-opacity-edit",
+    interval: { end: sourceAnchor, start: sourceAnchor },
     key: "appearance",
     kind: "SetProperty",
-    provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+    provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
     value: opacity,
   };
   return {
-    ...initialMoveProgram(),
+    ...moveEditProgram(undefined, sourceAnchor),
     operations: [operation],
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
-    transactionId: "runtime-trace-initial-opacity",
+    transactionId: "runtime-trace-opacity-edit",
   };
 }
 
-function request(sourceText = source, program = initialMoveProgram()): ProgramRenderRequest {
+function request(sourceText = source, program = moveEditProgram()): ProgramRenderRequest {
   return {
     cameraCenter: { x: 0, y: 0 },
     destination: null,
@@ -130,16 +130,16 @@ function request(sourceText = source, program = initialMoveProgram()): ProgramRe
 }
 
 function lower(sourceText = source, renderRequest = request(sourceText)) {
-  return lowerRuntimeTraceInitialEditSource(
+  return lowerRuntimeTraceEditSource(
     sourceText,
     renderRequest,
-    [{ program: renderRequest.program, sourceAnchor: 0 }],
+    [{ program: renderRequest.program, sourceAnchor: renderRequest.program.anchor.resolvedSeconds }],
     frame,
     null,
   );
 }
 
-describe("Runtime Trace initial-edit source lowering", () => {
+describe("Runtime Trace edit source lowering", () => {
   it("keeps the demo Scene on Studio's minimum duration and frame grid", () => {
     const imported = importManimScene(source, sourcePath, sceneName, frame);
 
@@ -167,16 +167,60 @@ describe("Runtime Trace initial-edit source lowering", () => {
       baseSourceHash: request().sourceHash,
       entityId,
       expectedWorldCenter: { x: 2, y: 1 },
-      kind: "runtime-trace-initial-move",
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 0,
     });
 
-    const derived = deriveRuntimeTraceInitialMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
     );
     expect(derived.candidateBinding.id).not.toBe(derived.baseBinding.id);
     expect(derived.expectedWorldCenter).toEqual({ x: 2, y: 1 });
+  });
+
+  it("inserts and independently re-derives a move at a later static wait boundary", () => {
+    const temporalSource = source.replace("        self.wait(0.1)", "        self.wait(5)\n        self.wait(2)");
+    const renderRequest = request(temporalSource, moveEditProgram({ x: 410, y: 135 }, 5));
+    const lowered = lower(temporalSource, renderRequest);
+
+    expect(lowered?.source).toContain(
+      "        self.wait(5)\n" + "        square.move_to((2, 1, 0))\n" + "        self.wait(2)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      expectedWorldCenter: { x: 2, y: 1 },
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 5,
+    });
+
+    const derived = deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "square", 5);
+    expect(derived.baseSource).toBe(temporalSource);
+    expect(derived.sourceAnchor).toBe(5);
+  });
+
+  it("rejects a nonzero source time inside, rather than at the start of, a static wait", () => {
+    const temporalSource = source.replace("        self.wait(0.1)", "        self.wait(5)\n        self.wait(2)");
+    const renderRequest = request(temporalSource, moveEditProgram({ x: 410, y: 135 }, 5.5));
+
+    expect(() => lower(temporalSource, renderRequest)).toThrow(/start of the final statically imported/i);
+  });
+
+  it("rejects the start of a static wait that is not the terminal settled wait", () => {
+    const temporalSource = source.replace(
+      "        self.wait(0.1)",
+      "        self.wait(2)\n        self.wait(3)\n        self.wait(2)",
+    );
+    const renderRequest = request(temporalSource, moveEditProgram({ x: 410, y: 135 }, 2));
+
+    expect(() => lower(temporalSource, renderRequest)).toThrow(/final statically imported/i);
+  });
+
+  it("fails closed when a later source time is not contained by one statically imported wait", () => {
+    const dynamicWait = source.replace("        self.wait(0.1)", "        duration = 2\n        self.wait(duration)");
+    const renderRequest = request(dynamicWait, moveEditProgram({ x: 410, y: 135 }, 1));
+
+    expect(() => lower(dynamicWait, renderRequest)).toThrow(/statically imported construct-level wait/i);
   });
 
   it("selects the request-named binding among multiple projected candidates", () => {
@@ -189,14 +233,14 @@ describe("Runtime Trace initial-edit source lowering", () => {
     expect(lowered?.insertedCode).toBe("        square.move_to((2, 1, 0))");
     expect(lowered?.preflight).toMatchObject({
       baseBinding: { name: "square", ordinal: 1 },
-      kind: "runtime-trace-initial-move",
+      kind: "runtime-trace-move-edit",
     });
 
-    const derived = deriveRuntimeTraceInitialMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(multiple);
     expect(derived.expectedWorldCenter).toEqual({ x: 2, y: 1 });
     // The sibling candidate never authorizes the edit: deriving for it fails.
-    expect(() => deriveRuntimeTraceInitialMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "circle")).toThrow(
+    expect(() => deriveRuntimeTraceMoveSourceEditPlan(lowered!.source, sceneName, sourcePath, "circle")).toThrow(
       /canonical finite bounded move_to/i,
     );
   });
@@ -239,7 +283,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
       dependsOn: [],
       entityId,
       from: { dimensions: { height: 2, width: 2 }, position: { x: 320, y: 180 } },
-      id: "runtime-trace-initial-resize",
+      id: "runtime-trace-resize-edit",
       interval: { end: 0, start: 0 },
       kind: "ResizeEntity",
       provenance: { evidence: ["Runtime Trace root"], origin: "direct-manipulation" },
@@ -248,16 +292,16 @@ describe("Runtime Trace initial-edit source lowering", () => {
       to: { dimensions: { height: 3, width: 3 }, position: { x: 320, y: 180 } },
     };
     const resizeProgram: CanonicalEditProgram = {
-      ...initialMoveProgram(),
+      ...moveEditProgram(),
       operations: [resize],
       schedule: { edges: [], mode: "parallel", order: [resize.id] },
     };
     expect(() => lower(source, request(source, resizeProgram))).toThrow(/only one exact direct-manipulation/i);
 
-    const first = initialMoveProgram().operations[0]!;
+    const first = moveEditProgram().operations[0]!;
     const second = { ...first, id: "second-position", value: { x: 420, y: 145 } };
     const multiProgram: CanonicalEditProgram = {
-      ...initialMoveProgram(),
+      ...moveEditProgram(),
       intentCount: 2,
       operations: [first, second],
       schedule: { edges: [], mode: "parallel", order: [first.id, second.id] },
@@ -294,10 +338,10 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        self.add(square)\n        square.move_to((2, 1, 0))\n        square.set_stroke",
     );
 
-    expect(() => deriveRuntimeTraceInitialMoveSourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceMoveSourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
       /canonical finite bounded move_to/i,
     );
-    expect(() => deriveRuntimeTraceInitialMoveSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceMoveSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
       /candidate move/i,
     );
   });
@@ -313,18 +357,21 @@ describe("Runtime Trace initial-edit source lowering", () => {
     // the producer never receives a binding its own inventory would reject.
     expect(imported?.runtimeSceneState.duration).toBe(0.1);
     expect(() => lower(rebound, request(rebound))).toThrow(/one projected top-level source occurrence/i);
-    expect(() => deriveRuntimeTraceInitialMoveSourceEditPlan(rebound, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceMoveSourceEditPlan(rebound, sceneName, sourcePath, "square")).toThrow(
       /exactly one unambiguous top-level binding/i,
     );
   });
 
-  it("leaves an explicit source-time-zero anchor to the established general lowerer", () => {
+  it("keeps Runtime Trace validation authoritative when an explicit source anchor exists at the same time", () => {
     const anchored = source.replace(
       "        square.set_stroke(WHITE, width=2)",
       "        # poietra:anchor 0.000\n        square.set_stroke(WHITE, width=2)",
     );
 
-    expect(lower(anchored, request(anchored))).toBeNull();
+    const lowered = lower(anchored, request(anchored));
+
+    expect(lowered?.preflight).toMatchObject({ kind: "runtime-trace-move-edit", sourceAnchor: 0 });
+    expect(lowered?.source).toContain("        square.move_to((2, 1, 0))");
   });
 
   it("fails closed instead of dropping rotation when an explicit zero anchor selects the general lowerer", () => {
@@ -332,7 +379,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        square.set_stroke(WHITE, width=2)",
       "        # poietra:anchor 0.000\n        square.set_stroke(WHITE, width=2)",
     );
-    const renderRequest = request(anchored, initialRotationProgram());
+    const renderRequest = request(anchored, rotationEditProgram());
 
     expect(() =>
       lowerCanonicalProgramBatchSource(
@@ -350,7 +397,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        square.set_stroke(WHITE, width=2)",
       "        # poietra:anchor 0.000\n        square.set_stroke(WHITE, width=2)",
     );
-    const renderRequest = request(anchored, initialOpacityProgram());
+    const renderRequest = request(anchored, opacityEditProgram());
 
     expect(() =>
       lowerCanonicalProgramBatchSource(
@@ -364,7 +411,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
   });
 
   it("inserts one canonical uniform resize after the exact assignment and emits re-derivable evidence", () => {
-    const lowered = lower(source, request(source, initialResizeProgram()));
+    const lowered = lower(source, request(source, resizeEditProgram()));
 
     expect(lowered).not.toBeNull();
     expect(lowered?.insertedCode).toBe("        square.scale(1.5)");
@@ -383,10 +430,11 @@ describe("Runtime Trace initial-edit source lowering", () => {
       baseSourceHash: request().sourceHash,
       entityId,
       expectedScaleFactor: 1.5,
-      kind: "runtime-trace-initial-resize",
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 0,
     });
 
-    const derived = deriveRuntimeTraceInitialResizeSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceResizeSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
@@ -395,27 +443,44 @@ describe("Runtime Trace initial-edit source lowering", () => {
     expect(derived.expectedScaleFactor).toBe(1.5);
   });
 
+  it("inserts and independently re-derives a resize before a later static wait boundary", () => {
+    const temporalSource = source.replace("        self.wait(0.1)", "        self.wait(5)\n        self.wait(2)");
+    const renderRequest = request(temporalSource, resizeEditProgram(1.5, 1, 5));
+    const lowered = lower(temporalSource, renderRequest);
+
+    expect(lowered?.source).toContain(
+      "        self.wait(5)\n" + "        square.scale(1.5)\n" + "        self.wait(2)",
+    );
+    expect(lowered?.preflight).toMatchObject({
+      expectedScaleFactor: 1.5,
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 5,
+    });
+
+    const derived = deriveRuntimeTraceResizeSourceEditPlan(lowered!.source, sceneName, sourcePath, "square", 5);
+    expect(derived.baseSource).toBe(temporalSource);
+    expect(derived.sourceAnchor).toBe(5);
+  });
+
   it("lowers the relative factor for shrink edits and non-unit execution scales", () => {
     // A rebased edit keeps its multiplicative intent: from=2, to=3 must lower
     // the relative factor 1.5, never the absolute channel value 3.
-    const rebased = lower(source, request(source, initialResizeProgram(1.5, 2)));
+    const rebased = lower(source, request(source, resizeEditProgram(1.5, 2)));
     expect(rebased?.insertedCode).toBe("        square.scale(1.5)");
     expect(rebased?.preflight).toMatchObject({ expectedScaleFactor: 1.5 });
 
-    const shrunk = lower(source, request(source, initialResizeProgram(0.5)));
+    const shrunk = lower(source, request(source, resizeEditProgram(0.5)));
     expect(shrunk?.insertedCode).toBe("        square.scale(0.5)");
     expect(shrunk?.preflight).toMatchObject({ expectedScaleFactor: 0.5 });
   });
 
   it("rejects an identity, non-positive, or non-relative uniform resize factor", () => {
-    expect(() => lower(source, request(source, initialResizeProgram(1)))).toThrow(
+    expect(() => lower(source, request(source, resizeEditProgram(1)))).toThrow(
       /positive non-identity bounded scale factor/i,
     );
-    expect(() => lower(source, request(source, initialResizeProgram(-2)))).toThrow(
-      /only one exact direct-manipulation/i,
-    );
+    expect(() => lower(source, request(source, resizeEditProgram(-2)))).toThrow(/only one exact direct-manipulation/i);
     const inconsistent: CanonicalEditProgram = (() => {
-      const program = initialResizeProgram(1.5);
+      const program = resizeEditProgram(1.5);
       const operation = { ...program.operations[0]!, relativeFactor: 2 } as CanonicalEditOperation;
       return { ...program, operations: [operation] };
     })();
@@ -423,7 +488,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
   });
 
   it("rejects non-canonical or non-adjacent candidate resize statements during independent derivation", () => {
-    const lowered = lower(source, request(source, initialResizeProgram()));
+    const lowered = lower(source, request(source, resizeEditProgram()));
     expect(lowered).not.toBeNull();
     const nonCanonical = lowered!.source.replace("square.scale(1.5)", "square.scale(1.50)");
     const identity = lowered!.source.replace("square.scale(1.5)", "square.scale(1)");
@@ -432,19 +497,19 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        self.add(square)\n        square.scale(1.5)\n        square.set_stroke",
     );
 
-    expect(() => deriveRuntimeTraceInitialResizeSourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceResizeSourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
       /canonical positive non-identity bounded scale/i,
     );
-    expect(() => deriveRuntimeTraceInitialResizeSourceEditPlan(identity, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceResizeSourceEditPlan(identity, sceneName, sourcePath, "square")).toThrow(
       /canonical positive non-identity bounded scale/i,
     );
-    expect(() => deriveRuntimeTraceInitialResizeSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceResizeSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
       /candidate resize/i,
     );
   });
 
   it("inserts one canonical opacity after the exact assignment and emits re-derivable evidence", () => {
-    const lowered = lower(source, request(source, initialOpacityProgram(0.25)));
+    const lowered = lower(source, request(source, opacityEditProgram(0.25)));
 
     expect(lowered).not.toBeNull();
     expect(lowered?.insertedCode).toBe("        square.set_opacity(0.25)");
@@ -463,10 +528,11 @@ describe("Runtime Trace initial-edit source lowering", () => {
       baseSourceHash: request().sourceHash,
       entityId,
       expectedOpacity: 0.25,
-      kind: "runtime-trace-initial-opacity",
+      kind: "runtime-trace-opacity-edit",
+      sourceAnchor: 0,
     });
 
-    const derived = deriveRuntimeTraceInitialOpacitySourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceOpacitySourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
@@ -476,21 +542,28 @@ describe("Runtime Trace initial-edit source lowering", () => {
   });
 
   it("accepts opacity endpoints and rejects non-finite, out-of-range, or non-numeric values", () => {
-    expect(lower(source, request(source, initialOpacityProgram(0)))?.insertedCode).toBe(
-      "        square.set_opacity(0)",
-    );
-    expect(lower(source, request(source, initialOpacityProgram(1)))?.insertedCode).toBe(
-      "        square.set_opacity(1)",
-    );
+    expect(lower(source, request(source, opacityEditProgram(0)))?.insertedCode).toBe("        square.set_opacity(0)");
+    expect(lower(source, request(source, opacityEditProgram(1)))?.insertedCode).toBe("        square.set_opacity(1)");
     for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -0.01, 1.01, "0.5"] as const) {
-      expect(() => lower(source, request(source, initialOpacityProgram(invalid)))).toThrow(
+      expect(() => lower(source, request(source, opacityEditProgram(invalid)))).toThrow(
         /only one exact direct-manipulation/i,
       );
     }
   });
 
+  it("keeps opacity and rotation restricted to source time zero", () => {
+    const temporalSource = source.replace("        self.wait(0.1)", "        self.wait(2)");
+
+    expect(() => lower(temporalSource, request(temporalSource, opacityEditProgram(0.5, 1)))).toThrow(
+      /opacity and rotation remain restricted to source time zero/i,
+    );
+    expect(() => lower(temporalSource, request(temporalSource, rotationEditProgram(0.5, 1)))).toThrow(
+      /opacity and rotation remain restricted to source time zero/i,
+    );
+  });
+
   it("rejects non-canonical or non-adjacent candidate opacity statements during independent derivation", () => {
-    const lowered = lower(source, request(source, initialOpacityProgram()));
+    const lowered = lower(source, request(source, opacityEditProgram()));
     expect(lowered).not.toBeNull();
     const nonCanonical = lowered!.source.replace("square.set_opacity(0.25)", "square.set_opacity(0.250)");
     const nonAdjacent = lowered!.source.replace(
@@ -498,16 +571,16 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        self.add(square)\n        square.set_opacity(0.25)\n        square.set_stroke",
     );
 
-    expect(() => deriveRuntimeTraceInitialOpacitySourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceOpacitySourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
       /canonical finite opacity between zero and one/i,
     );
-    expect(() => deriveRuntimeTraceInitialOpacitySourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceOpacitySourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
       /candidate opacity/i,
     );
   });
 
   it("inserts one canonical rotation after the exact assignment and emits re-derivable evidence", () => {
-    const lowered = lower(source, request(source, initialRotationProgram(Math.PI / 4)));
+    const lowered = lower(source, request(source, rotationEditProgram(Math.PI / 4)));
 
     expect(lowered).not.toBeNull();
     expect(lowered?.insertedCode).toBe("        square.rotate(0.785398163397)");
@@ -526,10 +599,11 @@ describe("Runtime Trace initial-edit source lowering", () => {
       baseSourceHash: request().sourceHash,
       entityId,
       expectedAngleRadians: 0.785398163397,
-      kind: "runtime-trace-initial-rotation",
+      kind: "runtime-trace-rotation-edit",
+      sourceAnchor: 0,
     });
 
-    const derived = deriveRuntimeTraceInitialRotationSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceRotationSourceEditPlan(lowered!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(source);
     expect(derived.baseBinding).toEqual(
       lowered?.preflight && "baseBinding" in lowered.preflight ? lowered.preflight.baseBinding : null,
@@ -539,21 +613,17 @@ describe("Runtime Trace initial-edit source lowering", () => {
   });
 
   it("accepts a negative rotation and rejects no-op, non-finite, or unbounded angles", () => {
-    expect(lower(source, request(source, initialRotationProgram(-0.5)))?.insertedCode).toBe(
-      "        square.rotate(-0.5)",
-    );
-    expect(() => lower(source, request(source, initialRotationProgram(0)))).toThrow(/finite non-noop bounded angle/i);
-    expect(() => lower(source, request(source, initialRotationProgram(2 * Math.PI)))).toThrow(
+    expect(lower(source, request(source, rotationEditProgram(-0.5)))?.insertedCode).toBe("        square.rotate(-0.5)");
+    expect(() => lower(source, request(source, rotationEditProgram(0)))).toThrow(/finite non-noop bounded angle/i);
+    expect(() => lower(source, request(source, rotationEditProgram(2 * Math.PI)))).toThrow(
       /finite non-noop bounded angle/i,
     );
-    expect(() => lower(source, request(source, initialRotationProgram(Number.NaN)))).toThrow(
+    expect(() => lower(source, request(source, rotationEditProgram(Number.NaN)))).toThrow(
       /only one exact direct-manipulation/i,
     );
-    expect(() => lower(source, request(source, initialRotationProgram(1e100)))).toThrow(
-      /finite non-noop bounded angle/i,
-    );
+    expect(() => lower(source, request(source, rotationEditProgram(1e100)))).toThrow(/finite non-noop bounded angle/i);
 
-    const setProperty = initialMoveProgram();
+    const setProperty = moveEditProgram();
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId,
@@ -570,7 +640,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
   });
 
   it("rejects non-canonical or non-adjacent candidate rotation statements during independent derivation", () => {
-    const lowered = lower(source, request(source, initialRotationProgram()));
+    const lowered = lower(source, request(source, rotationEditProgram()));
     expect(lowered).not.toBeNull();
     const nonCanonical = lowered!.source.replace("square.rotate(0.5)", "square.rotate(0.50)");
     const identity = lowered!.source.replace("square.rotate(0.5)", "square.rotate(0)");
@@ -579,13 +649,13 @@ describe("Runtime Trace initial-edit source lowering", () => {
       "        self.add(square)\n        square.rotate(0.5)\n        square.set_stroke",
     );
 
-    expect(() =>
-      deriveRuntimeTraceInitialRotationSourceEditPlan(nonCanonical, sceneName, sourcePath, "square"),
-    ).toThrow(/canonical finite non-noop bounded rotate/i);
-    expect(() => deriveRuntimeTraceInitialRotationSourceEditPlan(identity, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceRotationSourceEditPlan(nonCanonical, sceneName, sourcePath, "square")).toThrow(
       /canonical finite non-noop bounded rotate/i,
     );
-    expect(() => deriveRuntimeTraceInitialRotationSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
+    expect(() => deriveRuntimeTraceRotationSourceEditPlan(identity, sceneName, sourcePath, "square")).toThrow(
+      /canonical finite non-noop bounded rotate/i,
+    );
+    expect(() => deriveRuntimeTraceRotationSourceEditPlan(nonAdjacent, sceneName, sourcePath, "square")).toThrow(
       /candidate rotation/i,
     );
   });
@@ -594,7 +664,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
     // A resize on an already-moved base keeps the earlier canonical move as
     // plain base program text; only the newest inserted statement is removed.
     const moved = lower()!.source;
-    const resized = lower(moved, request(moved, initialResizeProgram()));
+    const resized = lower(moved, request(moved, resizeEditProgram()));
     expect(resized).not.toBeNull();
     expect(resized?.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
@@ -602,14 +672,29 @@ describe("Runtime Trace initial-edit source lowering", () => {
         "        square.move_to((2, 1, 0))\n" +
         "        square.set_stroke(WHITE, width=2)",
     );
-    const derived = deriveRuntimeTraceInitialResizeSourceEditPlan(resized!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceResizeSourceEditPlan(resized!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(moved);
     expect(derived.expectedScaleFactor).toBe(1.5);
   });
 
+  it("appends a repeated absolute move after the prior move", () => {
+    const first = lower(source, request(source, moveEditProgram({ x: 410, y: 135 })))!.source;
+    const second = lower(first, request(first, moveEditProgram({ x: 500, y: 225 })));
+
+    expect(second?.source).toContain(
+      "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
+        "        square.move_to((2, 1, 0))\n" +
+        "        square.move_to((4, -1, 0))\n" +
+        "        square.set_stroke(WHITE, width=2)",
+    );
+    const derived = deriveRuntimeTraceMoveSourceEditPlan(second!.source, sceneName, sourcePath, "square");
+    expect(derived.baseSource).toBe(first);
+    expect(derived.expectedWorldCenter).toEqual({ x: 4, y: -1 });
+  });
+
   it("appends a repeated relative rotation after the prior canonical rotation", () => {
-    const first = lower(source, request(source, initialRotationProgram(0.3)))!.source;
-    const second = lower(first, request(first, initialRotationProgram(0.5)));
+    const first = lower(source, request(source, rotationEditProgram(0.3)))!.source;
+    const second = lower(first, request(first, rotationEditProgram(0.5)));
 
     expect(second?.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
@@ -617,14 +702,14 @@ describe("Runtime Trace initial-edit source lowering", () => {
         "        square.rotate(0.5)\n" +
         "        square.set_stroke(WHITE, width=2)",
     );
-    const derived = deriveRuntimeTraceInitialRotationSourceEditPlan(second!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceRotationSourceEditPlan(second!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(first);
     expect(derived.expectedAngleRadians).toBe(0.5);
   });
 
   it("appends a repeated absolute opacity after the prior canonical opacity", () => {
-    const first = lower(source, request(source, initialOpacityProgram(0.4)))!.source;
-    const second = lower(first, request(first, initialOpacityProgram(0.75)));
+    const first = lower(source, request(source, opacityEditProgram(0.4)))!.source;
+    const second = lower(first, request(first, opacityEditProgram(0.75)));
 
     expect(second?.source).toContain(
       "        square = Square().set_fill(BLUE, opacity=0.6)\n" +
@@ -632,7 +717,7 @@ describe("Runtime Trace initial-edit source lowering", () => {
         "        square.set_opacity(0.75)\n" +
         "        square.set_stroke(WHITE, width=2)",
     );
-    const derived = deriveRuntimeTraceInitialOpacitySourceEditPlan(second!.source, sceneName, sourcePath, "square");
+    const derived = deriveRuntimeTraceOpacitySourceEditPlan(second!.source, sceneName, sourcePath, "square");
     expect(derived.baseSource).toBe(first);
     expect(derived.expectedOpacity).toBe(0.75);
   });

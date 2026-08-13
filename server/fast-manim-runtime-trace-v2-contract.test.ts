@@ -3,15 +3,10 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
-import type { FastManimRuntimeTraceRunRequestV1 } from "../src/render-pipeline/runtime-trace-preview-contract";
 import {
   fastManimRuntimeTraceProducerEnvironment,
   TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY,
 } from "./fast-manim-runtime-trace-producer-identity";
-import {
-  createFastManimRuntimeTraceProducerRequestV1,
-  trustedFastManimRuntimeTraceProducerV1,
-} from "./fast-manim-runtime-trace-profile";
 import {
   FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
   FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
@@ -19,40 +14,23 @@ import {
   MAX_FAST_MANIM_RUNTIME_TRACE_REQUEST_JSON_BYTES_V2,
   parseFastManimRuntimeTraceProducerRequestJsonV2,
 } from "./fast-manim-runtime-trace-v2-contract";
-import {
-  createFastManimRuntimeTraceConfigV2,
-  createFastManimRuntimeTraceProducerRequestV2,
-  FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-  trustedFastManimRuntimeTraceProducerV2,
-} from "./fast-manim-runtime-trace-v2-profile";
-import { trustedFastManimRuntimeTraceProducerV3 } from "./fast-manim-runtime-trace-v3-profile";
 import { FastManimSandboxRequestBundleV1, verifyFastManimSandboxRequestBundleV1 } from "./fast-manim-sandbox-backend";
-import { RUNTIME_TRACE_SOURCE_TEXT } from "./test-fixtures/fast-manim-runtime-trace-fixture";
-
-const frame = { height: 8, width: 128 / 9 } as const;
-const request = {
-  projectId: "demo",
-  requestId: "req-opening-runtime-trace-v2",
-  sceneName: FAST_MANIM_RUNTIME_TRACE_SCENE_NAME_V2,
-  sourceHash: FAST_MANIM_RUNTIME_TRACE_SOURCE_HASH_V2,
-  sourcePath: FAST_MANIM_RUNTIME_TRACE_SOURCE_PATH_V2,
-} as const satisfies FastManimRuntimeTraceRunRequestV1;
+import {
+  RUNTIME_TRACE_V2_CONFIG_HASH,
+  runtimeTraceV2ConfigFixture,
+  runtimeTraceV2RequestFixture,
+} from "./test-fixtures/fast-manim-runtime-trace-v2-fixture";
 
 function producerRequest() {
-  return createFastManimRuntimeTraceProducerRequestV2(request, RUNTIME_TRACE_SOURCE_TEXT, frame);
+  return runtimeTraceV2RequestFixture();
 }
 
 describe("fast-manim Runtime Trace V2 request contract", () => {
-  it("seals the exact OpeningManim 0–15 second producer request", () => {
+  it("round-trips a structurally valid legacy V2 producer request", () => {
     const value = producerRequest();
     const parsed = parseFastManimRuntimeTraceProducerRequestJsonV2(canonicalJsonV1(value));
 
-    expect(FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2).toBe(
-      "0b5d2eae4a3709627a7ccae44ce5a977171452ed73e90ab6bfcfdffda604b977",
-    );
+    expect(RUNTIME_TRACE_V2_CONFIG_HASH).toBe("0b5d2eae4a3709627a7ccae44ce5a977171452ed73e90ab6bfcfdffda604b977");
     expect(parsed).toEqual(value);
     expect(parsed).toMatchObject({
       profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
@@ -62,7 +40,7 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
         profileVersion: FAST_MANIM_RUNTIME_TRACE_PROFILE_VERSION_V2,
         version: FAST_MANIM_RUNTIME_TRACE_VERSION_V2,
       },
-      runtimeConfigHash: FAST_MANIM_RUNTIME_TRACE_CONFIG_HASH_V2,
+      runtimeConfigHash: RUNTIME_TRACE_V2_CONFIG_HASH,
       sceneName: "OpeningManim",
       sceneOccurrence: { constructStartLine: 19, definitionOrdinal: 1 },
       sourceHash: "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f",
@@ -72,32 +50,11 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
     expect(createHash("sha256").update(parsed.sourceText, "utf8").digest("hex")).toBe(parsed.sourceHash);
   });
 
-  it("keeps V1 and V2 admission disjoint", () => {
-    expect(() => createFastManimRuntimeTraceProducerRequestV1(request, RUNTIME_TRACE_SOURCE_TEXT, frame)).toThrowError(
-      /UpdatersExample profile/,
-    );
-    expect(() =>
-      createFastManimRuntimeTraceProducerRequestV2(
-        { ...request, sceneName: "UpdatersExample" },
-        RUNTIME_TRACE_SOURCE_TEXT,
-        frame,
-      ),
-    ).toThrowError(/OpeningManim/);
-  });
-
-  it("pins every profile to the shared merged producer command", () => {
-    const v1 = trustedFastManimRuntimeTraceProducerV1();
-    const v2 = trustedFastManimRuntimeTraceProducerV2();
-    const v3 = trustedFastManimRuntimeTraceProducerV3();
-
-    expect(v1.producer).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
-    expect(v2.producer).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
-    expect(v3).toMatchObject(TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY);
+  it("publishes the shared producer identity as the process environment", () => {
     expect(fastManimRuntimeTraceProducerEnvironment()).toEqual({
       POIETRA_FAST_MANIM_COMMIT: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimCommit,
       POIETRA_FAST_MANIM_TREE: TRUSTED_FAST_MANIM_RUNTIME_TRACE_PRODUCER_IDENTITY.fastManimTree,
     });
-    expect(v2.roots.map(({ binding }) => binding.name)).toEqual(["title", "basel", "grid", "grid_title"]);
   });
 
   it("rejects stale source, scene, config, and occurrence correlation", () => {
@@ -109,9 +66,6 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
       { ...value, sceneOccurrence: { ...value.sceneOccurrence, definitionOrdinal: 2 } },
     ];
 
-    expect(() =>
-      createFastManimRuntimeTraceProducerRequestV2(request, `${RUNTIME_TRACE_SOURCE_TEXT}\n`, frame),
-    ).toThrowError(/OpeningManim/);
     for (const stale of staleValues.slice(0, 3)) {
       expect(() => parseFastManimRuntimeTraceProducerRequestJsonV2(canonicalJsonV1(stale))).toThrowError(
         /closed contract/,
@@ -125,7 +79,7 @@ describe("fast-manim Runtime Trace V2 request contract", () => {
   });
 
   it("requires the canonical Cairo camera and exact V2 temporal profile", () => {
-    const config = createFastManimRuntimeTraceConfigV2(frame);
+    const config = runtimeTraceV2ConfigFixture();
     for (const changed of [
       { ...config, durationSeconds: 5 },
       { ...config, frameRate: 30 },

@@ -54,7 +54,7 @@ function pngHead(generation = 1n): ProjectPngHeadV1 {
   };
 }
 
-function initialMoveExportFixture(withVerifier: boolean, edit: "move" | "resize" = "move") {
+function runtimeTraceEditExportFixture(withVerifier: boolean, edit: "move" | "resize" = "move") {
   const source = `from manim import *
 
 class StaticSquare(Scene):
@@ -76,7 +76,7 @@ class StaticSquare(Scene):
           interval: { end: 0, start: 0 },
           key: "position",
           kind: "SetProperty",
-          provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+          provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
           value: { x: 410, y: 135 },
         } as const)
       : ({
@@ -88,7 +88,7 @@ class StaticSquare(Scene):
           interval: { end: 0, start: 0 },
           key: "scale",
           kind: "AnimateProperty",
-          provenance: { evidence: ["Runtime Trace initial root"], origin: "direct-manipulation" },
+          provenance: { evidence: ["Runtime Trace edit target"], origin: "direct-manipulation" },
           relativeFactor: 1.5,
           to: 1.5,
         } as const);
@@ -114,6 +114,7 @@ class StaticSquare(Scene):
     program,
     projectId: "project-a",
     sceneName: "StaticSquare",
+    sourceValidation: "runtime-trace",
     sourceBindings: [{ entityId, sourceVariable: "square" }],
     sourceHash: digest,
     sourcePath,
@@ -228,8 +229,8 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     await Promise.all([unavailable.close(), failing.close(), unconfigured.close()]);
   });
 
-  it("verifies a generic initial move before exporting its durable source", async () => {
-    const { digest, entityId, request, runtime, verify } = initialMoveExportFixture(true);
+  it("verifies a generic move edit before exporting its durable source", async () => {
+    const { digest, entityId, request, runtime, verify } = runtimeTraceEditExportFixture(true);
 
     const exported = await runtime.exportSource(request);
 
@@ -239,21 +240,22 @@ describe("DurableManimRuntimeV1 production readiness", () => {
     expect(verify.mock.calls[0]?.[0].preflight).toMatchObject({
       baseSourceHash: digest,
       entityId,
-      kind: "runtime-trace-initial-move",
+      kind: "runtime-trace-move-edit",
+      sourceAnchor: 0,
     });
     expect(verify.mock.calls[0]?.[1]).toEqual(request);
     await runtime.close();
   });
 
   it("fails generic durable source export closed when candidate verification is unavailable", async () => {
-    const { request, runtime } = initialMoveExportFixture(false);
+    const { request, runtime } = runtimeTraceEditExportFixture(false);
 
     await expect(runtime.exportSource(request)).rejects.toMatchObject({ status: 503 });
     await runtime.close();
   });
 
-  it("verifies a generic initial resize before exporting its durable source", async () => {
-    const { digest, entityId, request, runtime, verify } = initialMoveExportFixture(true, "resize");
+  it("verifies a generic resize edit before exporting its durable source", async () => {
+    const { digest, entityId, request, runtime, verify } = runtimeTraceEditExportFixture(true, "resize");
 
     const exported = await runtime.exportSource(request);
 
@@ -264,14 +266,15 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       baseSourceHash: digest,
       entityId,
       expectedScaleFactor: 1.5,
-      kind: "runtime-trace-initial-resize",
+      kind: "runtime-trace-resize-edit",
+      sourceAnchor: 0,
     });
     expect(verify.mock.calls[0]?.[1]).toEqual(request);
     await runtime.close();
   });
 
   it("fails generic resize durable source export closed when candidate verification is unavailable", async () => {
-    const { request, runtime } = initialMoveExportFixture(false, "resize");
+    const { request, runtime } = runtimeTraceEditExportFixture(false, "resize");
 
     await expect(runtime.exportSource(request)).rejects.toMatchObject({ status: 503 });
     await runtime.close();
@@ -491,7 +494,7 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       sourcePath: "main.py",
     } as const;
     const query = { sceneName: "MainScene", sourcePath: "main.py" } as const;
-    const runtimeTraceRequest = { ...request, responseVersion: 2 as const, sourceHash: "a".repeat(64) };
+    const runtimeTraceRequest = { ...request, sourceHash: "a".repeat(64) };
 
     await expect(runtime.productionReady()).resolves.toBe(true);
     await expect(runtime.runSceneSnapshot(request)).resolves.toEqual({ kind: "run" });

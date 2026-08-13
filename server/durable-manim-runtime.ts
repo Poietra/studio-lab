@@ -429,10 +429,10 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       request,
     });
     if (
-      lowered.lowered.preflight?.kind === "runtime-trace-initial-move" ||
-      lowered.lowered.preflight?.kind === "runtime-trace-initial-opacity" ||
-      lowered.lowered.preflight?.kind === "runtime-trace-initial-resize" ||
-      lowered.lowered.preflight?.kind === "runtime-trace-initial-rotation"
+      lowered.lowered.preflight?.kind === "runtime-trace-move-edit" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-opacity-edit" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-resize-edit" ||
+      lowered.lowered.preflight?.kind === "runtime-trace-rotation-edit"
     ) {
       if (!this.#runtimeTraceEditVerifier) {
         throw new HttpError("Runtime Trace edit verification is unavailable.", 503);

@@ -10,7 +10,6 @@ import {
 } from "./runtime-trace-v3-shared-contract";
 
 export const FAST_MANIM_RUNTIME_TRACE_RUN_SCHEMA_V1 = "poietra.fast-manim-runtime-trace-run" as const;
-export const FAST_MANIM_RUNTIME_TRACE_RESPONSE_VERSION_HEADER = "x-poietra-runtime-trace-response-version" as const;
 export const FAST_MANIM_RUNTIME_TRACE_RUN_RESPONSE_ENVELOPE_BYTES_V2 = 256 * 1024;
 export const MAX_FAST_MANIM_RUNTIME_TRACE_RUN_ROOTS_V2 = MAX_FAST_MANIM_RUNTIME_TRACE_SOURCE_BINDINGS_V3;
 
@@ -19,8 +18,6 @@ export const fastManimRuntimeTraceRunRequestV1Schema = z
   .object({
     projectId: manimProjectIdSchema,
     requestId: opaqueIdV1Schema,
-    /** Internal capability projected from the optional HTTP response-version header. */
-    responseVersion: z.literal(2).optional(),
     sceneName: manimSceneNameSchema,
     sourceHash: sha256V1Schema,
     sourcePath: manimSourcePathSchema,
@@ -85,7 +82,7 @@ const runtimeTraceRunRootV2Schema = z
   })
   .strict();
 
-/** Unpublished, request-scoped response consumed directly by Studio preview. */
+/** Internal legacy/failure response. Public HTTP rejects verified V1 views. */
 export const fastManimRuntimeTraceRunViewV1Schema = z.discriminatedUnion("status", [
   z
     .object({
@@ -127,12 +124,7 @@ export const fastManimRuntimeTraceRunViewV2Schema = z
   })
   .strict();
 
-/**
- * Version-aware Runtime Trace response. Existing reviewed V1/V2 producer
- * profiles and all failure views remain byte-compatible wire V1; verified
- * generic producer V3 runs use wire V2 to carry bounded server-verified
- * source/root evidence.
- */
+/** Internal runner response union; the public HTTP boundary admits only failures and verified generic V2 views. */
 export const fastManimRuntimeTraceRunViewSchema = z.union([
   fastManimRuntimeTraceRunViewV1Schema,
   fastManimRuntimeTraceRunViewV2Schema,

@@ -160,14 +160,14 @@ class StaticSquare(Scene):
 
 type RuntimeTraceEditVerify = NonNullable<DurableManimRenderServiceOptionsV1["runtimeTraceEditVerifier"]>["verify"];
 
-function initialMoveRequest(): ProgramRenderRequest {
+function moveEditRequest(): ProgramRenderRequest {
   const sourcePath = "scenes/static_square.py";
   const sceneName = "StaticSquare";
   const entityId = `source:${sourcePath}#${sceneName}:square`;
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     entityId,
-    id: "generic-initial-position",
+    id: "generic-position-edit",
     interval: { end: 0, start: 0 },
     key: "position",
     kind: "SetProperty",
@@ -187,7 +187,7 @@ function initialMoveRequest(): ProgramRenderRequest {
     provenance: { evidence: ["runtime trace"], origin: "direct-manipulation" },
     requestedExecution: "parallel",
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
-    transactionId: "generic-initial-move",
+    transactionId: "generic-move-edit",
     version: 1,
   };
   return {
@@ -196,6 +196,7 @@ function initialMoveRequest(): ProgramRenderRequest {
     program,
     projectId: "default",
     sceneName,
+    sourceValidation: "runtime-trace",
     sourceBindings: [{ entityId, sourceVariable: "square" }],
     sourceHash: sourceHash(genericSource),
     sourcePath,
@@ -209,7 +210,7 @@ function runtimeTraceEditFixture(
     verify?: RuntimeTraceEditVerify;
   }> = {},
 ) {
-  const input = initialMoveRequest();
+  const input = moveEditRequest();
   const head: WorkspaceSourceHeadV1 = {
     blob: receipt(input.sourceHash, "candidate-source-version"),
     generation: 4n,
