@@ -3,9 +3,11 @@ use poietra_eval::{
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
     CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, EngineSessionV1, EvaluationError,
-    RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneTimelineEdit,
-    SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
+    RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors,
+    SceneTimelineEdit, SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand,
+    SetSubtreeVectorPaintAlphaError, TransformSceneEntityAtTimeCommand,
+    TransformSceneEntityCommand, TransformSceneEntityError, TransformSceneEntityExpectedBaseline,
+    TransformSceneEntityIntent,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
@@ -316,6 +318,109 @@ struct ScaleAboutPivotJsonV1 {
     y_factor: f64,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SceneEntityAxisFactorsJsonV1 {
+    x_factor: f64,
+    y_factor: f64,
+}
+
+impl From<SceneEntityAxisFactorsJsonV1> for SceneEntityAxisFactors {
+    fn from(value: SceneEntityAxisFactorsJsonV1) -> Self {
+        Self {
+            x_factor: value.x_factor,
+            y_factor: value.y_factor,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum TransformSceneEntityExpectedBaselineJsonV1 {
+    Center {
+        world_center: PointV1,
+    },
+    UniformAffine {
+        uniform_scale: f64,
+        world_center: PointV1,
+    },
+    WorldSize {
+        height: f64,
+        width: f64,
+        world_center: PointV1,
+    },
+}
+
+impl From<TransformSceneEntityExpectedBaselineJsonV1> for TransformSceneEntityExpectedBaseline {
+    fn from(value: TransformSceneEntityExpectedBaselineJsonV1) -> Self {
+        match value {
+            TransformSceneEntityExpectedBaselineJsonV1::Center { world_center } => {
+                Self::Center { world_center }
+            }
+            TransformSceneEntityExpectedBaselineJsonV1::UniformAffine {
+                uniform_scale,
+                world_center,
+            } => Self::UniformAffine {
+                uniform_scale,
+                world_center,
+            },
+            TransformSceneEntityExpectedBaselineJsonV1::WorldSize {
+                height,
+                width,
+                world_center,
+            } => Self::WorldSize {
+                height,
+                width,
+                world_center,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+enum TransformSceneEntityIntentJsonV1 {
+    Relative {
+        delta: PointV1,
+        scale: Option<ScaleAboutPivotJsonV1>,
+    },
+    FromBaseline {
+        baseline: TransformSceneEntityExpectedBaselineJsonV1,
+        scale: Option<SceneEntityAxisFactorsJsonV1>,
+        target_center: Option<PointV1>,
+    },
+}
+
+impl From<TransformSceneEntityIntentJsonV1> for TransformSceneEntityIntent {
+    fn from(value: TransformSceneEntityIntentJsonV1) -> Self {
+        match value {
+            TransformSceneEntityIntentJsonV1::Relative { delta, scale } => Self::Relative {
+                delta,
+                scale: scale.map(Into::into),
+            },
+            TransformSceneEntityIntentJsonV1::FromBaseline {
+                baseline,
+                scale,
+                target_center,
+            } => Self::FromBaseline {
+                expected_baseline: baseline.into(),
+                scale: scale.map(Into::into),
+                target_center,
+            },
+        }
+    }
+}
+
 impl From<ScaleAboutPivotJsonV1> for ScaleAboutPivot {
     fn from(value: ScaleAboutPivotJsonV1) -> Self {
         Self {
@@ -329,14 +434,13 @@ impl From<ScaleAboutPivotJsonV1> for ScaleAboutPivot {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct TransformSceneEntityCommandJsonV1 {
-    delta: PointV1,
     entity_id: String,
     expected_base_revision: String,
+    intent: TransformSceneEntityIntentJsonV1,
     next_revision: String,
     provenance: ProvenanceRecordV1,
     #[serde(rename = "schema")]
     _schema: TransformSceneEntitySchemaV1,
-    scale: Option<ScaleAboutPivotJsonV1>,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
 }
@@ -344,12 +448,11 @@ struct TransformSceneEntityCommandJsonV1 {
 impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
     fn from(value: TransformSceneEntityCommandJsonV1) -> Self {
         Self {
-            delta: value.delta,
             entity_id: value.entity_id,
             expected_base_revision: value.expected_base_revision,
+            intent: value.intent.into(),
             next_revision: value.next_revision,
             provenance: value.provenance,
-            scale: value.scale.map(Into::into),
         }
     }
 }
@@ -568,7 +671,7 @@ pub fn create_scene_motion_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Applies one atomic translation and optional positive axis scale through the shared core.
+/// Resolves and applies one atomic transform intent through the shared core.
 ///
 /// # Errors
 ///
@@ -745,6 +848,33 @@ mod tests {
         .unwrap()
     }
 
+    fn baseline_transform_command_json(world_center_x: f64) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "entityId": "later",
+            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "intent": {
+                "baseline": {
+                    "height": 1.0,
+                    "kind": "world-size",
+                    "width": 1.0,
+                    "worldCenter": { "x": world_center_x, "y": 0.0 }
+                },
+                "kind": "from-baseline",
+                "scale": { "xFactor": 1.5, "yFactor": 1.5 },
+                "targetCenter": { "x": 3.0, "y": -1.0 }
+            },
+            "nextRevision": "8888888888888888888888888888888888888888888888888888888888888888",
+            "provenance": {
+                "evidence": ["WASM adapter verified transform baseline"],
+                "id": "wasm-baseline-transform",
+                "origin": "studio-edit-program"
+            },
+            "schema": "poietra.transform-scene-entity",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
     fn create_entities_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "entities": [{
@@ -885,9 +1015,12 @@ mod tests {
             .expect("the real LineJoints fixture must retain its top-level VGroup");
         let root_id = root.id.clone();
         let command = serde_json::to_vec(&json!({
-            "delta": { "x": 2.5, "y": -1.5 },
             "entityId": root_id,
             "expectedBaseRevision": bundle.scene.source.revision_hash(),
+            "intent": {
+                "delta": { "x": 2.5, "y": -1.5 },
+                "kind": "relative"
+            },
             "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "provenance": {
                 "evidence": ["WASM adapter real top-level group move test"],
@@ -914,6 +1047,70 @@ mod tests {
                 "edge {edge} moved to {after_edge}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the wire command applies exact finite values around its derived center"
+    )]
+    fn baseline_transform_intent_verifies_the_baseline_before_mutation() {
+        let snapshot = fixture_json();
+        let response =
+            transform_scene_entity_json(&snapshot, &baseline_transform_command_json(1.0)).unwrap();
+        let authored = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let target = authored
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(target.transform.m11, 1.5);
+        assert_eq!(target.transform.m22, 1.5);
+        assert_eq!(target.transform.tx, 1.5);
+        assert_eq!(target.transform.ty, -1.0);
+        assert!(matches!(
+            transform_scene_entity_json(&snapshot, &baseline_transform_command_json(1.25)),
+            Err(SceneAuthoringAdapterError::TransformCommand(
+                TransformSceneEntityError::BaselineMismatch
+            ))
+        ));
+
+        let mut centered = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
+        let centered_target = centered
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        let SceneGeometryV1::Circle { center, .. } = &mut centered_target.geometry else {
+            panic!("fixture target must be a Circle");
+        };
+        *center = PointV1 { x: 0.0, y: 0.0 };
+        centered_target.transform.tx = 3.0;
+        centered_target.transform.ty = -2.0;
+        let centered_snapshot = serde_json::to_vec(&centered).unwrap();
+        let mut scale_only: serde_json::Value =
+            serde_json::from_slice(&baseline_transform_command_json(3.0 + 1.0e-10)).unwrap();
+        scale_only["intent"]["baseline"]["worldCenter"]["y"] = json!(-2.0);
+        scale_only["intent"]
+            .as_object_mut()
+            .unwrap()
+            .remove("targetCenter");
+        let scale_only_response = transform_scene_entity_json(
+            &centered_snapshot,
+            &serde_json::to_vec(&scale_only).unwrap(),
+        )
+        .unwrap();
+        let scale_only_authored = parse_scene_ir_bundle_json_v1(&scale_only_response).unwrap();
+        let scale_only_target = scale_only_authored
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(scale_only_target.transform.tx, 3.0);
+        assert_eq!(scale_only_target.transform.ty, -2.0);
     }
 
     #[test]
@@ -999,9 +1196,17 @@ mod tests {
             .expect("the real LineJoints fixture must retain its top-level VGroup");
         let root_id = root.id.clone();
         let command = serde_json::to_vec(&json!({
-            "delta": { "x": 0.0, "y": 0.0 },
             "entityId": root_id,
             "expectedBaseRevision": bundle.scene.source.revision_hash(),
+            "intent": {
+                "delta": { "x": 0.0, "y": 0.0 },
+                "kind": "relative",
+                "scale": {
+                    "pivot": { "x": 1.0, "y": -0.5 },
+                    "xFactor": 0.5,
+                    "yFactor": 0.75
+                }
+            },
             "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "provenance": {
                 "evidence": ["WASM adapter real top-level group axis scale test"],
@@ -1009,11 +1214,6 @@ mod tests {
                 "origin": "studio-edit-program"
             },
             "schema": "poietra.transform-scene-entity",
-            "scale": {
-                "pivot": { "x": 1.0, "y": -0.5 },
-                "xFactor": 0.5,
-                "yFactor": 0.75
-            },
             "version": 1
         }))
         .unwrap();
@@ -1382,9 +1582,12 @@ mod tests {
     #[test]
     fn transform_adapter_rejects_unknown_and_oversized_commands() {
         let mut command = json!({
-            "delta": { "x": 1.0, "y": 0.0 },
             "entityId": "later",
             "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "intent": {
+                "delta": { "x": 1.0, "y": 0.0 },
+                "kind": "relative"
+            },
             "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
             "provenance": {
                 "evidence": ["WASM adapter transform validation"],

@@ -1,6 +1,6 @@
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 
-const POIETRA_ENGINE_ABI_VERSION = 3;
+const POIETRA_ENGINE_ABI_VERSION = 4;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -25,19 +25,41 @@ export type RotateSceneEntityCompiler = (
 ) => Promise<SceneIrBundleV1>;
 
 export type TransformSceneEntityWireCommandV1 = Readonly<{
-  delta: Readonly<{ x: number; y: number }>;
   entityId: string;
   expectedBaseRevision: string;
+  intent:
+    | Readonly<{
+        delta: Readonly<{ x: number; y: number }>;
+        kind: "relative";
+        scale?: Readonly<{
+          pivot: Readonly<{ x: number; y: number }>;
+          xFactor: number;
+          yFactor: number;
+        }>;
+      }>
+    | Readonly<{
+        baseline:
+          | Readonly<{ kind: "center"; worldCenter: Readonly<{ x: number; y: number }> }>
+          | Readonly<{
+              kind: "uniform-affine";
+              uniformScale: number;
+              worldCenter: Readonly<{ x: number; y: number }>;
+            }>
+          | Readonly<{
+              height: number;
+              kind: "world-size";
+              width: number;
+              worldCenter: Readonly<{ x: number; y: number }>;
+            }>;
+        kind: "from-baseline";
+        scale?: Readonly<{ xFactor: number; yFactor: number }>;
+        targetCenter?: Readonly<{ x: number; y: number }>;
+      }>;
   nextRevision: string;
   provenance: Readonly<{
     evidence: readonly string[];
     id: string;
     origin: "studio-edit-program";
-  }>;
-  scale?: Readonly<{
-    pivot: Readonly<{ x: number; y: number }>;
-    xFactor: number;
-    yFactor: number;
   }>;
   schema: "poietra.transform-scene-entity";
   version: 1;

@@ -8,7 +8,7 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 3);
+assert.equal(engine.poietraEngineAbiVersion(), 4);
 assert.equal(engine.poietraCanvasAbiVersion(), 4);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.editSceneTimelineV1, "function");
@@ -96,9 +96,9 @@ for (const [name, delta, scale, expected] of [
         snapshot,
         encoder.encode(
           JSON.stringify({
-            delta,
             entityId: "later",
             expectedBaseRevision: "a".repeat(64),
+            intent: { delta, kind: "relative", ...(scale ? { scale } : {}) },
             nextRevision: revision.repeat(64),
             provenance: {
               evidence: [`engine WASM smoke atomic ${name}`],
@@ -106,7 +106,6 @@ for (const [name, delta, scale, expected] of [
               origin: "studio-edit-program",
             },
             schema: "poietra.transform-scene-entity",
-            ...(scale ? { scale } : {}),
             version: 1,
           }),
         ),
@@ -122,6 +121,50 @@ for (const [name, delta, scale, expected] of [
   assert.equal(transformed.provenanceId, `wasm-smoke-atomic-${name}`);
   assert.equal(transformedBundle.scene.source.revisionHash, revision.repeat(64));
 }
+
+const verifiedTransformBundle = JSON.parse(
+  new TextDecoder("utf-8", { fatal: true }).decode(
+    engine.transformSceneEntityV1(
+      snapshot,
+      encoder.encode(
+        JSON.stringify({
+          entityId: "later",
+          expectedBaseRevision: "a".repeat(64),
+          intent: {
+            baseline: {
+              height: 1,
+              kind: "world-size",
+              width: 1,
+              worldCenter: { x: 1, y: 0 },
+            },
+            kind: "from-baseline",
+            scale: { xFactor: 1.5, yFactor: 0.75 },
+            targetCenter: { x: 2.25, y: -0.5 },
+          },
+          nextRevision: "8".repeat(64),
+          provenance: {
+            evidence: ["engine WASM smoke geometry-verified transform"],
+            id: "wasm-smoke-verified-transform",
+            origin: "studio-edit-program",
+          },
+          schema: "poietra.transform-scene-entity",
+          version: 1,
+        }),
+      ),
+    ),
+  ),
+);
+const verifiedTransformEntity = verifiedTransformBundle.scene.entities.find(({ id }) => id === "later");
+assert.ok(verifiedTransformEntity, "geometry-verified transform response lost its target");
+assert.deepEqual(
+  [
+    verifiedTransformEntity.transform.m11,
+    verifiedTransformEntity.transform.m22,
+    verifiedTransformEntity.transform.tx,
+    verifiedTransformEntity.transform.ty,
+  ],
+  [1.5, 0.75, 0.75, -0.5],
+);
 
 const paintAlphaBundle = JSON.parse(
   new TextDecoder("utf-8", { fatal: true }).decode(
