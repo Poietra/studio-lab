@@ -247,25 +247,15 @@ and return only the sampled `RenderPacket`; immutable Scene and manifest data ar
 not cloned across the worker boundary on every frame. Build the web-target package
 with the repository script:
 
-Canvas ABI v4 additionally accepts transferable, manifest-verified PNG assets
-during atomic install/replacement. It retains the Studio-only `SceneDeltaV1`
-transport from v3 (256 KiB and 256 operations maximum) as one transferred
-`ArrayBuffer`. Rust checks the
-transport base/next revisions in the shared `EngineSessionV1` core, constructs and indexes the complete candidate,
-and pre-serializes a 128 KiB-bounded entity/channel/camera/asset dirty-set ACK
-before the atomic swap. The page client advances its revision only after that
-ACK; malformed, unsupported, or stale deltas retain the base revision and may
-recover through the existing full `replace-scene` operation. Production Studio
-authoring uses profile-free Rust commands for its supported edits and reports
-unsupported edits explicitly; it does not reconstruct a candidate Scene in TypeScript. Dirty sets
-are dependency-safe invalidation candidates, not a minimal list of changed
-records: channel edits include both their old and new entity target (or the
-camera), while entity edits include descendants from both the installed and
-candidate parent graphs. IDs are deduplicated and sorted, and a closure that
-exceeds either 256-ID bound rejects before the swap so it cannot be truncated
-into an unsafe ACK. These candidates do not yet make GPU preparation/upload
-incremental because prepared geometry is not retained; that cache/invalidation
-work remains in #70.
+Canvas ABI v5 accepts complete Scene snapshots and transferable,
+manifest-verified PNG assets during atomic install/replacement. The page client
+supplies the installed base revision and candidate revision; the Worker rejects a
+stale base, and Rust validates and indexes the complete candidate before swapping
+it into `EngineSessionV1`. The client advances its revision only after the
+correlated acknowledgement, while malformed or unsupported snapshots preserve
+the installed Scene. Production Studio authoring uses profile-free Rust commands
+for supported edits and sends the resulting canonical snapshot through this same
+path; TypeScript and WASM do not maintain a second delta mutation implementation.
 
 ```sh
 cargo install wasm-pack --locked --version 0.15.0

@@ -457,26 +457,16 @@ static/dynamic vector, MathTex, PNG, and generic planar VMobject profiles; they 
 not claim arbitrary Python or updater semantics. Unsupported or unverifiable
 Scenes continue through the existing server-rendered fallback.
 
-### Incremental Scene transaction boundary
+### Canonical Scene replacement boundary
 
-`poietra.scene-delta` v1 is a bounded atomic transaction for Studio Edit Program
-snapshots. It correlates one Scene ID and exact base/next revision hashes, carries
-at most 256 non-duplicated operations, and has a 256 KiB encoded hard limit.
-Entity, animation-channel, and Scene-metadata changes are applied to an isolated
-candidate. The candidate replaces the installed snapshot only after the complete
-`SceneIrBundleV1` and asset-manifest integrity checks succeed; any stale revision,
-operation conflict, unknown field/version, size violation, or final invariant
-failure requests a full-snapshot fallback and leaves the base unchanged.
-Atomic application belongs to the native/WASM-shared `poietra-eval`
-`EngineSessionV1`; TypeScript only produces and bounds the transport delta and
-does not carry a second mutation implementation.
-
-Imported Manim snapshots deliberately do not use this delta. Their revision is a
-server-sealed content digest whose integrity cannot be established from a client
-edit transaction, so they require another verified full server snapshot. For
-Studio-owned Scenes, Canvas Worker ABI v4 carries the bounded delta into WASM and
-advances revision ownership only after the correlated acknowledgement. Asset
-changes and rejected or stale deltas use an explicit verified full replacement.
+Every committed Scene update crosses the Canvas Worker boundary as a complete,
+verified `SceneIrBundleV1`. Canvas ABI v5 correlates the installed base revision
+with the candidate revision; Rust validates and indexes the complete candidate
+before `EngineSessionV1` atomically swaps it in. A stale base, invalid snapshot,
+or asset-integrity failure preserves the installed Scene, and the client advances
+its revision only after the correlated acknowledgement. Studio-owned and imported
+Manim snapshots use this same replacement path; there is no second delta mutation
+implementation in TypeScript or WASM.
 
 ## Fixed experiment protocol and adoption budget
 
@@ -571,8 +561,7 @@ fixtures and the following budgets on the reference host:
 | worker + WASM cold ready, p95 over 20 runs | <= 1,000 ms |
 | additional compressed engine payload | <= 3 MiB |
 | observed retained response-boundary logical peak (`WASM linear + logical GPU resident`) | <= 256 MiB |
-| initial Scene snapshot | <= 5 MiB |
-| typical edit delta across the worker boundary | <= 256 KiB |
+| Scene install/replacement snapshot | <= 5 MiB |
 | browser/native perceptual parity | SSIM >= 0.995 and <= 0.5% pixels above 8/255 error |
 
 The memory budget has a deliberately narrower boundary than either intra-frame
@@ -641,7 +630,7 @@ The following evidence is reproducible in this repository:
 | fixture breadth and visual parity | met for the bounded corpus, static real-Scene slice, and exact `UpdatersExample` Runtime Trace slice | the catalog fixes 15 workload IDs; the corpus-driven full-RGBA lane covers affine/camera, PNG alpha, nested MathTex, generic stroke topology, and five bounded real MathTex morph samples. The V5 aggregate-path interpolation remains semantic evidence rather than exact Manim/Cairo animation parity. The independent static `RealPreviewScene` Cairo-to-visible-Edge compositor run passes at SSIM `0.9985658029` with `1,855 / 389,376` pixels (`0.47640327%`) above `8/255`, against gates of `0.995` and `0.5%`; expected, actual, diff, report, source, host, commit, producer, and served-WASM identities are checked in under [`docs/evidence/manim-compositor-parity-2026-07-31`](../evidence/manim-compositor-parity-2026-07-31/report.json). The local required Runtime Trace lane independently executes Cairo and compares seven full 640x360 RGBA frames after the real producer, server verification, lowering, and one retained WebGPU install. Its worst frame passes at SSIM `0.9993221454`; its largest over-`8/255` fraction is `1,007 / 230,400` pixels (`0.43706597%`), and a backward seek reproduces the bottom frame byte-for-byte. This is exact evidence only for the sealed official `UpdatersExample` profile, not arbitrary updater semantics. |
 | renderer capability coverage | partial | non-convex closed cubic fills, multiple subpaths, holes, self-intersections, nonzero/even-odd rules, general cubic strokes with v1 caps/joins/miter limits, ordered fill-then-stroke composition, transforms/camera/animation, verified PNG images, and four-sample coverage for Manim/Cairo vector frames work; the shared stroke fixture also samples nonzero trim, morph, and motion. Open fill paths, portable linear-light antialiasing, and clipping remain truthful fallbacks. |
 | Studio preview integration | met for bounded V1–V6 | The standard UI selects the server-backed WebGPU preview by default, preserves explicit tab-local consent before workspace Python executes, installs its verified snapshot once, and accepts only exactly correlated retained frame acknowledgements. Verified prepared geometry drives the paint-free React interaction overlay; unsupported semantics and failures are explicit rather than rendered by a second DOM implementation. Exact GPU texture readback and the named-host visible browser-compositor path are both covered. |
-| incremental edit transfer | met for Studio-owned Scenes | the first revision uses a verified full install; subsequent edits use the 256 KiB stale-revision-safe delta through Canvas Worker ABI v4 and WASM, with asset changes and rejected/stale deltas using a verified full replacement. Imported Manim snapshots remain server-sealed full installs. |
+| atomic Scene replacement | met | Canvas Worker ABI v5 installs or replaces one complete verified snapshot; Rust validates and indexes the candidate before the swap, stale or invalid updates preserve the installed Scene, and imported Manim snapshots use the same boundary. |
 | fast-manim bridge | met for bounded V1–V6; production arbitrary Python blocked | V1 covers the static Circle/Rectangle/Line slice; V2 adds variable duration and bounded affine, opacity, trim, morph, and motion channels; V3 adds hermetic MathTex; V4 adds verified PNG; V5 adds the bounded MathTex A/B/A morph; V6 adds generic planar VMobject paths. Studio hands canonical immutable request bytes to the explicit [sandbox backend boundary](../fast-manim-sandbox-backend.md), rechecks backend attestation and result correlation, and then verifies and seals the result. Runner-owned lifecycle bounds quarantine invalid adapters, omitted deployment defaults to production, and the local-process adapter remains explicit dev/test-only. |
 | frame, scrub, and cold-start latency | met on the named host | native Edge/D3D12 on the pinned NVIDIA adapter records warm acknowledgement p95 0.7 ms, scrub p95 0.3 ms, and 20-process cold scene-ready p95 397.6 ms. Five stress workloads sustain about 60 fps; 1,000 animated cubics sustain 40.42 fps while remaining within the 33.3 ms acknowledgement budget. |
 | retained-boundary memory budget | met for six canonical linear-light workloads; mixed-compositing follow-up pending | the existing six workloads remain single-sample and their largest post-fence high-water is 11,534,336 bytes for 1,000 animated cubics. A 1,920 x 1,080 Manim/Cairo frame adds an exact 33,177,600-byte retained target component; a fresh mixed-compositing benchmark remains follow-up evidence. Transient image allocation and browser/driver RSS remain explicitly excluded. |

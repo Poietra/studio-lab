@@ -8,7 +8,6 @@
 mod authoring;
 mod evaluator;
 mod retained_index;
-mod scene_delta;
 
 pub use authoring::{
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
@@ -26,8 +25,4 @@ pub use evaluator::{
 };
 pub use retained_index::{
     MAX_RETAINED_SCENE_INDEX_BYTES_V1, RetainedSceneIndexErrorV1, RetainedSceneIndexStatsV1,
-};
-pub use scene_delta::{
-    MAX_SCENE_DELTA_ACK_JSON_BYTES_V1, MAX_SCENE_DELTA_JSON_BYTES_V1, SceneDeltaErrorV1,
-    scene_delta_updates_assets_v1,
 };

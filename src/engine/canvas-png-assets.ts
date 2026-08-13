@@ -245,14 +245,3 @@ export async function prepareCanvasPngAssetTransfersV1(
   }
   return { nextRegistry: { byDigest: nextByDigest }, transfers };
 }
-
-/** True when a delta changes the immutable manifest and must use replacement. */
-export function canvasSceneDeltaChangesAssetsV1(delta: Readonly<{ operations: readonly unknown[] }>) {
-  return delta.operations.some(
-    (operation) =>
-      typeof operation === "object" &&
-      operation !== null &&
-      (operation as Readonly<{ kind?: unknown }>).kind === "update-scene" &&
-      "assets" in operation,
-  );
-}
