@@ -1191,8 +1191,7 @@ function planImportedTimeline(
     return { kind: "unsupported", message: "The verified source snapshot is not one exact imported Scene." };
   }
 
-  let duration = scene.duration;
-  const waitHistory: Array<{ at: number; id: string; remaining: number }> = [];
+  const authorizedWaitOperationIds: string[] = [];
   const edits: EditSceneTimelineWireCommandV1["edits"][number][] = [];
   const operationIds: string[] = [];
   for (const { operation, program } of timelineOperations) {
@@ -1203,8 +1202,7 @@ function planImportedTimeline(
       program.anchor.source.kind !== "absolute" ||
       !Number.isFinite(program.anchor.source.seconds) ||
       !Number.isFinite(program.anchor.resolvedSeconds) ||
-      program.anchor.resolvedSeconds < 0 ||
-      program.anchor.resolvedSeconds > duration + 0.0005
+      program.anchor.resolvedSeconds < 0
     ) {
       return { kind: "unsupported", message: "The Scene timeline edit has no exact Studio duration authority." };
     }
@@ -1213,72 +1211,35 @@ function planImportedTimeline(
       if (
         operation.eventKind !== "wait" ||
         operation.purpose !== "scene-duration" ||
-        !closeStaticTransformValue(operation.interval.start, program.anchor.resolvedSeconds) ||
-        !Number.isFinite(waitDuration) ||
-        waitDuration <= 0
+        !closeStaticTransformValue(operation.interval.start, program.anchor.resolvedSeconds)
       ) {
         return { kind: "unsupported", message: "Only an exact Studio Scene duration wait can be inserted." };
       }
       edits.push({ at: operation.interval.start, duration: waitDuration, kind: "insert-wait" });
-      duration += waitDuration;
-      waitHistory.push({ at: operation.interval.start, id: operation.id, remaining: waitDuration });
+      authorizedWaitOperationIds.push(operation.id);
       operationIds.push(operation.id);
       continue;
     }
 
-    const expectedWaitOperationIds = waitHistory.map(({ id }) => id).reverse();
-    let suffixEnd = -Infinity;
-    for (let index = waitHistory.length - 1; index >= 0; index -= 1) {
-      const wait = waitHistory[index]!;
-      if (wait.remaining > 0.0005) {
-        suffixEnd = wait.at + wait.remaining;
-        break;
-      }
-    }
+    const expectedWaitOperationIds = authorizedWaitOperationIds.toReversed();
     if (
       !closeStaticTransformValue(operation.interval.start, operation.interval.end) ||
       operation.waitOperationIds.length !== expectedWaitOperationIds.length ||
-      operation.waitOperationIds.some((operationId, index) => operationId !== expectedWaitOperationIds[index]) ||
-      !Number.isFinite(operation.removedDuration) ||
-      operation.removedDuration <= 0 ||
-      !Number.isFinite(suffixEnd) ||
-      !closeStaticTransformValue(operation.interval.start, suffixEnd) ||
-      !Number.isFinite(operation.targetDuration) ||
-      Math.abs(duration - operation.removedDuration - operation.targetDuration) >= 0.0005
+      operation.waitOperationIds.some((operationId, index) => operationId !== expectedWaitOperationIds[index])
     ) {
-      return { kind: "unsupported", message: "The Scene duration trim is not a suffix of this Studio wait history." };
+      return { kind: "unsupported", message: "The Scene duration trim has no exact Studio wait authority." };
     }
     edits.push({
+      at: operation.interval.start,
       kind: "trim-scene-duration",
       removedDuration: operation.removedDuration,
       targetDuration: operation.targetDuration,
     });
-    let remainingRemoval = operation.removedDuration;
-    let removalCursor = suffixEnd;
-    for (let index = waitHistory.length - 1; index >= 0 && remainingRemoval > 0.0005; index -= 1) {
-      const wait = waitHistory[index]!;
-      if (wait.remaining <= 0.0005) continue;
-      if (!closeStaticTransformValue(wait.at + wait.remaining, removalCursor)) {
-        return { kind: "unsupported", message: "The Scene duration trim crosses a non-wait timeline segment." };
-      }
-      const removed = Math.min(wait.remaining, remainingRemoval);
-      wait.remaining -= removed;
-      remainingRemoval -= removed;
-      removalCursor -= removed;
-    }
-    if (remainingRemoval > 0.0005) {
-      return { kind: "unsupported", message: "The Scene duration trim exceeds its Studio wait history." };
-    }
-    duration = operation.targetDuration;
     operationIds.push(operation.id);
   }
 
-  if (
-    edits.length === 0 ||
-    Math.abs(duration - input.proposedState.evaluatedScene.duration) >= 0.0005 ||
-    input.proposedState.evaluatedScene.sceneId !== input.proposedState.base.runtimeSceneState.sceneId
-  ) {
-    return { kind: "unsupported", message: "The Scene timeline edit does not reproduce the evaluated duration." };
+  if (input.proposedState.evaluatedScene.sceneId !== input.proposedState.base.runtimeSceneState.sceneId) {
+    return { kind: "unsupported", message: "The Scene timeline edit does not preserve the Studio Scene identity." };
   }
   return { edits, kind: "authorized", operationIds };
 }
@@ -1526,6 +1487,15 @@ export async function compileStudioPreviewSceneV1(
         schema: "poietra.edit-scene-timeline",
         version: 1,
       });
+      if (
+        bundle.scene.sceneId !== input.snapshot.snapshot.scene.sceneId ||
+        Math.abs(bundle.scene.duration - input.proposedState.evaluatedScene.duration) >= 0.0005
+      ) {
+        return {
+          error: "Rust core timeline result does not reproduce the Studio evaluated Scene.",
+          kind: "unsupported",
+        };
+      }
       return {
         kind: "compiled",
         scene: {

@@ -221,10 +221,13 @@ function exactImportedTimelineWorkingBase(base: Awaited<ReturnType<typeof compil
   };
 }
 
-function recordingTimelineCompiler(calls: EditSceneTimelineWireCommandV1[]): EditSceneTimelineCompiler {
+function recordingTimelineCompiler(
+  calls: EditSceneTimelineWireCommandV1[],
+  resultDuration: number,
+): EditSceneTimelineCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    return bundle;
+    return { ...bundle, scene: { ...bundle.scene, duration: resultDuration } };
   };
 }
 
@@ -1583,7 +1586,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const commands: EditSceneTimelineWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: recordingTimelineCompiler(commands),
+      editSceneTimelineCompiler: recordingTimelineCompiler(commands, proposedState.evaluatedScene.duration),
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot: base.snapshot,
@@ -1604,6 +1607,18 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       schema: "poietra.edit-scene-timeline",
       version: 1,
+    });
+    const mismatched = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: async (bundle) => bundle,
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:rejected-mismatched-duration",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+    expect(mismatched).toEqual({
+      error: "Rust core timeline result does not reproduce the Studio evaluated Scene.",
+      kind: "unsupported",
     });
   });
 
@@ -1644,7 +1659,7 @@ describe("compileStudioPreviewSceneV1", () => {
       editSceneTimelineCompiler: async (bundle) => {
         compilerCalls += 1;
         expect(bundle.scene.animationChannels).toEqual(animationChannels);
-        return bundle;
+        return { ...bundle, scene: { ...bundle.scene, duration: 3 } };
       },
       frame: { height: 9, width: 16 },
       proposedState: evaluateWorkingState({
@@ -1706,7 +1721,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const commands: EditSceneTimelineWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: recordingTimelineCompiler(commands),
+      editSceneTimelineCompiler: recordingTimelineCompiler(commands, proposedState.evaluatedScene.duration),
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot: base.snapshot,
@@ -1718,7 +1733,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands).toHaveLength(1);
     expect(commands[0]?.edits).toEqual([
       { at: 1, duration: 1, kind: "insert-wait" },
-      { kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 2.5 },
+      { at: 2, kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 2.5 },
       { at: 1.5, duration: 1, kind: "insert-wait" },
     ]);
     expect(commands[0]?.provenance.evidence).toEqual([
@@ -1726,6 +1741,33 @@ describe("compileStudioPreviewSceneV1", () => {
       `authorized operation ${trim.program.operations[0]?.id}`,
       `authorized operation ${laterExtension.program.operations[0]?.id}`,
     ]);
+
+    const trimOperation = trimRecord.program.operations[0];
+    if (trimOperation?.kind !== "TrimSceneDuration") throw new Error("Expected one Scene duration trim.");
+    const forgedTrimRecord = {
+      ...trimRecord,
+      program: {
+        ...trimRecord.program,
+        operations: [{ ...trimOperation, waitOperationIds: ["foreign-wait-operation"] }],
+      },
+    };
+    let compilerCalls = 0;
+    const rejected = await compileStudioPreviewSceneV1({
+      editSceneTimelineCompiler: async () => {
+        compilerCalls += 1;
+        throw new Error("A trim with foreign wait authority must not reach Rust.");
+      },
+      frame: { height: 9, width: 16 },
+      proposedState: evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord, forgedTrimRecord] }),
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:foreign-wait-authority",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+    expect(rejected).toMatchObject({
+      error: expect.stringContaining("no exact Studio wait authority"),
+      kind: "unsupported",
+    });
+    expect(compilerCalls).toBe(0);
   });
 
   it("rejects an appearance operation combined with a Scene timeline edit before Rust compilation", async () => {
