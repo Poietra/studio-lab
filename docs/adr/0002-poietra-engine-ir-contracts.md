@@ -304,22 +304,19 @@ scale stays a path draw.
 Entries are rounded before multiplying because an entry can underflow on its
 own — `m11 = 1e-50` with `m22 = 1e30` has an f64 determinant of `1e-20`, but
 `m11` is zero once rounded. The threshold is stable across WASM and native
-because it is a fixed IEEE-754 binary32 quantity rather than a tuned tolerance,
-and the predicate reaches it only through operations IEEE-754 pins exactly in
-both targets: round-to-nearest-even f64 to f32 conversion (`as f32` in Rust,
-`Math.fround` in TypeScript) and one f64 multiply-subtract. No platform math
-library is involved. Both implementations spell the same literal:
-`MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir` and `MIN_AFFINE_DETERMINANT`
-in `src/engine/primitives.ts`.
+because both execute the same Rust implementation. It uses the fixed IEEE-754
+binary32 `f32::MIN_POSITIVE` value, round-to-nearest-even f64-to-f32 conversion,
+and one f64 multiply-subtract; no platform math library or tuned tolerance is
+involved. `MIN_AFFINE_DETERMINANT_V1` in `poietra-scene-ir` is the single
+contract literal.
 
-Evaluation and packet validation classify a sample with the same predicate, not
-with two copies of it: `poietra-eval` — the crate the Canvas worker loads through
-`poietra-wasm` — calls
+Evaluation and packet validation classify a sample with the same predicate:
+`poietra-eval` — the crate the Canvas worker loads through `poietra-wasm` — calls
 `poietra_scene_ir::affine_transform_is_singular_v1`, the function packet
 validation itself uses. The golden fixture set carries a near-singular case
 (`fixtures/engine-v1/shared-near-singular-affine.json`) which the native Rust
-evaluator runs. The retired TypeScript reference evaluator no longer duplicates
-this rule.
+evaluator runs. Browser and native consumers therefore exercise the same rule
+rather than maintaining a TypeScript packet validator.
 
 GPU preparation has one operation order:
 
@@ -415,10 +412,12 @@ the code actually dispatches on that profile. Fixture history is not a domain AP
 
 ## Repository boundary
 
-The TypeScript contracts, Studio adapter, and Rust implementation stay in
-`studio-lab` while the boundary evolves. Rust lives in the top-level `engine/`
-Cargo workspace rather than under `src-tauri`, so browser, native/headless,
-Electron, and Tauri can consume the same core without a desktop-shell dependency.
+The Studio adapter and Rust implementation stay in `studio-lab` while the
+boundary evolves. TypeScript retains browser-facing Scene, asset, and viewport
+schemas, while Rust alone validates RenderPacket and cross-document EngineFrame
+invariants. Rust lives in the top-level `engine/` Cargo workspace rather than
+under `src-tauri`, so browser, native/headless, Electron, and Tauri can consume
+the same core without a desktop-shell dependency.
 
 Extraction to an independent Poietra repository is considered only after browser
 and native consumers pass the same golden fixtures and a release/compatibility
@@ -623,7 +622,7 @@ The following evidence is reproducible in this repository:
 
 | Area | Status | Evidence |
 | --- | --- | --- |
-| closed v1 contracts and integrity checks | met | TypeScript and Rust reject unknown fields, versions, capabilities, stale manifests, invalid references, and bounded-resource violations |
+| closed v1 contracts and integrity checks | met | TypeScript rejects malformed browser-facing Scene, asset, and viewport inputs; Rust is the single authority for RenderPacket and EngineFrame versions, capabilities, references, ordering, compositing, and bounded-resource invariants |
 | canonical evaluation | met for the shared fill/Line fixture | the same Rust evaluator produces the pinned semantic result for `eng-v1-shared-circle-opacity` through native tests and the browser WASM adapter, including the canonical Line cubic |
 | native WGPU output | met for the shared fill/Line fixture | Lavapipe readback proves black background, opaque blue fill, opacity-composited red fill, and green round-cap/interior pixels |
 | browser WASM/WebGPU output | met for the shared fill/Line fixture | Chromium 146 Worker readback proves the same fill and round-capped Line sample points through retained Scene evaluation |
