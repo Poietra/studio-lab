@@ -337,6 +337,7 @@ export function StudioCanvas({
           if (
             !showingCanvasPixels ||
             displayOnlyPreview ||
+            selectionOnlyPreview ||
             insertTool === "select" ||
             boundaryActive ||
             isCanvasInteractionTarget(event.target)

@@ -1,9 +1,6 @@
-import { readFile } from "node:fs/promises";
-
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { VerifiedSourceRuntimeIdentityMapV1 } from "../src/engine/source-runtime-identity";
-import { STUDIO_VIEWPORT } from "../src/studio/studio-viewport-geometry";
 
 const SNAPSHOT_PATH = "/api/manim/projects/real-preview-harness/scene-snapshots";
 const SCENE_LABEL = "scene_mixed_dynamic.py · MixedMathDemo";
@@ -58,115 +55,6 @@ async function expectPresented(page: Page, revision: number) {
   const viewport = await canvas.getAttribute("data-preview-viewport");
   if (!viewport) throw new Error("The mixed V7 preview did not expose its WebGPU viewport.");
   return viewport;
-}
-
-async function waitForNewPresentedFrame(page: Page, previousRevision: string, previousPacket: string) {
-  const canvas = page.locator("[data-studio-canvas]");
-  await expect
-    .poll(
-      async () => {
-        const [phase, revision, packet, reason] = await Promise.all([
-          canvas.getAttribute("data-preview-renderer"),
-          canvas.getAttribute("data-preview-revision"),
-          canvas.getAttribute("data-preview-packet-id"),
-          canvas.getAttribute("data-preview-fallback-reason"),
-        ]);
-        return phase === "presented" && revision && revision !== previousRevision && packet && packet !== previousPacket
-          ? "presented"
-          : JSON.stringify({ packet, phase, reason, revision });
-      },
-      { timeout: 30_000 },
-    )
-    .toBe("presented");
-  const revision = await canvas.getAttribute("data-preview-revision");
-  const packet = await canvas.getAttribute("data-preview-packet-id");
-  if (!revision || !packet) throw new Error("The edited mixed V7 frame has no retained-frame identity.");
-  return { packet, revision };
-}
-
-async function exportedSource(page: Page) {
-  const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "Export .py" }).click();
-  const download = await downloadPromise;
-  const path = await download.path();
-  if (!path) throw new Error("The mixed V7 source export was not persisted by Playwright.");
-  return readFile(path, "utf8");
-}
-
-async function applyDraft(page: Page, previous: Readonly<{ packet: string; revision: string }>) {
-  const draft = page.getByRole("heading", { name: "Draft program" });
-  await expect(draft).toBeVisible();
-  await page.getByRole("button", { name: "Apply program" }).click();
-  await expect(draft).toHaveCount(0, { timeout: 30_000 });
-  return waitForNewPresentedFrame(page, previous.revision, previous.packet);
-}
-
-async function renderCommitAndRerun(page: Page) {
-  const render = page.getByRole("button", { name: "Render program" });
-  await expect(render).toBeVisible({ timeout: 30_000 });
-  await render.click();
-  const commit = page.getByRole("button", { name: "Commit to source" });
-  await expect(commit).toBeVisible({ timeout: 60_000 });
-  await commit.click();
-  const dialog = page.getByRole("alertdialog", { name: "Commit rendered program?" });
-  await expect(dialog).toBeVisible();
-  const response = snapshotResponse(page);
-  await dialog.getByRole("button", { name: "Commit source" }).click();
-  return verifiedMixedSnapshot(response);
-}
-
-async function dragBy(page: Page, target: Locator, delta: Readonly<{ x: number; y: number }>) {
-  const box = await target.boundingBox();
-  if (!box) throw new Error("The mixed V7 edit target is not visible.");
-  const origin = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  await page.mouse.move(origin.x, origin.y);
-  await page.mouse.down();
-  await page.mouse.move(origin.x + delta.x, origin.y + delta.y);
-  await page.mouse.up();
-}
-
-function cubicEntityBounds(bundle: SceneIrBundleV1, entityId: string) {
-  const entity = bundle.scene.entities.find((candidate) => candidate.id === entityId);
-  if (!entity || entity.geometry.kind !== "cubic-path") {
-    throw new Error(`Entity ${entityId} has no cubic geometry.`);
-  }
-  const points = entity.geometry.path.subpaths.flatMap((subpath) => [
-    subpath.start,
-    ...subpath.segments.map((segment) => segment.end),
-  ]);
-  if (points.length === 0) throw new Error(`Entity ${entityId} has empty cubic geometry.`);
-  const world = points.map(({ x, y }) => ({
-    x: entity.transform.m11 * x + entity.transform.m12 * y + entity.transform.tx,
-    y: entity.transform.m21 * x + entity.transform.m22 * y + entity.transform.ty,
-  }));
-  const left = Math.min(...world.map(({ x }) => x));
-  const right = Math.max(...world.map(({ x }) => x));
-  const bottom = Math.min(...world.map(({ y }) => y));
-  const top = Math.max(...world.map(({ y }) => y));
-  return {
-    center: { x: (left + right) / 2, y: (bottom + top) / 2 },
-    height: top - bottom,
-    width: right - left,
-  };
-}
-
-function animationSemantics(bundle: SceneIrBundleV1, identity: VerifiedSourceRuntimeIdentityMapV1) {
-  const sourceNameByEntity = new Map(identity.mappings.map(({ binding, entityId }) => [entityId, binding.name]));
-  return bundle.scene.animationChannels.map(({ entityId, id: _id, provenanceId: _provenanceId, ...channel }) => ({
-    ...channel,
-    sourceName: sourceNameByEntity.get(entityId),
-  }));
-}
-
-function canonicalEquationTransform(source: string) {
-  const positions = [...source.matchAll(/^\s*equation\.move_to\(\(([-+0-9.eE]+), ([-+0-9.eE]+), 0\)\)\s*$/gm)];
-  const scales = [...source.matchAll(/^\s*equation\.scale\(([-+0-9.eE]+)\)\s*$/gm)];
-  expect(positions).toHaveLength(1);
-  expect(scales).toHaveLength(1);
-  return {
-    center: { x: Number(positions[0]?.[1]), y: Number(positions[0]?.[2]) },
-    scale: Number(scales[0]?.[1]),
-  };
 }
 
 async function renderCheckpoints(
@@ -317,124 +205,25 @@ test("renders one identity-mapped MathTex and animated shapes from a real Manim 
       ([red, green, blue, alpha]) => red === 0 && green === 0 && blue === 0 && alpha === 255,
     ),
   ).toBe(true);
-  const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
-  await expect(scenePlayhead).toHaveAttribute("max", "4");
 
   const canvas = page.locator("[data-studio-canvas]");
-  const pristineRevision = await canvas.getAttribute("data-preview-revision");
-  const pristinePacket = await canvas.getAttribute("data-preview-packet-id");
-  if (!pristineRevision || !pristinePacket) throw new Error("The pristine mixed V7 frame has no identity.");
-  const initialEquationBounds = cubicEntityBounds(run.bundle, equationId);
-  const equation = page.getByRole("button", { name: "Move equation", exact: true });
-  await expect(equation).toBeVisible();
-  await expect(equation).toBeEnabled();
-  await page.getByRole("button", { name: "Set position" }).click();
-  await page.getByRole("checkbox", { name: "Select equation" }).check();
-  const studioEquationId = await equation.getAttribute("data-studio-entity");
-  if (!studioEquationId) throw new Error("The mixed V7 MathTex has no Studio identity.");
-  const equationWrapper = page.locator(`[data-studio-entity-wrapper="${studioEquationId}"]`);
-  const dragSurfaceWidth = await equation.evaluate(
-    (element) => element.closest<HTMLElement>("[data-scene-phase]")?.getBoundingClientRect().width ?? 0,
-  );
-  expect(dragSurfaceWidth).toBeGreaterThan(0);
+  await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+  await expect(page.locator("[data-studio-preview-status]")).toContainText("selection only");
 
-  await dragBy(page, equation, { x: 32, y: 0 });
-  const movedFrame = await applyDraft(page, { packet: pristinePacket, revision: pristineRevision });
-  await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
-
-  const resizeHandle = page.getByRole("button", { name: "Resize equation from bottom-right corner" });
-  await expect(resizeHandle).toBeVisible();
-  await resizeHandle.press("ArrowRight");
-  const resizedFrame = await applyDraft(page, movedFrame);
-  await expect(canvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
-  await expect(equationWrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
-
-  const source = await exportedSource(page);
-  expect(source).toContain("# poietra:cursor 0");
-  const firstTransform = canonicalEquationTransform(source);
-  const exportedCenter = firstTransform.center;
-  expect(exportedCenter.x).toBeCloseTo(
-    run.bundle.scene.camera.view.center.x + (32 / dragSurfaceWidth) * run.bundle.scene.camera.view.frameWidth,
-    8,
-  );
-  expect(exportedCenter.y).toBeCloseTo(run.bundle.scene.camera.view.center.y, 8);
-  expect(firstTransform.scale).toBeCloseTo(1.05, 8);
-  expect(source.indexOf("equation.scale(1.05)")).toBeLessThan(source.indexOf("self.play(Create(ring"));
-  expect(source).toContain("# poietra:anchor 0");
-
-  const rerun = await renderCommitAndRerun(page);
-  expect(rerun.snapshotHash).not.toBe(run.snapshotHash);
-  expect(rerun.bundle.scene.duration).toBe(4);
-  expect(animationSemantics(rerun.bundle, rerun.identity)).toEqual(animationSemantics(run.bundle, run.identity));
-
-  const rerunEquationId = rerun.identity.mappings.find(({ binding }) => binding.name === "equation")?.entityId;
-  if (!rerunEquationId) throw new Error("The edited mixed V7 MathTex did not regain source/runtime identity.");
-  const editedEquationBounds = cubicEntityBounds(rerun.bundle, rerunEquationId);
-  expect(editedEquationBounds.width / initialEquationBounds.width).toBeCloseTo(1.05, 8);
-  expect(editedEquationBounds.height / initialEquationBounds.height).toBeCloseTo(1.05, 8);
-  expect(editedEquationBounds.center.x).toBeCloseTo(exportedCenter.x, 8);
-  expect(editedEquationBounds.center.y).toBeCloseTo(exportedCenter.y, 8);
-
-  const rerunFrame = await waitForNewPresentedFrame(page, resizedFrame.revision, resizedFrame.packet);
-  expect(rerunFrame.revision).toBe(rerun.snapshotHash);
-  await expect(page.locator("[data-studio-preview-status]")).toContainText(
-    `verified server snapshot r${rerun.revision}`,
-  );
+  const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
+  await expect(scenePlayhead).toHaveAttribute("max", "4");
+  const packetIds = new Set<string>();
   for (const sampleTime of [0.5, 2, 3.99]) {
     await scenePlayhead.fill(String(sampleTime));
     await expect(canvas).toHaveAttribute("data-preview-renderer", "presented");
     await expect(canvas).toHaveAttribute("data-preview-sample-time", String(sampleTime));
+    await expect(canvas).toHaveAttribute("data-preview-interaction", "selection-only");
+    const packetId = await canvas.getAttribute("data-preview-packet-id");
+    if (!packetId) throw new Error(`The mixed V7 frame at ${sampleTime}s has no retained packet identity.`);
+    packetIds.add(packetId);
   }
-  await page.getByRole("button", { name: "Keep source" }).click();
-  await expect(page.getByRole("button", { name: "Render program" })).toBeVisible();
-
-  const secondCanvas = page.locator("[data-studio-canvas]");
-  const secondPlayhead = page.getByRole("slider", { name: "Scene playhead" });
-  await secondPlayhead.press("Home");
-  await expect(secondPlayhead).toHaveValue("0");
-  await expect(secondCanvas).toHaveAttribute("data-preview-sample-time", "0");
-  const secondEquation = page.getByRole("button", { name: "Move equation", exact: true });
-  const secondStudioEquationId = await secondEquation.getAttribute("data-studio-entity");
-  if (!secondStudioEquationId) throw new Error("The rerun MathTex has no Studio identity.");
-  const secondEquationWrapper = page.locator(`[data-studio-entity-wrapper="${secondStudioEquationId}"]`);
-  await expect(secondEquationWrapper).toHaveAttribute("data-studio-runtime-entity", rerunEquationId);
-  await expect(secondEquationWrapper).toHaveAttribute("data-studio-entity-scale", "1.0500");
-  await page.getByRole("button", { name: "Set position" }).click();
-  await page.getByRole("checkbox", { name: "Select equation" }).check();
-
-  await secondEquation.press("Shift+ArrowRight");
-  const secondMovedFrame = await applyDraft(page, rerunFrame);
-  await expect(secondCanvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
-
-  const secondResizeHandle = page.getByRole("button", { name: "Resize equation from bottom-right corner" });
-  await secondResizeHandle.press("ArrowRight");
-  const secondResizedFrame = await applyDraft(page, secondMovedFrame);
-  await expect(secondCanvas).not.toHaveAttribute("data-preview-fallback-reason", /.+/);
-  await expect(secondEquationWrapper).toHaveAttribute("data-studio-entity-scale", "1.1025");
-
-  const secondSource = await exportedSource(page);
-  const secondTransform = canonicalEquationTransform(secondSource);
-  expect(secondSource.match(/^\s*# poietra:cursor 0\s*$/gm)).toHaveLength(1);
-  expect(secondTransform.center.x).toBeCloseTo(
-    exportedCenter.x + (10 / STUDIO_VIEWPORT.width) * rerun.bundle.scene.camera.view.frameWidth,
-    8,
-  );
-  expect(secondTransform.center.y).toBeCloseTo(exportedCenter.y, 8);
-  expect(secondTransform.scale).toBeCloseTo(1.1025, 8);
-  expect(secondSource.indexOf("equation.scale(")).toBeLessThan(secondSource.indexOf("self.play(Create(ring"));
-
-  const secondRerun = await renderCommitAndRerun(page);
-  expect(secondRerun.snapshotHash).not.toBe(rerun.snapshotHash);
-  expect(animationSemantics(secondRerun.bundle, secondRerun.identity)).toEqual(
-    animationSemantics(run.bundle, run.identity),
-  );
-  const finalEquationId = secondRerun.identity.mappings.find(({ binding }) => binding.name === "equation")?.entityId;
-  if (!finalEquationId) throw new Error("The twice-edited MathTex did not regain source/runtime identity.");
-  const finalBounds = cubicEntityBounds(secondRerun.bundle, finalEquationId);
-  expect(finalBounds.center.x).toBeCloseTo(secondTransform.center.x, 8);
-  expect(finalBounds.center.y).toBeCloseTo(secondTransform.center.y, 8);
-  expect(finalBounds.width / initialEquationBounds.width).toBeCloseTo(1.1025, 8);
-  expect(finalBounds.height / initialEquationBounds.height).toBeCloseTo(1.1025, 8);
-  const finalFrame = await waitForNewPresentedFrame(page, secondResizedFrame.revision, secondResizedFrame.packet);
-  expect(finalFrame.revision).toBe(secondRerun.snapshotHash);
+  expect(packetIds.size).toBe(3);
+  await scenePlayhead.press("Home");
+  await expect(scenePlayhead).toHaveValue("0");
+  await expect(canvas).toHaveAttribute("data-preview-sample-time", "0");
 });

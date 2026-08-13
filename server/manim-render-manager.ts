@@ -1157,7 +1157,7 @@ export class ManimRenderManager {
   runRuntimeTrace(request: FastManimRuntimeTraceRunRequestV1, signal?: AbortSignal) {
     if (this.closing) throw new HttpError("The Manim render pipeline is shutting down.", 503);
     if (request.projectId !== this.projectId) throw new HttpError("Configured Manim project not found.", 404);
-    if (!this.runtimeTraceRunner) throw new HttpError("Runtime Trace preview is not configured.", 503);
+    if (!this.runtimeTraceRunner) throw new HttpError("Runtime Trace preview is not configured.", 501);
     return this.runtimeTraceRunner.runRuntimeTrace(request, signal);
   }
 
