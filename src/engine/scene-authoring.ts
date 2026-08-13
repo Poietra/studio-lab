@@ -1,6 +1,6 @@
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 
-const POIETRA_ENGINE_ABI_VERSION = 5;
+const POIETRA_ENGINE_ABI_VERSION = 6;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -99,7 +99,7 @@ export type TransformSceneEntityAtTimeCompiler = (
 export type EditSceneTimelineWireCommandV1 = Readonly<{
   edits: readonly (
     | Readonly<{ at: number; duration: number; kind: "insert-wait" }>
-    | Readonly<{ kind: "trim-scene-duration"; removedDuration: number; targetDuration: number }>
+    | Readonly<{ at: number; kind: "trim-scene-duration"; removedDuration: number; targetDuration: number }>
   )[];
   expectedBaseRevision: string;
   nextRevision: string;

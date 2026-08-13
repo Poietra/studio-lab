@@ -60,6 +60,7 @@ pub struct SceneTimelineInsertion {
 pub enum SceneTimelineEdit {
     InsertWait(SceneTimelineInsertion),
     TrimSceneDuration {
+        at: f64,
         removed_duration: f64,
         target_duration: f64,
     },
@@ -848,11 +849,13 @@ fn remove_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, start: f64, end: f
 fn trim_inserted_waits(
     scene: &mut poietra_scene_ir::SceneIrV1,
     inserted_waits: &mut Vec<IntervalV1>,
+    at: f64,
     removed_duration: f64,
     target_duration: f64,
 ) -> Result<(), EditSceneTimelineError> {
     let resolved_duration = scene.duration - removed_duration;
-    if !removed_duration.is_finite()
+    if !at.is_finite()
+        || !removed_duration.is_finite()
         || removed_duration <= 0.0
         || !target_duration.is_finite()
         || target_duration <= 0.0
@@ -866,6 +869,9 @@ fn trim_inserted_waits(
         .last()
         .map(|wait| wait.end)
         .ok_or(EditSceneTimelineError::InvalidTrim)?;
+    if (removal_cursor - at).abs() >= TIMELINE_ANCHOR_EPSILON {
+        return Err(EditSceneTimelineError::InvalidTrim);
+    }
     while remaining > TIMELINE_ANCHOR_EPSILON {
         let Some(wait) = inserted_waits.last() else {
             return Err(EditSceneTimelineError::InvalidTrim);
@@ -1231,11 +1237,13 @@ impl EngineSessionV1 {
                     });
                 }
                 SceneTimelineEdit::TrimSceneDuration {
+                    at,
                     removed_duration,
                     target_duration,
                 } => trim_inserted_waits(
                     &mut candidate.scene,
                     &mut inserted_waits,
+                    *at,
                     *removed_duration,
                     *target_duration,
                 )?,
@@ -2776,6 +2784,7 @@ mod tests {
                 duration: 3.0,
             }),
             SceneTimelineEdit::TrimSceneDuration {
+                at: 10.0,
                 removed_duration: 1.0,
                 target_duration: 14.0,
             },
@@ -2852,6 +2861,7 @@ mod tests {
                 duration: 3.0,
             }),
             SceneTimelineEdit::TrimSceneDuration {
+                at: 10.0,
                 removed_duration: 4.0,
                 target_duration: 11.0,
             },
@@ -2864,6 +2874,31 @@ mod tests {
         ));
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    fn trim_at_a_different_source_anchor_is_rejected_atomically() {
+        let bundle = timeline_bundle();
+        let expected_scene = bundle.scene.clone();
+        let command = timeline_command(vec![
+            SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: 7.0,
+                duration: 3.0,
+            }),
+            SceneTimelineEdit::TrimSceneDuration {
+                at: 9.5,
+                removed_duration: 1.0,
+                target_duration: 14.0,
+            },
+        ]);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.edit_scene_timeline(command),
+            Err(EditSceneTimelineError::InvalidTrim)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
@@ -2881,6 +2916,7 @@ mod tests {
                 duration: 1.0,
             }),
             SceneTimelineEdit::TrimSceneDuration {
+                at: 9.0,
                 removed_duration: 2.0,
                 target_duration: 12.0,
             },
@@ -2908,6 +2944,7 @@ mod tests {
                 duration: 0.1,
             }),
             SceneTimelineEdit::TrimSceneDuration {
+                at: 7.2,
                 removed_duration: 0.2,
                 target_duration: 12.0,
             },
@@ -2930,6 +2967,7 @@ mod tests {
                 duration: 1.0,
             }),
             SceneTimelineEdit::TrimSceneDuration {
+                at: 8.5,
                 removed_duration: 1.5,
                 target_duration: 12.5,
             },

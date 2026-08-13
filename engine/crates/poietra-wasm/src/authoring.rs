@@ -214,6 +214,7 @@ enum SceneTimelineEditJsonV1 {
     InsertWait { at: f64, duration: f64 },
     #[serde(rename = "trim-scene-duration")]
     TrimSceneDuration {
+        at: f64,
         #[serde(rename = "removedDuration")]
         removed_duration: f64,
         #[serde(rename = "targetDuration")]
@@ -228,9 +229,11 @@ impl From<SceneTimelineEditJsonV1> for SceneTimelineEdit {
                 Self::InsertWait(SceneTimelineInsertion { at, duration })
             }
             SceneTimelineEditJsonV1::TrimSceneDuration {
+                at,
                 removed_duration,
                 target_duration,
             } => Self::TrimSceneDuration {
+                at,
                 removed_duration,
                 target_duration,
             },
@@ -943,7 +946,7 @@ mod tests {
         serde_json::to_vec(&json!({
             "edits": [
                 { "at": 0.5, "duration": 0.5, "kind": "insert-wait" },
-                { "kind": "trim-scene-duration", "removedDuration": 0.2, "targetDuration": 2.3 }
+                { "at": 1.0, "kind": "trim-scene-duration", "removedDuration": 0.2, "targetDuration": 2.3 }
             ],
             "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",

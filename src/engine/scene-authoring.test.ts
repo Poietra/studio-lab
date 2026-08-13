@@ -130,7 +130,7 @@ const timedTransformCommand: TransformSceneEntityAtTimeWireCommandV1 = {
 const editTimelineCommand: EditSceneTimelineWireCommandV1 = {
   edits: [
     { at: 2, duration: 1.5, kind: "insert-wait" },
-    { kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 3 },
+    { at: 3.5, kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 3 },
   ],
   expectedBaseRevision: "a".repeat(64),
   nextRevision: "c".repeat(64),
