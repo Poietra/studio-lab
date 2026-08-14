@@ -4,10 +4,10 @@ import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type ApplyStaticRootTransformEditWireCommandV1,
-  type CreateSceneEntitiesWireCommandV1,
+  type ApplyStudioCreationEditWireCommandV1,
   type CreateSceneMotionWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
-  createCreateSceneEntitiesCompiler,
+  createApplyStudioCreationEditCompiler,
   createCreateSceneMotionCompiler,
   createEditSceneTimelineCompiler,
   createRotateSceneEntityCompiler,
@@ -57,31 +57,69 @@ const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 
   viewport: { height: 360, width: 640 },
 };
 
-const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
-  entities: [
+const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
+  evaluatedDuration: 2.4,
+  evaluatedEntities: [
     {
-      fadeIn: { end: 0.9 },
-      geometry: { height: 2, kind: "rectangle", width: 4 },
+      contentSampleTexParts: [],
+      contentTexParts: null,
       id: "tx:create/entity:rectangle",
-      instantTransform: { at: 1.25, position: { x: 3, y: 1 }, scaleX: 1.5, scaleY: 0.75 },
-      lifetime: { end: 2.4, start: 0.5 },
-      position: { x: 2, y: 0 },
-      scale: 1,
+      kind: "rectangle",
+      lifetimes: [{ end: 2.4, start: 0.5 }],
+      objectGraphKey: "tx:create/entity:rectangle",
+      sourceIdentity: null,
+      transactionId: "create",
     },
   ],
-  expectedBaseRevision: "a".repeat(64),
-  nextRevision: "d".repeat(64),
-  provenance: {
-    evidence: ["Studio entity creation"],
-    id: "studio-edit:create-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.create-scene-entities",
-  timelineInsertions: [
-    { at: 0.5, duration: 0.2 },
-    { at: 0.7, duration: 0.2 },
+  evaluatedEvents: [
+    { interval: { end: 0.5, start: 0.5 }, operationId: "create-rectangle" },
+    { interval: { end: 0.5, start: 0.5 }, operationId: "position-rectangle" },
+    { interval: { end: 0.9, start: 0.5 }, operationId: "fade-rectangle" },
   ],
+  expectedBaseRevision: "a".repeat(64),
+  frame: { height: 9, width: 16 },
+  mathTexOutlines: [],
+  nextRevision: "d".repeat(64),
+  programs: [
+    {
+      anchorSeconds: 0.5,
+      loweringSupported: true,
+      operations: [
+        {
+          entity: {
+            dimensions: { height: 2, width: 4 },
+            id: "tx:create/entity:rectangle",
+            kind: "rectangle",
+            lifetimeStart: 0.5,
+            texParts: null,
+          },
+          id: "create-rectangle",
+          interval: { end: 0.5, start: 0.5 },
+          kind: "create",
+        },
+        {
+          entityId: "tx:create/entity:rectangle",
+          id: "position-rectangle",
+          interval: { end: 0.5, start: 0.5 },
+          kind: "position",
+          position: { x: 320, y: 180 },
+        },
+        {
+          entityId: "tx:create/entity:rectangle",
+          id: "fade-rectangle",
+          interval: { end: 0.9, start: 0.5 },
+          kind: "fade-in",
+          persistent: true,
+        },
+      ],
+      scheduleOrder: ["create-rectangle", "position-rectangle", "fade-rectangle"],
+      transactionId: "create",
+      validationValid: true,
+    },
+  ],
+  schema: "poietra.apply-studio-creation-edit",
   version: 1,
+  viewport: { height: 360, width: 640 },
 };
 
 const createMotionCommand: CreateSceneMotionWireCommandV1 = {
@@ -221,11 +259,11 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(staticRootTransformEditCommand);
   });
 
-  it("forwards one exact entity-creation command and complete base snapshot", async () => {
+  it("forwards one complete normalized Studio creation edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createCreateSceneEntitiesCompiler(async () => ({
-      createSceneEntitiesV1: (snapshotJson, commandJson) => {
+    const compile = createApplyStudioCreationEditCompiler(async () => ({
+      applyStudioCreationEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
@@ -234,9 +272,9 @@ describe("Scene authoring WASM adapter", () => {
       },
     }));
 
-    const result = await compile(bundle, createEntitiesCommand);
+    const result = await compile(bundle, creationEditCommand);
     expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(createEntitiesCommand);
+    expect(calls[1]).toEqual(creationEditCommand);
   });
 
   it("forwards one profile-free command and accepts only a verified complete bundle", async () => {
@@ -367,8 +405,8 @@ describe("Scene authoring WASM adapter", () => {
 
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
-    const compileCreation = createCreateSceneEntitiesCompiler(async () => ({
-      createSceneEntitiesV1: () => new TextEncoder().encode("null"),
+    const compileCreation = createApplyStudioCreationEditCompiler(async () => ({
+      applyStudioCreationEditV1: () => new TextEncoder().encode("null"),
     }));
     const compileRotation = createRotateSceneEntityCompiler(async () => ({
       rotateSceneEntityV1: () => new TextEncoder().encode('{"scene":{}}'),
@@ -383,7 +421,7 @@ describe("Scene authoring WASM adapter", () => {
       editSceneTimelineV1: () => new TextEncoder().encode("false"),
     }));
 
-    await expect(compileCreation(bundle, createEntitiesCommand)).rejects.toThrow();
+    await expect(compileCreation(bundle, creationEditCommand)).rejects.toThrow();
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
     await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();

@@ -19,11 +19,11 @@ import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
   type ApplyStaticRootTransformEditCompiler,
   type ApplyStaticRootTransformEditWireCommandV1,
-  type CreateSceneEntitiesCompiler,
-  type CreateSceneEntitiesWireCommandV1,
+  type ApplyStudioCreationEditCompiler,
+  type ApplyStudioCreationEditWireCommandV1,
   type CreateSceneMotionCompiler,
   compileApplyStaticRootTransformEdit,
-  compileCreateSceneEntities,
+  compileApplyStudioCreationEdit,
   compileCreateSceneMotion,
   compileEditSceneTimeline,
   type EditSceneTimelineCompiler,
@@ -35,14 +35,7 @@ import {
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
-import type {
-  EntityDimensions,
-  Point,
-  ProgramRecord,
-  ProjectedEntity,
-  ProposedState,
-  RuntimeSceneState,
-} from "./model";
+import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import type { CanonicalEditOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
@@ -74,9 +67,8 @@ import {
   studioPreviewRuntimeTraceEditCandidates,
   studioPreviewRuntimeTraceProgramValidation,
 } from "./preview-temporal-rebase";
-import { insertedProgramDuration } from "./program-composition";
 import { isPointValue } from "./property-sampling";
-import { studioPointToScenePoint, studioVectorToSceneVector } from "./scene-authoring-geometry";
+import { studioVectorToSceneVector } from "./scene-authoring-geometry";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
@@ -456,277 +448,69 @@ type ImportedMotionPlan =
       runtimeEntityIds: readonly string[];
     }>;
 
-type StudioCreatedEntityEntry = Readonly<{
-  create: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>;
-  entity: RuntimeSceneState["objectGraph"]["entities"][string];
-  fadeIn?: Extract<CanonicalEditOperation, { kind: "ChangePresence" }>;
-  instantTransform?: Readonly<{
-    at: number;
-    position: Point;
-    scaleX: number;
-    scaleY: number;
-  }>;
-  position: Extract<CanonicalEditOperation, { kind: "SetProperty" }> & Readonly<{ key: "position"; value: Point }>;
-}>;
-
-type StudioCreatedEntityAuthoringState = {
-  dimensions?: EntityDimensions;
-  initialDimensions?: EntityDimensions;
-  instantAt?: number;
-  position: Point;
-  scale: number;
-  type: "Circle" | "MathTex" | "Rectangle";
-};
-
-type StudioCreatedEntityPlan =
-  | Readonly<{ kind: "not-applicable" }>
-  | Readonly<{ kind: "unsupported"; message: string }>
-  | Readonly<{
-      entities: readonly StudioCreatedEntityEntry[];
-      kind: "authorized";
-      operationCount: number;
-      programCount: number;
-      timelineInsertions: readonly Readonly<{ at: number; duration: number }>[];
-    }>;
-
-function evaluatedOperationStart(scene: RuntimeSceneState, operationId: string) {
-  const events = scene.eventTrack.events.filter((event) => event.operationId === operationId);
-  const interval = events.length === 1 ? events[0]?.interval : undefined;
-  return interval && interval.start === interval.end && Number.isFinite(interval.start) ? interval.start : null;
+function studioCreationEntityKind(type: string): "circle" | "image" | "math-tex" | "other" | "rectangle" {
+  return type === "Circle"
+    ? "circle"
+    : type === "ImageMobject"
+      ? "image"
+      : type === "MathTex"
+        ? "math-tex"
+        : type === "Rectangle"
+          ? "rectangle"
+          : "other";
 }
 
-function planStudioCreatedEntities(proposedState: ProposedState): StudioCreatedEntityPlan {
-  const createPrograms = proposedState.programs
-    .map((record, index) => ({ index, record }))
-    .filter(({ record }) => record.program.operations.some(({ kind }) => kind === "CreateEntity"))
-    .sort(
-      (left, right) =>
-        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
-        left.index - right.index,
-    )
-    .map(({ record }) => record);
-  const createProgramSet = new Set(createPrograms);
-  const followupPrograms = proposedState.programs
-    .map((record, index) => ({ index, record }))
-    .filter(({ record }) => !createProgramSet.has(record))
-    .sort(
-      (left, right) =>
-        left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
-        left.index - right.index,
-    )
-    .map(({ record }) => record);
-  const createRecords = createPrograms.flatMap((record) =>
-    record.program.operations.flatMap((create) => (create.kind === "CreateEntity" ? [{ create, record }] : [])),
-  );
-  if (createRecords.length === 0) return { kind: "not-applicable" };
-  if (proposedState.programs.some(({ validation }) => validation.status !== "valid")) {
-    return { kind: "unsupported", message: "Studio creation requires only validated edit Programs." };
-  }
-  const createdIds = new Set(createRecords.map(({ create }) => create.entity.id));
-  if (createdIds.size !== createRecords.length) {
-    return { kind: "unsupported", message: "Studio creation contains duplicate entity identities." };
-  }
-  for (const { create } of createRecords) {
-    if (create.entity.type !== "Circle" && create.entity.type !== "Rectangle" && create.entity.type !== "MathTex") {
-      return {
-        kind: "unsupported",
-        message: `Studio-created ${create.entity.type} is not supported by the canonical core creation command.`,
-      };
-    }
-  }
+function studioCreationMathTexParts(value: unknown): readonly string[] | null {
+  return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
+}
 
-  const permitted = createPrograms.every((record) => {
-    const programCreatedIds = new Set(
-      record.program.operations.flatMap((operation) =>
-        operation.kind === "CreateEntity" ? [operation.entity.id] : [],
-      ),
-    );
-    return record.program.operations.every(
-      (operation) =>
-        operation.kind === "CreateEntity" ||
-        (operation.kind === "SetProperty" &&
-          operation.key === "position" &&
-          programCreatedIds.has(operation.entityId)) ||
-        (operation.kind === "ChangePresence" &&
-          operation.effect === "fade-in" &&
-          operation.persistent &&
-          programCreatedIds.has(operation.entityId)),
-    );
-  });
-  if (!permitted) {
+function normalizedStudioCreationOperation(
+  operation: CanonicalEditOperation,
+): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = { id: operation.id, interval: operation.interval };
+  if (operation.kind === "CreateEntity") {
     return {
-      kind: "unsupported",
-      message:
-        "Studio creation cannot be combined with edits outside the canonical create/position/fade operation set.",
-    };
-  }
-
-  const evaluatedOrder = new Map(
-    Object.keys(proposedState.evaluatedScene.objectGraph.entities).map((entityId, index) => [entityId, index]),
-  );
-  const orderedCreates = [...createRecords].sort(
-    (left, right) =>
-      (evaluatedOrder.get(left.create.entity.id) ?? Infinity) -
-      (evaluatedOrder.get(right.create.entity.id) ?? Infinity),
-  );
-  const entities: StudioCreatedEntityEntry[] = [];
-  const authoringState = new Map<string, StudioCreatedEntityAuthoringState>();
-  for (const { create, record } of orderedCreates) {
-    const entity = proposedState.evaluatedScene.objectGraph.entities[create.entity.id];
-    const positions = record.program.operations.filter(
-      (operation): operation is StudioCreatedEntityEntry["position"] =>
-        operation.kind === "SetProperty" &&
-        operation.key === "position" &&
-        operation.entityId === create.entity.id &&
-        isFinitePoint(operation.value),
-    );
-    const fades = record.program.operations.filter(
-      (operation): operation is NonNullable<StudioCreatedEntityEntry["fadeIn"]> =>
-        operation.kind === "ChangePresence" && operation.entityId === create.entity.id,
-    );
-    const lifetime = entity?.lifetime.length === 1 ? entity.lifetime[0] : undefined;
-    if (
-      !entity ||
-      entity.sourceIdentity.kind !== "unknown" ||
-      entity.transactionId === undefined ||
-      entity.transactionId !== record.program.transactionId ||
-      !entity.id.startsWith(`tx:${entity.transactionId}/entity:`) ||
-      entity.type !== create.entity.type ||
-      positions.length !== 1 ||
-      fades.length > 1 ||
-      !lifetime ||
-      !Number.isFinite(lifetime.start) ||
-      !Number.isFinite(lifetime.end) ||
-      lifetime.end <= lifetime.start ||
-      lifetime.start !== create.entity.lifetime.start ||
-      (fades[0] !== undefined &&
-        (fades[0].interval.start !== lifetime.start ||
-          !Number.isFinite(fades[0].interval.end) ||
-          fades[0].interval.end <= lifetime.start ||
-          fades[0].interval.end > lifetime.end))
-    ) {
-      return {
-        kind: "unsupported",
-        message: `Studio-created entity ${create.entity.id} has incomplete canonical creation evidence.`,
-      };
-    }
-    if (
-      (create.entity.type === "Circle" &&
-        (!Number.isFinite(create.entity.dimensions?.radius) || (create.entity.dimensions?.radius ?? 0) <= 0)) ||
-      (create.entity.type === "Rectangle" &&
-        (!Number.isFinite(create.entity.dimensions?.width) ||
-          !Number.isFinite(create.entity.dimensions?.height) ||
-          (create.entity.dimensions?.width ?? 0) <= 0 ||
-          (create.entity.dimensions?.height ?? 0) <= 0))
-    ) {
-      return { kind: "unsupported", message: `Studio-created entity ${create.entity.id} has invalid dimensions.` };
-    }
-    entities.push({ create, entity, ...(fades[0] ? { fadeIn: fades[0] } : {}), position: positions[0] });
-    authoringState.set(create.entity.id, {
-      dimensions: create.entity.dimensions,
-      initialDimensions: create.entity.dimensions,
-      position: positions[0].value,
-      scale: 1,
-      type: create.entity.type as StudioCreatedEntityAuthoringState["type"],
-    });
-  }
-  for (const { program } of followupPrograms) {
-    const operationById = new Map(program.operations.map((operation) => [operation.id, operation]));
-    for (const operationId of program.schedule.order) {
-      const operation = operationById.get(operationId);
-      if (!operation || !("entityId" in operation) || !createdIds.has(operation.entityId)) {
-        return { kind: "unsupported", message: "Studio creation contains an unrelated follow-up operation." };
-      }
-      const state = authoringState.get(operation.entityId);
-      const instantAt = evaluatedOperationStart(proposedState.evaluatedScene, operation.id);
-      const supportedPosition =
-        operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value);
-      const supportedScale =
-        operation.kind === "AnimateProperty" &&
-        operation.key === "scale" &&
-        Number.isFinite(operation.relativeFactor) &&
-        (operation.relativeFactor ?? 0) > 0;
-      const supportedResize =
-        operation.kind === "ResizeEntity" &&
-        ((state?.type === "Circle" && operation.shape === "circle") ||
-          (state?.type === "Rectangle" && operation.shape === "rectangle"));
-      if (!state || instantAt === null || (!supportedPosition && !supportedScale && !supportedResize)) {
-        return {
-          kind: "unsupported",
-          message: "Studio creation supports one instant move, uniform scale, or shape resize anchor per entity.",
-        };
-      }
-      if (state.instantAt !== undefined && Math.abs(state.instantAt - instantAt) > 1e-9) {
-        return {
-          kind: "unsupported",
-          message: `Studio-created entity ${operation.entityId} has edits at more than one instant anchor.`,
-        };
-      }
-      state.instantAt = instantAt;
-      if (supportedPosition) state.position = operation.value;
-      if (supportedScale) state.scale *= operation.relativeFactor!;
-      if (supportedResize && operation.kind === "ResizeEntity") {
-        state.dimensions = operation.to.dimensions;
-        state.position = operation.to.position;
-      }
-    }
-  }
-  const timelineInsertions = createPrograms.map(({ program }) => ({
-    at: program.anchor.resolvedSeconds,
-    duration: insertedProgramDuration(program),
-  }));
-  const insertedDuration = timelineInsertions.reduce((total, insertion) => total + insertion.duration, 0);
-  if (
-    timelineInsertions.some(({ at, duration }) => !Number.isFinite(at) || !Number.isFinite(duration) || duration < 0) ||
-    Math.abs(proposedState.base.runtimeSceneState.duration + insertedDuration - proposedState.evaluatedScene.duration) >
-      1e-9
-  ) {
-    return {
-      kind: "unsupported",
-      message: "Studio creation does not resolve to canonical timeline insertions.",
-    };
-  }
-  const authorizedEntities: StudioCreatedEntityEntry[] = [];
-  for (const entry of entities) {
-    const state = authoringState.get(entry.entity.id)!;
-    if (state.instantAt === undefined) {
-      authorizedEntities.push(entry);
-      continue;
-    }
-    const initial = state.initialDimensions;
-    const current = state.dimensions;
-    const ratios =
-      state.type === "Circle" && initial?.radius && current?.radius
-        ? { x: current.radius / initial.radius, y: current.radius / initial.radius }
-        : state.type === "Rectangle" && initial?.width && initial.height && current?.width && current.height
-          ? { x: current.width / initial.width, y: current.height / initial.height }
-          : state.type === "MathTex"
-            ? { x: 1, y: 1 }
-            : null;
-    if (!ratios || ratios.x <= 0 || ratios.y <= 0 || !Number.isFinite(ratios.x) || !Number.isFinite(ratios.y)) {
-      return { kind: "unsupported", message: `Studio-created entity ${entry.entity.id} has invalid resize facts.` };
-    }
-    authorizedEntities.push({
-      ...entry,
-      instantTransform: {
-        at: state.instantAt,
-        position: state.position,
-        scaleX: state.scale * ratios.x,
-        scaleY: state.scale * ratios.y,
+      ...common,
+      entity: {
+        dimensions: operation.entity.dimensions ?? {},
+        id: operation.entity.id,
+        kind: studioCreationEntityKind(operation.entity.type),
+        lifetimeStart: operation.entity.lifetime.start,
+        texParts: operation.entity.type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
       },
-    });
+      kind: "create",
+    };
   }
-  return {
-    entities: authorizedEntities,
-    kind: "authorized",
-    operationCount: proposedState.programs.reduce((count, { program }) => count + program.operations.length, 0),
-    programCount: proposedState.programs.length,
-    timelineInsertions,
-  };
-}
-
-function isFinitePoint(value: unknown): value is Point {
-  return isPointValue(value) && Number.isFinite(value.x) && Number.isFinite(value.y);
+  if (operation.kind === "SetProperty" && operation.key === "position") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "position",
+      position: isPointValue(operation.value) ? operation.value : null,
+    };
+  }
+  if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
+    return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
+  }
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "uniform-scale",
+      relativeFactor: operation.relativeFactor ?? null,
+    };
+  }
+  if (operation.kind === "ResizeEntity") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "resize",
+      shape: operation.shape,
+      toDimensions: operation.to.dimensions,
+      toPosition: operation.to.position,
+    };
+  }
+  return { ...common, kind: "unsupported" };
 }
 
 function closeStaticTransformValue(left: number, right: number) {
@@ -1008,7 +792,7 @@ function planImportedTimeline(
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
-    createSceneEntitiesCompiler?: CreateSceneEntitiesCompiler;
+    applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
     createSceneMotionCompiler?: CreateSceneMotionCompiler;
     editSceneTimelineCompiler?: EditSceneTimelineCompiler;
     frame: Readonly<{ height: number; width: number }>;
@@ -1070,57 +854,41 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
-  const createdEntityPlan = planStudioCreatedEntities(input.proposedState);
-  if (createdEntityPlan.kind === "unsupported") {
-    return { error: createdEntityPlan.message, kind: "unsupported" };
-  }
-  if (createdEntityPlan.kind === "authorized") {
-    const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
-    for (const { create, entity } of createdEntityPlan.entities) {
-      if (create.entity.type !== "MathTex") continue;
-      const sourceContent = canonicalEditableContent(create.entity.content, "MathTex");
-      const evaluatedContent = canonicalEditableContent(entity.content, "MathTex");
-      const contentSamples = input.proposedState.evaluatedScene.propertyChannels[`${entity.id}/content`]?.samples ?? [];
-      const contentChanges = contentSamples.some((sample) => {
-        const sampled = canonicalEditableContent(sample.value, "MathTex");
-        return (
-          !sampled?.texParts ||
-          !sourceContent?.texParts ||
-          sampled.texParts.length !== sourceContent.texParts.length ||
-          sampled.texParts.some((part, index) => part !== sourceContent.texParts?.[index])
-        );
-      });
-      if (
-        !sourceContent?.texParts ||
-        !evaluatedContent?.texParts ||
-        contentChanges ||
-        sourceContent.texParts.length !== evaluatedContent.texParts.length ||
-        sourceContent.texParts.some((part, index) => part !== evaluatedContent.texParts?.[index])
-      ) {
-        return {
-          error: `Studio-created MathTex entity ${entity.id} changes content or has no stable canonical content.`,
-          kind: "unsupported",
-        };
-      }
-      outlineInputs.push({ entityId: entity.id, texParts: sourceContent.texParts });
+  const hasStudioCreation = input.proposedState.programs.some(({ program }) =>
+    program.operations.some(({ kind }) => kind === "CreateEntity"),
+  );
+  if (hasStudioCreation) {
+    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
+      return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
     }
-    const mathTexOutlines: Record<string, MathTexOutlineArtifactV1> = {};
+    const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
+    for (const { program } of input.proposedState.programs) {
+      for (const operation of program.operations) {
+        if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
+        const texParts = studioCreationMathTexParts(operation.entity.content);
+        if (texParts) outlineInputs.push({ entityId: operation.entity.id, texParts });
+      }
+    }
+    const mathTexOutlines: ApplyStudioCreationEditWireCommandV1["mathTexOutlines"][number][] = [];
+    const mathTexOutlineDigestMap: Record<string, MathTexOutlineArtifactV1> = {};
     try {
       const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
       const responses = await Promise.all(
         outlineInputs.map(async ({ entityId, texParts }) => ({
           entityId,
           response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
+          texParts,
         })),
       );
-      for (const { entityId, response } of responses) {
+      for (const { entityId, response, texParts } of responses) {
         if (response.result.kind === "unsupported") {
           return {
             error: `MathTex entity ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
             kind: "unsupported",
           };
         }
-        mathTexOutlines[entityId] = response.result;
+        mathTexOutlines.push({ entityId, path: response.result.path, texParts });
+        mathTexOutlineDigestMap[entityId] = response.result;
       }
     } catch (error) {
       return {
@@ -1128,75 +896,57 @@ export async function compileStudioPreviewSceneV1(
         kind: "unsupported",
       };
     }
-    if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
-      return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
-    }
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
-      mathTexOutlines,
+      mathTexOutlines: mathTexOutlineDigestMap,
       snapshot: input.snapshot,
       studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const entities: CreateSceneEntitiesWireCommandV1["entities"] = createdEntityPlan.entities.map(
-      ({ create, entity, fadeIn, instantTransform, position }) => {
-        const dimensions = create.entity.dimensions;
-        const outline = mathTexOutlines[entity.id];
-        const geometry =
-          create.entity.type === "Circle" && dimensions?.radius !== undefined
-            ? ({ kind: "circle", radius: dimensions.radius } as const)
-            : create.entity.type === "Rectangle" && dimensions?.height !== undefined && dimensions.width !== undefined
-              ? ({ height: dimensions.height, kind: "rectangle", width: dimensions.width } as const)
-              : outline
-                ? ({ kind: "mathtex", path: outline.path } as const)
-                : null;
-        if (!geometry) throw new Error(`Studio-created entity ${entity.id} has no compiled geometry.`);
-        return {
-          ...(fadeIn ? { fadeIn: { end: fadeIn.interval.end } } : {}),
-          geometry,
+    const command: ApplyStudioCreationEditWireCommandV1 = {
+      evaluatedDuration: input.proposedState.evaluatedScene.duration,
+      evaluatedEntities: Object.entries(input.proposedState.evaluatedScene.objectGraph.entities).map(
+        ([objectGraphKey, entity]) => ({
+          contentSampleTexParts: (
+            input.proposedState.evaluatedScene.propertyChannels[`${entity.id}/content`]?.samples ?? []
+          ).map(({ value }) => studioCreationMathTexParts(value)),
           id: entity.id,
-          ...(instantTransform
-            ? {
-                instantTransform: {
-                  at: instantTransform.at,
-                  position: studioPointToScenePoint(
-                    instantTransform.position,
-                    input.frame,
-                    input.snapshot.snapshot.scene.camera.view.center,
-                  ),
-                  scaleX: instantTransform.scaleX,
-                  scaleY: instantTransform.scaleY,
-                },
-              }
-            : {}),
-          lifetime: entity.lifetime[0]!,
-          position: studioPointToScenePoint(
-            position.value,
-            input.frame,
-            input.snapshot.snapshot.scene.camera.view.center,
-          ),
-          scale: 1,
-        };
-      },
-    );
+          kind: studioCreationEntityKind(entity.type),
+          lifetimes: entity.lifetime,
+          objectGraphKey,
+          sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+          contentTexParts: entity.type === "MathTex" ? studioCreationMathTexParts(entity.content) : null,
+          transactionId: entity.transactionId ?? null,
+        }),
+      ),
+      evaluatedEvents: input.proposedState.evaluatedScene.eventTrack.events.map((event) => ({
+        interval: event.interval ?? null,
+        operationId: event.operationId ?? null,
+      })),
+      expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+      frame: input.frame,
+      mathTexOutlines,
+      nextRevision: engineRevisionHash,
+      programs: input.proposedState.programs.map(({ program, validation }) => ({
+        anchorSeconds: program.anchor.resolvedSeconds,
+        loweringSupported: program.loweringStatus === "supported",
+        operations: program.operations.map(normalizedStudioCreationOperation),
+        scheduleOrder: program.schedule.order,
+        transactionId: program.transactionId,
+        validationValid: validation.status === "valid",
+      })),
+      schema: "poietra.apply-studio-creation-edit",
+      version: 1,
+      viewport: STUDIO_VIEWPORT,
+    };
     try {
-      const bundle = await (input.createSceneEntitiesCompiler ?? compileCreateSceneEntities)(input.snapshot.snapshot, {
-        entities,
-        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-        nextRevision: engineRevisionHash,
-        provenance: {
-          evidence: [
-            `${createdEntityPlan.programCount} validated Studio Program(s) with ${createdEntityPlan.operationCount} operation(s) lowered as one atomic creation/transform core command`,
-          ],
-          id: `studio-create:${engineRevisionHash}`,
-          origin: "studio-edit-program",
-        },
-        schema: "poietra.create-scene-entities",
-        timelineInsertions: createdEntityPlan.timelineInsertions,
-        version: 1,
-      });
-      const bundleEntityIds = new Set(bundle.scene.entities.map(({ id }) => id));
+      const bundle = await (input.applyStudioCreationEditCompiler ?? compileApplyStudioCreationEdit)(
+        input.snapshot.snapshot,
+        command,
+      );
+      const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
+      const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
       const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
         input.snapshot.sourceRuntimeIdentity,
         studioPreviewInteractionAuthority(
@@ -1206,13 +956,12 @@ export async function compileStudioPreviewSceneV1(
         ),
         bundle.scene.entities,
       );
-      for (const { entity } of createdEntityPlan.entities) {
+      for (const entityId of createdEntityIds) {
         if (
-          bundleEntityIds.has(entity.id) &&
-          !interactionEntityIds.includes(entity.id) &&
+          !interactionEntityIds.includes(entityId) &&
           interactionEntityIds.length < MAX_CANVAS_INTERACTION_ENTITY_IDS
         ) {
-          interactionEntityIds.push(entity.id);
+          interactionEntityIds.push(entityId);
         }
       }
       return {

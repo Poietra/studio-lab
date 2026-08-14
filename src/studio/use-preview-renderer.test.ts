@@ -3,12 +3,12 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { pngSnapshotBundleFixture } from "../../server/test-fixtures/fast-manim-snapshot-bundle-fixture";
 import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/contracts";
-import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
+import { digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
-  CreateSceneEntitiesWireCommandV1,
+  ApplyStudioCreationEditWireCommandV1,
   CreateSceneMotionCompiler,
   CreateSceneMotionWireCommandV1,
   EditSceneTimelineCompiler,
@@ -33,9 +33,7 @@ import {
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
-import { createMathTexFixturePreviewSnapshotProviderV1 } from "./preview-snapshot-provider.fixture";
 import { validateAndScheduleProgram } from "./program-validation";
-import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -1725,394 +1723,143 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.animationChannels).toBe(snapshot.snapshot.scene.animationChannels);
   });
 
-  it("routes Circle and Rectangle creation through one atomic core command and adopts its bundle", async () => {
+  it("normalizes Studio creation state at the Rust command boundary", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
-      entities: [
-        { dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" },
-        { dimensions: { height: 2, width: 4 }, position: { x: 400, y: 180 }, type: "Rectangle" },
-      ],
+      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
       scene: proposedState.base.runtimeSceneState,
-      transactionId: "real-create",
+      transactionId: "normalized-create",
     });
     expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
     const edited = evaluateWorkingState({
       ...proposedState.base,
       appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
     });
+    const commands: ApplyStudioCreationEditWireCommandV1[] = [];
 
-    expect(edited.base.runtimeSceneState.duration).toBe(2);
-    expect(edited.evaluatedScene.duration).toBeCloseTo(2.4, 9);
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
+      applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
         return bundle;
       },
       frame: { height: 9, width: 16 },
       proposedState: edited,
       snapshot,
-      workingRevision: "studio-working-v1:real-create",
+      workingRevision: "studio-working-v1:normalized-create",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
+
     expect(result.kind).toBe("compiled");
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(result.scene.bundle).toBe(snapshot.snapshot);
     expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      entities: [
-        {
-          fadeIn: { end: 0.9 },
-          geometry: { kind: "circle", radius: 1 },
-          id: creation.entityIds[0],
-          lifetime: { end: 2.4, start: 0.5 },
-          position: { x: 0, y: 0 },
-          scale: 1,
-        },
-        {
-          fadeIn: { end: 0.9 },
-          geometry: { height: 2, kind: "rectangle", width: 4 },
-          id: creation.entityIds[1],
-          lifetime: { end: 2.4, start: 0.5 },
-          position: { x: 2, y: 0 },
-          scale: 1,
-        },
-      ],
-      schema: "poietra.create-scene-entities",
-      timelineInsertions: [{ at: 0.5, duration: 0.4 }],
+    const command = commands[0];
+    expect(command).toMatchObject({
+      evaluatedDuration: edited.evaluatedScene.duration,
+      expectedBaseRevision: HASH_C,
+      frame: { height: 9, width: 16 },
+      mathTexOutlines: [],
+      schema: "poietra.apply-studio-creation-edit",
       version: 1,
+      viewport: { height: 360, width: 640 },
     });
-  });
-
-  it("batches successive Studio creation Programs with their rebased timeline insertions", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const first = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "create-first",
+    expect(command?.nextRevision).toMatch(/^[0-9a-f]{64}$/);
+    expect(command?.programs).toHaveLength(1);
+    expect(command?.programs[0]).toMatchObject({
+      anchorSeconds: 0.5,
+      loweringSupported: true,
+      scheduleOrder: creation.validation.program.schedule.order,
+      transactionId: "normalized-create",
+      validationValid: true,
     });
-    const second = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { height: 2, width: 4 }, position: { x: 400, y: 180 }, type: "Rectangle" }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "create-second",
-    });
-    expect(first.validation.kind).toBe("valid");
-    expect(second.validation.kind).toBe("valid");
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [
-        programRecord(first.validation.program, first.validation),
-        programRecord(second.validation.program, second.validation),
-      ],
-    });
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
-
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
-        commands.push(command);
-        return bundle;
+    expect(command?.programs[0]?.operations.map(({ kind }) => kind)).toEqual(["create", "position", "fade-in"]);
+    expect(command?.programs[0]?.operations[0]).toMatchObject({
+      entity: {
+        dimensions: { radius: 1 },
+        id: creation.entityIds[0],
+        kind: "circle",
+        lifetimeStart: 0.5,
+        texParts: null,
       },
-      frame: { height: 9, width: 16 },
-      proposedState: edited,
-      snapshot,
-      workingRevision: "studio-working-v1:two-creates",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-
-    expect(result.kind).toBe("compiled");
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      entities: [
-        {
-          fadeIn: { end: 0.9 },
-          id: first.entityIds[0],
-          lifetime: { end: 2.8, start: 0.5 },
-        },
-        {
-          fadeIn: { end: 1.3 },
-          id: second.entityIds[0],
-          lifetime: { end: 2.8, start: 0.9 },
-        },
-      ],
-      timelineInsertions: [
-        { at: 0.5, duration: 0.4 },
-        { at: 0.9, duration: 0.4 },
-      ],
-    });
-  });
-
-  it("keeps a created-entity move aligned after a later timeline insertion", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "create-before-move",
-    });
-    const created = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    const entityId = creation.entityIds[0]!;
-    const sourceScene = projectRuntimeSceneToSourceTimeline(created.evaluatedScene, [creation.validation.program]);
-    const move = createDirectManipulationPositionProgram({
-      capturedPlayhead: 0.5,
-      delta: { x: 40, y: 0 },
-      positions: { [entityId]: { x: 320, y: 180 } },
-      scene: sourceScene,
-      start: 0.5,
-      targetEntityIds: [entityId],
-      transactionId: "move-after-create",
-    });
-    expect(move.kind).toBe("valid");
-    const laterCreation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { radius: 0.5 }, position: { x: 400, y: 180 }, type: "Circle" }],
-      scene: sourceScene,
-      transactionId: "create-after-move",
-    });
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [
-        programRecord(creation.validation.program, creation.validation),
-        programRecord(move.program, move),
-        programRecord(laterCreation.validation.program, laterCreation.validation),
-      ],
-    });
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
-
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
-        commands.push(command);
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      proposedState: edited,
-      snapshot,
-      workingRevision: "studio-working-v1:create-then-move",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-
-    expect(result.kind).toBe("compiled");
-    expect(commands).toHaveLength(1);
-    expect(commands[0]?.entities[0]?.instantTransform).toEqual({
-      at: 1.3,
-      position: { x: 1, y: 0 },
-      scaleX: 1,
-      scaleY: 1,
-    });
-
-    const sourceAfterEdits = projectRuntimeSceneToSourceTimeline(edited.evaluatedScene, [
-      creation.validation.program,
-      move.program,
-      laterCreation.validation.program,
-    ]);
-    const secondMove = createDirectManipulationPositionProgram({
-      capturedPlayhead: 1,
-      delta: { x: 20, y: 0 },
-      positions: { [entityId]: { x: 360, y: 180 } },
-      scene: sourceAfterEdits,
-      start: 1,
-      targetEntityIds: [entityId],
-      transactionId: "second-move-after-create",
-    });
-    expect(secondMove.kind).toBe("valid");
-    let rejectedCompilerCalls = 0;
-    const rejected = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle) => {
-        rejectedCompilerCalls += 1;
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(move.program, move),
-          programRecord(laterCreation.validation.program, laterCreation.validation),
-          programRecord(secondMove.program, secondMove),
-        ],
-      }),
-      snapshot,
-      workingRevision: "studio-working-v1:create-then-two-moves",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(rejected).toMatchObject({
-      error: expect.stringContaining("more than one instant anchor"),
-      kind: "unsupported",
-    });
-    expect(rejectedCompilerCalls).toBe(0);
-  });
-
-  it.each([
-    {
-      dimensions: { radius: 1 },
-      expectedScale: { x: 1.5, y: 1.5 },
-      label: "Circle",
-      shape: "circle",
-      toDimensions: { radius: 1.5 },
-      type: "Circle",
-    },
-    {
-      dimensions: { height: 2, width: 4 },
-      expectedScale: { x: 2, y: 1.5 },
-      label: "Rectangle",
-      shape: "rectangle",
-      toDimensions: { height: 3, width: 8 },
-      type: "Rectangle",
-    },
-  ] as const)("lowers a follow-up $label resize without replacing its canonical geometry", async (fixture) => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: fixture.dimensions, position: { x: 320, y: 180 }, type: fixture.type }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: `create-before-${fixture.shape}-resize`,
-    });
-    const created = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    const entityId = creation.entityIds[0]!;
-    const resize = createDirectManipulationResizeProgram({
-      capturedPlayhead: 0.5,
-      entityId,
-      from: { dimensions: fixture.dimensions, position: { x: 320, y: 180 } },
       interval: { end: 0.5, start: 0.5 },
-      scale: 1,
-      scene: projectRuntimeSceneToSourceTimeline(created.evaluatedScene, [creation.validation.program]),
-      shape: fixture.shape,
-      to: { dimensions: fixture.toDimensions, position: { x: 340, y: 190 } },
-      transactionId: `resize-created-${fixture.shape}`,
+      kind: "create",
     });
-    expect(resize.kind).toBe("valid");
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
-
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
-        commands.push(command);
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(resize.program, resize),
-        ],
+    expect(command?.evaluatedEntities).toContainEqual(
+      expect.objectContaining({
+        contentSampleTexParts: [],
+        contentTexParts: null,
+        id: creation.entityIds[0],
+        kind: "circle",
+        sourceIdentity: null,
+        transactionId: "normalized-create",
       }),
-      snapshot,
-      workingRevision: `studio-working-v1:create-then-${fixture.shape}-resize`,
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-
-    expect(result.kind).toBe("compiled");
-    const entity = commands[0]?.entities[0];
-    expect(entity).toMatchObject({
-      geometry: fixture.shape === "circle" ? { kind: "circle", radius: 1 } : { height: 2, kind: "rectangle", width: 4 },
-      instantTransform: {
-        at: 0.9,
-        scaleX: fixture.expectedScale.x,
-        scaleY: fixture.expectedScale.y,
-      },
-    });
-    expect(entity?.instantTransform?.position.x).toBeCloseTo(0.5, 12);
-    expect(entity?.instantTransform?.position.y).toBeCloseTo(-0.25, 12);
+    );
+    expect(command?.evaluatedEvents).toEqual(
+      edited.evaluatedScene.eventTrack.events.map((event) => ({
+        interval: event.interval ?? null,
+        operationId: event.operationId ?? null,
+      })),
+    );
   });
 
-  it("lowers a follow-up instant MathTex scale into the atomic creation command", async () => {
+  it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
+    const texParts = ["\\frac{a}{b}"];
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
       entities: [
         {
-          content: { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] },
-          position: { x: 320, y: 180 },
+          content: { displayLines: texParts, label: texParts.join(""), texParts },
+          position: { x: 400, y: 180 },
           type: "MathTex",
         },
       ],
       scene: proposedState.base.runtimeSceneState,
-      transactionId: "create-before-mathtex-scale",
+      transactionId: "normalized-mathtex",
     });
-    const created = evaluateWorkingState({
+    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
+    const edited = evaluateWorkingState({
       ...proposedState.base,
       appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
     });
-    const entityId = creation.entityIds[0]!;
-    const scale = createDirectManipulationScaleProgram({
-      capturedPlayhead: 0.5,
-      interval: { end: 0.5, start: 0.5 },
-      scales: { [entityId]: { from: 1, to: 1.5 } },
-      scene: projectRuntimeSceneToSourceTimeline(created.evaluatedScene, [creation.validation.program]),
-      targetEntityIds: [entityId],
-      transactionId: "scale-created-mathtex",
-    });
-    expect(scale.kind).toBe("valid");
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
+    const compilerInputs: string[][] = [];
+    const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+    const outline = compiledMathTexResponse();
 
     const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
+      applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
         return bundle;
       },
       frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => compiledMathTexResponse(),
-      proposedState: evaluateWorkingState({
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(scale.program, scale),
-        ],
-      }),
+      mathTexOutlineCompiler: async (input) => {
+        compilerInputs.push([...input]);
+        return outline;
+      },
+      proposedState: edited,
       snapshot,
-      workingRevision: "studio-working-v1:create-then-mathtex-scale",
+      workingRevision: "studio-working-v1:normalized-mathtex",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
 
     expect(result.kind).toBe("compiled");
-    expect(commands[0]?.entities[0]?.instantTransform).toEqual({
-      at: 0.9,
-      position: { x: 0, y: 0 },
-      scaleX: 1.5,
-      scaleY: 1.5,
+    expect(compilerInputs).toEqual([texParts]);
+    const compiled = outline.result;
+    if (compiled.kind !== "compiled") throw new Error("MathTex test outline must compile.");
+    expect(commands[0]?.mathTexOutlines).toEqual([{ entityId: creation.entityIds[0], path: compiled.path, texParts }]);
+    expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
+      entity: { id: creation.entityIds[0], kind: "math-tex", texParts },
+      kind: "create",
     });
-
-    const animatedScale = createDirectManipulationScaleProgram({
-      capturedPlayhead: 0.5,
-      interval: { end: 0.75, start: 0.5 },
-      scales: { [entityId]: { from: 1, to: 1.5 } },
-      scene: projectRuntimeSceneToSourceTimeline(created.evaluatedScene, [creation.validation.program]),
-      targetEntityIds: [entityId],
-      transactionId: "animate-created-mathtex-scale",
-    });
-    expect(animatedScale.kind).toBe("valid");
-    let rejectedCompilerCalls = 0;
-    const rejected = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle) => {
-        rejectedCompilerCalls += 1;
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => compiledMathTexResponse(),
-      proposedState: evaluateWorkingState({
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(animatedScale.program, animatedScale),
-        ],
+    expect(commands[0]?.evaluatedEntities).toContainEqual(
+      expect.objectContaining({
+        contentTexParts: texParts,
+        id: creation.entityIds[0],
+        kind: "math-tex",
       }),
-      snapshot,
-      workingRevision: "studio-working-v1:create-then-animated-mathtex-scale",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(rejected).toMatchObject({ error: expect.stringContaining("one instant move"), kind: "unsupported" });
-    expect(rejectedCompilerCalls).toBe(0);
+    );
   });
 
-  it("rejects unsupported Studio-created types before invoking the core compiler", async () => {
+  it("surfaces a Rust rejection without recreating creation semantics in TypeScript", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
@@ -2127,130 +1874,32 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "unsupported-text",
     });
     expect(creation.validation.kind).toBe("valid");
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    let compilerCalls = 0;
+    const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+
     const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle) => {
-        compilerCalls += 1;
-        return bundle;
+      applyStudioCreationEditCompiler: async (_bundle, command) => {
+        commands.push(command);
+        throw new Error("normalized Studio creation is unsupported");
       },
       frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => {
-        throw new Error("outline compiler must not run for Text");
-      },
-      proposedState: edited,
+      proposedState: evaluateWorkingState({
+        ...proposedState.base,
+        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+      }),
       snapshot,
       workingRevision: "studio-working-v1:unsupported-text",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
-    expect(result).toMatchObject({ error: expect.stringContaining("Text is not supported"), kind: "unsupported" });
-    expect(compilerCalls).toBe(0);
-  });
 
-  it("compiles a Studio-created MathTex outline and fails closed on an unsupported expression", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [
-        {
-          content: { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] },
-          position: { x: 400, y: 180 },
-          type: "MathTex",
-        },
-      ],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "real-mathtex",
-    });
-    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    const inputs: string[][] = [];
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
-        commands.push(command);
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async (texParts) => {
-        inputs.push([...texParts]);
-        return compiledMathTexResponse();
-      },
-      proposedState: edited,
-      snapshot,
-      workingRevision: "studio-working-v1:real-mathtex",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(inputs).toEqual([["E = mc^2"]]);
-    expect(result.kind).toBe("compiled");
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(result.scene.bundle).toBe(snapshot.snapshot);
     expect(commands).toHaveLength(1);
-    const compiledOutline = compiledMathTexResponse().result;
-    if (compiledOutline.kind !== "compiled") throw new Error("MathTex test outline must compile.");
-    expect(commands[0]?.entities[0]).toMatchObject({
-      geometry: { kind: "mathtex", path: compiledOutline.path },
-      id: creation.entityIds[0],
-      position: { x: 2, y: 0 },
+    expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
+      entity: { id: creation.entityIds[0], kind: "other" },
+      kind: "create",
     });
-
-    const unsupported = await compileStudioPreviewSceneV1({
-      frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => ({
-        result: { code: "frame-item-unsupported", kind: "unsupported", message: "Shape frame item is unsupported." },
-        schema: "poietra.mathtex-outline-response",
-        version: 1,
-      }),
-      proposedState: edited,
-      snapshot,
-      workingRevision: "studio-working-v1:unsupported-mathtex",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(unsupported).toMatchObject({
-      error: expect.stringContaining("frame-item-unsupported"),
+    expect(result).toMatchObject({
+      error: expect.stringContaining("normalized Studio creation is unsupported"),
       kind: "unsupported",
     });
-    expect(commands).toHaveLength(1);
-
-    let discontinuousCompilerCalls = 0;
-    const discontinuous = await compileStudioPreviewSceneV1({
-      frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => {
-        discontinuousCompilerCalls += 1;
-        return compiledMathTexResponse();
-      },
-      proposedState: {
-        ...edited,
-        evaluatedScene: {
-          ...edited.evaluatedScene,
-          propertyChannels: {
-            ...edited.evaluatedScene.propertyChannels,
-            [`${creation.entityIds[0]}/content`]: {
-              entityId: creation.entityIds[0] ?? "missing-mathtex",
-              key: "content",
-              samples: [
-                {
-                  interval: { end: edited.evaluatedScene.duration, start: 1 },
-                  kind: "exact",
-                  provenanceId: "test-content-change",
-                  value: { displayLines: ["E = mc^3"], texParts: ["E = mc^3"] },
-                },
-              ],
-            },
-          },
-        },
-      },
-      snapshot,
-      workingRevision: "studio-working-v1:dynamic-mathtex",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(discontinuousCompilerCalls).toBe(0);
-    expect(discontinuous).toMatchObject({ error: expect.stringContaining("changes content"), kind: "unsupported" });
   });
 
   it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {
@@ -2344,198 +1993,6 @@ describe("compileStudioPreviewSceneV1", () => {
       error: expect.stringContaining("unsupported static root operation"),
       kind: "unsupported",
     });
-  });
-
-  it("routes the checked MathTex parity fixture through the core creation boundary", async () => {
-    const [fixtureSource, harnessSource] = await Promise.all([
-      readFile(new URL("../../fixtures/engine-v1/mathtex-nested-radical-fraction.json", import.meta.url), "utf8"),
-      readFile(new URL("../../fixtures/engine-v1/studio-mathtex-preview.harness.json", import.meta.url), "utf8"),
-    ]);
-    const fixture = JSON.parse(fixtureSource) as Readonly<{
-      assets: unknown;
-      id: string;
-      mathTexReference: Readonly<{
-        compilerBounds: unknown;
-        compilerContentDigest: string;
-        compilerFillRule: unknown;
-        compilerFontDigest: string;
-        compilerToolchainDigest: string;
-        texParts: string[];
-      }>;
-      scene: unknown;
-    }>;
-    const harness = JSON.parse(harnessSource) as Readonly<{
-      expectedIdentity: Readonly<{ projectId: string; sceneName: string; sourceHash: string; sourcePath: string }>;
-    }>;
-    const expectedBundle = await parseVerifiedSceneIrBundleV1({ assets: fixture.assets, scene: fixture.scene });
-    if (expectedBundle.scene.source.kind !== "studio-edit-program") {
-      throw new Error("The checked MathTex parity fixture must carry Studio revision evidence.");
-    }
-    const [expectedEntity] = expectedBundle.scene.entities;
-    if (!expectedEntity || expectedEntity.geometry.kind !== "cubic-path") {
-      throw new Error("The checked MathTex parity fixture must contain one cubic-path entity.");
-    }
-    const outlineResponse = mathTexOutlineResponseV1Schema.parse({
-      result: {
-        bounds: fixture.mathTexReference.compilerBounds,
-        contentDigest: fixture.mathTexReference.compilerContentDigest,
-        fillRule: fixture.mathTexReference.compilerFillRule,
-        fontDigest: fixture.mathTexReference.compilerFontDigest,
-        kind: "compiled",
-        path: expectedEntity.geometry.path,
-        toolchainDigest: fixture.mathTexReference.compilerToolchainDigest,
-      },
-      schema: "poietra.mathtex-outline-response",
-      version: 1,
-    });
-    const snapshot = await createMathTexFixturePreviewSnapshotProviderV1().loadVerifiedSnapshot({
-      identity: harness.expectedIdentity,
-    });
-    const baseScene: RuntimeSceneState = {
-      constraintGraph: { constraints: [] },
-      duration: snapshot.duration,
-      eventTrack: { events: [] },
-      objectGraph: { entities: {}, lineage: [] },
-      propertyChannels: {},
-      provenanceGraph: { records: [] },
-      sceneId: snapshot.sceneId,
-      version: STUDIO_STATE_VERSION,
-    };
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0,
-      entities: [
-        {
-          content: {
-            displayLines: [...fixture.mathTexReference.texParts],
-            label: fixture.mathTexReference.texParts.join(""),
-            texParts: [...fixture.mathTexReference.texParts],
-          },
-          position: { x: 320, y: 180 },
-          type: "MathTex",
-        },
-      ],
-      scene: baseScene,
-      transactionId: "visual-parity-mathtex-nested-radical-fraction",
-    });
-    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
-    const record = programRecord(creation.validation.program, creation.validation);
-    const workingState: WorkingState = {
-      appliedPrograms: [record],
-      editorContext: {
-        activeSceneId: baseScene.sceneId,
-        playhead: 0.5,
-        selection: [...creation.entityIds],
-        version: STUDIO_STATE_VERSION,
-        viewport: { height: 360, width: 640 },
-      },
-      runtimeSceneState: baseScene,
-      sourceSnapshot: {
-        configId: "visual-parity-v1",
-        hash: `sha256:${snapshot.correlation.context.sourceHash}`,
-        sourceId: snapshot.correlation.context.sourcePath,
-        version: STUDIO_STATE_VERSION,
-      },
-      stagedPrograms: [],
-      staticSemanticState: { entities: [], unknowns: [], version: STUDIO_STATE_VERSION },
-      version: STUDIO_STATE_VERSION,
-    };
-    const proposedState = evaluateWorkingState(workingState);
-    const workingRevision = canonicalEditorWorkingRevision({
-      appliedPrograms: [record],
-      draftProgram: null,
-      editingAppliedProgram: null,
-      redoPrograms: [],
-    });
-    const workspaceKey = studioPreviewWorkspaceKeyV1({ ...snapshot.correlation.context, workingRevision });
-    const compilerInputs: string[][] = [];
-    const createCommands: CreateSceneEntitiesWireCommandV1[] = [];
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (_bundle, command) => {
-        createCommands.push(command);
-        return expectedBundle;
-      },
-      frame: {
-        height: snapshot.snapshot.scene.camera.view.frameHeight,
-        width: snapshot.snapshot.scene.camera.view.frameWidth,
-      },
-      mathTexOutlineCompiler: async (texParts) => {
-        compilerInputs.push([...texParts]);
-        return outlineResponse;
-      },
-      proposedState,
-      snapshot,
-      workingRevision,
-      workspaceKey,
-    });
-    expect(compilerInputs).toEqual([fixture.mathTexReference.texParts]);
-    expect(createCommands).toHaveLength(1);
-    expect(createCommands[0]?.entities[0]?.geometry).toEqual({ kind: "mathtex", path: expectedEntity.geometry.path });
-    expect(result.kind).toBe("compiled");
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(canonicalJsonV1(result.scene.bundle)).toBe(canonicalJsonV1(expectedBundle));
-    expect(result.scene.engineRevisionHash).toBe(expectedBundle.scene.source.revisionHash);
-    expect(canonicalJsonV1(result.scene.bundle.scene.entities[0]?.geometry)).toBe(
-      canonicalJsonV1(expectedEntity.geometry),
-    );
-    expect(outlineResponse.result).toMatchObject({
-      contentDigest: fixture.mathTexReference.compilerContentDigest,
-      kind: "compiled",
-    });
-  });
-
-  it("rejects creation on a legacy animated Scene before invoking the core planner", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const legacySource = snapshot.snapshot.scene.source;
-    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "create-on-animated-base",
-    });
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    const animatedSnapshot: StudioVerifiedPreviewSnapshotV1 = {
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          source: { ...legacySource, snapshotVersion: 7 },
-          animationChannels: [
-            {
-              entityId: "earlier",
-              id: "opacity:earlier",
-              keyframes: [
-                { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
-                { at: 2, easingToNext: null, value: 1 },
-              ],
-              kind: "opacity",
-              provenanceId: "verified-source-fade",
-            },
-          ],
-        },
-      },
-    };
-    const commands: CreateSceneEntitiesWireCommandV1[] = [];
-    const result = await compileStudioPreviewSceneV1({
-      createSceneEntitiesCompiler: async (bundle, command) => {
-        commands.push(command);
-        return bundle;
-      },
-      frame: { height: 9, width: 16 },
-      proposedState: edited,
-      snapshot: animatedSnapshot,
-      workingRevision: "studio-working-v1:edit-animated-source",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-    expect(result).toMatchObject({
-      error: "Editing an imported animation requires generic Runtime Trace authoring support.",
-      kind: "unsupported",
-    });
-    expect(commands).toHaveLength(0);
   });
 
   it("changes the compiled revision across every snapshot, asset, and frame authority axis", async () => {
