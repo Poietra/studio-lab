@@ -1,6 +1,6 @@
-import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
+import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
-const POIETRA_ENGINE_ABI_VERSION = 8;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
@@ -231,27 +231,13 @@ type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
   TransformSceneAtTimeAuthoringBindingsV1 &
   SetSubtreeVectorPaintAlphaBindingsV1;
 
-function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
-  return typeof value === "object" && value !== null;
-}
-
 let bindingsPromise: Promise<SceneAuthoringBindingsV1> | null = null;
 
 async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   if (bindingsPromise) return bindingsPromise;
   const pending: Promise<SceneAuthoringBindingsV1> = (async () => {
-    if (typeof document === "undefined") {
-      throw new Error("Scene authoring requires a browser document.");
-    }
-    const moduleUrl = new URL("./engine-wasm/poietra_wasm.js", document.baseURI);
-    const candidate: unknown = await import(/* @vite-ignore */ moduleUrl.href);
-    if (!isRecord(candidate) || typeof candidate.default !== "function") {
-      throw new Error("The Poietra WASM module does not export its initializer.");
-    }
-    await candidate.default();
+    const candidate = await loadPoietraWasmModule();
     if (
-      typeof candidate.poietraEngineAbiVersion !== "function" ||
-      candidate.poietraEngineAbiVersion() !== POIETRA_ENGINE_ABI_VERSION ||
       typeof candidate.createSceneEntitiesV1 !== "function" ||
       typeof candidate.createSceneMotionV1 !== "function" ||
       typeof candidate.editSceneTimelineV1 !== "function" ||
@@ -260,7 +246,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.transformSceneEntityAtTimeV1 !== "function" ||
       typeof candidate.transformSceneEntityV1 !== "function"
     ) {
-      throw new Error(`The Poietra WASM module does not support engine ABI ${POIETRA_ENGINE_ABI_VERSION}.`);
+      throw new Error("The Poietra WASM module does not export Scene authoring.");
     }
     return {
       createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
@@ -284,7 +270,7 @@ async function invokeSceneAuthoringCommand(
   invoke: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array,
 ) {
   const response = invoke(encoder.encode(JSON.stringify(snapshot)), encoder.encode(JSON.stringify(command)));
-  return parseVerifiedSceneIrBundleV1(JSON.parse(decoder.decode(response)) as unknown);
+  return sceneIrBundleV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
 }
 
 /** Creates supported Studio entities through one atomic core command. */

@@ -11,6 +11,7 @@ await engine.default({ module_or_path: wasmBytes });
 assert.equal(engine.poietraEngineAbiVersion(), 8);
 assert.equal(engine.poietraCanvasAbiVersion(), 5);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
+assert.equal(typeof engine.validateSceneIrBundleV1, "function");
 assert.equal(typeof engine.editSceneTimelineV1, "function");
 assert.equal(typeof engine.createSceneMotionV1, "function");
 assert.equal(typeof engine.rotateSceneEntityV1, "function");
@@ -27,6 +28,14 @@ assert.equal(typeof engine.PoietraCanvasEngineV1.prototype.renderWithTelemetry, 
 const encoder = new TextEncoder();
 const snapshot = encoder.encode(JSON.stringify({ assets: fixture.assets, scene: fixture.scene }));
 assert.ok(snapshot.byteLength <= 5 * 1024 * 1024, "shared snapshot exceeds the adoption budget");
+engine.validateSceneIrBundleV1(snapshot);
+assert.throws(
+  () =>
+    engine.validateSceneIrBundleV1(
+      encoder.encode(JSON.stringify({ assets: fixture.assets, scene: { ...fixture.scene, duration: -1 } })),
+    ),
+  /contract validation failed/,
+);
 
 const session = new engine.PoietraEngineSessionV1(snapshot);
 let response;

@@ -196,6 +196,8 @@ roots in API responses.
 
 `pnpm package:electron` builds the web renderer and Electron main process, then
 assembles a host-platform application under `release/electron-<platform>-<arch>`.
+It requires `wasm-pack 0.15.0` and builds the canonical engine and MathTex WASM
+artifacts as part of a clean package.
 The command explicitly runs Electron's runtime installer first, so a clean pnpm
 checkout downloads the host runtime before packaging instead of depending on a
 previous lifecycle-script side effect.
