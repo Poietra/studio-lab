@@ -21,13 +21,13 @@ import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioTimelineEditCompiler,
+  type ApplyStudioTimelineEditWireCommandV1,
   type CreateSceneMotionCompiler,
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioTimelineEdit,
   compileCreateSceneMotion,
-  compileEditSceneTimeline,
-  type EditSceneTimelineCompiler,
-  type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityAtTimeCompiler,
@@ -426,15 +426,6 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-type ImportedTimelinePlan =
-  | Readonly<{ kind: "not-applicable" }>
-  | Readonly<{ kind: "unsupported"; message: string }>
-  | Readonly<{
-      edits: EditSceneTimelineWireCommandV1["edits"];
-      kind: "authorized";
-      operationIds: readonly string[];
-    }>;
-
 type ImportedMotionPlan =
   | Readonly<{ kind: "not-applicable" }>
   | Readonly<{ kind: "unsupported"; message: string }>
@@ -511,10 +502,6 @@ function normalizedStudioCreationOperation(
     };
   }
   return { ...common, kind: "unsupported" };
-}
-
-function closeStaticTransformValue(left: number, right: number) {
-  return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
 }
 
 function planImportedMotion(
@@ -682,119 +669,76 @@ function staticRootTransformEditCommand(
   };
 }
 
-function planImportedTimeline(
-  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
-): ImportedTimelinePlan {
-  const orderedRecords = input.proposedState.programs
-    .map((record, inputIndex) => ({ inputIndex, record }))
-    .sort(
-      (left, right) =>
-        (left.record.program.anchor.source.kind === "absolute"
-          ? left.record.program.anchor.source.seconds
-          : left.record.program.anchor.resolvedSeconds) -
-          (right.record.program.anchor.source.kind === "absolute"
-            ? right.record.program.anchor.source.seconds
-            : right.record.program.anchor.resolvedSeconds) || left.inputIndex - right.inputIndex,
-    )
-    .map(({ record }) => record);
-  const timelineOperations = orderedRecords.flatMap(({ program }) =>
-    program.schedule.order.flatMap((operationId) => {
-      const operation = program.operations.find(({ id }) => id === operationId);
-      return operation?.kind === "InsertTimelineEvent" || operation?.kind === "TrimSceneDuration"
-        ? [{ operation, program }]
-        : [];
-    }),
-  );
-  if (timelineOperations.length === 0) return { kind: "not-applicable" };
-
-  const scene = input.snapshot.snapshot.scene;
-  const allOperationsAreTimelineEdits = orderedRecords.every(
-    ({ program, validation }) =>
-      validation.status === "valid" &&
-      program.loweringStatus === "supported" &&
-      program.operations.length === 1 &&
-      program.schedule.order.length === 1 &&
-      program.schedule.order[0] === program.operations[0]?.id &&
-      (program.operations[0]?.kind === "InsertTimelineEvent" || program.operations[0]?.kind === "TrimSceneDuration"),
-  );
-  if (!allOperationsAreTimelineEdits) {
+function normalizedStudioTimelineOperation(
+  operation: CanonicalEditOperation,
+): ApplyStudioTimelineEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = { id: operation.id, interval: operation.interval, origin: operation.provenance.origin };
+  if (operation.kind === "InsertTimelineEvent") {
     return {
-      kind: "unsupported",
-      message: "A Scene timeline edit cannot be combined with another preview operation.",
+      ...common,
+      eventKind: operation.eventKind,
+      kind: "insert-wait",
+      purpose: operation.purpose ?? null,
     };
   }
-  if (
-    scene.source.kind !== "imported-manim-server-snapshot" ||
-    !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
-    Math.abs(input.proposedState.base.runtimeSceneState.duration - scene.duration) >= 0.0005 ||
-    input.proposedState.base.runtimeSceneState.sceneId !== input.proposedState.base.editorContext.activeSceneId ||
-    input.proposedState.base.runtimeSceneState.sceneId !==
-      `${input.snapshot.correlation.context.sourcePath}#${input.snapshot.correlation.context.sceneName}` ||
-    input.proposedState.base.sourceSnapshot.sourceId !== input.snapshot.correlation.context.sourcePath ||
-    input.proposedState.base.sourceSnapshot.hash !== `sha256:${input.snapshot.correlation.context.sourceHash}`
-  ) {
-    return { kind: "unsupported", message: "The verified source snapshot is not one exact imported Scene." };
-  }
-
-  const authorizedWaitOperationIds: string[] = [];
-  const edits: EditSceneTimelineWireCommandV1["edits"][number][] = [];
-  const operationIds: string[] = [];
-  for (const { operation, program } of timelineOperations) {
-    const origin = program.provenance.origin;
-    if (
-      operation.provenance.origin !== origin ||
-      origin !== "studio-default" ||
-      program.anchor.source.kind !== "absolute" ||
-      !Number.isFinite(program.anchor.source.seconds) ||
-      !Number.isFinite(program.anchor.resolvedSeconds) ||
-      program.anchor.resolvedSeconds < 0
-    ) {
-      return { kind: "unsupported", message: "The Scene timeline edit has no exact Studio duration authority." };
-    }
-    if (operation.kind === "InsertTimelineEvent") {
-      const waitDuration = operation.interval.end - operation.interval.start;
-      if (
-        operation.eventKind !== "wait" ||
-        operation.purpose !== "scene-duration" ||
-        !closeStaticTransformValue(operation.interval.start, program.anchor.resolvedSeconds)
-      ) {
-        return { kind: "unsupported", message: "Only an exact Studio Scene duration wait can be inserted." };
-      }
-      edits.push({ at: operation.interval.start, duration: waitDuration, kind: "insert-wait" });
-      authorizedWaitOperationIds.push(operation.id);
-      operationIds.push(operation.id);
-      continue;
-    }
-
-    const expectedWaitOperationIds = authorizedWaitOperationIds.toReversed();
-    if (
-      !closeStaticTransformValue(operation.interval.start, operation.interval.end) ||
-      operation.waitOperationIds.length !== expectedWaitOperationIds.length ||
-      operation.waitOperationIds.some((operationId, index) => operationId !== expectedWaitOperationIds[index])
-    ) {
-      return { kind: "unsupported", message: "The Scene duration trim has no exact Studio wait authority." };
-    }
-    edits.push({
-      at: operation.interval.start,
+  if (operation.kind === "TrimSceneDuration") {
+    return {
+      ...common,
       kind: "trim-scene-duration",
       removedDuration: operation.removedDuration,
       targetDuration: operation.targetDuration,
-    });
-    operationIds.push(operation.id);
+      waitOperationIds: operation.waitOperationIds,
+    };
   }
+  return { ...common, kind: "unsupported" };
+}
 
-  if (input.proposedState.evaluatedScene.sceneId !== input.proposedState.base.runtimeSceneState.sceneId) {
-    return { kind: "unsupported", message: "The Scene timeline edit does not preserve the Studio Scene identity." };
-  }
-  return { edits, kind: "authorized", operationIds };
+function studioTimelineSourceIsExact(
+  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
+) {
+  const scene = input.snapshot.snapshot.scene;
+  const correlation = input.snapshot.correlation;
+  const base = input.proposedState.base;
+  return (
+    scene.source.kind === "imported-manim-server-snapshot" &&
+    importedSnapshotCorrelationIsExact(input.snapshot, true) &&
+    base.runtimeSceneState.sceneId === base.editorContext.activeSceneId &&
+    base.runtimeSceneState.sceneId === `${correlation.context.sourcePath}#${correlation.context.sceneName}` &&
+    base.sourceSnapshot.sourceId === correlation.context.sourcePath &&
+    base.sourceSnapshot.hash === `sha256:${correlation.context.sourceHash}`
+  );
+}
+
+function studioTimelineEditCommand(
+  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
+  nextRevision: string,
+): ApplyStudioTimelineEditWireCommandV1 {
+  return {
+    baseStudioSceneId: input.proposedState.base.runtimeSceneState.sceneId,
+    evaluatedDuration: input.proposedState.evaluatedScene.duration,
+    evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
+    expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+    nextRevision,
+    programs: input.proposedState.programs.map(({ program, validation }) => ({
+      absoluteSourceSeconds: program.anchor.source.kind === "absolute" ? program.anchor.source.seconds : null,
+      loweringSupported: program.loweringStatus === "supported",
+      operations: program.operations.map(normalizedStudioTimelineOperation),
+      origin: program.provenance.origin,
+      resolvedSeconds: program.anchor.resolvedSeconds,
+      scheduleOrder: program.schedule.order,
+      validationValid: validation.status === "valid",
+    })),
+    schema: "poietra.apply-studio-timeline-edit",
+    version: 1,
+  };
 }
 
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
+    applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     createSceneMotionCompiler?: CreateSceneMotionCompiler;
-    editSceneTimelineCompiler?: EditSceneTimelineCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
@@ -983,11 +927,16 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const importedTimeline = planImportedTimeline(input);
-  if (importedTimeline.kind === "unsupported") {
-    return { error: `Imported Scene timeline edit is unsupported: ${importedTimeline.message}`, kind: "unsupported" };
-  }
-  if (importedTimeline.kind === "authorized") {
+  const hasStudioTimelineEdit = input.proposedState.programs.some(({ program }) =>
+    program.operations.some(({ kind }) => kind === "InsertTimelineEvent" || kind === "TrimSceneDuration"),
+  );
+  if (hasStudioTimelineEdit) {
+    if (!studioTimelineSourceIsExact(input)) {
+      return {
+        error: "The verified source snapshot is not one exact imported Scene.",
+        kind: "unsupported",
+      };
+    }
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
@@ -996,27 +945,10 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const bundle = await (input.editSceneTimelineCompiler ?? compileEditSceneTimeline)(input.snapshot.snapshot, {
-        edits: importedTimeline.edits,
-        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-        nextRevision: engineRevisionHash,
-        provenance: {
-          evidence: importedTimeline.operationIds.map((operationId) => `authorized operation ${operationId}`),
-          id: `studio-imported-timeline:${engineRevisionHash}`,
-          origin: "studio-edit-program",
-        },
-        schema: "poietra.edit-scene-timeline",
-        version: 1,
-      });
-      if (
-        bundle.scene.sceneId !== input.snapshot.snapshot.scene.sceneId ||
-        Math.abs(bundle.scene.duration - input.proposedState.evaluatedScene.duration) >= 0.0005
-      ) {
-        return {
-          error: "Rust core timeline result does not reproduce the Studio evaluated Scene.",
-          kind: "unsupported",
-        };
-      }
+      const bundle = await (input.applyStudioTimelineEditCompiler ?? compileApplyStudioTimelineEdit)(
+        input.snapshot.snapshot,
+        studioTimelineEditCommand(input, engineRevisionHash),
+      );
       return {
         kind: "compiled",
         scene: {
@@ -1040,7 +972,7 @@ export async function compileStudioPreviewSceneV1(
     } catch (error) {
       return {
         error: `Rust core rejected the imported Scene timeline edit: ${
-          error instanceof Error ? error.message : "unknown error"
+          error instanceof Error ? error.message : String(error)
         }`,
         kind: "unsupported",
       };
