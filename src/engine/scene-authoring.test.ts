@@ -5,16 +5,16 @@ import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioTimelineEditWireCommandV1,
   type CreateSceneMotionWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioCreationEditCompiler,
+  createApplyStudioTimelineEditCompiler,
   createCreateSceneMotionCompiler,
-  createEditSceneTimelineCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
   createTransformSceneEntityAtTimeCompiler,
   createTransformSceneEntityCompiler,
-  type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityWireCommandV1,
   type SetSubtreeVectorPaintAlphaWireCommandV1,
   type TransformSceneEntityAtTimeWireCommandV1,
@@ -203,19 +203,33 @@ const timedTransformCommand: TransformSceneEntityAtTimeWireCommandV1 = {
   version: 1,
 };
 
-const editTimelineCommand: EditSceneTimelineWireCommandV1 = {
-  edits: [
-    { at: 2, duration: 1.5, kind: "insert-wait" },
-    { at: 3.5, kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 3 },
-  ],
+const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
+  baseStudioSceneId: "scene.py#CircleScene",
+  evaluatedDuration: 3,
+  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
   nextRevision: "c".repeat(64),
-  provenance: {
-    evidence: ["Studio Scene duration control"],
-    id: "studio-edit:timeline-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.edit-scene-timeline",
+  programs: [
+    {
+      absoluteSourceSeconds: 2,
+      loweringSupported: true,
+      operations: [
+        {
+          eventKind: "wait",
+          id: "wait-1",
+          interval: { end: 3.5, start: 2 },
+          kind: "insert-wait",
+          origin: "studio-default",
+          purpose: "scene-duration",
+        },
+      ],
+      origin: "studio-default",
+      resolvedSeconds: 2,
+      scheduleOrder: ["wait-1"],
+      validationValid: true,
+    },
+  ],
+  schema: "poietra.apply-studio-timeline-edit",
   version: 1,
 };
 
@@ -367,11 +381,11 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(timedTransformCommand);
   });
 
-  it("forwards one ordered atomic Scene timeline command and complete base snapshot", async () => {
+  it("forwards one complete normalized Studio timeline edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createEditSceneTimelineCompiler(async () => ({
-      editSceneTimelineV1: (snapshotJson, commandJson) => {
+    const compile = createApplyStudioTimelineEditCompiler(async () => ({
+      applyStudioTimelineEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
@@ -380,9 +394,9 @@ describe("Scene authoring WASM adapter", () => {
       },
     }));
 
-    const result = await compile(bundle, editTimelineCommand);
+    const result = await compile(bundle, studioTimelineEditCommand);
     expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(editTimelineCommand);
+    expect(calls[1]).toEqual(studioTimelineEditCommand);
   });
 
   it("forwards the exact subtree vector-paint command and complete base snapshot", async () => {
@@ -417,14 +431,9 @@ describe("Scene authoring WASM adapter", () => {
     const compileTransform = createTransformSceneEntityCompiler(async () => ({
       transformSceneEntityV1: () => new TextEncoder().encode("{}"),
     }));
-    const compileTimeline = createEditSceneTimelineCompiler(async () => ({
-      editSceneTimelineV1: () => new TextEncoder().encode("false"),
-    }));
-
     await expect(compileCreation(bundle, creationEditCommand)).rejects.toThrow();
     await expect(compileRotation(bundle, command)).rejects.toThrow();
     await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
     await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();
-    await expect(compileTimeline(bundle, editTimelineCommand)).rejects.toThrow();
   });
 });

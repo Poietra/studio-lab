@@ -66,7 +66,7 @@ export type TransformSceneEntityCompiler = (
   command: TransformSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-type StaticRootTransformOrigin = "direct-manipulation" | "fixture" | "remote-model" | "studio-default";
+type StudioAuthoringOrigin = "direct-manipulation" | "fixture" | "remote-model" | "studio-default";
 type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
@@ -75,8 +75,8 @@ type StaticRootTransformOperation = Readonly<{
   id: string;
   interval: Readonly<{ end: number; start: number }>;
   loweringSupported: boolean;
-  origin: StaticRootTransformOrigin;
-  programOrigin: StaticRootTransformOrigin;
+  origin: StudioAuthoringOrigin;
+  programOrigin: StudioAuthoringOrigin;
   validationValid: boolean;
 }> &
   (
@@ -156,25 +156,48 @@ export type TransformSceneEntityAtTimeCompiler = (
   command: TransformSceneEntityAtTimeWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type EditSceneTimelineWireCommandV1 = Readonly<{
-  edits: readonly (
-    | Readonly<{ at: number; duration: number; kind: "insert-wait" }>
-    | Readonly<{ at: number; kind: "trim-scene-duration"; removedDuration: number; targetDuration: number }>
-  )[];
+type StudioTimelineOperationV1 = Readonly<{
+  id: string;
+  interval: Readonly<{ end: number; start: number }>;
+  origin: StudioAuthoringOrigin;
+}> &
+  (
+    | Readonly<{
+        eventKind: "play" | "wait";
+        kind: "insert-wait";
+        purpose: "scene-duration" | null;
+      }>
+    | Readonly<{
+        kind: "trim-scene-duration";
+        removedDuration: number;
+        targetDuration: number;
+        waitOperationIds: readonly string[];
+      }>
+    | Readonly<{ kind: "unsupported" }>
+  );
+
+export type ApplyStudioTimelineEditWireCommandV1 = Readonly<{
+  baseStudioSceneId: string;
+  evaluatedDuration: number;
+  evaluatedSceneId: string;
   expectedBaseRevision: string;
   nextRevision: string;
-  provenance: Readonly<{
-    evidence: readonly string[];
-    id: string;
-    origin: "studio-edit-program";
-  }>;
-  schema: "poietra.edit-scene-timeline";
+  programs: readonly Readonly<{
+    absoluteSourceSeconds: number | null;
+    loweringSupported: boolean;
+    operations: readonly StudioTimelineOperationV1[];
+    origin: StudioAuthoringOrigin;
+    resolvedSeconds: number;
+    scheduleOrder: readonly string[];
+    validationValid: boolean;
+  }>[];
+  schema: "poietra.apply-studio-timeline-edit";
   version: 1;
 }>;
 
-export type EditSceneTimelineCompiler = (
+export type ApplyStudioTimelineEditCompiler = (
   snapshot: SceneIrBundleV1,
-  command: EditSceneTimelineWireCommandV1,
+  command: ApplyStudioTimelineEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
@@ -307,8 +330,8 @@ type TransformSceneAtTimeAuthoringBindingsV1 = Readonly<{
   transformSceneEntityAtTimeV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type EditSceneTimelineBindingsV1 = Readonly<{
-  editSceneTimelineV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+type ApplyStudioTimelineEditBindingsV1 = Readonly<{
+  applyStudioTimelineEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type ApplyStudioCreationEditBindingsV1 = Readonly<{
@@ -325,8 +348,8 @@ type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
 
 type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
+  ApplyStudioTimelineEditBindingsV1 &
   CreateSceneMotionBindingsV1 &
-  EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
   TransformSceneAtTimeAuthoringBindingsV1 &
@@ -341,8 +364,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     if (
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
+      typeof candidate.applyStudioTimelineEditV1 !== "function" ||
       typeof candidate.createSceneMotionV1 !== "function" ||
-      typeof candidate.editSceneTimelineV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
       typeof candidate.transformSceneEntityAtTimeV1 !== "function" ||
@@ -355,8 +378,9 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStaticRootTransformEditV1 as SceneAuthoringBindingsV1["applyStaticRootTransformEditV1"],
       applyStudioCreationEditV1:
         candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
+      applyStudioTimelineEditV1:
+        candidate.applyStudioTimelineEditV1 as SceneAuthoringBindingsV1["applyStudioTimelineEditV1"],
       createSceneMotionV1: candidate.createSceneMotionV1 as SceneAuthoringBindingsV1["createSceneMotionV1"],
-      editSceneTimelineV1: candidate.editSceneTimelineV1 as SceneAuthoringBindingsV1["editSceneTimelineV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
@@ -438,13 +462,13 @@ export function createTransformSceneEntityAtTimeCompiler(
   };
 }
 
-/** Creates the browser adapter around one ordered, atomic Scene timeline edit. */
-export function createEditSceneTimelineCompiler(
-  getBindings: () => Promise<EditSceneTimelineBindingsV1>,
-): EditSceneTimelineCompiler {
+/** Passes one complete normalized Studio timeline edit to the canonical core. */
+export function createApplyStudioTimelineEditCompiler(
+  getBindings: () => Promise<ApplyStudioTimelineEditBindingsV1>,
+): ApplyStudioTimelineEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.editSceneTimelineV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioTimelineEditV1);
   };
 }
 
@@ -460,8 +484,8 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
+export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);
 export const compileCreateSceneMotion = createCreateSceneMotionCompiler(loadBindings);
-export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntityAtTime = createTransformSceneEntityAtTimeCompiler(loadBindings);

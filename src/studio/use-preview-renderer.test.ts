@@ -9,10 +9,10 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioTimelineEditCompiler,
+  ApplyStudioTimelineEditWireCommandV1,
   CreateSceneMotionCompiler,
   CreateSceneMotionWireCommandV1,
-  EditSceneTimelineCompiler,
-  EditSceneTimelineWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -214,13 +214,12 @@ function exactImportedTimelineWorkingBase(base: Awaited<ReturnType<typeof compil
   };
 }
 
-function recordingTimelineCompiler(
-  calls: EditSceneTimelineWireCommandV1[],
-  resultDuration: number,
-): EditSceneTimelineCompiler {
+function recordingStudioTimelineCompiler(
+  calls: ApplyStudioTimelineEditWireCommandV1[],
+): ApplyStudioTimelineEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    return { ...bundle, scene: { ...bundle.scene, duration: resultDuration } };
+    return { ...bundle, scene: { ...bundle.scene, duration: command.evaluatedDuration } };
   };
 }
 
@@ -1316,7 +1315,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.interactionEntityIds).toEqual(["runtime-line"]);
   });
 
-  it("routes one static imported Scene duration extension through the canonical Rust timeline command", async () => {
+  it("passes one complete normalized Studio timeline edit to Rust", async () => {
     const base = await compilablePreviewInput();
     const workingBase = exactImportedTimelineWorkingBase(base);
     const extension = createSceneDurationProgram({
@@ -1329,10 +1328,10 @@ describe("compileStudioPreviewSceneV1", () => {
     if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
     const extensionRecord = programRecord(extension.program, extension);
     const proposedState = evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] });
-    const commands: EditSceneTimelineWireCommandV1[] = [];
+    const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: recordingTimelineCompiler(commands, proposedState.evaluatedScene.duration),
+      applyStudioTimelineEditCompiler: recordingStudioTimelineCompiler(commands),
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot: base.snapshot,
@@ -1343,32 +1342,76 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
-      edits: [{ at: 1, duration: 1, kind: "insert-wait" }],
+      baseStudioSceneId: workingBase.runtimeSceneState.sceneId,
+      evaluatedDuration: proposedState.evaluatedScene.duration,
+      evaluatedSceneId: proposedState.evaluatedScene.sceneId,
       expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
       nextRevision: result.scene.engineRevisionHash,
-      provenance: {
-        evidence: [`authorized operation ${extension.program.operations[0]?.id}`],
-        id: `studio-imported-timeline:${result.scene.engineRevisionHash}`,
-        origin: "studio-edit-program",
-      },
-      schema: "poietra.edit-scene-timeline",
+      programs: [
+        {
+          absoluteSourceSeconds: 1,
+          loweringSupported: true,
+          operations: [
+            {
+              eventKind: "wait",
+              id: extension.program.operations[0]?.id,
+              interval: { end: 2, start: 1 },
+              kind: "insert-wait",
+              origin: "studio-default",
+              purpose: "scene-duration",
+            },
+          ],
+          origin: "studio-default",
+          resolvedSeconds: 1,
+          scheduleOrder: extension.program.schedule.order,
+          validationValid: true,
+        },
+      ],
+      schema: "poietra.apply-studio-timeline-edit",
       version: 1,
     });
-    const mismatched = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: async (bundle) => bundle,
+
+    let compilerCalls = 0;
+    const rejected = await compileStudioPreviewSceneV1({
+      applyStudioTimelineEditCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return bundle;
+      },
+      frame: { height: 9, width: 16 },
+      proposedState: {
+        ...proposedState,
+        base: {
+          ...proposedState.base,
+          sourceSnapshot: { ...proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
+        },
+      },
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:inexact-imported-timeline-source",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+    expect(rejected).toEqual({
+      error: "The verified source snapshot is not one exact imported Scene.",
+      kind: "unsupported",
+    });
+    expect(compilerCalls).toBe(0);
+
+    const coreRejected = await compileStudioPreviewSceneV1({
+      applyStudioTimelineEditCompiler: async () => {
+        throw "closed timeline authority rejected the edit";
+      },
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot: base.snapshot,
-      workingRevision: "studio-working-v1:rejected-mismatched-duration",
+      workingRevision: "studio-working-v1:core-rejected-imported-timeline",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
-    expect(mismatched).toEqual({
-      error: "Rust core timeline result does not reproduce the Studio evaluated Scene.",
+    expect(coreRejected).toEqual({
+      error: "Rust core rejected the imported Scene timeline edit: closed timeline authority rejected the edit",
       kind: "unsupported",
     });
   });
 
-  it("rejects a legacy animated Scene timeline edit before invoking the core planner", async () => {
+  it("rejects a legacy animated Scene timeline edit before invoking the core use case", async () => {
     const base = await compilablePreviewInput();
     const legacySource = base.snapshot.snapshot.scene.source;
     if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
@@ -1405,7 +1448,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
     let compilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: async (bundle) => {
+      applyStudioTimelineEditCompiler: async (bundle) => {
         compilerCalls += 1;
         expect(bundle.scene.animationChannels).toEqual(animationChannels);
         return { ...bundle, scene: { ...bundle.scene, duration: 3 } };
@@ -1427,99 +1470,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(compilerCalls).toBe(0);
   });
 
-  it("preserves source order for extension, trim, and a later same-anchor extension", async () => {
-    const base = await compilablePreviewInput();
-    const workingBase = exactImportedTimelineWorkingBase(base);
-    const extension = createSceneDurationProgram({
-      capturedPlayhead: 1,
-      scene: workingBase.runtimeSceneState,
-      sourceAnchor: 1,
-      targetDuration: 3,
-      transactionId: "extend-before-imported-trim",
-    });
-    if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
-    const extensionRecord = programRecord(extension.program, extension);
-    const extended = evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] });
-    const trim = createSceneDurationProgram({
-      appliedPrograms: [extensionRecord],
-      capturedPlayhead: 3,
-      scene: extended.evaluatedScene,
-      sourceAnchor: 1,
-      targetDuration: 2.5,
-      transactionId: "trim-imported-scene",
-    });
-    if (trim.kind !== "valid") throw new Error(JSON.stringify(trim.issues));
-    const trimRecord = programRecord(trim.program, trim);
-    const trimmed = evaluateWorkingState({
-      ...workingBase,
-      appliedPrograms: [extensionRecord, trimRecord],
-    });
-    const laterExtension = createSceneDurationProgram({
-      capturedPlayhead: 2.5,
-      scene: trimmed.evaluatedScene,
-      sourceAnchor: 1,
-      targetDuration: 3.5,
-      transactionId: "extend-after-imported-trim",
-    });
-    if (laterExtension.kind !== "valid") throw new Error(JSON.stringify(laterExtension.issues));
-    const laterExtensionRecord = programRecord(laterExtension.program, laterExtension);
-    const proposedState = evaluateWorkingState({
-      ...workingBase,
-      appliedPrograms: [extensionRecord, trimRecord, laterExtensionRecord],
-    });
-    const commands: EditSceneTimelineWireCommandV1[] = [];
-
-    const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: recordingTimelineCompiler(commands, proposedState.evaluatedScene.duration),
-      frame: { height: 9, width: 16 },
-      proposedState,
-      snapshot: base.snapshot,
-      workingRevision: "studio-working-v1:extend-and-trim-imported-scene",
-      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
-    });
-
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(commands).toHaveLength(1);
-    expect(commands[0]?.edits).toEqual([
-      { at: 1, duration: 1, kind: "insert-wait" },
-      { at: 2, kind: "trim-scene-duration", removedDuration: 0.5, targetDuration: 2.5 },
-      { at: 1.5, duration: 1, kind: "insert-wait" },
-    ]);
-    expect(commands[0]?.provenance.evidence).toEqual([
-      `authorized operation ${extension.program.operations[0]?.id}`,
-      `authorized operation ${trim.program.operations[0]?.id}`,
-      `authorized operation ${laterExtension.program.operations[0]?.id}`,
-    ]);
-
-    const trimOperation = trimRecord.program.operations[0];
-    if (trimOperation?.kind !== "TrimSceneDuration") throw new Error("Expected one Scene duration trim.");
-    const forgedTrimRecord = {
-      ...trimRecord,
-      program: {
-        ...trimRecord.program,
-        operations: [{ ...trimOperation, waitOperationIds: ["foreign-wait-operation"] }],
-      },
-    };
-    let compilerCalls = 0;
-    const rejected = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: async () => {
-        compilerCalls += 1;
-        throw new Error("A trim with foreign wait authority must not reach Rust.");
-      },
-      frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord, forgedTrimRecord] }),
-      snapshot: base.snapshot,
-      workingRevision: "studio-working-v1:foreign-wait-authority",
-      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
-    });
-    expect(rejected).toMatchObject({
-      error: expect.stringContaining("no exact Studio wait authority"),
-      kind: "unsupported",
-    });
-    expect(compilerCalls).toBe(0);
-  });
-
-  it("rejects an appearance operation combined with a Scene timeline edit before Rust compilation", async () => {
+  it("forwards every Program and unsupported operation without pre-authorizing them", async () => {
     const base = await compilablePreviewInput();
     const workingBase = exactImportedTimelineWorkingBase(base);
     const extension = createSceneDurationProgram({
@@ -1530,7 +1481,8 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "timeline-with-appearance",
     });
     if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
-    const appearanceOperation = {
+    const extensionRecord = programRecord(extension.program, extension);
+    const unsupportedOperation = {
       dependsOn: [],
       entityId: "source:circle",
       id: "tx:appearance/operation:set-opacity",
@@ -1540,33 +1492,50 @@ describe("compileStudioPreviewSceneV1", () => {
       provenance: { evidence: ["unsupported appearance regression"], origin: "studio-default" },
       value: 0.5,
     } as const;
-    const appearanceProgram = {
-      ...extension.program,
-      anchor: { ...extension.program.anchor, resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } as const },
-      operations: [appearanceOperation],
-      schedule: { edges: [], mode: "sequence", order: [appearanceOperation.id] } as const,
-      transactionId: "appearance-only",
-    };
-    const appearance = validateAndScheduleProgram(appearanceProgram, workingBase.runtimeSceneState);
-    if (appearance.kind !== "valid") throw new Error(JSON.stringify(appearance.issues));
-    let compilerCalls = 0;
-    const result = await compileStudioPreviewSceneV1({
-      editSceneTimelineCompiler: async () => {
-        compilerCalls += 1;
-        throw new Error("The Rust timeline compiler must not run for a mixed appearance edit.");
+    const unsupportedRecord = {
+      program: {
+        ...extension.program,
+        anchor: { ...extension.program.anchor, resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } as const },
+        operations: [unsupportedOperation],
+        schedule: { edges: [], mode: "sequence", order: [unsupportedOperation.id] } as const,
+        transactionId: "appearance-only",
       },
+      validation: { issues: [], status: "valid" },
+    } as const;
+    const proposedState = {
+      ...evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] }),
+      programs: [extensionRecord, unsupportedRecord],
+    };
+    const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioTimelineEditCompiler: recordingStudioTimelineCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({
-        ...workingBase,
-        appliedPrograms: [programRecord(extension.program, extension), programRecord(appearance.program, appearance)],
-      }),
+      proposedState,
       snapshot: base.snapshot,
       workingRevision: "studio-working-v1:timeline-with-appearance",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
 
-    expect(result).toMatchObject({ error: expect.stringContaining("cannot be combined"), kind: "unsupported" });
-    expect(compilerCalls).toBe(0);
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.programs).toHaveLength(2);
+    expect(commands[0]?.programs[0]?.operations[0]?.kind).toBe("insert-wait");
+    expect(commands[0]?.programs[1]).toMatchObject({
+      absoluteSourceSeconds: 0,
+      operations: [
+        {
+          id: unsupportedOperation.id,
+          interval: unsupportedOperation.interval,
+          kind: "unsupported",
+          origin: "studio-default",
+        },
+      ],
+      origin: "studio-default",
+      resolvedSeconds: 0,
+      scheduleOrder: [unsupportedOperation.id],
+      validationValid: true,
+    });
   });
 
   it.each(["direct-manipulation", "studio-default"] as const)(

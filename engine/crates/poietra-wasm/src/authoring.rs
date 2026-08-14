@@ -1,15 +1,15 @@
 use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
-    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, CreateSceneMotionCommand,
-    CreateSceneMotionEasing, CreateSceneMotionError, EditSceneTimelineCommand,
-    EditSceneTimelineError, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
-    RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors, SceneTimelineEdit,
-    SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioTimelineEditCommand,
+    ApplyStudioTimelineEditError, CreateSceneMotionCommand, CreateSceneMotionEasing,
+    CreateSceneMotionError, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
+    RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors,
+    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
     StaticRootTransformOperation, StaticRootTransformSize, StaticRootTransformSourceBinding,
     StaticRootTransformStudioEntity, StudioAuthoringSize, StudioCreationEvaluatedEntity,
     StudioCreationEvaluatedEvent, StudioCreationMathTexOutline, StudioCreationProgram,
-    TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
-    TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
+    StudioTimelineProgram, TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand,
+    TransformSceneEntityError, TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, IntervalV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
@@ -42,6 +42,12 @@ enum ApplyStaticRootTransformEditSchemaV1 {
 enum ApplyStudioCreationEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-creation-edit")]
     ApplyStudioCreationEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStudioTimelineEditSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-timeline-edit")]
+    ApplyStudioTimelineEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -94,70 +100,6 @@ impl From<CreateSceneMotionCommandJsonV1> for CreateSceneMotionCommand {
             next_revision: value.next_revision,
             provenance: value.provenance,
             target_entity_ids: value.target_entity_ids,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum EditSceneTimelineSchemaV1 {
-    #[serde(rename = "poietra.edit-scene-timeline")]
-    EditSceneTimeline,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "kind", deny_unknown_fields)]
-enum SceneTimelineEditJsonV1 {
-    #[serde(rename = "insert-wait")]
-    InsertWait { at: f64, duration: f64 },
-    #[serde(rename = "trim-scene-duration")]
-    TrimSceneDuration {
-        at: f64,
-        #[serde(rename = "removedDuration")]
-        removed_duration: f64,
-        #[serde(rename = "targetDuration")]
-        target_duration: f64,
-    },
-}
-
-impl From<SceneTimelineEditJsonV1> for SceneTimelineEdit {
-    fn from(value: SceneTimelineEditJsonV1) -> Self {
-        match value {
-            SceneTimelineEditJsonV1::InsertWait { at, duration } => {
-                Self::InsertWait(SceneTimelineInsertion { at, duration })
-            }
-            SceneTimelineEditJsonV1::TrimSceneDuration {
-                at,
-                removed_duration,
-                target_duration,
-            } => Self::TrimSceneDuration {
-                at,
-                removed_duration,
-                target_duration,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EditSceneTimelineCommandJsonV1 {
-    edits: Vec<SceneTimelineEditJsonV1>,
-    expected_base_revision: String,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: EditSceneTimelineSchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<EditSceneTimelineCommandJsonV1> for EditSceneTimelineCommand {
-    fn from(value: EditSceneTimelineCommandJsonV1) -> Self {
-        Self {
-            edits: value.edits.into_iter().map(Into::into).collect(),
-            expected_base_revision: value.expected_base_revision,
-            next_revision: value.next_revision,
-            provenance: value.provenance,
         }
     }
 }
@@ -424,6 +366,34 @@ impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditComma
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioTimelineEditCommandJsonV1 {
+    base_studio_scene_id: String,
+    evaluated_duration: f64,
+    evaluated_scene_id: String,
+    expected_base_revision: String,
+    next_revision: String,
+    programs: Vec<StudioTimelineProgram>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioTimelineEditSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditCommand {
+    fn from(value: ApplyStudioTimelineEditCommandJsonV1) -> Self {
+        Self {
+            base_studio_scene_id: value.base_studio_scene_id,
+            evaluated_duration: value.evaluated_duration,
+            evaluated_scene_id: value.evaluated_scene_id,
+            expected_base_revision: value.expected_base_revision,
+            next_revision: value.next_revision,
+            programs: value.programs,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
     #[error("{command} command contains {actual_bytes} bytes; maximum is {maximum_bytes}")]
@@ -444,8 +414,6 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     CreateMotionCommand(#[from] CreateSceneMotionError),
     #[error(transparent)]
-    TimelineCommand(#[from] EditSceneTimelineError),
-    #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
     TransformCommand(#[from] TransformSceneEntityError),
@@ -453,6 +421,8 @@ enum SceneAuthoringAdapterError {
     StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
     #[error(transparent)]
     StudioCreationEdit(#[from] ApplyStudioCreationEditError),
+    #[error(transparent)]
+    StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
     #[error(transparent)]
     SetSubtreeVectorPaintAlphaCommand(#[from] SetSubtreeVectorPaintAlphaError),
     #[error("the authored Scene bundle could not be serialized: {0}")]
@@ -561,6 +531,20 @@ fn apply_studio_creation_edit_json(
     scene_authoring_response(&result)
 }
 
+fn apply_studio_timeline_edit_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioTimelineEditCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "Studio timeline edit",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_timeline_edit(command.into())?;
+    scene_authoring_response(&result)
+}
+
 fn create_scene_motion_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -570,31 +554,6 @@ fn create_scene_motion_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.create_scene_motion(command.into())?;
     scene_authoring_response(&result)
-}
-
-fn edit_scene_timeline_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: EditSceneTimelineCommandJsonV1 =
-        parse_scene_authoring_command("edit timeline", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.edit_scene_timeline(command.into())?;
-    scene_authoring_response(&result)
-}
-
-/// Applies ordered wait insertions and trailing duration trims through the shared core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or edited result.
-#[wasm_bindgen(js_name = editSceneTimelineV1)]
-pub fn edit_scene_timeline_v1(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, JsValue> {
-    edit_scene_timeline_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 /// Applies one complete normalized Studio creation edit through the shared core.
@@ -608,6 +567,20 @@ pub fn apply_studio_creation_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_creation_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Applies one complete normalized Studio timeline edit through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or authored result.
+#[wasm_bindgen(js_name = applyStudioTimelineEditV1)]
+pub fn apply_studio_timeline_edit_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_studio_timeline_edit_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -889,6 +862,54 @@ mod tests {
         .unwrap()
     }
 
+    fn studio_timeline_edit_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "baseStudioSceneId": "scene.py#CircleScene",
+            "evaluatedDuration": 2.3,
+            "evaluatedSceneId": "scene.py#CircleScene",
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "programs": [
+                {
+                    "absoluteSourceSeconds": 0.5,
+                    "loweringSupported": true,
+                    "operations": [{
+                        "eventKind": "wait",
+                        "id": "extend-scene-duration",
+                        "interval": { "end": 1.0, "start": 0.5 },
+                        "kind": "insert-wait",
+                        "origin": "studio-default",
+                        "purpose": "scene-duration"
+                    }],
+                    "origin": "studio-default",
+                    "resolvedSeconds": 0.5,
+                    "scheduleOrder": ["extend-scene-duration"],
+                    "validationValid": true
+                },
+                {
+                    "absoluteSourceSeconds": 0.5,
+                    "loweringSupported": true,
+                    "operations": [{
+                        "id": "trim-scene-duration",
+                        "interval": { "end": 1.0, "start": 1.0 },
+                        "kind": "trim-scene-duration",
+                        "origin": "studio-default",
+                        "removedDuration": 0.2,
+                        "targetDuration": 2.3,
+                        "waitOperationIds": ["extend-scene-duration"]
+                    }],
+                    "origin": "studio-default",
+                    "resolvedSeconds": 1.0,
+                    "scheduleOrder": ["trim-scene-duration"],
+                    "validationValid": true
+                }
+            ],
+            "schema": "poietra.apply-studio-timeline-edit",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
     fn command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "angleRadians": std::f64::consts::FRAC_PI_2,
@@ -987,25 +1008,6 @@ mod tests {
             },
             "schema": "poietra.create-scene-motion",
             "targetEntityIds": ["later", "stroke"],
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn edit_timeline_command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "edits": [
-                { "at": 0.5, "duration": 0.5, "kind": "insert-wait" },
-                { "at": 1.0, "kind": "trim-scene-duration", "removedDuration": 0.2, "targetDuration": 2.3 }
-            ],
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "provenance": {
-                "evidence": ["WASM adapter timeline edit test"],
-                "id": "wasm-timeline-edit",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.edit-scene-timeline",
             "version": 1
         }))
         .unwrap()
@@ -1546,6 +1548,57 @@ mod tests {
     }
 
     #[test]
+    fn studio_timeline_adapter_forwards_literal_json_to_the_core() {
+        let response = apply_studio_timeline_edit_json(
+            &static_fixture_json(),
+            &studio_timeline_edit_command_json(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+
+        assert!((bundle.scene.duration - 2.3).abs() < f64::EPSILON);
+        assert!(
+            bundle
+                .scene
+                .entities
+                .iter()
+                .all(|entity| { (entity.lifetimes[0].end - 2.3).abs() < f64::EPSILON })
+        );
+        assert_eq!(
+            bundle.scene.provenance.last().unwrap().id,
+            "studio-imported-timeline:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        );
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        ));
+    }
+
+    #[test]
+    fn studio_timeline_adapter_rejects_unknown_fields_and_non_static_sources() {
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(&studio_timeline_edit_command_json()).unwrap();
+        unknown["profile"] = json!("legacy");
+        let error = apply_studio_timeline_edit_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&unknown).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field `profile`"));
+
+        let error =
+            apply_studio_timeline_edit_json(&fixture_json(), &studio_timeline_edit_command_json())
+                .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StudioTimelineEdit(
+                ApplyStudioTimelineEditError::Unsupported
+            )
+        ));
+    }
+
+    #[test]
     fn motion_adapter_forwards_the_strict_command_to_the_core() {
         let response =
             create_scene_motion_json(&fixture_json(), &create_motion_command_json()).unwrap();
@@ -1625,36 +1678,6 @@ mod tests {
             SceneAuthoringAdapterError::CreateMotionCommand(
                 CreateSceneMotionError::StaleBaseRevision
             )
-        ));
-    }
-
-    #[test]
-    fn timeline_adapter_forwards_wait_and_trim_to_the_core() {
-        let response =
-            edit_scene_timeline_json(&fixture_json(), &edit_timeline_command_json()).unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
-
-        assert!((bundle.scene.duration - 2.3).abs() < 1e-12);
-        assert!(
-            bundle
-                .scene
-                .entities
-                .iter()
-                .all(|entity| { (entity.lifetimes[0].end - 2.3).abs() < 1e-12 })
-        );
-        assert!(matches!(
-            &bundle.scene.animation_channels[0],
-            AnimationChannelV1::Opacity { keyframes, .. }
-                if (keyframes[1].at - 2.3).abs() < 1e-12
-        ));
-        assert_eq!(
-            bundle.scene.provenance.last().unwrap().id,
-            "wasm-timeline-edit"
-        );
-        assert!(matches!(
-            bundle.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         ));
     }
 

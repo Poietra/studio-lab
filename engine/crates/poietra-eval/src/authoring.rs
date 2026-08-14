@@ -47,14 +47,14 @@ struct CreateSceneEntity {
 
 /// One insertion into an existing Scene timeline.
 #[derive(Clone, Debug, PartialEq)]
-pub struct SceneTimelineInsertion {
-    pub at: f64,
-    pub duration: f64,
+struct SceneTimelineInsertion {
+    at: f64,
+    duration: f64,
 }
 
 /// One ordered mutation in an atomic Scene timeline edit.
 #[derive(Clone, Debug, PartialEq)]
-pub enum SceneTimelineEdit {
+enum SceneTimelineEdit {
     InsertWait(SceneTimelineInsertion),
     TrimSceneDuration {
         at: f64,
@@ -65,11 +65,11 @@ pub enum SceneTimelineEdit {
 
 /// One profile-free Studio command that atomically edits Scene time.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EditSceneTimelineCommand {
-    pub edits: Vec<SceneTimelineEdit>,
-    pub expected_base_revision: String,
-    pub next_revision: String,
-    pub provenance: ProvenanceRecordV1,
+struct EditSceneTimelineCommand {
+    edits: Vec<SceneTimelineEdit>,
+    expected_base_revision: String,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -177,12 +177,14 @@ pub struct TransformSceneEntityAtTimeCommand {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
-pub enum StaticRootTransformOrigin {
+pub enum StudioAuthoringOrigin {
     DirectManipulation,
     Fixture,
     RemoteModel,
     StudioDefault,
 }
+
+pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(rename_all = "kebab-case")]
@@ -289,6 +291,90 @@ pub struct ApplyStaticRootTransformEditCommand {
     pub source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
     pub studio_entities: Vec<StaticRootTransformStudioEntity>,
     pub viewport: StaticRootTransformSize,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioTimelineEventKind {
+    Play,
+    Wait,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioTimelinePurpose {
+    SceneDuration,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioTimelineOperation {
+    InsertWait {
+        event_kind: StudioTimelineEventKind,
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+        purpose: Option<StudioTimelinePurpose>,
+    },
+    TrimSceneDuration {
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+        removed_duration: f64,
+        target_duration: f64,
+        wait_operation_ids: Vec<String>,
+    },
+    Unsupported {
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+    },
+}
+
+impl StudioTimelineOperation {
+    fn id(&self) -> &str {
+        match self {
+            Self::InsertWait { id, .. }
+            | Self::TrimSceneDuration { id, .. }
+            | Self::Unsupported { id, .. } => id,
+        }
+    }
+
+    fn origin(&self) -> StudioAuthoringOrigin {
+        match self {
+            Self::InsertWait { origin, .. }
+            | Self::TrimSceneDuration { origin, .. }
+            | Self::Unsupported { origin, .. } => *origin,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioTimelineProgram {
+    pub absolute_source_seconds: Option<f64>,
+    pub lowering_supported: bool,
+    pub operations: Vec<StudioTimelineOperation>,
+    pub origin: StudioAuthoringOrigin,
+    pub resolved_seconds: f64,
+    pub schedule_order: Vec<String>,
+    pub validation_valid: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyStudioTimelineEditCommand {
+    pub base_studio_scene_id: String,
+    pub evaluated_duration: f64,
+    pub evaluated_scene_id: String,
+    pub expected_base_revision: String,
+    pub next_revision: String,
+    pub programs: Vec<StudioTimelineProgram>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -452,13 +538,15 @@ pub enum CreateSceneMotionError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum EditSceneTimelineError {
+pub enum ApplyStudioTimelineEditError {
+    #[error(
+        "the normalized Studio Programs do not authorize one static imported Scene timeline edit"
+    )]
+    Unsupported,
     #[error("the installed Scene revision does not match expectedBaseRevision")]
     StaleBaseRevision,
     #[error("the timeline edit must advance to a different Scene revision")]
     RevisionDidNotAdvance,
-    #[error("a timeline command must contain at least one edit")]
-    EmptyEdits,
     #[error(
         "a wait insertion must have a finite positive duration and start inside the current Scene"
     )]
@@ -467,8 +555,6 @@ pub enum EditSceneTimelineError {
         "a trim must consume waits inserted earlier in the same command and resolve to targetDuration"
     )]
     InvalidTrim,
-    #[error("the timeline edit provenance must use the Studio Edit Program origin")]
-    InvalidProvenanceOrigin,
     #[error("the timeline edit provenance ID already exists: {0}")]
     ProvenanceConflict(String),
     #[error("the edited Scene failed whole-bundle verification: {0}")]
@@ -1185,13 +1271,32 @@ fn remove_scene_time(scene: &mut poietra_scene_ir::SceneIrV1, start: f64, end: f
     scene.duration -= end - start;
 }
 
+fn studio_timeline_semantic_values_match(left: f64, right: f64) -> bool {
+    left.is_finite()
+        && right.is_finite()
+        && (left - right).abs() <= 1e-9 * left.abs().max(right.abs()).max(1.0)
+}
+
+fn studio_timeline_duration_matches(left: f64, right: f64) -> bool {
+    left.is_finite() && right.is_finite() && (left - right).abs() < TIMELINE_ANCHOR_EPSILON
+}
+
+fn studio_timeline_program_is_closed(program: &StudioTimelineProgram) -> bool {
+    let Some(operation) = program.operations.first() else {
+        return false;
+    };
+    program.operations.len() == 1
+        && program.schedule_order.len() == 1
+        && program.schedule_order[0] == operation.id()
+}
+
 fn trim_inserted_waits(
     scene: &mut poietra_scene_ir::SceneIrV1,
     inserted_waits: &mut Vec<IntervalV1>,
     at: f64,
     removed_duration: f64,
     target_duration: f64,
-) -> Result<(), EditSceneTimelineError> {
+) -> Result<(), ApplyStudioTimelineEditError> {
     let resolved_duration = scene.duration - removed_duration;
     if !at.is_finite()
         || !removed_duration.is_finite()
@@ -1201,19 +1306,19 @@ fn trim_inserted_waits(
         || !resolved_duration.is_finite()
         || (resolved_duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON
     {
-        return Err(EditSceneTimelineError::InvalidTrim);
+        return Err(ApplyStudioTimelineEditError::InvalidTrim);
     }
     let mut remaining = removed_duration;
     let mut removal_cursor = inserted_waits
         .last()
         .map(|wait| wait.end)
-        .ok_or(EditSceneTimelineError::InvalidTrim)?;
+        .ok_or(ApplyStudioTimelineEditError::InvalidTrim)?;
     if (removal_cursor - at).abs() >= TIMELINE_ANCHOR_EPSILON {
-        return Err(EditSceneTimelineError::InvalidTrim);
+        return Err(ApplyStudioTimelineEditError::InvalidTrim);
     }
     while remaining > TIMELINE_ANCHOR_EPSILON {
         let Some(wait) = inserted_waits.last() else {
-            return Err(EditSceneTimelineError::InvalidTrim);
+            return Err(ApplyStudioTimelineEditError::InvalidTrim);
         };
         let available = wait.end - wait.start;
         if available <= 0.0 {
@@ -1221,7 +1326,7 @@ fn trim_inserted_waits(
             continue;
         }
         if (wait.end - removal_cursor).abs() >= TIMELINE_ANCHOR_EPSILON {
-            return Err(EditSceneTimelineError::InvalidTrim);
+            return Err(ApplyStudioTimelineEditError::InvalidTrim);
         }
         let removed = available.min(remaining);
         let removal_end = wait.end;
@@ -1236,7 +1341,7 @@ fn trim_inserted_waits(
         remaining = (remaining - removed).max(0.0);
     }
     if (scene.duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON {
-        return Err(EditSceneTimelineError::InvalidTrim);
+        return Err(ApplyStudioTimelineEditError::InvalidTrim);
     }
     scene.duration = target_duration;
     Ok(())
@@ -1509,6 +1614,182 @@ fn append_created_entity(
 }
 
 impl EngineSessionV1 {
+    /// Authorizes normalized Studio duration Programs and applies them atomically.
+    ///
+    /// Source anchors are ordered stably and rebased through earlier waits and trims before the
+    /// existing Scene timeline primitive is invoked. The caller must send every Program and map
+    /// every non-timeline operation to `Unsupported`; this method owns admission of the complete
+    /// edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the normalized Programs do not describe the closed static
+    /// imported-Scene duration subset, or the timeline primitive error when mutation fails.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the closed timeline authority remains one auditable ordering and rebase state machine"
+    )]
+    pub fn apply_studio_timeline_edit(
+        &mut self,
+        command: ApplyStudioTimelineEditCommand,
+    ) -> Result<SceneIrBundleV1, ApplyStudioTimelineEditError> {
+        let ApplyStudioTimelineEditCommand {
+            base_studio_scene_id,
+            evaluated_duration,
+            evaluated_scene_id,
+            expected_base_revision,
+            next_revision,
+            programs,
+        } = command;
+        let scene = self.scene();
+        if !matches!(
+            scene.source,
+            SceneSourceV1::ImportedManimServerSnapshot { .. }
+        ) || !scene.animation_channels.is_empty()
+            || base_studio_scene_id != evaluated_scene_id
+            || !evaluated_duration.is_finite()
+            || programs.is_empty()
+        {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+        let mut operation_ids = BTreeSet::new();
+        for program in &programs {
+            let Some(source_seconds) = program.absolute_source_seconds else {
+                return Err(ApplyStudioTimelineEditError::Unsupported);
+            };
+            let Some(operation) = program.operations.first() else {
+                return Err(ApplyStudioTimelineEditError::Unsupported);
+            };
+            if !source_seconds.is_finite()
+                || source_seconds < 0.0
+                || !program.resolved_seconds.is_finite()
+                || program.resolved_seconds < 0.0
+                || !program.validation_valid
+                || !program.lowering_supported
+                || program.origin != StudioAuthoringOrigin::StudioDefault
+                || !studio_timeline_program_is_closed(program)
+                || operation.origin() != StudioAuthoringOrigin::StudioDefault
+                || operation.id().is_empty()
+                || !operation_ids.insert(operation.id())
+            {
+                return Err(ApplyStudioTimelineEditError::Unsupported);
+            }
+        }
+
+        let mut ordered_programs = programs
+            .iter()
+            .enumerate()
+            .map(|(index, program)| (program.absolute_source_seconds.unwrap_or_default(), index))
+            .collect::<Vec<_>>();
+        ordered_programs.sort_by(|(left_anchor, left_index), (right_anchor, right_index)| {
+            left_anchor
+                .total_cmp(right_anchor)
+                .then(left_index.cmp(right_index))
+        });
+
+        let mut authorized_wait_operation_ids = Vec::new();
+        let mut edits = Vec::with_capacity(programs.len());
+        let mut operation_ids = Vec::with_capacity(programs.len());
+        let mut projected_duration = scene.duration;
+        let mut resolved_offset = 0.0;
+        for (source_seconds, program_index) in ordered_programs {
+            let program = &programs[program_index];
+            let expected_resolved_seconds = source_seconds + resolved_offset;
+            if !studio_timeline_semantic_values_match(
+                expected_resolved_seconds,
+                program.resolved_seconds,
+            ) {
+                return Err(ApplyStudioTimelineEditError::Unsupported);
+            }
+
+            let operation = &program.operations[0];
+            match operation {
+                StudioTimelineOperation::InsertWait {
+                    event_kind,
+                    id,
+                    interval,
+                    purpose,
+                    ..
+                } => {
+                    let duration = interval.end - interval.start;
+                    if *event_kind != StudioTimelineEventKind::Wait
+                        || *purpose != Some(StudioTimelinePurpose::SceneDuration)
+                        || !studio_timeline_semantic_values_match(
+                            interval.start,
+                            program.resolved_seconds,
+                        )
+                        || !duration.is_finite()
+                        || duration <= 0.0
+                    {
+                        return Err(ApplyStudioTimelineEditError::Unsupported);
+                    }
+                    edits.push(SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                        at: interval.start,
+                        duration,
+                    }));
+                    authorized_wait_operation_ids.push(id.clone());
+                    operation_ids.push(id.clone());
+                    projected_duration += duration;
+                    resolved_offset += duration;
+                }
+                StudioTimelineOperation::TrimSceneDuration {
+                    id,
+                    interval,
+                    removed_duration,
+                    target_duration,
+                    wait_operation_ids,
+                    ..
+                } => {
+                    if !studio_timeline_semantic_values_match(interval.start, interval.end)
+                        || !studio_timeline_semantic_values_match(
+                            interval.start,
+                            program.resolved_seconds,
+                        )
+                        || wait_operation_ids.len() != authorized_wait_operation_ids.len()
+                        || wait_operation_ids
+                            .iter()
+                            .zip(authorized_wait_operation_ids.iter().rev())
+                            .any(|(actual, expected)| actual != expected)
+                        || !removed_duration.is_finite()
+                        || *removed_duration < 0.1 - TIMELINE_ANCHOR_EPSILON
+                        || !target_duration.is_finite()
+                        || *target_duration < 0.1
+                    {
+                        return Err(ApplyStudioTimelineEditError::Unsupported);
+                    }
+                    edits.push(SceneTimelineEdit::TrimSceneDuration {
+                        at: interval.start,
+                        removed_duration: *removed_duration,
+                        target_duration: *target_duration,
+                    });
+                    operation_ids.push(id.clone());
+                    projected_duration -= removed_duration;
+                    resolved_offset -= *removed_duration;
+                }
+                StudioTimelineOperation::Unsupported { .. } => {
+                    return Err(ApplyStudioTimelineEditError::Unsupported);
+                }
+            }
+        }
+        if !studio_timeline_duration_matches(projected_duration, evaluated_duration) {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+
+        self.edit_scene_timeline(EditSceneTimelineCommand {
+            edits,
+            expected_base_revision,
+            next_revision: next_revision.clone(),
+            provenance: ProvenanceRecordV1 {
+                evidence: operation_ids
+                    .iter()
+                    .map(|operation_id| format!("authorized operation {operation_id}"))
+                    .collect(),
+                id: format!("studio-imported-timeline:{next_revision}"),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+        })
+    }
+
     /// Atomically applies ordered wait insertions and duration trims.
     ///
     /// A trim can consume only the suffix of waits inserted earlier in this command. Removing
@@ -1520,21 +1801,15 @@ impl EngineSessionV1 {
     ///
     /// Returns a command or whole-bundle validation error. Every failure preserves the installed
     /// Scene, assets, and retained index.
-    pub fn edit_scene_timeline(
+    fn edit_scene_timeline(
         &mut self,
         command: EditSceneTimelineCommand,
-    ) -> Result<SceneIrBundleV1, EditSceneTimelineError> {
+    ) -> Result<SceneIrBundleV1, ApplyStudioTimelineEditError> {
         if self.scene().source.revision_hash() != command.expected_base_revision {
-            return Err(EditSceneTimelineError::StaleBaseRevision);
+            return Err(ApplyStudioTimelineEditError::StaleBaseRevision);
         }
         if command.next_revision == command.expected_base_revision {
-            return Err(EditSceneTimelineError::RevisionDidNotAdvance);
-        }
-        if command.edits.is_empty() {
-            return Err(EditSceneTimelineError::EmptyEdits);
-        }
-        if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
-            return Err(EditSceneTimelineError::InvalidProvenanceOrigin);
+            return Err(ApplyStudioTimelineEditError::RevisionDidNotAdvance);
         }
         if self
             .scene()
@@ -1542,7 +1817,7 @@ impl EngineSessionV1 {
             .iter()
             .any(|record| record.id == command.provenance.id)
         {
-            return Err(EditSceneTimelineError::ProvenanceConflict(
+            return Err(ApplyStudioTimelineEditError::ProvenanceConflict(
                 command.provenance.id,
             ));
         }
@@ -1567,7 +1842,7 @@ impl EngineSessionV1 {
                                     > wait.start + TIMELINE_ANCHOR_EPSILON
                         })
                     {
-                        return Err(EditSceneTimelineError::InvalidInsertion);
+                        return Err(ApplyStudioTimelineEditError::InvalidInsertion);
                     }
                     insert_scene_time(&mut candidate.scene, insertion);
                     inserted_waits.push(IntervalV1 {
@@ -3464,6 +3739,98 @@ mod tests {
         }
     }
 
+    fn studio_timeline_wait_program(
+        id: &str,
+        source_seconds: f64,
+        resolved_seconds: f64,
+        duration: f64,
+    ) -> StudioTimelineProgram {
+        StudioTimelineProgram {
+            absolute_source_seconds: Some(source_seconds),
+            lowering_supported: true,
+            operations: vec![StudioTimelineOperation::InsertWait {
+                event_kind: StudioTimelineEventKind::Wait,
+                id: id.to_owned(),
+                interval: IntervalV1 {
+                    end: resolved_seconds + duration,
+                    start: resolved_seconds,
+                },
+                origin: StudioAuthoringOrigin::StudioDefault,
+                purpose: Some(StudioTimelinePurpose::SceneDuration),
+            }],
+            origin: StudioAuthoringOrigin::StudioDefault,
+            resolved_seconds,
+            schedule_order: vec![id.to_owned()],
+            validation_valid: true,
+        }
+    }
+
+    fn studio_timeline_trim_program(
+        id: &str,
+        source_seconds: f64,
+        resolved_seconds: f64,
+        removed_duration: f64,
+        target_duration: f64,
+        wait_operation_ids: Vec<String>,
+    ) -> StudioTimelineProgram {
+        StudioTimelineProgram {
+            absolute_source_seconds: Some(source_seconds),
+            lowering_supported: true,
+            operations: vec![StudioTimelineOperation::TrimSceneDuration {
+                id: id.to_owned(),
+                interval: IntervalV1 {
+                    end: resolved_seconds,
+                    start: resolved_seconds,
+                },
+                origin: StudioAuthoringOrigin::StudioDefault,
+                removed_duration,
+                target_duration,
+                wait_operation_ids,
+            }],
+            origin: StudioAuthoringOrigin::StudioDefault,
+            resolved_seconds,
+            schedule_order: vec![id.to_owned()],
+            validation_valid: true,
+        }
+    }
+
+    fn studio_timeline_command(bundle: &SceneIrBundleV1) -> ApplyStudioTimelineEditCommand {
+        let source_seconds = 0.5;
+        ApplyStudioTimelineEditCommand {
+            base_studio_scene_id: "studio-scene".to_owned(),
+            evaluated_duration: bundle.scene.duration + 1.5,
+            evaluated_scene_id: "studio-scene".to_owned(),
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: vec![
+                studio_timeline_wait_program("wait-1", source_seconds, source_seconds, 1.0),
+                studio_timeline_trim_program(
+                    "trim-1",
+                    source_seconds,
+                    source_seconds + 1.0,
+                    0.5,
+                    bundle.scene.duration + 0.5,
+                    vec!["wait-1".to_owned()],
+                ),
+                studio_timeline_wait_program("wait-2", source_seconds, source_seconds + 0.5, 1.0),
+            ],
+        }
+    }
+
+    fn rejected_studio_timeline_edit(
+        bundle: SceneIrBundleV1,
+        command: ApplyStudioTimelineEditCommand,
+    ) -> ApplyStudioTimelineEditError {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.apply_studio_timeline_edit(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
     fn rejected_transform(
         bundle: SceneIrBundleV1,
         command: TransformSceneEntityCommand,
@@ -4376,6 +4743,156 @@ mod tests {
     }
 
     #[test]
+    fn studio_timeline_authority_rebases_same_anchor_wait_trim_wait_in_input_order() {
+        let bundle = static_imported_bundle();
+        let expected_duration = bundle.scene.duration + 1.5;
+        let command = studio_timeline_command(&bundle);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_timeline_edit(command).unwrap();
+
+        assert!((result.scene.duration - expected_duration).abs() < f64::EPSILON);
+        assert_eq!(
+            result.scene.provenance.last(),
+            Some(&ProvenanceRecordV1 {
+                evidence: vec![
+                    "authorized operation wait-1".to_owned(),
+                    "authorized operation trim-1".to_owned(),
+                    "authorized operation wait-2".to_owned(),
+                ],
+                id: format!("studio-imported-timeline:{NEXT_REVISION}"),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            })
+        );
+        assert_eq!(result.scene.source.revision_hash(), NEXT_REVISION);
+        assert_eq!(session.scene(), &result.scene);
+    }
+
+    #[test]
+    fn studio_timeline_authority_rejects_invalid_normalized_facts_atomically() {
+        let bundle = static_imported_bundle();
+        let mut cases = Vec::new();
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].resolved_seconds += 0.0001;
+        cases.push(("resolved anchor", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].absolute_source_seconds = Some(-0.5);
+        cases.push(("negative source anchor", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].validation_valid = false;
+        cases.push(("invalid validation", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].lowering_supported = false;
+        cases.push(("unsupported lowering", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].origin = StudioAuthoringOrigin::RemoteModel;
+        cases.push(("program origin", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        let StudioTimelineOperation::InsertWait { origin, .. } =
+            &mut command.programs[0].operations[0]
+        else {
+            unreachable!();
+        };
+        *origin = StudioAuthoringOrigin::DirectManipulation;
+        cases.push(("operation origin", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[0].schedule_order[0] = "foreign-operation".to_owned();
+        cases.push(("open schedule", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        let StudioTimelineOperation::InsertWait { id, .. } = &mut command.programs[2].operations[0]
+        else {
+            unreachable!();
+        };
+        id.clone_from(&"wait-1".to_owned());
+        command.programs[2].schedule_order[0] = "wait-1".to_owned();
+        cases.push(("duplicate operation ID", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        let StudioTimelineOperation::TrimSceneDuration {
+            wait_operation_ids, ..
+        } = &mut command.programs[1].operations[0]
+        else {
+            unreachable!();
+        };
+        *wait_operation_ids = vec!["foreign-wait".to_owned()];
+        cases.push(("foreign wait authority", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        let interval = match &command.programs[2].operations[0] {
+            StudioTimelineOperation::InsertWait { interval, .. } => interval.clone(),
+            _ => unreachable!(),
+        };
+        command.programs[2].operations[0] = StudioTimelineOperation::Unsupported {
+            id: "wait-2".to_owned(),
+            interval,
+            origin: StudioAuthoringOrigin::StudioDefault,
+        };
+        cases.push(("mixed operation", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.evaluated_scene_id = "other-scene".to_owned();
+        cases.push(("evaluated Scene identity", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        command.evaluated_duration += 0.01;
+        cases.push(("evaluated duration", command));
+
+        let mut command = studio_timeline_command(&bundle);
+        let StudioTimelineOperation::TrimSceneDuration {
+            removed_duration, ..
+        } = &mut command.programs[1].operations[0]
+        else {
+            unreachable!();
+        };
+        *removed_duration = 0.01;
+        cases.push(("sub-minimum trim", command));
+
+        for (case, command) in cases {
+            assert!(
+                matches!(
+                    rejected_studio_timeline_edit(bundle.clone(), command),
+                    ApplyStudioTimelineEditError::Unsupported
+                ),
+                "{case}"
+            );
+        }
+    }
+
+    #[test]
+    fn studio_timeline_authority_requires_one_static_server_snapshot() {
+        let mut runtime_trace = static_imported_bundle();
+        runtime_trace.scene.source = SceneSourceV1::ImportedManimRuntimeTrace {
+            runtime_config_hash: "a".repeat(64),
+            source_hash: "b".repeat(64),
+            trace_digest: BASE_REVISION.to_owned(),
+            trace_version: RuntimeTraceVersionV1::V3,
+        };
+        let runtime_command = studio_timeline_command(&runtime_trace);
+        assert!(matches!(
+            rejected_studio_timeline_edit(runtime_trace, runtime_command),
+            ApplyStudioTimelineEditError::Unsupported
+        ));
+
+        let mut animated = static_imported_bundle();
+        let animated_fixture = fixture_bundle("shared-circle-opacity.json");
+        animated.scene.animation_channels = animated_fixture.scene.animation_channels;
+        animated.scene.required_capabilities = animated_fixture.scene.required_capabilities;
+        let animated_command = studio_timeline_command(&animated);
+        assert!(matches!(
+            rejected_studio_timeline_edit(animated, animated_command),
+            ApplyStudioTimelineEditError::Unsupported
+        ));
+    }
+
+    #[test]
     #[allow(
         clippy::float_cmp,
         reason = "timeline edits produce exact stored authoring times"
@@ -4474,7 +4991,7 @@ mod tests {
 
         assert!(matches!(
             session.edit_scene_timeline(command),
-            Err(EditSceneTimelineError::InvalidTrim)
+            Err(ApplyStudioTimelineEditError::InvalidTrim)
         ));
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
@@ -4500,7 +5017,7 @@ mod tests {
 
         assert!(matches!(
             session.edit_scene_timeline(command),
-            Err(EditSceneTimelineError::InvalidTrim)
+            Err(ApplyStudioTimelineEditError::InvalidTrim)
         ));
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.retained_index_stats().build_count, 1);
@@ -4529,7 +5046,7 @@ mod tests {
 
         assert!(matches!(
             session.edit_scene_timeline(command),
-            Err(EditSceneTimelineError::InvalidTrim)
+            Err(ApplyStudioTimelineEditError::InvalidTrim)
         ));
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.retained_index_stats().build_count, 1);
@@ -4579,7 +5096,7 @@ mod tests {
 
         assert!(matches!(
             session.edit_scene_timeline(command),
-            Err(EditSceneTimelineError::InvalidInsertion)
+            Err(ApplyStudioTimelineEditError::InvalidInsertion)
         ));
     }
 
