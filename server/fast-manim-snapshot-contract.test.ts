@@ -1682,7 +1682,7 @@ class ExampleScene(Scene):
         compiled(mutateScene({ requiredCapabilities: ["cubic-path-geometry"] }) as SceneIrBundleV1),
         expectedV4,
       ),
-    ).rejects.toThrow(/requiredCapabilities must exactly equal: png-image/i);
+    ).rejects.toThrow(/requiredCapabilities.*capabilities derived from scene content/i);
     for (const candidate of rejected) {
       await expect(parseProducer(compiled(candidate as SceneIrBundleV1), expectedV4)).rejects.toMatchObject({
         code: "profile-violation",
@@ -2775,7 +2775,9 @@ class ExampleScene(Scene):
       assets: { ...bundle.assets, manifestDigest },
       scene: { ...bundle.scene, assetManifest: { ...bundle.scene.assetManifest, manifestDigest } },
     } as SceneIrBundleV1;
-    await expect(parseProducer(compiled(invalidManifest), expected)).rejects.toThrow(/manifest digest/i);
+    await expect(parseProducer(compiled(invalidManifest), expected)).rejects.toThrow(
+      /manifestDigest.*canonical manifest metadata/i,
+    );
   });
 
   it("rejects producer-chosen ID suffixes and unreferenced provenance records", async () => {

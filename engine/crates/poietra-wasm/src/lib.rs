@@ -63,6 +63,18 @@ pub fn poietra_canvas_telemetry_abi_version() -> u32 {
     POIETRA_CANVAS_TELEMETRY_ABI_VERSION_V4
 }
 
+/// Validates one complete Scene IR bundle with the canonical Rust contract.
+///
+/// # Errors
+///
+/// Returns a JavaScript error when the JSON or any Scene invariant is invalid.
+#[wasm_bindgen(js_name = validateSceneIrBundleV1)]
+pub fn validate_scene_ir_bundle_v1(snapshot_json: &[u8]) -> Result<(), JsValue> {
+    poietra_scene_ir::parse_scene_ir_bundle_json_v1(snapshot_json)
+        .map(drop)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 /// Opaque WASM handle owned by one dedicated browser worker.
 #[wasm_bindgen]
 #[derive(Debug)]

@@ -18,8 +18,7 @@ import {
   normalizeCanvasInteractionEntityIdsV1,
   POIETRA_CANVAS_WORKER_VERSION,
 } from "./canvas-worker-protocol";
-import type { SceneIrBundleV1 } from "./contracts";
-import { parseVerifiedSceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
+import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "./contracts";
 import { sceneIrSourceRevisionHash } from "./scene-ir";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
@@ -198,12 +197,10 @@ function validationError(message: string, cause?: unknown) {
 }
 
 function encodeSnapshot(revision: string, snapshot: SceneIrBundleV1) {
-  const parsed = sceneIrBundleV1Schema.safeParse(snapshot);
-  if (!parsed.success) throw validationError("The Scene snapshot does not match the v1 engine contract.", parsed.error);
-  if (sceneIrSourceRevisionHash(parsed.data.scene) !== revision) {
+  if (sceneIrSourceRevisionHash(snapshot.scene) !== revision) {
     throw validationError("The Scene revision does not match its source revision hash.");
   }
-  const bytes = new TextEncoder().encode(JSON.stringify(parsed.data));
+  const bytes = new TextEncoder().encode(JSON.stringify(snapshot));
   if (bytes.byteLength > MAX_CANVAS_SNAPSHOT_JSON_BYTES) {
     throw validationError(`The Scene snapshot exceeds ${MAX_CANVAS_SNAPSHOT_JSON_BYTES} encoded bytes.`);
   }
@@ -214,7 +211,7 @@ async function verifySnapshot(snapshot: SceneIrBundleV1) {
   try {
     return await parseVerifiedSceneIrBundleV1(snapshot);
   } catch (cause) {
-    throw validationError("The Scene snapshot failed its manifest integrity check.", cause);
+    throw validationError("The Scene snapshot failed canonical Rust contract validation.", cause);
   }
 }
 

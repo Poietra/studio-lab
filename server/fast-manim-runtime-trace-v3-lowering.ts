@@ -10,7 +10,6 @@ import {
   type SceneEntityV1,
   type SceneIrBundleV1,
   type SceneIrV1,
-  sceneIrV1Schema,
 } from "../src/engine/contracts";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import {
@@ -562,9 +561,9 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
 
   const assets = await emptyManifest(trace);
   const traceDigest = digestFastManimRuntimeTraceV3(trace);
-  let scene: SceneIrV1;
+  let bundle: SceneIrBundleV1;
   try {
-    scene = sceneIrV1Schema.parse({
+    const scene = {
       animationChannels: channels,
       assetManifest: { manifestDigest: assets.manifestDigest, manifestId: assets.manifestId },
       camera: {
@@ -608,13 +607,13 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
         traceVersion: 3,
       },
       version: 1,
-    });
+    } satisfies SceneIrV1;
+    bundle = await parseVerifiedSceneIrBundleV1({ assets, scene });
   } catch (cause) {
     throw new FastManimRuntimeTraceV3LoweringError("Runtime Trace V3 cannot be represented by bounded Scene IR.", {
       cause,
     });
   }
-  const bundle = await parseVerifiedSceneIrBundleV1({ assets, scene } satisfies SceneIrBundleV1);
   if (Buffer.byteLength(canonicalJsonV1(bundle), "utf8") > MAX_FAST_MANIM_RUNTIME_TRACE_NORMALIZED_JSON_BYTES_V3) {
     fail("Runtime Trace V3 normalized Scene IR exceeds its byte budget.");
   }
