@@ -6,13 +6,13 @@ import { parseVerifiedSceneIrBundleV1, type SceneIrBundleV1 } from "../engine/co
 import { canonicalJsonV1, digestFastManimSnapshotBundleInBrowserV1 } from "../engine/fast-manim-snapshot-digest";
 import { type MathTexOutlineResponseV1, mathTexOutlineResponseV1Schema } from "../engine/mathtex-outline";
 import type {
+  ApplyStaticRootTransformEditCompiler,
+  ApplyStaticRootTransformEditWireCommandV1,
   CreateSceneEntitiesWireCommandV1,
   CreateSceneMotionCompiler,
   CreateSceneMotionWireCommandV1,
   EditSceneTimelineCompiler,
   EditSceneTimelineWireCommandV1,
-  TransformSceneEntityCompiler,
-  TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -477,98 +477,17 @@ async function verifiedStaticPrimitivePreviewInput(type: "Circle" | "Rectangle")
   };
 }
 
-function recordingTransformCompiler(calls: TransformSceneEntityWireCommandV1[]): TransformSceneEntityCompiler {
+function recordingStaticRootTransformEditCompiler(
+  calls: ApplyStaticRootTransformEditWireCommandV1[],
+  compile: ApplyStaticRootTransformEditCompiler = async (bundle) => bundle,
+): ApplyStaticRootTransformEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    const unmappedEntity = bundle.scene.entities[0];
-    return await parseVerifiedSceneIrBundleV1({
-      ...bundle,
-      scene: {
-        ...bundle.scene,
-        entities: [
-          ...bundle.scene.entities,
-          ...(unmappedEntity
-            ? [{ ...unmappedEntity, id: "runtime-unmapped", sceneOrder: unmappedEntity.sceneOrder + 1 }]
-            : []),
-        ],
-      },
-    });
+    return compile(bundle, command);
   };
 }
 
-const testTransformCompiler: TransformSceneEntityCompiler = async (bundle, command) => {
-  const intent = command.intent;
-  const target = bundle.scene.entities.find(({ id }) => id === command.entityId);
-  if (!target) throw new Error("The transform test target is missing.");
-  const currentCenter = () => {
-    const localCenter = (() => {
-      const geometry = target.geometry;
-      if (geometry.kind === "circle" || geometry.kind === "rectangle") return geometry.center;
-      if (geometry.kind === "image") {
-        return {
-          x: (geometry.localRect.left + geometry.localRect.right) / 2,
-          y: (geometry.localRect.bottom + geometry.localRect.top) / 2,
-        };
-      }
-      if (geometry.kind !== "cubic-path") throw new Error("The current-baseline fixture has no local bounds.");
-      const points = geometry.path.subpaths.flatMap((subpath) => [
-        subpath.start,
-        ...subpath.segments.flatMap(({ control1, control2, end }) => [control1, control2, end]),
-      ]);
-      return {
-        x: (Math.min(...points.map(({ x }) => x)) + Math.max(...points.map(({ x }) => x))) / 2,
-        y: (Math.min(...points.map(({ y }) => y)) + Math.max(...points.map(({ y }) => y))) / 2,
-      };
-    })();
-    return {
-      x: target.transform.m11 * localCenter.x + target.transform.m12 * localCenter.y + target.transform.tx,
-      y: target.transform.m21 * localCenter.x + target.transform.m22 * localCenter.y + target.transform.ty,
-    };
-  };
-  const baselineCenter =
-    intent.kind === "from-baseline"
-      ? intent.baseline.kind === "current-center" || intent.baseline.kind === "current-uniform-affine"
-        ? currentCenter()
-        : intent.baseline.worldCenter
-      : null;
-  const delta =
-    intent.kind === "relative"
-      ? intent.delta
-      : {
-          x: (intent.targetCenter?.x ?? baselineCenter!.x) - baselineCenter!.x,
-          y: (intent.targetCenter?.y ?? baselineCenter!.y) - baselineCenter!.y,
-        };
-  const scale = intent.kind === "relative" ? intent.scale : intent.scale && { pivot: baselineCenter!, ...intent.scale };
-  return await parseVerifiedSceneIrBundleV1({
-    ...bundle,
-    scene: {
-      ...bundle.scene,
-      entities: bundle.scene.entities.map((entity) => {
-        if (entity.id !== command.entityId) return entity;
-        const transform = { ...entity.transform };
-        if (scale) {
-          transform.m11 *= scale.xFactor;
-          transform.m12 *= scale.xFactor;
-          transform.m21 *= scale.yFactor;
-          transform.m22 *= scale.yFactor;
-          transform.tx = scale.pivot.x + scale.xFactor * (transform.tx - scale.pivot.x);
-          transform.ty = scale.pivot.y + scale.yFactor * (transform.ty - scale.pivot.y);
-        }
-        transform.tx += delta.x;
-        transform.ty += delta.y;
-        return { ...entity, provenanceId: command.provenance.id, transform };
-      }),
-      provenance: [...bundle.scene.provenance, command.provenance],
-      source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: command.nextRevision },
-    },
-  });
-};
-
-async function importedMathTexPreviewInput(
-  options: Readonly<{ includeMove?: boolean; includeScale?: boolean; rotated?: boolean }> = {},
-) {
-  const includeMove = options.includeMove ?? true;
-  const includeScale = options.includeScale ?? true;
+async function importedMathTexPreviewInput() {
   const base = await compilablePreviewInput();
   const runtimeEntity = base.snapshot.snapshot.scene.entities[0];
   const outline = compiledMathTexResponse().result;
@@ -601,9 +520,7 @@ class MathTexScene(Scene):
     x: (Math.min(...pathPoints.map(({ x }) => x)) + Math.max(...pathPoints.map(({ x }) => x))) / 2,
     y: (Math.min(...pathPoints.map(({ y }) => y)) + Math.max(...pathPoints.map(({ y }) => y))) / 2,
   };
-  const linearTransform = options.rotated
-    ? { m11: 1.25, m12: -0.75, m21: 0.75, m22: 1.25 }
-    : { m11: 1.5, m12: 0, m21: 0, m22: 1.5 };
+  const linearTransform = { m11: 1.5, m12: 0, m21: 0, m22: 1.5 };
   const entityId = "source:scene.py#MathTexScene:equation";
   const runtimeEntityId = "runtime:equation";
   const runtimeSceneState = imported.runtimeSceneState;
@@ -714,13 +631,7 @@ class MathTexScene(Scene):
   return {
     edited: evaluateWorkingState({
       ...workingState,
-      appliedPrograms:
-        includeMove && includeScale
-          ? [programRecord(combined.program, combined)]
-          : [
-              ...(includeMove ? [programRecord(position.program, position)] : []),
-              ...(includeScale ? [programRecord(scale.program, scale)] : []),
-            ],
+      appliedPrograms: [programRecord(combined.program, combined)],
     }),
     entityId,
     runtimeEntityId,
@@ -1661,65 +1572,60 @@ describe("compileStudioPreviewSceneV1", () => {
   });
 
   it.each(["direct-manipulation", "studio-default"] as const)(
-    "routes one imported static root move from %s through the canonical Rust command",
+    "passes one %s static root move and its verified identity binding to Rust",
     async (origin) => {
-      const frame = { height: 9, width: 16 } as const;
-      const { operationId, proposedState, snapshot, workingRevision, workspaceKey } =
-        await editedStaticRootPreviewInput({ origin });
-      if (!operationId) throw new Error("Imported root move lost its operation identity.");
-      const commands: TransformSceneEntityWireCommandV1[] = [];
+      const fixture = await editedStaticRootPreviewInput({ origin });
+      if (!fixture.operationId) throw new Error("Static root move fixture lost its operation ID.");
+      const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
       const result = await compileStudioPreviewSceneV1({
-        frame,
-        proposedState,
-        snapshot,
-        transformCompiler: recordingTransformCompiler(commands),
-        workingRevision,
-        workspaceKey,
+        applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
+        frame: { height: 9, width: 16 },
+        proposedState: fixture.proposedState,
+        snapshot: fixture.snapshot,
+        workingRevision: fixture.workingRevision,
+        workspaceKey: fixture.workspaceKey,
       });
 
       if (result.kind !== "compiled") throw new Error(result.error);
       expect(commands).toHaveLength(1);
-      const command = commands[0];
-      if (!command) throw new Error("Imported root move did not reach the Rust compiler boundary.");
-      expect(command).toMatchObject({
-        entityId: "earlier",
-        expectedBaseRevision: snapshot.correlation.engineRevisionHash,
-        intent: { kind: "relative" },
+      expect(commands[0]).toMatchObject({
+        expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
+        frame: { height: 9, width: 16 },
         nextRevision: result.scene.engineRevisionHash,
-        provenance: {
-          evidence: [
-            "Studio t=0 position request projected onto one verified static imported root",
-            `authorized operation ${operationId}`,
-          ],
-          id: `studio-static-move:${result.scene.engineRevisionHash}`,
-          origin: "studio-edit-program",
-        },
-        schema: "poietra.transform-scene-entity",
+        operations: [
+          {
+            anchorSeconds: 0,
+            entityId: "source:circle",
+            id: fixture.operationId,
+            interval: { end: 0, start: 0 },
+            kind: "position",
+            loweringSupported: true,
+            origin,
+            position: { x: 384, y: 144 },
+            programOrigin: origin,
+            validationValid: true,
+          },
+        ],
+        schema: "poietra.apply-static-root-transform-edit",
+        sourceRuntimeBindings: [{ runtimeEntityId: "earlier", sourceIdentityKey: "circle", sourceName: "circle" }],
+        studioEntities: [
+          {
+            id: "source:circle",
+            kind: "circle",
+            objectGraphKey: "source:circle",
+            provisional: false,
+            sourceIdentity: "circle",
+          },
+        ],
         version: 1,
+        viewport: { height: 360, width: 640 },
       });
-      if (command.intent.kind !== "relative") throw new Error("Imported move used the wrong transform intent.");
-      expect(command.intent.delta.x).toBeCloseTo(1.6, 12);
-      expect(command.intent.delta.y).toBeCloseTo(0.9, 12);
-      expect(result.scene.bundle.scene.entities.map(({ id }) => id)).toEqual(["earlier", "runtime-unmapped"]);
       expect(result.scene.interactionEntityIds).toEqual(["earlier"]);
     },
   );
 
-  it.each([
-    {
-      expectedScale: { xFactor: 1.5, yFactor: 1.5 },
-      shape: "circle",
-      toDimensions: { radius: 1.5 },
-      type: "Circle",
-    },
-    {
-      expectedScale: { xFactor: 2, yFactor: 1.5 },
-      shape: "rectangle",
-      toDimensions: { height: 1.5, width: 4 },
-      type: "Rectangle",
-    },
-  ] as const)("routes an imported static $type ResizeEntity through the canonical Rust command", async (input) => {
-    const fixture = await verifiedStaticPrimitivePreviewInput(input.type);
+  it("passes ResizeEntity to Rust without reconstructing a transform intent in TypeScript", async () => {
+    const fixture = await verifiedStaticPrimitivePreviewInput("Rectangle");
     const validation = createDirectManipulationResizeProgram({
       capturedPlayhead: 0,
       entityId: fixture.entityId,
@@ -1727,26 +1633,18 @@ describe("compileStudioPreviewSceneV1", () => {
       interval: { end: 0, start: 0 },
       scale: 1,
       scene: fixture.workingBase.runtimeSceneState,
-      shape: input.shape,
-      to: {
-        dimensions: input.toDimensions,
-        position: { x: fixture.position.x + 20, y: fixture.position.y + 10 },
-      },
-      transactionId: `resize-imported-${input.shape}`,
+      shape: "rectangle",
+      to: { dimensions: { height: 1.5, width: 4 }, position: { x: 420, y: 190 } },
+      transactionId: "resize-imported-rectangle",
     });
-    if (validation.kind !== "valid") {
-      throw new Error(`Imported ${input.type} resize fixture is invalid: ${JSON.stringify(validation.issues)}`);
-    }
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
     const record = programRecord(validation.program, validation);
-    const commands: TransformSceneEntityWireCommandV1[] = [];
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: { height: 9, width: 16 },
       proposedState: evaluateWorkingState({ ...fixture.workingBase, appliedPrograms: [record] }),
       snapshot: fixture.snapshot,
-      transformCompiler: async (bundle, command) => {
-        commands.push(command);
-        return testTransformCompiler(bundle, command);
-      },
       workingRevision: canonicalEditorWorkingRevision({
         appliedPrograms: [record],
         draftProgram: null,
@@ -1756,230 +1654,56 @@ describe("compileStudioPreviewSceneV1", () => {
       workspaceKey: fixture.workspaceKey,
     });
 
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(commands).toHaveLength(1);
-    const command = commands[0];
-    if (!command) throw new Error(`Imported ${input.type} resize did not reach the Rust compiler boundary.`);
-    expect(command).toMatchObject({
-      intent: {
-        baseline: {
-          height: input.type === "Circle" ? 2 : 1,
-          kind: "world-size",
-          width: 2,
-          worldCenter: { x: input.type === "Circle" ? -1 : 2, y: 0 },
-        },
-        kind: "from-baseline",
-        scale: input.expectedScale,
-      },
-      entityId: "earlier",
-      expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      schema: "poietra.transform-scene-entity",
-      version: 1,
+    expect(result.kind).toBe("compiled");
+    expect(commands[0]?.operations).toHaveLength(1);
+    expect(commands[0]?.operations[0]).toMatchObject({
+      kind: "resize",
+      shape: "rectangle",
     });
-    if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
-      throw new Error("Resize did not retain its target center.");
-    }
-    expect(command.intent.targetCenter.x).toBeCloseTo(input.type === "Circle" ? -0.5 : 2.5, 12);
-    expect(command.intent.targetCenter.y).toBeCloseTo(-0.25, 12);
-    expect(command.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
-    expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
-      fixture.snapshot.snapshot.scene.entities[0]?.geometry,
-    );
   });
 
-  it("routes an imported static Circle AnimateProperty(scale) through the canonical Rust command", async () => {
-    const fixture = await verifiedStaticPrimitivePreviewInput("Circle");
-    const validation = createDirectManipulationScaleProgram({
-      capturedPlayhead: 0,
-      interval: { end: 0, start: 0 },
-      scales: { [fixture.entityId]: { from: 1, to: 1.25 } },
-      scene: fixture.workingBase.runtimeSceneState,
-      targetEntityIds: [fixture.entityId],
-      transactionId: "scale-imported-circle",
-    });
-    if (validation.kind !== "valid") {
-      throw new Error(`Imported Circle scale fixture is invalid: ${JSON.stringify(validation.issues)}`);
-    }
-    const record = programRecord(validation.program, validation);
-    const commands: TransformSceneEntityWireCommandV1[] = [];
+  it("surfaces a Rust static-root rejection as an unsupported preview", async () => {
+    const fixture = await editedStaticRootPreviewInput();
     const result = await compileStudioPreviewSceneV1({
-      frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({ ...fixture.workingBase, appliedPrograms: [record] }),
-      snapshot: fixture.snapshot,
-      transformCompiler: async (bundle, command) => {
-        commands.push(command);
-        return testTransformCompiler(bundle, command);
+      applyStaticRootTransformEditCompiler: async () => {
+        throw new Error("the edit contains an unsupported operation");
       },
-      workingRevision: canonicalEditorWorkingRevision({
-        appliedPrograms: [record],
-        draftProgram: null,
-        editingAppliedProgram: null,
-        redoPrograms: [],
-      }),
+      frame: { height: 9, width: 16 },
+      proposedState: fixture.proposedState,
+      snapshot: fixture.snapshot,
+      workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
     });
 
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(commands).toHaveLength(1);
-    expect(commands[0]).toMatchObject({
-      entityId: "earlier",
-      expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      intent: {
-        baseline: { height: 2, kind: "world-size", width: 2, worldCenter: { x: -1, y: 0 } },
-        kind: "from-baseline",
-        scale: { xFactor: 1.25, yFactor: 1.25 },
-      },
-      schema: "poietra.transform-scene-entity",
-      version: 1,
+    expect(result).toMatchObject({
+      error: expect.stringContaining("the edit contains an unsupported operation"),
+      kind: "unsupported",
     });
-    expect(commands[0]?.intent).not.toHaveProperty("targetCenter");
-    expect(commands[0]?.provenance.evidence).toContain(`authorized operation ${validation.program.operations[0]?.id}`);
-    expect(result.scene.bundle.scene.entities[0]?.geometry).toEqual(
-      fixture.snapshot.snapshot.scene.entities[0]?.geometry,
-    );
   });
 
-  it("fails closed before Rust compilation when a static imported move loses exact authority", async () => {
-    const direct = await editedStaticRootPreviewInput();
-    const nonzeroTime = await editedStaticRootPreviewInput({ capturedPlayhead: 0.5 });
-    const zeroMove = await editedStaticRootPreviewInput({ target: { x: 320, y: 180 } });
-    const baseRuntimeState = direct.proposedState.base.runtimeSceneState;
-    const baseCircle = baseRuntimeState.objectGraph.entities["source:circle"];
-    if (!baseCircle?.geometry) throw new Error("Imported root base geometry is missing.");
-    const cases: readonly Readonly<{
-      name: string;
-      proposedState: ProposedState;
-      snapshot: StudioVerifiedPreviewSnapshotV1;
-      workingRevision: string;
-      workspaceKey: string;
-    }>[] = [
-      {
-        name: "nonzero source time",
-        proposedState: nonzeroTime.proposedState,
-        snapshot: nonzeroTime.snapshot,
-        workingRevision: nonzeroTime.workingRevision,
-        workspaceKey: nonzeroTime.workspaceKey,
+  it("rejects mismatched source correlation before invoking the Rust static-root use case", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return bundle;
       },
-      {
-        name: "multiple Programs",
-        proposedState: {
-          ...direct.proposedState,
-          programs: [...direct.proposedState.programs, direct.programRecord],
+      frame: { height: 9, width: 16 },
+      proposedState: {
+        ...fixture.proposedState,
+        base: {
+          ...fixture.proposedState.base,
+          sourceSnapshot: { ...fixture.proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
         },
-        snapshot: direct.snapshot,
-        workingRevision: canonicalEditorWorkingRevision({
-          appliedPrograms: [direct.programRecord, direct.programRecord],
-          draftProgram: null,
-          editingAppliedProgram: null,
-          redoPrograms: [],
-        }),
-        workspaceKey: direct.workspaceKey,
       },
-      {
-        name: "missing source/runtime identity",
-        proposedState: direct.proposedState,
-        snapshot: { ...direct.snapshot, sourceRuntimeIdentity: null },
-        workingRevision: direct.workingRevision,
-        workspaceKey: direct.workspaceKey,
-      },
-      {
-        name: "child runtime entity",
-        proposedState: direct.proposedState,
-        snapshot: {
-          ...direct.snapshot,
-          snapshot: {
-            ...direct.snapshot.snapshot,
-            scene: {
-              ...direct.snapshot.snapshot.scene,
-              entities: direct.snapshot.snapshot.scene.entities.map((entity) =>
-                entity.id === "earlier" ? { ...entity, parentId: "runtime-parent" } : entity,
-              ),
-            },
-          },
-        },
-        workingRevision: direct.workingRevision,
-        workspaceKey: direct.workspaceKey,
-      },
-      {
-        name: "verified animation channel",
-        proposedState: direct.proposedState,
-        snapshot: {
-          ...direct.snapshot,
-          snapshot: {
-            ...direct.snapshot.snapshot,
-            scene: {
-              ...direct.snapshot.snapshot.scene,
-              animationChannels: [
-                {
-                  entityId: "earlier",
-                  id: "opacity:earlier",
-                  keyframes: [
-                    { at: 0, easingToNext: { kind: "smooth" }, value: 0 },
-                    { at: 2, easingToNext: null, value: 1 },
-                  ],
-                  kind: "opacity",
-                  provenanceId: "verified-source-fade",
-                },
-              ],
-            },
-          },
-        },
-        workingRevision: direct.workingRevision,
-        workspaceKey: direct.workspaceKey,
-      },
-      {
-        name: "unknown base position",
-        proposedState: {
-          ...direct.proposedState,
-          base: {
-            ...direct.proposedState.base,
-            runtimeSceneState: {
-              ...baseRuntimeState,
-              objectGraph: {
-                ...baseRuntimeState.objectGraph,
-                entities: {
-                  ...baseRuntimeState.objectGraph.entities,
-                  "source:circle": {
-                    ...baseCircle,
-                    geometry: {
-                      ...baseCircle.geometry,
-                      position: { kind: "unknown", reason: "Position depends on runtime Python." },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-        snapshot: direct.snapshot,
-        workingRevision: direct.workingRevision,
-        workspaceKey: direct.workspaceKey,
-      },
-      {
-        name: "zero displacement",
-        proposedState: zeroMove.proposedState,
-        snapshot: zeroMove.snapshot,
-        workingRevision: zeroMove.workingRevision,
-        workspaceKey: zeroMove.workspaceKey,
-      },
-    ];
+      snapshot: fixture.snapshot,
+      workingRevision: fixture.workingRevision,
+      workspaceKey: fixture.workspaceKey,
+    });
 
-    for (const testCase of cases) {
-      let compilerCalls = 0;
-      const result = await compileStudioPreviewSceneV1({
-        frame: { height: 9, width: 16 },
-        transformCompiler: async () => {
-          compilerCalls += 1;
-          throw new Error(`Rust compiler must not run for ${testCase.name}.`);
-        },
-        proposedState: testCase.proposedState,
-        snapshot: testCase.snapshot,
-        workingRevision: testCase.workingRevision,
-        workspaceKey: testCase.workspaceKey,
-      });
-      expect(result, testCase.name).toMatchObject({ kind: "unsupported" });
-      expect(compilerCalls, testCase.name).toBe(0);
-    }
+    expect(result).toMatchObject({ error: expect.stringContaining("not correlated"), kind: "unsupported" });
+    expect(compilerCalls).toBe(0);
   });
 
   it("restores the exact verified snapshot after undo returns to zero applied Programs", async () => {
@@ -2529,158 +2253,55 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(discontinuous).toMatchObject({ error: expect.stringContaining("changes content"), kind: "unsupported" });
   });
 
-  it.each([
-    ["move with an existing affine", true, false, true, { x: 2, y: 2 }, undefined],
-    ["scale", false, true, false, { x: 0, y: 0 }, { factor: 2, pivot: { x: 2, y: -1 } }],
-    ["move and scale in one Program", true, true, false, { x: 2, y: 2 }, { factor: 2, pivot: { x: 2, y: -1 } }],
-  ] as const)(
-    "routes imported MathTex %s through the transform compiler boundary",
-    async (_label, includeMove, includeScale, rotated, delta, uniformScale) => {
-      const fixture = await importedMathTexPreviewInput({ includeMove, includeScale, rotated });
-      const commands: TransformSceneEntityWireCommandV1[] = [];
-      let outlineCompilerCalls = 0;
-      const result = await compileStudioPreviewSceneV1({
-        frame: { height: 9, width: 16 },
-        mathTexOutlineCompiler: async () => {
-          outlineCompilerCalls += 1;
-          return compiledMathTexResponse();
-        },
-        proposedState: fixture.edited,
-        snapshot: fixture.snapshot,
-        transformCompiler: async (bundle, command) => {
-          commands.push(command);
-          return testTransformCompiler(bundle, command);
-        },
-        workingRevision: `studio-working-v1:edit-imported-mathtex-${_label.replaceAll(" ", "-")}`,
-        workspaceKey: "project-a/scene.py/MathTexScene",
-      });
-      expect(outlineCompilerCalls).toBe(0);
-      if (result.kind !== "compiled") throw new Error(result.error);
-      expect(commands).toHaveLength(1);
-      const command = commands[0]!;
-      expect(command).toMatchObject({
-        entityId: fixture.runtimeEntityId,
-        expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-        intent: {
-          baseline: { kind: includeScale ? "current-uniform-affine" : "current-center" },
-          kind: "from-baseline",
-        },
-        nextRevision: result.scene.engineRevisionHash,
-        schema: "poietra.transform-scene-entity",
-        version: 1,
-      });
-      if (command.intent.kind !== "from-baseline") throw new Error("MathTex used the wrong transform intent.");
-      expect(command.intent.baseline).not.toHaveProperty("worldCenter");
-      if (includeMove) {
-        expect(command.intent.targetCenter?.x).toBeCloseTo(2 + delta.x, 12);
-        expect(command.intent.targetCenter?.y).toBeCloseTo(-1 + delta.y, 12);
-      } else {
-        expect(command.intent).not.toHaveProperty("targetCenter");
-      }
-      expect(command.intent.scale).toEqual(
-        uniformScale ? { xFactor: uniformScale.factor, yFactor: uniformScale.factor } : undefined,
-      );
-      for (const operation of fixture.edited.programs.flatMap(({ program }) => program.operations)) {
-        expect(command.provenance.evidence).toContain(`authorized operation ${operation.id}`);
-      }
-      expect(result.scene.bundle.assets).toEqual(fixture.snapshot.snapshot.assets);
-      const compiledEntity = result.scene.bundle.scene.entities[0];
-      expect(compiledEntity).toMatchObject({
-        geometry: fixture.snapshot.snapshot.scene.entities[0]?.geometry,
-        id: fixture.runtimeEntityId,
-        provenanceId: command.provenance.id,
-      });
-    },
-  );
-
-  it("routes an imported Image move and scale through the transform compiler boundary", async () => {
-    const fixture = await importedImagePreviewInput();
-    const commands: TransformSceneEntityWireCommandV1[] = [];
+  it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    let outlineCompilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => {
+        outlineCompilerCalls += 1;
+        return compiledMathTexResponse();
+      },
+      proposedState: fixture.edited,
+      snapshot: fixture.snapshot,
+      workingRevision: "studio-working-v1:edit-imported-mathtex",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+
+    expect(outlineCompilerCalls).toBe(0);
+    expect(result.kind).toBe("compiled");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.operations.map(({ kind }) => kind)).toEqual(["position", "uniform-scale"]);
+    expect(commands[0]?.sourceRuntimeBindings).toEqual([
+      { runtimeEntityId: fixture.runtimeEntityId, sourceIdentityKey: "equation", sourceName: "equation" },
+    ]);
+    expect(commands[0]?.studioEntities).toContainEqual(
+      expect.objectContaining({ id: fixture.entityId, kind: "math-tex", sourceIdentity: "equation" }),
+    );
+  });
+
+  it("passes an imported Image move and scale to the same Rust use case", async () => {
+    const fixture = await importedImagePreviewInput();
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: fixture.frame,
       proposedState: fixture.edited,
       snapshot: fixture.snapshot,
-      transformCompiler: async (bundle, command) => {
-        commands.push(command);
-        return testTransformCompiler(bundle, command);
-      },
       workingRevision: "studio-working-v1:edit-imported-image",
       workspaceKey: "project-a/image_scene.py/ImageScene",
     });
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(commands).toHaveLength(1);
-    const command = commands[0]!;
-    expect(command).toMatchObject({
-      entityId: fixture.runtimeEntityId,
-      expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
-      intent: {
-        baseline: { kind: "current-center" },
-        kind: "from-baseline",
-        scale: { xFactor: 2, yFactor: 2 },
-      },
-      nextRevision: result.scene.engineRevisionHash,
-      schema: "poietra.transform-scene-entity",
-      version: 1,
-    });
-    if (command.intent.kind !== "from-baseline" || !command.intent.targetCenter) {
-      throw new Error("Image move did not retain its target center.");
-    }
-    expect(command.intent.baseline).toEqual({ kind: "current-center" });
-    expect(command.intent.targetCenter.x).toBeCloseTo(4, 12);
-    expect(command.intent.targetCenter.y).toBeCloseTo(1, 12);
-    expect(command.provenance.evidence.filter((entry) => entry.startsWith("authorized operation "))).toHaveLength(2);
-    expect(result.scene.bundle.assets).toEqual(fixture.snapshot.snapshot.assets);
-    expect(result.scene.bundle.scene.entities[0]).toMatchObject({
-      geometry: fixture.snapshot.snapshot.scene.entities[0]?.geometry,
-      id: fixture.runtimeEntityId,
-      provenanceId: command.provenance.id,
-    });
-  });
 
-  it.each([
-    ["move", false],
-    ["move and scale", true],
-  ])("uses the current Rust MathTex baseline for %s despite stale Studio geometry", async (_label, includeScale) => {
-    const fixture = await importedMathTexPreviewInput({ includeScale });
-    const baseEntity = fixture.edited.base.runtimeSceneState.objectGraph.entities[fixture.entityId];
-    if (!baseEntity?.geometry) throw new Error("Imported MathTex baseline fixture is incomplete.");
-    const proposedState: ProposedState = {
-      ...fixture.edited,
-      base: {
-        ...fixture.edited.base,
-        runtimeSceneState: {
-          ...fixture.edited.base.runtimeSceneState,
-          objectGraph: {
-            ...fixture.edited.base.runtimeSceneState.objectGraph,
-            entities: {
-              ...fixture.edited.base.runtimeSceneState.objectGraph.entities,
-              [fixture.entityId]: {
-                ...baseEntity,
-                geometry: { ...baseEntity.geometry, position: { kind: "known", value: { x: 401, y: 220 } } },
-              },
-            },
-          },
-        },
-      },
-    };
-    const commands: TransformSceneEntityWireCommandV1[] = [];
-    const result = await compileStudioPreviewSceneV1({
-      frame: { height: 9, width: 16 },
-      proposedState,
-      snapshot: fixture.snapshot,
-      transformCompiler: async (bundle, command) => {
-        commands.push(command);
-        return testTransformCompiler(bundle, command);
-      },
-      workingRevision: "studio-working-v1:drifted-imported-affine",
-      workspaceKey: "project-a/scene.py/MathTexScene",
-    });
     expect(result.kind).toBe("compiled");
     expect(commands).toHaveLength(1);
-    expect(commands[0]?.intent).toMatchObject({
-      baseline: { kind: includeScale ? "current-uniform-affine" : "current-center" },
-      kind: "from-baseline",
-    });
+    expect(commands[0]?.sourceRuntimeBindings).toEqual([
+      { runtimeEntityId: fixture.runtimeEntityId, sourceIdentityKey: "image", sourceName: "image" },
+    ]);
+    expect(commands[0]?.studioEntities).toContainEqual(
+      expect.objectContaining({ kind: "image", sourceIdentity: "image" }),
+    );
   });
 
   it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {
@@ -2700,11 +2321,16 @@ describe("compileStudioPreviewSceneV1", () => {
       ...fixture.workingState,
       appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
     });
-    let compilerCalls = 0;
+    let outlineCompilerCalls = 0;
+    let staticEditCompilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: async () => {
+        staticEditCompilerCalls += 1;
+        throw new Error("unsupported static root operation: SetProperty(content)");
+      },
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async () => {
-        compilerCalls += 1;
+        outlineCompilerCalls += 1;
         return compiledMathTexResponse();
       },
       proposedState,
@@ -2712,9 +2338,10 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevision: "studio-working-v1:edit-imported-mathtex-content",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
-    expect(compilerCalls).toBe(0);
+    expect(outlineCompilerCalls).toBe(0);
+    expect(staticEditCompilerCalls).toBe(1);
     expect(result).toMatchObject({
-      error: expect.stringContaining("No canonical Rust preview command"),
+      error: expect.stringContaining("unsupported static root operation"),
       kind: "unsupported",
     });
   });

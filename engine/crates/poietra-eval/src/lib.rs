@@ -10,12 +10,16 @@ mod evaluator;
 mod retained_index;
 
 pub use authoring::{
+    ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
     CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, RotateSceneEntityCommand,
     RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors, SceneTimelineEdit,
     SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
+    StaticRootTransformDimensions, StaticRootTransformEntityKind, StaticRootTransformOperation,
+    StaticRootTransformOperationKind, StaticRootTransformOrigin, StaticRootTransformSize,
+    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
     TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
 };

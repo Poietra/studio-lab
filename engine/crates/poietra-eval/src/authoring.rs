@@ -7,6 +7,7 @@ use poietra_scene_ir::{
     SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
     SceneSourceV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
 };
+use serde::Deserialize;
 
 use crate::{EngineSessionV1, EvaluationError};
 
@@ -179,6 +180,116 @@ pub struct TransformSceneEntityAtTimeCommand {
     pub scale: Option<ScaleAboutPivot>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StaticRootTransformOrigin {
+    DirectManipulation,
+    Fixture,
+    RemoteModel,
+    StudioDefault,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StaticRootTransformEntityKind {
+    Circle,
+    Image,
+    MathTex,
+    Other,
+    Rectangle,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootTransformSize {
+    pub height: f64,
+    pub width: f64,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootTransformDimensions {
+    pub height: Option<f64>,
+    pub radius: Option<f64>,
+    pub width: Option<f64>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StaticRootTransformOperationKind {
+    Position {
+        position: Option<PointV1>,
+    },
+    UniformScale {
+        control_present: bool,
+        from: Option<f64>,
+        relative_factor: Option<f64>,
+        to: Option<f64>,
+    },
+    Resize {
+        from_dimensions: StaticRootTransformDimensions,
+        from_position: PointV1,
+        from_scale: f64,
+        shape: StaticRootTransformEntityKind,
+        to_dimensions: StaticRootTransformDimensions,
+        to_position: PointV1,
+    },
+    Unsupported,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticRootTransformOperation {
+    pub anchor_seconds: f64,
+    pub entity_id: String,
+    pub id: String,
+    pub interval: IntervalV1,
+    #[serde(flatten)]
+    pub kind: StaticRootTransformOperationKind,
+    pub lowering_supported: bool,
+    pub origin: StaticRootTransformOrigin,
+    pub program_origin: StaticRootTransformOrigin,
+    pub validation_valid: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootTransformStudioEntity {
+    pub dimensions: StaticRootTransformDimensions,
+    pub object_graph_key: String,
+    pub id: String,
+    pub kind: StaticRootTransformEntityKind,
+    pub position: Option<PointV1>,
+    pub provisional: bool,
+    pub scale: Option<f64>,
+    pub source_identity: Option<String>,
+    pub transaction_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootTransformSourceBinding {
+    pub source_identity_key: String,
+    pub runtime_entity_id: String,
+    pub source_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyStaticRootTransformEditCommand {
+    pub expected_base_revision: String,
+    pub frame: StaticRootTransformSize,
+    pub next_revision: String,
+    pub operations: Vec<StaticRootTransformOperation>,
+    pub source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
+    pub studio_entities: Vec<StaticRootTransformStudioEntity>,
+    pub viewport: StaticRootTransformSize,
+}
+
 /// One profile-free Studio command that sets vector-paint alpha in one root subtree.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SetSubtreeVectorPaintAlphaCommand {
@@ -329,6 +440,14 @@ pub enum TransformSceneEntityError {
     ProvenanceConflict(String),
     #[error("the transformed Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyStaticRootTransformEditError {
+    #[error("the normalized Studio edit does not authorize one static imported root transform")]
+    Unsupported,
+    #[error(transparent)]
+    Transform(#[from] TransformSceneEntityError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -617,6 +736,77 @@ fn resolve_transform_intent(
             }
             Ok((delta, scale))
         }
+    }
+}
+
+fn static_transform_point_is_finite(point: &PointV1) -> bool {
+    point.x.is_finite() && point.y.is_finite()
+}
+
+fn static_transform_size_is_positive(size: StaticRootTransformSize) -> bool {
+    size.width.is_finite() && size.width > 0.0 && size.height.is_finite() && size.height > 0.0
+}
+
+fn static_transform_shape_size(
+    kind: StaticRootTransformEntityKind,
+    dimensions: StaticRootTransformDimensions,
+) -> Option<StaticRootTransformSize> {
+    match (kind, dimensions.radius, dimensions.width, dimensions.height) {
+        (StaticRootTransformEntityKind::Circle, Some(radius), None, None)
+            if radius.is_finite() && radius > 0.0 =>
+        {
+            Some(StaticRootTransformSize {
+                height: radius * 2.0,
+                width: radius * 2.0,
+            })
+        }
+        (StaticRootTransformEntityKind::Rectangle, None, Some(width), Some(height))
+            if width.is_finite() && width > 0.0 && height.is_finite() && height > 0.0 =>
+        {
+            Some(StaticRootTransformSize { height, width })
+        }
+        _ => None,
+    }
+}
+
+fn studio_point_to_scene_point(
+    point: &PointV1,
+    frame: StaticRootTransformSize,
+    viewport: StaticRootTransformSize,
+    camera_center: &PointV1,
+) -> PointV1 {
+    PointV1 {
+        x: camera_center.x + (point.x / viewport.width - 0.5) * frame.width,
+        y: camera_center.y + (0.5 - point.y / viewport.height) * frame.height,
+    }
+}
+
+fn static_transform_geometry_matches(
+    kind: StaticRootTransformEntityKind,
+    entity: &SceneEntityV1,
+) -> bool {
+    match kind {
+        StaticRootTransformEntityKind::Circle => {
+            matches!(
+                entity.geometry,
+                SceneGeometryV1::Circle { .. } | SceneGeometryV1::CubicPath { .. }
+            ) && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
+        StaticRootTransformEntityKind::Rectangle => {
+            matches!(
+                entity.geometry,
+                SceneGeometryV1::Rectangle { .. } | SceneGeometryV1::CubicPath { .. }
+            ) && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
+        StaticRootTransformEntityKind::Image => {
+            matches!(entity.geometry, SceneGeometryV1::Image { .. })
+                && matches!(entity.appearance, SceneAppearanceV1::Image { .. })
+        }
+        StaticRootTransformEntityKind::MathTex => {
+            matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
+                && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
+        StaticRootTransformEntityKind::Other => true,
     }
 }
 
@@ -1496,6 +1686,350 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
+    /// Applies the closed static imported-root subset of one or two Studio edit operations.
+    ///
+    /// The caller serializes every Program operation, including unsupported ones. This method is
+    /// therefore the sole authority for operation admission, identity resolution, geometry
+    /// baseline verification, and atomic mutation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` when the complete normalized edit is outside the closed subset, or
+    /// the existing transform error when the installed Scene rejects the resolved intent.
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "exact t=0 and identity factors define the closed authoring subset; keeping its one admission path contiguous prevents split authority"
+    )]
+    pub fn apply_static_root_transform_edit(
+        &mut self,
+        command: ApplyStaticRootTransformEditCommand,
+    ) -> Result<SceneIrBundleV1, ApplyStaticRootTransformEditError> {
+        let ApplyStaticRootTransformEditCommand {
+            expected_base_revision,
+            frame,
+            next_revision,
+            operations,
+            source_runtime_bindings,
+            studio_entities,
+            viewport,
+        } = command;
+        let scene = self.scene();
+        if !matches!(
+            scene.source,
+            SceneSourceV1::ImportedManimServerSnapshot { .. }
+        ) || !scene.animation_channels.is_empty()
+            || !static_transform_size_is_positive(frame)
+            || !static_transform_size_is_positive(viewport)
+            || frame.width != scene.camera.view.frame_width
+            || frame.height != scene.camera.view.frame_height
+            || operations.is_empty()
+            || operations.len() > 2
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+
+        let mut entity_id: Option<String> = None;
+        let mut operation_ids = Vec::new();
+        let mut position: Option<PointV1> = None;
+        let mut uniform_scale: Option<f64> = None;
+        let mut resize: Option<(
+            StaticRootTransformEntityKind,
+            StaticRootTransformDimensions,
+            PointV1,
+            f64,
+            StaticRootTransformDimensions,
+            PointV1,
+        )> = None;
+        for operation in operations {
+            if operation.anchor_seconds != 0.0
+                || !operation.lowering_supported
+                || !operation.validation_valid
+                || operation.interval.start != 0.0
+                || operation.interval.end != 0.0
+                || operation.origin != operation.program_origin
+                || operation.id.is_empty()
+                || operation_ids.contains(&operation.id)
+                || entity_id
+                    .as_ref()
+                    .is_some_and(|expected| expected != &operation.entity_id)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            operation_ids.push(operation.id.clone());
+            entity_id.get_or_insert_with(|| operation.entity_id.clone());
+            match operation.kind {
+                StaticRootTransformOperationKind::Position {
+                    position: Some(target),
+                } if matches!(
+                    operation.origin,
+                    StaticRootTransformOrigin::DirectManipulation
+                        | StaticRootTransformOrigin::StudioDefault
+                ) && static_transform_point_is_finite(&target)
+                    && position.replace(target.clone()).is_none() => {}
+                StaticRootTransformOperationKind::UniformScale {
+                    control_present,
+                    from: Some(from),
+                    relative_factor: Some(factor),
+                    to: Some(to),
+                } if operation.origin == StaticRootTransformOrigin::DirectManipulation
+                    && !control_present
+                    && factor.is_finite()
+                    && factor > 0.0
+                    && factor != 1.0
+                    && from.is_finite()
+                    && from > 0.0
+                    && to.is_finite()
+                    && to > 0.0
+                    && close_transform_baseline_value(to / from, factor)
+                    && uniform_scale.replace(factor).is_none() => {}
+                StaticRootTransformOperationKind::Resize {
+                    from_dimensions,
+                    from_position,
+                    from_scale,
+                    shape,
+                    to_dimensions,
+                    to_position,
+                } if matches!(
+                    operation.origin,
+                    StaticRootTransformOrigin::DirectManipulation
+                        | StaticRootTransformOrigin::StudioDefault
+                ) && matches!(
+                    shape,
+                    StaticRootTransformEntityKind::Circle
+                        | StaticRootTransformEntityKind::Rectangle
+                ) && from_scale.is_finite()
+                    && from_scale > 0.0
+                    && static_transform_point_is_finite(&from_position)
+                    && static_transform_point_is_finite(&to_position)
+                    && resize
+                        .replace((
+                            shape,
+                            from_dimensions,
+                            from_position.clone(),
+                            from_scale,
+                            to_dimensions,
+                            to_position.clone(),
+                        ))
+                        .is_none() => {}
+                StaticRootTransformOperationKind::Position { .. }
+                | StaticRootTransformOperationKind::UniformScale { .. }
+                | StaticRootTransformOperationKind::Resize { .. }
+                | StaticRootTransformOperationKind::Unsupported => {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+            }
+        }
+        if (resize.is_some()
+            && (position.is_some() || uniform_scale.is_some() || operation_ids.len() != 1))
+            || (resize.is_none() && position.is_none() && uniform_scale.is_none())
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+
+        let entity_id = entity_id.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+        let mut matching_studio_entities = studio_entities
+            .iter()
+            .filter(|entity| entity.object_graph_key == entity_id && entity.id == entity_id);
+        let studio_entity = matching_studio_entities
+            .next()
+            .filter(|entity| {
+                !entity.provisional
+                    && entity.transaction_id.is_none()
+                    && entity.source_identity.is_some()
+            })
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+        let semantic_position = studio_entity
+            .position
+            .as_ref()
+            .filter(|position| static_transform_point_is_finite(position));
+        let semantic_scale = studio_entity
+            .scale
+            .filter(|scale| scale.is_finite() && *scale > 0.0);
+        let primitive_size =
+            static_transform_shape_size(studio_entity.kind, studio_entity.dimensions);
+        let primitive_transform = matches!(
+            studio_entity.kind,
+            StaticRootTransformEntityKind::Circle | StaticRootTransformEntityKind::Rectangle
+        ) && (uniform_scale.is_some() || resize.is_some());
+        if matching_studio_entities.next().is_some()
+            || !matches!(
+                studio_entity.kind,
+                StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
+            ) && semantic_position.is_none()
+            || primitive_transform && (semantic_scale.is_none() || primitive_size.is_none())
+            || uniform_scale.is_some()
+                && !matches!(
+                    studio_entity.kind,
+                    StaticRootTransformEntityKind::Circle
+                        | StaticRootTransformEntityKind::Image
+                        | StaticRootTransformEntityKind::MathTex
+                        | StaticRootTransformEntityKind::Rectangle
+                )
+            || resize
+                .as_ref()
+                .is_some_and(|(shape, ..)| *shape != studio_entity.kind)
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+        let source_identity = studio_entity
+            .source_identity
+            .as_deref()
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+        let mut matching_bindings = source_runtime_bindings
+            .iter()
+            .filter(|binding| binding.source_identity_key == source_identity);
+        let binding = matching_bindings
+            .next()
+            .filter(|binding| binding.source_name == source_identity)
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+        if matching_bindings.next().is_some()
+            || source_runtime_bindings
+                .iter()
+                .filter(|candidate| candidate.runtime_entity_id == binding.runtime_entity_id)
+                .count()
+                != 1
+        {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+        let runtime_entity = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == binding.runtime_entity_id)
+            .filter(|entity| {
+                entity.parent_id.is_none()
+                    && static_transform_geometry_matches(studio_entity.kind, entity)
+            })
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+
+        let intent = if let Some((
+            shape,
+            from_dimensions,
+            from_position,
+            from_scale,
+            to_dimensions,
+            to_position,
+        )) = resize
+        {
+            let from_size = static_transform_shape_size(shape, from_dimensions)
+                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let to_size = static_transform_shape_size(shape, to_dimensions)
+                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let semantic_position =
+                semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let semantic_scale =
+                semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let primitive_size =
+                primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            if !close_transform_baseline_value(from_size.width, primitive_size.width)
+                || !close_transform_baseline_value(from_size.height, primitive_size.height)
+                || !close_transform_baseline_value(from_scale, semantic_scale)
+                || !close_transform_baseline_value(from_position.x, semantic_position.x)
+                || !close_transform_baseline_value(from_position.y, semantic_position.y)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            let world_center = studio_point_to_scene_point(
+                semantic_position,
+                frame,
+                viewport,
+                &scene.camera.view.center,
+            );
+            TransformSceneEntityIntent::FromBaseline {
+                expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize {
+                    height: primitive_size.height * semantic_scale,
+                    width: primitive_size.width * semantic_scale,
+                    world_center,
+                },
+                scale: Some(SceneEntityAxisFactors {
+                    x_factor: to_size.width / from_size.width,
+                    y_factor: to_size.height / from_size.height,
+                }),
+                target_center: Some(studio_point_to_scene_point(
+                    &to_position,
+                    frame,
+                    viewport,
+                    &scene.camera.view.center,
+                )),
+            }
+        } else if !primitive_transform
+            && !matches!(
+                studio_entity.kind,
+                StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
+            )
+        {
+            let target = position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let baseline = studio_point_to_scene_point(
+                semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                frame,
+                viewport,
+                &scene.camera.view.center,
+            );
+            let target =
+                studio_point_to_scene_point(&target, frame, viewport, &scene.camera.view.center);
+            TransformSceneEntityIntent::Relative {
+                delta: PointV1 {
+                    x: target.x - baseline.x,
+                    y: target.y - baseline.y,
+                },
+                scale: None,
+            }
+        } else {
+            TransformSceneEntityIntent::FromBaseline {
+                expected_baseline: if primitive_transform {
+                    let size =
+                        primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    let scale =
+                        semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    TransformSceneEntityExpectedBaseline::WorldSize {
+                        height: size.height * scale,
+                        width: size.width * scale,
+                        world_center: studio_point_to_scene_point(
+                            semantic_position
+                                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                            frame,
+                            viewport,
+                            &scene.camera.view.center,
+                        ),
+                    }
+                } else if uniform_scale.is_some()
+                    && studio_entity.kind == StaticRootTransformEntityKind::MathTex
+                {
+                    TransformSceneEntityExpectedBaseline::CurrentUniformAffine
+                } else {
+                    TransformSceneEntityExpectedBaseline::CurrentCenter
+                },
+                scale: uniform_scale.map(|factor| SceneEntityAxisFactors {
+                    x_factor: factor,
+                    y_factor: factor,
+                }),
+                target_center: position.map(|target| {
+                    studio_point_to_scene_point(&target, frame, viewport, &scene.camera.view.center)
+                }),
+            }
+        };
+        let mut evidence = vec!["Studio static imported-root edit".to_owned()];
+        evidence.extend(
+            operation_ids
+                .into_iter()
+                .map(|operation_id| format!("authorized operation {operation_id}")),
+        );
+        let provenance = ProvenanceRecordV1 {
+            evidence,
+            id: format!("studio-static-transform:{next_revision}"),
+            origin: ProvenanceOriginV1::StudioEditProgram,
+        };
+        let runtime_entity_id = runtime_entity.id.clone();
+        self.transform_scene_entity(TransformSceneEntityCommand {
+            entity_id: runtime_entity_id,
+            expected_base_revision,
+            intent,
+            next_revision,
+            provenance,
+        })
+        .map_err(Into::into)
+    }
+
     /// Atomically resolves and applies one world-space transform intent to one entity.
     ///
     /// Relative transforms use their explicit pivot. Baseline transforms first verify the
@@ -1854,7 +2388,8 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use poietra_scene_ir::{
-        RuntimeTraceVersionV1, SceneIrBundleV1, SceneSourceV1, parse_scene_ir_bundle_json_v1,
+        RuntimeTraceVersionV1, SceneIrBundleV1, SceneSourceV1, SnapshotProfileVersionV1,
+        parse_scene_ir_bundle_json_v1,
     };
 
     use super::*;
@@ -1896,6 +2431,72 @@ mod tests {
         target.transform.tx = 3.0;
         target.transform.ty = -2.0;
         bundle
+    }
+
+    fn static_imported_bundle() -> SceneIrBundleV1 {
+        let mut bundle = fixture_bundle("shared-circle-opacity.json");
+        bundle.scene.animation_channels.clear();
+        bundle.scene.required_capabilities = vec![SceneCapabilityV1::ShapePrimitives];
+        bundle.scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            snapshot_hash: BASE_REVISION.to_owned(),
+            snapshot_version: SnapshotProfileVersionV1::V1,
+            source_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned(),
+        };
+        bundle
+    }
+
+    fn static_root_position_command() -> ApplyStaticRootTransformEditCommand {
+        ApplyStaticRootTransformEditCommand {
+            expected_base_revision: BASE_REVISION.to_owned(),
+            frame: StaticRootTransformSize {
+                height: 9.0,
+                width: 16.0,
+            },
+            next_revision: NEXT_REVISION.to_owned(),
+            operations: vec![StaticRootTransformOperation {
+                anchor_seconds: 0.0,
+                entity_id: "source:circle".to_owned(),
+                id: "move-circle".to_owned(),
+                interval: IntervalV1 {
+                    end: 0.0,
+                    start: 0.0,
+                },
+                kind: StaticRootTransformOperationKind::Position {
+                    position: Some(PointV1 { x: 400.0, y: 180.0 }),
+                },
+                lowering_supported: true,
+                origin: StaticRootTransformOrigin::DirectManipulation,
+                program_origin: StaticRootTransformOrigin::DirectManipulation,
+                validation_valid: true,
+            }],
+            source_runtime_bindings: vec![StaticRootTransformSourceBinding {
+                source_identity_key: "circle".to_owned(),
+                runtime_entity_id: "later".to_owned(),
+                source_name: "circle".to_owned(),
+            }],
+            studio_entities: vec![StaticRootTransformStudioEntity {
+                dimensions: StaticRootTransformDimensions {
+                    height: None,
+                    radius: Some(0.5),
+                    width: None,
+                },
+                object_graph_key: "source:circle".to_owned(),
+                id: "source:circle".to_owned(),
+                kind: StaticRootTransformEntityKind::Circle,
+                position: Some(PointV1 { x: 360.0, y: 180.0 }),
+                provisional: false,
+                scale: Some(1.0),
+                source_identity: Some("circle".to_owned()),
+                transaction_id: None,
+            }],
+            viewport: StaticRootTransformSize {
+                height: 360.0,
+                width: 640.0,
+            },
+        }
     }
 
     fn command() -> RotateSceneEntityCommand {
@@ -2234,6 +2835,151 @@ mod tests {
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 1);
         error
+    }
+
+    #[test]
+    fn applies_one_normalized_static_root_position_through_existing_transform_authority() {
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session
+            .apply_static_root_transform_edit(static_root_position_command())
+            .unwrap();
+
+        let moved = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert!((moved.transform.tx - 1.0).abs() < f64::EPSILON);
+        assert!(moved.transform.ty.abs() < f64::EPSILON);
+        assert_eq!(
+            moved.provenance_id,
+            format!("studio-static-transform:{NEXT_REVISION}")
+        );
+        assert_eq!(result.scene.source.revision_hash(), NEXT_REVISION);
+    }
+
+    #[test]
+    fn applies_one_normalized_circle_resize_from_the_installed_geometry_baseline() {
+        let mut command = static_root_position_command();
+        command.operations[0].kind = StaticRootTransformOperationKind::Resize {
+            from_dimensions: StaticRootTransformDimensions {
+                height: None,
+                radius: Some(0.5),
+                width: None,
+            },
+            from_position: PointV1 { x: 360.0, y: 180.0 },
+            from_scale: 1.0,
+            shape: StaticRootTransformEntityKind::Circle,
+            to_dimensions: StaticRootTransformDimensions {
+                height: None,
+                radius: Some(1.0),
+                width: None,
+            },
+            to_position: PointV1 { x: 400.0, y: 180.0 },
+        };
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+        let resized = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert!((resized.transform.m11 - 2.0).abs() < f64::EPSILON);
+        assert!((resized.transform.m22 - 2.0).abs() < f64::EPSILON);
+        assert!(resized.transform.tx.abs() < f64::EPSILON);
+        assert!(resized.transform.ty.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn applies_one_normalized_mathtex_move_and_uniform_scale_atomically() {
+        let mut bundle = fixture_bundle("mathtex-nested-radical-fraction.json");
+        bundle.scene.animation_channels.clear();
+        bundle.scene.required_capabilities = vec![SceneCapabilityV1::CubicPathGeometry];
+        bundle.scene.source = SceneSourceV1::ImportedManimServerSnapshot {
+            runtime_config_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                .to_owned(),
+            snapshot_hash: BASE_REVISION.to_owned(),
+            snapshot_version: SnapshotProfileVersionV1::V1,
+            source_hash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                .to_owned(),
+        };
+        let runtime_entity_id = bundle.scene.entities[0].id.clone();
+        let mut command = static_root_position_command();
+        command.frame = StaticRootTransformSize {
+            height: bundle.scene.camera.view.frame_height,
+            width: bundle.scene.camera.view.frame_width,
+        };
+        command.operations[0].entity_id = "source:formula".to_owned();
+        let mut scale = command.operations[0].clone();
+        scale.id = "scale-formula".to_owned();
+        scale.kind = StaticRootTransformOperationKind::UniformScale {
+            control_present: false,
+            from: Some(1.0),
+            relative_factor: Some(1.5),
+            to: Some(1.5),
+        };
+        command.operations.push(scale);
+        command.source_runtime_bindings = vec![StaticRootTransformSourceBinding {
+            source_identity_key: "formula".to_owned(),
+            runtime_entity_id: runtime_entity_id.clone(),
+            source_name: "formula".to_owned(),
+        }];
+        command.studio_entities = vec![StaticRootTransformStudioEntity {
+            dimensions: StaticRootTransformDimensions {
+                height: None,
+                radius: None,
+                width: None,
+            },
+            object_graph_key: "source:formula".to_owned(),
+            id: "source:formula".to_owned(),
+            kind: StaticRootTransformEntityKind::MathTex,
+            position: None,
+            provisional: false,
+            scale: None,
+            source_identity: Some("formula".to_owned()),
+            transaction_id: None,
+        }];
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+        let transformed = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == runtime_entity_id)
+            .unwrap();
+        assert!((transformed.transform.m11 - 1.5).abs() < f64::EPSILON);
+        assert!((transformed.transform.m22 - 1.5).abs() < f64::EPSILON);
+        let center = scene_entity_world_center(
+            transformed,
+            &scene_entity_local_bounds(transformed).unwrap(),
+        );
+        assert!((center.x - result.scene.camera.view.frame_width / 8.0).abs() < f64::EPSILON);
+        assert!(center.y.abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn rejects_any_unsupported_normalized_operation_without_mutating_the_session() {
+        let bundle = static_imported_bundle();
+        let expected_scene = bundle.scene.clone();
+        let mut command = static_root_position_command();
+        command.operations[0].kind = StaticRootTransformOperationKind::Unsupported;
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let error = session
+            .apply_static_root_transform_edit(command)
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplyStaticRootTransformEditError::Unsupported
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.retained_index_stats().build_count, 1);
     }
 
     #[test]
