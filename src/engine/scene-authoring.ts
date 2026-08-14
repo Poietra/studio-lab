@@ -66,6 +66,71 @@ export type TransformSceneEntityCompiler = (
   command: TransformSceneEntityWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+type StaticRootTransformOrigin = "direct-manipulation" | "fixture" | "remote-model" | "studio-default";
+type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
+type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
+type StaticRootTransformOperation = Readonly<{
+  anchorSeconds: number;
+  entityId: string;
+  id: string;
+  interval: Readonly<{ end: number; start: number }>;
+  loweringSupported: boolean;
+  origin: StaticRootTransformOrigin;
+  programOrigin: StaticRootTransformOrigin;
+  validationValid: boolean;
+}> &
+  (
+    | Readonly<{ kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
+    | Readonly<{
+        controlPresent: boolean;
+        from: number | null;
+        kind: "uniform-scale";
+        relativeFactor: number | null;
+        to: number | null;
+      }>
+    | Readonly<{
+        fromDimensions: StaticRootTransformDimensions;
+        fromPosition: Readonly<{ x: number; y: number }>;
+        fromScale: number;
+        kind: "resize";
+        shape: StaticRootTransformEntityKind;
+        toDimensions: StaticRootTransformDimensions;
+        toPosition: Readonly<{ x: number; y: number }>;
+      }>
+    | Readonly<{ kind: "unsupported" }>
+  );
+
+export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
+  expectedBaseRevision: string;
+  frame: Readonly<{ height: number; width: number }>;
+  nextRevision: string;
+  operations: readonly StaticRootTransformOperation[];
+  schema: "poietra.apply-static-root-transform-edit";
+  sourceRuntimeBindings: readonly Readonly<{
+    runtimeEntityId: string;
+    sourceIdentityKey: string;
+    sourceName: string;
+  }>[];
+  studioEntities: readonly Readonly<{
+    dimensions: StaticRootTransformDimensions;
+    id: string;
+    kind: StaticRootTransformEntityKind;
+    objectGraphKey: string;
+    position: Readonly<{ x: number; y: number }> | null;
+    provisional: boolean;
+    scale: number | null;
+    sourceIdentity: string | null;
+    transactionId?: string;
+  }>[];
+  version: 1;
+  viewport: Readonly<{ height: number; width: number }>;
+}>;
+
+export type ApplyStaticRootTransformEditCompiler = (
+  snapshot: SceneIrBundleV1,
+  command: ApplyStaticRootTransformEditWireCommandV1,
+) => Promise<SceneIrBundleV1>;
+
 export type TransformSceneEntityAtTimeWireCommandV1 = Readonly<{
   at: number;
   delta: Readonly<{ x: number; y: number }>;
@@ -203,6 +268,10 @@ type TransformSceneAuthoringBindingsV1 = Readonly<{
   transformSceneEntityV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ApplyStaticRootTransformEditBindingsV1 = Readonly<{
+  applyStaticRootTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type TransformSceneAtTimeAuthoringBindingsV1 = Readonly<{
   transformSceneEntityAtTimeV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -223,7 +292,8 @@ type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
   setSubtreeVectorPaintAlphaV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type SceneAuthoringBindingsV1 = CreateSceneEntitiesBindingsV1 &
+type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
+  CreateSceneEntitiesBindingsV1 &
   CreateSceneMotionBindingsV1 &
   EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
@@ -238,6 +308,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   const pending: Promise<SceneAuthoringBindingsV1> = (async () => {
     const candidate = await loadPoietraWasmModule();
     if (
+      typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.createSceneEntitiesV1 !== "function" ||
       typeof candidate.createSceneMotionV1 !== "function" ||
       typeof candidate.editSceneTimelineV1 !== "function" ||
@@ -249,6 +320,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       throw new Error("The Poietra WASM module does not export Scene authoring.");
     }
     return {
+      applyStaticRootTransformEditV1:
+        candidate.applyStaticRootTransformEditV1 as SceneAuthoringBindingsV1["applyStaticRootTransformEditV1"],
       createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
       createSceneMotionV1: candidate.createSceneMotionV1 as SceneAuthoringBindingsV1["createSceneMotionV1"],
       editSceneTimelineV1: candidate.editSceneTimelineV1 as SceneAuthoringBindingsV1["editSceneTimelineV1"],
@@ -262,6 +335,16 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
   })();
   bindingsPromise = pending;
   return pending;
+}
+
+/** Applies the supported static imported-root edit subset through the canonical core. */
+export function createApplyStaticRootTransformEditCompiler(
+  getBindings: () => Promise<ApplyStaticRootTransformEditBindingsV1>,
+): ApplyStaticRootTransformEditCompiler {
+  return async (snapshot, command) => {
+    const bindings = await getBindings();
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStaticRootTransformEditV1);
+  };
 }
 
 async function invokeSceneAuthoringCommand(
@@ -343,6 +426,7 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
   };
 }
 
+export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(loadBindings);
 export const compileCreateSceneMotion = createCreateSceneMotionCompiler(loadBindings);
 export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);

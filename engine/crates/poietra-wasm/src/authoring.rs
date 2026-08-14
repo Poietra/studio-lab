@@ -1,13 +1,15 @@
 use poietra_eval::{
+    ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     CreateSceneEntitiesCommand, CreateSceneEntitiesError, CreateSceneEntity,
     CreateSceneEntityFadeIn, CreateSceneEntityGeometry, CreateSceneEntityInstantTransform,
     CreateSceneMotionCommand, CreateSceneMotionEasing, CreateSceneMotionError,
     EditSceneTimelineCommand, EditSceneTimelineError, EngineSessionV1, EvaluationError,
     RotateSceneEntityCommand, RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors,
     SceneTimelineEdit, SceneTimelineInsertion, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, TransformSceneEntityAtTimeCommand,
-    TransformSceneEntityCommand, TransformSceneEntityError, TransformSceneEntityExpectedBaseline,
-    TransformSceneEntityIntent,
+    SetSubtreeVectorPaintAlphaError, StaticRootTransformOperation, StaticRootTransformSize,
+    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
+    TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand, TransformSceneEntityError,
+    TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, CubicPathV1, IntervalV1, PointV1, ProvenanceRecordV1,
@@ -28,6 +30,12 @@ enum TransformSceneEntitySchemaV1 {
 enum TransformSceneEntityAtTimeSchemaV1 {
     #[serde(rename = "poietra.transform-scene-entity-at-time")]
     TransformSceneEntityAtTime,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStaticRootTransformEditSchemaV1 {
+    #[serde(rename = "poietra.apply-static-root-transform-edit")]
+    ApplyStaticRootTransformEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -479,6 +487,36 @@ impl From<TransformSceneEntityAtTimeCommandJsonV1> for TransformSceneEntityAtTim
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStaticRootTransformEditCommandJsonV1 {
+    expected_base_revision: String,
+    frame: StaticRootTransformSize,
+    next_revision: String,
+    operations: Vec<StaticRootTransformOperation>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStaticRootTransformEditSchemaV1,
+    source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
+    studio_entities: Vec<StaticRootTransformStudioEntity>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+    viewport: StaticRootTransformSize,
+}
+
+impl From<ApplyStaticRootTransformEditCommandJsonV1> for ApplyStaticRootTransformEditCommand {
+    fn from(value: ApplyStaticRootTransformEditCommandJsonV1) -> Self {
+        Self {
+            expected_base_revision: value.expected_base_revision,
+            frame: value.frame,
+            next_revision: value.next_revision,
+            operations: value.operations,
+            source_runtime_bindings: value.source_runtime_bindings,
+            studio_entities: value.studio_entities,
+            viewport: value.viewport,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
     #[error("{command} command contains {actual_bytes} bytes; maximum is {maximum_bytes}")]
@@ -506,6 +544,8 @@ enum SceneAuthoringAdapterError {
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
     TransformCommand(#[from] TransformSceneEntityError),
+    #[error(transparent)]
+    StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
     #[error(transparent)]
     SetSubtreeVectorPaintAlphaCommand(#[from] SetSubtreeVectorPaintAlphaError),
     #[error("the authored Scene bundle could not be serialized: {0}")]
@@ -582,6 +622,21 @@ fn transform_scene_entity_at_time_json(
         parse_scene_authoring_command("transform at time", command_json)?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.transform_scene_entity_at_time(command.into())?;
+    scene_authoring_response(&result)
+}
+
+fn apply_static_root_transform_edit_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStaticRootTransformEditCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "static root transform edit",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_static_root_transform_edit(command.into())?;
     scene_authoring_response(&result)
 }
 
@@ -691,6 +746,20 @@ pub fn transform_scene_entity_at_time_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Authorizes complete Studio Edit Programs and applies one static imported-root transform.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, Studio command, binding, or transform.
+#[wasm_bindgen(js_name = applyStaticRootTransformEditV1)]
+pub fn apply_static_root_transform_edit_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_static_root_transform_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 fn set_subtree_vector_paint_alpha_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -795,6 +864,60 @@ mod tests {
         serde_json::to_vec(&json!({
             "assets": fixture["assets"],
             "scene": fixture["scene"],
+        }))
+        .unwrap()
+    }
+
+    fn static_fixture_json() -> Vec<u8> {
+        let mut fixture: serde_json::Value =
+            serde_json::from_slice(&fixture_json()).expect("fixture must be JSON");
+        fixture["scene"]["animationChannels"] = json!([]);
+        fixture["scene"]["requiredCapabilities"] = json!(["shape-primitives"]);
+        fixture["scene"]["source"] = json!({
+            "kind": "imported-manim-server-snapshot",
+            "runtimeConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "snapshotHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "snapshotVersion": 1,
+            "sourceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        });
+        serde_json::to_vec(&fixture).unwrap()
+    }
+
+    fn static_root_transform_command_json() -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "frame": { "height": 9.0, "width": 16.0 },
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "operations": [{
+                "anchorSeconds": 0.0,
+                "entityId": "source:circle",
+                "id": "move-circle",
+                "interval": { "end": 0.0, "start": 0.0 },
+                "kind": "position",
+                "loweringSupported": true,
+                "origin": "direct-manipulation",
+                "position": { "x": 400.0, "y": 180.0 },
+                "programOrigin": "direct-manipulation",
+                "validationValid": true
+            }],
+            "schema": "poietra.apply-static-root-transform-edit",
+            "sourceRuntimeBindings": [{
+                "runtimeEntityId": "later",
+                "sourceIdentityKey": "circle",
+                "sourceName": "circle"
+            }],
+            "studioEntities": [{
+                "dimensions": { "radius": 0.5 },
+                "id": "source:circle",
+                "kind": "circle",
+                "objectGraphKey": "source:circle",
+                "position": { "x": 360.0, "y": 180.0 },
+                "provisional": false,
+                "scale": 1.0,
+                "sourceIdentity": "circle"
+            }],
+            "version": 1,
+            "viewport": { "height": 360.0, "width": 640.0 }
         }))
         .unwrap()
     }
@@ -1396,6 +1519,29 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        ));
+    }
+
+    #[test]
+    fn static_root_transform_adapter_forwards_the_closed_command_to_the_core() {
+        let response = apply_static_root_transform_edit_json(
+            &static_fixture_json(),
+            &static_root_transform_command_json(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let moved = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+
+        assert!((moved.transform.tx - 1.0).abs() < f64::EPSILON);
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         ));
     }
 

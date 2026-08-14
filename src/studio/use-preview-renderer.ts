@@ -17,20 +17,21 @@ import {
 } from "../engine/preview-renderer";
 import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
+  type ApplyStaticRootTransformEditCompiler,
+  type ApplyStaticRootTransformEditWireCommandV1,
   type CreateSceneEntitiesCompiler,
   type CreateSceneEntitiesWireCommandV1,
   type CreateSceneMotionCompiler,
+  compileApplyStaticRootTransformEdit,
   compileCreateSceneEntities,
   compileCreateSceneMotion,
   compileEditSceneTimeline,
-  compileTransformSceneEntity,
   type EditSceneTimelineCompiler,
   type EditSceneTimelineWireCommandV1,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityAtTimeCompiler,
   type TransformSceneEntityCompiler,
-  type TransformSceneEntityWireCommandV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
@@ -74,8 +75,9 @@ import {
   studioPreviewRuntimeTraceProgramValidation,
 } from "./preview-temporal-rebase";
 import { insertedProgramDuration } from "./program-composition";
-import { isEntityDimensionsValue, isPointValue } from "./property-sampling";
+import { isPointValue } from "./property-sampling";
 import { studioPointToScenePoint, studioVectorToSceneVector } from "./scene-authoring-geometry";
+import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -432,23 +434,6 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-type StaticImportedRootTransformPlan =
-  | Readonly<{ kind: "not-applicable" }>
-  | Readonly<{ kind: "unsupported"; message: string }>
-  | Readonly<{
-      effect:
-        | Readonly<{ delta: Point; kind: "translate" }>
-        | Readonly<{
-            baseline: Extract<TransformSceneEntityWireCommandV1["intent"], { kind: "from-baseline" }>["baseline"];
-            kind: "from-baseline";
-            scale?: Readonly<{ xFactor: number; yFactor: number }>;
-            targetCenter?: Point;
-          }>;
-      kind: "authorized";
-      operationIds: readonly string[];
-      runtimeEntityId: string;
-    }>;
-
 type ImportedTimelinePlan =
   | Readonly<{ kind: "not-applicable" }>
   | Readonly<{ kind: "unsupported"; message: string }>
@@ -470,21 +455,6 @@ type ImportedMotionPlan =
       operationId: string;
       runtimeEntityIds: readonly string[];
     }>;
-
-type StaticImportedPositionOperation = Extract<CanonicalEditOperation, { kind: "SetProperty" }> &
-  Readonly<{ key: "position" }>;
-type StaticImportedScaleOperation = Extract<CanonicalEditOperation, { kind: "AnimateProperty" }> &
-  Readonly<{ key: "scale" }>;
-type StaticImportedResizeOperation = Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>;
-type StaticImportedTransformOperation =
-  | StaticImportedPositionOperation
-  | StaticImportedResizeOperation
-  | StaticImportedScaleOperation;
-
-type StaticImportedTransformEntry = Readonly<{
-  operation: StaticImportedTransformOperation;
-  record: ProgramRecord;
-}>;
 
 type StudioCreatedEntityEntry = Readonly<{
   create: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>;
@@ -763,10 +733,6 @@ function closeStaticTransformValue(left: number, right: number) {
   return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
 }
 
-function sameStaticTransformPoint(left: Point, right: Point) {
-  return closeStaticTransformValue(left.x, right.x) && closeStaticTransformValue(left.y, right.y);
-}
-
 function planImportedMotion(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -844,292 +810,91 @@ function planImportedMotion(
   };
 }
 
-function positiveShapeDimensions(type: "Circle" | "Rectangle", value: unknown): value is EntityDimensions {
-  if (!isEntityDimensionsValue(value)) return false;
-  return type === "Circle"
-    ? value.radius !== undefined && value.radius > 0 && value.width === undefined && value.height === undefined
-    : value.width !== undefined &&
-        value.width > 0 &&
-        value.height !== undefined &&
-        value.height > 0 &&
-        value.radius === undefined;
-}
-
-function sameShapeDimensions(type: "Circle" | "Rectangle", left: EntityDimensions, right: EntityDimensions) {
-  return type === "Circle"
-    ? closeStaticTransformValue(left.radius!, right.radius!)
-    : closeStaticTransformValue(left.width!, right.width!) && closeStaticTransformValue(left.height!, right.height!);
-}
-
-function planStaticImportedRootTransform(
+function staticRootTransformEditCommand(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
   }>,
-): StaticImportedRootTransformPlan {
-  const base = input.proposedState.base;
-  const baseEntities = base.runtimeSceneState.objectGraph.entities;
-  const entries = input.proposedState.programs.flatMap((record) =>
-    record.program.operations.map((operation) => ({ operation, record })),
-  );
-  const transformEntries = entries.filter((entry): entry is StaticImportedTransformEntry => {
-    const { operation } = entry;
-    if (!("entityId" in operation)) return false;
-    const entity = baseEntities[operation.entityId];
-    const scalable =
-      entity?.type === "Circle" ||
-      entity?.type === "Rectangle" ||
-      entity?.type === "ImageMobject" ||
-      entity?.type === "MathTex";
-    return (
-      entity !== undefined &&
-      ((operation.kind === "SetProperty" && operation.key === "position") ||
-        (scalable && operation.kind === "AnimateProperty" && operation.key === "scale") ||
-        ((entity.type === "Circle" || entity.type === "Rectangle") && operation.kind === "ResizeEntity"))
-    );
-  });
-  if (transformEntries.length === 0) return { kind: "not-applicable" };
-  const scene = input.snapshot.snapshot.scene;
-  if (scene.source.kind !== "imported-manim-server-snapshot") return { kind: "not-applicable" };
-  const operations = transformEntries.map(({ operation }) => operation);
-  const entityIds = new Set(operations.map(({ entityId }) => entityId));
-  const positionOperations = operations.filter(
-    (operation): operation is StaticImportedPositionOperation =>
-      operation.kind === "SetProperty" && operation.key === "position",
-  );
-  const scaleOperations = operations.filter(
-    (operation): operation is StaticImportedScaleOperation =>
-      operation.kind === "AnimateProperty" && operation.key === "scale",
-  );
-  const resizeOperations = operations.filter(
-    (operation): operation is StaticImportedResizeOperation => operation.kind === "ResizeEntity",
-  );
-  const targetId = operations[0]?.entityId;
-  const target = targetId ? baseEntities[targetId] : undefined;
-  const imageOrMathTex = target?.type === "ImageMobject" || target?.type === "MathTex";
-  const primitiveType = target?.type === "Circle" || target?.type === "Rectangle" ? target.type : null;
-  if (
-    entityIds.size !== 1 ||
-    positionOperations.length > 1 ||
-    scaleOperations.length > 1 ||
-    resizeOperations.length > 1
-  ) {
-    return { kind: "unsupported", message: "The static transform must identify one target." };
-  }
-  if (
-    entries.length !== transformEntries.length ||
-    (resizeOperations.length === 1 ? operations.length !== 1 : operations.length > 2)
-  ) {
-    return {
-      kind: "unsupported",
-      message: "One static imported transform may contain one resize or one position plus one uniform scale edit.",
-    };
-  }
-  for (const { operation, record } of transformEntries) {
-    const program = record.program;
-    const origin = program.provenance.origin;
-    const positionIsAuthorized =
-      operation.kind === "SetProperty" &&
-      operation.key === "position" &&
-      isFinitePoint(operation.value) &&
-      (origin === "direct-manipulation" || origin === "studio-default");
-    const scaleIsAuthorized =
-      operation.kind === "AnimateProperty" &&
-      operation.key === "scale" &&
-      origin === "direct-manipulation" &&
-      operation.control === undefined &&
-      typeof operation.relativeFactor === "number" &&
-      Number.isFinite(operation.relativeFactor) &&
-      operation.relativeFactor > 0 &&
-      operation.relativeFactor !== 1;
-    const resizeIsAuthorized =
-      operation.kind === "ResizeEntity" &&
-      primitiveType !== null &&
-      operation.shape === (primitiveType === "Circle" ? "circle" : "rectangle") &&
-      (origin === "direct-manipulation" || origin === "studio-default") &&
-      Number.isFinite(operation.scale) &&
-      operation.scale > 0 &&
-      positiveShapeDimensions(primitiveType, operation.from.dimensions) &&
-      positiveShapeDimensions(primitiveType, operation.to.dimensions) &&
-      isFinitePoint(operation.from.position) &&
-      isFinitePoint(operation.to.position);
-    if (
-      record.validation.status !== "valid" ||
-      program.anchor.resolvedSeconds !== 0 ||
-      program.loweringStatus !== "supported" ||
-      operation.interval.start !== 0 ||
-      operation.interval.end !== 0 ||
-      operation.provenance.origin !== origin ||
-      (!positionIsAuthorized && !scaleIsAuthorized && !resizeIsAuthorized)
-    ) {
-      return {
-        kind: "unsupported",
-        message: "Only exact t=0 pointer, keyboard, or Inspector transforms are supported.",
+  nextRevision: string,
+): ApplyStaticRootTransformEditWireCommandV1 {
+  const operations = input.proposedState.programs.flatMap(({ program, validation }) =>
+    program.operations.map((operation): ApplyStaticRootTransformEditWireCommandV1["operations"][number] => {
+      const common = {
+        anchorSeconds: program.anchor.resolvedSeconds,
+        entityId: "entityId" in operation && typeof operation.entityId === "string" ? operation.entityId : "",
+        id: operation.id,
+        interval: operation.interval,
+        loweringSupported: program.loweringStatus === "supported",
+        origin: operation.provenance.origin,
+        programOrigin: program.provenance.origin,
+        validationValid: validation.status === "valid",
       };
-    }
-  }
-
-  const correlation = input.snapshot.correlation;
-  if (
-    scene.animationChannels.length !== 0 ||
-    input.frame.width !== scene.camera.view.frameWidth ||
-    input.frame.height !== scene.camera.view.frameHeight ||
-    !importedSnapshotCorrelationIsExact(input.snapshot, true)
-  ) {
-    return { kind: "unsupported", message: "The verified source snapshot is not one exact static Scene." };
-  }
-  if (
-    base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
-    base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
-    input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
-    base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
-    base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
-  ) {
-    return { kind: "unsupported", message: "Studio state is not correlated with the verified static Scene." };
-  }
-
-  const baseEntity = target;
-  const basePosition = baseEntity?.geometry?.position;
-  const baseScale = baseEntity?.geometry?.scale;
-  const baseDimensions = baseEntity?.geometry?.dimensions;
-  const semanticScale =
-    baseScale?.kind === "known" && Number.isFinite(baseScale.value) && baseScale.value > 0 ? baseScale.value : null;
-  const primitiveTransform = primitiveType !== null && (scaleOperations.length === 1 || resizeOperations.length === 1);
-  const requiresSemanticPosition = !imageOrMathTex;
-  if (
-    !baseEntity ||
-    baseEntity.provisional ||
-    baseEntity.transactionId !== undefined ||
-    baseEntity.sourceIdentity.kind !== "known" ||
-    (requiresSemanticPosition && (basePosition?.kind !== "known" || !isFinitePoint(basePosition.value))) ||
-    (primitiveTransform && semanticScale === null) ||
-    (primitiveTransform &&
-      (baseDimensions?.kind !== "known" || !positiveShapeDimensions(primitiveType, baseDimensions.value)))
-  ) {
-    return { kind: "unsupported", message: "The imported transform has no stable semantic identity and baseline." };
-  }
-  const mapping = input.snapshot.sourceRuntimeIdentity?.get(baseEntity.sourceIdentity.value);
-  const runtimeEntity = mapping ? scene.entities.find(({ id }) => id === mapping.entityId) : undefined;
-  const reverseMappingCount = mapping
-    ? [...(input.snapshot.sourceRuntimeIdentity?.values() ?? [])].filter(
-        ({ entityId }) => entityId === mapping.entityId,
-      ).length
-    : 0;
-  const runtimeTypeMatches =
-    (primitiveType === "Circle" &&
-      (runtimeEntity?.geometry.kind === "circle" || runtimeEntity?.geometry.kind === "cubic-path") &&
-      runtimeEntity.appearance.kind === "vector") ||
-    (primitiveType === "Rectangle" &&
-      (runtimeEntity?.geometry.kind === "rectangle" || runtimeEntity?.geometry.kind === "cubic-path") &&
-      runtimeEntity.appearance.kind === "vector") ||
-    (!imageOrMathTex && primitiveType === null) ||
-    (baseEntity.type === "ImageMobject" &&
-      runtimeEntity?.geometry.kind === "image" &&
-      runtimeEntity.appearance.kind === "image") ||
-    (baseEntity.type === "MathTex" &&
-      runtimeEntity?.geometry.kind === "cubic-path" &&
-      runtimeEntity.appearance.kind === "vector");
-  if (
-    !mapping ||
-    mapping.sourceName !== baseEntity.sourceIdentity.value ||
-    reverseMappingCount !== 1 ||
-    !runtimeEntity ||
-    runtimeEntity.parentId !== null ||
-    !runtimeTypeMatches
-  ) {
-    return { kind: "unsupported", message: "The Studio entity does not resolve to one verified runtime root." };
-  }
-  const semanticCenter =
-    basePosition?.kind === "known" && isFinitePoint(basePosition.value)
-      ? studioPointToScenePoint(basePosition.value, input.frame, scene.camera.view.center)
-      : null;
-  const resize = resizeOperations[0];
-  const resizeBaselineMatches =
-    !resize ||
-    (primitiveType !== null &&
-      baseDimensions?.kind === "known" &&
-      semanticScale !== null &&
-      basePosition?.kind === "known" &&
-      sameShapeDimensions(primitiveType, resize.from.dimensions, baseDimensions.value) &&
-      sameStaticTransformPoint(resize.from.position, basePosition.value) &&
-      closeStaticTransformValue(resize.scale, semanticScale));
-  if (!resizeBaselineMatches) {
-    return { kind: "unsupported", message: "The semantic transform baseline does not match verified geometry." };
-  }
-
-  const position = positionOperations[0];
-  const targetPosition = resize?.to.position ?? (position && isFinitePoint(position.value) ? position.value : null);
-  const targetCenter = targetPosition
-    ? studioPointToScenePoint(targetPosition, input.frame, scene.camera.view.center)
-    : semanticCenter;
-  const scaleFactor = scaleOperations[0]?.relativeFactor;
-  const xFactor = resize
-    ? primitiveType === "Circle"
-      ? resize.to.dimensions.radius! / resize.from.dimensions.radius!
-      : resize.to.dimensions.width! / resize.from.dimensions.width!
-    : scaleFactor;
-  const yFactor = resize
-    ? primitiveType === "Circle"
-      ? resize.to.dimensions.radius! / resize.from.dimensions.radius!
-      : resize.to.dimensions.height! / resize.from.dimensions.height!
-    : scaleFactor;
-  const hasScale = xFactor !== undefined && yFactor !== undefined && (xFactor !== 1 || yFactor !== 1);
-  if (
-    (targetCenter !== null && !isFinitePoint(targetCenter)) ||
-    (xFactor !== undefined && (!Number.isFinite(xFactor) || xFactor <= 0)) ||
-    (yFactor !== undefined && (!Number.isFinite(yFactor) || yFactor <= 0)) ||
-    (!hasScale && targetPosition === null)
-  ) {
-    return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
-  }
-
-  const geometryVerifiedTransform = imageOrMathTex || primitiveTransform;
-  let effect: Extract<StaticImportedRootTransformPlan, { kind: "authorized" }>["effect"];
-  if (!geometryVerifiedTransform) {
-    if (semanticCenter === null || targetCenter === null) {
-      return { kind: "unsupported", message: "The imported move has no stable semantic position." };
-    }
-    const semanticDelta = { x: targetCenter.x - semanticCenter.x, y: targetCenter.y - semanticCenter.y };
-    if (!isFinitePoint(semanticDelta) || (semanticDelta.x === 0 && semanticDelta.y === 0)) {
-      return { kind: "unsupported", message: "The static transform must have one finite non-zero effect." };
-    }
-    effect = { delta: semanticDelta, kind: "translate" };
-  } else {
-    let baseline: Extract<TransformSceneEntityWireCommandV1["intent"], { kind: "from-baseline" }>["baseline"] = {
-      kind: "current-center",
-    };
-    if (
-      primitiveTransform &&
-      primitiveType !== null &&
-      baseDimensions?.kind === "known" &&
-      semanticScale !== null &&
-      semanticCenter !== null
-    ) {
-      const width =
-        primitiveType === "Circle"
-          ? baseDimensions.value.radius! * semanticScale * 2
-          : baseDimensions.value.width! * semanticScale;
-      const height =
-        primitiveType === "Circle"
-          ? baseDimensions.value.radius! * semanticScale * 2
-          : baseDimensions.value.height! * semanticScale;
-      baseline = { height, kind: "world-size", width, worldCenter: semanticCenter };
-    } else if (baseEntity.type === "MathTex" && hasScale) {
-      baseline = { kind: "current-uniform-affine" };
-    }
-    effect = {
-      baseline,
-      kind: "from-baseline",
-      ...(!hasScale ? {} : { scale: { xFactor: xFactor!, yFactor: yFactor! } }),
-      ...(targetPosition === null || targetCenter === null ? {} : { targetCenter }),
-    };
-  }
+      if (operation.kind === "SetProperty" && operation.key === "position") {
+        return { ...common, kind: "position", position: isPointValue(operation.value) ? operation.value : null };
+      }
+      if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+        return {
+          ...common,
+          controlPresent: operation.control !== undefined,
+          from: typeof operation.from === "number" ? operation.from : null,
+          kind: "uniform-scale",
+          relativeFactor: operation.relativeFactor ?? null,
+          to: typeof operation.to === "number" ? operation.to : null,
+        };
+      }
+      if (operation.kind === "ResizeEntity") {
+        return {
+          ...common,
+          fromDimensions: operation.from.dimensions,
+          fromPosition: operation.from.position,
+          fromScale: operation.scale,
+          kind: "resize",
+          shape: operation.shape,
+          toDimensions: operation.to.dimensions,
+          toPosition: operation.to.position,
+        };
+      }
+      return { ...common, kind: "unsupported" };
+    }),
+  );
   return {
-    effect,
-    kind: "authorized",
-    operationIds: operations.map(({ id }) => id),
-    runtimeEntityId: runtimeEntity.id,
+    expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+    frame: input.frame,
+    nextRevision,
+    operations,
+    schema: "poietra.apply-static-root-transform-edit",
+    sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
+      ([sourceIdentityKey, { entityId, sourceName }]) => ({
+        runtimeEntityId: entityId,
+        sourceIdentityKey,
+        sourceName,
+      }),
+    ),
+    studioEntities: Object.entries(input.proposedState.base.runtimeSceneState.objectGraph.entities).map(
+      ([objectGraphKey, entity]) => ({
+        dimensions: entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : {},
+        id: entity.id,
+        kind:
+          entity.type === "Circle"
+            ? "circle"
+            : entity.type === "ImageMobject"
+              ? "image"
+              : entity.type === "MathTex"
+                ? "math-tex"
+                : entity.type === "Rectangle"
+                  ? "rectangle"
+                  : "other",
+        objectGraphKey,
+        position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
+        provisional: entity.provisional,
+        scale: entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null,
+        sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+        ...(entity.transactionId === undefined ? {} : { transactionId: entity.transactionId }),
+      }),
+    ),
+    version: 1,
+    viewport: STUDIO_VIEWPORT,
   };
 }
 
@@ -1242,6 +1007,7 @@ function planImportedTimeline(
 
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
+    applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     createSceneEntitiesCompiler?: CreateSceneEntitiesCompiler;
     createSceneMotionCompiler?: CreateSceneMotionCompiler;
     editSceneTimelineCompiler?: EditSceneTimelineCompiler;
@@ -1635,14 +1401,22 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
-  const staticRootTransform = planStaticImportedRootTransform(input);
-  if (staticRootTransform.kind === "unsupported") {
-    return {
-      error: `Static imported root transform is unsupported: ${staticRootTransform.message}`,
-      kind: "unsupported",
-    };
-  }
-  if (staticRootTransform.kind === "authorized") {
+  if (importedSource.kind === "imported-manim-server-snapshot") {
+    const base = input.proposedState.base;
+    const correlation = input.snapshot.correlation;
+    if (
+      !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
+      base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
+      base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
+      input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
+      base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
+      base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
+    ) {
+      return {
+        error: "Static imported Studio state is not correlated with one exact verified Scene.",
+        kind: "unsupported",
+      };
+    }
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
@@ -1651,37 +1425,10 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const includesScale = staticRootTransform.effect.kind === "from-baseline" && staticRootTransform.effect.scale;
-      const provenance = {
-        evidence: [
-          includesScale
-            ? "Studio t=0 transform projected onto one verified static imported root"
-            : "Studio t=0 position request projected onto one verified static imported root",
-          ...staticRootTransform.operationIds.map((operationId) => `authorized operation ${operationId}`),
-        ],
-        id: `studio-static-${includesScale ? "transform" : "move"}:${engineRevisionHash}`,
-        origin: "studio-edit-program" as const,
-      };
-      const intent: TransformSceneEntityWireCommandV1["intent"] =
-        staticRootTransform.effect.kind === "from-baseline"
-          ? {
-              baseline: staticRootTransform.effect.baseline,
-              kind: "from-baseline",
-              ...(staticRootTransform.effect.scale ? { scale: staticRootTransform.effect.scale } : {}),
-              ...(staticRootTransform.effect.targetCenter
-                ? { targetCenter: staticRootTransform.effect.targetCenter }
-                : {}),
-            }
-          : { delta: staticRootTransform.effect.delta, kind: "relative" };
-      const bundle = await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-        entityId: staticRootTransform.runtimeEntityId,
-        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-        intent,
-        nextRevision: engineRevisionHash,
-        provenance,
-        schema: "poietra.transform-scene-entity",
-        version: 1,
-      });
+      const bundle = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
+        input.snapshot.snapshot,
+        staticRootTransformEditCommand(input, engineRevisionHash),
+      );
       return {
         kind: "compiled",
         scene: {
@@ -1704,13 +1451,14 @@ export async function compileStudioPreviewSceneV1(
       };
     } catch (error) {
       return {
-        error: `Rust core rejected the static imported root transform: ${
+        error: `Rust core rejected the static imported root edit: ${
           error instanceof Error ? error.message : "unknown error"
         }`,
         kind: "unsupported",
       };
     }
   }
+
   return {
     error: "No canonical Rust preview command supports this Studio edit.",
     kind: "unsupported",

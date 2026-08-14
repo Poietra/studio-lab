@@ -3,8 +3,10 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
+  type ApplyStaticRootTransformEditWireCommandV1,
   type CreateSceneEntitiesWireCommandV1,
   type CreateSceneMotionWireCommandV1,
+  createApplyStaticRootTransformEditCompiler,
   createCreateSceneEntitiesCompiler,
   createCreateSceneMotionCompiler,
   createEditSceneTimelineCompiler,
@@ -18,6 +20,42 @@ import {
   type TransformSceneEntityAtTimeWireCommandV1,
   type TransformSceneEntityWireCommandV1,
 } from "./scene-authoring";
+
+const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 = {
+  expectedBaseRevision: "a".repeat(64),
+  frame: { height: 9, width: 16 },
+  nextRevision: "7".repeat(64),
+  operations: [
+    {
+      anchorSeconds: 0,
+      entityId: "source:circle",
+      id: "move-circle",
+      interval: { end: 0, start: 0 },
+      kind: "position",
+      loweringSupported: true,
+      origin: "direct-manipulation",
+      position: { x: 400, y: 180 },
+      programOrigin: "direct-manipulation",
+      validationValid: true,
+    },
+  ],
+  schema: "poietra.apply-static-root-transform-edit",
+  sourceRuntimeBindings: [{ runtimeEntityId: "later", sourceIdentityKey: "circle", sourceName: "circle" }],
+  studioEntities: [
+    {
+      dimensions: { radius: 0.5 },
+      id: "source:circle",
+      kind: "circle",
+      objectGraphKey: "source:circle",
+      position: { x: 360, y: 180 },
+      provisional: false,
+      scale: 1,
+      sourceIdentity: "circle",
+    },
+  ],
+  version: 1,
+  viewport: { height: 360, width: 640 },
+};
 
 const createEntitiesCommand: CreateSceneEntitiesWireCommandV1 = {
   entities: [
@@ -165,6 +203,24 @@ async function fixtureBundle() {
 }
 
 describe("Scene authoring WASM adapter", () => {
+  it("forwards one complete static imported-root edit command without reconstructing it", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const compile = createApplyStaticRootTransformEditCompiler(async () => ({
+      applyStaticRootTransformEditV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(bundle));
+      },
+    }));
+
+    const result = await compile(bundle, staticRootTransformEditCommand);
+    expect(result).toEqual(calls[0]);
+    expect(calls[1]).toEqual(staticRootTransformEditCommand);
+  });
+
   it("forwards one exact entity-creation command and complete base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
