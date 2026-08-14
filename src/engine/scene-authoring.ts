@@ -177,46 +177,77 @@ export type EditSceneTimelineCompiler = (
   command: EditSceneTimelineWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-type CreateSceneEntityGeometryV1 =
-  | Readonly<{ kind: "circle"; radius: number }>
-  | Readonly<{ height: number; kind: "rectangle"; width: number }>
-  | Readonly<{
-      kind: "mathtex";
-      path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
-    }>;
+type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
+type StudioCreationEntityKindV1 = "circle" | "image" | "math-tex" | "other" | "rectangle";
+type StudioCreationOperationV1 = Readonly<{
+  entityId?: string;
+  id: string;
+  interval: Readonly<{ end: number; start: number }>;
+}> &
+  (
+    | Readonly<{
+        entity: Readonly<{
+          dimensions: StudioCreationDimensionsV1;
+          id: string;
+          kind: StudioCreationEntityKindV1;
+          lifetimeStart: number;
+          texParts: readonly string[] | null;
+        }>;
+        kind: "create";
+      }>
+    | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
+    | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
+    | Readonly<{ entityId: string; kind: "uniform-scale"; relativeFactor: number | null }>
+    | Readonly<{
+        entityId: string;
+        kind: "resize";
+        shape: StudioCreationEntityKindV1;
+        toDimensions: StudioCreationDimensionsV1;
+        toPosition: Readonly<{ x: number; y: number }>;
+      }>
+    | Readonly<{ kind: "unsupported" }>
+  );
 
-export type CreateSceneEntitiesWireCommandV1 = Readonly<{
-  entities: readonly Readonly<{
-    fadeIn?: Readonly<{
-      end: number;
-    }>;
-    geometry: CreateSceneEntityGeometryV1;
+export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
+  evaluatedDuration: number;
+  evaluatedEntities: readonly Readonly<{
+    contentSampleTexParts: readonly (readonly string[] | null)[];
     id: string;
-    instantTransform?: Readonly<{
-      at: number;
-      position: Readonly<{ x: number; y: number }>;
-      scaleX: number;
-      scaleY: number;
-    }>;
-    lifetime: Readonly<{ end: number; start: number }>;
-    position: Readonly<{ x: number; y: number }>;
-    scale: number;
+    kind: StudioCreationEntityKindV1;
+    lifetimes: readonly Readonly<{ end: number; start: number }>[];
+    objectGraphKey: string;
+    sourceIdentity: string | null;
+    contentTexParts: readonly string[] | null;
+    transactionId: string | null;
+  }>[];
+  evaluatedEvents: readonly Readonly<{
+    interval: Readonly<{ end: number; start: number }> | null;
+    operationId: string | null;
   }>[];
   expectedBaseRevision: string;
+  frame: Readonly<{ height: number; width: number }>;
+  mathTexOutlines: readonly Readonly<{
+    entityId: string;
+    path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    texParts: readonly string[];
+  }>[];
   nextRevision: string;
-  provenance: Readonly<{
-    evidence: readonly string[];
-    id: string;
-    origin: "studio-edit-program";
-  }>;
-  schema: "poietra.create-scene-entities";
-  timelineInsertions: readonly Readonly<{ at: number; duration: number }>[];
+  programs: readonly Readonly<{
+    anchorSeconds: number;
+    loweringSupported: boolean;
+    operations: readonly StudioCreationOperationV1[];
+    scheduleOrder: readonly string[];
+    transactionId: string;
+    validationValid: boolean;
+  }>[];
+  schema: "poietra.apply-studio-creation-edit";
   version: 1;
+  viewport: Readonly<{ height: number; width: number }>;
 }>;
 
-export type CreateSceneEntitiesCompiler = (
+export type ApplyStudioCreationEditCompiler = (
   snapshot: SceneIrBundleV1,
-  command: CreateSceneEntitiesWireCommandV1,
+  command: ApplyStudioCreationEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 export type CreateSceneMotionWireCommandV1 = Readonly<{
@@ -280,8 +311,8 @@ type EditSceneTimelineBindingsV1 = Readonly<{
   editSceneTimelineV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type CreateSceneEntitiesBindingsV1 = Readonly<{
-  createSceneEntitiesV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+type ApplyStudioCreationEditBindingsV1 = Readonly<{
+  applyStudioCreationEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type CreateSceneMotionBindingsV1 = Readonly<{
@@ -293,7 +324,7 @@ type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
 }>;
 
 type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
-  CreateSceneEntitiesBindingsV1 &
+  ApplyStudioCreationEditBindingsV1 &
   CreateSceneMotionBindingsV1 &
   EditSceneTimelineBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
@@ -309,7 +340,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     const candidate = await loadPoietraWasmModule();
     if (
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
-      typeof candidate.createSceneEntitiesV1 !== "function" ||
+      typeof candidate.applyStudioCreationEditV1 !== "function" ||
       typeof candidate.createSceneMotionV1 !== "function" ||
       typeof candidate.editSceneTimelineV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
@@ -322,7 +353,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     return {
       applyStaticRootTransformEditV1:
         candidate.applyStaticRootTransformEditV1 as SceneAuthoringBindingsV1["applyStaticRootTransformEditV1"],
-      createSceneEntitiesV1: candidate.createSceneEntitiesV1 as SceneAuthoringBindingsV1["createSceneEntitiesV1"],
+      applyStudioCreationEditV1:
+        candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
       createSceneMotionV1: candidate.createSceneMotionV1 as SceneAuthoringBindingsV1["createSceneMotionV1"],
       editSceneTimelineV1: candidate.editSceneTimelineV1 as SceneAuthoringBindingsV1["editSceneTimelineV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
@@ -356,13 +388,13 @@ async function invokeSceneAuthoringCommand(
   return sceneIrBundleV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
 }
 
-/** Creates supported Studio entities through one atomic core command. */
-export function createCreateSceneEntitiesCompiler(
-  getBindings: () => Promise<CreateSceneEntitiesBindingsV1>,
-): CreateSceneEntitiesCompiler {
+/** Passes the complete normalized Studio creation edit to the canonical core. */
+export function createApplyStudioCreationEditCompiler(
+  getBindings: () => Promise<ApplyStudioCreationEditBindingsV1>,
+): ApplyStudioCreationEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.createSceneEntitiesV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioCreationEditV1);
   };
 }
 
@@ -427,7 +459,7 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 }
 
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
-export const compileCreateSceneEntities = createCreateSceneEntitiesCompiler(loadBindings);
+export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
 export const compileCreateSceneMotion = createCreateSceneMotionCompiler(loadBindings);
 export const compileEditSceneTimeline = createEditSceneTimelineCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
