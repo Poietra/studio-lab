@@ -179,6 +179,16 @@ function normalizedStudioCreationOperation(
       toPosition: operation.to.position,
     };
   }
+  if (operation.kind === "CreateMotion") {
+    return {
+      ...common,
+      controlOffset: operation.controlOffset,
+      delta: operation.delta,
+      easing: operation.easing,
+      kind: "create-motion",
+      targetEntityIds: operation.targetEntityIds,
+    };
+  }
   return { ...common, kind: "unsupported" };
 }
 

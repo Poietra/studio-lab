@@ -682,19 +682,29 @@ describe("Manim render request lowering", () => {
     expect(authorizerCalls).toBe(0);
   });
 
-  it("rejects creation followed by motion until Rust authorizes the complete batch", async () => {
-    const creation = createCircleProgram("created-before-motion");
+  it("routes creation followed by motion through the same snapshot authorization", async () => {
+    const baseCreation = createCircleProgram("created-before-motion");
+    const creation: CanonicalEditProgram = {
+      ...baseCreation,
+      operations: baseCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? { ...operation, entity: { ...operation.entity, dimensions: { radius: 1 } } }
+          : operation,
+      ),
+    };
     const createdEntityId = "tx:created-before-motion/entity:circle";
     const movement = motionProgram(7, "move-created-circle", createdEntityId);
-    let authorizerCalls = 0;
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
-    await expect(
-      lower({ ...request(creation), programs: [creation, movement] }, sceneSource, async () => {
-        authorizerCalls += 1;
-      }),
-    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    const result = await lower({ ...request(creation), programs: [creation, movement] }, sceneSource, async (input) => {
+      authorizations.push(input);
+    });
 
-    expect(authorizerCalls).toBe(0);
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([creation, movement]);
+    expect(result.lowered.source.indexOf("Circle(radius=1)")).toBeLessThan(
+      result.lowered.source.indexOf(".animate.shift("),
+    );
   });
 
   it("rejects a created entity plus an imported transform as an unsupported mixed family", async () => {
