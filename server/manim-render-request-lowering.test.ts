@@ -467,17 +467,25 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("evaluates an out-of-order batch in source-anchor order without mutating the input", async () => {
+  it("routes a multi-motion batch through snapshot authorization in source-anchor order", async () => {
     const later = motionProgram(7, "batch-later");
     const earlier = motionProgram(5, "batch-earlier");
     const renderRequest: ProgramRenderRequest = {
       ...request(later),
       programs: [later, earlier],
     };
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
-    const result = await lower(renderRequest);
+    const result = await lower(renderRequest, sceneSource, async (input) => {
+      authorizations.push(input);
+    });
 
     expect(renderRequest.programs?.map((program) => program.transactionId)).toEqual(["batch-later", "batch-earlier"]);
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs.map((program) => program.transactionId)).toEqual([
+      "batch-earlier",
+      "batch-later",
+    ]);
     expect(result.renderRequest.program.transactionId).toBe("batch-earlier");
     expect(result.renderRequest.programs?.map((program) => program.transactionId)).toEqual([
       "batch-earlier",
@@ -486,6 +494,42 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source.indexOf('poietra:transaction "batch-earlier"')).toBeLessThan(
       result.lowered.source.indexOf('poietra:transaction "batch-later"'),
     );
+  });
+
+  it("fails a multi-motion batch closed without snapshot authorization", async () => {
+    const later = motionProgram(7, "batch-without-authority-later");
+    const earlier = motionProgram(5, "batch-without-authority-earlier");
+
+    await expect(lower({ ...request(later), programs: [later, earlier] })).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("keeps one Program with multiple motion operations outside exact snapshot authorization", async () => {
+    const first = motionProgram(5, "multi-operation-motion");
+    const secondOperation = motionProgram(6.5, "second-operation").operations[0];
+    if (!secondOperation || secondOperation.kind !== "CreateMotion") {
+      throw new Error("The second motion fixture is malformed.");
+    }
+    const combined: CanonicalEditProgram = {
+      ...first,
+      intentCount: 2,
+      operations: [...first.operations, secondOperation],
+      schedule: {
+        edges: [],
+        mode: "sequence",
+        order: [first.operations[0]!.id, secondOperation.id],
+      },
+    };
+    let authorizerCalls = 0;
+
+    const result = await lower(request(combined), sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source.match(/\.animate\.shift\(/g)).toHaveLength(2);
   });
 
   it("routes exactly one imported CreateMotion Program through snapshot authorization", async () => {

@@ -1118,6 +1118,49 @@ describe("compileStudioPreviewSceneV1", () => {
     });
   });
 
+  it("passes every motion Program in the working history to Rust", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const first = validateMotionProgramFixture({
+      capturedPlayhead: 0.25,
+      controlOffset: { x: 16, y: 9 },
+      delta: { x: 32, y: -18 },
+      interval: { end: 0.75, start: 0.25 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "first-motion",
+    });
+    const second = validateMotionProgramFixture({
+      capturedPlayhead: 1,
+      controlOffset: { x: -8, y: 4 },
+      delta: { x: -16, y: 8 },
+      interval: { end: 1.5, start: 1 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "second-motion",
+    });
+    if (first.kind !== "valid" || second.kind !== "valid") {
+      throw new Error("Motion history fixture did not validate.");
+    }
+    const commands: ApplyStudioMotionEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
+      frame: { height: 9, width: 16 },
+      snapshot: base.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedPrograms: [programRecord(first.program, first), programRecord(second.program, second)],
+      },
+      workingRevision: "studio-working-v1:two-motions",
+      workspaceKey: "project-a/scene.py/CircleScene",
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.programs.map((program) => program.transactionId)).toEqual(["first-motion", "second-motion"]);
+  });
+
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {
     const { proposedState, snapshot } = await linePreviewInput();
     const result = await compileStudioPreviewSceneV1({

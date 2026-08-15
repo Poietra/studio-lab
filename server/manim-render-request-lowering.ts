@@ -14,7 +14,7 @@ import {
   isSceneDurationOperation,
   isStaticRootTransformOperation,
 } from "../src/studio/operations";
-import { studioCreationMathTexParts } from "../src/studio/scene-authoring-wire";
+import { isExactStudioMotionProgramBatch, studioCreationMathTexParts } from "../src/studio/scene-authoring-wire";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
@@ -124,10 +124,7 @@ export async function lowerManimRenderRequest({
     sourceOrderedPrograms.every(
       (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
     );
-  const isSingleCreateMotionProgram =
-    sourceOrderedPrograms.length === 1 &&
-    sourceOrderedPrograms[0]?.operations.length === 1 &&
-    sourceOrderedPrograms[0].operations[0]?.kind === "CreateMotion";
+  const isStudioMotionBatch = isExactStudioMotionProgramBatch(sourceOrderedPrograms);
   const isStudioCreationBatch = isStudioCreationProgramBatch(sourceOrderedPrograms);
   if (request.sourceValidation === "runtime-trace") {
     if (containsPersistentRemove) {
@@ -170,7 +167,7 @@ export async function lowerManimRenderRequest({
       );
     }
   } else if (
-    (containsPersistentRemove || isStaticRootTransformBatch || isSingleCreateMotionProgram || isStudioCreationBatch) &&
+    (containsPersistentRemove || isStaticRootTransformBatch || isStudioMotionBatch || isStudioCreationBatch) &&
     !containsSceneDurationOperation
   ) {
     if (!snapshotProgramAuthorizer) {

@@ -11,6 +11,7 @@ import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
   buildStudioMotionEditCommand,
+  isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
   studioMotionStudioEntities,
@@ -116,11 +117,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
     sourceIdentityKey: mapping.binding.name,
     sourceName: mapping.binding.name,
   }));
-  const isSingleCreateMotionProgram =
-    input.programs.length === 1 &&
-    input.programs[0]?.operations.length === 1 &&
-    input.programs[0].operations[0]?.kind === "CreateMotion";
-  if (isSingleCreateMotionProgram) {
+  if (isExactStudioMotionProgramBatch(input.programs)) {
     await compileApplyStudioMotionEdit(
       bundle,
       buildStudioMotionEditCommand({
