@@ -23,7 +23,6 @@ import {
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
-  type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
@@ -37,7 +36,7 @@ import {
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
-import { type CanonicalEditOperation, hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
+import { hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
   evaluateStudioPreviewEligibility,
@@ -70,8 +69,10 @@ import {
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioMotionEditCommand,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioMotionStudioEntities,
 } from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
@@ -434,51 +435,6 @@ function sourceProgramRecords(workingState: WorkingState): readonly ProgramRecor
   return [...workingState.appliedPrograms, ...workingState.stagedPrograms];
 }
 
-function studioProgramEnvelope(program: ProgramRecord["program"]) {
-  const source = program.anchor.source;
-  const anchorSource =
-    source.kind === "absolute"
-      ? ({ kind: "absolute", seconds: source.seconds } as const)
-      : source.kind === "playhead"
-        ? ({ kind: "playhead", referenceSeconds: source.referenceSeconds } as const)
-        : ({ kind: "unsupported" } as const);
-  return {
-    anchorCapturedPlayhead: program.anchor.capturedPlayhead,
-    anchorResolvedSeconds: program.anchor.resolvedSeconds,
-    anchorSource,
-    intentCount: program.intentCount,
-    loweringSupported: program.loweringStatus === "supported",
-    origin: program.provenance.origin,
-    requestedExecution: program.requestedExecution,
-    scheduleEdgeCount: program.schedule.edges.length,
-    scheduleMode: program.schedule.mode,
-    scheduleOrder: program.schedule.order,
-    transactionId: program.transactionId,
-  };
-}
-
-function normalizedStudioMotionOperation(
-  operation: CanonicalEditOperation,
-): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = {
-    dependsOn: operation.dependsOn,
-    id: operation.id,
-    interval: operation.interval,
-    origin: operation.provenance.origin,
-  };
-  if (operation.kind === "CreateMotion") {
-    return {
-      ...common,
-      controlOffset: operation.controlOffset,
-      delta: operation.delta,
-      easing: operation.easing,
-      kind: "create-motion",
-      targetEntityIds: operation.targetEntityIds,
-    };
-  }
-  return { ...common, kind: "unsupported" };
-}
-
 function staticRootTransformEditCommand(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
@@ -532,16 +488,12 @@ function studioMotionEditCommand(
     workingState: WorkingState;
   }>,
   nextRevision: string,
-): ApplyStudioMotionEditWireCommandV1 {
-  return {
+) {
+  return buildStudioMotionEditCommand({
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    programs: sourceProgramRecords(input.workingState).map(({ program }) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(normalizedStudioMotionOperation),
-    })),
-    schema: "poietra.apply-studio-motion-edit",
+    programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
       ([sourceIdentityKey, { entityId, sourceName }]) => ({
         runtimeEntityId: entityId,
@@ -549,16 +501,9 @@ function studioMotionEditCommand(
         sourceName,
       }),
     ),
-    studioEntities: Object.entries(input.workingState.runtimeSceneState.objectGraph.entities).map(
-      ([objectGraphKey, entity]) => ({
-        objectGraphKey,
-        provisional: entity.provisional,
-        sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
-      }),
-    ),
-    version: 1,
+    studioEntities: studioMotionStudioEntities(input.workingState.runtimeSceneState),
     viewport: STUDIO_VIEWPORT,
-  };
+  });
 }
 
 function studioTimelineCommands(

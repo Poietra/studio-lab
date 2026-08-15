@@ -10,7 +10,12 @@ import { HttpError, sendJson } from "./http/json";
 import { createStructuredLogger, type StructuredLogRecord } from "./logging/structured-logger";
 import { ManimProjectRegistry } from "./manim-project-registry";
 import { authenticateManimRequestContext, handleManimRequest, type ManimRequestContext } from "./manim-render-http";
-import { fakeRenderer, request, sceneSource } from "./manim-render-pipeline-test-fixtures";
+import {
+  fakeRenderer,
+  installVerifiedRegistrySnapshots,
+  request,
+  sceneSource,
+} from "./manim-render-pipeline-test-fixtures";
 import {
   authenticateManimPrincipal,
   createTrustedLocalManimPrincipal,
@@ -96,6 +101,7 @@ describe("Manim request principals", () => {
       tenantId: "tenant-b",
     });
     registries.push(tenantA, tenantB);
+    await installVerifiedRegistrySnapshots(tenantB, { ...request(), projectId: "shared-project" }, "equation");
     const tenants = new ManimTenantRegistry([tenantA, tenantB]);
     const authenticator: ManimPrincipalAuthenticator<string | undefined> = {
       authenticate: async (authorization) => {

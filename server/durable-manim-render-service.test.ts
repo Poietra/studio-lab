@@ -6,7 +6,13 @@ import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-sna
 import { type DurableManimRenderServiceOptionsV1, DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import { HttpError } from "./http/json";
-import { batchRequest, createCircleProgram, request, sceneSource } from "./manim-render-pipeline-test-fixtures";
+import {
+  batchRequest,
+  createCircleProgram,
+  request,
+  sceneSource,
+  verifiedSnapshotView,
+} from "./manim-render-pipeline-test-fixtures";
 import { renderCommitCorrelationKey } from "./manim-render-session-policy";
 import { sourceHash } from "./manim-source-store";
 import type {
@@ -133,7 +139,7 @@ function fixture(
     frame: { height: 8, width: 14.222 },
     repository,
     sessionIdFactory: () => "00000000-0000-4000-8000-000000000010",
-    ...(overrides.snapshotLookup ? { snapshotLookup: overrides.snapshotLookup } : {}),
+    snapshotLookup: overrides.snapshotLookup ?? (async () => verifiedSnapshotView(request(), "equation")),
     sourceRepository,
     tenantId: "tenant-a",
   });
@@ -296,6 +302,24 @@ function runtimeTraceEditFixture(
 }
 
 describe("DurableManimRenderServiceV1", () => {
+  it("routes one imported CreateMotion Program through the durable snapshot lookup", async () => {
+    const failure = new HttpError("durable motion snapshot lookup reached", 418);
+    const snapshotLookup = vi.fn<NonNullable<DurableManimRenderServiceOptionsV1["snapshotLookup"]>>(async () => {
+      throw failure;
+    });
+    const { createSession, putSource, service } = fixture({ snapshotLookup });
+
+    await expect(service.start(request())).rejects.toBe(failure);
+
+    expect(snapshotLookup).toHaveBeenCalledWith(
+      "default",
+      { sceneName: "GroupedEquation", sourcePath: "scene.py" },
+      undefined,
+    );
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
   it("routes imported persistent remove admission through the durable snapshot lookup", async () => {
     const renderRequest = {
       ...request(),

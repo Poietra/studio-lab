@@ -1,6 +1,7 @@
 import type {
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMotionEditWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
@@ -14,6 +15,9 @@ type StaticRootTransformCommandInput = Omit<
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "programs" | "schema" | "version"> &
+  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+
+type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 function studioProgramEnvelope(program: CanonicalEditProgram) {
@@ -184,6 +188,52 @@ export function buildStudioCreationEditCommand(
     schema: "poietra.apply-studio-creation-edit",
     version: 1,
   };
+}
+
+function normalizedStudioMotionOperation(
+  operation: CanonicalEditOperation,
+): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
+  if (operation.kind === "CreateMotion") {
+    return {
+      ...common,
+      controlOffset: operation.controlOffset,
+      delta: operation.delta,
+      easing: operation.easing,
+      kind: "create-motion",
+      targetEntityIds: operation.targetEntityIds,
+    };
+  }
+  return { ...common, kind: "unsupported" };
+}
+
+/** Normalizes one complete Canonical Program batch for the Studio-motion Rust authority. */
+export function buildStudioMotionEditCommand(input: StudioMotionCommandInput): ApplyStudioMotionEditWireCommandV1 {
+  return {
+    ...input,
+    programs: input.programs.map((program) => ({
+      ...studioProgramEnvelope(program),
+      operations: program.operations.map(normalizedStudioMotionOperation),
+    })),
+    schema: "poietra.apply-studio-motion-edit",
+    version: 1,
+  };
+}
+
+/** Projects imported Studio identity facts for Rust motion admission. */
+export function studioMotionStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): ApplyStudioMotionEditWireCommandV1["studioEntities"] {
+  return Object.entries(runtimeSceneState.objectGraph.entities).map(([objectGraphKey, entity]) => ({
+    objectGraphKey,
+    provisional: entity.provisional,
+    sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+  }));
 }
 
 /** Projects imported Studio entity facts for Rust to verify against Scene IR. */
