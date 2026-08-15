@@ -723,6 +723,12 @@ pub enum StaticRootTransformOperationKind {
     PersistentRemove {
         persistent: bool,
     },
+    CreateMotion {
+        control_offset: PointV1,
+        delta: PointV1,
+        easing: StudioMotionEasing,
+        target_entity_ids: Vec<String>,
+    },
     Unsupported,
 }
 
@@ -730,7 +736,7 @@ pub enum StaticRootTransformOperationKind {
 #[serde(rename_all = "camelCase")]
 pub struct StaticRootTransformOperation {
     pub depends_on: Vec<String>,
-    pub entity_id: String,
+    pub entity_id: Option<String>,
     pub id: String,
     pub interval: IntervalV1,
     #[serde(flatten)]
@@ -2267,6 +2273,51 @@ fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram)
             &program.schedule_order,
             &[],
         )
+}
+
+fn static_root_motion_program(program: &StaticRootTransformProgram) -> Option<StudioMotionProgram> {
+    let operations = program
+        .operations
+        .iter()
+        .map(|operation| {
+            let StaticRootTransformOperationKind::CreateMotion {
+                control_offset,
+                delta,
+                easing,
+                target_entity_ids,
+            } = &operation.kind
+            else {
+                return None;
+            };
+            if operation.entity_id.is_some() {
+                return None;
+            }
+            Some(StudioMotionOperation::CreateMotion {
+                control_offset: control_offset.clone(),
+                delta: delta.clone(),
+                depends_on: operation.depends_on.clone(),
+                easing: *easing,
+                id: operation.id.clone(),
+                interval: operation.interval.clone(),
+                origin: operation.origin,
+                target_entity_ids: target_entity_ids.clone(),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(StudioMotionProgram {
+        anchor_captured_playhead: program.anchor_captured_playhead,
+        anchor_resolved_seconds: program.anchor_resolved_seconds,
+        anchor_source: program.anchor_source.clone(),
+        intent_count: program.intent_count,
+        lowering_supported: program.lowering_supported,
+        operations,
+        origin: program.origin,
+        requested_execution: program.requested_execution,
+        schedule_edge_count: program.schedule_edge_count,
+        schedule_mode: program.schedule_mode,
+        schedule_order: program.schedule_order.clone(),
+        transaction_id: program.transaction_id.clone(),
+    })
 }
 
 struct PendingStudioCreation {
@@ -5757,14 +5808,49 @@ impl EngineSessionV1 {
             StaticRootTransformDimensions,
             PointV1,
         )> = None;
-        let mut program_indexes = (0..programs.len()).collect::<Vec<_>>();
-        program_indexes.sort_by(|left, right| {
+        let mut ordered_program_indexes = (0..programs.len()).collect::<Vec<_>>();
+        ordered_program_indexes.sort_by(|left, right| {
             programs[*left]
                 .anchor_resolved_seconds
                 .total_cmp(&programs[*right].anchor_resolved_seconds)
                 .then_with(|| left.cmp(right))
         });
-        for program_index in program_indexes {
+        let mut static_program_indexes = Vec::new();
+        let mut motion_programs = Vec::new();
+        let mut reached_motion_suffix = false;
+        for program_index in ordered_program_indexes {
+            let program = &programs[program_index];
+            let motion_operation_count = program
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(
+                        operation.kind,
+                        StaticRootTransformOperationKind::CreateMotion { .. }
+                    )
+                })
+                .count();
+            if motion_operation_count > 0 {
+                if motion_operation_count != program.operations.len() {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                reached_motion_suffix = true;
+                motion_programs.push(
+                    static_root_motion_program(program)
+                        .ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                );
+            } else {
+                if reached_motion_suffix {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                static_program_indexes.push(program_index);
+            }
+        }
+        if !motion_programs.is_empty() && static_program_indexes.is_empty() {
+            return Err(ApplyStaticRootTransformEditError::Unsupported);
+        }
+
+        for program_index in static_program_indexes {
             let program = &programs[program_index];
             let contains_removal = program.operations.iter().any(|operation| {
                 matches!(
@@ -5788,7 +5874,7 @@ impl EngineSessionV1 {
                     .iter()
                     .find(|operation| operation.id == *scheduled_id)
                     .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-                if operation.id.is_empty() || !operation_ids.insert(operation.id.as_str()) {
+                if operation.id.is_empty() || !operation_ids.insert(operation.id.clone()) {
                     return Err(ApplyStaticRootTransformEditError::Unsupported);
                 }
                 ordered_operation_ids.push(operation.id.clone());
@@ -5799,18 +5885,25 @@ impl EngineSessionV1 {
                                 operation.origin,
                                 StaticRootTransformOrigin::DirectManipulation
                                     | StaticRootTransformOrigin::StudioDefault
-                            ) && !operation.entity_id.is_empty()
+                            ) && operation
+                                .entity_id
+                                .as_deref()
+                                .is_some_and(|entity_id| !entity_id.is_empty())
                                 && studio_timeline_semantic_values_match(
                                     operation.interval.start,
                                     program.anchor_resolved_seconds,
                                 )
                                 && operation.interval.end >= operation.interval.start =>
                         {
+                            let entity_id = operation
+                                .entity_id
+                                .as_ref()
+                                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
                             removals.push(PersistentSceneRemoval {
-                                entity_id: operation.entity_id.clone(),
+                                entity_id: entity_id.clone(),
                                 interval: operation.interval.clone(),
                                 operation_id: operation.id.clone(),
-                                studio_entity_id: operation.entity_id.clone(),
+                                studio_entity_id: entity_id.clone(),
                                 transaction_id: program.transaction_id.clone(),
                             });
                         }
@@ -5818,23 +5911,28 @@ impl EngineSessionV1 {
                         | StaticRootTransformOperationKind::Position { .. }
                         | StaticRootTransformOperationKind::UniformScale { .. }
                         | StaticRootTransformOperationKind::Resize { .. }
+                        | StaticRootTransformOperationKind::CreateMotion { .. }
                         | StaticRootTransformOperationKind::Unsupported => {
                             return Err(ApplyStaticRootTransformEditError::Unsupported);
                         }
                     }
                     continue;
                 }
+                let operation_entity_id = operation
+                    .entity_id
+                    .as_deref()
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
                 if !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
                     || !studio_timeline_semantic_values_match(operation.interval.start, 0.0)
                     || !studio_timeline_semantic_values_match(operation.interval.end, 0.0)
                     || entity_id
                         .as_ref()
-                        .is_some_and(|expected| expected != &operation.entity_id)
+                        .is_some_and(|expected| expected != operation_entity_id)
                 {
                     return Err(ApplyStaticRootTransformEditError::Unsupported);
                 }
                 transform_operation_count += 1;
-                entity_id.get_or_insert_with(|| operation.entity_id.clone());
+                entity_id.get_or_insert_with(|| operation_entity_id.to_owned());
                 match &operation.kind {
                     StaticRootTransformOperationKind::Position {
                         position: Some(target),
@@ -5893,12 +5991,14 @@ impl EngineSessionV1 {
                     | StaticRootTransformOperationKind::UniformScale { .. }
                     | StaticRootTransformOperationKind::Resize { .. }
                     | StaticRootTransformOperationKind::PersistentRemove { .. }
+                    | StaticRootTransformOperationKind::CreateMotion { .. }
                     | StaticRootTransformOperationKind::Unsupported => {
                         return Err(ApplyStaticRootTransformEditError::Unsupported);
                     }
                 }
             }
         }
+        let has_motion_suffix = !motion_programs.is_empty();
         if transform_operation_count > 2
             || (resize.is_some()
                 && (position.is_some()
@@ -5909,6 +6009,7 @@ impl EngineSessionV1 {
                 && position.is_none()
                 && uniform_scale.is_none())
             || (transform_operation_count > 0 && !scene.animation_channels.is_empty())
+            || (has_motion_suffix && (transform_operation_count == 0 || !removals.is_empty()))
         {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
         }
@@ -6090,6 +6191,108 @@ impl EngineSessionV1 {
             removal.entity_id.clone_from(&runtime_entity.id);
             resolved_removals.push(removal);
         }
+        let provenance_id = if transform_operation_count > 0 {
+            format!("studio-static-transform:{next_revision}")
+        } else {
+            format!("studio-persistent-remove:{next_revision}")
+        };
+        let mut planned_motions = Vec::new();
+        let mut motion_timeline_insertions = Vec::new();
+        let mut resolved_motion_offset = 0.0;
+        for program in motion_programs {
+            let operations = closed_studio_motion_operations(&program, scene.duration)
+                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            let mut maximum_end = program.anchor_resolved_seconds;
+            let mut parallel_bucket_start: Option<f64> = None;
+            let mut parallel_targets = BTreeSet::new();
+            for operation in operations {
+                if !operation_ids.insert(operation.id().to_owned()) {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                ordered_operation_ids.push(operation.id().to_owned());
+                let StudioMotionOperation::CreateMotion {
+                    control_offset,
+                    delta,
+                    easing,
+                    interval,
+                    target_entity_ids,
+                    ..
+                } = operation
+                else {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                };
+                let mut runtime_entity_ids = Vec::with_capacity(target_entity_ids.len());
+                for studio_entity_id in target_entity_ids {
+                    let (_, runtime_entity) = resolve_static_root_binding(
+                        scene,
+                        &studio_entities,
+                        &source_runtime_bindings,
+                        studio_entity_id,
+                    )
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    runtime_entity_ids.push(runtime_entity.id.clone());
+                }
+                if program.requested_execution == StudioProgramExecution::Parallel {
+                    if parallel_bucket_start.is_none_or(|bucket_start| {
+                        (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
+                    }) {
+                        parallel_bucket_start = Some(interval.start);
+                        parallel_targets.clear();
+                    }
+                    if runtime_entity_ids
+                        .iter()
+                        .any(|entity_id| !parallel_targets.insert(entity_id.clone()))
+                    {
+                        return Err(ApplyStaticRootTransformEditError::Unsupported);
+                    }
+                }
+
+                let control_offset = studio_vector_to_scene_vector(control_offset, frame, viewport);
+                let delta = studio_vector_to_scene_vector(delta, frame, viewport);
+                validate_create_scene_motion_command(
+                    scene,
+                    &CreateSceneMotionCommand {
+                        control_offset: control_offset.clone(),
+                        delta: delta.clone(),
+                        easing: *easing,
+                        expected_base_revision: expected_base_revision.clone(),
+                        interval: interval.clone(),
+                        next_revision: next_revision.clone(),
+                        provenance: ProvenanceRecordV1 {
+                            evidence: vec![],
+                            id: provenance_id.clone(),
+                            origin: ProvenanceOriginV1::StudioEditProgram,
+                        },
+                        target_entity_ids: runtime_entity_ids.clone(),
+                    },
+                )
+                .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?;
+                maximum_end = maximum_end.max(interval.end);
+                planned_motions.push(PlannedSceneMotion {
+                    control_offset,
+                    delta,
+                    easing: *easing,
+                    interval: IntervalV1 {
+                        end: interval.end + resolved_motion_offset,
+                        start: interval.start + resolved_motion_offset,
+                    },
+                    target_entity_ids: runtime_entity_ids,
+                });
+            }
+            let insertion_duration = maximum_end - program.anchor_resolved_seconds;
+            let resolved_anchor = program.anchor_resolved_seconds + resolved_motion_offset;
+            if !insertion_duration.is_finite()
+                || insertion_duration <= 0.0
+                || !resolved_anchor.is_finite()
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+            motion_timeline_insertions.push(SceneTimelineInsertion {
+                at: resolved_anchor,
+                duration: insertion_duration,
+            });
+            resolved_motion_offset += insertion_duration;
+        }
         let mut evidence = vec!["Studio static imported-root edit".to_owned()];
         evidence.extend(
             ordered_operation_ids
@@ -6098,11 +6301,7 @@ impl EngineSessionV1 {
         );
         let provenance = ProvenanceRecordV1 {
             evidence,
-            id: if transform_operation_count > 0 {
-                format!("studio-static-transform:{next_revision}")
-            } else {
-                format!("studio-persistent-remove:{next_revision}")
-            },
+            id: provenance_id,
             origin: ProvenanceOriginV1::StudioEditProgram,
         };
         if scene
@@ -6136,6 +6335,11 @@ impl EngineSessionV1 {
             };
             candidate
         };
+        for insertion in &motion_timeline_insertions {
+            insert_scene_time(&mut candidate.scene, insertion);
+        }
+        append_planned_scene_motions(&mut candidate.scene, &planned_motions, &provenance.id)
+            .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?;
         let persistent_remove_projection = if resolved_removals.is_empty() {
             StudioPersistentRemoveProjection::default()
         } else {
@@ -6738,7 +6942,7 @@ mod tests {
                 lowering_supported: true,
                 operations: vec![StaticRootTransformOperation {
                     depends_on: vec![],
-                    entity_id: "source:circle".to_owned(),
+                    entity_id: Some("source:circle".to_owned()),
                     id: "move-circle".to_owned(),
                     interval: IntervalV1 {
                         end: 0.0,
@@ -6783,6 +6987,40 @@ mod tests {
         }
     }
 
+    fn static_root_motion_program(target_entity_ids: Vec<String>) -> StaticRootTransformProgram {
+        StaticRootTransformProgram {
+            anchor_captured_playhead: 0.5,
+            anchor_resolved_seconds: 0.5,
+            anchor_source: StudioProgramAnchorSource::Playhead {
+                reference_seconds: Some(0.5),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations: vec![StaticRootTransformOperation {
+                depends_on: vec![],
+                entity_id: None,
+                id: "move-imported-root".to_owned(),
+                interval: IntervalV1 {
+                    end: 1.5,
+                    start: 0.5,
+                },
+                kind: StaticRootTransformOperationKind::CreateMotion {
+                    control_offset: PointV1 { x: 0.0, y: -160.0 },
+                    delta: PointV1 { x: 240.0, y: -80.0 },
+                    easing: StudioMotionEasing::Smooth,
+                    target_entity_ids,
+                },
+                origin: StaticRootTransformOrigin::DirectManipulation,
+            }],
+            origin: StaticRootTransformOrigin::DirectManipulation,
+            requested_execution: StudioProgramExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_order: vec!["move-imported-root".to_owned()],
+            transaction_id: "move-imported-root".to_owned(),
+        }
+    }
+
     fn static_persistent_remove_program(
         targets: &[(&str, &str)],
         start: f64,
@@ -6800,7 +7038,7 @@ mod tests {
                 .iter()
                 .map(|(operation_id, entity_id)| StaticRootTransformOperation {
                     depends_on: vec![],
-                    entity_id: (*entity_id).to_owned(),
+                    entity_id: Some((*entity_id).to_owned()),
                     id: (*operation_id).to_owned(),
                     interval: IntervalV1 { end, start },
                     kind: StaticRootTransformOperationKind::PersistentRemove { persistent: true },
@@ -8050,6 +8288,213 @@ mod tests {
     }
 
     #[test]
+    fn applies_move_or_resize_then_motion_without_a_visual_center_jump() {
+        let moved = static_root_position_command();
+        let mut resized = static_root_position_command();
+        resized.programs[0].operations[0].kind = StaticRootTransformOperationKind::Resize {
+            from_dimensions: StaticRootTransformDimensions {
+                height: None,
+                radius: Some(0.5),
+                width: None,
+            },
+            from_position: PointV1 { x: 360.0, y: 180.0 },
+            from_scale: 1.0,
+            shape: StaticRootTransformEntityKind::Circle,
+            to_dimensions: StaticRootTransformDimensions {
+                height: None,
+                radius: Some(1.0),
+                width: None,
+            },
+            to_position: PointV1 { x: 400.0, y: 180.0 },
+        };
+
+        for (mut command, path_start_x, local_center_scale) in
+            [(moved, 1.0, 1.0), (resized, 0.0, 2.0)]
+        {
+            command
+                .programs
+                .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+            let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+            let result = session.apply_static_root_transform_edit(command).unwrap();
+            assert!((result.bundle.scene.duration - 3.0).abs() < f64::EPSILON);
+            let path = result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .find_map(|channel| match channel {
+                    AnimationChannelV1::MotionPath {
+                        entity_id, path, ..
+                    } if entity_id == "later" => Some(path),
+                    _ => None,
+                })
+                .unwrap();
+            assert!((path.subpaths[0].start.x - path_start_x).abs() < f64::EPSILON);
+
+            for (time, expected_center) in [
+                (0.5, PointV1 { x: 2.0, y: 0.0 }),
+                (1.0, PointV1 { x: 5.0, y: 3.0 }),
+                (1.5, PointV1 { x: 8.0, y: 2.0 }),
+            ] {
+                let packet = session
+                    .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                        evidence: &[],
+                        packet_id: "static-then-motion-sample",
+                        sample_time: time,
+                        viewport: poietra_scene_ir::ViewportV1 {
+                            height_px: 900,
+                            width_px: 1600,
+                        },
+                    })
+                    .unwrap();
+                let poietra_scene_ir::RenderDrawV1::Path { transform, .. } = packet
+                    .draws
+                    .iter()
+                    .find(|draw| draw.entity_id() == "later")
+                    .unwrap()
+                else {
+                    panic!("motion target must remain a path draw");
+                };
+                let sampled_center = PointV1 {
+                    x: transform.tx + local_center_scale,
+                    y: transform.ty,
+                };
+                assert!(
+                    (sampled_center.x - expected_center.x).abs() < 1e-10,
+                    "time={time}"
+                );
+                assert!(
+                    (sampled_center.y - expected_center.y).abs() < 1e-10,
+                    "time={time}"
+                );
+            }
+            assert_eq!(session.scene(), &result.bundle.scene);
+        }
+    }
+
+    #[test]
+    fn static_then_motion_can_target_a_different_imported_root() {
+        let mut command = static_root_position_command();
+        command.programs.push(static_root_motion_program(vec![
+            "source:earlier".to_owned(),
+        ]));
+        let mut earlier = command.studio_entities[0].clone();
+        earlier.dimensions.radius = Some(1.0);
+        earlier.id = "source:earlier".to_owned();
+        earlier.object_graph_key = earlier.id.clone();
+        earlier.position = Some(PointV1 { x: 280.0, y: 180.0 });
+        earlier.source_identity = Some("earlier".to_owned());
+        command.studio_entities.push(earlier);
+        command
+            .source_runtime_bindings
+            .push(StaticRootTransformSourceBinding {
+                source_identity_key: "earlier".to_owned(),
+                runtime_entity_id: "earlier".to_owned(),
+                source_name: "earlier".to_owned(),
+            });
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+        let path = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id, path, ..
+                } if entity_id == "earlier" => Some(path),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(path.subpaths[0].start, PointV1 { x: 0.0, y: 0.0 });
+        assert_eq!(path.subpaths[0].segments[0].end, PointV1 { x: 6.0, y: 2.0 });
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .all(|channel| {
+                    !matches!(
+                        channel,
+                        AnimationChannelV1::MotionPath { entity_id, .. } if entity_id == "later"
+                    )
+                })
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_static_then_motion_suffixes_atomically() {
+        let bundle = static_imported_bundle();
+        let valid = || {
+            let mut command = static_root_position_command();
+            command
+                .programs
+                .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+            command
+        };
+
+        let mut unknown_target = valid();
+        let StaticRootTransformOperationKind::CreateMotion {
+            target_entity_ids, ..
+        } = &mut unknown_target.programs[1].operations[0].kind
+        else {
+            unreachable!();
+        };
+        target_entity_ids[0] = "source:missing".to_owned();
+
+        let mut motion_then_static = valid();
+        let mut later_static = motion_then_static.programs[0].clone();
+        later_static.anchor_captured_playhead = 1.75;
+        later_static.anchor_resolved_seconds = 1.75;
+        later_static.anchor_source = StudioProgramAnchorSource::Playhead {
+            reference_seconds: Some(1.75),
+        };
+        later_static.operations[0].id = "late-static".to_owned();
+        later_static.operations[0].interval = IntervalV1 {
+            end: 1.75,
+            start: 1.75,
+        };
+        later_static.schedule_order = vec!["late-static".to_owned()];
+        motion_then_static.programs.push(later_static);
+
+        let mut mixed_program = valid();
+        let mut static_operation = mixed_program.programs[0].operations[0].clone();
+        static_operation.id = "mixed-static".to_owned();
+        let mixed = &mut mixed_program.programs[1];
+        mixed.operations.push(static_operation);
+        mixed.intent_count = 2;
+        mixed.schedule_edge_count = 1;
+        mixed.schedule_order.push("mixed-static".to_owned());
+
+        let mut remove_then_motion = valid();
+        remove_then_motion.programs[0] =
+            static_persistent_remove_program(&[("remove-root", "source:circle")], 0.0, 0.0);
+
+        for command in [
+            unknown_target,
+            motion_then_static,
+            mixed_program,
+            remove_then_motion,
+        ] {
+            let expected_scene = bundle.scene.clone();
+            let expected_assets = bundle.assets.clone();
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+            assert!(matches!(
+                session.apply_static_root_transform_edit(command),
+                Err(ApplyStaticRootTransformEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &expected_scene);
+            assert_eq!(session.assets(), &expected_assets);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
+    }
+
+    #[test]
     fn applies_one_normalized_mathtex_move_and_uniform_scale_atomically() {
         let mut bundle = fixture_bundle("mathtex-nested-radical-fraction.json");
         bundle.scene.animation_channels.clear();
@@ -8068,7 +8513,7 @@ mod tests {
             height: bundle.scene.camera.view.frame_height,
             width: bundle.scene.camera.view.frame_width,
         };
-        command.programs[0].operations[0].entity_id = "source:formula".to_owned();
+        command.programs[0].operations[0].entity_id = Some("source:formula".to_owned());
         let mut scale = command.programs[0].operations[0].clone();
         scale.id = "scale-formula".to_owned();
         scale.kind = StaticRootTransformOperationKind::UniformScale {

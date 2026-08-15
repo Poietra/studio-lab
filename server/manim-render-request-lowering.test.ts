@@ -87,12 +87,12 @@ function motionProgram(anchor: number, transactionId: string, targetEntityId = e
   };
 }
 
-function staticRootMoveProgram(transactionId: string): CanonicalEditProgram {
+function staticRootMoveProgram(transactionId: string, anchor = 7): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     dependsOn: [],
     entityId,
     id: `tx:${transactionId}/operation:position`,
-    interval: { end: 7, start: 7 },
+    interval: { end: anchor, start: anchor },
     key: "position",
     kind: "SetProperty",
     provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
@@ -100,10 +100,10 @@ function staticRootMoveProgram(transactionId: string): CanonicalEditProgram {
   };
   return {
     anchor: {
-      capturedPlayhead: 7,
-      evidence: ["captured-playhead:7.000"],
-      resolvedSeconds: 7,
-      source: { kind: "playhead", referenceSeconds: 7 },
+      capturedPlayhead: anchor,
+      evidence: [`captured-playhead:${anchor.toFixed(3)}`],
+      resolvedSeconds: anchor,
+      source: { kind: "playhead", referenceSeconds: anchor },
     },
     intentCount: 1,
     loweringStatus: "supported",
@@ -732,6 +732,31 @@ describe("Manim render request lowering", () => {
     expect(authorizations).toHaveLength(1);
     expect(authorizations[0]?.programs).toEqual([program]);
     expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
+  });
+
+  it("routes an imported static transform followed by motion through one snapshot authorization", async () => {
+    const transform = staticRootMoveProgram("static-before-motion", 0);
+    const movement = motionProgram(7, "motion-after-static");
+    const staticMotionSource = sceneSource.replace(
+      "        self.add(equation)\n",
+      "        self.add(equation)\n        # poietra:anchor 0.000\n",
+    );
+    const renderRequest = {
+      ...request(transform),
+      programs: [transform, movement],
+      sourceHash: createHash("sha256").update(staticMotionSource).digest("hex"),
+    };
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(renderRequest, staticMotionSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([transform, movement]);
+    expect(result.lowered.source.indexOf("equation.move_to((0, 0, 0))")).toBeLessThan(
+      result.lowered.source.indexOf("equation.animate.shift("),
+    );
   });
 
   it("fails an imported static-root transform closed without snapshot authorization", async () => {

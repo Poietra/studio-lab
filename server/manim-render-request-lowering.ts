@@ -127,6 +127,17 @@ export async function lowerManimRenderRequest({
     sourceOrderedPrograms.every(
       (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
     );
+  const isStaticRootTransformMotionBatch =
+    sourceOrderedPrograms.length > 0 &&
+    sourceOrderedPrograms.every(
+      (program) =>
+        program.operations.length > 0 &&
+        program.operations.every(
+          (operation) => isStaticRootTransformOperation(operation) || operation.kind === "CreateMotion",
+        ),
+    ) &&
+    sourceOrderedPrograms.some((program) => program.operations.some(isStaticRootTransformOperation)) &&
+    sourceOrderedPrograms.some((program) => program.operations.some((operation) => operation.kind === "CreateMotion"));
   const isStudioMotionBatch = isExactStudioMotionProgramBatch(sourceOrderedPrograms);
   const isStudioMathTexTransformBatch = isExactStudioMathTexTransformProgramBatch(sourceOrderedPrograms);
   const isStudioCreationBatch = isStudioCreationProgramBatch(sourceOrderedPrograms);
@@ -173,6 +184,7 @@ export async function lowerManimRenderRequest({
   } else if (
     (containsPersistentRemove ||
       isStaticRootTransformBatch ||
+      isStaticRootTransformMotionBatch ||
       isStudioMotionBatch ||
       isStudioMathTexTransformBatch ||
       isStudioCreationBatch) &&
