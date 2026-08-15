@@ -17,6 +17,7 @@ import { programRecord } from "./evaluator";
 import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
 import type { CanonicalEditProgram } from "./operations";
+import { buildStudioCreationProjectionCommand } from "./scene-authoring-wire";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
 import {
   projectStudioWorkspace,
@@ -324,9 +325,9 @@ describe("Studio workspace projection", () => {
     });
   });
 
-  it("installs a Studio-created entity follow-up motion from the same Rust projection", () => {
+  it("installs a Studio-created Line and its follow-up motion from the same Rust projection", () => {
     const imported = workspaceScene("First", null);
-    const entityId = "tx:create/entity:circle";
+    const entityId = "tx:create/entity:line";
     const creationProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
       intentCount: 3,
@@ -334,14 +335,14 @@ describe("Studio workspace projection", () => {
       operations: [
         {
           dependsOn: [],
-          entity: { dimensions: { radius: 40 }, id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
-          id: "create/circle",
+          entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Line" },
+          id: "create/line",
           interval: { end: 0, start: 0 },
           kind: "CreateEntity",
           provenance: { evidence: [], origin: "studio-default" },
         },
         {
-          dependsOn: ["create/circle"],
+          dependsOn: ["create/line"],
           entityId,
           id: "create/position",
           interval: { end: 0, start: 0 },
@@ -365,11 +366,11 @@ describe("Studio workspace projection", () => {
       requestedExecution: "sequence",
       schedule: {
         edges: [
-          { from: "create/circle", reason: "explicit", to: "create/position" },
+          { from: "create/line", reason: "explicit", to: "create/position" },
           { from: "create/position", reason: "explicit", to: "create/fade" },
         ],
         mode: "sequence",
-        order: ["create/circle", "create/position", "create/fade"],
+        order: ["create/line", "create/position", "create/fade"],
       },
       transactionId: "create",
       version: 1,
@@ -402,10 +403,10 @@ describe("Studio workspace projection", () => {
         {
           createdLifetime: { end: imported.runtimeSceneState.duration + 1.4, start: 0 },
           entityId,
-          initialDimensions: { radius: 40 },
+          initialDimensions: {},
           initialScale: 1,
-          kind: "circle",
-          operationId: "create/circle",
+          kind: "line",
+          operationId: "create/line",
           transactionId: creationProgram.transactionId,
         },
       ],
@@ -488,6 +489,12 @@ describe("Studio workspace projection", () => {
       transactionId: "remove-created",
       version: 1,
     };
+    expect(
+      buildStudioCreationProjectionCommand({
+        baseDuration: imported.runtimeSceneState.duration,
+        programs: [creationProgram, motionProgram, removeProgram],
+      }).programs[0]?.operations[0],
+    ).toMatchObject({ entity: { dimensions: {}, kind: "line" }, kind: "create" });
     const projected = projectStudioWorkspace({
       activeScene: imported,
       appliedPrograms: [

@@ -88,31 +88,31 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
         {
           dependsOn: [],
           entity: {
-            dimensions: { height: 2, width: 4 },
-            id: "tx:create/entity:rectangle",
-            kind: "rectangle",
+            dimensions: {},
+            id: "tx:create/entity:line",
+            kind: "line",
             lifetimeEnd: null,
             lifetimeStart: 0.5,
             texParts: null,
           },
-          id: "create-rectangle",
+          id: "create-line",
           interval: { end: 0.5, start: 0.5 },
           kind: "create",
           origin: "studio-default",
         },
         {
-          dependsOn: ["create-rectangle"],
-          entityId: "tx:create/entity:rectangle",
-          id: "position-rectangle",
+          dependsOn: ["create-line"],
+          entityId: "tx:create/entity:line",
+          id: "position-line",
           interval: { end: 0.5, start: 0.5 },
           kind: "position",
           origin: "studio-default",
           position: { x: 320, y: 180 },
         },
         {
-          dependsOn: ["position-rectangle"],
-          entityId: "tx:create/entity:rectangle",
-          id: "fade-rectangle",
+          dependsOn: ["position-line"],
+          entityId: "tx:create/entity:line",
+          id: "fade-line",
           interval: { end: 0.9, start: 0.5 },
           kind: "fade-in",
           origin: "studio-default",
@@ -123,7 +123,7 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
       requestedExecution: "parallel",
       scheduleEdgeCount: 4,
       scheduleMode: "dependency-dag",
-      scheduleOrder: ["create-rectangle", "position-rectangle", "fade-rectangle"],
+      scheduleOrder: ["create-line", "position-line", "fade-line"],
       transactionId: "create",
     },
   ],
@@ -430,7 +430,28 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards one complete normalized Studio creation edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const response = { bundle, persistentRemoveProjection: { removals: [] } } as const;
+    const response = {
+      bundle,
+      creationProjection: {
+        entities: [
+          {
+            createdLifetime: { end: bundle.scene.duration, start: 0.5 },
+            entityId: "tx:create/entity:line",
+            initialDimensions: {},
+            initialScale: 1,
+            kind: "line",
+            operationId: "create-line",
+            transactionId: "create",
+          },
+        ],
+        insertions: [],
+        motions: [],
+        mutations: [],
+        projectedDuration: bundle.scene.duration,
+        removals: [],
+      },
+      persistentRemoveProjection: { removals: [] },
+    } as const;
     const compile = createApplyStudioCreationEditCompiler(async () => ({
       applyStudioCreationEditV1: (snapshotJson, commandJson) => {
         calls.push(

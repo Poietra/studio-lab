@@ -18,6 +18,7 @@ const TIMELINE_ANCHOR_EPSILON: f64 = 0.0005;
 #[derive(Clone, Debug, PartialEq)]
 enum CreateSceneEntityGeometry {
     Circle { radius: f64 },
+    Line,
     Rectangle { height: f64, width: f64 },
     MathTex { path: CubicPathV1 },
 }
@@ -969,6 +970,7 @@ pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
 pub enum StudioAuthoringEntityKind {
     Circle,
     Image,
+    Line,
     MathTex,
     Other,
     Rectangle,
@@ -3982,6 +3984,7 @@ fn plan_studio_creation_programs(
                 || !matches!(
                     entity.kind,
                     StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::Line
                         | StudioAuthoringEntityKind::MathTex
                         | StudioAuthoringEntityKind::Rectangle
                 )
@@ -4038,16 +4041,23 @@ fn plan_studio_creation_programs(
                 shift_interval_for_insertion(&mut lifetime, insertion);
             }
         }
+        let creation_payload_is_valid = match spec.kind {
+            StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle => {
+                spec.tex_parts.is_none()
+                    && studio_authoring_shape_size(spec.kind, spec.dimensions).is_some()
+            }
+            StudioAuthoringEntityKind::Line => {
+                spec.tex_parts.is_none() && spec.dimensions == StudioAuthoringDimensions::default()
+            }
+            StudioAuthoringEntityKind::MathTex => spec.tex_parts.as_ref().is_some_and(|parts| {
+                !parts.is_empty() && parts.iter().all(|part| !part.trim().is_empty())
+            }),
+            StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => false,
+        };
         if !lifetime.start.is_finite()
             || !lifetime.end.is_finite()
             || lifetime.end <= lifetime.start
-            || (spec.kind == StudioAuthoringEntityKind::MathTex
-                && spec.tex_parts.as_ref().is_none_or(|parts| {
-                    parts.is_empty() || parts.iter().any(|part| part.trim().is_empty())
-                }))
-            || (spec.kind != StudioAuthoringEntityKind::MathTex
-                && (spec.tex_parts.is_some()
-                    || studio_authoring_shape_size(spec.kind, spec.dimensions).is_none()))
+            || !creation_payload_is_valid
         {
             return Err(ProjectStudioCreationEditError::Unsupported);
         }
@@ -4555,6 +4565,12 @@ fn static_transform_geometry_matches(
             matches!(entity.geometry, SceneGeometryV1::Image { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Image { .. })
         }
+        StaticRootTransformEntityKind::Line => {
+            matches!(
+                entity.geometry,
+                SceneGeometryV1::Line { .. } | SceneGeometryV1::CubicPath { .. }
+            ) && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
+        }
         StaticRootTransformEntityKind::MathTex => {
             matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
                 && matches!(entity.appearance, SceneAppearanceV1::Vector { .. })
@@ -4696,6 +4712,14 @@ fn created_geometry_and_appearance(
             SceneGeometryV1::Circle {
                 center: PointV1 { x: 0.0, y: 0.0 },
                 radius,
+            },
+            studio_shape_appearance(),
+            SceneCapabilityV1::ShapePrimitives,
+        ),
+        CreateSceneEntityGeometry::Line => (
+            SceneGeometryV1::Line {
+                end: PointV1 { x: 1.0, y: 0.0 },
+                start: PointV1 { x: -1.0, y: 0.0 },
             },
             studio_shape_appearance(),
             SceneCapabilityV1::ShapePrimitives,
@@ -6311,6 +6335,7 @@ impl EngineSessionV1 {
                         radius: size.width / 2.0,
                     }
                 }
+                StudioAuthoringEntityKind::Line => CreateSceneEntityGeometry::Line,
                 StudioAuthoringEntityKind::Rectangle => {
                     let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
                         .ok_or(ApplyStudioCreationEditError::Unsupported)?;
@@ -6349,7 +6374,9 @@ impl EngineSessionV1 {
                             current.height / initial.height,
                         )
                     }
-                    StudioAuthoringEntityKind::MathTex => (1.0, 1.0),
+                    StudioAuthoringEntityKind::Line | StudioAuthoringEntityKind::MathTex => {
+                        (1.0, 1.0)
+                    }
                     StudioAuthoringEntityKind::Image | StudioAuthoringEntityKind::Other => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -10817,6 +10844,55 @@ mod tests {
     }
 
     #[test]
+    fn normalized_creation_projects_and_applies_a_line() {
+        let bundle = static_imported_bundle();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        let program = &mut command.programs[0];
+        for operation in &mut program.operations {
+            if operation.entity_id.as_deref() == Some("tx:create/entity:circle") {
+                operation.entity_id = Some("tx:create/entity:line".to_owned());
+            }
+        }
+        let StudioCreationOperationKind::Create { entity } = &mut program.operations[0].kind else {
+            panic!("creation fixture must start with CreateEntity");
+        };
+        entity.id = "tx:create/entity:line".to_owned();
+        entity.kind = StudioAuthoringEntityKind::Line;
+        entity.dimensions = StudioAuthoringDimensions::default();
+
+        let projection =
+            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(projection.entities[0].kind, StudioAuthoringEntityKind::Line);
+
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:line")
+            .unwrap();
+        assert!(matches!(
+            &created.geometry,
+            SceneGeometryV1::Line {
+                start: PointV1 { x: -1.0, y: 0.0 },
+                end: PointV1 { x: 1.0, y: 0.0 },
+            }
+        ));
+        assert!(matches!(
+            &created.appearance,
+            SceneAppearanceV1::Vector {
+                fill: None,
+                stroke: Some(_),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     #[allow(
         clippy::float_cmp,
         reason = "exact authored intervals and endpoints verify the atomic creation motion"
@@ -10936,10 +11012,17 @@ mod tests {
         clippy::float_cmp,
         reason = "the normalized batch produces exact stored timeline and transform values"
     )]
-    fn normalized_creation_composes_motion_then_scale_and_remove() {
+    fn normalized_line_creation_composes_motion_then_scale_and_remove() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
         let mut command = studio_creation_command(&bundle);
+        let StudioCreationOperationKind::Create { entity } =
+            &mut command.programs[0].operations[0].kind
+        else {
+            panic!("creation fixture must start with CreateEntity");
+        };
+        entity.kind = StudioAuthoringEntityKind::Line;
+        entity.dimensions = StudioAuthoringDimensions::default();
         command.programs[1].operations[0].kind = StudioCreationOperationKind::UniformScale {
             control_present: false,
             from: Some(1.0),

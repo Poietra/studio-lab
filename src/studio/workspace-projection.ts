@@ -210,6 +210,7 @@ export function selectMotionProjection(
 
 function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
   if (type === "Circle") return "circle";
+  if (type === "Line") return "line";
   if (type === "MathTex") return "math-tex";
   if (type === "Rectangle") return "rectangle";
   return null;
