@@ -72,6 +72,23 @@ pub fn point_on_cubic_v1(start: &PointV1, segment: &CubicSegmentV1, parameter: f
     }
 }
 
+/// Estimates one cubic's length with the same nine chords used by Manim's
+/// `VMobject.point_from_proportion` curve selection.
+pub fn manim_cubic_chord_length_v1(start: &PointV1, segment: &CubicSegmentV1) -> f64 {
+    let mut length = 0.0;
+    let mut previous = start.clone();
+    #[allow(clippy::cast_precision_loss)]
+    let sample_step = 1.0 / (MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 - 1) as f64;
+    for index in 1..MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 {
+        #[allow(clippy::cast_precision_loss)]
+        let parameter = index as f64 * sample_step;
+        let point = point_on_cubic_v1(start, segment, parameter);
+        length += distance(&previous, &point);
+        previous = point;
+    }
+    length
+}
+
 fn tangent_on_cubic(start: &PointV1, segment: &CubicSegmentV1, parameter: f64) -> PointV1 {
     let inverse = 1.0 - parameter;
     PointV1 {
@@ -527,20 +544,7 @@ pub fn sample_cubic_path_manim_point_from_proportion_v1(
 
     let lengths: Vec<_> = entries
         .iter()
-        .map(|entry| {
-            let mut length = 0.0;
-            let mut previous = entry.start.clone();
-            #[allow(clippy::cast_precision_loss)]
-            let sample_step = 1.0 / (MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 - 1) as f64;
-            for index in 1..MANIM_CURVE_LENGTH_SAMPLE_POINTS_V1 {
-                #[allow(clippy::cast_precision_loss)]
-                let parameter = index as f64 * sample_step;
-                let point = point_on_cubic_v1(entry.start, entry.segment.as_ref(), parameter);
-                length += distance(&previous, &point);
-                previous = point;
-            }
-            length
-        })
+        .map(|entry| manim_cubic_chord_length_v1(entry.start, entry.segment.as_ref()))
         .collect();
     let target = progress.clamp(0.0, 1.0) * lengths.iter().sum::<f64>();
     let mut current = 0.0;

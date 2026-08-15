@@ -1335,6 +1335,54 @@ mod tests {
     }
 
     #[test]
+    fn motion_adapter_transports_multiple_programs_without_a_new_wire_version() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
+        command["programs"][0]["operations"][0]["targetEntityIds"] = json!(["source:later"]);
+        command["programs"][0]["operations"][0]["interval"]["end"] = json!(1.0);
+        let mut second = command["programs"][0].clone();
+        second["operations"][0]["id"] = json!("create-motion-second");
+        second["operations"][0]["delta"] = json!({ "x": 0.0, "y": -120.0 });
+        second["operations"][0]["controlOffset"] = json!({ "x": 80.0, "y": 0.0 });
+        second["operations"][0]["easing"] = json!("linear");
+        second["operations"][0]["interval"]["end"] = json!(1.0);
+        second["scheduleOrder"] = json!(["create-motion-second"]);
+        second["transactionId"] = json!("create-motion-second");
+        command["programs"].as_array_mut().unwrap().push(second);
+
+        let response = apply_studio_motion_edit_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&command).unwrap(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let (keyframes, path) = bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    keyframes,
+                    path,
+                    ..
+                } if entity_id == "later" => Some((keyframes, path)),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(command["version"], json!(1));
+        assert_eq!(path.subpaths[0].segments.len(), 2);
+        assert_eq!(
+            keyframes
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            vec![0.5, 1.0, 1.5]
+        );
+    }
+
+    #[test]
     fn motion_adapter_rejects_unknown_stale_and_malformed_programs() {
         let mut unknown: serde_json::Value =
             serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();

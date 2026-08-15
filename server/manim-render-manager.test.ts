@@ -521,12 +521,14 @@ class GroupedEquation(Scene):
     expect(manager.canUnregister()).toBe(true);
   });
 
-  it("exports Programs at distinct source anchors in source order", async () => {
+  it("authorizes and exports motion Programs at distinct source anchors in source order", async () => {
     const { manager } = await fixture();
     const later = motionProgram(7, "batch-later");
     const earlier = motionProgram(5, "batch-earlier");
+    const renderRequest = batchRequest([later, earlier]);
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
 
-    const exported = await manager.exportSource(batchRequest([later, earlier]));
+    const exported = await manager.exportSource(renderRequest);
 
     expect(exported.source.indexOf('poietra:transaction "batch-earlier"')).toBeLessThan(
       exported.source.indexOf('poietra:transaction "batch-later"'),

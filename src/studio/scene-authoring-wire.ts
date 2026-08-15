@@ -212,6 +212,14 @@ function normalizedStudioMotionOperation(
   return { ...common, kind: "unsupported" };
 }
 
+/** Selects the closed server-authorized motion family without validating its semantics in TypeScript. */
+export function isExactStudioMotionProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
+  return (
+    programs.length > 0 &&
+    programs.every((program) => program.operations.length === 1 && program.operations[0]?.kind === "CreateMotion")
+  );
+}
+
 /** Normalizes one complete Canonical Program batch for the Studio-motion Rust authority. */
 export function buildStudioMotionEditCommand(input: StudioMotionCommandInput): ApplyStudioMotionEditWireCommandV1 {
   return {
