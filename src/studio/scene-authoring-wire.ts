@@ -1,8 +1,10 @@
 import type {
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMathTexContentEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
+  StudioMathTexContentV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
@@ -19,6 +21,12 @@ type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "pr
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
+  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+
+type StudioMathTexContentCommandInput = Omit<
+  ApplyStudioMathTexContentEditWireCommandV1,
+  "programs" | "schema" | "version"
+> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioMathTexTransformCommandInput = Omit<
@@ -122,6 +130,38 @@ export function buildStaticRootTransformEditCommand(
 
 export function studioCreationMathTexParts(value: unknown): readonly string[] | null {
   return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
+}
+
+/** Normalizes one exact imported static MathTex content replacement without recreating its content. */
+export function buildStudioMathTexContentEditCommand(
+  input: StudioMathTexContentCommandInput,
+): ApplyStudioMathTexContentEditWireCommandV1 {
+  return {
+    ...input,
+    programs: input.programs.map((program) => ({
+      ...studioProgramEnvelope(program),
+      operations: program.operations.map((operation) => {
+        if (operation.kind !== "SetProperty" || operation.key !== "content") {
+          throw new TypeError("MathTex content edit requires one canonical MathTex content operation.");
+        }
+        const content = canonicalEditableContent(operation.value, "MathTex");
+        if (!content?.texParts) {
+          throw new TypeError("MathTex content edit requires one canonical MathTex content operation.");
+        }
+        return {
+          content: content as StudioMathTexContentV1,
+          dependsOn: operation.dependsOn,
+          entityId: operation.entityId,
+          id: operation.id,
+          interval: operation.interval,
+          kind: "math-tex-content" as const,
+          origin: operation.provenance.origin,
+        };
+      }),
+    })),
+    schema: "poietra.apply-studio-math-tex-content-edit",
+    version: 1,
+  };
 }
 
 function normalizedStudioCreationOperation(
@@ -290,6 +330,12 @@ export function studioMathTexTransformStudioEntities(
               ? "rectangle"
               : "other",
   }));
+}
+
+export function studioMathTexContentStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): ApplyStudioMathTexContentEditWireCommandV1["studioEntities"] {
+  return studioMathTexTransformStudioEntities(runtimeSceneState);
 }
 
 function normalizedStudioMotionOperation(

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type { StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
-import { createSceneDurationProgram } from "./authoring-commands";
+import { createInspectorEntityEditProgram, createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
 import {
   canResolveSourceDurationMismatch,
@@ -38,9 +38,18 @@ class Static(Scene):
     def construct(self):
         shape = Circle()
         self.add(shape)
+
+class MathFormula(Scene):
+    def construct(self):
+        equation = MathTex("E = mc^2")
+        self.add(equation)
+        self.wait(1)
 `;
 
-function workspaceScene(name: "First" | "Second" | "Static", nextSceneId: string | null): ManimWorkspaceScene {
+function workspaceScene(
+  name: "First" | "MathFormula" | "Second" | "Static",
+  nextSceneId: string | null,
+): ManimWorkspaceScene {
   const imported = importManimScene(source, "scene.py", name);
   if (!imported) throw new Error(`Could not import ${name}.`);
   return {
@@ -203,6 +212,91 @@ describe("Studio workspace projection", () => {
         mutations: [{ ...staticRootProjection.mutations[0]!, entityId: "source:missing" }],
       }),
     ).toThrow("is not in the imported Scene");
+  });
+
+  it("projects Rust-authorized MathTex content in source chronology", () => {
+    const imported = workspaceScene("MathFormula", null);
+    const initial = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: [],
+      currentTime: 0,
+      draftProgram: null,
+      nextScene: null,
+      selectedObjectIds: [],
+    });
+    const entity = initial.projection.canvas.entities[0];
+    if (!entity) throw new Error("MathTex fixture has no entity.");
+    const baseContent = { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] } as const;
+    const studioContent = { displayLines: ["F = ma"], label: "Force", texParts: ["F", "=", "ma"] } as const;
+    const futureContent = { displayLines: ["a^2 + b^2 = c^2"], texParts: ["a^2 + b^2 = c^2"] } as const;
+    const rebased = {
+      ...imported,
+      runtimeSceneState: {
+        ...imported.runtimeSceneState,
+        propertyChannels: {
+          ...imported.runtimeSceneState.propertyChannels,
+          [`${entity.id}/content`]: {
+            entityId: entity.id,
+            key: "content" as const,
+            samples: [
+              {
+                interval: { end: imported.runtimeSceneState.duration, start: 0 },
+                kind: "exact" as const,
+                provenanceId: "imported-base-content",
+                value: baseContent,
+              },
+              {
+                interval: { end: 0.5, start: 0.5 },
+                kind: "exact" as const,
+                provenanceId: "imported-future-content",
+                value: futureContent,
+              },
+            ],
+          },
+        },
+      },
+    } satisfies ManimWorkspaceScene;
+    const edit = createInspectorEntityEditProgram({
+      capturedPlayhead: 0,
+      edits: { content: studioContent },
+      entityId: entity.id,
+      from: { position: entity.position, scale: entity.scale },
+      scene: rebased.runtimeSceneState,
+      transactionId: "replace-imported-mathtex-content",
+    });
+    if (edit.kind !== "valid") throw new Error(JSON.stringify(edit.issues));
+    const operation = edit.program.operations[0];
+    if (operation?.kind !== "SetProperty" || operation.key !== "content") {
+      throw new Error("Expected one MathTex content operation.");
+    }
+    const projected = projectStudioWorkspace({
+      activeScene: rebased,
+      appliedPrograms: [programRecord(edit.program, edit)],
+      currentTime: 0.75,
+      draftProgram: null,
+      nextScene: null,
+      programAuthority: "static-imported-root",
+      selectedObjectIds: [],
+      staticRootProjection: {
+        mutations: [
+          {
+            content: studioContent,
+            entityId: entity.id,
+            interval: operation.interval,
+            kind: "math-tex-content",
+            operationId: operation.id,
+            transactionId: edit.program.transactionId,
+          },
+        ],
+      },
+    });
+
+    expect(projected.projection.canvas.entities[0]?.content).toEqual(futureContent);
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entity.id}/content`]?.samples.map(
+        ({ operationId, provenanceId }) => operationId ?? provenanceId,
+      ),
+    ).toEqual(["imported-base-content", operation.id, "imported-future-content"]);
   });
 
   it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {

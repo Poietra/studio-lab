@@ -6,11 +6,13 @@ import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioBoundEntityEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioMathTexContentEditWireCommandV1,
   type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioBoundEntityEditCompiler,
   createApplyStudioCreationEditCompiler,
+  createApplyStudioMathTexContentEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
   createProjectStudioTimelineCompiler,
@@ -123,6 +125,72 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
   schema: "poietra.apply-studio-creation-edit",
   version: 1,
   viewport: { height: 360, width: 640 },
+};
+
+const mathTexContentEditCommand: ApplyStudioMathTexContentEditWireCommandV1 = {
+  expectedBaseRevision: "a".repeat(64),
+  mathTexOutlines: [
+    {
+      entityId: "source:equation",
+      path: {
+        subpaths: [
+          {
+            closed: true,
+            segments: [
+              {
+                control1: { x: 0.3, y: 0 },
+                control2: { x: 0.7, y: 0 },
+                end: { x: 1, y: 0 },
+              },
+            ],
+            start: { x: 0, y: 0 },
+          },
+        ],
+      },
+      texParts: ["F", "=", "ma"],
+    },
+  ],
+  nextRevision: "e".repeat(64),
+  programs: [
+    {
+      anchorCapturedPlayhead: 0,
+      anchorResolvedSeconds: 0,
+      anchorSource: { kind: "absolute", seconds: 0 },
+      intentCount: 1,
+      loweringSupported: true,
+      operations: [
+        {
+          content: { displayLines: ["F = ma"], label: "Force", texParts: ["F", "=", "ma"] },
+          dependsOn: [],
+          entityId: "source:equation",
+          id: "replace-equation",
+          interval: { end: 0, start: 0 },
+          kind: "math-tex-content",
+          origin: "studio-default",
+        },
+      ],
+      origin: "studio-default",
+      requestedExecution: "parallel",
+      scheduleEdgeCount: 0,
+      scheduleMode: "parallel",
+      scheduleOrder: ["replace-equation"],
+      transactionId: "replace-equation",
+    },
+  ],
+  schema: "poietra.apply-studio-math-tex-content-edit",
+  sourceRuntimeBindings: [
+    { runtimeEntityId: "runtime:equation", sourceIdentityKey: "equation", sourceName: "equation" },
+  ],
+  studioEntities: [
+    {
+      objectGraphKey: "source:equation",
+      provisional: false,
+      scale: 1,
+      sourceIdentity: "equation",
+      type: "math-tex",
+    },
+  ],
+  version: 1,
 };
 
 const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
@@ -323,6 +391,39 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, creationEditCommand);
     expect(result).toEqual(response);
     expect(calls[1]).toEqual(creationEditCommand);
+  });
+
+  it("forwards one complete imported MathTex content edit without reconstructing its content", async () => {
+    const bundle = await fixtureBundle();
+    const calls: unknown[] = [];
+    const response = {
+      bundle,
+      persistentRemoveProjection: { removals: [] },
+      staticRootProjection: {
+        mutations: [
+          {
+            content: mathTexContentEditCommand.programs[0]!.operations[0]!.content,
+            entityId: "source:equation",
+            interval: { end: 0, start: 0 },
+            kind: "math-tex-content",
+            operationId: "replace-equation",
+            transactionId: "replace-equation",
+          },
+        ],
+      },
+    } as const;
+    const compile = createApplyStudioMathTexContentEditCompiler(async () => ({
+      applyStudioMathTexContentEditV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(response));
+      },
+    }));
+
+    await expect(compile(bundle, mathTexContentEditCommand)).resolves.toEqual(response);
+    expect(calls[1]).toEqual(mathTexContentEditCommand);
   });
 
   it("forwards one complete source-bound endpoint edit without reconstructing it", async () => {

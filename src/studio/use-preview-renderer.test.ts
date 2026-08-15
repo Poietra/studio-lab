@@ -9,6 +9,7 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMathTexContentEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditCompiler,
   ApplyStudioMotionEditWireCommandV1,
@@ -2297,13 +2298,12 @@ describe("compileStudioPreviewSceneV1", () => {
     );
   });
 
-  it("fails closed instead of showing a stale imported MathTex outline after a content edit", async () => {
+  it("compiles one imported static MathTex content edit through the dedicated Rust use case", async () => {
     const fixture = await importedMathTexPreviewInput();
+    const content = { displayLines: ["F = ma"], label: "Force", texParts: ["F", "=", "ma"] } as const;
     const contentEdit = createInspectorEntityEditProgram({
       capturedPlayhead: 0,
-      edits: {
-        content: { displayLines: ["F = ma"], label: "F = ma", texParts: ["F = ma"] },
-      },
+      edits: { content },
       entityId: fixture.entityId,
       from: { position: { x: 400, y: 220 }, scale: 1.5 },
       scene: fixture.workingState.runtimeSceneState,
@@ -2314,16 +2314,33 @@ describe("compileStudioPreviewSceneV1", () => {
       ...fixture.workingState,
       appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
     });
+    const commands: ApplyStudioMathTexContentEditWireCommandV1[] = [];
     let outlineCompilerCalls = 0;
-    let staticEditCompilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
-      applyStaticRootTransformEditCompiler: async () => {
-        staticEditCompilerCalls += 1;
-        throw new Error("unsupported static root operation: SetProperty(content)");
+      applyStudioMathTexContentEditCompiler: async (bundle, command) => {
+        commands.push(command);
+        const operation = command.programs[0]?.operations[0];
+        if (!operation) throw new Error("MathTex content command fixture is empty.");
+        return {
+          ...unchangedAuthoringResult(bundle),
+          staticRootProjection: {
+            mutations: [
+              {
+                content: operation.content,
+                entityId: operation.entityId,
+                interval: operation.interval,
+                kind: "math-tex-content",
+                operationId: operation.id,
+                transactionId: command.programs[0]!.transactionId,
+              },
+            ],
+          },
+        };
       },
       frame: { height: 9, width: 16 },
-      mathTexOutlineCompiler: async () => {
+      mathTexOutlineCompiler: async (texParts) => {
         outlineCompilerCalls += 1;
+        expect(texParts).toEqual(content.texParts);
         return compiledMathTexResponse();
       },
       snapshot: fixture.snapshot,
@@ -2331,10 +2348,105 @@ describe("compileStudioPreviewSceneV1", () => {
       workingRevision: "studio-working-v1:edit-imported-mathtex-content",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
-    expect(outlineCompilerCalls).toBe(0);
-    expect(staticEditCompilerCalls).toBe(1);
+    expect(outlineCompilerCalls).toBe(1);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      programs: [
+        {
+          anchorCapturedPlayhead: 0,
+          anchorResolvedSeconds: 0,
+          operations: [
+            {
+              content,
+              entityId: fixture.entityId,
+              interval: { end: 0, start: 0 },
+              kind: "math-tex-content",
+            },
+          ],
+        },
+      ],
+      schema: "poietra.apply-studio-math-tex-content-edit",
+    });
     expect(result).toMatchObject({
-      error: expect.stringContaining("unsupported static root operation"),
+      kind: "compiled",
+      scene: {
+        programAuthority: "static-imported-root",
+        staticRootProjection: { mutations: [{ content, kind: "math-tex-content" }] },
+      },
+    });
+  });
+
+  it("does not invoke Rust or show stale geometry when the MathTex content outline is unsupported", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const contentEdit = createInspectorEntityEditProgram({
+      capturedPlayhead: 0,
+      edits: { content: { displayLines: ["unsupported"], texParts: ["\\unsupported"] } },
+      entityId: fixture.entityId,
+      from: { position: { x: 400, y: 220 }, scale: 1.5 },
+      scene: fixture.workingState.runtimeSceneState,
+      transactionId: "unsupported-imported-mathtex-content-outline",
+    });
+    if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
+    let compilerCalls = 0;
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMathTexContentEditCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return unchangedAuthoringResult(bundle);
+      },
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () =>
+        mathTexOutlineResponseV1Schema.parse({
+          result: {
+            code: "syntax-unsupported",
+            kind: "unsupported",
+            message: "The expression is not supported by the outline compiler.",
+          },
+          schema: "poietra.mathtex-outline-response",
+          version: 1,
+        }),
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.workingState,
+        appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+      },
+      workingRevision: "studio-working-v1:unsupported-imported-mathtex-content-outline",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+
+    expect(compilerCalls).toBe(0);
+    expect(result).toEqual({
+      error:
+        "MathTex content is unsupported (syntax-unsupported): The expression is not supported by the outline compiler.",
+      kind: "unsupported",
+    });
+  });
+
+  it("fails closed when Rust omits the imported MathTex content projection", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const contentEdit = createInspectorEntityEditProgram({
+      capturedPlayhead: 0,
+      edits: { content: { displayLines: ["F = ma"], texParts: ["F = ma"] } },
+      entityId: fixture.entityId,
+      from: { position: { x: 400, y: 220 }, scale: 1.5 },
+      scene: fixture.workingState.runtimeSceneState,
+      transactionId: "missing-imported-mathtex-content-projection",
+    });
+    if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMathTexContentEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => compiledMathTexResponse(),
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.workingState,
+        appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
+      },
+      workingRevision: "studio-working-v1:missing-imported-mathtex-content-projection",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+
+    expect(result).toEqual({
+      error: "Rust core returned an uncorrelated MathTex content projection.",
       kind: "unsupported",
     });
   });
