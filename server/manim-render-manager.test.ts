@@ -548,17 +548,20 @@ class GroupedEquation(Scene):
       targetDuration: 11,
       transactionId: "integration-duration-extension",
     });
-    const extensionRecord = {
-      program: extension.program,
-      validation: { issues: extension.issues, status: extension.kind },
-    } as const;
+    const extensionOperation = extension.program.operations[0]!;
     const trim = createSceneDurationProgram({
-      appliedPrograms: [extensionRecord],
       capturedPlayhead: 11,
       scene: { ...imported.runtimeSceneState, duration: 11 },
       sourceAnchor: 7,
       targetDuration: 10,
       transactionId: "integration-duration-trim",
+      trimAvailability: {
+        anchor: 7,
+        blocker: null,
+        minimumDuration: 8,
+        removableDuration: 3,
+        waitOperationIds: [extensionOperation.id],
+      },
     });
 
     const exported = await manager.exportSource(batchRequest([extension.program, trim.program]));

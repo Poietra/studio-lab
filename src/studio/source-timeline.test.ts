@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import type { RuntimeSceneState } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
@@ -14,16 +15,18 @@ function insertionProgram(): CanonicalEditProgram {
     },
     intentCount: 1,
     loweringStatus: "supported",
-    operations: [{
-      dependsOn: [],
-      effect: "fade-in",
-      entityId: "source",
-      id: "op",
-      interval: { end: 5.4, start: 5 },
-      kind: "ChangePresence",
-      persistent: true,
-      provenance: { evidence: [], origin: "studio-default" },
-    }],
+    operations: [
+      {
+        dependsOn: [],
+        effect: "fade-in",
+        entityId: "source",
+        id: "op",
+        interval: { end: 5.4, start: 5 },
+        kind: "ChangePresence",
+        persistent: true,
+        provenance: { evidence: [], origin: "studio-default" },
+      },
+    ],
     provenance: { evidence: [], origin: "studio-default" },
     requestedExecution: "sequence",
     schedule: { edges: [], mode: "sequence", order: ["op"] },
@@ -31,6 +34,40 @@ function insertionProgram(): CanonicalEditProgram {
     version: 1,
   };
 }
+
+function timelineProgram(): CanonicalEditProgram {
+  const base = insertionProgram();
+  return {
+    ...base,
+    operations: [
+      {
+        dependsOn: [],
+        eventKind: "wait",
+        id: "wait",
+        interval: { end: 6, start: 5 },
+        kind: "InsertTimelineEvent",
+        label: "Wait",
+        provenance: { evidence: [], origin: "studio-default" },
+        purpose: "scene-duration",
+      },
+    ],
+    schedule: { edges: [], mode: "sequence", order: ["wait"] },
+    transactionId: "wait",
+  };
+}
+
+const timelineProjection: StudioTimelineProjectionV1 = {
+  programProjections: [
+    {
+      operationId: "wait",
+      transactionId: "wait",
+      workingAnchor: 5,
+      workingInterval: { end: 6, start: 5 },
+    },
+  ],
+  projectedDuration: 13,
+  transforms: [{ interval: { end: 6, start: 5 }, kind: "insert", operationId: "wait" }],
+};
 
 function scene(): RuntimeSceneState {
   return {
@@ -58,14 +95,39 @@ function scene(): RuntimeSceneState {
 
 describe("projectRuntimeSceneToSourceTimeline", () => {
   it("makes entities created inside an inserted block addressable at its source anchor", () => {
-    const projected = projectRuntimeSceneToSourceTimeline(
-      scene(),
-      [insertionProgram(), insertionProgram()],
-    );
+    const projected = projectRuntimeSceneToSourceTimeline(scene(), [insertionProgram(), insertionProgram()]);
 
     expect(projected.duration).toBeCloseTo(12);
-    expect(projected.objectGraph.entities.createdLater?.lifetime).toEqual([
-      { end: 12, start: 5 },
-    ]);
+    expect(projected.objectGraph.entities.createdLater?.lifetime).toEqual([{ end: 12, start: 5 }]);
+  });
+
+  it("requires a Rust projection for Scene duration Programs and rejects mixed batches", () => {
+    expect(() => projectRuntimeSceneToSourceTimeline(scene(), [timelineProgram()])).toThrow(
+      /Rust timeline projection/i,
+    );
+    expect(() =>
+      projectRuntimeSceneToSourceTimeline(scene(), [timelineProgram(), insertionProgram()], timelineProjection),
+    ).toThrow(/must not mix Scene duration and other Programs/i);
+  });
+
+  it("maps timeline Scenes only from Rust-authorized transforms", () => {
+    const workingScene = {
+      ...scene(),
+      duration: 13,
+      objectGraph: {
+        entities: {
+          createdLater: {
+            ...scene().objectGraph.entities.createdLater!,
+            lifetime: [{ end: 13, start: 6 }],
+          },
+        },
+        lineage: [],
+      },
+    };
+
+    const projected = projectRuntimeSceneToSourceTimeline(workingScene, [timelineProgram()], timelineProjection);
+
+    expect(projected.duration).toBe(12);
+    expect(projected.objectGraph.entities.createdLater?.lifetime).toEqual([{ end: 12, start: 5 }]);
   });
 });

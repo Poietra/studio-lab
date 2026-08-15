@@ -1,10 +1,4 @@
 import { describe, expect, it } from "vitest";
-
-import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import type { CanonicalEditOperation } from "./operations";
-import { rebaseProgramTime, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./program-composition";
-import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 import {
   createImportedEntityLifetimeProgram,
   createInspectorEntityEditProgram,
@@ -15,10 +9,25 @@ import {
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
-import { createDirectManipulationResizeProgram } from "./suggestion-program";
+import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
+import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import type { CanonicalEditOperation } from "./operations";
+import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
+import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
+import { createDirectManipulationResizeProgram } from "./suggestion-program";
 
 describe("manual Studio authoring commands", () => {
+  function trimAvailability(waitOperationId: string) {
+    return {
+      anchor: 7,
+      blocker: null,
+      minimumDuration: 12,
+      removableDuration: 3,
+      waitOperationIds: [waitOperationId],
+    } as const;
+  }
+
   it("projects Inspector position and content edits from one canonical program", () => {
     const validation = createInspectorEntityEditProgram({
       capturedPlayhead: 5,
@@ -678,12 +687,7 @@ describe("manual Studio authoring commands", () => {
         interval: { end: 7, start: 7 },
       }),
     );
-    const evaluated = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [programRecord(restored.program, restored)],
-      }),
-    );
-    expect(evaluated.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([{ end: 12, start: 0 }]);
+    expect(restored.kind).toBe("valid");
   });
 
   it("extends the composition with an explicit source wait", () => {
@@ -702,12 +706,6 @@ describe("manual Studio authoring commands", () => {
         purpose: "scene-duration",
       }),
     );
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(result.program, result)],
-      }),
-    );
-    expect(proposed.evaluatedScene.duration).toBe(15);
   });
 
   it("previews a shorter Scene by reducing only the trailing Studio duration wait", () => {
@@ -719,18 +717,13 @@ describe("manual Studio authoring commands", () => {
       transactionId: "extend-before-trim",
     });
     const extensionRecord = programRecord(extension.program, extension);
-    const extended = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [extensionRecord],
-      }),
-    );
     const trim = createSceneDurationProgram({
-      appliedPrograms: [extensionRecord],
       capturedPlayhead: 15,
-      scene: extended.evaluatedScene,
+      scene: { ...STUDIO_FIXTURE_SCENE, duration: 15 },
       sourceAnchor: 7,
       targetDuration: 14,
       transactionId: "trim-duration",
+      trimAvailability: trimAvailability(extensionRecord.program.operations[0]!.id),
     });
 
     expect(trim.kind).toBe("valid");
@@ -742,25 +735,6 @@ describe("manual Studio authoring commands", () => {
         waitOperationIds: [extension.program.operations[0]?.id],
       }),
     ]);
-
-    const preview = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [extensionRecord],
-        stagedPrograms: [programRecord(trim.program, trim)],
-      }),
-    );
-    expect(preview.evaluatedScene.duration).toBe(14);
-    expect(preview.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([{ end: 14, start: 0 }]);
-    expect(
-      preview.evaluatedScene.eventTrack.events.every((event) => (event.at ?? event.interval?.end ?? 0) <= 14),
-    ).toBe(true);
-    expect(
-      Object.values(preview.evaluatedScene.propertyChannels).every((channel) =>
-        channel.samples.every((sample) => sample.interval.end <= 14),
-      ),
-    ).toBe(true);
-    expect(sourceTimeToWorkingTime([extension.program, trim.program], 12)).toBe(14);
-    expect(workingTimeToSourceTime([extension.program, trim.program], 14)).toBe(12);
   });
 
   it("removes a Studio duration wait completely at the safe boundary", () => {
@@ -772,42 +746,35 @@ describe("manual Studio authoring commands", () => {
       transactionId: "extend-to-delete",
     });
     const extensionRecord = programRecord(extension.program, extension);
-    const extended = evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: [extensionRecord] }));
     const trim = createSceneDurationProgram({
-      appliedPrograms: [extensionRecord],
       capturedPlayhead: 15,
-      scene: extended.evaluatedScene,
+      scene: { ...STUDIO_FIXTURE_SCENE, duration: 15 },
       sourceAnchor: 7,
       targetDuration: 12,
       transactionId: "delete-duration-wait",
+      trimAvailability: trimAvailability(extensionRecord.program.operations[0]!.id),
     });
-    const restored = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [extensionRecord, programRecord(trim.program, trim)],
-      }),
-    );
-
     expect(trim.kind).toBe("valid");
-    expect(restored.evaluatedScene.duration).toBe(12);
-    expect(restored.evaluatedScene.eventTrack.events).not.toContainEqual(
+    expect(trim.program.operations[0]).toEqual(
       expect.objectContaining({
-        operationId: extension.program.operations[0]?.id,
+        kind: "TrimSceneDuration",
+        removedDuration: 3,
+        targetDuration: 12,
+        waitOperationIds: [extension.program.operations[0]?.id],
       }),
     );
-    expect(sourceTimeToWorkingTime([extension.program, trim.program], 7)).toBe(7);
   });
 
-  it("rejects shortening that would cut source content or a later applied Program", () => {
+  it("requires Rust trim availability and obeys its safe lower bound", () => {
     expect(() =>
       createSceneDurationProgram({
-        appliedPrograms: [],
         capturedPlayhead: 12,
         scene: STUDIO_FIXTURE_SCENE,
         sourceAnchor: 7,
         targetDuration: 11,
         transactionId: "trim-imported-content",
       }),
-    ).toThrow(/imported or animated content is never truncated/i);
+    ).toThrow(/Rust timeline projection is required/i);
 
     const extension = createSceneDurationProgram({
       capturedPlayhead: 5,
@@ -817,39 +784,15 @@ describe("manual Studio authoring commands", () => {
       transactionId: "extend-before-later-edit",
     });
     const extensionRecord = programRecord(extension.program, extension);
-    const later = createRemoveEntitiesProgram({
-      capturedPlayhead: 5,
-      entityIds: ["equation_1"],
-      scene: STUDIO_FIXTURE_SCENE,
-      transactionId: "later-edit",
-    });
+    const extendedScene = { ...STUDIO_FIXTURE_SCENE, duration: 15 };
     expect(() =>
       createSceneDurationProgram({
-        appliedPrograms: [extensionRecord, programRecord(later.program, later)],
         capturedPlayhead: 15,
-        scene: evaluateWorkingState(
-          createFixtureWorkingState({
-            appliedPrograms: [extensionRecord],
-          }),
-        ).evaluatedScene,
-        sourceAnchor: 7,
-        targetDuration: 14,
-        transactionId: "blocked-trim",
-      }),
-    ).toThrow(/later-edit.*Undo later edits/i);
-
-    expect(() =>
-      createSceneDurationProgram({
-        appliedPrograms: [extensionRecord],
-        capturedPlayhead: 15,
-        scene: evaluateWorkingState(
-          createFixtureWorkingState({
-            appliedPrograms: [extensionRecord],
-          }),
-        ).evaluatedScene,
+        scene: extendedScene,
         sourceAnchor: 7,
         targetDuration: 11,
         transactionId: "trim-too-far",
+        trimAvailability: trimAvailability(extensionRecord.program.operations[0]!.id),
       }),
     ).toThrow(/shortest safe duration is 12\.00s/i);
   });

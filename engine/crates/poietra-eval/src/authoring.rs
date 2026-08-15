@@ -7,7 +7,7 @@ use poietra_scene_ir::{
     SceneAppearanceV1, SceneCapabilityV1, SceneEntityV1, SceneGeometryV1, SceneIrBundleV1,
     SceneSourceV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{EngineSessionV1, EvaluationError};
 
@@ -706,6 +706,59 @@ pub struct ApplyStudioTimelineEditCommand {
     pub expected_base_revision: String,
     pub next_revision: String,
     pub programs: Vec<StudioTimelineProgram>,
+}
+
+/// One input Program projected into the working timeline.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioTimelineProgramProjection {
+    pub operation_id: String,
+    pub transaction_id: String,
+    pub working_anchor: f64,
+    pub working_interval: IntervalV1,
+}
+
+/// One authorized wait contribution consumed by a timeline removal.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioTimelineWaitReduction {
+    pub operation_id: String,
+    pub removed_duration: f64,
+}
+
+/// One ordered time-axis transform produced by a normalized timeline Program.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StudioTimelineEditTransform {
+    Insert {
+        interval: IntervalV1,
+        operation_id: String,
+    },
+    Remove {
+        interval: IntervalV1,
+        operation_id: String,
+        wait_reductions: Vec<StudioTimelineWaitReduction>,
+    },
+}
+
+/// Pure projection of normalized timeline Programs from source time into working time.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioTimelineProjection {
+    pub program_projections: Vec<StudioTimelineProgramProjection>,
+    pub projected_duration: f64,
+    pub transforms: Vec<StudioTimelineEditTransform>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StudioTimelinePlan {
+    edits: Vec<SceneTimelineEdit>,
+    operation_ids: Vec<String>,
+    projection: StudioTimelineProjection,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -1964,6 +2017,13 @@ fn studio_timeline_semantic_values_match(left: f64, right: f64) -> bool {
         && (left - right).abs() <= 1e-9 * left.abs().max(right.abs()).max(1.0)
 }
 
+fn studio_timeline_intervals_overlap(left: &IntervalV1, right: &IntervalV1) -> bool {
+    left.start < right.end
+        && left.end > right.start
+        && !studio_timeline_semantic_values_match(left.start, right.end)
+        && !studio_timeline_semantic_values_match(left.end, right.start)
+}
+
 fn studio_timeline_program_is_closed(program: &StudioTimelineProgram) -> bool {
     let operations = program
         .operations
@@ -1986,6 +2046,374 @@ fn studio_timeline_program_is_closed(program: &StudioTimelineProgram) -> bool {
         )
 }
 
+fn plan_wait_suffix_removal(
+    inserted_waits: &mut Vec<IntervalV1>,
+    at: f64,
+    removed_duration: f64,
+) -> Result<Vec<IntervalV1>, ApplyStudioTimelineEditError> {
+    if !at.is_finite() || !removed_duration.is_finite() || removed_duration <= 0.0 {
+        return Err(ApplyStudioTimelineEditError::InvalidTrim);
+    }
+    let mut remaining = removed_duration;
+    let mut removal_cursor = inserted_waits
+        .last()
+        .map(|wait| wait.end)
+        .ok_or(ApplyStudioTimelineEditError::InvalidTrim)?;
+    if !studio_timeline_semantic_values_match(removal_cursor, at) {
+        return Err(ApplyStudioTimelineEditError::InvalidTrim);
+    }
+    let mut removals = Vec::new();
+    while !studio_timeline_semantic_values_match(remaining, 0.0) {
+        let Some(wait) = inserted_waits.last() else {
+            return Err(ApplyStudioTimelineEditError::InvalidTrim);
+        };
+        let available = wait.end - wait.start;
+        if available <= 0.0 {
+            inserted_waits.pop();
+            continue;
+        }
+        if !studio_timeline_semantic_values_match(wait.end, removal_cursor) {
+            return Err(ApplyStudioTimelineEditError::InvalidTrim);
+        }
+        let removed = available.min(remaining);
+        let removal_end = wait.end;
+        let removal_start = removal_end - removed;
+        removals.push(IntervalV1 {
+            end: removal_end,
+            start: removal_start,
+        });
+        for wait in inserted_waits.iter_mut() {
+            wait.start = time_after_removal(wait.start, removal_start, removal_end);
+            wait.end = time_after_removal(wait.end, removal_start, removal_end);
+        }
+        inserted_waits.retain(|wait| wait.end > wait.start);
+        removal_cursor = removal_start;
+        remaining = (remaining - removed).max(0.0);
+    }
+    Ok(removals)
+}
+
+fn validate_studio_timeline_programs(
+    base_duration: f64,
+    programs: &[StudioTimelineProgram],
+) -> Result<(), ApplyStudioTimelineEditError> {
+    if !base_duration.is_finite() || base_duration <= 0.0 || programs.is_empty() {
+        return Err(ApplyStudioTimelineEditError::Unsupported);
+    }
+    let mut unique_operation_ids = BTreeSet::new();
+    for program in programs {
+        let StudioProgramAnchorSource::Absolute { seconds: Some(_) } = &program.anchor_source
+        else {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        };
+        let Some(operation) = program.operations.first() else {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        };
+        if !studio_program_anchor_is_closed(
+            &program.anchor_source,
+            program.anchor_captured_playhead,
+            program.anchor_resolved_seconds,
+            base_duration,
+        ) || program.transaction_id.is_empty()
+            || !program.lowering_supported
+            || program.origin != StudioAuthoringOrigin::StudioDefault
+            || !studio_timeline_program_is_closed(program)
+            || operation.origin() != StudioAuthoringOrigin::StudioDefault
+            || operation.id().is_empty()
+            || !unique_operation_ids.insert(operation.id())
+        {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+    }
+    Ok(())
+}
+
+fn ordered_studio_timeline_programs(programs: &[StudioTimelineProgram]) -> Vec<(f64, usize)> {
+    let mut ordered = programs
+        .iter()
+        .enumerate()
+        .map(|(index, program)| {
+            let StudioProgramAnchorSource::Absolute {
+                seconds: Some(source_seconds),
+            } = &program.anchor_source
+            else {
+                unreachable!("timeline anchor was admitted above")
+            };
+            (*source_seconds, index)
+        })
+        .collect::<Vec<_>>();
+    ordered.sort_by(|(left_anchor, left_index), (right_anchor, right_index)| {
+        left_anchor
+            .total_cmp(right_anchor)
+            .then(left_index.cmp(right_index))
+    });
+    ordered
+}
+
+struct StudioTimelinePlanningState {
+    edits: Vec<SceneTimelineEdit>,
+    inserted_waits: Vec<IntervalV1>,
+    operation_ids: Vec<String>,
+    projected_duration: f64,
+    resolved_offset: f64,
+    transforms: Vec<StudioTimelineEditTransform>,
+    wait_balances: Vec<StudioTimelineWaitBalance>,
+}
+
+struct StudioTimelineWaitBalance {
+    operation_id: String,
+    remaining_duration: f64,
+}
+
+impl StudioTimelinePlanningState {
+    fn new(base_duration: f64, program_count: usize) -> Self {
+        Self {
+            edits: Vec::with_capacity(program_count),
+            inserted_waits: Vec::new(),
+            operation_ids: Vec::with_capacity(program_count),
+            projected_duration: base_duration,
+            resolved_offset: 0.0,
+            transforms: Vec::with_capacity(program_count),
+            wait_balances: Vec::with_capacity(program_count),
+        }
+    }
+
+    fn project_insert_wait(
+        &mut self,
+        event_kind: StudioTimelineEventKind,
+        id: &str,
+        interval: &IntervalV1,
+        purpose: Option<StudioTimelinePurpose>,
+        source_seconds: f64,
+        working_anchor: f64,
+    ) -> Result<IntervalV1, ApplyStudioTimelineEditError> {
+        let duration = interval.end - interval.start;
+        if event_kind != StudioTimelineEventKind::Wait
+            || purpose != Some(StudioTimelinePurpose::SceneDuration)
+            || !studio_timeline_semantic_values_match(interval.start, source_seconds)
+            || interval.end <= interval.start
+            || !duration.is_finite()
+            || duration <= 0.0
+        {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+        let insertion_interval = IntervalV1 {
+            end: working_anchor + duration,
+            start: working_anchor,
+        };
+        let projected_duration = self.projected_duration + duration;
+        let resolved_offset = self.resolved_offset + duration;
+        if working_anchor < 0.0
+            || working_anchor > self.projected_duration
+            || !insertion_interval.end.is_finite()
+            || !projected_duration.is_finite()
+            || !resolved_offset.is_finite()
+            || self
+                .inserted_waits
+                .iter()
+                .any(|wait| studio_timeline_intervals_overlap(&insertion_interval, wait))
+        {
+            return Err(ApplyStudioTimelineEditError::InvalidInsertion);
+        }
+        self.edits
+            .push(SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
+                at: working_anchor,
+                duration,
+            }));
+        self.inserted_waits.push(insertion_interval.clone());
+        self.operation_ids.push(id.to_owned());
+        self.projected_duration = projected_duration;
+        self.resolved_offset = resolved_offset;
+        self.transforms.push(StudioTimelineEditTransform::Insert {
+            interval: insertion_interval.clone(),
+            operation_id: id.to_owned(),
+        });
+        self.wait_balances.push(StudioTimelineWaitBalance {
+            operation_id: id.to_owned(),
+            remaining_duration: duration,
+        });
+        Ok(insertion_interval)
+    }
+
+    fn project_trim(
+        &mut self,
+        id: &str,
+        interval: &IntervalV1,
+        removed_duration: f64,
+        target_duration: f64,
+        wait_operation_ids: &[String],
+        working_anchor: f64,
+    ) -> Result<IntervalV1, ApplyStudioTimelineEditError> {
+        if !studio_timeline_semantic_values_match(interval.start, interval.end)
+            || !studio_timeline_semantic_values_match(
+                interval.start,
+                working_anchor - self.resolved_offset,
+            )
+            || wait_operation_ids.len() != self.wait_balances.len()
+            || wait_operation_ids
+                .iter()
+                .zip(self.wait_balances.iter().rev())
+                .any(|(actual, expected)| actual != &expected.operation_id)
+            || !removed_duration.is_finite()
+            || removed_duration < 0.1 - TIMELINE_ANCHOR_EPSILON
+            || (removed_duration > self.resolved_offset
+                && !studio_timeline_semantic_values_match(removed_duration, self.resolved_offset))
+            || !target_duration.is_finite()
+            || target_duration < 0.1
+            || !studio_timeline_semantic_values_match(
+                self.projected_duration - removed_duration,
+                target_duration,
+            )
+        {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+        plan_wait_suffix_removal(&mut self.inserted_waits, working_anchor, removed_duration)?;
+        let mut remaining = removed_duration;
+        let mut wait_reductions = Vec::new();
+        for wait in self.wait_balances.iter_mut().rev() {
+            if remaining == 0.0 {
+                break;
+            }
+            let removed = wait.remaining_duration.min(remaining);
+            if removed > 0.0 {
+                wait_reductions.push(StudioTimelineWaitReduction {
+                    operation_id: wait.operation_id.clone(),
+                    removed_duration: removed,
+                });
+            }
+            wait.remaining_duration = (wait.remaining_duration - removed).max(0.0);
+            if studio_timeline_semantic_values_match(wait.remaining_duration, 0.0) {
+                wait.remaining_duration = 0.0;
+            }
+            remaining = (remaining - removed).max(0.0);
+        }
+        if !studio_timeline_semantic_values_match(remaining, 0.0) {
+            return Err(ApplyStudioTimelineEditError::InvalidTrim);
+        }
+        self.edits.push(SceneTimelineEdit::TrimSceneDuration {
+            at: working_anchor,
+            removed_duration,
+            target_duration,
+        });
+        self.operation_ids.push(id.to_owned());
+        self.transforms.push(StudioTimelineEditTransform::Remove {
+            interval: IntervalV1 {
+                end: working_anchor,
+                start: working_anchor - removed_duration,
+            },
+            operation_id: id.to_owned(),
+            wait_reductions,
+        });
+        self.projected_duration -= removed_duration;
+        self.resolved_offset -= removed_duration;
+        if self.resolved_offset.abs() < TIMELINE_ANCHOR_EPSILON {
+            self.resolved_offset = 0.0;
+        }
+        Ok(IntervalV1 {
+            end: working_anchor,
+            start: working_anchor,
+        })
+    }
+
+    fn project_program(
+        &mut self,
+        program: &StudioTimelineProgram,
+        source_seconds: f64,
+    ) -> Result<StudioTimelineProgramProjection, ApplyStudioTimelineEditError> {
+        let working_anchor = source_seconds + self.resolved_offset;
+        if !working_anchor.is_finite() || self.resolved_offset < -TIMELINE_ANCHOR_EPSILON {
+            return Err(ApplyStudioTimelineEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        let working_interval = match operation {
+            StudioTimelineOperation::InsertWait {
+                event_kind,
+                id,
+                interval,
+                purpose,
+                ..
+            } => self.project_insert_wait(
+                *event_kind,
+                id,
+                interval,
+                *purpose,
+                source_seconds,
+                working_anchor,
+            )?,
+            StudioTimelineOperation::TrimSceneDuration {
+                id,
+                interval,
+                removed_duration,
+                target_duration,
+                wait_operation_ids,
+                ..
+            } => self.project_trim(
+                id,
+                interval,
+                *removed_duration,
+                *target_duration,
+                wait_operation_ids,
+                working_anchor,
+            )?,
+            StudioTimelineOperation::Unsupported { .. } => {
+                return Err(ApplyStudioTimelineEditError::Unsupported);
+            }
+        };
+        Ok(StudioTimelineProgramProjection {
+            operation_id: operation.id().to_owned(),
+            transaction_id: program.transaction_id.clone(),
+            working_anchor,
+            working_interval,
+        })
+    }
+
+    fn finish(
+        self,
+        program_projections: Vec<StudioTimelineProgramProjection>,
+    ) -> StudioTimelinePlan {
+        StudioTimelinePlan {
+            edits: self.edits,
+            operation_ids: self.operation_ids,
+            projection: StudioTimelineProjection {
+                program_projections,
+                projected_duration: self.projected_duration,
+                transforms: self.transforms,
+            },
+        }
+    }
+}
+
+fn plan_studio_timeline_programs(
+    base_duration: f64,
+    programs: &[StudioTimelineProgram],
+) -> Result<StudioTimelinePlan, ApplyStudioTimelineEditError> {
+    validate_studio_timeline_programs(base_duration, programs)?;
+    let ordered_programs = ordered_studio_timeline_programs(programs);
+    let mut program_projections = vec![None; programs.len()];
+    let mut state = StudioTimelinePlanningState::new(base_duration, programs.len());
+    for (source_seconds, program_index) in ordered_programs {
+        program_projections[program_index] =
+            Some(state.project_program(&programs[program_index], source_seconds)?);
+    }
+    let program_projections = program_projections
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or(ApplyStudioTimelineEditError::Unsupported)?;
+    Ok(state.finish(program_projections))
+}
+
+/// Projects normalized timeline Programs without reading or mutating an Engine session.
+///
+/// # Errors
+///
+/// Returns the same closed-contract admission error used by timeline mutation.
+pub fn project_studio_timeline_programs(
+    base_duration: f64,
+    programs: &[StudioTimelineProgram],
+) -> Result<StudioTimelineProjection, ApplyStudioTimelineEditError> {
+    Ok(plan_studio_timeline_programs(base_duration, programs)?.projection)
+}
+
 fn trim_inserted_waits(
     scene: &mut poietra_scene_ir::SceneIrV1,
     inserted_waits: &mut Vec<IntervalV1>,
@@ -2000,43 +2428,16 @@ fn trim_inserted_waits(
         || !target_duration.is_finite()
         || target_duration <= 0.0
         || !resolved_duration.is_finite()
-        || (resolved_duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON
+        || !studio_timeline_semantic_values_match(resolved_duration, target_duration)
     {
         return Err(ApplyStudioTimelineEditError::InvalidTrim);
     }
-    let mut remaining = removed_duration;
-    let mut removal_cursor = inserted_waits
-        .last()
-        .map(|wait| wait.end)
-        .ok_or(ApplyStudioTimelineEditError::InvalidTrim)?;
-    if (removal_cursor - at).abs() >= TIMELINE_ANCHOR_EPSILON {
-        return Err(ApplyStudioTimelineEditError::InvalidTrim);
-    }
-    while remaining > TIMELINE_ANCHOR_EPSILON {
-        let Some(wait) = inserted_waits.last() else {
-            return Err(ApplyStudioTimelineEditError::InvalidTrim);
-        };
-        let available = wait.end - wait.start;
-        if available <= 0.0 {
-            inserted_waits.pop();
-            continue;
-        }
-        if (wait.end - removal_cursor).abs() >= TIMELINE_ANCHOR_EPSILON {
-            return Err(ApplyStudioTimelineEditError::InvalidTrim);
-        }
-        let removed = available.min(remaining);
-        let removal_end = wait.end;
-        let removal_start = removal_end - removed;
+    for removal in plan_wait_suffix_removal(inserted_waits, at, removed_duration)? {
+        let removal_start = removal.start;
+        let removal_end = removal.end;
         remove_scene_time(scene, removal_start, removal_end);
-        for wait in inserted_waits.iter_mut() {
-            wait.start = time_after_removal(wait.start, removal_start, removal_end);
-            wait.end = time_after_removal(wait.end, removal_start, removal_end);
-        }
-        inserted_waits.retain(|wait| wait.end > wait.start);
-        removal_cursor = removal_start;
-        remaining = (remaining - removed).max(0.0);
     }
-    if (scene.duration - target_duration).abs() >= TIMELINE_ANCHOR_EPSILON {
+    if !studio_timeline_semantic_values_match(scene.duration, target_duration) {
         return Err(ApplyStudioTimelineEditError::InvalidTrim);
     }
     scene.duration = target_duration;
@@ -2324,10 +2725,6 @@ impl EngineSessionV1 {
     ///
     /// Returns `Unsupported` when the normalized Programs do not describe the closed static
     /// imported-Scene duration subset, or the timeline primitive error when mutation fails.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the closed timeline authority remains one auditable ordering and rebase state machine"
-    )]
     pub fn apply_studio_timeline_edit(
         &mut self,
         command: ApplyStudioTimelineEditCommand,
@@ -2342,147 +2739,18 @@ impl EngineSessionV1 {
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
         ) || !scene.animation_channels.is_empty()
-            || programs.is_empty()
         {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         }
-        let mut operation_ids = BTreeSet::new();
-        for program in &programs {
-            let StudioProgramAnchorSource::Absolute { seconds: Some(_) } = &program.anchor_source
-            else {
-                return Err(ApplyStudioTimelineEditError::Unsupported);
-            };
-            let Some(operation) = program.operations.first() else {
-                return Err(ApplyStudioTimelineEditError::Unsupported);
-            };
-            if !studio_program_anchor_is_closed(
-                &program.anchor_source,
-                program.anchor_captured_playhead,
-                program.anchor_resolved_seconds,
-                scene.duration,
-            ) || program.transaction_id.is_empty()
-                || !program.lowering_supported
-                || program.origin != StudioAuthoringOrigin::StudioDefault
-                || !studio_timeline_program_is_closed(program)
-                || operation.origin() != StudioAuthoringOrigin::StudioDefault
-                || operation.id().is_empty()
-                || !operation_ids.insert(operation.id())
-            {
-                return Err(ApplyStudioTimelineEditError::Unsupported);
-            }
-        }
-
-        let mut ordered_programs = programs
-            .iter()
-            .enumerate()
-            .map(|(index, program)| {
-                let StudioProgramAnchorSource::Absolute {
-                    seconds: Some(source_seconds),
-                } = program.anchor_source
-                else {
-                    unreachable!("timeline anchor was admitted above")
-                };
-                (source_seconds, index)
-            })
-            .collect::<Vec<_>>();
-        ordered_programs.sort_by(|(left_anchor, left_index), (right_anchor, right_index)| {
-            left_anchor
-                .total_cmp(right_anchor)
-                .then(left_index.cmp(right_index))
-        });
-
-        let mut authorized_wait_operation_ids = Vec::new();
-        let mut edits = Vec::with_capacity(programs.len());
-        let mut operation_ids = Vec::with_capacity(programs.len());
-        let mut projected_duration = scene.duration;
-        let mut resolved_offset = 0.0;
-        for (source_seconds, program_index) in ordered_programs {
-            let program = &programs[program_index];
-            let expected_resolved_seconds = source_seconds + resolved_offset;
-            if !expected_resolved_seconds.is_finite() || resolved_offset < -TIMELINE_ANCHOR_EPSILON
-            {
-                return Err(ApplyStudioTimelineEditError::Unsupported);
-            }
-
-            let operation = &program.operations[0];
-            match operation {
-                StudioTimelineOperation::InsertWait {
-                    event_kind,
-                    id,
-                    interval,
-                    purpose,
-                    ..
-                } => {
-                    let duration = interval.end - interval.start;
-                    if *event_kind != StudioTimelineEventKind::Wait
-                        || *purpose != Some(StudioTimelinePurpose::SceneDuration)
-                        || !studio_timeline_semantic_values_match(interval.start, source_seconds)
-                        || interval.end <= interval.start
-                        || !duration.is_finite()
-                        || duration <= 0.0
-                    {
-                        return Err(ApplyStudioTimelineEditError::Unsupported);
-                    }
-                    edits.push(SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
-                        at: expected_resolved_seconds,
-                        duration,
-                    }));
-                    authorized_wait_operation_ids.push(id.clone());
-                    operation_ids.push(id.clone());
-                    projected_duration += duration;
-                    resolved_offset += duration;
-                }
-                StudioTimelineOperation::TrimSceneDuration {
-                    id,
-                    interval,
-                    removed_duration,
-                    target_duration,
-                    wait_operation_ids,
-                    ..
-                } => {
-                    if !studio_timeline_semantic_values_match(interval.start, interval.end)
-                        || !studio_timeline_semantic_values_match(interval.start, source_seconds)
-                        || wait_operation_ids.len() != authorized_wait_operation_ids.len()
-                        || wait_operation_ids
-                            .iter()
-                            .zip(authorized_wait_operation_ids.iter().rev())
-                            .any(|(actual, expected)| actual != expected)
-                        || !removed_duration.is_finite()
-                        || *removed_duration < 0.1 - TIMELINE_ANCHOR_EPSILON
-                        || resolved_offset - removed_duration < -TIMELINE_ANCHOR_EPSILON
-                        || !target_duration.is_finite()
-                        || *target_duration < 0.1
-                        || !studio_timeline_semantic_values_match(
-                            projected_duration - removed_duration,
-                            *target_duration,
-                        )
-                    {
-                        return Err(ApplyStudioTimelineEditError::Unsupported);
-                    }
-                    edits.push(SceneTimelineEdit::TrimSceneDuration {
-                        at: expected_resolved_seconds,
-                        removed_duration: *removed_duration,
-                        target_duration: *target_duration,
-                    });
-                    operation_ids.push(id.clone());
-                    projected_duration -= removed_duration;
-                    resolved_offset -= *removed_duration;
-                    if resolved_offset.abs() < TIMELINE_ANCHOR_EPSILON {
-                        resolved_offset = 0.0;
-                    }
-                }
-                StudioTimelineOperation::Unsupported { .. } => {
-                    return Err(ApplyStudioTimelineEditError::Unsupported);
-                }
-            }
-        }
+        let plan = plan_studio_timeline_programs(scene.duration, &programs)?;
 
         self.edit_scene_timeline(EditSceneTimelineCommand {
-            edits,
+            edits: plan.edits,
             expected_base_revision,
             next_revision: next_revision.clone(),
             provenance: ProvenanceRecordV1 {
-                evidence: operation_ids
+                evidence: plan
+                    .operation_ids
                     .iter()
                     .map(|operation_id| format!("authorized operation {operation_id}"))
                     .collect(),
@@ -2539,9 +2807,13 @@ impl EngineSessionV1 {
                         || insertion.duration <= 0.0
                         || !(candidate.scene.duration + insertion.duration).is_finite()
                         || inserted_waits.iter().any(|wait| {
-                            insertion.at < wait.end - TIMELINE_ANCHOR_EPSILON
-                                && insertion.at + insertion.duration
-                                    > wait.start + TIMELINE_ANCHOR_EPSILON
+                            studio_timeline_intervals_overlap(
+                                &IntervalV1 {
+                                    end: insertion.at + insertion.duration,
+                                    start: insertion.at,
+                                },
+                                wait,
+                            )
                         })
                     {
                         return Err(ApplyStudioTimelineEditError::InvalidInsertion);
@@ -6589,6 +6861,71 @@ mod tests {
         let expected_duration = bundle.scene.duration + 1.5;
         let mut command = studio_timeline_command(&bundle);
         command.programs[1].anchor_captured_playhead = bundle.scene.duration + 1.0;
+        let projection =
+            project_studio_timeline_programs(bundle.scene.duration, &command.programs).unwrap();
+        assert_eq!(
+            projection.program_projections,
+            vec![
+                StudioTimelineProgramProjection {
+                    operation_id: "wait-1".to_owned(),
+                    transaction_id: "wait-1".to_owned(),
+                    working_anchor: 0.5,
+                    working_interval: IntervalV1 {
+                        end: 1.5,
+                        start: 0.5,
+                    },
+                },
+                StudioTimelineProgramProjection {
+                    operation_id: "trim-1".to_owned(),
+                    transaction_id: "trim-1".to_owned(),
+                    working_anchor: 1.5,
+                    working_interval: IntervalV1 {
+                        end: 1.5,
+                        start: 1.5,
+                    },
+                },
+                StudioTimelineProgramProjection {
+                    operation_id: "wait-2".to_owned(),
+                    transaction_id: "wait-2".to_owned(),
+                    working_anchor: 1.0,
+                    working_interval: IntervalV1 {
+                        end: 2.0,
+                        start: 1.0,
+                    },
+                },
+            ]
+        );
+        assert_eq!(
+            projection.transforms,
+            vec![
+                StudioTimelineEditTransform::Insert {
+                    interval: IntervalV1 {
+                        end: 1.5,
+                        start: 0.5,
+                    },
+                    operation_id: "wait-1".to_owned(),
+                },
+                StudioTimelineEditTransform::Remove {
+                    interval: IntervalV1 {
+                        end: 1.5,
+                        start: 1.0,
+                    },
+                    operation_id: "trim-1".to_owned(),
+                    wait_reductions: vec![StudioTimelineWaitReduction {
+                        operation_id: "wait-1".to_owned(),
+                        removed_duration: 0.5,
+                    }],
+                },
+                StudioTimelineEditTransform::Insert {
+                    interval: IntervalV1 {
+                        end: 2.0,
+                        start: 1.0,
+                    },
+                    operation_id: "wait-2".to_owned(),
+                },
+            ]
+        );
+        assert!((projection.projected_duration - expected_duration).abs() < f64::EPSILON);
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_timeline_edit(command).unwrap();
@@ -6631,11 +6968,72 @@ mod tests {
                 studio_timeline_wait_program("wait-c", source_anchor, 0.2),
             ],
         };
+        let projection =
+            project_studio_timeline_programs(base_duration, &command.programs).unwrap();
+        assert!((projection.projected_duration - (base_duration + 0.2)).abs() < 1e-9);
+        assert!((projection.program_projections[3].working_anchor - source_anchor).abs() < 1e-9);
+        let StudioTimelineEditTransform::Remove {
+            operation_id,
+            wait_reductions,
+            ..
+        } = &projection.transforms[2]
+        else {
+            panic!("the third timeline transform must remove the authorized wait suffix")
+        };
+        assert_eq!(operation_id, "trim-all");
+        assert_eq!(wait_reductions.len(), 2);
+        assert_eq!(wait_reductions[0].operation_id, "wait-b");
+        assert!((wait_reductions[0].removed_duration - 0.6).abs() < 1e-9);
+        assert_eq!(wait_reductions[1].operation_id, "wait-a");
+        assert!((wait_reductions[1].removed_duration - 0.3).abs() < 1e-9);
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_timeline_edit(command).unwrap();
 
         assert!((result.scene.duration - (base_duration + 0.2)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn studio_timeline_projection_rejects_a_trim_outside_the_inserted_wait_suffix() {
+        let bundle = static_imported_bundle();
+        let separated_waits = vec![
+            studio_timeline_wait_program("wait", 0.5, 1.0),
+            studio_timeline_trim_program(
+                "trim",
+                0.5004,
+                1.0,
+                bundle.scene.duration,
+                vec!["wait".to_owned()],
+            ),
+        ];
+        assert!(matches!(
+            project_studio_timeline_programs(bundle.scene.duration, &separated_waits),
+            Err(ApplyStudioTimelineEditError::InvalidTrim)
+        ));
+
+        let over_trimmed = vec![
+            studio_timeline_wait_program("wait", 0.5, 1.0),
+            studio_timeline_trim_program(
+                "trim",
+                0.5,
+                1.0004,
+                bundle.scene.duration - 0.0004,
+                vec!["wait".to_owned()],
+            ),
+        ];
+        assert!(matches!(
+            project_studio_timeline_programs(bundle.scene.duration, &over_trimmed),
+            Err(ApplyStudioTimelineEditError::Unsupported)
+        ));
+        let command = ApplyStudioTimelineEditCommand {
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: separated_waits,
+        };
+        assert!(matches!(
+            rejected_studio_timeline_edit(bundle, command),
+            ApplyStudioTimelineEditError::InvalidTrim
+        ));
     }
 
     #[test]
@@ -6964,7 +7362,7 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_wait_insertion_is_rejected_atomically() {
+    fn sub_epsilon_overlapping_wait_insertion_is_rejected_atomically() {
         let mut session = EngineSessionV1::new(timeline_bundle()).unwrap();
         let command = timeline_command(vec![
             SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
@@ -6972,11 +7370,11 @@ mod tests {
                 duration: 1.0,
             }),
             SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
-                at: 7.5,
+                at: 7.9996,
                 duration: 1.0,
             }),
             SceneTimelineEdit::TrimSceneDuration {
-                at: 8.5,
+                at: 8.9996,
                 removed_duration: 1.5,
                 target_duration: 12.5,
             },

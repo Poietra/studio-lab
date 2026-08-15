@@ -21,10 +21,17 @@ import {
 import type { SuggestionStatus } from "./magic-edit-panel";
 import type { ProgramRecord } from "./model";
 import { programExecutionCapabilities } from "./operation-registry";
+import { isSceneDurationOperation } from "./operations";
 import { sourceTimeToWorkingTime } from "./program-composition";
 import type { StudioTool } from "./studio-toolbar";
 import type { InteractionMode } from "./studio-viewport";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
+
+function editorTransitionTime(programs: readonly ProgramRecord["program"][], sourceTime: number, currentTime: number) {
+  return programs.some((program) => program.operations.some(isSceneDurationOperation))
+    ? currentTime
+    : sourceTimeToWorkingTime(programs, sourceTime);
+}
 
 export type {
   AppliedProgramEdit,
@@ -362,9 +369,10 @@ export function applyEditorDraft(state: EditorControllerState): EditorController
       value,
     };
   }
-  const currentTime = sourceTimeToWorkingTime(
+  const currentTime = editorTransitionTime(
     appliedPrograms.map((record) => record.program),
     state.draftProgram.program.anchor.resolvedSeconds,
+    state.currentTime,
   );
   return withoutSuggestion({
     ...state,
@@ -443,7 +451,11 @@ export function redoEditorProgram(
       : state.appliedPrograms.map((record) => record.program);
     return {
       ...state,
-      currentTime: sourceTimeToWorkingTime(precedingPrograms, entry.value.program.anchor.resolvedSeconds),
+      currentTime: editorTransitionTime(
+        precedingPrograms,
+        entry.value.program.anchor.resolvedSeconds,
+        state.currentTime,
+      ),
       draftError: programExecutionCapabilities(entry.value.program).applyBlocker,
       draftOperation: entry.value.editorMetadata?.operation ?? null,
       draftProgram: entry.value,
@@ -513,9 +525,10 @@ export function editEditorAppliedProgram(
   }
   return withoutSuggestion({
     ...state,
-    currentTime: sourceTimeToWorkingTime(
+    currentTime: editorTransitionTime(
       state.appliedPrograms.slice(0, index).map((candidate) => candidate.program),
       input.focusSourceTime ?? draftRecord.program.anchor.resolvedSeconds,
+      state.currentTime,
     ),
     draftError: programExecutionCapabilities(draftRecord.program).applyBlocker,
     draftOperation: operation,

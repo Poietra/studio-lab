@@ -1,3 +1,4 @@
+import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import type {
   EntityContent,
   ProgramRecord,
@@ -11,9 +12,16 @@ import type {
   TimelineObjectTrack,
   WorkingState,
 } from "./model";
-import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import { STUDIO_STATE_VERSION } from "./model";
-import { evaluateOperation, type EvaluationDraft } from "./operation-registry";
+import { type EvaluationDraft, evaluateOperation } from "./operation-registry";
+import { isSceneDurationOperation } from "./operations";
+import {
+  insertedProgramDuration,
+  rebaseProgramTime,
+  shiftIntervalForInsertion,
+  timelineInsertionOffset,
+} from "./program-composition";
+import { validateAndScheduleProgram } from "./program-validation";
 import {
   isEntityDimensionsValue,
   isPointValue,
@@ -24,13 +32,6 @@ import {
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
-import {
-  programTimelineDelta,
-  rebaseProgramTime,
-  shiftIntervalForInsertion,
-  timelineInsertionOffset,
-} from "./program-composition";
-import { validateAndScheduleProgram } from "./program-validation";
 
 function cloneScene(scene: RuntimeSceneState): EvaluationDraft {
   return {
@@ -131,6 +132,12 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
         left.record.program.anchor.resolvedSeconds - right.record.program.anchor.resolvedSeconds ||
         left.inputIndex - right.inputIndex,
     );
+  const sceneDurationOperation = programs
+    .flatMap(({ record }) => record.program.operations)
+    .find(isSceneDurationOperation);
+  if (sceneDurationOperation) {
+    throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
+  }
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
@@ -146,7 +153,7 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms[inputIndex] = evaluatedRecord;
     if (validation.kind !== "valid") continue;
-    const timelineDelta = programTimelineDelta(validation.program);
+    const timelineDelta = insertedProgramDuration(validation.program);
     if (timelineDelta > 0) {
       insertSceneTime(draft, validation.program.anchor.resolvedSeconds, timelineDelta);
     }

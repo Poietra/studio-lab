@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { type SceneIrBundleV1, sceneIrBundleV1Schema } from "./contracts";
 import { loadPoietraWasmModule } from "./poietra-wasm-module";
 
@@ -171,6 +172,94 @@ export type ApplyStudioTimelineEditCompiler = (
   command: ApplyStudioTimelineEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+export type ProjectStudioTimelineWireCommandV1 = Readonly<{
+  baseDuration: number;
+  programs: readonly StudioAuthoringProgramV1<StudioTimelineOperationV1>[];
+  schema: "poietra.project-studio-timeline";
+  version: 1;
+}>;
+
+export type StudioTimelineProgramProjectionV1 = Readonly<{
+  operationId: string;
+  transactionId: string;
+  workingAnchor: number;
+  workingInterval: Readonly<{ end: number; start: number }>;
+}>;
+
+export type StudioTimelineEditTransformV1 =
+  | Readonly<{
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "insert";
+      operationId: string;
+    }>
+  | Readonly<{
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "remove";
+      operationId: string;
+      waitReductions: readonly StudioTimelineWaitReductionV1[];
+    }>;
+
+export type StudioTimelineWaitReductionV1 = Readonly<{
+  operationId: string;
+  removedDuration: number;
+}>;
+
+export type StudioTimelineProjectionV1 = Readonly<{
+  programProjections: readonly StudioTimelineProgramProjectionV1[];
+  projectedDuration: number;
+  transforms: readonly StudioTimelineEditTransformV1[];
+}>;
+
+export type ProjectStudioTimelineCompiler = (
+  command: ProjectStudioTimelineWireCommandV1,
+) => Promise<StudioTimelineProjectionV1>;
+
+const finiteNumberSchema = z.number().finite();
+const studioTimelineProjectionIntervalV1Schema = z
+  .object({ end: finiteNumberSchema, start: finiteNumberSchema })
+  .strict();
+const studioTimelineProjectionV1Schema = z
+  .object({
+    programProjections: z.array(
+      z
+        .object({
+          operationId: z.string().min(1),
+          transactionId: z.string().min(1),
+          workingAnchor: finiteNumberSchema,
+          workingInterval: studioTimelineProjectionIntervalV1Schema,
+        })
+        .strict(),
+    ),
+    projectedDuration: finiteNumberSchema,
+    transforms: z.array(
+      z.discriminatedUnion("kind", [
+        z
+          .object({
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("insert"),
+            operationId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("remove"),
+            operationId: z.string().min(1),
+            waitReductions: z.array(
+              z
+                .object({
+                  operationId: z.string().min(1),
+                  removedDuration: finiteNumberSchema.positive(),
+                })
+                .strict(),
+            ),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
+
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StudioCreationOperationV1 = Readonly<{
@@ -289,6 +378,10 @@ type ApplyStudioTimelineEditBindingsV1 = Readonly<{
   applyStudioTimelineEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ProjectStudioTimelineBindingsV1 = Readonly<{
+  projectStudioTimelineV1: (commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type ApplyStudioCreationEditBindingsV1 = Readonly<{
   applyStudioCreationEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -301,7 +394,8 @@ type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioBoundEntityEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
-  ApplyStudioTimelineEditBindingsV1;
+  ApplyStudioTimelineEditBindingsV1 &
+  ProjectStudioTimelineBindingsV1;
 
 let bindingsPromise: Promise<SceneAuthoringBindingsV1> | null = null;
 
@@ -314,7 +408,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStudioBoundEntityEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
-      typeof candidate.applyStudioTimelineEditV1 !== "function"
+      typeof candidate.applyStudioTimelineEditV1 !== "function" ||
+      typeof candidate.projectStudioTimelineV1 !== "function"
     ) {
       throw new Error("The Poietra WASM module does not export Scene authoring.");
     }
@@ -328,6 +423,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
       applyStudioTimelineEditV1:
         candidate.applyStudioTimelineEditV1 as SceneAuthoringBindingsV1["applyStudioTimelineEditV1"],
+      projectStudioTimelineV1: candidate.projectStudioTimelineV1 as SceneAuthoringBindingsV1["projectStudioTimelineV1"],
     };
   })();
   bindingsPromise = pending;
@@ -393,8 +489,20 @@ export function createApplyStudioTimelineEditCompiler(
   };
 }
 
+/** Projects normalized timeline Programs through the canonical core without a Scene snapshot. */
+export function createProjectStudioTimelineCompiler(
+  getBindings: () => Promise<ProjectStudioTimelineBindingsV1>,
+): ProjectStudioTimelineCompiler {
+  return async (command) => {
+    const bindings = await getBindings();
+    const response = bindings.projectStudioTimelineV1(encoder.encode(JSON.stringify(command)));
+    return studioTimelineProjectionV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
+  };
+}
+
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);
+export const projectStudioTimeline = createProjectStudioTimelineCompiler(loadBindings);

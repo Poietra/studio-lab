@@ -7,7 +7,7 @@ import type {
   ApplyStudioBoundEntityEditWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
-import { evaluateWorkingState, programRecord } from "./evaluator";
+import { programRecord } from "./evaluator";
 import { type RuntimeEntity, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import {
@@ -176,10 +176,10 @@ async function moveInput() {
   return {
     base,
     candidate,
-    proposedState: evaluateWorkingState({ ...base, appliedPrograms: [record] }),
     record,
     snapshot,
     validationScene,
+    workingState: { ...base, appliedPrograms: [record] },
   };
 }
 
@@ -378,7 +378,7 @@ describe("Runtime Trace endpoint candidate integration", () => {
 
 describe("source-bound endpoint compilation", () => {
   it("forwards complete Programs and all verified candidates to one high-level Rust command", async () => {
-    const { candidate, proposedState, record, snapshot: singleRootSnapshot } = await moveInput();
+    const { candidate, record, snapshot: singleRootSnapshot, workingState } = await moveInput();
     const snapshot = withAdditionalSourceRoot(singleRootSnapshot);
     const verifiedCandidates = studioPreviewRuntimeTraceEditCandidates(snapshot, 0, []);
     expect(verifiedCandidates.map(({ targetSourceName }) => targetSourceName)).toEqual(["square", "circle"]);
@@ -391,9 +391,9 @@ describe("source-bound endpoint compilation", () => {
     const result = await compileStudioPreviewRuntimeTraceEdit({
       boundEntityEditCompiler: compiler,
       frame: FRAME,
-      proposedState,
       snapshot,
       sourceRevisionHash: nextRevision,
+      workingState,
     });
     expect(result.kind).toBe("rebased");
     expect(commands).toHaveLength(1);
@@ -442,8 +442,8 @@ describe("source-bound endpoint compilation", () => {
     const compiled = await compileStudioPreviewSceneV1({
       applyStudioBoundEntityEditCompiler: compiler,
       frame: FRAME,
-      proposedState,
       snapshot,
+      workingState,
       workingRevision: "generic-v3-initial-move-revision",
       workspaceKey: "generic-preview/scenes/staticsquare.py/StaticSquare",
     });
@@ -454,15 +454,15 @@ describe("source-bound endpoint compilation", () => {
   });
 
   it("reports a core rejection without synthesizing a fallback Scene", async () => {
-    const { proposedState, snapshot } = await moveInput();
+    const { snapshot, workingState } = await moveInput();
     const result = await compileStudioPreviewRuntimeTraceEdit({
       boundEntityEditCompiler: async () => {
         throw new Error("unsupported Program");
       },
       frame: FRAME,
-      proposedState,
       snapshot,
       sourceRevisionHash: "c".repeat(64),
+      workingState,
     });
     expect(result).toEqual({
       issue: {

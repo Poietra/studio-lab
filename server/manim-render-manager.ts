@@ -776,7 +776,7 @@ export class ManimRenderManager {
         409,
       );
     }
-    const { lowered, renderRequest } = lowerManimRenderRequest({
+    const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.frame,
       originalSource,
       projectId: this.projectId,

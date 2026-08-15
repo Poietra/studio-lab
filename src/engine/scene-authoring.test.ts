@@ -13,6 +13,8 @@ import {
   createApplyStudioCreationEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
+  createProjectStudioTimelineCompiler,
+  type ProjectStudioTimelineWireCommandV1,
 } from "./scene-authoring";
 
 const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 = {
@@ -242,6 +244,13 @@ const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
   version: 1,
 };
 
+const studioTimelineProjectionCommand: ProjectStudioTimelineWireCommandV1 = {
+  baseDuration: 2,
+  programs: studioTimelineEditCommand.programs,
+  schema: "poietra.project-studio-timeline",
+  version: 1,
+};
+
 async function fixtureBundle() {
   const fixture = JSON.parse(
     await readFile(new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url), "utf8"),
@@ -340,6 +349,37 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(studioTimelineEditCommand);
   });
 
+  it("projects normalized Studio timeline Programs without reconstructing Rust semantics", async () => {
+    const calls: unknown[] = [];
+    const projection = {
+      programProjections: [
+        {
+          operationId: "wait-1",
+          transactionId: "duration",
+          workingAnchor: 2,
+          workingInterval: { end: 3.5, start: 2 },
+        },
+      ],
+      projectedDuration: 3.5,
+      transforms: [
+        {
+          interval: { end: 3.5, start: 2 },
+          kind: "insert",
+          operationId: "wait-1",
+        },
+      ],
+    } as const;
+    const project = createProjectStudioTimelineCompiler(async () => ({
+      projectStudioTimelineV1: (commandJson) => {
+        calls.push(JSON.parse(new TextDecoder().decode(commandJson)));
+        return new TextEncoder().encode(JSON.stringify(projection));
+      },
+    }));
+
+    await expect(project(studioTimelineProjectionCommand)).resolves.toEqual(projection);
+    expect(calls).toEqual([studioTimelineProjectionCommand]);
+  });
+
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
     const compileCreation = createApplyStudioCreationEditCompiler(async () => ({
@@ -348,7 +388,18 @@ describe("Scene authoring WASM adapter", () => {
     const compileBoundEntity = createApplyStudioBoundEntityEditCompiler(async () => ({
       applyStudioBoundEntityEditV1: () => new TextEncoder().encode('{"scene":{}}'),
     }));
+    const projectTimeline = createProjectStudioTimelineCompiler(async () => ({
+      projectStudioTimelineV1: () =>
+        new TextEncoder().encode(
+          JSON.stringify({
+            programProjections: [],
+            projectedDuration: Number.NaN,
+            transforms: [],
+          }),
+        ),
+    }));
     await expect(compileCreation(bundle, creationEditCommand)).rejects.toThrow();
     await expect(compileBoundEntity(bundle, boundEntityEditCommand)).rejects.toThrow();
+    await expect(projectTimeline(studioTimelineProjectionCommand)).rejects.toThrow();
   });
 });

@@ -1,10 +1,19 @@
 import { parseAuthoritativeEditorProgramsV1 } from "../collaboration/editor-edit-mutation";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
+import type { ProjectStudioTimelineCompiler } from "../engine/scene-authoring";
 import type { EditorProgramRecord } from "./editor-session-store";
 import { evaluateWorkingState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import { programExecutionCapabilities } from "./operation-registry";
-import type { CanonicalEditProgram } from "./operations";
+import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "./timeline-projection";
+
+export class EditorTimelineAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EditorTimelineAdmissionError";
+  }
+}
 
 export function editorProgramsMatchAuthorityV1(
   local: readonly EditorProgramRecord[],
@@ -18,27 +27,53 @@ export function editorProgramsMatchAuthorityV1(
  * durable authority owns canonical Programs, while validation and optional
  * authoring metadata remain browser concerns.
  */
-export function materializeAuthoritativeEditorProgramsV1(
+export async function materializeAuthoritativeEditorProgramsV1(
   scene: ManimWorkspaceScene,
   current: readonly EditorProgramRecord[],
   programValues: unknown,
-): readonly EditorProgramRecord[] {
+  timelineCompiler?: ProjectStudioTimelineCompiler,
+): Promise<readonly EditorProgramRecord[]> {
   const programs = parseAuthoritativeEditorProgramsV1(programValues);
   const seeds = programs.map((program) => ({
     program,
     validation: { issues: [], status: "valid" as const },
   }));
-  const evaluated = evaluateWorkingState(
-    importedWorkingState(scene, {
-      appliedPrograms: seeds,
-      playhead: 0,
-      selection: [],
-      stagedPrograms: [],
-    }),
-  );
+  const operations = programs.flatMap((program) => program.operations);
+  const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
+  if (sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
+    throw new EditorTimelineAdmissionError(
+      "The authoritative Editor projection must not mix Scene duration and other Programs.",
+    );
+  }
+  if (sceneDurationOperationCount > 0 && !isSceneDurationProgramBatch(programs)) {
+    throw new EditorTimelineAdmissionError(
+      "The authoritative Editor projection requires one Scene duration operation per Program.",
+    );
+  }
+
+  const timelineProjection = isSceneDurationProgramBatch(programs)
+    ? await projectTimelineProgramBatch(scene.runtimeSceneState.duration, programs, timelineCompiler).catch((error) => {
+        throw new EditorTimelineAdmissionError(
+          `The Rust timeline admission rejected the authoritative Editor projection: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      })
+    : null;
+  const evaluatedPrograms =
+    timelineProjection?.programs.map((program) => ({
+      program,
+      validation: { issues: [], status: "valid" as const },
+    })) ??
+    evaluateWorkingState(
+      importedWorkingState(scene, {
+        appliedPrograms: seeds,
+        playhead: 0,
+        selection: [],
+        stagedPrograms: [],
+      }),
+    ).programs;
   if (
-    evaluated.programs.length !== programs.length ||
-    evaluated.programs.some(
+    evaluatedPrograms.length !== programs.length ||
+    evaluatedPrograms.some(
       (record) =>
         record.validation.status !== "valid" || programExecutionCapabilities(record.program).apply !== "supported",
     )
@@ -47,14 +82,15 @@ export function materializeAuthoritativeEditorProgramsV1(
   }
   const currentByTransaction = new Map(current.map((record) => [record.program.transactionId, record] as const));
   return Object.freeze(
-    programs.map((program, index) => {
-      const local = currentByTransaction.get(program.transactionId);
-      const exactLocal = local && canonicalJsonV1(local.program) === canonicalJsonV1(program) ? local : null;
-      const validation = evaluated.programs[index]!.validation;
+    programs.map((authoritativeProgram, index) => {
+      const local = currentByTransaction.get(authoritativeProgram.transactionId);
+      const exactLocal =
+        local && canonicalJsonV1(local.program) === canonicalJsonV1(authoritativeProgram) ? local : null;
+      const evaluated = evaluatedPrograms[index]!;
       return Object.freeze({
         ...(exactLocal?.editorMetadata ? { editorMetadata: exactLocal.editorMetadata } : undefined),
-        program,
-        validation,
+        program: authoritativeProgram,
+        validation: evaluated.validation,
       });
     }),
   );

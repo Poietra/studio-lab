@@ -25,8 +25,10 @@ pub use authoring::{
     StudioCreationOperation, StudioCreationOperationKind, StudioCreationProgram,
     StudioMotionEasing, StudioMotionEntityIdentity, StudioMotionOperation, StudioMotionProgram,
     StudioMotionSourceBinding, StudioProgramAnchorSource, StudioProgramExecution,
-    StudioProgramScheduleMode, StudioTimelineEventKind, StudioTimelineOperation,
-    StudioTimelineProgram, StudioTimelinePurpose,
+    StudioProgramScheduleMode, StudioTimelineEditTransform, StudioTimelineEventKind,
+    StudioTimelineOperation, StudioTimelineProgram, StudioTimelineProgramProjection,
+    StudioTimelineProjection, StudioTimelinePurpose, StudioTimelineWaitReduction,
+    project_studio_timeline_programs,
 };
 pub use evaluator::{
     CompileEngineFrameOptionsV1, EngineSessionV1, EvaluationError, SampleEngineSessionOptionsV1,

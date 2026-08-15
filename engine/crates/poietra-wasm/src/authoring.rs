@@ -7,7 +7,8 @@ use poietra_eval::{
     StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringSize,
     StudioBoundEntityEditCandidate, StudioBoundEntityProgram, StudioCreationMathTexOutline,
     StudioCreationProgram, StudioMotionEntityIdentity, StudioMotionProgram,
-    StudioMotionSourceBinding, StudioTimelineProgram,
+    StudioMotionSourceBinding, StudioTimelineProgram, StudioTimelineProjection,
+    project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -31,6 +32,12 @@ enum ApplyStudioCreationEditSchemaV1 {
 enum ApplyStudioTimelineEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-timeline-edit")]
     ApplyStudioTimelineEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ProjectStudioTimelineSchemaV1 {
+    #[serde(rename = "poietra.project-studio-timeline")]
+    ProjectStudioTimeline,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -127,6 +134,17 @@ impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditComma
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectStudioTimelineCommandJsonV1 {
+    base_duration: f64,
+    programs: Vec<StudioTimelineProgram>,
+    #[serde(rename = "schema")]
+    _schema: ProjectStudioTimelineSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioMotionEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StudioAuthoringSize,
@@ -210,10 +228,10 @@ enum SceneAuthoringAdapterError {
     StudioCreationEdit(#[from] ApplyStudioCreationEditError),
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
-    #[error("the authored Scene bundle could not be serialized: {0}")]
+    #[error("the Scene authoring response could not be serialized: {0}")]
     ResponseJson(serde_json::Error),
     #[error(
-        "the authored Scene bundle contains {actual_bytes} bytes; maximum is {}",
+        "the Scene authoring response contains {actual_bytes} bytes; maximum is {}",
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1
     )]
     ResponseTooLarge { actual_bytes: usize },
@@ -246,6 +264,19 @@ fn scene_authoring_response(
     bundle: &SceneIrBundleV1,
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
     let response = serde_json::to_vec(bundle).map_err(SceneAuthoringAdapterError::ResponseJson)?;
+    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
+        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
+            actual_bytes: response.len(),
+        });
+    }
+    Ok(response)
+}
+
+fn studio_timeline_projection_response(
+    projection: &StudioTimelineProjection,
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let response =
+        serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
     if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
         return Err(SceneAuthoringAdapterError::ResponseTooLarge {
             actual_bytes: response.len(),
@@ -295,6 +326,18 @@ fn apply_studio_timeline_edit_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_studio_timeline_edit(command.into())?;
     scene_authoring_response(&result)
+}
+
+fn project_studio_timeline_json(
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ProjectStudioTimelineCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "Studio timeline projection",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
+    let projection = project_studio_timeline_programs(command.base_duration, &command.programs)?;
+    studio_timeline_projection_response(&projection)
 }
 
 fn apply_studio_motion_edit_json(
@@ -351,6 +394,17 @@ pub fn apply_studio_timeline_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_timeline_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Projects normalized Studio timeline Programs without requiring a Scene snapshot.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for a malformed or unsupported closed-contract command.
+#[wasm_bindgen(js_name = projectStudioTimelineV1)]
+pub fn project_studio_timeline_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+    project_studio_timeline_json(command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -717,6 +771,18 @@ mod tests {
                 }
             ],
             "schema": "poietra.apply-studio-timeline-edit",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn studio_timeline_projection_command_json() -> Vec<u8> {
+        let apply_command: serde_json::Value =
+            serde_json::from_slice(&studio_timeline_edit_command_json()).unwrap();
+        serde_json::to_vec(&json!({
+            "baseDuration": 2.0,
+            "programs": apply_command["programs"],
+            "schema": "poietra.project-studio-timeline",
             "version": 1
         }))
         .unwrap()
@@ -1117,6 +1183,32 @@ mod tests {
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
         ));
+    }
+
+    #[test]
+    fn studio_timeline_projection_adapter_returns_working_intervals_and_ordered_transforms() {
+        let response =
+            project_studio_timeline_json(&studio_timeline_projection_command_json()).unwrap();
+        let projection: serde_json::Value = serde_json::from_slice(&response).unwrap();
+
+        assert_eq!(projection["projectedDuration"], json!(2.3));
+        assert_eq!(
+            projection["programProjections"][0]["workingAnchor"],
+            json!(0.5)
+        );
+        assert_eq!(
+            projection["programProjections"][1]["workingAnchor"],
+            json!(1.0)
+        );
+        assert_eq!(projection["transforms"][0]["kind"], json!("insert"));
+        assert_eq!(projection["transforms"][1]["kind"], json!("remove"));
+        assert_eq!(
+            projection["transforms"][1]["waitReductions"],
+            json!([{
+                "operationId": "extend-scene-duration",
+                "removedDuration": 0.2
+            }])
+        );
     }
 
     #[test]

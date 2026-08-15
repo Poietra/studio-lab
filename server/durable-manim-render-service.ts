@@ -159,7 +159,7 @@ export class DurableManimRenderServiceV1 {
     }
     const originalSource = await this.#blobs.readSource(this.#tenantId, originalHead.blob, signal);
     signal?.throwIfAborted();
-    const { lowered, renderRequest } = lowerManimRenderRequest({
+    const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.#frame,
       originalSource,
       projectId: request.projectId,

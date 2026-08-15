@@ -27,6 +27,7 @@ import {
   canonicalEditorSessionSnapshotJsonV1,
   type EditorSessionSnapshotV1,
 } from "../collaboration/editor-session-contract";
+import { EditorTimelineAdmissionError } from "./editor-authority-state";
 import {
   assertEditorMutationCommitAcknowledgementV1,
   browserEditorMutationPendingJournalV1,
@@ -151,8 +152,8 @@ type UseEditorDocumentAuthorityInputV1 = Readonly<{
   client?: EditorDocumentClientV1;
   identity: EditorDocumentAuthorityIdentityV1 | null;
   liveClient?: EditorLiveClientV1 | null;
-  onOpen: (outcome: EditorDocumentAuthorityOpenOutcomeV1) => EditorDocumentSessionBootstrapV1;
-  onProjection: (programs: readonly CanonicalEditProgram[], reason: "open" | "remote") => void;
+  onOpen: (outcome: EditorDocumentAuthorityOpenOutcomeV1) => Promise<EditorDocumentSessionBootstrapV1>;
+  onProjection: (programs: readonly CanonicalEditProgram[], reason: "open" | "remote") => Promise<void>;
   ownerKey: string | null;
   sessionSnapshot: EditorSessionSnapshotV1 | null;
 }>;
@@ -344,6 +345,7 @@ function sameStudioPresenceParticipantsV1(
 }
 
 export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityInputV1) {
+  const [reopenGeneration, setReopenGeneration] = useState(0);
   const [state, setState] = useState<EditorDocumentAuthorityUiStateV1>({
     journalConflict: false,
     journalConflictAccountWide: false,
@@ -421,6 +423,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     [input.identity?.organizationId, input.ownerKey],
   );
   const authoritySnapshot = useRef<EditorDocumentAuthoritySnapshotV1 | null>(null);
+  const rejectedTimelineProgram = useRef<Readonly<{ program: CanonicalEditProgram; revision: string }> | null>(null);
   const journalBasis = useRef<EditorSessionPendingJournalBasisV1 | null>(null);
   const journalConflictIdentity = useRef<EditorSessionPendingJournalLaneIdentityV1 | null>(null);
   const mutationConflictLookup = useRef<EditorMutationPendingJournalLookupV1 | null>(null);
@@ -759,6 +762,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     queuedReconcileIdentityKey.current = null;
     setRenderedQueuedCommitIdentityKey(null);
     presentationReady.current = false;
+    rejectedTimelineProgram.current = null;
     lastSavedSessionCanonical.current = null;
     authoritySnapshot.current = null;
     journalBasis.current = null;
@@ -820,7 +824,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
         if (!openAttemptIsCurrent()) return null;
         journalConflictIdentity.current = null;
         installAuthoritySnapshot(snapshot);
-        const installed = bootstrap.current(snapshot);
+        const installed = await bootstrap.current(snapshot);
+        if (!openAttemptIsCurrent()) return null;
         presentationReady.current = true;
         const canonical = canonicalEditorSessionSnapshotJsonV1(installed.snapshot);
         if (installed.persist) {
@@ -844,7 +849,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               }
               sessionAuthorityEpoch.current += 1;
               lastSavedSessionCanonical.current = null;
-              projection.current(saved.snapshot.programs, "remote");
+              await projection.current(saved.snapshot.programs, "remote");
+              if (!openAttemptIsCurrent()) return null;
               pendingSessionRecovery.current = null;
               if (attempt < 2) continue;
               throw new EditorDocumentAuthorityErrorV1(
@@ -910,6 +916,11 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           authority.current !== nextAuthority
         )
           return;
+        if (error instanceof EditorTimelineAdmissionError) {
+          const snapshot = authoritySnapshot.current;
+          const program = snapshot?.programs.at(-1);
+          rejectedTimelineProgram.current = snapshot && program ? { program, revision: snapshot.revision } : null;
+        }
         const message = publicAuthorityMessageV1(error);
         const retryable =
           nextAuthority.sessionRecoveryPending || (presentationReady.current && nextAuthority.recoveryKind !== null);
@@ -966,6 +977,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     mutationJournal,
     pendingJournalRetainsCurrentBasis,
     recoverPendingJournalAtOpen,
+    reopenGeneration,
     updateState,
   ]);
 
@@ -1053,7 +1065,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
                 }
                 sessionAuthorityEpoch.current += 1;
                 lastSavedSessionCanonical.current = null;
-                projection.current(outcome.snapshot.programs, "remote");
+                await projection.current(outcome.snapshot.programs, "remote");
+                if (!saveAttemptIsCurrent()) return false;
                 remoteHeadQueue.current?.kick();
                 return false;
               }
@@ -1095,7 +1108,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
             }
             sessionAuthorityEpoch.current += 1;
             lastSavedSessionCanonical.current = null;
-            projection.current(outcome.snapshot.programs, "remote");
+            await projection.current(outcome.snapshot.programs, "remote");
+            if (!saveAttemptIsCurrent()) return false;
             remoteHeadQueue.current?.kick();
             return false;
           }
@@ -1366,7 +1380,15 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
               }
               sessionAuthorityEpoch.current += 1;
               lastSavedSessionCanonical.current = null;
-              projection.current(outcome.snapshot.programs, "remote");
+              await projection.current(outcome.snapshot.programs, "remote");
+              if (
+                controller.signal.aborted ||
+                generation.current !== activeGeneration ||
+                renderedIdentityKey.current !== activeIdentityKey ||
+                authority.current !== activeAuthority
+              ) {
+                return { kind: "stale" };
+              }
             }
             if (outcome.kind === "committed") {
               pendingCommitSessionRecovery.current = null;
@@ -1458,6 +1480,37 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     ],
   );
 
+  const removeRejectedTimelineProgram = useCallback(async () => {
+    const recovery = rejectedTimelineProgram.current;
+    const snapshot = authoritySnapshot.current;
+    const program = snapshot?.programs.at(-1);
+    if (
+      !recovery ||
+      !snapshot ||
+      !program ||
+      snapshot.revision !== recovery.revision ||
+      program !== recovery.program ||
+      presentationReady.current ||
+      stateRef.current.phase !== "blocked"
+    ) {
+      return false;
+    }
+    // Reuse the normal durable mutation lane; only this exact retained Program
+    // is allowed through the ready gate while presentation is unavailable.
+    updateState({ message: null, phase: "ready", retryable: false });
+    const outcome = await commitMutation({
+      kind: "remove",
+      program,
+      targetTransactionId: program.transactionId,
+    });
+    const advanced = authoritySnapshot.current?.revision !== recovery.revision;
+    if (outcome.kind === "blocked" || outcome.kind === "stale") {
+      if (!advanced) return false;
+    }
+    setReopenGeneration((generation) => generation + 1);
+    return true;
+  }, [commitMutation, updateState]);
+
   const retry = useCallback(async () => {
     const activeAuthority = authority.current;
     const activeIdentityKey = renderedIdentityKey.current;
@@ -1506,7 +1559,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
           }
           sessionAuthorityEpoch.current += 1;
           lastSavedSessionCanonical.current = null;
-          projection.current(outcome.snapshot.programs, "remote");
+          await projection.current(outcome.snapshot.programs, "remote");
+          if (!retryAttemptIsCurrent()) return false;
           const basis = journalBasis.current;
           if (basis && sessionJournal?.readLaneExact(basis.identity)) {
             throw new EditorSessionPendingJournalConflictV1();
@@ -1547,7 +1601,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
             }
             journalConflictIdentity.current = null;
             installAuthoritySnapshot(recovered);
-            const installed = bootstrap.current(recovered);
+            const installed = await bootstrap.current(recovered);
+            if (!retryAttemptIsCurrent()) return false;
             if (installed.persist) {
               throw new EditorDocumentAuthorityErrorV1(
                 "The recovered private Editor session was not accepted as stored cloud state.",
@@ -1593,7 +1648,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       pendingCommitSessionRecovery.current = null;
       if (outcome.kind === "committed" && !outcome.sessionInvalidated && pendingCommitSession) {
         sessionAuthorityEpoch.current += 1;
-        const installed = bootstrap.current({ ...outcome.snapshot, session: pendingCommitSession.snapshot });
+        const installed = await bootstrap.current({ ...outcome.snapshot, session: pendingCommitSession.snapshot });
+        if (!retryAttemptIsCurrent()) return false;
         if (installed.persist) {
           throw new EditorDocumentAuthorityErrorV1(
             "The recovered atomic Editor session was not accepted as stored cloud state.",
@@ -1605,7 +1661,8 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       } else if (outcome.kind === "committed" || outcome.sessionInvalidated) {
         sessionAuthorityEpoch.current += 1;
         lastSavedSessionCanonical.current = null;
-        projection.current(outcome.snapshot.programs, "remote");
+        await projection.current(outcome.snapshot.programs, "remote");
+        if (!retryAttemptIsCurrent()) return false;
       }
       updateState({ message: null, phase: "ready", retryable: false });
       if (outcome.kind === "committed" || outcome.accepted) {
@@ -1706,7 +1763,15 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
             }
             sessionAuthorityEpoch.current += 1;
             lastSavedSessionCanonical.current = null;
-            projection.current(result.snapshot.programs, "remote");
+            await projection.current(result.snapshot.programs, "remote");
+            if (
+              controller.signal.aborted ||
+              generation.current !== activeGeneration ||
+              renderedIdentityKey.current !== activeIdentityKey ||
+              authority.current !== activeAuthority
+            ) {
+              return false;
+            }
           }
           updateState({ message: null, phase: "ready", retryable: false });
           return true;
@@ -1830,6 +1895,9 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
       (identityKey !== null && authorityIdentityKey.current === identityKey && presentationReady.current),
     presenceParticipants: presenceRoom.identityKey === identityKey ? presenceRoom.participants : [],
     reconcileRemoteHead,
+    rejectedTimelineProgramAvailable:
+      rejectedTimelineProgram.current !== null && !presentationReady.current && state.phase === "blocked",
+    removeRejectedTimelineProgram,
     retry,
     retryable: state.retryable,
     updatePresence,

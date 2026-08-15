@@ -298,6 +298,8 @@ describe("Studio workspace projection", () => {
       transactionId: "duration-before-runtime-snapshot",
     });
     expect(edit.kind).toBe("valid");
+    const operation = edit.program.operations[0]!;
+    const workingInterval = operation.interval;
 
     const projected = projectStudioWorkspace({
       activeScene: projectVerifiedSourceDuration(imported, 1),
@@ -306,6 +308,18 @@ describe("Studio workspace projection", () => {
       draftProgram: null,
       nextScene: null,
       selectedObjectIds: [],
+      timelineProjection: {
+        programProjections: [
+          {
+            operationId: operation.id,
+            transactionId: edit.program.transactionId,
+            workingAnchor: workingInterval.start,
+            workingInterval,
+          },
+        ],
+        projectedDuration: 1.5,
+        transforms: [{ interval: workingInterval, kind: "insert", operationId: operation.id }],
+      },
     });
 
     expect(projected.proposedState.evaluatedScene.duration).toBe(1.5);

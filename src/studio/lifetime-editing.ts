@@ -1,11 +1,10 @@
 import type { Interval, ProgramRecord, RuntimeSceneState, TimelineObjectTrack } from "./model";
-import type { CanonicalEditOperation } from "./operations";
+import { type CanonicalEditOperation, isSceneDurationOperation } from "./operations";
 import {
   insertedProgramDuration,
-  programTimelineDelta,
   shiftIntervalForInsertion,
-  timelineInsertionOffset,
   type TimelineInsertion,
+  timelineInsertionOffset,
   workingTimeToSourceTime,
 } from "./program-composition";
 
@@ -153,28 +152,12 @@ function projectImportedInterval(source: Interval, programs: readonly ProgramRec
   let working = source;
   const insertions: TimelineInsertion[] = [];
   for (const { program } of programs) {
-    const duration = programTimelineDelta(program);
+    const duration = insertedProgramDuration(program);
     const at = program.anchor.resolvedSeconds + timelineInsertionOffset(insertions, program.anchor.resolvedSeconds);
-    working = shiftIntervalForTimelineDelta(working, at, duration);
+    working = shiftIntervalForInsertion(working, at, duration);
     insertions.push({ duration, sourceAnchor: program.anchor.resolvedSeconds });
   }
   return working;
-}
-
-function timeAfterRemoval(time: number, start: number, end: number) {
-  if (time <= start + 0.0005) return Math.min(time, start);
-  if (time >= end - 0.0005) return time - (end - start);
-  return start;
-}
-
-function shiftIntervalForTimelineDelta(interval: Interval, at: number, delta: number): Interval {
-  if (delta >= 0) return shiftIntervalForInsertion(interval, at, delta);
-  const removalStart = at + delta;
-  const nextStart = timeAfterRemoval(interval.start, removalStart, at);
-  return {
-    end: Math.max(nextStart, timeAfterRemoval(interval.end, removalStart, at)),
-    start: nextStart,
-  };
 }
 
 function createsEntity(
@@ -195,8 +178,7 @@ function ownerDuration(owner: StudioLifetimeOwner, entityId: string, source: Int
       operation.kind === "ChangePresence" ||
       operation.kind === "CreateMotion" ||
       operation.kind === "TransformContent" ||
-      (operation.kind === "AnimateProperty" && operation.key === "scale") ||
-      (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait");
+      (operation.kind === "AnimateProperty" && operation.key === "scale");
     if (!inserted) return [];
     const end =
       operation.kind === "ChangePresence" && operation.entityId === entityId && operation.effect === "fade-in"
@@ -223,7 +205,7 @@ function projectOwnedInterval(
   let working: Interval | null = null;
   for (const [index, { program }] of programs.entries()) {
     const sourceAnchor = index === owner.index ? candidateAnchor : program.anchor.resolvedSeconds;
-    const duration = index === owner.index ? candidateDuration : programTimelineDelta(program);
+    const duration = index === owner.index ? candidateDuration : insertedProgramDuration(program);
     const offset = timelineInsertionOffset(insertions, sourceAnchor);
     const at = sourceAnchor + offset;
     if (index === owner.index) {
@@ -235,7 +217,7 @@ function projectOwnedInterval(
         start: source.start + offset,
       };
     } else if (working) {
-      working = shiftIntervalForTimelineDelta(working, at, duration);
+      working = shiftIntervalForInsertion(working, at, duration);
     }
     insertions.push({ duration, sourceAnchor });
   }
@@ -319,6 +301,9 @@ export function buildLifetimeEditControls(
     tracks: readonly TimelineObjectTrack[];
   }>,
 ): Readonly<Record<string, LifetimeEditControls>> {
+  if (input.programs.some((record) => record.program.operations.some(isSceneDurationOperation))) {
+    throw new TypeError("Lifetime controls require the Rust timeline projection for timeline Programs.");
+  }
   const safeTimes = uniqueTimes(input.anchors);
   const result: Record<string, LifetimeEditControls> = {};
   for (const track of input.tracks) {

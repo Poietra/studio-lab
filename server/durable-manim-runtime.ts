@@ -422,7 +422,7 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     if (head.blob.digest !== request.sourceHash) {
       throw new HttpError("The imported source changed before export. Reimport the workspace and try again.", 409);
     }
-    const lowered = lowerManimRenderRequest({
+    const lowered = await lowerManimRenderRequest({
       frame: this.#frame,
       originalSource: source,
       projectId: request.projectId,

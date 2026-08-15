@@ -1,3 +1,4 @@
+import type { StudioTimelineEditTransformV1 } from "../src/engine/scene-authoring";
 import { type ProgramRenderRequest, renderRequestPrograms } from "../src/render-pipeline/contracts";
 import {
   type LoweredProgramBatchSource,
@@ -7,6 +8,8 @@ import {
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
+import { type CanonicalEditProgram, isSceneDurationOperation } from "../src/studio/operations";
+import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
@@ -22,12 +25,12 @@ export type ManimRenderRequestLoweringResult = Readonly<{
   renderRequest: ProgramRenderRequest;
 }>;
 
-export function lowerManimRenderRequest({
+export async function lowerManimRenderRequest({
   frame,
   originalSource,
   projectId,
   request,
-}: ManimRenderRequestLoweringInput): ManimRenderRequestLoweringResult {
+}: ManimRenderRequestLoweringInput): Promise<ManimRenderRequestLoweringResult> {
   const importedSnapshot = importSourceSnapshot(originalSource, request.sourcePath, frame);
   const activeScene = sceneView(importedSnapshot.view, request.sceneName);
   if (!activeScene) {
@@ -68,39 +71,67 @@ export function lowerManimRenderRequest({
       throw error;
     }
   }
-  const evaluated = evaluateWorkingState({
-    appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),
-    editorContext: {
-      activeSceneId: activeScene.sceneId,
-      playhead: 0,
-      selection: [],
+  const sourceOrderedPrograms = orderedPrograms.map(({ program }) => program);
+  const containsSceneDurationOperation = sourceOrderedPrograms.some((program) =>
+    program.operations.some(isSceneDurationOperation),
+  );
+  let validatedPrograms: readonly CanonicalEditProgram[];
+  let timelineTransforms: readonly StudioTimelineEditTransformV1[] | null = null;
+  if (isSceneDurationProgramBatch(sourceOrderedPrograms)) {
+    try {
+      const projected = await projectTimelineProgramBatch(
+        activeScene.runtimeSceneState.duration,
+        sourceOrderedPrograms,
+      );
+      validatedPrograms = projected.programs;
+      timelineTransforms = projected.projection.transforms;
+    } catch (error) {
+      throw new HttpError(
+        `The Rust core rejected the Scene duration Program batch: ${error instanceof Error ? error.message : String(error)}`,
+        400,
+      );
+    }
+  } else {
+    if (containsSceneDurationOperation) {
+      throw new HttpError(
+        "Scene duration Programs cannot be mixed with another operation family in one render batch.",
+        400,
+      );
+    }
+    const evaluated = evaluateWorkingState({
+      appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),
+      editorContext: {
+        activeSceneId: activeScene.sceneId,
+        playhead: 0,
+        selection: [],
+        version: STUDIO_STATE_VERSION,
+        viewport: request.viewport,
+      },
+      runtimeSceneState: activeScene.runtimeSceneState,
+      sourceSnapshot: {
+        configId: projectId,
+        hash: request.sourceHash,
+        sourceId: request.sourcePath,
+        version: STUDIO_STATE_VERSION,
+      },
+      stagedPrograms: [],
+      staticSemanticState: {
+        entities: [],
+        unknowns: [],
+        version: STUDIO_STATE_VERSION,
+      },
       version: STUDIO_STATE_VERSION,
-      viewport: request.viewport,
-    },
-    runtimeSceneState: activeScene.runtimeSceneState,
-    sourceSnapshot: {
-      configId: projectId,
-      hash: request.sourceHash,
-      sourceId: request.sourcePath,
-      version: STUDIO_STATE_VERSION,
-    },
-    stagedPrograms: [],
-    staticSemanticState: {
-      entities: [],
-      unknowns: [],
-      version: STUDIO_STATE_VERSION,
-    },
-    version: STUDIO_STATE_VERSION,
-  });
-  const invalidRecord = evaluated.programs.find((record) => record.validation.status === "invalid");
-  if (invalidRecord) {
-    throw new HttpError(
-      invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message ??
-        "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
-      400,
-    );
+    });
+    const invalidRecord = evaluated.programs.find((record) => record.validation.status === "invalid");
+    if (invalidRecord) {
+      throw new HttpError(
+        invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message ??
+          "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
+        400,
+      );
+    }
+    validatedPrograms = evaluated.programs.map((record) => record.program);
   }
-  const validatedPrograms = evaluated.programs.map((record) => record.program);
   const renderRequest: ProgramRenderRequest = request.programs
     ? { ...request, program: validatedPrograms[0]!, programs: validatedPrograms }
     : { ...request, program: validatedPrograms[0]! };
@@ -151,6 +182,7 @@ export function lowerManimRenderRequest({
       })),
       frame,
       incoming,
+      timelineTransforms,
     );
     return { lowered, renderRequest };
   } catch (error) {

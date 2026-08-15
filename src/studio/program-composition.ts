@@ -1,4 +1,4 @@
-import type { CanonicalEditOperation, CanonicalEditProgram } from "./operations";
+import { type CanonicalEditOperation, type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
 
 const ANCHOR_EPSILON = 0.0005;
 
@@ -15,22 +15,15 @@ export function insertedProgramDuration(program: CanonicalEditProgram) {
       operation.kind === "ResizeEntity" ||
       operation.kind === "TransformContent" ||
       (operation.kind === "AnimateProperty" && operation.key === "scale") ||
-      (operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait"),
+      (operation.kind === "InsertTimelineEvent" &&
+        !isSceneDurationOperation(operation) &&
+        operation.eventKind === "wait"),
   );
   const end = Math.max(
     program.anchor.resolvedSeconds,
     ...insertedAnimations.map((operation) => operation.interval.end),
   );
   return Math.max(0, end - program.anchor.resolvedSeconds);
-}
-
-/** Signed change to working time; Scene duration trims deliberately return a negative delta. */
-export function programTimelineDelta(program: CanonicalEditProgram) {
-  const removedDuration = program.operations.reduce(
-    (duration, operation) => (operation.kind === "TrimSceneDuration" ? duration + operation.removedDuration : duration),
-    0,
-  );
-  return insertedProgramDuration(program) - removedDuration;
 }
 
 export type TimelineInsertion = Readonly<{
@@ -59,6 +52,10 @@ export function shiftIntervalForInsertion(
 }
 
 function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
+  const sceneDurationOperation = programs.flatMap((program) => program.operations).find(isSceneDurationOperation);
+  if (sceneDurationOperation) {
+    throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
+  }
   const sorted = programs
     .map((program, index) => ({ index, program }))
     .sort(
@@ -68,7 +65,7 @@ function sourceInsertions(programs: readonly CanonicalEditProgram[]) {
   const insertions: TimelineInsertion[] = [];
   for (const { program } of sorted) {
     const sourceAnchor = program.anchor.resolvedSeconds;
-    const duration = programTimelineDelta(program);
+    const duration = insertedProgramDuration(program);
     const current = insertions.at(-1);
     if (current && Math.abs(current.sourceAnchor - sourceAnchor) < ANCHOR_EPSILON) {
       insertions[insertions.length - 1] = {
@@ -208,6 +205,10 @@ function remapOperation(operation: CanonicalEditOperation, offset: number, maps:
 export function rebaseProgramTime(program: CanonicalEditProgram, offset: number): CanonicalEditProgram {
   if (!Number.isFinite(offset) || offset < 0)
     throw new Error("A Program timeline offset must be finite and non-negative.");
+  const sceneDurationOperation = program.operations.find(isSceneDurationOperation);
+  if (sceneDurationOperation) {
+    throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
+  }
   if (offset < ANCHOR_EPSILON) return program;
   const identityMaps: IdMaps = { entities: new Map(), operations: new Map() };
   return {
