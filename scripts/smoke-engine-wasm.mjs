@@ -9,7 +9,7 @@ const wasmBytes = await readFile("public/engine-wasm/poietra_wasm_bg.wasm");
 const engine = await import("../public/engine-wasm/poietra_wasm.js");
 
 await engine.default({ module_or_path: wasmBytes });
-assert.equal(engine.poietraEngineAbiVersion(), 13);
+assert.equal(engine.poietraEngineAbiVersion(), 14);
 assert.equal(engine.poietraCanvasAbiVersion(), 5);
 assert.equal(engine.poietraCanvasTelemetryAbiVersion(), 4);
 assert.equal(typeof engine.validateSceneIrBundleV1, "function");
@@ -71,7 +71,6 @@ const boundResult = JSON.parse(
       boundSnapshot,
       encoder.encode(
         JSON.stringify({
-          baseStudioSceneId: "scene.py#LineJoints",
           candidates: [
             {
               baseCenter: { x: 320, y: 180 },
@@ -84,8 +83,6 @@ const boundResult = JSON.parse(
               studioEntityId: "source:root",
             },
           ],
-          evaluatedDuration: boundScene.duration,
-          evaluatedSceneId: "scene.py#LineJoints",
           expectedBaseRevision: boundScene.source.snapshotHash,
           frame: { height: boundScene.camera.view.frameHeight, width: boundScene.camera.view.frameWidth },
           nextRevision: "e".repeat(64),
@@ -112,7 +109,7 @@ const boundResult = JSON.parse(
               scheduleEdgeCount: 0,
               scheduleMode: "parallel",
               scheduleOrder: ["move-root"],
-              validationValid: true,
+              transactionId: "move-root",
             },
           ],
           schema: "poietra.apply-studio-bound-entity-edit",

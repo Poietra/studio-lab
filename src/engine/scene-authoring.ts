@@ -5,6 +5,24 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 
 type StudioAuthoringOrigin = "direct-manipulation" | "fixture" | "remote-model" | "studio-default";
+type StudioAuthoringAnchorSourceV1 =
+  | Readonly<{ kind: "absolute"; seconds: number | null }>
+  | Readonly<{ kind: "playhead"; referenceSeconds: number | null }>
+  | Readonly<{ kind: "unsupported" }>;
+type StudioAuthoringProgramV1<Operation> = Readonly<{
+  anchorCapturedPlayhead: number;
+  anchorResolvedSeconds: number;
+  anchorSource: StudioAuthoringAnchorSourceV1;
+  intentCount: number;
+  loweringSupported: boolean;
+  operations: readonly Operation[];
+  origin: StudioAuthoringOrigin;
+  requestedExecution: "parallel" | "sequence";
+  scheduleEdgeCount: number;
+  scheduleMode: "dependency-dag" | "parallel" | "sequence";
+  scheduleOrder: readonly string[];
+  transactionId: string;
+}>;
 
 type StudioBoundEntityEditOperationV1 = Readonly<{
   dependsOn: readonly string[];
@@ -35,7 +53,6 @@ type StudioBoundEntityEditOperationV1 = Readonly<{
   );
 
 export type ApplyStudioBoundEntityEditWireCommandV1 = Readonly<{
-  baseStudioSceneId: string;
   candidates: readonly Readonly<{
     baseCenter: Readonly<{ x: number; y: number }>;
     baseOpacity: number | null;
@@ -46,28 +63,10 @@ export type ApplyStudioBoundEntityEditWireCommandV1 = Readonly<{
     sourceAnchor: number;
     studioEntityId: string;
   }>[];
-  evaluatedDuration: number;
-  evaluatedSceneId: string;
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
   nextRevision: string;
-  programs: readonly Readonly<{
-    anchorCapturedPlayhead: number;
-    anchorResolvedSeconds: number;
-    anchorSource:
-      | Readonly<{ kind: "absolute"; seconds: number | null }>
-      | Readonly<{ kind: "playhead"; referenceSeconds: number | null }>
-      | Readonly<{ kind: "unsupported" }>;
-    intentCount: number;
-    loweringSupported: boolean;
-    operations: readonly StudioBoundEntityEditOperationV1[];
-    origin: StudioAuthoringOrigin;
-    requestedExecution: "parallel" | "sequence";
-    scheduleEdgeCount: number;
-    scheduleMode: "dependency-dag" | "parallel" | "sequence";
-    scheduleOrder: readonly string[];
-    validationValid: boolean;
-  }>[];
+  programs: readonly StudioAuthoringProgramV1<StudioBoundEntityEditOperationV1>[];
   schema: "poietra.apply-studio-bound-entity-edit";
   version: 1;
   viewport: Readonly<{ height: number; width: number }>;
@@ -80,14 +79,11 @@ export type ApplyStudioBoundEntityEditCompiler = (
 type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
-  anchorSeconds: number;
+  dependsOn: readonly string[];
   entityId: string;
   id: string;
   interval: Readonly<{ end: number; start: number }>;
-  loweringSupported: boolean;
   origin: StudioAuthoringOrigin;
-  programOrigin: StudioAuthoringOrigin;
-  validationValid: boolean;
 }> &
   (
     | Readonly<{ kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
@@ -114,7 +110,7 @@ export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
   nextRevision: string;
-  operations: readonly StaticRootTransformOperation[];
+  programs: readonly StudioAuthoringProgramV1<StaticRootTransformOperation>[];
   schema: "poietra.apply-static-root-transform-edit";
   sourceRuntimeBindings: readonly Readonly<{
     runtimeEntityId: string;
@@ -142,6 +138,7 @@ export type ApplyStaticRootTransformEditCompiler = (
 ) => Promise<SceneIrBundleV1>;
 
 type StudioTimelineOperationV1 = Readonly<{
+  dependsOn: readonly string[];
   id: string;
   interval: Readonly<{ end: number; start: number }>;
   origin: StudioAuthoringOrigin;
@@ -162,20 +159,9 @@ type StudioTimelineOperationV1 = Readonly<{
   );
 
 export type ApplyStudioTimelineEditWireCommandV1 = Readonly<{
-  baseStudioSceneId: string;
-  evaluatedDuration: number;
-  evaluatedSceneId: string;
   expectedBaseRevision: string;
   nextRevision: string;
-  programs: readonly Readonly<{
-    absoluteSourceSeconds: number | null;
-    loweringSupported: boolean;
-    operations: readonly StudioTimelineOperationV1[];
-    origin: StudioAuthoringOrigin;
-    resolvedSeconds: number;
-    scheduleOrder: readonly string[];
-    validationValid: boolean;
-  }>[];
+  programs: readonly StudioAuthoringProgramV1<StudioTimelineOperationV1>[];
   schema: "poietra.apply-studio-timeline-edit";
   version: 1;
 }>;
@@ -188,9 +174,11 @@ export type ApplyStudioTimelineEditCompiler = (
 type StudioCreationDimensionsV1 = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StudioCreationEntityKindV1 = "circle" | "image" | "math-tex" | "other" | "rectangle";
 type StudioCreationOperationV1 = Readonly<{
+  dependsOn: readonly string[];
   entityId?: string;
   id: string;
   interval: Readonly<{ end: number; start: number }>;
+  origin: StudioAuthoringOrigin;
 }> &
   (
     | Readonly<{
@@ -198,6 +186,7 @@ type StudioCreationOperationV1 = Readonly<{
           dimensions: StudioCreationDimensionsV1;
           id: string;
           kind: StudioCreationEntityKindV1;
+          lifetimeEnd: number | null;
           lifetimeStart: number;
           texParts: readonly string[] | null;
         }>;
@@ -205,9 +194,19 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
-    | Readonly<{ entityId: string; kind: "uniform-scale"; relativeFactor: number | null }>
+    | Readonly<{
+        controlPresent: boolean;
+        entityId: string;
+        from: number | null;
+        kind: "uniform-scale";
+        relativeFactor: number | null;
+        to: number | null;
+      }>
     | Readonly<{
         entityId: string;
+        fromDimensions: StudioCreationDimensionsV1;
+        fromPosition: Readonly<{ x: number; y: number }>;
+        fromScale: number;
         kind: "resize";
         shape: StudioCreationEntityKindV1;
         toDimensions: StudioCreationDimensionsV1;
@@ -217,21 +216,6 @@ type StudioCreationOperationV1 = Readonly<{
   );
 
 export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
-  evaluatedDuration: number;
-  evaluatedEntities: readonly Readonly<{
-    contentSampleTexParts: readonly (readonly string[] | null)[];
-    id: string;
-    kind: StudioCreationEntityKindV1;
-    lifetimes: readonly Readonly<{ end: number; start: number }>[];
-    objectGraphKey: string;
-    sourceIdentity: string | null;
-    contentTexParts: readonly string[] | null;
-    transactionId: string | null;
-  }>[];
-  evaluatedEvents: readonly Readonly<{
-    interval: Readonly<{ end: number; start: number }> | null;
-    operationId: string | null;
-  }>[];
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
   mathTexOutlines: readonly Readonly<{
@@ -240,14 +224,7 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
     texParts: readonly string[];
   }>[];
   nextRevision: string;
-  programs: readonly Readonly<{
-    anchorSeconds: number;
-    loweringSupported: boolean;
-    operations: readonly StudioCreationOperationV1[];
-    scheduleOrder: readonly string[];
-    transactionId: string;
-    validationValid: boolean;
-  }>[];
+  programs: readonly StudioAuthoringProgramV1<StudioCreationOperationV1>[];
   schema: "poietra.apply-studio-creation-edit";
   version: 1;
   viewport: Readonly<{ height: number; width: number }>;
@@ -259,6 +236,7 @@ export type ApplyStudioCreationEditCompiler = (
 ) => Promise<SceneIrBundleV1>;
 
 type StudioMotionOperationV1 = Readonly<{
+  dependsOn: readonly string[];
   id: string;
   interval: Readonly<{ end: number; start: number }>;
   origin: StudioAuthoringOrigin;
@@ -275,20 +253,10 @@ type StudioMotionOperationV1 = Readonly<{
   );
 
 export type ApplyStudioMotionEditWireCommandV1 = Readonly<{
-  baseStudioSceneId: string;
-  evaluatedDuration: number;
-  evaluatedSceneId: string;
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
   nextRevision: string;
-  programs: readonly Readonly<{
-    anchorSeconds: number;
-    loweringSupported: boolean;
-    operations: readonly StudioMotionOperationV1[];
-    origin: StudioAuthoringOrigin;
-    scheduleOrder: readonly string[];
-    validationValid: boolean;
-  }>[];
+  programs: readonly StudioAuthoringProgramV1<StudioMotionOperationV1>[];
   schema: "poietra.apply-studio-motion-edit";
   sourceRuntimeBindings: readonly Readonly<{
     runtimeEntityId: string;

@@ -410,8 +410,6 @@ describe("source-bound endpoint compilation", () => {
       })),
     );
     expect(commands[0]).toMatchObject({
-      baseStudioSceneId: candidate.studioSceneId,
-      evaluatedSceneId: candidate.studioSceneId,
       expectedBaseRevision: snapshot.correlation.engineRevisionHash,
       nextRevision,
       programs: [
@@ -435,7 +433,6 @@ describe("source-bound endpoint compilation", () => {
           requestedExecution: "parallel",
           scheduleEdgeCount: 0,
           scheduleMode: "parallel",
-          validationValid: true,
         },
       ],
       schema: "poietra.apply-studio-bound-entity-edit",
