@@ -347,6 +347,13 @@ type StudioCreationOperationV1 = Readonly<{
         toDimensions: StudioCreationDimensionsV1;
         toPosition: Readonly<{ x: number; y: number }>;
       }>
+    | Readonly<{
+        controlOffset: Readonly<{ x: number; y: number }>;
+        delta: Readonly<{ x: number; y: number }>;
+        easing: "linear" | "smooth";
+        kind: "create-motion";
+        targetEntityIds: readonly string[];
+      }>
     | Readonly<{ kind: "unsupported" }>
   );
 

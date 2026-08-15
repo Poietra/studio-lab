@@ -593,16 +593,17 @@ class GroupedEquation(Scene):
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(temporalMetadataSource);
   });
 
-  it("rejects a generated entity motion until Rust authorizes the complete batch", async () => {
+  it("routes generated entity motion through the Rust creation planner", async () => {
     const { manager } = await fixture();
-    const creation = createCircleProgram();
+    const creation = rustAuthorizableCircleCreationProgram("batch-create");
     const entityId = "tx:batch-create/entity:circle";
     const movement = motionProgram(7, "batch-move-created", entityId);
+    const renderRequest = batchRequest([creation, movement]);
+    await installVerifiedSnapshot(manager, renderRequest);
 
-    await expect(manager.exportSource(batchRequest([creation, movement]))).rejects.toMatchObject({
-      message: "The Rust Scene core does not support this complete Program batch.",
-      status: 400,
-    });
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(exported.source.indexOf("Circle(radius=1)")).toBeLessThan(exported.source.indexOf(".animate.shift("));
   });
 
   it("routes a complete Studio-created Circle scale and delete batch through the Rust creation planner", async () => {

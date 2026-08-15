@@ -75,6 +75,7 @@ function isStudioCreationProgramBatch(programs: readonly CanonicalEditProgram[])
       }
       return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
     }
+    if (operation.kind === "CreateMotion") return true;
     if (!("entityId" in operation) || !createdEntityIds.has(operation.entityId)) return false;
     return (
       operation.kind === "ResizeEntity" ||

@@ -77,6 +77,7 @@ struct EditSceneTimelineCommand {
 struct CreateSceneEntitiesCommand {
     entities: Vec<CreateSceneEntity>,
     expected_base_revision: String,
+    motions: Vec<PlannedSceneMotion>,
     next_revision: String,
     persistent_removals: Vec<PersistentSceneRemoval>,
     provenance: ProvenanceRecordV1,
@@ -982,6 +983,12 @@ pub enum StudioCreationOperationKind {
     PersistentRemove {
         persistent: bool,
     },
+    CreateMotion {
+        control_offset: PointV1,
+        delta: PointV1,
+        easing: StudioMotionEasing,
+        target_entity_ids: Vec<String>,
+    },
     Unsupported,
 }
 
@@ -1059,6 +1066,8 @@ pub enum CreateSceneEntitiesError {
     InvalidFade,
     #[error("a created entity instant transform must be finite, positive, and inside its lifetime")]
     InvalidInstantTransform,
+    #[error(transparent)]
+    Motion(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
     PersistentRemove(#[from] ApplyStudioPersistentRemoveError),
     #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
@@ -2123,6 +2132,7 @@ fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Resize { .. }
             | StudioCreationOperationKind::PersistentRemove { .. }
+            | StudioCreationOperationKind::CreateMotion { .. }
             | StudioCreationOperationKind::Unsupported => None,
         })
         .collect::<Vec<_>>();
@@ -2152,6 +2162,93 @@ fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
         )
 }
 
+fn closed_studio_creation_motion_operations(
+    program: &StudioCreationProgram,
+    scene_duration: f64,
+) -> Option<Vec<&StudioCreationOperation>> {
+    let mut operations = program
+        .schedule_order
+        .iter()
+        .map(|operation_id| {
+            program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !studio_creation_program_is_closed(program)
+        || operations.iter().any(|operation| {
+            operation.entity_id.is_some()
+                || !matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+                || !operation.interval.start.is_finite()
+                || !operation.interval.end.is_finite()
+                || operation.interval.start < 0.0
+                || operation.interval.start >= operation.interval.end
+                || operation.interval.end > scene_duration + TIMELINE_ANCHOR_EPSILON
+        })
+    {
+        return None;
+    }
+
+    if program.requested_execution == StudioProgramExecution::Parallel {
+        operations.sort_by(|left, right| left.interval.start.total_cmp(&right.interval.start));
+    }
+    let first = *operations.first()?;
+    if (program.anchor_resolved_seconds - first.interval.start).abs() > TIMELINE_ANCHOR_EPSILON {
+        return None;
+    }
+
+    match program.requested_execution {
+        StudioProgramExecution::Sequence => {
+            if operations
+                .windows(2)
+                .any(|pair| pair[1].interval.start < pair[0].interval.end - TIMELINE_ANCHOR_EPSILON)
+            {
+                return None;
+            }
+        }
+        StudioProgramExecution::Parallel => {
+            let StudioCreationOperationKind::CreateMotion { easing, .. } = &first.kind else {
+                return None;
+            };
+            if program.schedule_mode != StudioProgramScheduleMode::Parallel {
+                return None;
+            }
+            let mut bucket_start = first.interval.start;
+            let mut bucket_end = first.interval.end;
+            let mut bucket_easing = *easing;
+            for operation in operations.iter().skip(1) {
+                let StudioCreationOperationKind::CreateMotion {
+                    easing: candidate_easing,
+                    ..
+                } = &operation.kind
+                else {
+                    return None;
+                };
+                if (operation.interval.start - bucket_start).abs() <= TIMELINE_ANCHOR_EPSILON {
+                    if *candidate_easing != bucket_easing
+                        || (operation.interval.end - bucket_end).abs() > TIMELINE_ANCHOR_EPSILON
+                    {
+                        return None;
+                    }
+                    bucket_end = bucket_end.max(operation.interval.end);
+                } else {
+                    if operation.interval.start < bucket_end - TIMELINE_ANCHOR_EPSILON {
+                        return None;
+                    }
+                    bucket_start = operation.interval.start;
+                    bucket_end = operation.interval.end;
+                    bucket_easing = *candidate_easing;
+                }
+            }
+        }
+    }
+    Some(operations)
+}
+
 fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram) -> bool {
     let operations = program
         .operations
@@ -2173,11 +2270,13 @@ fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram)
 }
 
 struct PendingStudioCreation {
+    creation_program_rank: usize,
     current_dimensions: StudioAuthoringDimensions,
     fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,
     instant_at: Option<f64>,
+    has_position_or_resize_instant: bool,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
     persistent_removal: Option<PersistentSceneRemoval>,
@@ -2214,6 +2313,28 @@ fn record_studio_creation_instant(
     }
     state.instant_at = Some(instant_at);
     Ok(())
+}
+
+fn studio_creation_motion_is_compatible(
+    state: &PendingStudioCreation,
+    motion: &PlannedSceneMotion,
+) -> bool {
+    let fade_end = state.fade_interval.as_ref().map(|interval| interval.end);
+    !state.has_position_or_resize_instant
+        && motion.interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+        && motion.interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+        && fade_end.is_none_or(|end| motion.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        && state
+            .instant_at
+            .is_none_or(|at| at >= motion.interval.end - TIMELINE_ANCHOR_EPSILON)
+        && state.persistent_removal.as_ref().is_none_or(|removal| {
+            removal.interval.start >= motion.interval.end - TIMELINE_ANCHOR_EPSILON
+                && state
+                    .instant_at
+                    .is_none_or(|at| removal.interval.start >= at - TIMELINE_ANCHOR_EPSILON)
+                && fade_end
+                    .is_none_or(|end| removal.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        })
 }
 
 fn static_transform_geometry_matches(
@@ -3444,6 +3565,89 @@ fn stitched_motion_keyframes(
     Ok(keyframes)
 }
 
+fn append_planned_scene_motions(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    motions: &[PlannedSceneMotion],
+    provenance_id: &str,
+) -> Result<(), ApplyStudioMotionEditError> {
+    if motions.is_empty() {
+        return Ok(());
+    }
+    let mut entity_order = Vec::new();
+    let mut entity_paths = BTreeMap::<String, PlannedEntityMotionPath>::new();
+    for motion in motions {
+        for entity_id in &motion.target_entity_ids {
+            if !entity_paths.contains_key(entity_id) {
+                let entity = scene
+                    .entities
+                    .iter()
+                    .find(|entity| entity.id == *entity_id)
+                    .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
+                let start = PointV1 {
+                    x: entity.transform.tx,
+                    y: entity.transform.ty,
+                };
+                entity_order.push(entity_id.clone());
+                entity_paths.insert(
+                    entity_id.clone(),
+                    PlannedEntityMotionPath {
+                        current: start.clone(),
+                        segments: Vec::new(),
+                        start,
+                    },
+                );
+            }
+            let path = entity_paths
+                .get_mut(entity_id)
+                .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
+            let segment =
+                quadratic_motion_segment(&path.current, &motion.delta, &motion.control_offset);
+            path.current = segment.end.clone();
+            path.segments.push(PlannedEntityMotionSegment {
+                easing: motion.easing,
+                interval: motion.interval.clone(),
+                segment,
+            });
+        }
+    }
+
+    for entity_id in entity_order {
+        let path = entity_paths
+            .remove(&entity_id)
+            .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
+        let channel_id = unused_channel_id(scene, "studio-motion");
+        scene
+            .animation_channels
+            .push(AnimationChannelV1::MotionPath {
+                entity_id,
+                id: channel_id,
+                keyframes: stitched_motion_keyframes(&path.start, &path.segments)?,
+                orient_to_path: false,
+                parameterization: Some(MotionPathParameterizationV1::ManimPointFromProportionV1),
+                path: CubicPathV1 {
+                    subpaths: vec![CubicSubpathV1 {
+                        closed: false,
+                        segments: path
+                            .segments
+                            .into_iter()
+                            .map(|planned| planned.segment)
+                            .collect(),
+                        start: path.start,
+                    }],
+                },
+                provenance_id: provenance_id.to_owned(),
+            });
+    }
+    let mut capabilities = scene
+        .required_capabilities
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    capabilities.insert(SceneCapabilityV1::MotionPathAnimation);
+    scene.required_capabilities = capabilities.into_iter().collect();
+    Ok(())
+}
+
 #[allow(
     clippy::float_cmp,
     reason = "exact zero distinguishes a visible motion command from a no-op"
@@ -3780,8 +3984,6 @@ impl EngineSessionV1 {
                 ],
             };
         }
-        candidate.scene.provenance.push(command.provenance.clone());
-
         let first_scene_order = candidate
             .scene
             .entities
@@ -3815,6 +4017,12 @@ impl EngineSessionV1 {
             source_z_index += 1.0;
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        candidate.scene.provenance.push(command.provenance.clone());
+        append_planned_scene_motions(
+            &mut candidate.scene,
+            &command.motions,
+            &command.provenance.id,
+        )?;
         let persistent_remove_projection = if command.persistent_removals.is_empty() {
             StudioPersistentRemoveProjection::default()
         } else {
@@ -3842,7 +4050,7 @@ impl EngineSessionV1 {
     /// # Errors
     ///
     /// Returns `Unsupported` when the normalized Programs do not describe the supported
-    /// create/position/fade, instant transform, and persistent-remove subset. Every failure
+    /// create/position/fade, motion, instant transform, and persistent-remove subset. Every failure
     /// preserves the installed session.
     #[allow(
         clippy::float_cmp,
@@ -3924,6 +4132,24 @@ impl EngineSessionV1 {
                     .iter()
                     .filter(|operation| {
                         matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    })
+                    .map(|operation| operation.interval.end)
+                    .fold(program.anchor_resolved_seconds, f64::max)
+                    - program.anchor_resolved_seconds
+            } else if program.operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            }) {
+                program
+                    .operations
+                    .iter()
+                    .filter(|operation| {
+                        matches!(
+                            operation.kind,
+                            StudioCreationOperationKind::CreateMotion { .. }
+                        )
                     })
                     .map(|operation| operation.interval.end)
                     .fold(program.anchor_resolved_seconds, f64::max)
@@ -4030,6 +4256,7 @@ impl EngineSessionV1 {
                     StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
                     | StudioCreationOperationKind::PersistentRemove { .. }
+                    | StudioCreationOperationKind::CreateMotion { .. }
                     | StudioCreationOperationKind::Unsupported => true,
                 })
             {
@@ -4058,6 +4285,7 @@ impl EngineSessionV1 {
                     | StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
                     | StudioCreationOperationKind::PersistentRemove { .. }
+                    | StudioCreationOperationKind::CreateMotion { .. }
                     | StudioCreationOperationKind::Unsupported => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -4219,11 +4447,13 @@ impl EngineSessionV1 {
             pending.push((
                 creation_order,
                 PendingStudioCreation {
+                    creation_program_rank: program_ranks[program_index],
                     current_dimensions: spec.dimensions,
                     fade_interval,
                     initial_dimensions: spec.dimensions,
                     initial_position: (*positions[0]).clone(),
                     instant_at: None,
+                    has_position_or_resize_instant: false,
                     kind: spec.kind,
                     lifetime,
                     persistent_removal: None,
@@ -4235,8 +4465,91 @@ impl EngineSessionV1 {
         }
         pending.sort_by_key(|(evaluated_order, _)| *evaluated_order);
 
+        let mut planned_motions = Vec::new();
         for program_index in followup_programs {
             let program = &programs[program_index];
+            let contains_motion = program.operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            });
+            if contains_motion {
+                if program.operations.iter().any(|operation| {
+                    !matches!(
+                        operation.kind,
+                        StudioCreationOperationKind::CreateMotion { .. }
+                    )
+                }) {
+                    return Err(ApplyStudioCreationEditError::Unsupported);
+                }
+                let operations = closed_studio_creation_motion_operations(program, base_duration)
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                let mut parallel_bucket_start: Option<f64> = None;
+                let mut parallel_targets = BTreeSet::new();
+                for operation in operations {
+                    let StudioCreationOperationKind::CreateMotion {
+                        control_offset,
+                        delta,
+                        easing,
+                        target_entity_ids,
+                    } = &operation.kind
+                    else {
+                        unreachable!();
+                    };
+                    if target_entity_ids.is_empty()
+                        || !control_offset.x.is_finite()
+                        || !control_offset.y.is_finite()
+                        || !delta.x.is_finite()
+                        || !delta.y.is_finite()
+                        || (control_offset.x == 0.0
+                            && control_offset.y == 0.0
+                            && delta.x == 0.0
+                            && delta.y == 0.0)
+                    {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
+                    if program.requested_execution == StudioProgramExecution::Parallel
+                        && parallel_bucket_start.is_none_or(|bucket_start| {
+                            (operation.interval.start - bucket_start).abs()
+                                > TIMELINE_ANCHOR_EPSILON
+                        })
+                    {
+                        parallel_bucket_start = Some(operation.interval.start);
+                        parallel_targets.clear();
+                    }
+                    let mut operation_targets = BTreeSet::new();
+                    for entity_id in target_entity_ids {
+                        let state = pending
+                            .iter()
+                            .find(|(_, state)| state.spec.id == *entity_id)
+                            .map(|(_, state)| state)
+                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                        if state.creation_program_rank >= program_ranks[program_index]
+                            || !operation_targets.insert(entity_id.as_str())
+                            || (program.requested_execution == StudioProgramExecution::Parallel
+                                && !parallel_targets.insert(entity_id.clone()))
+                        {
+                            return Err(ApplyStudioCreationEditError::Unsupported);
+                        }
+                    }
+                    planned_motions.push(PlannedSceneMotion {
+                        control_offset: studio_vector_to_scene_vector(
+                            control_offset,
+                            frame,
+                            viewport,
+                        ),
+                        delta: studio_vector_to_scene_vector(delta, frame, viewport),
+                        easing: *easing,
+                        interval: IntervalV1 {
+                            end: operation.interval.end + program_offsets[program_index],
+                            start: operation.interval.start + program_offsets[program_index],
+                        },
+                        target_entity_ids: target_entity_ids.clone(),
+                    });
+                }
+                continue;
+            }
             let contains_persistent_remove = program.operations.iter().any(|operation| {
                 matches!(
                     operation.kind,
@@ -4290,6 +4603,7 @@ impl EngineSessionV1 {
                             &program_ranks,
                             &ranked_insertions,
                         )?;
+                        state.has_position_or_resize_instant = true;
                         state.position = position.clone();
                     }
                     StudioCreationOperationKind::UniformScale {
@@ -4356,6 +4670,7 @@ impl EngineSessionV1 {
                             &program_ranks,
                             &ranked_insertions,
                         )?;
+                        state.has_position_or_resize_instant = true;
                         state.current_dimensions = *to_dimensions;
                         state.position = to_position.clone();
                     }
@@ -4393,6 +4708,7 @@ impl EngineSessionV1 {
                     | StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
                     | StudioCreationOperationKind::PersistentRemove { .. }
+                    | StudioCreationOperationKind::CreateMotion { .. }
                     | StudioCreationOperationKind::Unsupported => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -4400,6 +4716,18 @@ impl EngineSessionV1 {
             }
         }
 
+        for motion in &planned_motions {
+            for entity_id in &motion.target_entity_ids {
+                let state = pending
+                    .iter()
+                    .find(|(_, state)| state.spec.id == *entity_id)
+                    .map(|(_, state)| state)
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                if !studio_creation_motion_is_compatible(state, motion) {
+                    return Err(ApplyStudioCreationEditError::Unsupported);
+                }
+            }
+        }
         let timeline_insertions = ranked_insertions
             .into_iter()
             .map(|(_, insertion)| insertion)
@@ -4513,11 +4841,12 @@ impl EngineSessionV1 {
         self.create_scene_entities(CreateSceneEntitiesCommand {
             entities,
             expected_base_revision,
+            motions: planned_motions,
             next_revision: next_revision.clone(),
             persistent_removals,
             provenance: ProvenanceRecordV1 {
                 evidence: vec![format!(
-                    "{} validated Studio Program(s) with {operation_count} operation(s) lowered as one atomic creation/transform/persistent-remove core command",
+                    "{} validated Studio Program(s) with {operation_count} operation(s) lowered as one atomic creation/motion/transform/persistent-remove core command",
                     programs.len()
                 )],
                 id: format!("studio-create:{next_revision}"),
@@ -5241,46 +5570,6 @@ impl EngineSessionV1 {
         next_revision: String,
     ) -> Result<SceneIrBundleV1, ApplyStudioMotionEditError> {
         let scene = self.scene();
-        let mut entity_order = Vec::new();
-        let mut entity_paths = BTreeMap::<String, PlannedEntityMotionPath>::new();
-        for motion in motions {
-            for entity_id in &motion.target_entity_ids {
-                if !entity_paths.contains_key(entity_id) {
-                    let entity = scene
-                        .entities
-                        .iter()
-                        .find(|entity| entity.id == *entity_id)
-                        .ok_or_else(|| {
-                            ApplyStudioMotionEditError::TargetMissing(entity_id.clone())
-                        })?;
-                    let start = PointV1 {
-                        x: entity.transform.tx,
-                        y: entity.transform.ty,
-                    };
-                    entity_order.push(entity_id.clone());
-                    entity_paths.insert(
-                        entity_id.clone(),
-                        PlannedEntityMotionPath {
-                            current: start.clone(),
-                            segments: Vec::new(),
-                            start,
-                        },
-                    );
-                }
-                let path = entity_paths
-                    .get_mut(entity_id)
-                    .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
-                let segment =
-                    quadratic_motion_segment(&path.current, &motion.delta, &motion.control_offset);
-                path.current = segment.end.clone();
-                path.segments.push(PlannedEntityMotionSegment {
-                    easing: motion.easing,
-                    interval: motion.interval.clone(),
-                    segment,
-                });
-            }
-        }
-
         let mut candidate = SceneIrBundleV1 {
             assets: self.assets().clone(),
             scene: scene.clone(),
@@ -5289,44 +5578,7 @@ impl EngineSessionV1 {
             insert_scene_time(&mut candidate.scene, insertion);
         }
         candidate.scene.provenance.push(provenance.clone());
-        for entity_id in entity_order {
-            let path = entity_paths
-                .remove(&entity_id)
-                .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
-            let channel_id = unused_channel_id(&candidate.scene, "studio-motion");
-            candidate
-                .scene
-                .animation_channels
-                .push(AnimationChannelV1::MotionPath {
-                    entity_id,
-                    id: channel_id,
-                    keyframes: stitched_motion_keyframes(&path.start, &path.segments)?,
-                    orient_to_path: false,
-                    parameterization: Some(
-                        MotionPathParameterizationV1::ManimPointFromProportionV1,
-                    ),
-                    path: CubicPathV1 {
-                        subpaths: vec![CubicSubpathV1 {
-                            closed: false,
-                            segments: path
-                                .segments
-                                .into_iter()
-                                .map(|planned| planned.segment)
-                                .collect(),
-                            start: path.start,
-                        }],
-                    },
-                    provenance_id: provenance.id.clone(),
-                });
-        }
-        let mut capabilities = candidate
-            .scene
-            .required_capabilities
-            .iter()
-            .copied()
-            .collect::<BTreeSet<_>>();
-        capabilities.insert(SceneCapabilityV1::MotionPathAnimation);
-        candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        append_planned_scene_motions(&mut candidate.scene, motions, &provenance.id)?;
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
             revision_hash: next_revision,
@@ -7101,6 +7353,7 @@ mod tests {
                 },
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            motions: vec![],
             next_revision: NEXT_REVISION.to_owned(),
             persistent_removals: vec![],
             provenance: ProvenanceRecordV1 {
@@ -7250,6 +7503,40 @@ mod tests {
                 height: 360.0,
                 width: 640.0,
             },
+        }
+    }
+
+    fn studio_created_motion_program(target_entity_ids: Vec<String>) -> StudioCreationProgram {
+        StudioCreationProgram {
+            anchor_captured_playhead: 1.0,
+            anchor_resolved_seconds: 1.0,
+            anchor_source: StudioProgramAnchorSource::Playhead {
+                reference_seconds: Some(1.0),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: None,
+                id: "move-created".to_owned(),
+                interval: IntervalV1 {
+                    end: 2.0,
+                    start: 1.0,
+                },
+                kind: StudioCreationOperationKind::CreateMotion {
+                    control_offset: PointV1 { x: 0.0, y: -160.0 },
+                    delta: PointV1 { x: 240.0, y: -80.0 },
+                    easing: StudioMotionEasing::Smooth,
+                    target_entity_ids,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: StudioProgramExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Sequence,
+            schedule_order: vec!["move-created".to_owned()],
+            transaction_id: "move-created".to_owned(),
         }
     }
 
@@ -8253,6 +8540,190 @@ mod tests {
         assert_eq!(session.scene(), &result.scene);
         assert_eq!(session.assets(), &result.assets);
         assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "exact authored intervals and endpoints verify the atomic creation motion"
+    )]
+    fn normalized_creation_applies_and_samples_a_later_motion() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command
+            .programs
+            .push(studio_created_motion_program(vec![entity_id.to_owned()]));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let motion = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id: target,
+                    keyframes,
+                    path,
+                    ..
+                } if target == entity_id => Some((keyframes, path)),
+                _ => None,
+            })
+            .unwrap();
+
+        assert_eq!(result.bundle.scene.duration, base_duration + 1.4);
+        assert_eq!(
+            motion
+                .0
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            vec![1.4, 2.4]
+        );
+        assert_eq!(motion.1.subpaths[0].start, PointV1 { x: 0.0, y: 0.0 });
+        assert_eq!(
+            motion.1.subpaths[0].segments[0].end,
+            PointV1 { x: 6.0, y: 2.0 }
+        );
+
+        let sampled_position = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "created-motion-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            match packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == entity_id)
+                .unwrap()
+            {
+                poietra_scene_ir::RenderDrawV1::Path { transform, .. } => PointV1 {
+                    x: transform.tx,
+                    y: transform.ty,
+                },
+                _ => panic!("created motion target must remain a path draw"),
+            }
+        };
+        for (time, expected) in [
+            (1.4, PointV1 { x: 0.0, y: 0.0 }),
+            (1.9, PointV1 { x: 3.0, y: 3.0 }),
+            (2.4, PointV1 { x: 6.0, y: 2.0 }),
+        ] {
+            let sampled = sampled_position(time);
+            assert!((sampled.x - expected.x).abs() < 1e-10, "time={time}");
+            assert!((sampled.y - expected.y).abs() < 1e-10, "time={time}");
+        }
+        assert_eq!(session.scene(), &result.bundle.scene);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+    }
+
+    #[test]
+    fn normalized_creation_rejects_a_later_mixed_motion_atomically() {
+        let bundle = static_imported_bundle();
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command.programs.push(studio_created_motion_program(vec![
+            "tx:create/entity:circle".to_owned(),
+            "later".to_owned(),
+        ]));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        assert!(matches!(
+            session.apply_studio_creation_edit(command),
+            Err(ApplyStudioCreationEditError::Unsupported)
+        ));
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the normalized batch produces exact stored timeline and transform values"
+    )]
+    fn normalized_creation_composes_motion_then_scale_and_remove() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs[1].operations[0].kind = StudioCreationOperationKind::UniformScale {
+            control_present: false,
+            from: Some(1.0),
+            relative_factor: Some(1.5),
+            to: Some(1.5),
+        };
+        let mut motion = studio_created_motion_program(vec![entity_id.to_owned()]);
+        motion.anchor_captured_playhead = 0.75;
+        motion.anchor_resolved_seconds = 0.75;
+        motion.anchor_source = StudioProgramAnchorSource::Playhead {
+            reference_seconds: Some(0.75),
+        };
+        motion.operations[0].interval = IntervalV1 {
+            end: 1.75,
+            start: 0.75,
+        };
+        command.programs.insert(1, motion);
+        command
+            .programs
+            .push(studio_persistent_remove_program(entity_id, 1.8, 2.0));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        assert_eq!(result.bundle.scene.duration, 3.4);
+        assert_eq!(result.persistent_remove_projection.removals.len(), 1);
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::MotionPath {
+                            entity_id: target,
+                            keyframes,
+                            ..
+                        } if target == entity_id
+                            && keyframes[0].at == 1.15
+                            && keyframes[1].at == 2.15
+                    )
+                })
+        );
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform {
+                            entity_id: target,
+                            keyframes,
+                            ..
+                        } if target == entity_id
+                            && keyframes[0].at == 2.25
+                            && keyframes[0].value.m11 == 1.5
+                            && keyframes[0].value.m22 == 1.5
+                    )
+                })
+        );
+        assert_eq!(session.scene(), &result.bundle.scene);
     }
 
     #[test]

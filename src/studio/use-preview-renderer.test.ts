@@ -1706,11 +1706,31 @@ describe("compileStudioPreviewSceneV1", () => {
       ...proposedState.base,
       appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
     });
+    const motion = validateMotionProgramFixture({
+      capturedPlayhead: 0.5,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1.5, start: 0.5 },
+      scene: created.evaluatedScene,
+      targetEntityIds: creation.entityIds,
+      transactionId: "move-created-circle",
+    });
+    expect(motion.kind, JSON.stringify(motion.issues)).toBe("valid");
+    if (motion.kind !== "valid") throw new Error("Created-entity motion fixture did not validate.");
+    const motionOperation = motion.program.operations[0];
+    if (motionOperation?.kind !== "CreateMotion") throw new Error("Created-entity motion fixture is malformed.");
+    const moved = evaluateWorkingState({
+      ...proposedState.base,
+      appliedPrograms: [
+        programRecord(creation.validation.program, creation.validation),
+        programRecord(motion.program, motion),
+      ],
+    });
     const scale = createDirectManipulationScaleProgram({
       capturedPlayhead: 0.5,
       interval: { end: 0.5, start: 0.5 },
       scales: { [creation.entityIds[0]!]: { from: 1, to: 1.5 } },
-      scene: created.evaluatedScene,
+      scene: moved.evaluatedScene,
       targetEntityIds: creation.entityIds,
       transactionId: "scale-created-circle",
     });
@@ -1719,6 +1739,7 @@ describe("compileStudioPreviewSceneV1", () => {
       ...proposedState.base,
       appliedPrograms: [
         programRecord(creation.validation.program, creation.validation),
+        programRecord(motion.program, motion),
         programRecord(scale.program, scale),
       ],
     });
@@ -1746,12 +1767,17 @@ describe("compileStudioPreviewSceneV1", () => {
       ],
     } as const;
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+    let motionCompilerCalls = 0;
     let staticCompilerCalls = 0;
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
         return { bundle, persistentRemoveProjection };
+      },
+      applyStudioMotionEditCompiler: async (bundle) => {
+        motionCompilerCalls += 1;
+        return bundle;
       },
       applyStaticRootTransformEditCompiler: async (bundle) => {
         staticCompilerCalls += 1;
@@ -1769,6 +1795,7 @@ describe("compileStudioPreviewSceneV1", () => {
 
     expect(result.kind).toBe("compiled");
     expect(commands).toHaveLength(1);
+    expect(motionCompilerCalls).toBe(0);
     expect(staticCompilerCalls).toBe(0);
     const command = commands[0];
     expect(command).toMatchObject({
@@ -1780,7 +1807,7 @@ describe("compileStudioPreviewSceneV1", () => {
       viewport: { height: 360, width: 640 },
     });
     expect(command?.nextRevision).toMatch(/^[0-9a-f]{64}$/);
-    expect(command?.programs).toHaveLength(3);
+    expect(command?.programs).toHaveLength(4);
     expect(command?.programs[0]).toMatchObject({
       anchorResolvedSeconds: 0.5,
       loweringSupported: true,
@@ -1800,7 +1827,20 @@ describe("compileStudioPreviewSceneV1", () => {
       interval: { end: 0.5, start: 0.5 },
       kind: "create",
     });
-    expect(command?.programs[1]?.operations[0]).toMatchObject({
+    expect(command?.programs[1]?.operations).toEqual([
+      {
+        controlOffset: motionOperation.controlOffset,
+        delta: motionOperation.delta,
+        dependsOn: motionOperation.dependsOn,
+        easing: motionOperation.easing,
+        id: motionOperation.id,
+        interval: motionOperation.interval,
+        kind: "create-motion",
+        origin: motionOperation.provenance.origin,
+        targetEntityIds: motionOperation.targetEntityIds,
+      },
+    ]);
+    expect(command?.programs[2]?.operations[0]).toMatchObject({
       controlPresent: false,
       entityId: creation.entityIds[0],
       from: 1,
@@ -1808,7 +1848,7 @@ describe("compileStudioPreviewSceneV1", () => {
       relativeFactor: 1.5,
       to: 1.5,
     });
-    expect(command?.programs[2]?.operations).toEqual([
+    expect(command?.programs[3]?.operations).toEqual([
       expect.objectContaining({
         entityId: creation.entityIds[0],
         kind: "persistent-remove",
