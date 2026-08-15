@@ -5,12 +5,12 @@ import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
-  type CreateSceneMotionWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioCreationEditCompiler,
+  createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
-  createCreateSceneMotionCompiler,
   createRotateSceneEntityCompiler,
   createSetSubtreeVectorPaintAlphaCompiler,
   createTransformSceneEntityAtTimeCompiler,
@@ -122,21 +122,39 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
   viewport: { height: 360, width: 640 },
 };
 
-const createMotionCommand: CreateSceneMotionWireCommandV1 = {
-  controlOffset: { x: 0.5, y: 1 },
-  delta: { x: 3, y: -2 },
-  easing: "smooth",
+const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
+  baseStudioSceneId: "scene.py#CircleScene",
+  evaluatedDuration: 3.5,
+  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
-  interval: { end: 2, start: 0.5 },
+  frame: { height: 9, width: 16 },
   nextRevision: "9".repeat(64),
-  provenance: {
-    evidence: ["Studio pointer motion"],
-    id: "studio-edit:motion-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.create-scene-motion",
-  targetEntityIds: ["later"],
+  programs: [
+    {
+      anchorSeconds: 0.5,
+      loweringSupported: true,
+      operations: [
+        {
+          controlOffset: { x: 20, y: -40 },
+          delta: { x: 120, y: 80 },
+          easing: "smooth",
+          id: "motion-1",
+          interval: { end: 2, start: 0.5 },
+          kind: "create-motion",
+          origin: "direct-manipulation",
+          targetEntityIds: ["source:circle"],
+        },
+      ],
+      origin: "direct-manipulation",
+      scheduleOrder: ["motion-1"],
+      validationValid: true,
+    },
+  ],
+  schema: "poietra.apply-studio-motion-edit",
+  sourceRuntimeBindings: [{ runtimeEntityId: "later", sourceIdentityKey: "circle", sourceName: "circle" }],
+  studioEntities: [{ objectGraphKey: "source:circle", provisional: false, sourceIdentity: "circle" }],
   version: 1,
+  viewport: { height: 360, width: 640 },
 };
 
 const command: RotateSceneEntityWireCommandV1 = {
@@ -345,11 +363,11 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(verifiedTransformCommand);
   });
 
-  it("forwards one exact motion command and complete base snapshot", async () => {
+  it("forwards one complete Studio motion edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createCreateSceneMotionCompiler(async () => ({
-      createSceneMotionV1: (snapshotJson, commandJson) => {
+    const compile = createApplyStudioMotionEditCompiler(async () => ({
+      applyStudioMotionEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
@@ -358,9 +376,9 @@ describe("Scene authoring WASM adapter", () => {
       },
     }));
 
-    const result = await compile(bundle, createMotionCommand);
+    const result = await compile(bundle, studioMotionEditCommand);
     expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(createMotionCommand);
+    expect(calls[1]).toEqual(studioMotionEditCommand);
   });
 
   it("forwards one exact timed root transform and complete base snapshot", async () => {

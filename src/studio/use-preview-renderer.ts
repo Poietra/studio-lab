@@ -21,13 +21,14 @@ import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioMotionEditCompiler,
+  type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
-  type CreateSceneMotionCompiler,
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
-  compileCreateSceneMotion,
   type RotateSceneEntityCompiler,
   type SetSubtreeVectorPaintAlphaCompiler,
   type TransformSceneEntityAtTimeCompiler,
@@ -35,7 +36,7 @@ import {
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
-import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
+import type { ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import type { CanonicalEditOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
@@ -68,7 +69,6 @@ import {
   studioPreviewRuntimeTraceProgramValidation,
 } from "./preview-temporal-rebase";
 import { isPointValue } from "./property-sampling";
-import { studioVectorToSceneVector } from "./scene-authoring-geometry";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
 export type StudioPreviewRendererView = Readonly<{
@@ -426,19 +426,6 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-type ImportedMotionPlan =
-  | Readonly<{ kind: "not-applicable" }>
-  | Readonly<{ kind: "unsupported"; message: string }>
-  | Readonly<{
-      controlOffset: Point;
-      delta: Point;
-      easing: "linear" | "smooth";
-      interval: Readonly<{ end: number; start: number }>;
-      kind: "authorized";
-      operationId: string;
-      runtimeEntityIds: readonly string[];
-    }>;
-
 function studioCreationEntityKind(type: string): "circle" | "image" | "math-tex" | "other" | "rectangle" {
   return type === "Circle"
     ? "circle"
@@ -504,81 +491,21 @@ function normalizedStudioCreationOperation(
   return { ...common, kind: "unsupported" };
 }
 
-function planImportedMotion(
-  input: Readonly<{
-    frame: Readonly<{ height: number; width: number }>;
-    proposedState: ProposedState;
-    snapshot: StudioVerifiedPreviewSnapshotV1;
-  }>,
-): ImportedMotionPlan {
-  const entries = input.proposedState.programs.flatMap((record) =>
-    record.program.operations.map((operation) => ({ operation, record })),
-  );
-  const motionEntries = entries.filter(
-    (
-      entry,
-    ): entry is Readonly<{
-      operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
-      record: ProgramRecord;
-    }> => entry.operation.kind === "CreateMotion",
-  );
-  if (motionEntries.length === 0) return { kind: "not-applicable" };
-  if (motionEntries.length !== 1 || entries.length !== 1) {
-    return { kind: "unsupported", message: "A canonical motion preview currently requires one CreateMotion." };
+function normalizedStudioMotionOperation(
+  operation: CanonicalEditOperation,
+): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = { id: operation.id, interval: operation.interval, origin: operation.provenance.origin };
+  if (operation.kind === "CreateMotion") {
+    return {
+      ...common,
+      controlOffset: operation.controlOffset,
+      delta: operation.delta,
+      easing: operation.easing,
+      kind: "create-motion",
+      targetEntityIds: operation.targetEntityIds,
+    };
   }
-
-  const { operation, record } = motionEntries[0]!;
-  const program = record.program;
-  const scene = input.snapshot.snapshot.scene;
-  const correlation = input.snapshot.correlation;
-  const base = input.proposedState.base;
-  if (
-    record.validation.status !== "valid" ||
-    program.loweringStatus !== "supported" ||
-    program.schedule.order.length !== 1 ||
-    program.schedule.order[0] !== operation.id ||
-    program.anchor.resolvedSeconds !== operation.interval.start ||
-    operation.provenance.origin !== program.provenance.origin
-  ) {
-    return { kind: "unsupported", message: "The motion has no validated Studio authoring authority." };
-  }
-  if (
-    scene.source.kind !== "imported-manim-server-snapshot" ||
-    !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
-    input.frame.width !== scene.camera.view.frameWidth ||
-    input.frame.height !== scene.camera.view.frameHeight
-  ) {
-    return { kind: "unsupported", message: "The motion target is not one exact imported Scene." };
-  }
-  if (
-    base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
-    base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
-    input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
-    base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
-    base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
-  ) {
-    return { kind: "unsupported", message: "Studio motion state is not correlated with the verified Scene." };
-  }
-  const baseEntities = base.runtimeSceneState.objectGraph.entities;
-  const identity = input.snapshot.sourceRuntimeIdentity;
-  const runtimeEntityIds = operation.targetEntityIds.flatMap((studioEntityId) => {
-    const studioEntity = baseEntities[studioEntityId];
-    if (!studioEntity || studioEntity.provisional || studioEntity.sourceIdentity.kind !== "known") return [];
-    const mapping = identity?.get(studioEntity.sourceIdentity.value);
-    return mapping?.sourceName === studioEntity.sourceIdentity.value ? [mapping.entityId] : [];
-  });
-  if (runtimeEntityIds.length !== operation.targetEntityIds.length) {
-    return { kind: "unsupported", message: "A motion target has no verified runtime identity." };
-  }
-  return {
-    controlOffset: studioVectorToSceneVector(operation.controlOffset, input.frame),
-    delta: studioVectorToSceneVector(operation.delta, input.frame),
-    easing: operation.easing,
-    interval: operation.interval,
-    kind: "authorized",
-    operationId: operation.id,
-    runtimeEntityIds,
-  };
+  return { ...common, kind: "unsupported" };
 }
 
 function staticRootTransformEditCommand(
@@ -693,7 +620,7 @@ function normalizedStudioTimelineOperation(
   return { ...common, kind: "unsupported" };
 }
 
-function studioTimelineSourceIsExact(
+function staticImportedSourceIsExact(
   input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
 ) {
   const scene = input.snapshot.snapshot.scene;
@@ -707,6 +634,49 @@ function studioTimelineSourceIsExact(
     base.sourceSnapshot.sourceId === correlation.context.sourcePath &&
     base.sourceSnapshot.hash === `sha256:${correlation.context.sourceHash}`
   );
+}
+
+function studioMotionEditCommand(
+  input: Readonly<{
+    frame: Readonly<{ height: number; width: number }>;
+    proposedState: ProposedState;
+    snapshot: StudioVerifiedPreviewSnapshotV1;
+  }>,
+  nextRevision: string,
+): ApplyStudioMotionEditWireCommandV1 {
+  return {
+    baseStudioSceneId: input.proposedState.base.runtimeSceneState.sceneId,
+    evaluatedDuration: input.proposedState.evaluatedScene.duration,
+    evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
+    expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+    frame: input.frame,
+    nextRevision,
+    programs: input.proposedState.programs.map(({ program, validation }) => ({
+      anchorSeconds: program.anchor.resolvedSeconds,
+      loweringSupported: program.loweringStatus === "supported",
+      operations: program.operations.map(normalizedStudioMotionOperation),
+      origin: program.provenance.origin,
+      scheduleOrder: program.schedule.order,
+      validationValid: validation.status === "valid",
+    })),
+    schema: "poietra.apply-studio-motion-edit",
+    sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
+      ([sourceIdentityKey, { entityId, sourceName }]) => ({
+        runtimeEntityId: entityId,
+        sourceIdentityKey,
+        sourceName,
+      }),
+    ),
+    studioEntities: Object.entries(input.proposedState.base.runtimeSceneState.objectGraph.entities).map(
+      ([objectGraphKey, entity]) => ({
+        objectGraphKey,
+        provisional: entity.provisional,
+        sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+      }),
+    ),
+    version: 1,
+    viewport: STUDIO_VIEWPORT,
+  };
 }
 
 function studioTimelineEditCommand(
@@ -737,8 +707,8 @@ export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
+    applyStudioMotionEditCompiler?: ApplyStudioMotionEditCompiler;
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
-    createSceneMotionCompiler?: CreateSceneMotionCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
@@ -931,7 +901,7 @@ export async function compileStudioPreviewSceneV1(
     program.operations.some(({ kind }) => kind === "InsertTimelineEvent" || kind === "TrimSceneDuration"),
   );
   if (hasStudioTimelineEdit) {
-    if (!studioTimelineSourceIsExact(input)) {
+    if (!staticImportedSourceIsExact(input)) {
       return {
         error: "The verified source snapshot is not one exact imported Scene.",
         kind: "unsupported",
@@ -978,11 +948,16 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const importedMotion = planImportedMotion(input);
-  if (importedMotion.kind === "unsupported") {
-    return { error: `Imported Scene motion is unsupported: ${importedMotion.message}`, kind: "unsupported" };
-  }
-  if (importedMotion.kind === "authorized") {
+  const hasStudioMotion = input.proposedState.programs.some(({ program }) =>
+    program.operations.some(({ kind }) => kind === "CreateMotion"),
+  );
+  if (hasStudioMotion) {
+    if (!staticImportedSourceIsExact(input)) {
+      return {
+        error: "The verified source snapshot is not one exact imported Scene.",
+        kind: "unsupported",
+      };
+    }
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
@@ -991,22 +966,10 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const bundle = await (input.createSceneMotionCompiler ?? compileCreateSceneMotion)(input.snapshot.snapshot, {
-        controlOffset: importedMotion.controlOffset,
-        delta: importedMotion.delta,
-        easing: importedMotion.easing,
-        expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-        interval: importedMotion.interval,
-        nextRevision: engineRevisionHash,
-        provenance: {
-          evidence: [`authorized operation ${importedMotion.operationId}`],
-          id: `studio-motion:${engineRevisionHash}`,
-          origin: "studio-edit-program",
-        },
-        schema: "poietra.create-scene-motion",
-        targetEntityIds: importedMotion.runtimeEntityIds,
-        version: 1,
-      });
+      const bundle = await (input.applyStudioMotionEditCompiler ?? compileApplyStudioMotionEdit)(
+        input.snapshot.snapshot,
+        studioMotionEditCommand(input, engineRevisionHash),
+      );
       return {
         kind: "compiled",
         scene: {
@@ -1029,9 +992,7 @@ export async function compileStudioPreviewSceneV1(
       };
     } catch (error) {
       return {
-        error: `Rust core rejected the imported Scene motion: ${
-          error instanceof Error ? error.message : "unknown error"
-        }`,
+        error: `Rust core rejected the imported Scene motion: ${error instanceof Error ? error.message : String(error)}`,
         kind: "unsupported",
       };
     }

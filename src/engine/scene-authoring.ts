@@ -273,26 +273,55 @@ export type ApplyStudioCreationEditCompiler = (
   command: ApplyStudioCreationEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-export type CreateSceneMotionWireCommandV1 = Readonly<{
-  controlOffset: Readonly<{ x: number; y: number }>;
-  delta: Readonly<{ x: number; y: number }>;
-  easing: "linear" | "smooth";
-  expectedBaseRevision: string;
+type StudioMotionOperationV1 = Readonly<{
+  id: string;
   interval: Readonly<{ end: number; start: number }>;
+  origin: StudioAuthoringOrigin;
+}> &
+  (
+    | Readonly<{
+        controlOffset: Readonly<{ x: number; y: number }>;
+        delta: Readonly<{ x: number; y: number }>;
+        easing: "linear" | "smooth";
+        kind: "create-motion";
+        targetEntityIds: readonly string[];
+      }>
+    | Readonly<{ kind: "unsupported" }>
+  );
+
+export type ApplyStudioMotionEditWireCommandV1 = Readonly<{
+  baseStudioSceneId: string;
+  evaluatedDuration: number;
+  evaluatedSceneId: string;
+  expectedBaseRevision: string;
+  frame: Readonly<{ height: number; width: number }>;
   nextRevision: string;
-  provenance: Readonly<{
-    evidence: readonly string[];
-    id: string;
-    origin: "studio-edit-program";
-  }>;
-  schema: "poietra.create-scene-motion";
-  targetEntityIds: readonly string[];
+  programs: readonly Readonly<{
+    anchorSeconds: number;
+    loweringSupported: boolean;
+    operations: readonly StudioMotionOperationV1[];
+    origin: StudioAuthoringOrigin;
+    scheduleOrder: readonly string[];
+    validationValid: boolean;
+  }>[];
+  schema: "poietra.apply-studio-motion-edit";
+  sourceRuntimeBindings: readonly Readonly<{
+    runtimeEntityId: string;
+    sourceIdentityKey: string;
+    sourceName: string;
+  }>[];
+  studioEntities: readonly Readonly<{
+    objectGraphKey: string;
+    provisional: boolean;
+    sourceIdentity: string | null;
+  }>[];
   version: 1;
+  viewport: Readonly<{ height: number; width: number }>;
 }>;
 
-export type CreateSceneMotionCompiler = (
+export type ApplyStudioMotionEditCompiler = (
   snapshot: SceneIrBundleV1,
-  command: CreateSceneMotionWireCommandV1,
+  command: ApplyStudioMotionEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
 export type SetSubtreeVectorPaintAlphaWireCommandV1 = Readonly<{
@@ -338,8 +367,8 @@ type ApplyStudioCreationEditBindingsV1 = Readonly<{
   applyStudioCreationEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type CreateSceneMotionBindingsV1 = Readonly<{
-  createSceneMotionV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
+type ApplyStudioMotionEditBindingsV1 = Readonly<{
+  applyStudioMotionEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
@@ -348,8 +377,8 @@ type SetSubtreeVectorPaintAlphaBindingsV1 = Readonly<{
 
 type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
+  ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
-  CreateSceneMotionBindingsV1 &
   RotateSceneAuthoringBindingsV1 &
   TransformSceneAuthoringBindingsV1 &
   TransformSceneAtTimeAuthoringBindingsV1 &
@@ -364,8 +393,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
     if (
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
+      typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
-      typeof candidate.createSceneMotionV1 !== "function" ||
       typeof candidate.rotateSceneEntityV1 !== "function" ||
       typeof candidate.setSubtreeVectorPaintAlphaV1 !== "function" ||
       typeof candidate.transformSceneEntityAtTimeV1 !== "function" ||
@@ -378,9 +407,9 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStaticRootTransformEditV1 as SceneAuthoringBindingsV1["applyStaticRootTransformEditV1"],
       applyStudioCreationEditV1:
         candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
+      applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
       applyStudioTimelineEditV1:
         candidate.applyStudioTimelineEditV1 as SceneAuthoringBindingsV1["applyStudioTimelineEditV1"],
-      createSceneMotionV1: candidate.createSceneMotionV1 as SceneAuthoringBindingsV1["createSceneMotionV1"],
       rotateSceneEntityV1: candidate.rotateSceneEntityV1 as SceneAuthoringBindingsV1["rotateSceneEntityV1"],
       setSubtreeVectorPaintAlphaV1:
         candidate.setSubtreeVectorPaintAlphaV1 as SceneAuthoringBindingsV1["setSubtreeVectorPaintAlphaV1"],
@@ -422,13 +451,13 @@ export function createApplyStudioCreationEditCompiler(
   };
 }
 
-/** Creates one Studio motion through the canonical Scene core. */
-export function createCreateSceneMotionCompiler(
-  getBindings: () => Promise<CreateSceneMotionBindingsV1>,
-): CreateSceneMotionCompiler {
+/** Passes one complete normalized Studio motion edit to the canonical core. */
+export function createApplyStudioMotionEditCompiler(
+  getBindings: () => Promise<ApplyStudioMotionEditBindingsV1>,
+): ApplyStudioMotionEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.createSceneMotionV1);
+    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioMotionEditV1);
   };
 }
 
@@ -484,8 +513,8 @@ export function createSetSubtreeVectorPaintAlphaCompiler(
 
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
+export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);
-export const compileCreateSceneMotion = createCreateSceneMotionCompiler(loadBindings);
 export const compileRotateSceneEntity = createRotateSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntity = createTransformSceneEntityCompiler(loadBindings);
 export const compileTransformSceneEntityAtTime = createTransformSceneEntityAtTimeCompiler(loadBindings);
