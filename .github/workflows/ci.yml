@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -17,6 +18,34 @@ env:
   CI: true
 
 jobs:
+  changes:
+    name: Select CI lanes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      browser: ${{ steps.scope.outputs.browser }}
+      electron: ${{ steps.scope.outputs.electron }}
+      engine_core: ${{ steps.scope.outputs.engine_core }}
+      engine_wasm: ${{ steps.scope.outputs.engine_wasm }}
+      storage: ${{ steps.scope.outputs.storage }}
+      tauri: ${{ steps.scope.outputs.tauri }}
+      tests: ${{ steps.scope.outputs.tests }}
+      web: ${{ steps.scope.outputs.web }}
+    steps:
+      - name: Check out repository with base history
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Test change-scope routing
+        run: node --test scripts/ci-change-scope.test.mjs
+      - name: Select required lanes
+        id: scope
+        env:
+          POIETRA_CI_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          POIETRA_CI_FORCE_ALL: ${{ github.event_name != 'pull_request' }}
+          POIETRA_CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci-change-scope.mjs
+
   style:
     name: Style checks
     runs-on: ubuntu-latest
@@ -40,9 +69,85 @@ jobs:
           POIETRA_FORMAT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: pnpm check:style
 
-  web-build:
-    name: Web build
-    needs: engine-rust
+  engine-core:
+    name: Engine core
+    needs: changes
+    if: needs.changes.outputs.engine_core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
+          rustup default 1.92.0
+      - name: Check formatting
+        run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
+      - name: Run Engine tests
+        run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
+      - name: Smoke-test the MathTex Python ABI
+        run: node scripts/smoke-mathtex-python.mjs
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
+
+  engine-wasm:
+    name: Browser WASM
+    needs: changes
+    if: needs.changes.outputs.engine_wasm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.92.0
+          rustup default 1.92.0
+      - name: Check the browser WASM target
+        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --package poietra-mathtex-wasm --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
+      - name: Restore pinned wasm-pack
+        id: wasm-pack-cache
+        uses: actions/cache@v5
+        with:
+          key: wasm-pack-${{ runner.os }}-${{ runner.arch }}-0.15.0
+          path: ~/.cargo/bin/wasm-pack
+      - name: Install pinned wasm-pack
+        if: steps.wasm-pack-cache.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --locked --version 0.15.0
+      - name: Build browser WASM bindings
+        run: node scripts/build-engine-wasm.mjs
+      - name: Smoke-test generated WASM bindings
+        run: node scripts/smoke-engine-wasm.mjs
+      - name: Smoke-test generated MathTex outline WASM bindings
+        run: node scripts/smoke-mathtex-wasm.mjs
+      - name: Enforce MathTex outline WASM size budget and report warm compile
+        run: node scripts/measure-mathtex-wasm.mjs --check
+      - name: Upload browser WASM bindings
+        uses: actions/upload-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+          if-no-files-found: error
+          retention-days: 1
+
+  integration-tests:
+    name: Integration tests
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.tests == 'true' && needs.engine-wasm.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -55,6 +160,10 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - name: Set up Python test interpreter
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
       - name: Download browser WASM bindings
@@ -62,16 +171,18 @@ jobs:
         with:
           name: poietra-engine-wasm
           path: public/engine-wasm/
-      - name: Build web application
-        run: pnpm build:web
-      - name: Build production server
-        run: pnpm build:server
-      - name: Bundle Cloudflare account control plane
-        run: pnpm build:account-worker
+      - name: Install pinned Python test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps "Pillow==12.2.0"
+          python_interpreter="$(command -v python)"
+          printf 'PYTHON=%s\n' "$python_interpreter" >> "$GITHUB_ENV"
+      - name: Run boundary and integration tests
+        run: pnpm test:integration
 
-  tests:
-    name: Unit and integration tests
-    needs: engine-rust
+  unit-tests:
+    name: Unit tests
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.tests == 'true' && needs.engine-wasm.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -102,11 +213,11 @@ jobs:
           printf 'PYTHON=%s\n' "$python_interpreter" >> "$GITHUB_ENV"
       - name: Run unit tests
         run: pnpm test:unit
-      - name: Run boundary and integration tests
-        run: pnpm test:integration
 
   storage-e2e:
-    name: Durable PostgreSQL and MinIO storage E2E
+    name: Durable storage E2E
+    needs: changes
+    if: needs.changes.outputs.storage == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -124,32 +235,147 @@ jobs:
       - name: Run durable storage E2E
         run: pnpm test:storage:e2e
 
-  engine-rust:
-    name: Poietra Engine Rust core
+  web-build:
+    name: Web build
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.web == 'true' && needs.engine-wasm.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
       - name: Set up Node.js
         uses: actions/setup-node@v6
         with:
           node-version: 24
-      - name: Set up Python
-        uses: actions/setup-python@v6
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
         with:
-          python-version: "3.12"
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+      - name: Build web application
+        run: pnpm build:web
+      - name: Build production server
+        run: pnpm build:server
+      - name: Bundle Cloudflare account control plane
+        run: pnpm build:account-worker
+
+  browser-smoke:
+    name: Chromium E2E
+    needs: [changes, engine-wasm]
+    if: always() && github.event_name == 'pull_request' && needs.changes.outputs.browser == 'true' && needs.engine-wasm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+      - name: Install Chromium and system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+      - name: Run Chromium journeys
+        run: pnpm exec playwright test --project=chromium --grep @ci-smoke
+      - name: Upload Playwright diagnostics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: playwright-diagnostics
+          path: |
+            playwright-report/
+            test-results/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  electron-smoke:
+    name: Electron packaged startup
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.electron == 'true' && needs.engine-wasm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+      - name: Install Electron runtime
+        run: pnpm electron:install
+      - name: Install Electron system dependencies
+        run: pnpm exec playwright install-deps chromium
+      - name: Build Electron application
+        run: pnpm build:electron
+      - name: Assemble Electron package
+        run: |
+          node scripts/package-electron.mjs
+          node scripts/smoke-third-party-notices.mjs --electron
+      - name: Run packaged Electron startup smoke
+        run: xvfb-run --auto-servernum node scripts/electron-packaged-startup-smoke.mjs
+
+  tauri-check:
+    name: Tauri experiment check
+    needs: changes
+    if: needs.changes.outputs.tauri == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Install Tauri system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
       - name: Select pinned Rust toolchain
         run: |
-          rustup toolchain install 1.92.0 --profile minimal --component clippy,rustfmt
-          rustup target add wasm32-unknown-unknown --toolchain 1.92.0
+          rustup toolchain install 1.92.0 --profile minimal
           rustup default 1.92.0
-      - name: Check formatting
-        run: cargo fmt --all --manifest-path engine/Cargo.toml -- --check
-      - name: Run Engine tests
-        run: cargo test --locked --workspace --manifest-path engine/Cargo.toml
-      - name: Smoke-test the MathTex Python ABI
-        run: node scripts/smoke-mathtex-python.mjs
+      - name: Check retained Tauri crate
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
+  native-render-validation:
+    name: Full / Native WGPU reference
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Select pinned Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal
+          rustup default 1.92.0
       - name: Install software Vulkan adapter when absent
         run: |
           if ! dpkg-query --show --showformat='${Status}' mesa-vulkan-drivers 2>/dev/null | grep --quiet 'install ok installed'; then
@@ -168,33 +394,13 @@ jobs:
           path: test-results/visual-parity/native/
           if-no-files-found: error
           retention-days: 1
-      - name: Run Clippy
-        run: cargo clippy --locked --workspace --all-targets --all-features --manifest-path engine/Cargo.toml -- -D warnings
-      - name: Check the browser WASM target
-        run: cargo check --locked --package poietra-wasm --package poietra-render-wgpu --package poietra-mathtex-wasm --target wasm32-unknown-unknown --manifest-path engine/Cargo.toml
-      - name: Install pinned wasm-pack
-        run: cargo install wasm-pack --locked --version 0.15.0
-      - name: Build browser WASM bindings
-        run: node scripts/build-engine-wasm.mjs
-      - name: Smoke-test generated WASM bindings
-        run: node scripts/smoke-engine-wasm.mjs
-      - name: Smoke-test generated MathTex outline WASM bindings
-        run: node scripts/smoke-mathtex-wasm.mjs
-      - name: Enforce MathTex outline WASM size budget and report warm compile
-        run: node scripts/measure-mathtex-wasm.mjs --check
-      - name: Upload browser WASM bindings
-        uses: actions/upload-artifact@v6
-        with:
-          name: poietra-engine-wasm
-          path: public/engine-wasm/
-          if-no-files-found: error
-          retention-days: 1
 
-  browser-e2e:
-    name: Browser E2E
-    needs: engine-rust
+  full-browser-validation:
+    name: Full / Browser and render parity
+    needs: [engine-wasm, native-render-validation]
+    if: always() && github.event_name != 'pull_request' && needs.engine-wasm.result == 'success' && needs.native-render-validation.result == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -212,19 +418,19 @@ jobs:
         with:
           name: poietra-engine-wasm
           path: public/engine-wasm/
-      - name: Install browser engines and system dependencies
-        run: pnpm exec playwright install --with-deps chromium webkit
-      - name: Run browser tests
-        run: pnpm test:e2e
-      - name: Run production account browser test
-        run: pnpm test:e2e:account
-      - name: Run retained WebGPU preview tests
-        run: pnpm test:e2e:preview:webgpu
       - name: Download native visual parity artifact
         uses: actions/download-artifact@v6
         with:
           name: poietra-visual-parity-native
           path: test-results/visual-parity/native/
+      - name: Install browser engines and system dependencies
+        run: pnpm exec playwright install --with-deps chromium webkit
+      - name: Run browser compatibility suite
+        run: pnpm test:e2e
+      - name: Run production account browser test
+        run: pnpm test:e2e:account
+      - name: Run retained WebGPU preview tests
+        run: pnpm test:e2e:preview:webgpu
       - name: Compare browser WebGPU against native Lavapipe
         env:
           POIETRA_VISUAL_PARITY_NATIVE_ARTIFACT_DIR: test-results/visual-parity/native
@@ -233,32 +439,54 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
         with:
-          name: playwright-diagnostics
+          name: full-playwright-diagnostics
           path: |
             playwright-report/
             test-results/
           if-no-files-found: ignore
           retention-days: 14
 
-  tauri-check:
-    name: Tauri cargo check
+  gate:
+    name: CI gate
+    if: always()
+    needs:
+      - changes
+      - style
+      - engine-core
+      - engine-wasm
+      - integration-tests
+      - unit-tests
+      - storage-e2e
+      - web-build
+      - browser-smoke
+      - electron-smoke
+      - tauri-check
+      - native-render-validation
+      - full-browser-validation
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-      - name: Install Tauri system dependencies
+      - name: Require every selected lane to pass
+        env:
+          BROWSER_SMOKE: ${{ needs.browser-smoke.result }}
+          CHANGES: ${{ needs.changes.result }}
+          ELECTRON_SMOKE: ${{ needs.electron-smoke.result }}
+          ENGINE_CORE: ${{ needs.engine-core.result }}
+          ENGINE_WASM: ${{ needs.engine-wasm.result }}
+          FULL_BROWSER: ${{ needs.full-browser-validation.result }}
+          NATIVE_RENDER: ${{ needs.native-render-validation.result }}
+          STORAGE_E2E: ${{ needs.storage-e2e.result }}
+          STYLE: ${{ needs.style.result }}
+          TAURI_CHECK: ${{ needs.tauri-check.result }}
+          INTEGRATION_TESTS: ${{ needs.integration-tests.result }}
+          UNIT_TESTS: ${{ needs.unit-tests.result }}
+          WEB_BUILD: ${{ needs.web-build.result }}
         run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            libwebkit2gtk-4.1-dev \
-            pkg-config
-      - name: Select pinned Rust toolchain
-        run: |
-          rustup toolchain install 1.92.0 --profile minimal
-          rustup default 1.92.0
-      - name: Check Tauri crate
-        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+          for result in "$CHANGES" "$STYLE" "$ENGINE_CORE" "$ENGINE_WASM" "$INTEGRATION_TESTS" "$UNIT_TESTS" "$STORAGE_E2E" "$WEB_BUILD" "$BROWSER_SMOKE" "$ELECTRON_SMOKE" "$TAURI_CHECK" "$NATIVE_RENDER" "$FULL_BROWSER"; do
+            case "$result" in
+              failure|cancelled)
+                echo "A selected CI lane ended with: $result" >&2
+                exit 1
+                ;;
+            esac
+          done

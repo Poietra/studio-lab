@@ -41,7 +41,7 @@ async function applyCurrentDraft(page: Page) {
   await page.getByRole("button", { name: /^(Apply|Replace) program$/ }).click();
 }
 
-test("exports the selected Python source unchanged before any Studio edit", async ({ page }) => {
+test("exports the selected Python source unchanged before any Studio edit", { tag: "@ci-smoke" }, async ({ page }) => {
   await openWorkspace(page);
 
   const exportButton = page.getByRole("button", { name: "Export .py" });
@@ -417,9 +417,9 @@ test("allows a pending workspace mutation dialog to be cancelled", async ({ page
   await expect(page.getByRole("button", { name: "Open Studio Lab workspace" })).toBeVisible();
 });
 
-test("submits one browser-selected Python file with optional image.png and keeps diagnostics beside both pickers", async ({
-  page,
-}) => {
+test("submits one browser-selected Python file with optional image.png and keeps diagnostics beside both pickers", {
+  tag: "@ci-smoke",
+}, async ({ page }) => {
   const source = "from manim import *\nclass ImportedScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
   const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
   let importBody: Record<string, unknown> | null = null;
@@ -513,7 +513,7 @@ test("opens and byte-preserves a browser-imported Python file through export", a
   }
 });
 
-test("creates, persists, renames, and deletes a browser-managed workspace", async ({ page }) => {
+test("creates, persists, renames, and deletes a browser-managed workspace", { tag: "@ci-smoke" }, async ({ page }) => {
   let projectId: string | null = null;
   try {
     await page.goto("/");
@@ -653,7 +653,7 @@ test("undo and redo restore an uncommitted draft", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Move Circle" })).toBeVisible();
 });
 
-test("scrubs time from the ruler without blocking object intervals", async ({ page }) => {
+test("scrubs time from the ruler without blocking object intervals", { tag: "@ci-smoke" }, async ({ page }) => {
   await openWorkspace(page);
   const scenePlayhead = page.getByRole("slider", { name: "Scene playhead" });
   const timelinePlayhead = page.getByRole("slider", { name: "Timeline playhead" });
