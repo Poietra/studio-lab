@@ -9,20 +9,24 @@ import {
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import type { RuntimeSceneState } from "../src/studio/model";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
-import { type CanonicalEditProgram, isSceneDurationOperation } from "../src/studio/operations";
+import {
+  type CanonicalEditProgram,
+  isSceneDurationOperation,
+  isStaticRootTransformOperation,
+} from "../src/studio/operations";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
 export type ManimRenderRequestLoweringInput = Readonly<{
-  persistentRemoveAuthorizer: PersistentRemoveAuthorizer | null;
+  snapshotProgramAuthorizer: SnapshotProgramAuthorizer | null;
   frame: Readonly<{ height: number; width: number }>;
   originalSource: string;
   projectId: string;
   request: ProgramRenderRequest;
 }>;
 
-export type PersistentRemoveAuthorizer = (
+export type SnapshotProgramAuthorizer = (
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
     programs: readonly CanonicalEditProgram[];
@@ -38,7 +42,7 @@ export type ManimRenderRequestLoweringResult = Readonly<{
 }>;
 
 export async function lowerManimRenderRequest({
-  persistentRemoveAuthorizer,
+  snapshotProgramAuthorizer,
   frame,
   originalSource,
   projectId,
@@ -72,6 +76,11 @@ export async function lowerManimRenderRequest({
       (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
     ),
   );
+  const isStaticRootTransformBatch =
+    sourceOrderedPrograms.length > 0 &&
+    sourceOrderedPrograms.every(
+      (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
+    );
   if (request.sourceValidation === "runtime-trace") {
     if (containsPersistentRemove) {
       throw new HttpError("Runtime Trace does not authorize persistent remove Programs.", 400);
@@ -112,12 +121,12 @@ export async function lowerManimRenderRequest({
         400,
       );
     }
-  } else if (containsPersistentRemove && !containsSceneDurationOperation) {
-    if (!persistentRemoveAuthorizer) {
-      throw new HttpError("Persistent remove requires a verified Rust Scene authorization.", 400);
+  } else if ((containsPersistentRemove || isStaticRootTransformBatch) && !containsSceneDurationOperation) {
+    if (!snapshotProgramAuthorizer) {
+      throw new HttpError("This Program batch requires verified Rust Scene authorization.", 400);
     }
     try {
-      await persistentRemoveAuthorizer({
+      await snapshotProgramAuthorizer({
         frame,
         programs: sourceOrderedPrograms,
         projectId,
@@ -127,7 +136,7 @@ export async function lowerManimRenderRequest({
     } catch (error) {
       if (error instanceof HttpError) throw error;
       throw new HttpError(
-        `The Rust core rejected the persistent remove Program batch: ${error instanceof Error ? error.message : String(error)}`,
+        `The Rust core rejected the snapshot Program batch: ${error instanceof Error ? error.message : String(error)}`,
         400,
       );
     }

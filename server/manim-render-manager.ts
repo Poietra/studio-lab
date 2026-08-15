@@ -40,7 +40,6 @@ import {
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
-import { authorizePersistentRemoveWithSnapshot } from "./manim-persistent-remove-authorizer";
 import type { ManimProjectKind } from "./manim-project-catalog";
 import {
   beginRenderSessionAction,
@@ -67,6 +66,7 @@ import {
 } from "./manim-render-session-policy";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
+import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
 import { type ManimSourceReadHooks, ManimSourceStore, sourceHash } from "./manim-source-store";
 import { normalizeManimStorageRoots } from "./manim-tenant-storage";
 import { ManimThumbnailCache } from "./manim-thumbnail-cache";
@@ -779,12 +779,8 @@ export class ManimRenderManager {
     const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.frame,
       originalSource,
-      persistentRemoveAuthorizer: (input) =>
-        authorizePersistentRemoveWithSnapshot(
-          input,
-          (_projectId, query) => this.snapshotRunner.snapshot(query),
-          signal,
-        ),
+      snapshotProgramAuthorizer: (input) =>
+        authorizeSnapshotProgramWithSnapshot(input, (_projectId, query) => this.snapshotRunner.snapshot(query), signal),
       projectId: this.projectId,
       request,
     });

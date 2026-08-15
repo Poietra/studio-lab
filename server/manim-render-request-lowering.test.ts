@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
-import { lowerManimRenderRequest, type PersistentRemoveAuthorizer } from "./manim-render-request-lowering";
+import { lowerManimRenderRequest, type SnapshotProgramAuthorizer } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
 const sourcePath = "scene.py";
@@ -82,6 +82,35 @@ function motionProgram(anchor: number, transactionId: string): CanonicalEditProg
   };
 }
 
+function staticRootMoveProgram(transactionId: string): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: `tx:${transactionId}/operation:position`,
+    interval: { end: 7, start: 7 },
+    key: "position",
+    kind: "SetProperty",
+    provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
+    value: { x: 320, y: 180 },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 7,
+      evidence: ["captured-playhead:7.000"],
+      resolvedSeconds: 7,
+      source: { kind: "playhead", referenceSeconds: 7 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId,
+    version: 1,
+  };
+}
+
 function sceneBoundaryProgram(anchor: number, transactionId: string): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     at: anchor,
@@ -126,12 +155,12 @@ function request(program = motionProgram(7, "render-request-lowering")): Program
 function lower(
   renderRequest: ProgramRenderRequest,
   originalSource = sceneSource,
-  persistentRemoveAuthorizer: PersistentRemoveAuthorizer | null = null,
+  snapshotProgramAuthorizer: SnapshotProgramAuthorizer | null = null,
 ) {
   return lowerManimRenderRequest({
     frame,
     originalSource,
-    persistentRemoveAuthorizer,
+    snapshotProgramAuthorizer,
     projectId: "default",
     request: renderRequest,
   });
@@ -169,7 +198,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
-      persistentRemoveAuthorizer: null,
+      snapshotProgramAuthorizer: null,
       projectId: "generic-preview",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -231,7 +260,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
-      persistentRemoveAuthorizer: null,
+      snapshotProgramAuthorizer: null,
       projectId: "generic-preview",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -289,7 +318,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
-      persistentRemoveAuthorizer: null,
+      snapshotProgramAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -342,7 +371,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
-      persistentRemoveAuthorizer: null,
+      snapshotProgramAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -406,7 +435,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: exampleScenesSource,
-      persistentRemoveAuthorizer: null,
+      snapshotProgramAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -458,6 +487,37 @@ describe("Manim render request lowering", () => {
     );
   });
 
+  it("requires snapshot authorization for an imported static-root transform-only batch", async () => {
+    const program = staticRootMoveProgram("static-root-move");
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(program), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([program]);
+    expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
+  });
+
+  it("fails an imported static-root transform closed without snapshot authorization", async () => {
+    await expect(lower(request(staticRootMoveProgram("static-root-without-authority")))).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("does not fall back to the TypeScript evaluator after snapshot authorization rejects a static-root batch", async () => {
+    await expect(
+      lower(request(staticRootMoveProgram("static-root-rust-rejection")), sceneSource, async () => {
+        throw new Error("rejected by Rust");
+      }),
+    ).rejects.toMatchObject({
+      message: "The Rust core rejected the snapshot Program batch: rejected by Rust",
+      status: 400,
+    });
+  });
+
   it("authorizes the complete imported transform and persistent-remove batch with exact Scene facts", async () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
@@ -485,32 +545,7 @@ describe("Manim render request lowering", () => {
       transactionId: "persistent-remove",
       version: 1,
     };
-    const moveOperation: CanonicalEditOperation = {
-      dependsOn: [],
-      entityId,
-      id: "tx:move-before-remove/operation:position",
-      interval: { end: 0, start: 0 },
-      key: "position",
-      kind: "SetProperty",
-      provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
-      value: { x: 320, y: 180 },
-    };
-    const moveProgram: CanonicalEditProgram = {
-      anchor: {
-        capturedPlayhead: 0,
-        evidence: ["source-time zero"],
-        resolvedSeconds: 0,
-        source: { kind: "absolute", seconds: 0 },
-      },
-      intentCount: 1,
-      loweringStatus: "supported",
-      operations: [moveOperation],
-      provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
-      requestedExecution: "parallel",
-      schedule: { edges: [], mode: "parallel", order: [moveOperation.id] },
-      transactionId: "move-before-remove",
-      version: 1,
-    };
+    const moveProgram = staticRootMoveProgram("move-before-remove");
     const originalSource = sceneSource.replace(
       "        self.add(equation)\n",
       "        self.add(equation)\n        # poietra:anchor 0.000\n",
@@ -521,7 +556,7 @@ describe("Manim render request lowering", () => {
       sourceHash: createHash("sha256").update(originalSource).digest("hex"),
     };
 
-    const authorizations: Parameters<PersistentRemoveAuthorizer>[0][] = [];
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
     const result = await lower(renderRequest, originalSource, async (input) => {
       authorizations.push(input);
     });
@@ -560,7 +595,7 @@ describe("Manim render request lowering", () => {
     };
 
     await expect(lower(request(remove))).rejects.toMatchObject({
-      message: "Persistent remove requires a verified Rust Scene authorization.",
+      message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });
   });

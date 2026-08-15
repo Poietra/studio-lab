@@ -182,6 +182,35 @@ function persistentRemoveProgram(entityId: string, transactionId: string): Canon
   };
 }
 
+function staticRootMoveProgram(transactionId: string): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId: "source:scene.py#GroupedEquation:equation",
+    id: `tx:${transactionId}/operation:position`,
+    interval: { end: 0, start: 0 },
+    key: "position",
+    kind: "SetProperty",
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    value: { x: 320, y: 180 },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: [],
+      resolvedSeconds: 0,
+      source: { kind: "absolute", seconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId,
+    version: 1,
+  };
+}
+
 const genericSource = `from manim import *
 
 class StaticSquare(Scene):
@@ -287,6 +316,36 @@ describe("DurableManimRenderServiceV1", () => {
     );
     expect(putSource).not.toHaveBeenCalled();
     expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("routes imported static-root transform export through the durable snapshot service", async () => {
+    const renderRequest = { ...request(), program: staticRootMoveProgram("durable-export-static-root-move") };
+    const failure = new HttpError("durable export snapshot lookup reached", 418);
+    const snapshot = vi.fn<DurableFastManimSnapshotServiceV1["snapshot"]>(async () => {
+      throw failure;
+    });
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => sceneSource,
+      }),
+      namespace: "static-root-export-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        readSourceHead: async () => originalHead,
+      }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({ close: async () => undefined, snapshot }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.exportSource(renderRequest)).rejects.toBe(failure);
+
+    expect(snapshot).toHaveBeenCalledWith(
+      "default",
+      { sceneName: "GroupedEquation", sourcePath: "scene.py" },
+      undefined,
+    );
+    await runtime.close();
   });
 
   it("routes Studio-created Circle delete export through the durable snapshot service", async () => {

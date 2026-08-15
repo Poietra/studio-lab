@@ -9,17 +9,17 @@ import {
 } from "../src/studio/scene-authoring-wire";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
-import type { PersistentRemoveAuthorizer } from "./manim-render-request-lowering";
+import type { SnapshotProgramAuthorizer } from "./manim-render-request-lowering";
 
-export type PersistentRemoveSnapshotLookup = (
+export type SnapshotProgramLookup = (
   projectId: string,
   query: FastManimSnapshotQueryV1,
   signal?: AbortSignal,
 ) => Promise<FastManimSnapshotRunViewV1>;
 
-export async function authorizePersistentRemoveWithSnapshot(
-  input: Parameters<PersistentRemoveAuthorizer>[0],
-  snapshotLookup: PersistentRemoveSnapshotLookup,
+export async function authorizeSnapshotProgramWithSnapshot(
+  input: Parameters<SnapshotProgramAuthorizer>[0],
+  snapshotLookup: SnapshotProgramLookup,
   signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
@@ -30,7 +30,7 @@ export async function authorizePersistentRemoveWithSnapshot(
   );
   signal?.throwIfAborted();
   if (published.status !== "verified") {
-    throw new HttpError("Persistent remove requires a currently verified Scene snapshot.", 409);
+    throw new HttpError("This Program requires a currently verified Scene snapshot.", 409);
   }
   const { snapshot } = published;
   if (
