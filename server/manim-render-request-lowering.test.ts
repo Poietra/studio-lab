@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
+import { createCircleProgram } from "./manim-render-pipeline-test-fixtures";
 import { lowerManimRenderRequest, type SnapshotProgramAuthorizer } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
@@ -52,7 +53,7 @@ class NextScene(Scene):
         self.add(title)
 `;
 
-function motionProgram(anchor: number, transactionId: string): CanonicalEditProgram {
+function motionProgram(anchor: number, transactionId: string, targetEntityId = entityId): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     controlOffset: { x: 0, y: 0 },
     delta: { x: 64, y: 0 },
@@ -62,7 +63,7 @@ function motionProgram(anchor: number, transactionId: string): CanonicalEditProg
     interval: { end: anchor + 1, start: anchor },
     kind: "CreateMotion",
     provenance: { evidence: [], origin: "direct-manipulation" },
-    targetEntityIds: [entityId],
+    targetEntityIds: [targetEntityId],
   };
   return {
     anchor: {
@@ -515,6 +516,93 @@ describe("Manim render request lowering", () => {
       message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });
+  });
+
+  it("routes the complete Studio creation family through snapshot authorization", async () => {
+    const baseCreation = createCircleProgram("snapshot-created-circle");
+    const creation: CanonicalEditProgram = {
+      ...baseCreation,
+      operations: baseCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? { ...operation, entity: { ...operation.entity, dimensions: { radius: 1 } } }
+          : operation,
+      ),
+    };
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(creation), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([creation]);
+    expect(result.lowered.source).toContain("Circle(radius=1)");
+  });
+
+  it("keeps dimensionless Circle creation on the existing batch evaluator path", async () => {
+    const creation = createCircleProgram("legacy-dimensionless-circle");
+    let authorizerCalls = 0;
+
+    const result = await lower(request(creation), sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source).toContain("Circle(radius=1)");
+  });
+
+  it("keeps unsupported Text creation on the existing batch evaluator path", async () => {
+    const circleCreation = createCircleProgram("legacy-text-creation");
+    const creation: CanonicalEditProgram = {
+      ...circleCreation,
+      operations: circleCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? {
+              ...operation,
+              entity: {
+                ...operation.entity,
+                content: { displayLines: ["Hello"], label: "Hello", text: "Hello" },
+                type: "Text",
+              },
+            }
+          : operation,
+      ),
+    };
+    let authorizerCalls = 0;
+
+    const result = await lower(request(creation), sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source).toContain('Text("Hello")');
+  });
+
+  it("keeps creation followed by motion on the existing batch evaluator path", async () => {
+    const creation = createCircleProgram("created-before-motion");
+    const createdEntityId = "tx:created-before-motion/entity:circle";
+    const movement = motionProgram(7, "move-created-circle", createdEntityId);
+    let authorizerCalls = 0;
+
+    const result = await lower({ ...request(creation), programs: [creation, movement] }, sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source).toContain(".animate.shift(");
+  });
+
+  it("does not classify a created entity plus an imported transform as one creation family", async () => {
+    const creation = createCircleProgram("created-with-imported-transform");
+    const importedMove = staticRootMoveProgram("move-imported-after-create");
+    let authorizerCalls = 0;
+
+    const result = await lower({ ...request(creation), programs: [creation, importedMove] }, sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
   });
 
   it("requires snapshot authorization for an imported static-root transform-only batch", async () => {
