@@ -630,19 +630,23 @@ describe("Manim render request lowering", () => {
     });
   });
 
-  it("rejects a mixed MathTex transform and motion batch outside exact snapshot authorization", async () => {
+  it("routes a MathTex transform chain followed by motion through one snapshot authorization", async () => {
     const transform = mathTexTransformProgram("mixed-mathtex-transform");
     const finalTargetEntityId = "tx:mixed-mathtex-transform/entity:restored";
     const motion = motionProgram(7, "motion-after-mathtex-transform", finalTargetEntityId);
-    let authorizerCalls = 0;
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
-    await expect(
-      lower({ ...request(transform), programs: [transform, motion] }, sceneSource, async () => {
-        authorizerCalls += 1;
-      }),
-    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    const result = await lower({ ...request(transform), programs: [transform, motion] }, sceneSource, async (input) => {
+      authorizations.push(input);
+    });
 
-    expect(authorizerCalls).toBe(0);
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([transform, motion]);
+    expect(result.lowered.source.match(/TransformMatchingTex\(/g)).toHaveLength(2);
+    expect(result.lowered.source).toContain("poietra_mixed_mathtex_transform_2.animate.shift(");
+    expect(result.lowered.source.lastIndexOf("TransformMatchingTex(")).toBeLessThan(
+      result.lowered.source.indexOf("poietra_mixed_mathtex_transform_2.animate.shift("),
+    );
   });
 
   it("does not dispatch a Runtime Trace MathTex transform to snapshot authorization", async () => {

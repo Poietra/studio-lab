@@ -195,6 +195,16 @@ export type StudioMathTexTransformProjectionV1 = Readonly<{
     transactionId: string;
   }>[];
   projectedDuration: number;
+  motions: readonly Readonly<{
+    control: Readonly<{ x: number; y: number }>;
+    easing: "linear" | "smooth";
+    from: Readonly<{ x: number; y: number }>;
+    interval: Readonly<{ end: number; start: number }>;
+    operationId: string;
+    targetEntityId: string;
+    to: Readonly<{ x: number; y: number }>;
+    transactionId: string;
+  }>[];
   replacements: readonly Readonly<{
     content: StudioMathTexContentV1;
     interval: Readonly<{ end: number; start: number }>;
@@ -427,6 +437,20 @@ const studioMathTexTransformProjectionV1Schema = z
         .strict(),
     ),
     projectedDuration: finiteNumberSchema,
+    motions: z.array(
+      z
+        .object({
+          control: studioStaticRootPointV1Schema,
+          easing: z.enum(["linear", "smooth"]),
+          from: studioStaticRootPointV1Schema,
+          interval: studioTimelineProjectionIntervalV1Schema,
+          operationId: z.string().min(1),
+          targetEntityId: z.string().min(1),
+          to: studioStaticRootPointV1Schema,
+          transactionId: z.string().min(1),
+        })
+        .strict(),
+    ),
     replacements: z.array(
       z
         .object({
@@ -615,6 +639,13 @@ type StudioMathTexTransformOperationV1 = Readonly<{
 }> &
   (
     | Readonly<{
+        controlOffset: Readonly<{ x: number; y: number }>;
+        delta: Readonly<{ x: number; y: number }>;
+        easing: "linear" | "smooth";
+        kind: "create-motion";
+        targetEntityIds: readonly string[];
+      }>
+    | Readonly<{
         kind: "transform-content";
         replacement: StudioMathTexContentV1 | null;
         sourceEntityId: string;
@@ -627,6 +658,7 @@ type StudioMathTexTransformOperationV1 = Readonly<{
 
 export type ApplyStudioMathTexTransformEditWireCommandV1 = Readonly<{
   expectedBaseRevision: string;
+  frame: Readonly<{ height: number; width: number }>;
   mathTexOutlines: readonly Readonly<{
     entityId: string;
     path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
@@ -642,12 +674,14 @@ export type ApplyStudioMathTexTransformEditWireCommandV1 = Readonly<{
   }>[];
   studioEntities: readonly Readonly<{
     objectGraphKey: string;
+    position: Readonly<{ x: number; y: number }> | null;
     provisional: boolean;
     scale: number | null;
     sourceIdentity: string | null;
     type: StaticRootTransformEntityKind;
   }>[];
   version: 1;
+  viewport: Readonly<{ height: number; width: number }>;
 }>;
 
 export type ApplyStudioMathTexTransformEditCompiler = (
@@ -662,6 +696,7 @@ export type ProjectStudioMathTexTransformWireCommandV1 = Readonly<{
   studioEntities: readonly Readonly<{
     lifetime: readonly Readonly<{ end: number; start: number }>[];
     objectGraphKey: string;
+    position: Readonly<{ x: number; y: number }> | null;
     provisional: boolean;
     scale: number | null;
     sourceIdentity: string | null;

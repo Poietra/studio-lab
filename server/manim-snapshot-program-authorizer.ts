@@ -190,11 +190,13 @@ export async function authorizeSnapshotProgramWithSnapshot(
       bundle,
       buildStudioMathTexTransformEditCommand({
         expectedBaseRevision: snapshot.snapshotHash,
+        frame: input.frame,
         mathTexOutlines,
         nextRevision,
         programs: input.programs,
         sourceRuntimeBindings,
         studioEntities: studioMathTexTransformStudioEntities(input.runtimeSceneState),
+        viewport: input.request.viewport,
       }),
     );
     return;

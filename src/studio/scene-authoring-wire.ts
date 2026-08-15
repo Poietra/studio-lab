@@ -246,16 +246,18 @@ export function buildStudioCreationEditCommand(
   };
 }
 
-/** Selects only the bounded content-transform family; Rust owns its sequence and identity semantics. */
+/** Selects the bounded MathTex transform family; Rust owns sequence, target, and motion semantics. */
 export function isExactStudioMathTexTransformProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
-  const operationCount = programs.reduce((count, program) => count + program.operations.length, 0);
+  const operations = programs.flatMap(({ operations }) => operations);
+  const transformCount = operations.filter(({ kind }) => kind === "TransformContent").length;
+  const motionCount = operations.filter(({ kind }) => kind === "CreateMotion").length;
   return (
     programs.length > 0 &&
-    operationCount >= 1 &&
-    operationCount <= 2 &&
-    programs.every(
-      (program) => program.operations.length > 0 && program.operations.every(({ kind }) => kind === "TransformContent"),
-    )
+    transformCount >= 1 &&
+    transformCount <= 2 &&
+    motionCount <= 1 &&
+    programs.every((program) => program.operations.length > 0) &&
+    operations.every(({ kind }) => kind === "TransformContent" || kind === "CreateMotion")
   );
 }
 
@@ -284,6 +286,16 @@ function normalizedStudioMathTexTransformPrograms(
           interval: operation.interval,
           origin: operation.provenance.origin,
         };
+        if (operation.kind === "CreateMotion") {
+          return {
+            ...common,
+            controlOffset: operation.controlOffset,
+            delta: operation.delta,
+            easing: operation.easing,
+            kind: "create-motion",
+            targetEntityIds: operation.targetEntityIds,
+          };
+        }
         if (operation.kind !== "TransformContent") return { ...common, kind: "unsupported" };
         const replacement = canonicalEditableContent(operation.replacement, "MathTex");
         return {
@@ -318,6 +330,7 @@ export function studioMathTexTransformStudioEntities(
 ): ApplyStudioMathTexTransformEditWireCommandV1["studioEntities"] {
   return Object.entries(runtimeSceneState.objectGraph.entities).map(([objectGraphKey, entity]) => ({
     objectGraphKey,
+    position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
     provisional: entity.provisional,
     scale: entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null,
     sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,

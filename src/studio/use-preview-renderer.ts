@@ -865,6 +865,7 @@ export async function compileStudioPreviewSceneV1(
     });
     const command = buildStudioMathTexTransformEditCommand({
       expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+      frame: input.frame,
       mathTexOutlines,
       nextRevision: engineRevisionHash,
       programs: sourceProgramBatch,
@@ -876,6 +877,7 @@ export async function compileStudioPreviewSceneV1(
         }),
       ),
       studioEntities: studioMathTexTransformStudioEntities(input.workingState.runtimeSceneState),
+      viewport: STUDIO_VIEWPORT,
     });
     try {
       const result = await (input.applyStudioMathTexTransformEditCompiler ?? compileApplyStudioMathTexTransformEdit)(
@@ -936,6 +938,12 @@ export async function compileStudioPreviewSceneV1(
         kind: "unsupported",
       };
     }
+  }
+  if (sourceProgramBatch.some((program) => program.operations.some(({ kind }) => kind === "TransformContent"))) {
+    return {
+      error: "TransformContent requires one closed Rust MathTex transform batch.",
+      kind: "unsupported",
+    };
   }
   const hasPersistentRemove = sourcePrograms.some(({ program }) =>
     program.operations.some(
