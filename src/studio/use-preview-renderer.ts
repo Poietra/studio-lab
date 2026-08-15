@@ -33,7 +33,7 @@ import {
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
-import type { ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
+import type { ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
 import type { CanonicalEditOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
@@ -378,7 +378,6 @@ export async function digestStudioPreviewSceneRevisionV1(
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlines?: Readonly<Record<string, MathTexOutlineArtifactV1>>;
     snapshot: StudioVerifiedPreviewSnapshotV1;
-    studioScene: Readonly<{ duration: number; sceneId: string }>;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -390,9 +389,9 @@ export async function digestStudioPreviewSceneRevisionV1(
       : source.kind === "imported-manim-runtime-trace"
         ? [source.kind, source.sourceHash, source.runtimeConfigHash, source.traceVersion, source.traceDigest]
         : [source.kind, source.editProgramVersion, source.revisionHash];
-  // An ordered scalar tuple is the canonical serialization for this digest.
-  // Every authority axis that can alter the compiled bundle is included so a
-  // retained worker never observes two different scenes under one revision.
+  // `workingRevision` canonically contains the raw Programs. The digest must
+  // not include TypeScript's evaluated Scene mirror because Rust derives the
+  // compiled Scene from those Programs.
   const revisionBasis = [
     "poietra.studio-scene-ir-v1",
     input.workspaceKey,
@@ -403,8 +402,6 @@ export async function digestStudioPreviewSceneRevisionV1(
     input.snapshot.correlation.sceneDuration,
     input.snapshot.snapshot.assets.manifestDigest,
     sourceAuthority,
-    input.studioScene.sceneId,
-    input.studioScene.duration,
     input.frame.width,
     input.frame.height,
     Object.entries(input.mathTexOutlines ?? {})
@@ -421,6 +418,33 @@ export async function digestStudioPreviewSceneRevisionV1(
   const bytes = new TextEncoder().encode(canonicalJsonV1(revisionBasis));
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function sourceProgramRecords(proposedState: ProposedState): readonly ProgramRecord[] {
+  return [...proposedState.base.appliedPrograms, ...proposedState.base.stagedPrograms];
+}
+
+function studioProgramEnvelope(program: ProgramRecord["program"]) {
+  const source = program.anchor.source;
+  const anchorSource =
+    source.kind === "absolute"
+      ? ({ kind: "absolute", seconds: source.seconds } as const)
+      : source.kind === "playhead"
+        ? ({ kind: "playhead", referenceSeconds: source.referenceSeconds } as const)
+        : ({ kind: "unsupported" } as const);
+  return {
+    anchorCapturedPlayhead: program.anchor.capturedPlayhead,
+    anchorResolvedSeconds: program.anchor.resolvedSeconds,
+    anchorSource,
+    intentCount: program.intentCount,
+    loweringSupported: program.loweringStatus === "supported",
+    origin: program.provenance.origin,
+    requestedExecution: program.requestedExecution,
+    scheduleEdgeCount: program.schedule.edges.length,
+    scheduleMode: program.schedule.mode,
+    scheduleOrder: program.schedule.order,
+    transactionId: program.transactionId,
+  };
 }
 
 function studioCreationEntityKind(type: string): "circle" | "image" | "math-tex" | "other" | "rectangle" {
@@ -442,7 +466,12 @@ function studioCreationMathTexParts(value: unknown): readonly string[] | null {
 function normalizedStudioCreationOperation(
   operation: CanonicalEditOperation,
 ): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = { id: operation.id, interval: operation.interval };
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
   if (operation.kind === "CreateEntity") {
     return {
       ...common,
@@ -450,6 +479,7 @@ function normalizedStudioCreationOperation(
         dimensions: operation.entity.dimensions ?? {},
         id: operation.entity.id,
         kind: studioCreationEntityKind(operation.entity.type),
+        lifetimeEnd: operation.entity.lifetime.end,
         lifetimeStart: operation.entity.lifetime.start,
         texParts: operation.entity.type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
       },
@@ -470,15 +500,21 @@ function normalizedStudioCreationOperation(
   if (operation.kind === "AnimateProperty" && operation.key === "scale") {
     return {
       ...common,
+      controlPresent: operation.control !== undefined,
       entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
       kind: "uniform-scale",
       relativeFactor: operation.relativeFactor ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
     };
   }
   if (operation.kind === "ResizeEntity") {
     return {
       ...common,
       entityId: operation.entityId,
+      fromDimensions: operation.from.dimensions,
+      fromPosition: operation.from.position,
+      fromScale: operation.scale,
       kind: "resize",
       shape: operation.shape,
       toDimensions: operation.to.dimensions,
@@ -491,7 +527,12 @@ function normalizedStudioCreationOperation(
 function normalizedStudioMotionOperation(
   operation: CanonicalEditOperation,
 ): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = { id: operation.id, interval: operation.interval, origin: operation.provenance.origin };
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
   if (operation.kind === "CreateMotion") {
     return {
       ...common,
@@ -513,51 +554,51 @@ function staticRootTransformEditCommand(
   }>,
   nextRevision: string,
 ): ApplyStaticRootTransformEditWireCommandV1 {
-  const operations = input.proposedState.programs.flatMap(({ program, validation }) =>
-    program.operations.map((operation): ApplyStaticRootTransformEditWireCommandV1["operations"][number] => {
-      const common = {
-        anchorSeconds: program.anchor.resolvedSeconds,
-        entityId: "entityId" in operation && typeof operation.entityId === "string" ? operation.entityId : "",
-        id: operation.id,
-        interval: operation.interval,
-        loweringSupported: program.loweringStatus === "supported",
-        origin: operation.provenance.origin,
-        programOrigin: program.provenance.origin,
-        validationValid: validation.status === "valid",
-      };
-      if (operation.kind === "SetProperty" && operation.key === "position") {
-        return { ...common, kind: "position", position: isPointValue(operation.value) ? operation.value : null };
-      }
-      if (operation.kind === "AnimateProperty" && operation.key === "scale") {
-        return {
-          ...common,
-          controlPresent: operation.control !== undefined,
-          from: typeof operation.from === "number" ? operation.from : null,
-          kind: "uniform-scale",
-          relativeFactor: operation.relativeFactor ?? null,
-          to: typeof operation.to === "number" ? operation.to : null,
+  const programs = sourceProgramRecords(input.proposedState).map(({ program }) => ({
+    ...studioProgramEnvelope(program),
+    operations: program.operations.map(
+      (operation): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] => {
+        const common = {
+          dependsOn: operation.dependsOn,
+          entityId: "entityId" in operation && typeof operation.entityId === "string" ? operation.entityId : "",
+          id: operation.id,
+          interval: operation.interval,
+          origin: operation.provenance.origin,
         };
-      }
-      if (operation.kind === "ResizeEntity") {
-        return {
-          ...common,
-          fromDimensions: operation.from.dimensions,
-          fromPosition: operation.from.position,
-          fromScale: operation.scale,
-          kind: "resize",
-          shape: operation.shape,
-          toDimensions: operation.to.dimensions,
-          toPosition: operation.to.position,
-        };
-      }
-      return { ...common, kind: "unsupported" };
-    }),
-  );
+        if (operation.kind === "SetProperty" && operation.key === "position") {
+          return { ...common, kind: "position", position: isPointValue(operation.value) ? operation.value : null };
+        }
+        if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+          return {
+            ...common,
+            controlPresent: operation.control !== undefined,
+            from: typeof operation.from === "number" ? operation.from : null,
+            kind: "uniform-scale",
+            relativeFactor: operation.relativeFactor ?? null,
+            to: typeof operation.to === "number" ? operation.to : null,
+          };
+        }
+        if (operation.kind === "ResizeEntity") {
+          return {
+            ...common,
+            fromDimensions: operation.from.dimensions,
+            fromPosition: operation.from.position,
+            fromScale: operation.scale,
+            kind: "resize",
+            shape: operation.shape,
+            toDimensions: operation.to.dimensions,
+            toPosition: operation.to.position,
+          };
+        }
+        return { ...common, kind: "unsupported" };
+      },
+    ),
+  }));
   return {
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    operations,
+    programs,
     schema: "poietra.apply-static-root-transform-edit",
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
       ([sourceIdentityKey, { entityId, sourceName }]) => ({
@@ -596,7 +637,12 @@ function staticRootTransformEditCommand(
 function normalizedStudioTimelineOperation(
   operation: CanonicalEditOperation,
 ): ApplyStudioTimelineEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = { id: operation.id, interval: operation.interval, origin: operation.provenance.origin };
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
   if (operation.kind === "InsertTimelineEvent") {
     return {
       ...common,
@@ -642,19 +688,12 @@ function studioMotionEditCommand(
   nextRevision: string,
 ): ApplyStudioMotionEditWireCommandV1 {
   return {
-    baseStudioSceneId: input.proposedState.base.runtimeSceneState.sceneId,
-    evaluatedDuration: input.proposedState.evaluatedScene.duration,
-    evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    programs: input.proposedState.programs.map(({ program, validation }) => ({
-      anchorSeconds: program.anchor.resolvedSeconds,
-      loweringSupported: program.loweringStatus === "supported",
+    programs: sourceProgramRecords(input.proposedState).map(({ program }) => ({
+      ...studioProgramEnvelope(program),
       operations: program.operations.map(normalizedStudioMotionOperation),
-      origin: program.provenance.origin,
-      scheduleOrder: program.schedule.order,
-      validationValid: validation.status === "valid",
     })),
     schema: "poietra.apply-studio-motion-edit",
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
@@ -681,19 +720,11 @@ function studioTimelineEditCommand(
   nextRevision: string,
 ): ApplyStudioTimelineEditWireCommandV1 {
   return {
-    baseStudioSceneId: input.proposedState.base.runtimeSceneState.sceneId,
-    evaluatedDuration: input.proposedState.evaluatedScene.duration,
-    evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     nextRevision,
-    programs: input.proposedState.programs.map(({ program, validation }) => ({
-      absoluteSourceSeconds: program.anchor.source.kind === "absolute" ? program.anchor.source.seconds : null,
-      loweringSupported: program.loweringStatus === "supported",
+    programs: sourceProgramRecords(input.proposedState).map(({ program }) => ({
+      ...studioProgramEnvelope(program),
       operations: program.operations.map(normalizedStudioTimelineOperation),
-      origin: program.provenance.origin,
-      resolvedSeconds: program.anchor.resolvedSeconds,
-      scheduleOrder: program.schedule.order,
-      validationValid: validation.status === "valid",
     })),
     schema: "poietra.apply-studio-timeline-edit",
     version: 1,
@@ -717,16 +748,17 @@ export async function compileStudioPreviewSceneV1(
 ): Promise<
   Readonly<{ error: string; kind: "unsupported" }> | Readonly<{ kind: "compiled"; scene: CompiledStudioPreviewSceneV1 }>
 > {
+  const sourcePrograms = sourceProgramRecords(input.proposedState);
   if (Math.abs(input.proposedState.base.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
     return {
       error: "Studio source state is not correlated with the verified imported Scene timing.",
       kind: "unsupported",
     };
   }
-  if (input.workingRevision === PRISTINE_WORKING_REVISION && input.proposedState.programs.length > 0) {
+  if (input.workingRevision === PRISTINE_WORKING_REVISION && sourcePrograms.length > 0) {
     return { error: "A pristine Studio revision cannot contain evaluated edit Programs.", kind: "unsupported" };
   }
-  if (input.proposedState.programs.length === 0) {
+  if (sourcePrograms.length === 0) {
     const { correlation, snapshot } = input.snapshot;
     if (!importedSnapshotCorrelationIsExact(input.snapshot, true)) {
       return { error: "The base verified preview has inconsistent revision evidence.", kind: "unsupported" };
@@ -762,7 +794,7 @@ export async function compileStudioPreviewSceneV1(
       kind: "unsupported",
     };
   }
-  const hasStudioCreation = input.proposedState.programs.some(({ program }) =>
+  const hasStudioCreation = sourcePrograms.some(({ program }) =>
     program.operations.some(({ kind }) => kind === "CreateEntity"),
   );
   if (hasStudioCreation) {
@@ -770,7 +802,7 @@ export async function compileStudioPreviewSceneV1(
       return { error: "Studio creation requires an exactly correlated base snapshot.", kind: "unsupported" };
     }
     const outlineInputs: Array<Readonly<{ entityId: string; texParts: readonly string[] }>> = [];
-    for (const { program } of input.proposedState.programs) {
+    for (const { program } of sourcePrograms) {
       for (const operation of program.operations) {
         if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
         const texParts = studioCreationMathTexParts(operation.entity.content);
@@ -808,41 +840,17 @@ export async function compileStudioPreviewSceneV1(
       frame: input.frame,
       mathTexOutlines: mathTexOutlineDigestMap,
       snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
     const command: ApplyStudioCreationEditWireCommandV1 = {
-      evaluatedDuration: input.proposedState.evaluatedScene.duration,
-      evaluatedEntities: Object.entries(input.proposedState.evaluatedScene.objectGraph.entities).map(
-        ([objectGraphKey, entity]) => ({
-          contentSampleTexParts: (
-            input.proposedState.evaluatedScene.propertyChannels[`${entity.id}/content`]?.samples ?? []
-          ).map(({ value }) => studioCreationMathTexParts(value)),
-          id: entity.id,
-          kind: studioCreationEntityKind(entity.type),
-          lifetimes: entity.lifetime,
-          objectGraphKey,
-          sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
-          contentTexParts: entity.type === "MathTex" ? studioCreationMathTexParts(entity.content) : null,
-          transactionId: entity.transactionId ?? null,
-        }),
-      ),
-      evaluatedEvents: input.proposedState.evaluatedScene.eventTrack.events.map((event) => ({
-        interval: event.interval ?? null,
-        operationId: event.operationId ?? null,
-      })),
       expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
       frame: input.frame,
       mathTexOutlines,
       nextRevision: engineRevisionHash,
-      programs: input.proposedState.programs.map(({ program, validation }) => ({
-        anchorSeconds: program.anchor.resolvedSeconds,
-        loweringSupported: program.loweringStatus === "supported",
+      programs: sourcePrograms.map(({ program }) => ({
+        ...studioProgramEnvelope(program),
         operations: program.operations.map(normalizedStudioCreationOperation),
-        scheduleOrder: program.schedule.order,
-        transactionId: program.transactionId,
-        validationValid: validation.status === "valid",
       })),
       schema: "poietra.apply-studio-creation-edit",
       version: 1,
@@ -891,7 +899,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const hasStudioTimelineEdit = input.proposedState.programs.some(({ program }) =>
+  const hasStudioTimelineEdit = sourcePrograms.some(({ program }) =>
     program.operations.some(({ kind }) => kind === "InsertTimelineEvent" || kind === "TrimSceneDuration"),
   );
   if (hasStudioTimelineEdit) {
@@ -904,7 +912,6 @@ export async function compileStudioPreviewSceneV1(
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
@@ -942,7 +949,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const hasStudioMotion = input.proposedState.programs.some(({ program }) =>
+  const hasStudioMotion = sourcePrograms.some(({ program }) =>
     program.operations.some(({ kind }) => kind === "CreateMotion"),
   );
   if (hasStudioMotion) {
@@ -955,7 +962,6 @@ export async function compileStudioPreviewSceneV1(
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
@@ -995,7 +1001,6 @@ export async function compileStudioPreviewSceneV1(
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
@@ -1042,7 +1047,6 @@ export async function compileStudioPreviewSceneV1(
       !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
       base.runtimeSceneState.sceneId !== base.editorContext.activeSceneId ||
       base.runtimeSceneState.sceneId !== `${correlation.context.sourcePath}#${correlation.context.sceneName}` ||
-      input.proposedState.evaluatedScene.sceneId !== base.runtimeSceneState.sceneId ||
       base.sourceSnapshot.sourceId !== correlation.context.sourcePath ||
       base.sourceSnapshot.hash !== `sha256:${correlation.context.sourceHash}`
     ) {
@@ -1054,7 +1058,6 @@ export async function compileStudioPreviewSceneV1(
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
-      studioScene: input.proposedState.evaluatedScene,
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });

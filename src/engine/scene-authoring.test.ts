@@ -19,18 +19,30 @@ const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 
   expectedBaseRevision: "a".repeat(64),
   frame: { height: 9, width: 16 },
   nextRevision: "7".repeat(64),
-  operations: [
+  programs: [
     {
-      anchorSeconds: 0,
-      entityId: "source:circle",
-      id: "move-circle",
-      interval: { end: 0, start: 0 },
-      kind: "position",
+      anchorCapturedPlayhead: 0,
+      anchorResolvedSeconds: 0,
+      anchorSource: { kind: "playhead", referenceSeconds: 0 },
+      intentCount: 1,
       loweringSupported: true,
       origin: "direct-manipulation",
-      position: { x: 400, y: 180 },
-      programOrigin: "direct-manipulation",
-      validationValid: true,
+      operations: [
+        {
+          dependsOn: [],
+          entityId: "source:circle",
+          id: "move-circle",
+          interval: { end: 0, start: 0 },
+          kind: "position",
+          origin: "direct-manipulation",
+          position: { x: 400, y: 180 },
+        },
+      ],
+      requestedExecution: "parallel",
+      scheduleEdgeCount: 0,
+      scheduleMode: "parallel",
+      scheduleOrder: ["move-circle"],
+      transactionId: "move-circle",
     },
   ],
   schema: "poietra.apply-static-root-transform-edit",
@@ -52,63 +64,58 @@ const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 
 };
 
 const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
-  evaluatedDuration: 2.4,
-  evaluatedEntities: [
-    {
-      contentSampleTexParts: [],
-      contentTexParts: null,
-      id: "tx:create/entity:rectangle",
-      kind: "rectangle",
-      lifetimes: [{ end: 2.4, start: 0.5 }],
-      objectGraphKey: "tx:create/entity:rectangle",
-      sourceIdentity: null,
-      transactionId: "create",
-    },
-  ],
-  evaluatedEvents: [
-    { interval: { end: 0.5, start: 0.5 }, operationId: "create-rectangle" },
-    { interval: { end: 0.5, start: 0.5 }, operationId: "position-rectangle" },
-    { interval: { end: 0.9, start: 0.5 }, operationId: "fade-rectangle" },
-  ],
   expectedBaseRevision: "a".repeat(64),
   frame: { height: 9, width: 16 },
   mathTexOutlines: [],
   nextRevision: "d".repeat(64),
   programs: [
     {
-      anchorSeconds: 0.5,
+      anchorCapturedPlayhead: 0.5,
+      anchorResolvedSeconds: 0.5,
+      anchorSource: { kind: "playhead", referenceSeconds: 0.5 },
+      intentCount: 1,
       loweringSupported: true,
       operations: [
         {
+          dependsOn: [],
           entity: {
             dimensions: { height: 2, width: 4 },
             id: "tx:create/entity:rectangle",
             kind: "rectangle",
+            lifetimeEnd: null,
             lifetimeStart: 0.5,
             texParts: null,
           },
           id: "create-rectangle",
           interval: { end: 0.5, start: 0.5 },
           kind: "create",
+          origin: "studio-default",
         },
         {
+          dependsOn: ["create-rectangle"],
           entityId: "tx:create/entity:rectangle",
           id: "position-rectangle",
           interval: { end: 0.5, start: 0.5 },
           kind: "position",
+          origin: "studio-default",
           position: { x: 320, y: 180 },
         },
         {
+          dependsOn: ["position-rectangle"],
           entityId: "tx:create/entity:rectangle",
           id: "fade-rectangle",
           interval: { end: 0.9, start: 0.5 },
           kind: "fade-in",
+          origin: "studio-default",
           persistent: true,
         },
       ],
+      origin: "studio-default",
+      requestedExecution: "parallel",
+      scheduleEdgeCount: 4,
+      scheduleMode: "dependency-dag",
       scheduleOrder: ["create-rectangle", "position-rectangle", "fade-rectangle"],
       transactionId: "create",
-      validationValid: true,
     },
   ],
   schema: "poietra.apply-studio-creation-edit",
@@ -117,20 +124,21 @@ const creationEditCommand: ApplyStudioCreationEditWireCommandV1 = {
 };
 
 const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
-  baseStudioSceneId: "scene.py#CircleScene",
-  evaluatedDuration: 3.5,
-  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
   frame: { height: 9, width: 16 },
   nextRevision: "9".repeat(64),
   programs: [
     {
-      anchorSeconds: 0.5,
+      anchorCapturedPlayhead: 0.5,
+      anchorResolvedSeconds: 0.5,
+      anchorSource: { kind: "playhead", referenceSeconds: 0.5 },
+      intentCount: 1,
       loweringSupported: true,
       operations: [
         {
           controlOffset: { x: 20, y: -40 },
           delta: { x: 120, y: 80 },
+          dependsOn: [],
           easing: "smooth",
           id: "motion-1",
           interval: { end: 2, start: 0.5 },
@@ -140,8 +148,11 @@ const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
         },
       ],
       origin: "direct-manipulation",
+      requestedExecution: "parallel",
+      scheduleEdgeCount: 0,
+      scheduleMode: "parallel",
       scheduleOrder: ["motion-1"],
-      validationValid: true,
+      transactionId: "motion",
     },
   ],
   schema: "poietra.apply-studio-motion-edit",
@@ -152,7 +163,6 @@ const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
 };
 
 const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
-  baseStudioSceneId: "scene.py#CircleScene",
   candidates: [
     {
       baseCenter: { x: 320, y: 180 },
@@ -165,8 +175,6 @@ const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
       studioEntityId: "source:circle",
     },
   ],
-  evaluatedDuration: 3,
-  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
   frame: { height: 9, width: 16 },
   nextRevision: "b".repeat(64),
@@ -193,7 +201,7 @@ const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
       scheduleEdgeCount: 0,
       scheduleMode: "parallel",
       scheduleOrder: ["move-circle"],
-      validationValid: true,
+      transactionId: "move-circle",
     },
   ],
   schema: "poietra.apply-studio-bound-entity-edit",
@@ -202,17 +210,18 @@ const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
 };
 
 const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
-  baseStudioSceneId: "scene.py#CircleScene",
-  evaluatedDuration: 3,
-  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
   nextRevision: "c".repeat(64),
   programs: [
     {
-      absoluteSourceSeconds: 2,
+      anchorCapturedPlayhead: 2,
+      anchorResolvedSeconds: 2,
+      anchorSource: { kind: "absolute", seconds: 2 },
+      intentCount: 1,
       loweringSupported: true,
       operations: [
         {
+          dependsOn: [],
           eventKind: "wait",
           id: "wait-1",
           interval: { end: 3.5, start: 2 },
@@ -222,9 +231,11 @@ const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
         },
       ],
       origin: "studio-default",
-      resolvedSeconds: 2,
+      requestedExecution: "sequence",
+      scheduleEdgeCount: 0,
+      scheduleMode: "sequence",
       scheduleOrder: ["wait-1"],
-      validationValid: true,
+      transactionId: "duration",
     },
   ],
   schema: "poietra.apply-studio-timeline-edit",

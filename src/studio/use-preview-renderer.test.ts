@@ -219,7 +219,7 @@ function recordingStudioTimelineCompiler(
 ): ApplyStudioTimelineEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    return { ...bundle, scene: { ...bundle.scene, duration: command.evaluatedDuration } };
+    return bundle;
   };
 }
 
@@ -1317,6 +1317,7 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     const motion = validation.program.operations[0];
     if (!motion || motion.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
+    const rawMotion = { ...motion, dependsOn: ["missing-operation"] } as const;
     const unsupported = {
       dependsOn: [],
       entityId: "source:circle",
@@ -1329,12 +1330,24 @@ describe("compileStudioPreviewSceneV1", () => {
     } as const;
     const proposedState: ProposedState = {
       ...evaluated,
+      base: {
+        ...evaluated.base,
+        appliedPrograms: [
+          {
+            program: {
+              ...validation.program,
+              operations: [rawMotion, unsupported],
+              schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
+            },
+            validation: { issues: [], status: "valid" },
+          },
+        ],
+      },
       programs: [
         {
           program: {
             ...validation.program,
-            operations: [motion, unsupported],
-            schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
+            operations: [motion],
           },
           validation: { issues: [], status: "valid" },
         },
@@ -1354,22 +1367,28 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
-      baseStudioSceneId: "scene.py#CircleScene",
-      evaluatedDuration: 3,
-      evaluatedSceneId: "scene.py#CircleScene",
       frame: { height: 9, width: 16 },
       programs: [
         {
+          anchorCapturedPlayhead: 0.5,
+          anchorResolvedSeconds: 0.5,
+          anchorSource: { kind: "playhead", referenceSeconds: 0.5 },
+          intentCount: 1,
           operations: [
             {
               controlOffset: { x: 32, y: 18 },
               delta: { x: 64, y: -36 },
+              dependsOn: ["missing-operation"],
               kind: "create-motion",
               targetEntityIds: ["source:circle"],
             },
             { id: "unsupported-position", kind: "unsupported" },
           ],
+          requestedExecution: validation.program.requestedExecution,
+          scheduleEdgeCount: validation.program.schedule.edges.length,
+          scheduleMode: validation.program.schedule.mode,
           scheduleOrder: [motion.id, "unsupported-position"],
+          transactionId: "create-static-motion",
         },
       ],
       sourceRuntimeBindings: [{ runtimeEntityId: "earlier", sourceIdentityKey: "circle", sourceName: "circle" }],
@@ -1422,17 +1441,18 @@ describe("compileStudioPreviewSceneV1", () => {
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
-      baseStudioSceneId: workingBase.runtimeSceneState.sceneId,
-      evaluatedDuration: proposedState.evaluatedScene.duration,
-      evaluatedSceneId: proposedState.evaluatedScene.sceneId,
       expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
       nextRevision: result.scene.engineRevisionHash,
       programs: [
         {
-          absoluteSourceSeconds: 1,
+          anchorCapturedPlayhead: 1,
+          anchorResolvedSeconds: 1,
+          anchorSource: { kind: "absolute", seconds: 1 },
+          intentCount: 1,
           loweringSupported: true,
           operations: [
             {
+              dependsOn: [],
               eventKind: "wait",
               id: extension.program.operations[0]?.id,
               interval: { end: 2, start: 1 },
@@ -1442,9 +1462,11 @@ describe("compileStudioPreviewSceneV1", () => {
             },
           ],
           origin: "studio-default",
-          resolvedSeconds: 1,
+          requestedExecution: "sequence",
+          scheduleEdgeCount: 0,
+          scheduleMode: "sequence",
           scheduleOrder: extension.program.schedule.order,
-          validationValid: true,
+          transactionId: "extend-imported-scene",
         },
       ],
       schema: "poietra.apply-studio-timeline-edit",
@@ -1582,10 +1604,10 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       validation: { issues: [], status: "valid" },
     } as const;
-    const proposedState = {
-      ...evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] }),
-      programs: [extensionRecord, unsupportedRecord],
-    };
+    const proposedState = evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [extensionRecord, unsupportedRecord],
+    });
     const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
@@ -1602,9 +1624,12 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands[0]?.programs).toHaveLength(2);
     expect(commands[0]?.programs[0]?.operations[0]?.kind).toBe("insert-wait");
     expect(commands[0]?.programs[1]).toMatchObject({
-      absoluteSourceSeconds: 0,
+      anchorCapturedPlayhead: 1,
+      anchorResolvedSeconds: 0,
+      anchorSource: { kind: "absolute", seconds: 0 },
       operations: [
         {
+          dependsOn: [],
           id: unsupportedOperation.id,
           interval: unsupportedOperation.interval,
           kind: "unsupported",
@@ -1612,9 +1637,8 @@ describe("compileStudioPreviewSceneV1", () => {
         },
       ],
       origin: "studio-default",
-      resolvedSeconds: 0,
       scheduleOrder: [unsupportedOperation.id],
-      validationValid: true,
+      transactionId: "appearance-only",
     });
   });
 
@@ -1639,18 +1663,30 @@ describe("compileStudioPreviewSceneV1", () => {
         expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
         frame: { height: 9, width: 16 },
         nextRevision: result.scene.engineRevisionHash,
-        operations: [
+        programs: [
           {
-            anchorSeconds: 0,
-            entityId: "source:circle",
-            id: fixture.operationId,
-            interval: { end: 0, start: 0 },
-            kind: "position",
+            anchorCapturedPlayhead: 0,
+            anchorResolvedSeconds: 0,
+            anchorSource: { kind: "playhead", referenceSeconds: 0 },
+            intentCount: 1,
             loweringSupported: true,
+            operations: [
+              {
+                dependsOn: [],
+                entityId: "source:circle",
+                id: fixture.operationId,
+                interval: { end: 0, start: 0 },
+                kind: "position",
+                origin,
+                position: { x: 384, y: 144 },
+              },
+            ],
             origin,
-            position: { x: 384, y: 144 },
-            programOrigin: origin,
-            validationValid: true,
+            requestedExecution: fixture.programRecord.program.requestedExecution,
+            scheduleEdgeCount: fixture.programRecord.program.schedule.edges.length,
+            scheduleMode: fixture.programRecord.program.schedule.mode,
+            scheduleOrder: fixture.programRecord.program.schedule.order,
+            transactionId: fixture.programRecord.program.transactionId,
           },
         ],
         schema: "poietra.apply-static-root-transform-edit",
@@ -1702,8 +1738,8 @@ describe("compileStudioPreviewSceneV1", () => {
     });
 
     expect(result.kind).toBe("compiled");
-    expect(commands[0]?.operations).toHaveLength(1);
-    expect(commands[0]?.operations[0]).toMatchObject({
+    expect(commands[0]?.programs).toHaveLength(1);
+    expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
       kind: "resize",
       shape: "rectangle",
     });
@@ -1772,7 +1808,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.animationChannels).toBe(snapshot.snapshot.scene.animationChannels);
   });
 
-  it("normalizes Studio creation state at the Rust command boundary", async () => {
+  it("passes raw Studio creation Programs without a TypeScript evaluated-state mirror", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
@@ -1781,9 +1817,25 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "normalized-create",
     });
     expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
-    const edited = evaluateWorkingState({
+    const created = evaluateWorkingState({
       ...proposedState.base,
       appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+    });
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0.5,
+      interval: { end: 0.5, start: 0.5 },
+      scales: { [creation.entityIds[0]!]: { from: 1, to: 1.5 } },
+      scene: created.evaluatedScene,
+      targetEntityIds: creation.entityIds,
+      transactionId: "scale-created-circle",
+    });
+    expect(scale.kind, JSON.stringify(scale.issues)).toBe("valid");
+    const edited = evaluateWorkingState({
+      ...proposedState.base,
+      appliedPrograms: [
+        programRecord(creation.validation.program, creation.validation),
+        programRecord(scale.program, scale),
+      ],
     });
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
 
@@ -1803,7 +1855,6 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(commands).toHaveLength(1);
     const command = commands[0];
     expect(command).toMatchObject({
-      evaluatedDuration: edited.evaluatedScene.duration,
       expectedBaseRevision: HASH_C,
       frame: { height: 9, width: 16 },
       mathTexOutlines: [],
@@ -1812,13 +1863,12 @@ describe("compileStudioPreviewSceneV1", () => {
       viewport: { height: 360, width: 640 },
     });
     expect(command?.nextRevision).toMatch(/^[0-9a-f]{64}$/);
-    expect(command?.programs).toHaveLength(1);
+    expect(command?.programs).toHaveLength(2);
     expect(command?.programs[0]).toMatchObject({
-      anchorSeconds: 0.5,
+      anchorResolvedSeconds: 0.5,
       loweringSupported: true,
       scheduleOrder: creation.validation.program.schedule.order,
       transactionId: "normalized-create",
-      validationValid: true,
     });
     expect(command?.programs[0]?.operations.map(({ kind }) => kind)).toEqual(["create", "position", "fade-in"]);
     expect(command?.programs[0]?.operations[0]).toMatchObject({
@@ -1826,28 +1876,21 @@ describe("compileStudioPreviewSceneV1", () => {
         dimensions: { radius: 1 },
         id: creation.entityIds[0],
         kind: "circle",
+        lifetimeEnd: null,
         lifetimeStart: 0.5,
         texParts: null,
       },
       interval: { end: 0.5, start: 0.5 },
       kind: "create",
     });
-    expect(command?.evaluatedEntities).toContainEqual(
-      expect.objectContaining({
-        contentSampleTexParts: [],
-        contentTexParts: null,
-        id: creation.entityIds[0],
-        kind: "circle",
-        sourceIdentity: null,
-        transactionId: "normalized-create",
-      }),
-    );
-    expect(command?.evaluatedEvents).toEqual(
-      edited.evaluatedScene.eventTrack.events.map((event) => ({
-        interval: event.interval ?? null,
-        operationId: event.operationId ?? null,
-      })),
-    );
+    expect(command?.programs[1]?.operations[0]).toMatchObject({
+      controlPresent: false,
+      entityId: creation.entityIds[0],
+      from: 1,
+      kind: "uniform-scale",
+      relativeFactor: 1.5,
+      to: 1.5,
+    });
   });
 
   it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
@@ -1896,16 +1939,9 @@ describe("compileStudioPreviewSceneV1", () => {
     if (compiled.kind !== "compiled") throw new Error("MathTex test outline must compile.");
     expect(commands[0]?.mathTexOutlines).toEqual([{ entityId: creation.entityIds[0], path: compiled.path, texParts }]);
     expect(commands[0]?.programs[0]?.operations[0]).toMatchObject({
-      entity: { id: creation.entityIds[0], kind: "math-tex", texParts },
+      entity: { id: creation.entityIds[0], kind: "math-tex", lifetimeEnd: null, texParts },
       kind: "create",
     });
-    expect(commands[0]?.evaluatedEntities).toContainEqual(
-      expect.objectContaining({
-        contentTexParts: texParts,
-        id: creation.entityIds[0],
-        kind: "math-tex",
-      }),
-    );
   });
 
   it("surfaces a Rust rejection without recreating creation semantics in TypeScript", async () => {
@@ -1971,7 +2007,10 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(outlineCompilerCalls).toBe(0);
     expect(result.kind).toBe("compiled");
     expect(commands).toHaveLength(1);
-    expect(commands[0]?.operations.map(({ kind }) => kind)).toEqual(["position", "uniform-scale"]);
+    expect(commands[0]?.programs.flatMap(({ operations }) => operations.map(({ kind }) => kind))).toEqual([
+      "position",
+      "uniform-scale",
+    ]);
     expect(commands[0]?.sourceRuntimeBindings).toEqual([
       { runtimeEntityId: fixture.runtimeEntityId, sourceIdentityKey: "equation", sourceName: "equation" },
     ]);
@@ -2045,11 +2084,10 @@ describe("compileStudioPreviewSceneV1", () => {
   });
 
   it("changes the compiled revision across every snapshot, asset, and frame authority axis", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
+    const { snapshot } = await compilablePreviewInput();
     const basis = {
       frame: { height: 9, width: 16 },
       snapshot,
-      studioScene: proposedState.evaluatedScene,
       workingRevision: "studio-working-v1:circle",
       workspaceKey: "project-a/scene.py/CircleScene",
     } as const;

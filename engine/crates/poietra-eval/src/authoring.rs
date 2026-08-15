@@ -183,6 +183,34 @@ pub enum StudioAuthoringOrigin {
     StudioDefault,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioProgramExecution {
+    Parallel,
+    Sequence,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum StudioProgramScheduleMode {
+    DependencyDag,
+    Parallel,
+    Sequence,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioProgramAnchorSource {
+    Absolute { seconds: Option<f64> },
+    Playhead { reference_seconds: Option<f64> },
+    Unsupported,
+}
+
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(
     tag = "kind",
@@ -194,6 +222,7 @@ pub enum StudioMotionOperation {
     CreateMotion {
         control_offset: PointV1,
         delta: PointV1,
+        depends_on: Vec<String>,
         easing: StudioMotionEasing,
         id: String,
         interval: IntervalV1,
@@ -201,6 +230,7 @@ pub enum StudioMotionOperation {
         target_entity_ids: Vec<String>,
     },
     Unsupported {
+        depends_on: Vec<String>,
         id: String,
         interval: IntervalV1,
         origin: StudioAuthoringOrigin,
@@ -208,6 +238,14 @@ pub enum StudioMotionOperation {
 }
 
 impl StudioMotionOperation {
+    fn depends_on(&self) -> &[String] {
+        match self {
+            Self::CreateMotion { depends_on, .. } | Self::Unsupported { depends_on, .. } => {
+                depends_on
+            }
+        }
+    }
+
     fn id(&self) -> &str {
         match self {
             Self::CreateMotion { id, .. } | Self::Unsupported { id, .. } => id,
@@ -230,12 +268,18 @@ impl StudioMotionOperation {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioMotionProgram {
-    pub anchor_seconds: f64,
+    pub anchor_captured_playhead: f64,
+    pub anchor_resolved_seconds: f64,
+    pub anchor_source: StudioProgramAnchorSource,
+    pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioMotionOperation>,
     pub origin: StudioAuthoringOrigin,
+    pub requested_execution: StudioProgramExecution,
+    pub schedule_edge_count: usize,
+    pub schedule_mode: StudioProgramScheduleMode,
     pub schedule_order: Vec<String>,
-    pub validation_valid: bool,
+    pub transaction_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -257,9 +301,6 @@ pub struct StudioMotionSourceBinding {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyStudioMotionEditCommand {
-    pub base_studio_scene_id: String,
-    pub evaluated_duration: f64,
-    pub evaluated_scene_id: String,
     pub expected_base_revision: String,
     pub frame: StudioAuthoringSize,
     pub next_revision: String,
@@ -307,33 +348,9 @@ pub struct StudioBoundEntityEditCandidate {
     pub studio_entity_id: String,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum StudioBoundEntityExecution {
-    Parallel,
-    Sequence,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
-#[serde(rename_all = "kebab-case")]
-pub enum StudioBoundEntityScheduleMode {
-    DependencyDag,
-    Parallel,
-    Sequence,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum StudioBoundEntityAnchorSource {
-    Absolute { seconds: Option<f64> },
-    Playhead { reference_seconds: Option<f64> },
-    Unsupported,
-}
+pub type StudioBoundEntityExecution = StudioProgramExecution;
+pub type StudioBoundEntityScheduleMode = StudioProgramScheduleMode;
+pub type StudioBoundEntityAnchorSource = StudioProgramAnchorSource;
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(
@@ -456,17 +473,14 @@ pub struct StudioBoundEntityProgram {
     pub schedule_edge_count: usize,
     pub schedule_mode: StudioBoundEntityScheduleMode,
     pub schedule_order: Vec<String>,
-    pub validation_valid: bool,
+    pub transaction_id: String,
 }
 
 /// One complete normalized Studio request plus integration-verified binding candidates.
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyStudioBoundEntityEditCommand {
-    pub base_studio_scene_id: String,
     pub candidates: Vec<StudioBoundEntityEditCandidate>,
-    pub evaluated_duration: f64,
-    pub evaluated_scene_id: String,
     pub expected_base_revision: String,
     pub frame: StudioAuthoringSize,
     pub next_revision: String,
@@ -537,16 +551,30 @@ pub enum StaticRootTransformOperationKind {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StaticRootTransformOperation {
-    pub anchor_seconds: f64,
+    pub depends_on: Vec<String>,
     pub entity_id: String,
     pub id: String,
     pub interval: IntervalV1,
     #[serde(flatten)]
     pub kind: StaticRootTransformOperationKind,
-    pub lowering_supported: bool,
     pub origin: StaticRootTransformOrigin,
-    pub program_origin: StaticRootTransformOrigin,
-    pub validation_valid: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootTransformProgram {
+    pub anchor_captured_playhead: f64,
+    pub anchor_resolved_seconds: f64,
+    pub anchor_source: StudioProgramAnchorSource,
+    pub intent_count: usize,
+    pub lowering_supported: bool,
+    pub operations: Vec<StaticRootTransformOperation>,
+    pub origin: StaticRootTransformOrigin,
+    pub requested_execution: StudioProgramExecution,
+    pub schedule_edge_count: usize,
+    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_order: Vec<String>,
+    pub transaction_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -577,7 +605,7 @@ pub struct ApplyStaticRootTransformEditCommand {
     pub expected_base_revision: String,
     pub frame: StaticRootTransformSize,
     pub next_revision: String,
-    pub operations: Vec<StaticRootTransformOperation>,
+    pub programs: Vec<StaticRootTransformProgram>,
     pub source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
     pub studio_entities: Vec<StaticRootTransformStudioEntity>,
     pub viewport: StaticRootTransformSize,
@@ -605,6 +633,7 @@ pub enum StudioTimelinePurpose {
 )]
 pub enum StudioTimelineOperation {
     InsertWait {
+        depends_on: Vec<String>,
         event_kind: StudioTimelineEventKind,
         id: String,
         interval: IntervalV1,
@@ -612,6 +641,7 @@ pub enum StudioTimelineOperation {
         purpose: Option<StudioTimelinePurpose>,
     },
     TrimSceneDuration {
+        depends_on: Vec<String>,
         id: String,
         interval: IntervalV1,
         origin: StudioAuthoringOrigin,
@@ -620,6 +650,7 @@ pub enum StudioTimelineOperation {
         wait_operation_ids: Vec<String>,
     },
     Unsupported {
+        depends_on: Vec<String>,
         id: String,
         interval: IntervalV1,
         origin: StudioAuthoringOrigin,
@@ -627,6 +658,14 @@ pub enum StudioTimelineOperation {
 }
 
 impl StudioTimelineOperation {
+    fn depends_on(&self) -> &[String] {
+        match self {
+            Self::InsertWait { depends_on, .. }
+            | Self::TrimSceneDuration { depends_on, .. }
+            | Self::Unsupported { depends_on, .. } => depends_on,
+        }
+    }
+
     fn id(&self) -> &str {
         match self {
             Self::InsertWait { id, .. }
@@ -647,21 +686,23 @@ impl StudioTimelineOperation {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioTimelineProgram {
-    pub absolute_source_seconds: Option<f64>,
+    pub anchor_captured_playhead: f64,
+    pub anchor_resolved_seconds: f64,
+    pub anchor_source: StudioProgramAnchorSource,
+    pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioTimelineOperation>,
     pub origin: StudioAuthoringOrigin,
-    pub resolved_seconds: f64,
+    pub requested_execution: StudioProgramExecution,
+    pub schedule_edge_count: usize,
+    pub schedule_mode: StudioProgramScheduleMode,
     pub schedule_order: Vec<String>,
-    pub validation_valid: bool,
+    pub transaction_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyStudioTimelineEditCommand {
-    pub base_studio_scene_id: String,
-    pub evaluated_duration: f64,
-    pub evaluated_scene_id: String,
     pub expected_base_revision: String,
     pub next_revision: String,
     pub programs: Vec<StudioTimelineProgram>,
@@ -673,6 +714,7 @@ pub struct StudioCreationEntitySpec {
     pub dimensions: StudioAuthoringDimensions,
     pub id: String,
     pub kind: StudioAuthoringEntityKind,
+    pub lifetime_end: Option<f64>,
     pub lifetime_start: f64,
     pub tex_parts: Option<Vec<String>>,
 }
@@ -694,9 +736,15 @@ pub enum StudioCreationOperationKind {
         persistent: bool,
     },
     UniformScale {
+        control_present: bool,
+        from: Option<f64>,
         relative_factor: Option<f64>,
+        to: Option<f64>,
     },
     Resize {
+        from_dimensions: StudioAuthoringDimensions,
+        from_position: PointV1,
+        from_scale: f64,
         shape: StudioAuthoringEntityKind,
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
@@ -707,42 +755,30 @@ pub enum StudioCreationOperationKind {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioCreationOperation {
+    pub depends_on: Vec<String>,
     pub entity_id: Option<String>,
     pub id: String,
     pub interval: IntervalV1,
     #[serde(flatten)]
     pub kind: StudioCreationOperationKind,
+    pub origin: StudioAuthoringOrigin,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioCreationProgram {
-    pub anchor_seconds: f64,
+    pub anchor_captured_playhead: f64,
+    pub anchor_resolved_seconds: f64,
+    pub anchor_source: StudioProgramAnchorSource,
+    pub intent_count: usize,
     pub lowering_supported: bool,
     pub operations: Vec<StudioCreationOperation>,
+    pub origin: StudioAuthoringOrigin,
+    pub requested_execution: StudioProgramExecution,
+    pub schedule_edge_count: usize,
+    pub schedule_mode: StudioProgramScheduleMode,
     pub schedule_order: Vec<String>,
     pub transaction_id: String,
-    pub validation_valid: bool,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioCreationEvaluatedEntity {
-    pub content_sample_tex_parts: Vec<Option<Vec<String>>>,
-    pub content_tex_parts: Option<Vec<String>>,
-    pub id: String,
-    pub kind: StudioAuthoringEntityKind,
-    pub lifetimes: Vec<IntervalV1>,
-    pub object_graph_key: String,
-    pub source_identity: Option<String>,
-    pub transaction_id: Option<String>,
-}
-
-#[derive(Clone, Debug, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct StudioCreationEvaluatedEvent {
-    pub interval: Option<IntervalV1>,
-    pub operation_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -756,9 +792,6 @@ pub struct StudioCreationMathTexOutline {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApplyStudioCreationEditCommand {
-    pub evaluated_duration: f64,
-    pub evaluated_entities: Vec<StudioCreationEvaluatedEntity>,
-    pub evaluated_events: Vec<StudioCreationEvaluatedEvent>,
     pub expected_base_revision: String,
     pub frame: StudioAuthoringSize,
     pub math_tex_outlines: Vec<StudioCreationMathTexOutline>,
@@ -1291,13 +1324,148 @@ fn studio_vector_to_scene_vector(
     }
 }
 
-fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
-    let Some(operation) = program.operations.first() else {
+#[derive(Clone, Copy)]
+struct StudioProgramOperationFacts<'a> {
+    depends_on: &'a [String],
+    id: &'a str,
+}
+
+fn studio_program_source_seconds(
+    source: &StudioProgramAnchorSource,
+    captured_playhead: f64,
+) -> Option<f64> {
+    if !captured_playhead.is_finite() || captured_playhead < 0.0 {
+        return None;
+    }
+    match source {
+        StudioProgramAnchorSource::Absolute {
+            seconds: Some(seconds),
+        } if seconds.is_finite() && *seconds >= 0.0 => Some(*seconds),
+        StudioProgramAnchorSource::Playhead {
+            reference_seconds: Some(reference_seconds),
+        } if reference_seconds.is_finite()
+            && *reference_seconds >= 0.0
+            && (*reference_seconds - captured_playhead).abs() < 0.001 =>
+        {
+            Some(*reference_seconds)
+        }
+        StudioProgramAnchorSource::Absolute { seconds: None }
+        | StudioProgramAnchorSource::Playhead {
+            reference_seconds: None,
+        }
+        | StudioProgramAnchorSource::Unsupported
+        | StudioProgramAnchorSource::Absolute { .. }
+        | StudioProgramAnchorSource::Playhead { .. } => None,
+    }
+}
+
+fn studio_program_anchor_is_closed(
+    source: &StudioProgramAnchorSource,
+    captured_playhead: f64,
+    resolved_seconds: f64,
+    scene_duration: f64,
+) -> bool {
+    studio_program_source_seconds(source, captured_playhead).is_some_and(|source_seconds| {
+        resolved_seconds.is_finite()
+            && resolved_seconds >= 0.0
+            && resolved_seconds <= scene_duration + TIMELINE_ANCHOR_EPSILON
+            && studio_timeline_semantic_values_match(source_seconds, resolved_seconds)
+    })
+}
+
+fn studio_program_structure_is_closed(
+    operations: &[StudioProgramOperationFacts<'_>],
+    requested_execution: StudioProgramExecution,
+    schedule_edge_count: usize,
+    schedule_mode: StudioProgramScheduleMode,
+    schedule_order: &[String],
+    derived_edges: &[(&str, &str)],
+) -> bool {
+    if operations.is_empty() || operations.len() != schedule_order.len() {
         return false;
+    }
+    let operation_ids = operations
+        .iter()
+        .map(|operation| operation.id)
+        .collect::<BTreeSet<_>>();
+    let scheduled_ids = schedule_order
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    if operation_ids.len() != operations.len()
+        || operation_ids.iter().any(|id| id.is_empty())
+        || scheduled_ids.len() != schedule_order.len()
+        || operation_ids != scheduled_ids
+    {
+        return false;
+    }
+
+    let mut explicit_edges = BTreeSet::new();
+    for operation in operations {
+        let mut dependencies = BTreeSet::new();
+        for dependency in operation.depends_on {
+            if dependency == operation.id
+                || !operation_ids.contains(dependency.as_str())
+                || !dependencies.insert(dependency.as_str())
+            {
+                return false;
+            }
+            explicit_edges.insert((dependency.as_str(), operation.id));
+        }
+    }
+    if requested_execution == StudioProgramExecution::Sequence {
+        for pair in operations.windows(2) {
+            explicit_edges.insert((pair[0].id, pair[1].id));
+        }
+    }
+
+    let mut semantic_edges = BTreeSet::new();
+    for (from, to) in derived_edges {
+        if from == to || !operation_ids.contains(from) || !operation_ids.contains(to) {
+            return false;
+        }
+        semantic_edges.insert((*from, *to));
+    }
+    let expected_edge_count = explicit_edges.len() + semantic_edges.len();
+    let expected_mode = match requested_execution {
+        StudioProgramExecution::Sequence => StudioProgramScheduleMode::Sequence,
+        StudioProgramExecution::Parallel if expected_edge_count == 0 => {
+            StudioProgramScheduleMode::Parallel
+        }
+        StudioProgramExecution::Parallel => StudioProgramScheduleMode::DependencyDag,
     };
-    program.operations.len() == 1
-        && program.schedule_order.len() == 1
-        && program.schedule_order[0] == operation.id()
+    if schedule_edge_count != expected_edge_count || schedule_mode != expected_mode {
+        return false;
+    }
+
+    explicit_edges
+        .iter()
+        .chain(semantic_edges.iter())
+        .all(|(from, to)| {
+            schedule_order.iter().position(|id| id == from)
+                < schedule_order.iter().position(|id| id == to)
+        })
+}
+
+fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
+    let operations = program
+        .operations
+        .iter()
+        .map(|operation| StudioProgramOperationFacts {
+            depends_on: operation.depends_on(),
+            id: operation.id(),
+        })
+        .collect::<Vec<_>>();
+    program.intent_count == 1
+        && program.operations.len() == 1
+        && studio_program_structure_is_closed(
+            &operations,
+            program.requested_execution,
+            program.schedule_edge_count,
+            program.schedule_mode,
+            &program.schedule_order,
+            &[],
+        )
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1375,8 +1543,8 @@ fn resolve_studio_bound_entity_edit(
 ) -> Option<StudioBoundEntityEdit> {
     let operation = program.operations.first()?;
     let interval = operation.interval();
-    if !program.validation_valid
-        || program.intent_count != 1
+    if program.intent_count != 1
+        || program.transaction_id.is_empty()
         || !program.lowering_supported
         || program.origin != StudioAuthoringOrigin::DirectManipulation
         || program.requested_execution != StudioBoundEntityExecution::Parallel
@@ -1462,43 +1630,77 @@ fn resolve_studio_bound_entity_edit(
 }
 
 fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
-    if program.operations.is_empty() || program.schedule_order.len() != program.operations.len() {
-        return false;
-    }
-    let operation_ids = program
+    let operations = program
         .operations
         .iter()
-        .map(|operation| operation.id.as_str())
-        .collect::<BTreeSet<_>>();
-    let scheduled_ids = program
-        .schedule_order
+        .map(|operation| StudioProgramOperationFacts {
+            depends_on: &operation.depends_on,
+            id: &operation.id,
+        })
+        .collect::<Vec<_>>();
+    let producers = program
+        .operations
         .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    operation_ids.len() == program.operations.len()
-        && scheduled_ids.len() == program.schedule_order.len()
-        && operation_ids == scheduled_ids
+        .filter_map(|operation| match &operation.kind {
+            StudioCreationOperationKind::Create { entity } => {
+                Some((entity.id.as_str(), operation.id.as_str()))
+            }
+            StudioCreationOperationKind::Position { .. }
+            | StudioCreationOperationKind::FadeIn { .. }
+            | StudioCreationOperationKind::UniformScale { .. }
+            | StudioCreationOperationKind::Resize { .. }
+            | StudioCreationOperationKind::Unsupported => None,
+        })
+        .collect::<Vec<_>>();
+    let identity_edges = program
+        .operations
+        .iter()
+        .filter_map(|operation| {
+            let entity_id = operation.entity_id.as_deref()?;
+            let (_, producer_id) = producers
+                .iter()
+                .find(|(produced_id, _)| *produced_id == entity_id)?;
+            (*producer_id != operation.id).then_some((*producer_id, operation.id.as_str()))
+        })
+        .collect::<Vec<_>>();
+    (1..=16).contains(&program.intent_count)
+        && program
+            .operations
+            .iter()
+            .all(|operation| operation.origin == program.origin)
+        && studio_program_structure_is_closed(
+            &operations,
+            program.requested_execution,
+            program.schedule_edge_count,
+            program.schedule_mode,
+            &program.schedule_order,
+            &identity_edges,
+        )
 }
 
-#[allow(
-    clippy::float_cmp,
-    reason = "an evaluated instantaneous operation is represented by one exact zero-width interval"
-)]
-fn studio_creation_event_start(
-    events: &[StudioCreationEvaluatedEvent],
-    operation_id: &str,
-) -> Option<f64> {
-    let mut matching = events
+fn static_root_transform_program_is_closed(program: &StaticRootTransformProgram) -> bool {
+    let operations = program
+        .operations
         .iter()
-        .filter(|event| event.operation_id.as_deref() == Some(operation_id));
-    let interval = matching.next()?.interval.as_ref()?;
-    (matching.next().is_none() && interval.start.is_finite() && interval.start == interval.end)
-        .then_some(interval.start)
+        .map(|operation| StudioProgramOperationFacts {
+            depends_on: &operation.depends_on,
+            id: &operation.id,
+        })
+        .collect::<Vec<_>>();
+    (1..=16).contains(&program.intent_count)
+        && studio_program_structure_is_closed(
+            &operations,
+            program.requested_execution,
+            program.schedule_edge_count,
+            program.schedule_mode,
+            &program.schedule_order,
+            &[],
+        )
 }
 
 struct PendingStudioCreation {
     current_dimensions: StudioAuthoringDimensions,
-    fade_end: Option<f64>,
+    fade_interval: Option<IntervalV1>,
     initial_dimensions: StudioAuthoringDimensions,
     initial_position: PointV1,
     instant_at: Option<f64>,
@@ -1762,17 +1964,26 @@ fn studio_timeline_semantic_values_match(left: f64, right: f64) -> bool {
         && (left - right).abs() <= 1e-9 * left.abs().max(right.abs()).max(1.0)
 }
 
-fn studio_duration_matches(left: f64, right: f64) -> bool {
-    left.is_finite() && right.is_finite() && (left - right).abs() < TIMELINE_ANCHOR_EPSILON
-}
-
 fn studio_timeline_program_is_closed(program: &StudioTimelineProgram) -> bool {
-    let Some(operation) = program.operations.first() else {
-        return false;
-    };
-    program.operations.len() == 1
-        && program.schedule_order.len() == 1
-        && program.schedule_order[0] == operation.id()
+    let operations = program
+        .operations
+        .iter()
+        .map(|operation| StudioProgramOperationFacts {
+            depends_on: operation.depends_on(),
+            id: operation.id(),
+        })
+        .collect::<Vec<_>>();
+    program.intent_count == 1
+        && program.operations.len() == 1
+        && program.requested_execution == StudioProgramExecution::Sequence
+        && studio_program_structure_is_closed(
+            &operations,
+            program.requested_execution,
+            program.schedule_edge_count,
+            program.schedule_mode,
+            &program.schedule_order,
+            &[],
+        )
 }
 
 fn trim_inserted_waits(
@@ -2122,9 +2333,6 @@ impl EngineSessionV1 {
         command: ApplyStudioTimelineEditCommand,
     ) -> Result<SceneIrBundleV1, ApplyStudioTimelineEditError> {
         let ApplyStudioTimelineEditCommand {
-            base_studio_scene_id,
-            evaluated_duration,
-            evaluated_scene_id,
             expected_base_revision,
             next_revision,
             programs,
@@ -2134,25 +2342,25 @@ impl EngineSessionV1 {
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
         ) || !scene.animation_channels.is_empty()
-            || base_studio_scene_id != evaluated_scene_id
-            || !evaluated_duration.is_finite()
             || programs.is_empty()
         {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         }
         let mut operation_ids = BTreeSet::new();
         for program in &programs {
-            let Some(source_seconds) = program.absolute_source_seconds else {
+            let StudioProgramAnchorSource::Absolute { seconds: Some(_) } = &program.anchor_source
+            else {
                 return Err(ApplyStudioTimelineEditError::Unsupported);
             };
             let Some(operation) = program.operations.first() else {
                 return Err(ApplyStudioTimelineEditError::Unsupported);
             };
-            if !source_seconds.is_finite()
-                || source_seconds < 0.0
-                || !program.resolved_seconds.is_finite()
-                || program.resolved_seconds < 0.0
-                || !program.validation_valid
+            if !studio_program_anchor_is_closed(
+                &program.anchor_source,
+                program.anchor_captured_playhead,
+                program.anchor_resolved_seconds,
+                scene.duration,
+            ) || program.transaction_id.is_empty()
                 || !program.lowering_supported
                 || program.origin != StudioAuthoringOrigin::StudioDefault
                 || !studio_timeline_program_is_closed(program)
@@ -2167,7 +2375,15 @@ impl EngineSessionV1 {
         let mut ordered_programs = programs
             .iter()
             .enumerate()
-            .map(|(index, program)| (program.absolute_source_seconds.unwrap_or_default(), index))
+            .map(|(index, program)| {
+                let StudioProgramAnchorSource::Absolute {
+                    seconds: Some(source_seconds),
+                } = program.anchor_source
+                else {
+                    unreachable!("timeline anchor was admitted above")
+                };
+                (source_seconds, index)
+            })
             .collect::<Vec<_>>();
         ordered_programs.sort_by(|(left_anchor, left_index), (right_anchor, right_index)| {
             left_anchor
@@ -2183,10 +2399,8 @@ impl EngineSessionV1 {
         for (source_seconds, program_index) in ordered_programs {
             let program = &programs[program_index];
             let expected_resolved_seconds = source_seconds + resolved_offset;
-            if !studio_timeline_semantic_values_match(
-                expected_resolved_seconds,
-                program.resolved_seconds,
-            ) {
+            if !expected_resolved_seconds.is_finite() || resolved_offset < -TIMELINE_ANCHOR_EPSILON
+            {
                 return Err(ApplyStudioTimelineEditError::Unsupported);
             }
 
@@ -2202,17 +2416,15 @@ impl EngineSessionV1 {
                     let duration = interval.end - interval.start;
                     if *event_kind != StudioTimelineEventKind::Wait
                         || *purpose != Some(StudioTimelinePurpose::SceneDuration)
-                        || !studio_timeline_semantic_values_match(
-                            interval.start,
-                            program.resolved_seconds,
-                        )
+                        || !studio_timeline_semantic_values_match(interval.start, source_seconds)
+                        || interval.end <= interval.start
                         || !duration.is_finite()
                         || duration <= 0.0
                     {
                         return Err(ApplyStudioTimelineEditError::Unsupported);
                     }
                     edits.push(SceneTimelineEdit::InsertWait(SceneTimelineInsertion {
-                        at: interval.start,
+                        at: expected_resolved_seconds,
                         duration,
                     }));
                     authorized_wait_operation_ids.push(id.clone());
@@ -2229,10 +2441,7 @@ impl EngineSessionV1 {
                     ..
                 } => {
                     if !studio_timeline_semantic_values_match(interval.start, interval.end)
-                        || !studio_timeline_semantic_values_match(
-                            interval.start,
-                            program.resolved_seconds,
-                        )
+                        || !studio_timeline_semantic_values_match(interval.start, source_seconds)
                         || wait_operation_ids.len() != authorized_wait_operation_ids.len()
                         || wait_operation_ids
                             .iter()
@@ -2240,27 +2449,32 @@ impl EngineSessionV1 {
                             .any(|(actual, expected)| actual != expected)
                         || !removed_duration.is_finite()
                         || *removed_duration < 0.1 - TIMELINE_ANCHOR_EPSILON
+                        || resolved_offset - removed_duration < -TIMELINE_ANCHOR_EPSILON
                         || !target_duration.is_finite()
                         || *target_duration < 0.1
+                        || !studio_timeline_semantic_values_match(
+                            projected_duration - removed_duration,
+                            *target_duration,
+                        )
                     {
                         return Err(ApplyStudioTimelineEditError::Unsupported);
                     }
                     edits.push(SceneTimelineEdit::TrimSceneDuration {
-                        at: interval.start,
+                        at: expected_resolved_seconds,
                         removed_duration: *removed_duration,
                         target_duration: *target_duration,
                     });
                     operation_ids.push(id.clone());
                     projected_duration -= removed_duration;
                     resolved_offset -= *removed_duration;
+                    if resolved_offset.abs() < TIMELINE_ANCHOR_EPSILON {
+                        resolved_offset = 0.0;
+                    }
                 }
                 StudioTimelineOperation::Unsupported { .. } => {
                     return Err(ApplyStudioTimelineEditError::Unsupported);
                 }
             }
-        }
-        if !studio_duration_matches(projected_duration, evaluated_duration) {
-            return Err(ApplyStudioTimelineEditError::Unsupported);
         }
 
         self.edit_scene_timeline(EditSceneTimelineCommand {
@@ -2436,9 +2650,9 @@ impl EngineSessionV1 {
     ///
     /// # Errors
     ///
-    /// Returns `Unsupported` when the normalized Programs or their evaluated facts do not describe
-    /// the supported create/position/fade plus instant transform subset. Every failure preserves
-    /// the installed session.
+    /// Returns `Unsupported` when the normalized Programs do not describe the supported
+    /// create/position/fade plus instant transform subset. Every failure preserves the installed
+    /// session.
     #[allow(
         clippy::float_cmp,
         clippy::too_many_lines,
@@ -2449,9 +2663,6 @@ impl EngineSessionV1 {
         command: ApplyStudioCreationEditCommand,
     ) -> Result<SceneIrBundleV1, ApplyStudioCreationEditError> {
         let ApplyStudioCreationEditCommand {
-            evaluated_duration,
-            evaluated_entities,
-            evaluated_events,
             expected_base_revision,
             frame,
             math_tex_outlines,
@@ -2465,15 +2676,19 @@ impl EngineSessionV1 {
         if next_revision == expected_base_revision {
             return Err(CreateSceneEntitiesError::RevisionDidNotAdvance.into());
         }
+        let base_duration = self.scene().duration;
         if programs.is_empty()
-            || !evaluated_duration.is_finite()
             || !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != self.scene().camera.view.frame_width
             || frame.height != self.scene().camera.view.frame_height
             || programs.iter().any(|program| {
-                !program.anchor_seconds.is_finite()
-                    || !program.validation_valid
+                !studio_program_anchor_is_closed(
+                    &program.anchor_source,
+                    program.anchor_captured_playhead,
+                    program.anchor_resolved_seconds,
+                    base_duration,
+                ) || program.transaction_id.is_empty()
                     || !program.lowering_supported
                     || !studio_creation_program_is_closed(program)
             })
@@ -2484,10 +2699,69 @@ impl EngineSessionV1 {
         let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
         ordered_programs.sort_by(|left, right| {
             programs[*left]
-                .anchor_seconds
-                .total_cmp(&programs[*right].anchor_seconds)
+                .anchor_resolved_seconds
+                .total_cmp(&programs[*right].anchor_resolved_seconds)
                 .then(left.cmp(right))
         });
+        let mut operation_ids = BTreeSet::new();
+        if programs
+            .iter()
+            .flat_map(|program| &program.operations)
+            .any(|operation| {
+                operation.id.is_empty()
+                    || !operation.interval.start.is_finite()
+                    || !operation.interval.end.is_finite()
+                    || operation.interval.end < operation.interval.start
+                    || !operation_ids.insert(operation.id.as_str())
+            })
+        {
+            return Err(ApplyStudioCreationEditError::Unsupported);
+        }
+
+        let mut program_offsets = vec![0.0; programs.len()];
+        let mut program_ranks = vec![0; programs.len()];
+        let mut ranked_insertions = Vec::new();
+        let mut resolved_offset = 0.0;
+        let mut projected_duration = base_duration;
+        for (rank, program_index) in ordered_programs.iter().copied().enumerate() {
+            let program = &programs[program_index];
+            let insertion_duration = if program.operations.iter().any(|operation| {
+                matches!(operation.kind, StudioCreationOperationKind::Create { .. })
+            }) {
+                program
+                    .operations
+                    .iter()
+                    .filter(|operation| {
+                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    })
+                    .map(|operation| operation.interval.end)
+                    .fold(program.anchor_resolved_seconds, f64::max)
+                    - program.anchor_resolved_seconds
+            } else {
+                0.0
+            };
+            let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
+            if !insertion_duration.is_finite()
+                || insertion_duration < 0.0
+                || !resolved_anchor.is_finite()
+                || resolved_anchor > projected_duration + TIMELINE_ANCHOR_EPSILON
+            {
+                return Err(ApplyStudioCreationEditError::Unsupported);
+            }
+            program_offsets[program_index] = resolved_offset;
+            program_ranks[program_index] = rank;
+            if insertion_duration > 0.0 {
+                ranked_insertions.push((
+                    rank,
+                    SceneTimelineInsertion {
+                        at: resolved_anchor,
+                        duration: insertion_duration,
+                    },
+                ));
+                resolved_offset += insertion_duration;
+                projected_duration += insertion_duration;
+            }
+        }
         let create_programs = ordered_programs
             .iter()
             .copied()
@@ -2522,17 +2796,45 @@ impl EngineSessionV1 {
                 .operations
                 .iter()
                 .any(|operation| match &operation.kind {
-                    StudioCreationOperationKind::Create { .. } => operation.entity_id.is_some(),
-                    StudioCreationOperationKind::Position { .. } => operation
-                        .entity_id
-                        .as_deref()
-                        .is_none_or(|entity_id| !program_created_ids.contains(entity_id)),
+                    StudioCreationOperationKind::Create { .. } => {
+                        operation.entity_id.is_some()
+                            || !studio_timeline_semantic_values_match(
+                                operation.interval.start,
+                                program.anchor_resolved_seconds,
+                            )
+                            || !studio_timeline_semantic_values_match(
+                                operation.interval.end,
+                                program.anchor_resolved_seconds,
+                            )
+                    }
+                    StudioCreationOperationKind::Position { position } => {
+                        operation
+                            .entity_id
+                            .as_deref()
+                            .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                            || position
+                                .as_ref()
+                                .is_none_or(|position| !studio_authoring_point_is_finite(position))
+                            || !studio_timeline_semantic_values_match(
+                                operation.interval.start,
+                                program.anchor_resolved_seconds,
+                            )
+                            || !studio_timeline_semantic_values_match(
+                                operation.interval.end,
+                                program.anchor_resolved_seconds,
+                            )
+                    }
                     StudioCreationOperationKind::FadeIn { persistent } => {
                         !persistent
                             || operation
                                 .entity_id
                                 .as_deref()
                                 .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                            || !studio_timeline_semantic_values_match(
+                                operation.interval.start,
+                                program.anchor_resolved_seconds,
+                            )
+                            || operation.interval.end <= operation.interval.start
                     }
                     StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
@@ -2541,7 +2843,40 @@ impl EngineSessionV1 {
             {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
-            for (operation_index, operation) in program.operations.iter().enumerate() {
+            let mut scheduled_created_ids = BTreeSet::new();
+            for operation_id in &program.schedule_order {
+                let operation = program
+                    .operations
+                    .iter()
+                    .find(|operation| operation.id == *operation_id)
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                match &operation.kind {
+                    StudioCreationOperationKind::Create { entity } => {
+                        scheduled_created_ids.insert(entity.id.as_str());
+                    }
+                    StudioCreationOperationKind::Position { .. }
+                    | StudioCreationOperationKind::FadeIn { .. }
+                        if operation
+                            .entity_id
+                            .as_deref()
+                            .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {
+                    }
+                    StudioCreationOperationKind::Position { .. }
+                    | StudioCreationOperationKind::FadeIn { .. }
+                    | StudioCreationOperationKind::UniformScale { .. }
+                    | StudioCreationOperationKind::Resize { .. }
+                    | StudioCreationOperationKind::Unsupported => {
+                        return Err(ApplyStudioCreationEditError::Unsupported);
+                    }
+                }
+            }
+            for operation_id in &program.schedule_order {
+                let operation_index = program
+                    .operations
+                    .iter()
+                    .position(|operation| operation.id == *operation_id)
+                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                let operation = &program.operations[operation_index];
                 let StudioCreationOperationKind::Create { entity } = &operation.kind else {
                     continue;
                 };
@@ -2560,36 +2895,62 @@ impl EngineSessionV1 {
         }
 
         let mut pending = Vec::with_capacity(create_records.len());
-        for (program_index, operation_index) in create_records {
+        for (creation_order, (program_index, operation_index)) in
+            create_records.into_iter().enumerate()
+        {
             let program = &programs[program_index];
             let StudioCreationOperationKind::Create { entity: spec } =
                 &program.operations[operation_index].kind
             else {
                 unreachable!();
             };
-            let evaluated_matches = evaluated_entities
+            let create_interval = &program.operations[operation_index].interval;
+            if !studio_timeline_semantic_values_match(
+                create_interval.start,
+                program.anchor_resolved_seconds,
+            ) || !studio_timeline_semantic_values_match(
+                create_interval.end,
+                program.anchor_resolved_seconds,
+            ) {
+                return Err(ApplyStudioCreationEditError::Unsupported);
+            }
+            let program_offset = program_offsets[program_index];
+            let insertion_duration = ranked_insertions
                 .iter()
-                .enumerate()
-                .filter(|(_, entity)| entity.object_graph_key == spec.id && entity.id == spec.id)
-                .collect::<Vec<_>>();
-            let [(evaluated_order, evaluated)] = evaluated_matches.as_slice() else {
-                return Err(ApplyStudioCreationEditError::Unsupported);
+                .find(|(rank, _)| *rank == program_ranks[program_index])
+                .map_or(0.0, |(_, insertion)| insertion.duration);
+            let duration_after_program = base_duration
+                + ranked_insertions
+                    .iter()
+                    .filter(|(rank, _)| *rank <= program_ranks[program_index])
+                    .map(|(_, insertion)| insertion.duration)
+                    .sum::<f64>();
+            let mut lifetime = IntervalV1 {
+                end: spec.lifetime_end.map_or(duration_after_program, |end| {
+                    (end + program_offset + insertion_duration).min(duration_after_program)
+                }),
+                start: spec.lifetime_start + program_offset,
             };
-            let [lifetime] = evaluated.lifetimes.as_slice() else {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            };
-            if evaluated.source_identity.is_some()
-                || evaluated.transaction_id.as_deref() != Some(program.transaction_id.as_str())
-                || evaluated.kind != spec.kind
-                || !spec
-                    .id
-                    .starts_with(&format!("tx:{}/entity:", program.transaction_id))
+            if !spec
+                .id
+                .starts_with(&format!("tx:{}/entity:", program.transaction_id))
+                || !studio_timeline_semantic_values_match(
+                    spec.lifetime_start,
+                    program.anchor_resolved_seconds,
+                )
+                || spec
+                    .lifetime_end
+                    .is_some_and(|end| !end.is_finite() || end <= spec.lifetime_start)
                 || !lifetime.start.is_finite()
                 || !lifetime.end.is_finite()
                 || lifetime.end <= lifetime.start
-                || lifetime.start != spec.lifetime_start
             {
                 return Err(ApplyStudioCreationEditError::Unsupported);
+            }
+            for (rank, insertion) in &ranked_insertions {
+                if *rank > program_ranks[program_index] {
+                    shift_interval_for_insertion(&mut lifetime, insertion);
+                }
             }
             if spec.kind == StudioAuthoringEntityKind::MathTex {
                 let Some(tex_parts) = spec.tex_parts.as_ref() else {
@@ -2597,11 +2958,6 @@ impl EngineSessionV1 {
                 };
                 if tex_parts.is_empty()
                     || tex_parts.iter().any(|part| part.trim().is_empty())
-                    || evaluated.content_tex_parts.as_ref() != Some(tex_parts)
-                    || evaluated
-                        .content_sample_tex_parts
-                        .iter()
-                        .any(|sample| sample.as_ref() != Some(tex_parts))
                     || math_tex_outlines
                         .iter()
                         .filter(|outline| {
@@ -2612,6 +2968,8 @@ impl EngineSessionV1 {
                 {
                     return Err(ApplyStudioCreationEditError::Unsupported);
                 }
+            } else if spec.tex_parts.is_some() {
+                return Err(ApplyStudioCreationEditError::Unsupported);
             }
 
             let positions = program
@@ -2636,13 +2994,29 @@ impl EngineSessionV1 {
                     matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
                 })
                 .collect::<Vec<_>>();
+            let mut fade_interval = fades.first().map(|fade| IntervalV1 {
+                end: fade.interval.end + program_offset,
+                start: fade.interval.start + program_offset,
+            });
+            if let Some(fade) = &mut fade_interval {
+                for (rank, insertion) in &ranked_insertions {
+                    if *rank > program_ranks[program_index] {
+                        shift_interval_for_insertion(fade, insertion);
+                    }
+                }
+            }
             if positions.len() != 1
                 || fades.len() > 1
                 || fades.first().is_some_and(|fade| {
-                    fade.interval.start != lifetime.start
-                        || !fade.interval.end.is_finite()
-                        || fade.interval.end <= lifetime.start
-                        || fade.interval.end > lifetime.end
+                    !studio_timeline_semantic_values_match(
+                        fade.interval.start,
+                        program.anchor_resolved_seconds,
+                    ) || !fade.interval.end.is_finite()
+                        || fade.interval.end <= fade.interval.start
+                })
+                || fade_interval.as_ref().is_some_and(|fade| {
+                    !studio_timeline_semantic_values_match(fade.start, lifetime.start)
+                        || fade.end > lifetime.end
                 })
                 || (spec.kind != StudioAuthoringEntityKind::MathTex
                     && studio_authoring_shape_size(spec.kind, spec.dimensions).is_none())
@@ -2650,15 +3024,15 @@ impl EngineSessionV1 {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
             pending.push((
-                *evaluated_order,
+                creation_order,
                 PendingStudioCreation {
                     current_dimensions: spec.dimensions,
-                    fade_end: fades.first().map(|fade| fade.interval.end),
+                    fade_interval,
                     initial_dimensions: spec.dimensions,
                     initial_position: (*positions[0]).clone(),
                     instant_at: None,
                     kind: spec.kind,
-                    lifetime: (*lifetime).clone(),
+                    lifetime,
                     position: (*positions[0]).clone(),
                     scale: 1.0,
                     spec: spec.clone(),
@@ -2675,6 +3049,15 @@ impl EngineSessionV1 {
                     .iter()
                     .find(|operation| operation.id == *operation_id)
                     .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                if !studio_timeline_semantic_values_match(
+                    operation.interval.start,
+                    program.anchor_resolved_seconds,
+                ) || !studio_timeline_semantic_values_match(
+                    operation.interval.end,
+                    program.anchor_resolved_seconds,
+                ) {
+                    return Err(ApplyStudioCreationEditError::Unsupported);
+                }
                 let entity_id = operation
                     .entity_id
                     .as_deref()
@@ -2684,8 +3067,15 @@ impl EngineSessionV1 {
                     .find(|(_, state)| state.spec.id == entity_id)
                     .map(|(_, state)| state)
                     .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                let instant_at = studio_creation_event_start(&evaluated_events, &operation.id)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
+                let mut instant_at =
+                    program.anchor_resolved_seconds + program_offsets[program_index];
+                for (rank, insertion) in &ranked_insertions {
+                    if *rank > program_ranks[program_index]
+                        && instant_at >= insertion.at - TIMELINE_ANCHOR_EPSILON
+                    {
+                        instant_at += insertion.duration;
+                    }
+                }
                 if state
                     .instant_at
                     .is_some_and(|prior| (prior - instant_at).abs() > 1e-9)
@@ -2700,11 +3090,25 @@ impl EngineSessionV1 {
                         state.position = position.clone();
                     }
                     StudioCreationOperationKind::UniformScale {
+                        control_present,
+                        from: Some(from),
                         relative_factor: Some(relative_factor),
-                    } if relative_factor.is_finite() && *relative_factor > 0.0 => {
+                        to: Some(to),
+                    } if !control_present
+                        && from.is_finite()
+                        && *from > 0.0
+                        && to.is_finite()
+                        && *to > 0.0
+                        && relative_factor.is_finite()
+                        && *relative_factor > 0.0
+                        && close_transform_baseline_value(*to / *from, *relative_factor) =>
+                    {
                         state.scale *= relative_factor;
                     }
                     StudioCreationOperationKind::Resize {
+                        from_dimensions,
+                        from_position,
+                        from_scale,
                         shape,
                         to_dimensions,
                         to_position,
@@ -2714,6 +3118,15 @@ impl EngineSessionV1 {
                             StudioAuthoringEntityKind::Circle
                                 | StudioAuthoringEntityKind::Rectangle
                         )
+                        && *from_dimensions == state.current_dimensions
+                        && studio_authoring_shape_size(*shape, *from_dimensions).is_some()
+                        && studio_authoring_point_is_finite(from_position)
+                        && close_transform_baseline_value(from_position.x, state.position.x)
+                        && close_transform_baseline_value(from_position.y, state.position.y)
+                        && from_scale.is_finite()
+                        && *from_scale > 0.0
+                        && close_transform_baseline_value(*from_scale, state.scale)
+                        && studio_authoring_shape_size(*shape, *to_dimensions).is_some()
                         && studio_authoring_point_is_finite(to_position) =>
                     {
                         state.current_dimensions = *to_dimensions;
@@ -2731,32 +3144,11 @@ impl EngineSessionV1 {
             }
         }
 
-        let timeline_insertions = create_programs
-            .iter()
-            .map(|program_index| {
-                let program = &programs[*program_index];
-                let end = program
-                    .operations
-                    .iter()
-                    .filter(|operation| {
-                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
-                    })
-                    .map(|operation| operation.interval.end)
-                    .fold(program.anchor_seconds, f64::max);
-                SceneTimelineInsertion {
-                    at: program.anchor_seconds,
-                    duration: (end - program.anchor_seconds).max(0.0),
-                }
-            })
+        let timeline_insertions = ranked_insertions
+            .into_iter()
+            .map(|(_, insertion)| insertion)
             .collect::<Vec<_>>();
-        let inserted_duration = timeline_insertions
-            .iter()
-            .map(|insertion| insertion.duration)
-            .sum::<f64>();
-        if timeline_insertions.iter().any(|insertion| {
-            !insertion.at.is_finite() || !insertion.duration.is_finite() || insertion.duration < 0.0
-        }) || (self.scene().duration + inserted_duration - evaluated_duration).abs() > 1e-9
-        {
+        if pending.is_empty() || !projected_duration.is_finite() {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
 
@@ -2837,7 +3229,9 @@ impl EngineSessionV1 {
                 None
             };
             entities.push(CreateSceneEntity {
-                fade_in: state.fade_end.map(|end| CreateSceneEntityFadeIn { end }),
+                fade_in: state
+                    .fade_interval
+                    .map(|interval| CreateSceneEntityFadeIn { end: interval.end }),
                 geometry,
                 id: state.spec.id,
                 instant_transform,
@@ -2893,10 +3287,7 @@ impl EngineSessionV1 {
         command: ApplyStudioBoundEntityEditCommand,
     ) -> Result<SceneIrBundleV1, ApplyStudioBoundEntityEditError> {
         let ApplyStudioBoundEntityEditCommand {
-            base_studio_scene_id,
             candidates,
-            evaluated_duration,
-            evaluated_scene_id,
             expected_base_revision,
             frame,
             next_revision,
@@ -2904,9 +3295,7 @@ impl EngineSessionV1 {
             viewport,
         } = command;
         let scene = self.scene();
-        if base_studio_scene_id != evaluated_scene_id
-            || !studio_duration_matches(scene.duration, evaluated_duration)
-            || !studio_authoring_size_is_positive(frame)
+        if !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != scene.camera.view.frame_width
             || frame.height != scene.camera.view.frame_height
@@ -3085,9 +3474,6 @@ impl EngineSessionV1 {
         command: ApplyStudioMotionEditCommand,
     ) -> Result<SceneIrBundleV1, ApplyStudioMotionEditError> {
         let ApplyStudioMotionEditCommand {
-            base_studio_scene_id,
-            evaluated_duration,
-            evaluated_scene_id,
             expected_base_revision,
             frame,
             next_revision,
@@ -3101,7 +3487,6 @@ impl EngineSessionV1 {
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
         ) || !scene.animation_channels.is_empty()
-            || base_studio_scene_id != evaluated_scene_id
             || !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != scene.camera.view.frame_width
@@ -3116,11 +3501,17 @@ impl EngineSessionV1 {
             .operations
             .first()
             .filter(|operation| {
-                program.validation_valid
-                    && program.lowering_supported
+                program.lowering_supported
+                    && !program.transaction_id.is_empty()
+                    && studio_program_anchor_is_closed(
+                        &program.anchor_source,
+                        program.anchor_captured_playhead,
+                        program.anchor_resolved_seconds,
+                        scene.duration,
+                    )
                     && studio_motion_program_is_closed(program)
                     && !operation.id().is_empty()
-                    && program.anchor_seconds == operation.interval().start
+                    && program.anchor_resolved_seconds == operation.interval().start
                     && program.origin == operation.origin()
             })
             .ok_or(ApplyStudioMotionEditError::Unsupported)?;
@@ -3136,12 +3527,6 @@ impl EngineSessionV1 {
         else {
             return Err(ApplyStudioMotionEditError::Unsupported);
         };
-        if !studio_duration_matches(
-            scene.duration + interval.end - interval.start,
-            evaluated_duration,
-        ) {
-            return Err(ApplyStudioMotionEditError::Unsupported);
-        }
 
         let mut runtime_entity_ids = Vec::with_capacity(target_entity_ids.len());
         for studio_entity_id in target_entity_ids {
@@ -3366,12 +3751,16 @@ impl EngineSessionV1 {
             expected_base_revision,
             frame,
             next_revision,
-            operations,
+            programs,
             source_runtime_bindings,
             studio_entities,
             viewport,
         } = command;
         let scene = self.scene();
+        let operation_count = programs
+            .iter()
+            .map(|program| program.operations.len())
+            .sum::<usize>();
         if !matches!(
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
@@ -3380,8 +3769,25 @@ impl EngineSessionV1 {
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != scene.camera.view.frame_width
             || frame.height != scene.camera.view.frame_height
-            || operations.is_empty()
-            || operations.len() > 2
+            || programs.is_empty()
+            || operation_count == 0
+            || operation_count > 2
+            || programs.iter().any(|program| {
+                !program.lowering_supported
+                    || program.transaction_id.is_empty()
+                    || !studio_program_anchor_is_closed(
+                        &program.anchor_source,
+                        program.anchor_captured_playhead,
+                        program.anchor_resolved_seconds,
+                        scene.duration,
+                    )
+                    || program.anchor_resolved_seconds != 0.0
+                    || !static_root_transform_program_is_closed(program)
+                    || program
+                        .operations
+                        .iter()
+                        .any(|operation| operation.origin != program.origin)
+            })
         {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
         }
@@ -3398,13 +3804,9 @@ impl EngineSessionV1 {
             StaticRootTransformDimensions,
             PointV1,
         )> = None;
-        for operation in operations {
-            if operation.anchor_seconds != 0.0
-                || !operation.lowering_supported
-                || !operation.validation_valid
-                || operation.interval.start != 0.0
+        for operation in programs.into_iter().flat_map(|program| program.operations) {
+            if operation.interval.start != 0.0
                 || operation.interval.end != 0.0
-                || operation.origin != operation.program_origin
                 || operation.id.is_empty()
                 || operation_ids.contains(&operation.id)
                 || entity_id
@@ -4113,21 +4515,33 @@ mod tests {
                 width: 16.0,
             },
             next_revision: NEXT_REVISION.to_owned(),
-            operations: vec![StaticRootTransformOperation {
-                anchor_seconds: 0.0,
-                entity_id: "source:circle".to_owned(),
-                id: "move-circle".to_owned(),
-                interval: IntervalV1 {
-                    end: 0.0,
-                    start: 0.0,
+            programs: vec![StaticRootTransformProgram {
+                anchor_captured_playhead: 0.0,
+                anchor_resolved_seconds: 0.0,
+                anchor_source: StudioProgramAnchorSource::Playhead {
+                    reference_seconds: Some(0.0),
                 },
-                kind: StaticRootTransformOperationKind::Position {
-                    position: Some(PointV1 { x: 400.0, y: 180.0 }),
-                },
+                intent_count: 1,
                 lowering_supported: true,
+                operations: vec![StaticRootTransformOperation {
+                    depends_on: vec![],
+                    entity_id: "source:circle".to_owned(),
+                    id: "move-circle".to_owned(),
+                    interval: IntervalV1 {
+                        end: 0.0,
+                        start: 0.0,
+                    },
+                    kind: StaticRootTransformOperationKind::Position {
+                        position: Some(PointV1 { x: 400.0, y: 180.0 }),
+                    },
+                    origin: StaticRootTransformOrigin::DirectManipulation,
+                }],
                 origin: StaticRootTransformOrigin::DirectManipulation,
-                program_origin: StaticRootTransformOrigin::DirectManipulation,
-                validation_valid: true,
+                requested_execution: StudioProgramExecution::Parallel,
+                schedule_edge_count: 0,
+                schedule_mode: StudioProgramScheduleMode::Parallel,
+                schedule_order: vec!["move-circle".to_owned()],
+                transaction_id: "move-circle".to_owned(),
             }],
             source_runtime_bindings: vec![StaticRootTransformSourceBinding {
                 source_identity_key: "circle".to_owned(),
@@ -4193,9 +4607,6 @@ mod tests {
 
     fn studio_motion_edit_command(bundle: &SceneIrBundleV1) -> ApplyStudioMotionEditCommand {
         ApplyStudioMotionEditCommand {
-            base_studio_scene_id: "scene.py#CircleScene".to_owned(),
-            evaluated_duration: bundle.scene.duration + 1.0,
-            evaluated_scene_id: "scene.py#CircleScene".to_owned(),
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             frame: StudioAuthoringSize {
                 height: 9.0,
@@ -4203,11 +4614,17 @@ mod tests {
             },
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![StudioMotionProgram {
-                anchor_seconds: 0.5,
+                anchor_captured_playhead: 0.5,
+                anchor_resolved_seconds: 0.5,
+                anchor_source: StudioProgramAnchorSource::Playhead {
+                    reference_seconds: Some(0.5),
+                },
+                intent_count: 1,
                 lowering_supported: true,
                 operations: vec![StudioMotionOperation::CreateMotion {
                     control_offset: PointV1 { x: 0.0, y: -160.0 },
                     delta: PointV1 { x: 240.0, y: -80.0 },
+                    depends_on: vec![],
                     easing: StudioMotionEasing::Smooth,
                     id: "create-motion".to_owned(),
                     interval: IntervalV1 {
@@ -4218,8 +4635,11 @@ mod tests {
                     target_entity_ids: vec!["source:later".to_owned(), "source:stroke".to_owned()],
                 }],
                 origin: StudioAuthoringOrigin::DirectManipulation,
+                requested_execution: StudioProgramExecution::Sequence,
+                schedule_edge_count: 0,
+                schedule_mode: StudioProgramScheduleMode::Sequence,
                 schedule_order: vec!["create-motion".to_owned()],
-                validation_valid: true,
+                transaction_id: "create-motion".to_owned(),
             }],
             source_runtime_bindings: vec![
                 StudioMotionSourceBinding {
@@ -4370,7 +4790,6 @@ mod tests {
             StudioBoundEntityEditPhase::Settled => 1.0,
         };
         ApplyStudioBoundEntityEditCommand {
-            base_studio_scene_id: "scene.py#BoundScene".to_owned(),
             candidates: vec![StudioBoundEntityEditCandidate {
                 base_center: PointV1 { x: 320.0, y: 180.0 },
                 base_opacity: Some(1.0),
@@ -4385,8 +4804,6 @@ mod tests {
                 source_anchor,
                 studio_entity_id: "source:later".to_owned(),
             }],
-            evaluated_duration: bundle.scene.duration,
-            evaluated_scene_id: "scene.py#BoundScene".to_owned(),
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             frame: StudioAuthoringSize {
                 height: 9.0,
@@ -4407,7 +4824,7 @@ mod tests {
                 schedule_edge_count: 0,
                 schedule_mode: StudioBoundEntityScheduleMode::Parallel,
                 schedule_order: vec!["bound-edit".to_owned()],
-                validation_valid: true,
+                transaction_id: "bound-edit".to_owned(),
             }],
             viewport: StudioAuthoringSize {
                 height: 360.0,
@@ -4613,28 +5030,10 @@ mod tests {
             start: 0.5,
         };
         let resize_interval = IntervalV1 {
-            end: 1.25,
-            start: 1.25,
+            end: 0.85,
+            start: 0.85,
         };
         ApplyStudioCreationEditCommand {
-            evaluated_duration: bundle.scene.duration + 0.4,
-            evaluated_entities: vec![StudioCreationEvaluatedEntity {
-                content_sample_tex_parts: vec![],
-                content_tex_parts: None,
-                id: entity_id.to_owned(),
-                kind: StudioAuthoringEntityKind::Circle,
-                lifetimes: vec![IntervalV1 {
-                    end: bundle.scene.duration + 0.4,
-                    start: 0.5,
-                }],
-                object_graph_key: entity_id.to_owned(),
-                source_identity: None,
-                transaction_id: Some("create".to_owned()),
-            }],
-            evaluated_events: vec![StudioCreationEvaluatedEvent {
-                interval: Some(resize_interval.clone()),
-                operation_id: Some("resize".to_owned()),
-            }],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             frame: StudioAuthoringSize {
                 height: bundle.scene.camera.view.frame_height,
@@ -4644,10 +5043,16 @@ mod tests {
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![
                 StudioCreationProgram {
-                    anchor_seconds: 0.5,
+                    anchor_captured_playhead: 0.5,
+                    anchor_resolved_seconds: 0.5,
+                    anchor_source: StudioProgramAnchorSource::Playhead {
+                        reference_seconds: Some(0.5),
+                    },
+                    intent_count: 1,
                     lowering_supported: true,
                     operations: vec![
                         StudioCreationOperation {
+                            depends_on: vec![],
                             entity_id: None,
                             id: "create".to_owned(),
                             interval: create_interval.clone(),
@@ -4660,20 +5065,25 @@ mod tests {
                                     },
                                     id: entity_id.to_owned(),
                                     kind: StudioAuthoringEntityKind::Circle,
+                                    lifetime_end: None,
                                     lifetime_start: 0.5,
                                     tex_parts: None,
                                 },
                             },
+                            origin: StudioAuthoringOrigin::StudioDefault,
                         },
                         StudioCreationOperation {
+                            depends_on: vec!["create".to_owned()],
                             entity_id: Some(entity_id.to_owned()),
                             id: "position".to_owned(),
                             interval: create_interval,
                             kind: StudioCreationOperationKind::Position {
                                 position: Some(PointV1 { x: 320.0, y: 180.0 }),
                             },
+                            origin: StudioAuthoringOrigin::StudioDefault,
                         },
                         StudioCreationOperation {
+                            depends_on: vec!["position".to_owned()],
                             entity_id: Some(entity_id.to_owned()),
                             id: "fade".to_owned(),
                             interval: IntervalV1 {
@@ -4681,24 +5091,41 @@ mod tests {
                                 start: 0.5,
                             },
                             kind: StudioCreationOperationKind::FadeIn { persistent: true },
+                            origin: StudioAuthoringOrigin::StudioDefault,
                         },
                     ],
+                    origin: StudioAuthoringOrigin::StudioDefault,
+                    requested_execution: StudioProgramExecution::Parallel,
+                    schedule_edge_count: 4,
+                    schedule_mode: StudioProgramScheduleMode::DependencyDag,
                     schedule_order: vec![
                         "create".to_owned(),
                         "position".to_owned(),
                         "fade".to_owned(),
                     ],
                     transaction_id: "create".to_owned(),
-                    validation_valid: true,
                 },
                 StudioCreationProgram {
-                    anchor_seconds: 1.25,
+                    anchor_captured_playhead: 0.85,
+                    anchor_resolved_seconds: 0.85,
+                    anchor_source: StudioProgramAnchorSource::Playhead {
+                        reference_seconds: Some(0.85),
+                    },
+                    intent_count: 1,
                     lowering_supported: true,
                     operations: vec![StudioCreationOperation {
+                        depends_on: vec![],
                         entity_id: Some(entity_id.to_owned()),
                         id: "resize".to_owned(),
                         interval: resize_interval,
                         kind: StudioCreationOperationKind::Resize {
+                            from_dimensions: StudioAuthoringDimensions {
+                                height: None,
+                                radius: Some(1.0),
+                                width: None,
+                            },
+                            from_position: PointV1 { x: 320.0, y: 180.0 },
+                            from_scale: 1.0,
                             shape: StudioAuthoringEntityKind::Circle,
                             to_dimensions: StudioAuthoringDimensions {
                                 height: None,
@@ -4707,10 +5134,14 @@ mod tests {
                             },
                             to_position: PointV1 { x: 360.0, y: 180.0 },
                         },
+                        origin: StudioAuthoringOrigin::DirectManipulation,
                     }],
+                    origin: StudioAuthoringOrigin::DirectManipulation,
+                    requested_execution: StudioProgramExecution::Sequence,
+                    schedule_edge_count: 0,
+                    schedule_mode: StudioProgramScheduleMode::Sequence,
                     schedule_order: vec!["resize".to_owned()],
                     transaction_id: "resize".to_owned(),
-                    validation_valid: true,
                 },
             ],
             viewport: StudioAuthoringSize {
@@ -4761,45 +5192,57 @@ mod tests {
     fn studio_timeline_wait_program(
         id: &str,
         source_seconds: f64,
-        resolved_seconds: f64,
         duration: f64,
     ) -> StudioTimelineProgram {
         StudioTimelineProgram {
-            absolute_source_seconds: Some(source_seconds),
+            anchor_captured_playhead: source_seconds,
+            anchor_resolved_seconds: source_seconds,
+            anchor_source: StudioProgramAnchorSource::Absolute {
+                seconds: Some(source_seconds),
+            },
+            intent_count: 1,
             lowering_supported: true,
             operations: vec![StudioTimelineOperation::InsertWait {
+                depends_on: vec![],
                 event_kind: StudioTimelineEventKind::Wait,
                 id: id.to_owned(),
                 interval: IntervalV1 {
-                    end: resolved_seconds + duration,
-                    start: resolved_seconds,
+                    end: source_seconds + duration,
+                    start: source_seconds,
                 },
                 origin: StudioAuthoringOrigin::StudioDefault,
                 purpose: Some(StudioTimelinePurpose::SceneDuration),
             }],
             origin: StudioAuthoringOrigin::StudioDefault,
-            resolved_seconds,
+            requested_execution: StudioProgramExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Sequence,
             schedule_order: vec![id.to_owned()],
-            validation_valid: true,
+            transaction_id: id.to_owned(),
         }
     }
 
     fn studio_timeline_trim_program(
         id: &str,
         source_seconds: f64,
-        resolved_seconds: f64,
         removed_duration: f64,
         target_duration: f64,
         wait_operation_ids: Vec<String>,
     ) -> StudioTimelineProgram {
         StudioTimelineProgram {
-            absolute_source_seconds: Some(source_seconds),
+            anchor_captured_playhead: source_seconds,
+            anchor_resolved_seconds: source_seconds,
+            anchor_source: StudioProgramAnchorSource::Absolute {
+                seconds: Some(source_seconds),
+            },
+            intent_count: 1,
             lowering_supported: true,
             operations: vec![StudioTimelineOperation::TrimSceneDuration {
+                depends_on: vec![],
                 id: id.to_owned(),
                 interval: IntervalV1 {
-                    end: resolved_seconds,
-                    start: resolved_seconds,
+                    end: source_seconds,
+                    start: source_seconds,
                 },
                 origin: StudioAuthoringOrigin::StudioDefault,
                 removed_duration,
@@ -4807,31 +5250,29 @@ mod tests {
                 wait_operation_ids,
             }],
             origin: StudioAuthoringOrigin::StudioDefault,
-            resolved_seconds,
+            requested_execution: StudioProgramExecution::Sequence,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Sequence,
             schedule_order: vec![id.to_owned()],
-            validation_valid: true,
+            transaction_id: id.to_owned(),
         }
     }
 
     fn studio_timeline_command(bundle: &SceneIrBundleV1) -> ApplyStudioTimelineEditCommand {
         let source_seconds = 0.5;
         ApplyStudioTimelineEditCommand {
-            base_studio_scene_id: "studio-scene".to_owned(),
-            evaluated_duration: bundle.scene.duration + 1.5,
-            evaluated_scene_id: "studio-scene".to_owned(),
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
             programs: vec![
-                studio_timeline_wait_program("wait-1", source_seconds, source_seconds, 1.0),
+                studio_timeline_wait_program("wait-1", source_seconds, 1.0),
                 studio_timeline_trim_program(
                     "trim-1",
                     source_seconds,
-                    source_seconds + 1.0,
                     0.5,
                     bundle.scene.duration + 0.5,
                     vec!["wait-1".to_owned()],
                 ),
-                studio_timeline_wait_program("wait-2", source_seconds, source_seconds + 0.5, 1.0),
+                studio_timeline_wait_program("wait-2", source_seconds, 1.0),
             ],
         }
     }
@@ -5180,7 +5621,7 @@ mod tests {
     #[test]
     fn applies_one_normalized_circle_resize_from_the_installed_geometry_baseline() {
         let mut command = static_root_position_command();
-        command.operations[0].kind = StaticRootTransformOperationKind::Resize {
+        command.programs[0].operations[0].kind = StaticRootTransformOperationKind::Resize {
             from_dimensions: StaticRootTransformDimensions {
                 height: None,
                 radius: Some(0.5),
@@ -5230,8 +5671,8 @@ mod tests {
             height: bundle.scene.camera.view.frame_height,
             width: bundle.scene.camera.view.frame_width,
         };
-        command.operations[0].entity_id = "source:formula".to_owned();
-        let mut scale = command.operations[0].clone();
+        command.programs[0].operations[0].entity_id = "source:formula".to_owned();
+        let mut scale = command.programs[0].operations[0].clone();
         scale.id = "scale-formula".to_owned();
         scale.kind = StaticRootTransformOperationKind::UniformScale {
             control_present: false,
@@ -5239,7 +5680,14 @@ mod tests {
             relative_factor: Some(1.5),
             to: Some(1.5),
         };
-        command.operations.push(scale);
+        command.programs[0].operations.push(scale);
+        command.programs[0].intent_count = 2;
+        command.programs[0].requested_execution = StudioProgramExecution::Sequence;
+        command.programs[0].schedule_edge_count = 1;
+        command.programs[0].schedule_mode = StudioProgramScheduleMode::Sequence;
+        command.programs[0]
+            .schedule_order
+            .push("scale-formula".to_owned());
         command.source_runtime_bindings = vec![StaticRootTransformSourceBinding {
             source_identity_key: "formula".to_owned(),
             runtime_entity_id: runtime_entity_id.clone(),
@@ -5280,23 +5728,28 @@ mod tests {
     }
 
     #[test]
-    fn rejects_any_unsupported_normalized_operation_without_mutating_the_session() {
+    fn rejects_open_static_programs_without_mutating_the_session() {
         let bundle = static_imported_bundle();
-        let expected_scene = bundle.scene.clone();
-        let mut command = static_root_position_command();
-        command.operations[0].kind = StaticRootTransformOperationKind::Unsupported;
-        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let mut unsupported = static_root_position_command();
+        unsupported.programs[0].operations[0].kind = StaticRootTransformOperationKind::Unsupported;
+        let mut missing_dependency = static_root_position_command();
+        missing_dependency.programs[0].operations[0].depends_on =
+            vec!["missing-operation".to_owned()];
 
-        let error = session
-            .apply_static_root_transform_edit(command)
-            .unwrap_err();
+        for command in [unsupported, missing_dependency] {
+            let expected_scene = bundle.scene.clone();
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+            let error = session
+                .apply_static_root_transform_edit(command)
+                .unwrap_err();
 
-        assert!(matches!(
-            error,
-            ApplyStaticRootTransformEditError::Unsupported
-        ));
-        assert_eq!(session.scene(), &expected_scene);
-        assert_eq!(session.retained_index_stats().build_count, 1);
+            assert!(matches!(
+                error,
+                ApplyStaticRootTransformEditError::Unsupported
+            ));
+            assert_eq!(session.scene(), &expected_scene);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
     }
 
     #[test]
@@ -5388,6 +5841,120 @@ mod tests {
 
     #[test]
     #[allow(
+        clippy::too_many_lines,
+        reason = "the explicit second raw Program keeps same-anchor ordering and lifetime facts visible"
+    )]
+    fn normalized_creation_rebases_same_anchor_order_lifetimes_and_followup_time() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let mut command = studio_creation_command(&bundle);
+        let second_id = "tx:second/entity:rectangle";
+        command.programs.push(StudioCreationProgram {
+            anchor_captured_playhead: 0.5,
+            anchor_resolved_seconds: 0.5,
+            anchor_source: StudioProgramAnchorSource::Playhead {
+                reference_seconds: Some(0.5),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations: vec![
+                StudioCreationOperation {
+                    depends_on: vec![],
+                    entity_id: None,
+                    id: "second-create".to_owned(),
+                    interval: IntervalV1 {
+                        end: 0.5,
+                        start: 0.5,
+                    },
+                    kind: StudioCreationOperationKind::Create {
+                        entity: StudioCreationEntitySpec {
+                            dimensions: StudioAuthoringDimensions {
+                                height: Some(1.0),
+                                radius: None,
+                                width: Some(2.0),
+                            },
+                            id: second_id.to_owned(),
+                            kind: StudioAuthoringEntityKind::Rectangle,
+                            lifetime_end: Some(1.0),
+                            lifetime_start: 0.5,
+                            tex_parts: None,
+                        },
+                    },
+                    origin: StudioAuthoringOrigin::StudioDefault,
+                },
+                StudioCreationOperation {
+                    depends_on: vec!["second-create".to_owned()],
+                    entity_id: Some(second_id.to_owned()),
+                    id: "second-position".to_owned(),
+                    interval: IntervalV1 {
+                        end: 0.5,
+                        start: 0.5,
+                    },
+                    kind: StudioCreationOperationKind::Position {
+                        position: Some(PointV1 { x: 280.0, y: 180.0 }),
+                    },
+                    origin: StudioAuthoringOrigin::StudioDefault,
+                },
+                StudioCreationOperation {
+                    depends_on: vec!["second-position".to_owned()],
+                    entity_id: Some(second_id.to_owned()),
+                    id: "second-fade".to_owned(),
+                    interval: IntervalV1 {
+                        end: 0.7,
+                        start: 0.5,
+                    },
+                    kind: StudioCreationOperationKind::FadeIn { persistent: true },
+                    origin: StudioAuthoringOrigin::StudioDefault,
+                },
+            ],
+            origin: StudioAuthoringOrigin::StudioDefault,
+            requested_execution: StudioProgramExecution::Parallel,
+            schedule_edge_count: 4,
+            schedule_mode: StudioProgramScheduleMode::DependencyDag,
+            schedule_order: vec![
+                "second-create".to_owned(),
+                "second-position".to_owned(),
+                "second-fade".to_owned(),
+            ],
+            transaction_id: "second".to_owned(),
+        });
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let first = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "tx:create/entity:circle")
+            .unwrap();
+        let second = result
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == second_id)
+            .unwrap();
+
+        assert!((result.scene.duration - (base_duration + 0.6)).abs() < 1e-9);
+        assert_eq!(first.scene_order + 1, second.scene_order);
+        assert!((first.lifetimes[0].end - (base_duration + 0.6)).abs() < 1e-9);
+        assert!((second.lifetimes[0].start - 0.9).abs() < 1e-9);
+        assert!((second.lifetimes[0].end - 1.6).abs() < 1e-9);
+        assert!(
+            result
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    AnimationChannelV1::AffineTransform { entity_id, keyframes, .. }
+                        if entity_id == "tx:create/entity:circle"
+                            && (keyframes[0].at - 1.45).abs() < 1e-9
+                ))
+        );
+    }
+
+    #[test]
+    #[allow(
         clippy::float_cmp,
         reason = "the normalized command produces exact stored authoring values"
     )]
@@ -5406,10 +5973,11 @@ mod tests {
             entity.tex_parts = Some(tex_parts.clone());
             entity.id.clone()
         };
-        command.evaluated_entities[0].kind = StudioAuthoringEntityKind::MathTex;
-        command.evaluated_entities[0].content_tex_parts = Some(tex_parts.clone());
         command.programs[1].operations[0].kind = StudioCreationOperationKind::UniformScale {
+            control_present: false,
+            from: Some(2.0),
             relative_factor: Some(1.5),
+            to: Some(3.0),
         };
         let SceneGeometryV1::CubicPath { path } =
             fixture_bundle("mathtex-nested-radical-fraction.json")
@@ -5455,14 +6023,43 @@ mod tests {
     }
 
     #[test]
-    fn normalized_creation_rejects_hidden_operations_and_mismatched_identity_atomically() {
+    fn normalized_creation_rejects_hidden_and_malformed_programs_atomically() {
         let bundle = static_imported_bundle();
         let mut unsupported = studio_creation_command(&bundle);
         unsupported.programs[1].operations[0].kind = StudioCreationOperationKind::Unsupported;
-        let mut mismatched_identity = studio_creation_command(&bundle);
-        mismatched_identity.evaluated_entities[0].transaction_id = Some("foreign".to_owned());
+        let mut malformed_schedule = studio_creation_command(&bundle);
+        malformed_schedule.programs[0].schedule_order.swap(0, 1);
+        let mut malformed_anchor = studio_creation_command(&bundle);
+        malformed_anchor.programs[0].anchor_resolved_seconds = -0.5;
+        let mut malformed_interval = studio_creation_command(&bundle);
+        malformed_interval.programs[1].operations[0].interval.end += 0.1;
+        let mut missing_dependency = studio_creation_command(&bundle);
+        missing_dependency.programs[0].operations[1].depends_on = vec!["missing".to_owned()];
+        let mut scale_ratio_mismatch = studio_creation_command(&bundle);
+        scale_ratio_mismatch.programs[1].operations[0].kind =
+            StudioCreationOperationKind::UniformScale {
+                control_present: false,
+                from: Some(1.0),
+                relative_factor: Some(1.5),
+                to: Some(2.0),
+            };
+        let mut stale_resize_baseline = studio_creation_command(&bundle);
+        let StudioCreationOperationKind::Resize { from_scale, .. } =
+            &mut stale_resize_baseline.programs[1].operations[0].kind
+        else {
+            unreachable!();
+        };
+        *from_scale = 1.25;
 
-        for command in [unsupported, mismatched_identity] {
+        for command in [
+            unsupported,
+            malformed_schedule,
+            malformed_anchor,
+            malformed_interval,
+            missing_dependency,
+            scale_ratio_mismatch,
+            stale_resize_baseline,
+        ] {
             let expected = bundle.scene.clone();
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
             assert!(matches!(
@@ -5990,7 +6587,8 @@ mod tests {
     fn studio_timeline_authority_rebases_same_anchor_wait_trim_wait_in_input_order() {
         let bundle = static_imported_bundle();
         let expected_duration = bundle.scene.duration + 1.5;
-        let command = studio_timeline_command(&bundle);
+        let mut command = studio_timeline_command(&bundle);
+        command.programs[1].anchor_captured_playhead = bundle.scene.duration + 1.0;
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_timeline_edit(command).unwrap();
@@ -6013,21 +6611,47 @@ mod tests {
     }
 
     #[test]
+    fn studio_timeline_authority_normalizes_decimal_trim_offset_before_the_next_program() {
+        let bundle = static_imported_bundle();
+        let base_duration = bundle.scene.duration;
+        let source_anchor = 0.5;
+        let command = ApplyStudioTimelineEditCommand {
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: vec![
+                studio_timeline_wait_program("wait-a", source_anchor, 0.3),
+                studio_timeline_wait_program("wait-b", source_anchor, 0.6),
+                studio_timeline_trim_program(
+                    "trim-all",
+                    source_anchor,
+                    0.9,
+                    base_duration,
+                    vec!["wait-b".to_owned(), "wait-a".to_owned()],
+                ),
+                studio_timeline_wait_program("wait-c", source_anchor, 0.2),
+            ],
+        };
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_timeline_edit(command).unwrap();
+
+        assert!((result.scene.duration - (base_duration + 0.2)).abs() < 1e-9);
+    }
+
+    #[test]
     fn studio_timeline_authority_rejects_invalid_normalized_facts_atomically() {
         let bundle = static_imported_bundle();
         let mut cases = Vec::new();
 
         let mut command = studio_timeline_command(&bundle);
-        command.programs[0].resolved_seconds += 0.0001;
+        command.programs[0].anchor_resolved_seconds += 0.0001;
         cases.push(("resolved anchor", command));
 
         let mut command = studio_timeline_command(&bundle);
-        command.programs[0].absolute_source_seconds = Some(-0.5);
+        command.programs[0].anchor_source = StudioProgramAnchorSource::Absolute {
+            seconds: Some(-0.5),
+        };
         cases.push(("negative source anchor", command));
-
-        let mut command = studio_timeline_command(&bundle);
-        command.programs[0].validation_valid = false;
-        cases.push(("invalid validation", command));
 
         let mut command = studio_timeline_command(&bundle);
         command.programs[0].lowering_supported = false;
@@ -6051,6 +6675,15 @@ mod tests {
         cases.push(("open schedule", command));
 
         let mut command = studio_timeline_command(&bundle);
+        let StudioTimelineOperation::InsertWait { depends_on, .. } =
+            &mut command.programs[0].operations[0]
+        else {
+            unreachable!();
+        };
+        *depends_on = vec!["missing-operation".to_owned()];
+        cases.push(("missing dependency", command));
+
+        let mut command = studio_timeline_command(&bundle);
         let StudioTimelineOperation::InsertWait { id, .. } = &mut command.programs[2].operations[0]
         else {
             unreachable!();
@@ -6070,24 +6703,35 @@ mod tests {
         cases.push(("foreign wait authority", command));
 
         let mut command = studio_timeline_command(&bundle);
+        command.programs[0]
+            .operations
+            .push(StudioTimelineOperation::Unsupported {
+                depends_on: vec![],
+                id: "ignored-suffix".to_owned(),
+                interval: IntervalV1 {
+                    end: 0.5,
+                    start: 0.5,
+                },
+                origin: StudioAuthoringOrigin::StudioDefault,
+            });
+        command.programs[0]
+            .schedule_order
+            .push("ignored-suffix".to_owned());
+        command.programs[0].schedule_edge_count = 1;
+        cases.push(("hidden suffix operation", command));
+
+        let mut command = studio_timeline_command(&bundle);
         let interval = match &command.programs[2].operations[0] {
             StudioTimelineOperation::InsertWait { interval, .. } => interval.clone(),
             _ => unreachable!(),
         };
         command.programs[2].operations[0] = StudioTimelineOperation::Unsupported {
+            depends_on: vec![],
             id: "wait-2".to_owned(),
             interval,
             origin: StudioAuthoringOrigin::StudioDefault,
         };
         cases.push(("mixed operation", command));
-
-        let mut command = studio_timeline_command(&bundle);
-        command.evaluated_scene_id = "other-scene".to_owned();
-        cases.push(("evaluated Scene identity", command));
-
-        let mut command = studio_timeline_command(&bundle);
-        command.evaluated_duration += 0.01;
-        cases.push(("evaluated duration", command));
 
         let mut command = studio_timeline_command(&bundle);
         let StudioTimelineOperation::TrimSceneDuration {
@@ -6937,18 +7581,28 @@ mod tests {
         let bundle = static_imported_bundle();
         let mut rejected = Vec::new();
 
-        let mut wrong_scene = studio_motion_edit_command(&bundle);
-        wrong_scene.evaluated_scene_id = "scene.py#OtherScene".to_owned();
-        rejected.push(wrong_scene);
+        let mut wrong_anchor = studio_motion_edit_command(&bundle);
+        wrong_anchor.programs[0].anchor_resolved_seconds += 0.25;
+        rejected.push(wrong_anchor);
 
-        let mut wrong_duration = studio_motion_edit_command(&bundle);
-        wrong_duration.evaluated_duration += 0.001;
-        rejected.push(wrong_duration);
+        let mut wrong_schedule = studio_motion_edit_command(&bundle);
+        wrong_schedule.programs[0].schedule_order[0] = "foreign".to_owned();
+        rejected.push(wrong_schedule);
+
+        let mut missing_dependency = studio_motion_edit_command(&bundle);
+        let StudioMotionOperation::CreateMotion { depends_on, .. } =
+            &mut missing_dependency.programs[0].operations[0]
+        else {
+            unreachable!();
+        };
+        *depends_on = vec!["missing-operation".to_owned()];
+        rejected.push(missing_dependency);
 
         let mut mixed = studio_motion_edit_command(&bundle);
         mixed.programs[0]
             .operations
             .push(StudioMotionOperation::Unsupported {
+                depends_on: vec![],
                 id: "unsupported".to_owned(),
                 interval: IntervalV1 {
                     end: 0.5,
@@ -6959,6 +7613,7 @@ mod tests {
         mixed.programs[0]
             .schedule_order
             .push("unsupported".to_owned());
+        mixed.programs[0].schedule_edge_count = 1;
         rejected.push(mixed);
 
         let mut wrong_binding = studio_motion_edit_command(&bundle);

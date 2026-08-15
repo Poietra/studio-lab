@@ -1,7 +1,7 @@
 import {
-  compileApplyStudioBoundEntityEdit,
   type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioBoundEntityEditWireCommandV1,
+  compileApplyStudioBoundEntityEdit,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
@@ -504,7 +504,8 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     sourceRevisionHash: string;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
-  const sourceAnchor = input.proposedState.programs[0]?.program.anchor.resolvedSeconds;
+  const sourcePrograms = [...input.proposedState.base.appliedPrograms, ...input.proposedState.base.stagedPrograms];
+  const sourceAnchor = sourcePrograms[0]?.program.anchor.resolvedSeconds;
   const candidates =
     sourceAnchor === undefined
       ? []
@@ -527,9 +528,7 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     base.runtimeSceneState.duration !== correlation.duration ||
     base.editorContext.activeSceneId !== correlation.studioSceneId ||
     base.sourceSnapshot.sourceId !== context.sourcePath ||
-    base.sourceSnapshot.hash !== `sha256:${context.sourceHash}` ||
-    input.proposedState.evaluatedScene.sceneId !== correlation.studioSceneId ||
-    input.proposedState.evaluatedScene.duration !== correlation.duration
+    base.sourceSnapshot.hash !== `sha256:${context.sourceHash}`
   ) {
     return unsupported(
       "source-correlation-invalid",
@@ -540,7 +539,6 @@ export async function compileStudioPreviewRuntimeTraceEdit(
     const rebased = await (input.boundEntityEditCompiler ?? compileApplyStudioBoundEntityEdit)(
       input.snapshot.snapshot,
       {
-        baseStudioSceneId: base.runtimeSceneState.sceneId,
         candidates: candidates.map((candidate) => ({
           baseCenter: candidate.baseCenter,
           baseOpacity: candidate.baseOpacity,
@@ -551,12 +549,10 @@ export async function compileStudioPreviewRuntimeTraceEdit(
           sourceAnchor: candidate.sourceAnchor,
           studioEntityId: candidate.studioEntityId,
         })),
-        evaluatedDuration: input.proposedState.evaluatedScene.duration,
-        evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
         expectedBaseRevision: sceneIrSourceRevisionHash(scene),
         frame: input.frame,
         nextRevision: input.sourceRevisionHash,
-        programs: input.proposedState.programs.map((record) => ({
+        programs: sourcePrograms.map((record) => ({
           anchorCapturedPlayhead: record.program.anchor.capturedPlayhead,
           anchorResolvedSeconds: record.program.anchor.resolvedSeconds,
           anchorSource: boundEntityAnchorSource(record),
@@ -568,7 +564,7 @@ export async function compileStudioPreviewRuntimeTraceEdit(
           scheduleEdgeCount: record.program.schedule.edges.length,
           scheduleMode: record.program.schedule.mode,
           scheduleOrder: record.program.schedule.order,
-          validationValid: record.validation.status === "valid",
+          transactionId: record.program.transactionId,
         })),
         schema: "poietra.apply-studio-bound-entity-edit",
         version: 1,

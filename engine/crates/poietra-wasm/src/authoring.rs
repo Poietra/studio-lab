@@ -3,12 +3,11 @@ use poietra_eval::{
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioMotionEditCommand,
     ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
-    EngineSessionV1, EvaluationError, StaticRootTransformOperation, StaticRootTransformSize,
+    EngineSessionV1, EvaluationError, StaticRootTransformProgram, StaticRootTransformSize,
     StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringSize,
-    StudioBoundEntityEditCandidate, StudioBoundEntityProgram, StudioCreationEvaluatedEntity,
-    StudioCreationEvaluatedEvent, StudioCreationMathTexOutline, StudioCreationProgram,
-    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionSourceBinding,
-    StudioTimelineProgram,
+    StudioBoundEntityEditCandidate, StudioBoundEntityProgram, StudioCreationMathTexOutline,
+    StudioCreationProgram, StudioMotionEntityIdentity, StudioMotionProgram,
+    StudioMotionSourceBinding, StudioTimelineProgram,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -52,7 +51,7 @@ struct ApplyStaticRootTransformEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StaticRootTransformSize,
     next_revision: String,
-    operations: Vec<StaticRootTransformOperation>,
+    programs: Vec<StaticRootTransformProgram>,
     #[serde(rename = "schema")]
     _schema: ApplyStaticRootTransformEditSchemaV1,
     source_runtime_bindings: Vec<StaticRootTransformSourceBinding>,
@@ -68,7 +67,7 @@ impl From<ApplyStaticRootTransformEditCommandJsonV1> for ApplyStaticRootTransfor
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             next_revision: value.next_revision,
-            operations: value.operations,
+            programs: value.programs,
             source_runtime_bindings: value.source_runtime_bindings,
             studio_entities: value.studio_entities,
             viewport: value.viewport,
@@ -79,9 +78,6 @@ impl From<ApplyStaticRootTransformEditCommandJsonV1> for ApplyStaticRootTransfor
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioCreationEditCommandJsonV1 {
-    evaluated_duration: f64,
-    evaluated_entities: Vec<StudioCreationEvaluatedEntity>,
-    evaluated_events: Vec<StudioCreationEvaluatedEvent>,
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioCreationMathTexOutline>,
@@ -97,9 +93,6 @@ struct ApplyStudioCreationEditCommandJsonV1 {
 impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditCommand {
     fn from(value: ApplyStudioCreationEditCommandJsonV1) -> Self {
         Self {
-            evaluated_duration: value.evaluated_duration,
-            evaluated_entities: value.evaluated_entities,
-            evaluated_events: value.evaluated_events,
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             math_tex_outlines: value.math_tex_outlines,
@@ -113,9 +106,6 @@ impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditComma
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioTimelineEditCommandJsonV1 {
-    base_studio_scene_id: String,
-    evaluated_duration: f64,
-    evaluated_scene_id: String,
     expected_base_revision: String,
     next_revision: String,
     programs: Vec<StudioTimelineProgram>,
@@ -128,9 +118,6 @@ struct ApplyStudioTimelineEditCommandJsonV1 {
 impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditCommand {
     fn from(value: ApplyStudioTimelineEditCommandJsonV1) -> Self {
         Self {
-            base_studio_scene_id: value.base_studio_scene_id,
-            evaluated_duration: value.evaluated_duration,
-            evaluated_scene_id: value.evaluated_scene_id,
             expected_base_revision: value.expected_base_revision,
             next_revision: value.next_revision,
             programs: value.programs,
@@ -141,9 +128,6 @@ impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditComma
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioMotionEditCommandJsonV1 {
-    base_studio_scene_id: String,
-    evaluated_duration: f64,
-    evaluated_scene_id: String,
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     next_revision: String,
@@ -160,10 +144,7 @@ struct ApplyStudioMotionEditCommandJsonV1 {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioBoundEntityEditCommandJsonV1 {
-    base_studio_scene_id: String,
     candidates: Vec<StudioBoundEntityEditCandidate>,
-    evaluated_duration: f64,
-    evaluated_scene_id: String,
     expected_base_revision: String,
     frame: StudioAuthoringSize,
     next_revision: String,
@@ -178,10 +159,7 @@ struct ApplyStudioBoundEntityEditCommandJsonV1 {
 impl From<ApplyStudioBoundEntityEditCommandJsonV1> for ApplyStudioBoundEntityEditCommand {
     fn from(value: ApplyStudioBoundEntityEditCommandJsonV1) -> Self {
         Self {
-            base_studio_scene_id: value.base_studio_scene_id,
             candidates: value.candidates,
-            evaluated_duration: value.evaluated_duration,
-            evaluated_scene_id: value.evaluated_scene_id,
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             next_revision: value.next_revision,
@@ -194,9 +172,6 @@ impl From<ApplyStudioBoundEntityEditCommandJsonV1> for ApplyStudioBoundEntityEdi
 impl From<ApplyStudioMotionEditCommandJsonV1> for ApplyStudioMotionEditCommand {
     fn from(value: ApplyStudioMotionEditCommandJsonV1) -> Self {
         Self {
-            base_studio_scene_id: value.base_studio_scene_id,
-            evaluated_duration: value.evaluated_duration,
-            evaluated_scene_id: value.evaluated_scene_id,
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
             next_revision: value.next_revision,
@@ -480,7 +455,6 @@ mod tests {
             .id
             .clone();
         serde_json::to_vec(&json!({
-            "baseStudioSceneId": "scene.py#LineJoints",
             "candidates": [{
                 "baseCenter": { "x": 320.0, "y": 180.0 },
                 "baseOpacity": null,
@@ -495,8 +469,6 @@ mod tests {
                 "sourceAnchor": 0.0,
                 "studioEntityId": "source:root"
             }],
-            "evaluatedDuration": 1.0,
-            "evaluatedSceneId": "scene.py#LineJoints",
             "expectedBaseRevision": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
             "frame": { "height": 8.0, "width": 14.222_222_222_222_221 },
             "nextRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
@@ -520,7 +492,7 @@ mod tests {
                 "scheduleEdgeCount": 0,
                 "scheduleMode": "parallel",
                 "scheduleOrder": ["move-root"],
-                "validationValid": true
+                "transactionId": "move-root"
             }],
             "schema": "poietra.apply-studio-bound-entity-edit",
             "version": 1,
@@ -534,17 +506,27 @@ mod tests {
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "frame": { "height": 9.0, "width": 16.0 },
             "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "operations": [{
-                "anchorSeconds": 0.0,
-                "entityId": "source:circle",
-                "id": "move-circle",
-                "interval": { "end": 0.0, "start": 0.0 },
-                "kind": "position",
+            "programs": [{
+                "anchorCapturedPlayhead": 0.0,
+                "anchorResolvedSeconds": 0.0,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.0 },
+                "intentCount": 1,
                 "loweringSupported": true,
                 "origin": "direct-manipulation",
-                "position": { "x": 400.0, "y": 180.0 },
-                "programOrigin": "direct-manipulation",
-                "validationValid": true
+                "operations": [{
+                    "dependsOn": [],
+                    "entityId": "source:circle",
+                    "id": "move-circle",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "kind": "position",
+                    "origin": "direct-manipulation",
+                    "position": { "x": 400.0, "y": 180.0 }
+                }],
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "parallel",
+                "scheduleOrder": ["move-circle"],
+                "transactionId": "move-circle"
             }],
             "schema": "poietra.apply-static-root-transform-edit",
             "sourceRuntimeBindings": [{
@@ -568,58 +550,113 @@ mod tests {
         .unwrap()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one literal fixture keeps the accepted Studio creation wire contract visible"
+    )]
     fn studio_creation_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "evaluatedDuration": 2.4,
-            "evaluatedEntities": [{
-                "contentSampleTexParts": [],
-                "contentTexParts": null,
-                "id": "tx:create/entity:rectangle",
-                "kind": "rectangle",
-                "lifetimes": [{ "end": 2.4, "start": 0.5 }],
-                "objectGraphKey": "tx:create/entity:rectangle",
-                "sourceIdentity": null,
-                "transactionId": "create"
-            }],
-            "evaluatedEvents": [],
             "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "frame": { "height": 9.0, "width": 16.0 },
             "mathTexOutlines": [],
             "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "programs": [{
-                "anchorSeconds": 0.5,
+                "anchorCapturedPlayhead": 0.5,
+                "anchorResolvedSeconds": 0.5,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.5 },
+                "intentCount": 1,
                 "loweringSupported": true,
                 "operations": [
                     {
+                        "dependsOn": [],
                         "entity": {
                             "dimensions": { "height": 2.0, "width": 4.0 },
                             "id": "tx:create/entity:rectangle",
                             "kind": "rectangle",
+                            "lifetimeEnd": 2.4,
                             "lifetimeStart": 0.5,
                             "texParts": null
                         },
                         "id": "create-rectangle",
                         "interval": { "end": 0.5, "start": 0.5 },
-                        "kind": "create"
+                        "kind": "create",
+                        "origin": "studio-default"
                     },
                     {
+                        "dependsOn": ["create-rectangle"],
                         "entityId": "tx:create/entity:rectangle",
                         "id": "position-rectangle",
                         "interval": { "end": 0.5, "start": 0.5 },
                         "kind": "position",
+                        "origin": "studio-default",
                         "position": { "x": 320.0, "y": 180.0 }
                     },
                     {
+                        "dependsOn": ["position-rectangle"],
                         "entityId": "tx:create/entity:rectangle",
                         "id": "fade-rectangle",
                         "interval": { "end": 0.9, "start": 0.5 },
                         "kind": "fade-in",
+                        "origin": "studio-default",
                         "persistent": true
                     }
                 ],
+                "origin": "studio-default",
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 4,
+                "scheduleMode": "dependency-dag",
                 "scheduleOrder": ["create-rectangle", "position-rectangle", "fade-rectangle"],
-                "transactionId": "create",
-                "validationValid": true
+                "transactionId": "create"
+            }, {
+                "anchorCapturedPlayhead": 0.85,
+                "anchorResolvedSeconds": 0.85,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.85 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "controlPresent": false,
+                    "dependsOn": [],
+                    "entityId": "tx:create/entity:rectangle",
+                    "from": 1.0,
+                    "id": "scale-rectangle",
+                    "interval": { "end": 0.85, "start": 0.85 },
+                    "kind": "uniform-scale",
+                    "origin": "direct-manipulation",
+                    "relativeFactor": 1.5,
+                    "to": 1.5
+                }],
+                "origin": "direct-manipulation",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["scale-rectangle"],
+                "transactionId": "scale-rectangle"
+            }, {
+                "anchorCapturedPlayhead": 0.85,
+                "anchorResolvedSeconds": 0.85,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.85 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "dependsOn": [],
+                    "entityId": "tx:create/entity:rectangle",
+                    "fromDimensions": { "height": 2.0, "width": 4.0 },
+                    "fromPosition": { "x": 320.0, "y": 180.0 },
+                    "fromScale": 1.5,
+                    "id": "resize-rectangle",
+                    "interval": { "end": 0.85, "start": 0.85 },
+                    "kind": "resize",
+                    "origin": "direct-manipulation",
+                    "shape": "rectangle",
+                    "toDimensions": { "height": 3.0, "width": 6.0 },
+                    "toPosition": { "x": 360.0, "y": 180.0 }
+                }],
+                "origin": "direct-manipulation",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["resize-rectangle"],
+                "transactionId": "resize-rectangle"
             }],
             "schema": "poietra.apply-studio-creation-edit",
             "version": 1,
@@ -630,16 +667,17 @@ mod tests {
 
     fn studio_timeline_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "baseStudioSceneId": "scene.py#CircleScene",
-            "evaluatedDuration": 2.3,
-            "evaluatedSceneId": "scene.py#CircleScene",
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             "programs": [
                 {
-                    "absoluteSourceSeconds": 0.5,
+                    "anchorCapturedPlayhead": 0.5,
+                    "anchorResolvedSeconds": 0.5,
+                    "anchorSource": { "kind": "absolute", "seconds": 0.5 },
+                    "intentCount": 1,
                     "loweringSupported": true,
                     "operations": [{
+                        "dependsOn": [],
                         "eventKind": "wait",
                         "id": "extend-scene-duration",
                         "interval": { "end": 1.0, "start": 0.5 },
@@ -648,16 +686,22 @@ mod tests {
                         "purpose": "scene-duration"
                     }],
                     "origin": "studio-default",
-                    "resolvedSeconds": 0.5,
+                    "requestedExecution": "sequence",
+                    "scheduleEdgeCount": 0,
+                    "scheduleMode": "sequence",
                     "scheduleOrder": ["extend-scene-duration"],
-                    "validationValid": true
+                    "transactionId": "extend-scene-duration"
                 },
                 {
-                    "absoluteSourceSeconds": 0.5,
+                    "anchorCapturedPlayhead": 1.0,
+                    "anchorResolvedSeconds": 0.5,
+                    "anchorSource": { "kind": "absolute", "seconds": 0.5 },
+                    "intentCount": 1,
                     "loweringSupported": true,
                     "operations": [{
+                        "dependsOn": [],
                         "id": "trim-scene-duration",
-                        "interval": { "end": 1.0, "start": 1.0 },
+                        "interval": { "end": 0.5, "start": 0.5 },
                         "kind": "trim-scene-duration",
                         "origin": "studio-default",
                         "removedDuration": 0.2,
@@ -665,9 +709,11 @@ mod tests {
                         "waitOperationIds": ["extend-scene-duration"]
                     }],
                     "origin": "studio-default",
-                    "resolvedSeconds": 1.0,
+                    "requestedExecution": "sequence",
+                    "scheduleEdgeCount": 0,
+                    "scheduleMode": "sequence",
                     "scheduleOrder": ["trim-scene-duration"],
-                    "validationValid": true
+                    "transactionId": "trim-scene-duration"
                 }
             ],
             "schema": "poietra.apply-studio-timeline-edit",
@@ -678,18 +724,19 @@ mod tests {
 
     fn studio_motion_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "baseStudioSceneId": "scene.py#CircleScene",
-            "evaluatedDuration": 3.0,
-            "evaluatedSceneId": "scene.py#CircleScene",
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "frame": { "height": 9.0, "width": 16.0 },
             "nextRevision": "9999999999999999999999999999999999999999999999999999999999999999",
             "programs": [{
-                "anchorSeconds": 0.5,
+                "anchorCapturedPlayhead": 0.5,
+                "anchorResolvedSeconds": 0.5,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.5 },
+                "intentCount": 1,
                 "loweringSupported": true,
                 "operations": [{
                     "controlOffset": { "x": 0.0, "y": -160.0 },
                     "delta": { "x": 240.0, "y": -80.0 },
+                    "dependsOn": [],
                     "easing": "smooth",
                     "id": "create-motion",
                     "interval": { "end": 1.5, "start": 0.5 },
@@ -698,8 +745,11 @@ mod tests {
                     "targetEntityIds": ["source:later", "source:stroke"]
                 }],
                 "origin": "direct-manipulation",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "sequence",
                 "scheduleOrder": ["create-motion"],
-                "validationValid": true
+                "transactionId": "create-motion"
             }],
             "schema": "poietra.apply-studio-motion-edit",
             "sourceRuntimeBindings": [
@@ -877,17 +927,21 @@ mod tests {
     fn bound_entity_adapter_rejects_unknown_and_unsupported_commands() {
         let mut unknown: serde_json::Value =
             serde_json::from_slice(&bound_entity_edit_command_json()).unwrap();
-        unknown["profile"] = json!("legacy");
+        unknown["evaluatedDuration"] = json!(1.0);
         let error = apply_studio_bound_entity_edit_json(
             &bound_entity_fixture_json(),
             &serde_json::to_vec(&unknown).unwrap(),
         )
         .unwrap_err();
-        assert!(error.to_string().contains("unknown field `profile`"));
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field `evaluatedDuration`")
+        );
 
         let mut unsupported: serde_json::Value =
             serde_json::from_slice(&bound_entity_edit_command_json()).unwrap();
-        unsupported["programs"][0]["validationValid"] = json!(false);
+        unsupported["programs"][0]["loweringSupported"] = json!(false);
         let error = apply_studio_bound_entity_edit_json(
             &bound_entity_fixture_json(),
             &serde_json::to_vec(&unsupported).unwrap(),
@@ -946,10 +1000,57 @@ mod tests {
                 ..
             }
         ));
+        assert!(bundle.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::AffineTransform {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "tx:create/entity:rectangle"
+                    && keyframes.first().is_some_and(|keyframe| {
+                        (keyframe.value.m11 - 2.25).abs() < f64::EPSILON
+                            && (keyframe.value.m22 - 2.25).abs() < f64::EPSILON
+                    })
+            )
+        }));
         assert!(matches!(
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        ));
+    }
+
+    #[test]
+    fn studio_creation_adapter_rejects_invalid_ratio_and_stale_baseline() {
+        let mut invalid_ratio: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        invalid_ratio["programs"][1]["operations"][0]["relativeFactor"] = json!(2.0);
+        let error = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&invalid_ratio).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StudioCreationEdit(
+                ApplyStudioCreationEditError::Unsupported
+            )
+        ));
+
+        let mut stale_baseline: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        stale_baseline["programs"][2]["operations"][0]["fromScale"] = json!(1.0);
+        let error = apply_studio_creation_edit_json(
+            &fixture_json(),
+            &serde_json::to_vec(&stale_baseline).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StudioCreationEdit(
+                ApplyStudioCreationEditError::Unsupported
+            )
         ));
     }
 
@@ -1116,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn motion_adapter_rejects_unknown_and_stale_commands() {
+    fn motion_adapter_rejects_unknown_stale_and_malformed_programs() {
         let mut unknown: serde_json::Value =
             serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
         unknown["profile"] = json!("generic-runtime-trace-v3");
@@ -1140,6 +1241,19 @@ mod tests {
             SceneAuthoringAdapterError::StudioMotionEdit(
                 ApplyStudioMotionEditError::StaleBaseRevision
             )
+        ));
+
+        let mut malformed: serde_json::Value =
+            serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
+        malformed["programs"][0]["operations"][0]["dependsOn"] = json!(["missing"]);
+        let error = apply_studio_motion_edit_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&malformed).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StudioMotionEdit(ApplyStudioMotionEditError::Unsupported)
         ));
     }
 
