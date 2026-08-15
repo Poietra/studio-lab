@@ -269,6 +269,34 @@ describe("Studio workspace projection", () => {
     if (operation?.kind !== "SetProperty" || operation.key !== "content") {
       throw new Error("Expected one MathTex content operation.");
     }
+    const staticRootProjection = {
+      mutations: [
+        {
+          content: studioContent,
+          entityId: entity.id,
+          interval: operation.interval,
+          kind: "math-tex-content",
+          operationId: operation.id,
+          transactionId: edit.program.transactionId,
+        },
+      ],
+    } satisfies StudioStaticRootProjectionV1;
+    const mutation = staticRootProjection.mutations[0];
+    expect(() =>
+      selectStaticRootProjection([edit.program], {
+        mutations: [{ ...mutation, content: { ...studioContent, texParts: ["wrong"] } }],
+      }),
+    ).toThrow("is not correlated");
+    expect(() =>
+      selectStaticRootProjection([edit.program], {
+        mutations: [{ ...mutation, interval: { end: 0.25, start: 0 } }],
+      }),
+    ).toThrow("is not correlated");
+    expect(() =>
+      selectStaticRootProjection([edit.program], {
+        mutations: [{ ...mutation, entityId: "source:other" }],
+      }),
+    ).toThrow("is not correlated");
     const projected = projectStudioWorkspace({
       activeScene: rebased,
       appliedPrograms: [programRecord(edit.program, edit)],
@@ -277,18 +305,7 @@ describe("Studio workspace projection", () => {
       nextScene: null,
       programAuthority: "static-imported-root",
       selectedObjectIds: [],
-      staticRootProjection: {
-        mutations: [
-          {
-            content: studioContent,
-            entityId: entity.id,
-            interval: operation.interval,
-            kind: "math-tex-content",
-            operationId: operation.id,
-            transactionId: edit.program.transactionId,
-          },
-        ],
-      },
+      staticRootProjection,
     });
 
     expect(projected.projection.canvas.entities[0]?.content).toEqual(futureContent);

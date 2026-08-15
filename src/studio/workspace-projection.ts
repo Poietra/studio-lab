@@ -4,6 +4,7 @@ import type {
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
+import { canonicalEditableContent } from "./editable-content";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
@@ -80,6 +81,30 @@ type CorrelatedStaticRootMutation = Readonly<{
   program: CanonicalEditProgram;
 }>;
 
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function mathTexContentMutationMatchesOperation(
+  mutation: StudioStaticRootMutationV1,
+  operation: CanonicalEditOperation,
+) {
+  const isContentOperation = operation.kind === "SetProperty" && operation.key === "content";
+  if (mutation.kind !== "math-tex-content" || !isContentOperation) {
+    return mutation.kind !== "math-tex-content" && !isContentOperation;
+  }
+  const expectedContent = canonicalEditableContent(operation.value, "MathTex");
+  return (
+    expectedContent?.texParts !== undefined &&
+    mutation.entityId === operation.entityId &&
+    mutation.interval.start === 0 &&
+    mutation.interval.end === 0 &&
+    mutation.content.label === expectedContent.label &&
+    sameStrings(mutation.content.displayLines, expectedContent.displayLines) &&
+    sameStrings(mutation.content.texParts, expectedContent.texParts)
+  );
+}
+
 function correlateStaticRootProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioStaticRootProjectionV1 | null,
@@ -101,7 +126,8 @@ function correlateStaticRootProjection(
     if (
       !expected ||
       operationIds.has(mutation.operationId) ||
-      mutation.transactionId !== expected.program.transactionId
+      mutation.transactionId !== expected.program.transactionId ||
+      !mathTexContentMutationMatchesOperation(mutation, expected.operation)
     ) {
       throw new TypeError(`Static-root operation ${mutation.operationId} is not correlated with the Rust projection.`);
     }
