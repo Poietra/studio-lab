@@ -19,6 +19,7 @@ import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import type { MutableManimProjectApiOperations } from "./manim-api";
+import { authorizePersistentRemoveWithSnapshot } from "./manim-persistent-remove-authorizer";
 import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
@@ -425,6 +426,14 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     const lowered = await lowerManimRenderRequest({
       frame: this.#frame,
       originalSource: source,
+      persistentRemoveAuthorizer: this.#snapshots
+        ? (input) =>
+            authorizePersistentRemoveWithSnapshot(
+              input,
+              (projectId, query, lookupSignal) => this.#snapshots!.snapshot(projectId, query, lookupSignal),
+              signal,
+            )
+        : null,
       projectId: request.projectId,
       request,
     });

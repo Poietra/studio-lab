@@ -1,8 +1,8 @@
-import type { StudioTimelineProjectionV1 } from "../engine/scene-authoring";
+import type { StudioPersistentRemoveProjectionV1, StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import type { ProgramRecord, ProjectedEntity } from "./model";
-import { isSceneDurationOperation } from "./operations";
+import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -13,6 +13,36 @@ export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
   return entity.type.startsWith("TransitionOverlay:");
 }
 
+export function selectPersistentRemoveProjection(
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioPersistentRemoveProjectionV1 | null,
+): StudioPersistentRemoveProjectionV1 | null {
+  const expected = programs.flatMap((program) =>
+    program.operations.flatMap((operation) =>
+      operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent
+        ? [{ entityId: operation.entityId, operationId: operation.id, transactionId: program.transactionId }]
+        : [],
+    ),
+  );
+  if (expected.length === 0) return null;
+  if (!projection) {
+    throw new TypeError("A Rust persistent remove projection is required to project persistent remove Programs.");
+  }
+  const removalsByOperationId = new Map(projection.removals.map((removal) => [removal.operationId, removal] as const));
+  if (removalsByOperationId.size !== projection.removals.length) {
+    throw new TypeError("The Rust persistent remove projection contains duplicate operation IDs.");
+  }
+  return {
+    removals: expected.map(({ entityId, operationId, transactionId }) => {
+      const removal = removalsByOperationId.get(operationId);
+      if (!removal || removal.studioEntityId !== entityId || removal.transactionId !== transactionId) {
+        throw new TypeError(`Persistent remove ${operationId} is not correlated with the Rust authoring projection.`);
+      }
+      return removal;
+    }),
+  };
+}
+
 export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
@@ -20,6 +50,7 @@ export function projectStudioWorkspace(
     currentTime: number;
     draftProgram: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
+    persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
     selectedObjectIds: readonly string[];
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
@@ -32,8 +63,15 @@ export function projectStudioWorkspace(
   });
   const programs = [...workingState.appliedPrograms, ...workingState.stagedPrograms].map((record) => record.program);
   const containsSceneDurationOperation = programs.some((program) => program.operations.some(isSceneDurationOperation));
+  const persistentRemoveProjection = selectPersistentRemoveProjection(
+    programs,
+    input.persistentRemoveProjection ?? null,
+  );
   let proposedState;
   if (containsSceneDurationOperation) {
+    if (persistentRemoveProjection) {
+      throw new TypeError("Scene duration and persistent remove Programs cannot share one workspace projection.");
+    }
     if (!isSceneDurationProgramBatch(programs)) {
       throw new TypeError(
         "Scene duration Programs cannot be mixed with another operation family in one workspace projection.",
@@ -47,7 +85,7 @@ export function projectStudioWorkspace(
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
   } else {
-    proposedState = evaluateWorkingState(workingState);
+    proposedState = evaluateWorkingState(workingState, persistentRemoveProjection);
   }
   const projection = projectProposedState(proposedState, input.currentTime);
   const boundary =

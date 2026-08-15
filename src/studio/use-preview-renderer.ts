@@ -32,10 +32,10 @@ import {
   compileApplyStudioTimelineEdit,
   type ProjectStudioTimelineCompiler,
   projectStudioTimeline,
+  type StudioPersistentRemoveProjectionV1,
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import { canonicalEditableContent } from "./editable-content";
 import type { ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
 import { type CanonicalEditOperation, isSceneDurationOperation } from "./operations";
 import {
@@ -67,7 +67,12 @@ import {
   studioPreviewRuntimeTraceEditAnchor,
   studioPreviewRuntimeTraceEditCandidates,
 } from "./preview-temporal-rebase";
-import { isPointValue } from "./property-sampling";
+import {
+  buildStaticRootTransformEditCommand,
+  buildStudioCreationEditCommand,
+  staticRootTransformStudioEntities,
+  studioCreationMathTexParts,
+} from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
 
@@ -94,6 +99,8 @@ export type StudioPreviewRendererView = Readonly<{
   /** Server-verified source name to runtime entity mapping for this snapshot. */
   sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   state: PreviewRendererHostStateV1;
+  /** Rust-authorized lifetime and fade facts for persistent remove operations. */
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null;
   /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
   timelineProjection: StudioTimelineProjectionV1 | null;
   /** Preview-only endpoint authority; source lowering still verifies the exact boundary. */
@@ -164,6 +171,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   engineRevisionHash: string;
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
+  persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
   programAuthority?: "source-bound-endpoint";
   snapshot: StudioVerifiedPreviewSnapshotV1;
   timelineProjection?: StudioTimelineProjectionV1;
@@ -454,83 +462,6 @@ function studioProgramEnvelope(program: ProgramRecord["program"]) {
   };
 }
 
-function studioCreationEntityKind(type: string): "circle" | "image" | "math-tex" | "other" | "rectangle" {
-  return type === "Circle"
-    ? "circle"
-    : type === "ImageMobject"
-      ? "image"
-      : type === "MathTex"
-        ? "math-tex"
-        : type === "Rectangle"
-          ? "rectangle"
-          : "other";
-}
-
-function studioCreationMathTexParts(value: unknown): readonly string[] | null {
-  return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
-}
-
-function normalizedStudioCreationOperation(
-  operation: CanonicalEditOperation,
-): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = {
-    dependsOn: operation.dependsOn,
-    id: operation.id,
-    interval: operation.interval,
-    origin: operation.provenance.origin,
-  };
-  if (operation.kind === "CreateEntity") {
-    return {
-      ...common,
-      entity: {
-        dimensions: operation.entity.dimensions ?? {},
-        id: operation.entity.id,
-        kind: studioCreationEntityKind(operation.entity.type),
-        lifetimeEnd: operation.entity.lifetime.end,
-        lifetimeStart: operation.entity.lifetime.start,
-        texParts: operation.entity.type === "MathTex" ? studioCreationMathTexParts(operation.entity.content) : null,
-      },
-      kind: "create",
-    };
-  }
-  if (operation.kind === "SetProperty" && operation.key === "position") {
-    return {
-      ...common,
-      entityId: operation.entityId,
-      kind: "position",
-      position: isPointValue(operation.value) ? operation.value : null,
-    };
-  }
-  if (operation.kind === "ChangePresence" && operation.effect === "fade-in") {
-    return { ...common, entityId: operation.entityId, kind: "fade-in", persistent: operation.persistent };
-  }
-  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
-    return {
-      ...common,
-      controlPresent: operation.control !== undefined,
-      entityId: operation.entityId,
-      from: typeof operation.from === "number" ? operation.from : null,
-      kind: "uniform-scale",
-      relativeFactor: operation.relativeFactor ?? null,
-      to: typeof operation.to === "number" ? operation.to : null,
-    };
-  }
-  if (operation.kind === "ResizeEntity") {
-    return {
-      ...common,
-      entityId: operation.entityId,
-      fromDimensions: operation.from.dimensions,
-      fromPosition: operation.from.position,
-      fromScale: operation.scale,
-      kind: "resize",
-      shape: operation.shape,
-      toDimensions: operation.to.dimensions,
-      toPosition: operation.to.position,
-    };
-  }
-  return { ...common, kind: "unsupported" };
-}
-
 function normalizedStudioMotionOperation(
   operation: CanonicalEditOperation,
 ): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
@@ -561,52 +492,11 @@ function staticRootTransformEditCommand(
   }>,
   nextRevision: string,
 ): ApplyStaticRootTransformEditWireCommandV1 {
-  const programs = sourceProgramRecords(input.workingState).map(({ program }) => ({
-    ...studioProgramEnvelope(program),
-    operations: program.operations.map(
-      (operation): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] => {
-        const common = {
-          dependsOn: operation.dependsOn,
-          entityId: "entityId" in operation && typeof operation.entityId === "string" ? operation.entityId : "",
-          id: operation.id,
-          interval: operation.interval,
-          origin: operation.provenance.origin,
-        };
-        if (operation.kind === "SetProperty" && operation.key === "position") {
-          return { ...common, kind: "position", position: isPointValue(operation.value) ? operation.value : null };
-        }
-        if (operation.kind === "AnimateProperty" && operation.key === "scale") {
-          return {
-            ...common,
-            controlPresent: operation.control !== undefined,
-            from: typeof operation.from === "number" ? operation.from : null,
-            kind: "uniform-scale",
-            relativeFactor: operation.relativeFactor ?? null,
-            to: typeof operation.to === "number" ? operation.to : null,
-          };
-        }
-        if (operation.kind === "ResizeEntity") {
-          return {
-            ...common,
-            fromDimensions: operation.from.dimensions,
-            fromPosition: operation.from.position,
-            fromScale: operation.scale,
-            kind: "resize",
-            shape: operation.shape,
-            toDimensions: operation.to.dimensions,
-            toPosition: operation.to.position,
-          };
-        }
-        return { ...common, kind: "unsupported" };
-      },
-    ),
-  }));
-  return {
+  return buildStaticRootTransformEditCommand({
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    programs,
-    schema: "poietra.apply-static-root-transform-edit",
+    programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
       ([sourceIdentityKey, { entityId, sourceName }]) => ({
         runtimeEntityId: entityId,
@@ -614,41 +504,24 @@ function staticRootTransformEditCommand(
         sourceName,
       }),
     ),
-    studioEntities: Object.entries(input.workingState.runtimeSceneState.objectGraph.entities).map(
-      ([objectGraphKey, entity]) => ({
-        dimensions: entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : {},
-        id: entity.id,
-        kind:
-          entity.type === "Circle"
-            ? "circle"
-            : entity.type === "ImageMobject"
-              ? "image"
-              : entity.type === "MathTex"
-                ? "math-tex"
-                : entity.type === "Rectangle"
-                  ? "rectangle"
-                  : "other",
-        objectGraphKey,
-        position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
-        provisional: entity.provisional,
-        scale: entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null,
-        sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
-        ...(entity.transactionId === undefined ? {} : { transactionId: entity.transactionId }),
-      }),
-    ),
-    version: 1,
+    studioEntities: staticRootTransformStudioEntities(input.workingState.runtimeSceneState),
     viewport: STUDIO_VIEWPORT,
-  };
+  });
 }
 
 function staticImportedSourceIsExact(
   input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
 ) {
   const scene = input.snapshot.snapshot.scene;
+  return scene.source.kind === "imported-manim-server-snapshot" && importedWorkingSourceIsExact(input);
+}
+
+function importedWorkingSourceIsExact(
+  input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
+) {
   const correlation = input.snapshot.correlation;
   const base = input.workingState;
   return (
-    scene.source.kind === "imported-manim-server-snapshot" &&
     importedSnapshotCorrelationIsExact(input.snapshot, true) &&
     base.runtimeSceneState.sceneId === base.editorContext.activeSceneId &&
     base.runtimeSceneState.sceneId === `${correlation.context.sourcePath}#${correlation.context.sceneName}` &&
@@ -825,24 +698,20 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const command: ApplyStudioCreationEditWireCommandV1 = {
+    const command = buildStudioCreationEditCommand({
       expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
       frame: input.frame,
       mathTexOutlines,
       nextRevision: engineRevisionHash,
-      programs: sourcePrograms.map(({ program }) => ({
-        ...studioProgramEnvelope(program),
-        operations: program.operations.map(normalizedStudioCreationOperation),
-      })),
-      schema: "poietra.apply-studio-creation-edit",
-      version: 1,
+      programs: sourcePrograms.map(({ program }) => program),
       viewport: STUDIO_VIEWPORT,
-    };
+    });
     try {
-      const bundle = await (input.applyStudioCreationEditCompiler ?? compileApplyStudioCreationEdit)(
+      const result = await (input.applyStudioCreationEditCompiler ?? compileApplyStudioCreationEdit)(
         input.snapshot.snapshot,
         command,
       );
+      const bundle = result.bundle;
       const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
       const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
       const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
@@ -865,6 +734,7 @@ export async function compileStudioPreviewSceneV1(
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
+          persistentRemoveProjection: result.persistentRemoveProjection,
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -873,6 +743,58 @@ export async function compileStudioPreviewSceneV1(
     } catch (error) {
       return {
         error: `Rust core rejected Studio entity creation: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+  }
+  const hasPersistentRemove = sourcePrograms.some(({ program }) =>
+    program.operations.some(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
+    ),
+  );
+  if (hasPersistentRemove) {
+    if (!staticImportedSourceIsExact(input)) {
+      return {
+        error: "Persistent remove requires one exactly correlated static Scene snapshot.",
+        kind: "unsupported",
+      };
+    }
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      snapshot: input.snapshot,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    try {
+      const result = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
+        input.snapshot.snapshot,
+        staticRootTransformEditCommand(input, engineRevisionHash),
+      );
+      const bundle = result.bundle;
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+            input.snapshot.sourceRuntimeIdentity,
+            studioPreviewInteractionAuthority(
+              input.snapshot,
+              0,
+              input.workingState.runtimeSceneState.eventTrack.events,
+            ),
+            bundle.scene.entities,
+          ),
+          persistentRemoveProjection: result.persistentRemoveProjection,
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected persistent remove: ${error instanceof Error ? error.message : String(error)}`,
         kind: "unsupported",
       };
     }
@@ -1041,10 +963,11 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
-      const bundle = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
+      const result = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
         input.snapshot.snapshot,
         staticRootTransformEditCommand(input, engineRevisionHash),
       );
+      const bundle = result.bundle;
       return {
         kind: "compiled",
         scene: {
@@ -1060,6 +983,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
+          persistentRemoveProjection: result.persistentRemoveProjection,
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1472,6 +1396,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       sourceEvents,
     ),
     runtimeTraceProgramValidation,
+    persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
     timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,
   };

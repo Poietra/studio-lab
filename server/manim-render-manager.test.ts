@@ -7,6 +7,7 @@ import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { type ProgramRenderRequest, renderProgramBatchId } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
@@ -37,6 +38,150 @@ import {
 } from "./manim-render-pipeline-test-fixtures";
 
 afterEach(cleanupManimRenderPipelineFixtures);
+
+async function installVerifiedEmptySnapshot(manager: ManimRenderManager, request: ProgramRenderRequest) {
+  const fixtureDocument = JSON.parse(
+    await readFile(new URL("../fixtures/engine-v1/studio-mathtex-preview.json", import.meta.url), "utf8"),
+  ) as Readonly<Pick<SceneIrBundleV1, "assets" | "scene">>;
+  const fixture: SceneIrBundleV1 = { assets: fixtureDocument.assets, scene: fixtureDocument.scene };
+  const runtimeConfigHash = "b".repeat(64);
+  const snapshotHash = "e".repeat(64);
+  const bundle: SceneIrBundleV1 = {
+    ...fixture,
+    scene: {
+      ...fixture.scene,
+      camera: {
+        ...fixture.scene.camera,
+        view: { ...fixture.scene.camera.view, frameHeight: 8, frameWidth: 14.222 },
+      },
+      duration: 8,
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash,
+        snapshotHash,
+        snapshotVersion: 1,
+        sourceHash: request.sourceHash,
+      },
+    },
+  };
+  const snapshotRunner = Reflect.get(manager, "snapshotRunner") as Readonly<{
+    snapshot: (query: Readonly<{ sceneName: string; sourcePath: string }>) => Promise<unknown>;
+  }>;
+  Object.defineProperty(snapshotRunner, "snapshot", {
+    configurable: true,
+    value: async () => ({
+      projectId: request.projectId,
+      publishedAt: "2026-08-15T00:00:00.000Z",
+      requestId: "server-delete-authority",
+      revision: 1,
+      runtimeConfigHash,
+      sceneName: request.sceneName,
+      schema: "poietra.fast-manim-snapshot-run",
+      snapshot: {
+        bundle,
+        kind: "compiled",
+        projectId: request.projectId,
+        requestId: "server-delete-authority",
+        runtimeConfigHash,
+        sceneId: bundle.scene.sceneId,
+        sceneName: request.sceneName,
+        schema: "poietra.fast-manim-snapshot-result",
+        snapshotHash,
+        sourceHash: request.sourceHash,
+        sourcePath: request.sourcePath,
+        version: 1,
+      },
+      sourcePath: request.sourcePath,
+      status: "verified",
+      version: 1,
+    }),
+    writable: true,
+  });
+}
+
+function scaleCreatedEntityProgram(entityId: string): CanonicalEditProgram {
+  const operation = {
+    control: undefined,
+    dependsOn: [],
+    easing: "smooth" as const,
+    entityId,
+    from: 1,
+    id: "server-created-scale/operation:scale",
+    interval: { end: 7, start: 7 },
+    key: "scale" as const,
+    kind: "AnimateProperty" as const,
+    provenance: { evidence: [], origin: "direct-manipulation" as const },
+    relativeFactor: 1.5,
+    to: 1.5,
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 7,
+      evidence: [],
+      resolvedSeconds: 7,
+      source: { kind: "playhead", referenceSeconds: 7 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "server-created-scale",
+    version: 1,
+  };
+}
+
+function removeCreatedEntityProgram(entityId: string): CanonicalEditProgram {
+  const operation = {
+    dependsOn: [],
+    effect: "remove" as const,
+    entityId,
+    id: "server-created-remove/operation:remove",
+    interval: { end: 7.4, start: 7 },
+    kind: "ChangePresence" as const,
+    persistent: true,
+    provenance: { evidence: [], origin: "studio-default" as const },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 7,
+      evidence: [],
+      resolvedSeconds: 7,
+      source: { kind: "playhead", referenceSeconds: 7 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "studio-default" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    transactionId: "server-created-remove",
+    version: 1,
+  };
+}
+
+function rustAuthorizableCircleCreationProgram(transactionId: string, entityName = "circle"): CanonicalEditProgram {
+  const program = createCircleProgram(transactionId, entityName);
+  const [create, position, presence] = program.operations;
+  if (!create || !position || !presence || create.kind !== "CreateEntity") {
+    throw new Error("The Circle creation fixture is malformed.");
+  }
+  return {
+    ...program,
+    operations: [{ ...create, entity: { ...create.entity, dimensions: { radius: 1 } } }, position, presence],
+    schedule: {
+      edges: [
+        { from: create.id, reason: "explicit", to: position.id },
+        { from: position.id, reason: "explicit", to: presence.id },
+        { from: create.id, reason: "identity", to: position.id },
+        { from: create.id, reason: "identity", to: presence.id },
+      ],
+      mode: "sequence",
+      order: program.schedule.order,
+    },
+  };
+}
 
 describe("Manim render manager", () => {
   it("discovers Scenes and runs preview, commit, and exact Undo", async () => {
@@ -501,6 +646,50 @@ class GroupedEquation(Scene):
     expect(marker?.[1]).toBeTruthy();
     expect(exported.source).toContain(`${marker?.[1]}.animate.shift(`);
     expect(exported.source).toContain("# poietra:cursor 7.4");
+  });
+
+  it("routes a complete Studio-created Circle scale and delete batch through the Rust creation planner", async () => {
+    const { manager } = await fixture();
+    const creation = rustAuthorizableCircleCreationProgram("server-created-circle");
+    const entityId = "tx:server-created-circle/entity:circle";
+    const scale = scaleCreatedEntityProgram(entityId);
+    const removal = removeCreatedEntityProgram(entityId);
+    const renderRequest = batchRequest([creation, scale, removal]);
+    await installVerifiedEmptySnapshot(manager, renderRequest);
+
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(exported.source).toContain("Circle(");
+    expect(exported.source).toContain(".scale(1.5)");
+    expect(exported.source).toContain("FadeOut(");
+  });
+
+  it("fails Studio-created MathTex delete closed without a server outline authority", async () => {
+    const { manager } = await fixture();
+    const circleCreation = rustAuthorizableCircleCreationProgram("server-created-mathtex", "equation");
+    const entityId = "tx:server-created-mathtex/entity:equation";
+    const creation: CanonicalEditProgram = {
+      ...circleCreation,
+      operations: circleCreation.operations.map((operation) =>
+        operation.kind === "CreateEntity"
+          ? {
+              ...operation,
+              entity: {
+                ...operation.entity,
+                content: { displayLines: ["E = mc^2"], label: "E = mc^2", texParts: ["E = mc^2"] },
+                type: "MathTex",
+              },
+            }
+          : operation,
+      ),
+    };
+    const renderRequest = batchRequest([creation, removeCreatedEntityProgram(entityId)]);
+    await installVerifiedEmptySnapshot(manager, renderRequest);
+
+    await expect(manager.exportSource(renderRequest)).rejects.toMatchObject({
+      message: "Server rendering cannot yet authorize Studio-created MathTex outlines.",
+      status: 400,
+    });
   });
 
   it("allocates distinct Python variables when transaction IDs normalize to the same token", async () => {

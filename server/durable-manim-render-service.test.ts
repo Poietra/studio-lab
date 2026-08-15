@@ -2,9 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { ProgramRenderRequest, RenderCommitRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
+import type { DurableFastManimSnapshotServiceV1 } from "./durable-fast-manim-snapshot-service";
 import { type DurableManimRenderServiceOptionsV1, DurableManimRenderServiceV1 } from "./durable-manim-render-service";
+import { DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import { HttpError } from "./http/json";
-import { request, sceneSource } from "./manim-render-pipeline-test-fixtures";
+import { batchRequest, createCircleProgram, request, sceneSource } from "./manim-render-pipeline-test-fixtures";
 import { renderCommitCorrelationKey } from "./manim-render-session-policy";
 import { sourceHash } from "./manim-source-store";
 import type {
@@ -83,6 +85,7 @@ function fixture(
     originalSource?: string;
     putSource?: SourceContentBlobStoreV1["putSource"];
     readSession?: RenderSessionRepositoryV1["readSession"];
+    snapshotLookup?: DurableManimRenderServiceOptionsV1["snapshotLookup"];
   }> = {},
 ) {
   const putSource = vi.fn<SourceContentBlobStoreV1["putSource"]>(async (_tenantId, source, signal) =>
@@ -130,6 +133,7 @@ function fixture(
     frame: { height: 8, width: 14.222 },
     repository,
     sessionIdFactory: () => "00000000-0000-4000-8000-000000000010",
+    ...(overrides.snapshotLookup ? { snapshotLookup: overrides.snapshotLookup } : {}),
     sourceRepository,
     tenantId: "tenant-a",
   });
@@ -146,6 +150,35 @@ function fixture(
     repository,
     service,
     wake,
+  };
+}
+
+function persistentRemoveProgram(entityId: string, transactionId: string): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    effect: "remove",
+    entityId,
+    id: `tx:${transactionId}/operation:remove`,
+    interval: { end: 7.4, start: 7 },
+    kind: "ChangePresence",
+    persistent: true,
+    provenance: { evidence: [], origin: "studio-default" },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 7,
+      evidence: [],
+      resolvedSeconds: 7,
+      source: { kind: "playhead", referenceSeconds: 7 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: [], origin: "studio-default" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    transactionId,
+    version: 1,
   };
 }
 
@@ -234,6 +267,62 @@ function runtimeTraceEditFixture(
 }
 
 describe("DurableManimRenderServiceV1", () => {
+  it("routes imported persistent remove admission through the durable snapshot lookup", async () => {
+    const renderRequest = {
+      ...request(),
+      program: persistentRemoveProgram("source:scene.py#GroupedEquation:equation", "durable-delete"),
+    };
+    const failure = new HttpError("durable snapshot lookup reached", 418);
+    const snapshotLookup = vi.fn<NonNullable<DurableManimRenderServiceOptionsV1["snapshotLookup"]>>(async () => {
+      throw failure;
+    });
+    const { createSession, putSource, service } = fixture({ snapshotLookup });
+
+    await expect(service.start(renderRequest)).rejects.toBe(failure);
+
+    expect(snapshotLookup).toHaveBeenCalledWith(
+      "default",
+      { sceneName: "GroupedEquation", sourcePath: "scene.py" },
+      undefined,
+    );
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+  });
+
+  it("routes Studio-created Circle delete export through the durable snapshot service", async () => {
+    const creation = createCircleProgram("durable-created-circle");
+    const renderRequest = batchRequest([
+      creation,
+      persistentRemoveProgram("tx:durable-created-circle/entity:circle", "durable-created-delete"),
+    ]);
+    const failure = new HttpError("durable export snapshot lookup reached", 418);
+    const snapshot = vi.fn<DurableFastManimSnapshotServiceV1["snapshot"]>(async () => {
+      throw failure;
+    });
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => sceneSource,
+      }),
+      namespace: "persistent-remove-export-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        readSourceHead: async () => originalHead,
+      }),
+      snapshots: partial<DurableFastManimSnapshotServiceV1>({ close: async () => undefined, snapshot }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.exportSource(renderRequest)).rejects.toBe(failure);
+
+    expect(snapshot).toHaveBeenCalledWith(
+      "default",
+      { sceneName: "GroupedEquation", sourcePath: "scene.py" },
+      undefined,
+    );
+    await runtime.close();
+  });
+
   it("lowers source and creates a durable preparing session without launching a host process", async () => {
     const { createSession, putSource, service, wake } = fixture();
 

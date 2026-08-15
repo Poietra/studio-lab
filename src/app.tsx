@@ -151,7 +151,11 @@ import { useManimWorkspace } from "./studio/use-manim-workspace";
 import { useStudioPreviewAuthorityController } from "./studio/use-preview-authority-controller";
 import { useSourceReimportController } from "./studio/use-source-reimport-controller";
 import { WorkspaceLauncher } from "./studio/workspace-launcher";
-import { isTransitionOverlay, projectStudioWorkspace } from "./studio/workspace-projection";
+import {
+  isTransitionOverlay,
+  projectStudioWorkspace,
+  selectPersistentRemoveProjection,
+} from "./studio/workspace-projection";
 
 type Shell = "Browser" | "Electron" | "Tauri";
 const loadMotionFeatures = () => import("./lib/motion-features").then((module) => module.default);
@@ -815,6 +819,23 @@ export function App({
   function timelineProjectionForRecords(records: readonly ProgramRecord[]) {
     return timelineProjectionForPrograms(records.map((record) => record.program));
   }
+  function persistentRemoveProjectionForPrograms(programs: readonly CanonicalEditProgram[]) {
+    const containsPersistentRemove = programs.some((program) =>
+      program.operations.some(
+        (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
+      ),
+    );
+    if (!containsPersistentRemove) return null;
+    if (!previewRenderer?.persistentRemoveProjection) return undefined;
+    try {
+      return selectPersistentRemoveProjection(programs, previewRenderer.persistentRemoveProjection);
+    } catch {
+      return undefined;
+    }
+  }
+  function persistentRemoveProjectionForRecords(records: readonly ProgramRecord[]) {
+    return persistentRemoveProjectionForPrograms(records.map((record) => record.program));
+  }
   function sourceTimeToWorkingTime(programs: readonly CanonicalEditProgram[], sourceTime: number) {
     const timelineProjection = timelineProjectionForPrograms(programs);
     if (timelineProjection === undefined) {
@@ -845,14 +866,19 @@ export function App({
     ...(editingAppliedProgram || !draftProgram ? [] : [draftProgram]),
   ];
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
+  const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);
   const workspaceProjection =
-    editorDocumentPresentationReady && projectedActiveScene && workspaceTimelineProjection !== undefined
+    editorDocumentPresentationReady &&
+    projectedActiveScene &&
+    workspaceTimelineProjection !== undefined &&
+    workspacePersistentRemoveProjection !== undefined
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
           appliedPrograms: previewAppliedPrograms,
           currentTime,
           draftProgram: editingAppliedProgram ? null : draftProgram,
           nextScene,
+          persistentRemoveProjection: workspacePersistentRemoveProjection,
           selectedObjectIds,
           timelineProjection: workspaceTimelineProjection,
         })
@@ -1094,9 +1120,10 @@ export function App({
   }
 
   const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
+  const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingPrograms);
   const draftBaseProjection =
     editorDocumentPresentationReady && projectedActiveScene && draftProgram
-      ? draftBaseTimelineProjection === undefined
+      ? draftBaseTimelineProjection === undefined || draftBasePersistentRemoveProjection === undefined
         ? null
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
@@ -1104,6 +1131,7 @@ export function App({
             currentTime,
             draftProgram: null,
             nextScene,
+            persistentRemoveProjection: draftBasePersistentRemoveProjection,
             selectedObjectIds,
             timelineProjection: draftBaseTimelineProjection,
           })
@@ -1567,8 +1595,9 @@ export function App({
     const precedingRecords = appliedPrograms.slice(0, index);
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
-    if (precedingTimelineProjection === undefined) {
-      setDraftError("Wait for the Rust timeline projection before editing this Program.");
+    const precedingPersistentRemoveProjection = persistentRemoveProjectionForRecords(precedingRecords);
+    if (precedingTimelineProjection === undefined || precedingPersistentRemoveProjection === undefined) {
+      setDraftError("Wait for the Rust authoring projection before editing this Program.");
       return false;
     }
     const workingFocus = sourceTimeToWorkingTime(precedingPrograms, focusSourceTime);
@@ -1578,6 +1607,7 @@ export function App({
       currentTime: workingFocus,
       draftProgram: null,
       nextScene,
+      persistentRemoveProjection: precedingPersistentRemoveProjection,
       selectedObjectIds: metadata.selection,
       timelineProjection: precedingTimelineProjection,
     });
@@ -1879,8 +1909,9 @@ export function App({
     const sourceSceneBefore = (index: number) => {
       const preceding = appliedPrograms.slice(0, index);
       const timelineProjection = timelineProjectionForRecords(preceding);
-      if (timelineProjection === undefined) {
-        throw new Error("Wait for the Rust timeline projection before editing this object lifetime.");
+      const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
+      if (timelineProjection === undefined || persistentRemoveProjection === undefined) {
+        throw new Error("Wait for the Rust authoring projection before editing this object lifetime.");
       }
       const state = projectStudioWorkspace({
         activeScene: projectedActiveScene,
@@ -1888,6 +1919,7 @@ export function App({
         currentTime,
         draftProgram: null,
         nextScene,
+        persistentRemoveProjection,
         selectedObjectIds,
         timelineProjection,
       }).proposedState.evaluatedScene;
@@ -1900,31 +1932,8 @@ export function App({
       } as const;
     };
 
-    const assertCompatibleWithAppliedPrograms = (record: ProgramRecord, edit: Readonly<{ index: number }> | null) => {
-      const programs = edit
-        ? appliedPrograms.map((candidate, index) => (index === edit.index ? record : candidate))
-        : [...appliedPrograms, record];
-      const timelineProjection = timelineProjectionForRecords(programs);
-      if (timelineProjection === undefined) {
-        throw new Error("Timeline Programs cannot be combined with this object lifetime edit yet.");
-      }
-      const proposed = projectStudioWorkspace({
-        activeScene: projectedActiveScene,
-        appliedPrograms: programs,
-        currentTime,
-        draftProgram: null,
-        nextScene,
-        selectedObjectIds,
-        timelineProjection,
-      }).proposedState;
-      const invalid = proposed.programs.find((candidate) => candidate.validation.status === "invalid");
-      if (!invalid) return;
-      throw new Error(
-        invalid.validation.issues.find((issue) => issue.severity === "error")?.message ??
-          "The lifetime edit conflicts with another applied Program.",
-      );
-    };
-
+    // A new lifetime edit has no Rust projection until it is staged under its
+    // new working revision. The correlated preview gates Apply after staging.
     try {
       const owner = findStudioLifetimeOwner(appliedPrograms, entityId);
       if (owner) {
@@ -1944,7 +1953,6 @@ export function App({
         });
         const validated = validatedProgramRecord(validation);
         if (validated.kind === "invalid") throw new Error(validated.message);
-        assertCompatibleWithAppliedPrograms(validated.record, owner);
         if (
           !installCanonicalDraft(validated.record, [entityId], preceding.canonical, null, {
             index: owner.index,
@@ -2006,7 +2014,6 @@ export function App({
       });
       const validated = validatedProgramRecord(validation);
       if (validated.kind === "invalid") throw new Error(validated.message);
-      assertCompatibleWithAppliedPrograms(validated.record, existing);
       if (
         !installCanonicalDraft(
           validated.record,

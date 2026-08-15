@@ -15,6 +15,7 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
     epoch: 0,
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,
+    persistentRemoveProjection: null,
     runtimeTraceEditAnchor: null,
     runtimeTraceEditCandidates: [],
     runtimeTraceOpaqueSelectionEntities: [],

@@ -10,7 +10,7 @@ import {
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { createFixtureWorkingState, persistentRemoveProjectionFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
@@ -419,11 +419,11 @@ describe("manual Studio authoring commands", () => {
     expect(result.program.operations).toEqual([
       expect.objectContaining({ effect: "remove", entityId: "equation_1", persistent: true }),
     ]);
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(result.program, result)],
-      }),
-    );
+    const workingState = createFixtureWorkingState({
+      stagedPrograms: [programRecord(result.program, result)],
+    });
+    expect(() => evaluateWorkingState(workingState)).toThrow(/Rust authoring projection/i);
+    const proposed = evaluateWorkingState(workingState, persistentRemoveProjectionFixture(result.program));
     expect(
       projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.present,
     ).toBe(false);
@@ -454,6 +454,7 @@ describe("manual Studio authoring commands", () => {
       createFixtureWorkingState({
         stagedPrograms: [programRecord(result.program, result)],
       }),
+      persistentRemoveProjectionFixture(result.program),
     );
     expect(proposed.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([{ end: 7, start: 0 }]);
     expect(

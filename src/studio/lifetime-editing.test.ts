@@ -8,8 +8,9 @@ import {
   defaultEntityContent,
 } from "./authoring-commands";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { createFixtureWorkingState, persistentRemoveProjectionFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { buildLifetimeEditControls, findImportedLifetimeEdit, lifetimeControlKey } from "./lifetime-editing";
+import { insertedProgramDuration } from "./program-composition";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 
 describe("lifetime editing controls", () => {
@@ -78,6 +79,7 @@ describe("lifetime editing controls", () => {
         createFixtureWorkingState({
           appliedPrograms: [record],
         }),
+        persistentRemoveProjectionFixture(removal.program),
       ),
       5,
     ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
@@ -108,6 +110,7 @@ describe("lifetime editing controls", () => {
         createFixtureWorkingState({
           appliedPrograms: [record],
         }),
+        persistentRemoveProjectionFixture(trim.program),
       ),
       5,
     ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
@@ -198,6 +201,7 @@ describe("lifetime editing controls", () => {
         createFixtureWorkingState({
           appliedPrograms: records,
         }),
+        persistentRemoveProjectionFixture(removal.program, insertedProgramDuration(owner.program)),
       ),
       6,
     ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
@@ -227,6 +231,7 @@ describe("lifetime editing controls", () => {
             lifetime: [
               { end: 2, start: 0 },
               { end: 9, start: 5 },
+              { end: 11, start: 10 },
             ],
           },
         },
@@ -245,6 +250,7 @@ describe("lifetime editing controls", () => {
           lifetimes: [
             { end: 2, start: 0 },
             { end: 9, start: 5 },
+            { end: 11, start: 10 },
           ],
           provisional: false,
           type: "MathTex",
@@ -263,10 +269,13 @@ describe("lifetime editing controls", () => {
       targetEnd: 7,
       transactionId: "trim-second-lifetime",
     });
-    const trimmed = evaluateWorkingState({
-      ...createFixtureWorkingState({ appliedPrograms: [programRecord(trim.program, trim)] }),
-      runtimeSceneState: repeatedScene,
-    });
+    const trimmed = evaluateWorkingState(
+      {
+        ...createFixtureWorkingState({ appliedPrograms: [programRecord(trim.program, trim)] }),
+        runtimeSceneState: repeatedScene,
+      },
+      persistentRemoveProjectionFixture(trim.program),
+    );
     expect(trimmed.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([
       { end: 2, start: 0 },
       { end: 7, start: 5 },

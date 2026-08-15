@@ -1,3 +1,4 @@
+import type { StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
 import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import type {
   EntityContent,
@@ -121,7 +122,10 @@ function normalizePropertyChannels(draft: EvaluationDraft) {
   );
 }
 
-export function evaluateWorkingState(workingState: WorkingState): ProposedState {
+export function evaluateWorkingState(
+  workingState: WorkingState,
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
+): ProposedState {
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
     ...workingState.stagedPrograms.map((record) => ({ applied: false, record })),
@@ -138,6 +142,13 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
   if (sceneDurationOperation) {
     throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
   }
+  const persistentRemoveByOperationId = new Map(
+    (persistentRemoveProjection?.removals ?? []).map((removal) => [removal.operationId, removal] as const),
+  );
+  if (persistentRemoveByOperationId.size !== (persistentRemoveProjection?.removals.length ?? 0)) {
+    throw new TypeError("The Rust persistent remove projection contains duplicate operation IDs.");
+  }
+  const usedPersistentRemoveOperationIds = new Set<string>();
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
@@ -160,7 +171,13 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
     const operationById = new Map(validation.program.operations.map((operation) => [operation.id, operation]));
     for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
-      if (operation) evaluateOperation(draft, operation, validation.program);
+      if (operation) {
+        const removal = persistentRemoveByOperationId.get(operation.id);
+        evaluateOperation(draft, operation, validation.program, removal);
+        if (removal && operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
+          usedPersistentRemoveOperationIds.add(operation.id);
+        }
+      }
     }
     normalizePropertyChannels(draft);
     if (applied) {
@@ -176,6 +193,9 @@ export function evaluateWorkingState(workingState: WorkingState): ProposedState 
       }
     }
     insertions.push({ duration: timelineDelta, sourceAnchor });
+  }
+  if (usedPersistentRemoveOperationIds.size !== persistentRemoveByOperationId.size) {
+    throw new TypeError("The Rust persistent remove projection does not match the evaluated Program batch.");
   }
   return {
     base: workingState,
