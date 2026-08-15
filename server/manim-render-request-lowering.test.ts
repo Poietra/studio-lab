@@ -510,7 +510,7 @@ describe("Manim render request lowering", () => {
     });
   });
 
-  it("rejects one Program with multiple motion operations outside exact snapshot authorization", async () => {
+  it("routes one Program with multiple motion operations through exact snapshot authorization", async () => {
     const first = motionProgram(5, "multi-operation-motion");
     const secondOperation = motionProgram(6.5, "second-operation").operations[0];
     if (!secondOperation || secondOperation.kind !== "CreateMotion") {
@@ -521,20 +521,20 @@ describe("Manim render request lowering", () => {
       intentCount: 2,
       operations: [...first.operations, secondOperation],
       schedule: {
-        edges: [],
+        edges: [{ from: first.operations[0]!.id, reason: "explicit", to: secondOperation.id }],
         mode: "sequence",
         order: [first.operations[0]!.id, secondOperation.id],
       },
     };
-    let authorizerCalls = 0;
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
 
-    await expect(
-      lower(request(combined), sceneSource, async () => {
-        authorizerCalls += 1;
-      }),
-    ).rejects.toMatchObject(unsupportedProgramBatchError);
+    const result = await lower(request(combined), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
 
-    expect(authorizerCalls).toBe(0);
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([combined]);
+    expect(result.lowered.source.match(/equation\.animate\.shift/g)).toHaveLength(2);
   });
 
   it("routes exactly one imported CreateMotion Program through snapshot authorization", async () => {
