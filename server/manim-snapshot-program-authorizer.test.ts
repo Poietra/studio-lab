@@ -15,8 +15,8 @@ import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-a
 import { importSourceSnapshot, sceneView } from "./manim-workspace";
 
 const compilers = vi.hoisted(() => ({
-  content: vi.fn(),
   outline: vi.fn(),
+  staticRoot: vi.fn(),
 }));
 
 vi.mock("../src/engine/contracts", async (importOriginal) => {
@@ -33,7 +33,7 @@ vi.mock("../src/engine/mathtex-outline", () => ({
 
 vi.mock("../src/engine/scene-authoring", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/engine/scene-authoring")>()),
-  compileApplyStudioMathTexContentEdit: compilers.content,
+  compileApplyStaticRootTransformEdit: compilers.staticRoot,
 }));
 
 const entityId = "source:scene.py#GroupedEquation:equation";
@@ -99,24 +99,24 @@ async function lowerContent(transactionId: string, outlineResult: MathTexOutline
   });
 }
 
-describe("snapshot MathTex content authorization", () => {
+describe("snapshot static-root MathTex content authorization", () => {
   beforeEach(() => {
-    compilers.content.mockReset();
     compilers.outline.mockReset();
+    compilers.staticRoot.mockReset();
   });
 
-  it("compiles the replacement outline once before applying the dedicated Rust command", async () => {
-    compilers.content.mockResolvedValue({});
+  it("compiles the replacement outline once before applying the existing static-root command", async () => {
+    compilers.staticRoot.mockResolvedValue({});
 
     const result = await lowerContent("authorized-content", "compiled");
 
     expect(compilers.outline).toHaveBeenCalledOnce();
     expect(compilers.outline).toHaveBeenCalledWith(["F", "=", "m", "a"]);
-    expect(compilers.content).toHaveBeenCalledOnce();
-    expect(compilers.content.mock.calls[0]?.[1]).toMatchObject({
+    expect(compilers.staticRoot).toHaveBeenCalledOnce();
+    expect(compilers.staticRoot.mock.calls[0]?.[1]).toMatchObject({
       mathTexOutlines: [{ entityId, path: expect.any(Object), texParts: ["F", "=", "m", "a"] }],
       programs: [{ operations: [{ content: { texParts: ["F", "=", "m", "a"] }, kind: "math-tex-content" }] }],
-      schema: "poietra.apply-studio-math-tex-content-edit",
+      schema: "poietra.apply-static-root-transform-edit",
       version: 1,
     });
     expect(result.lowered.source).toContain('equation.become(MathTex("F", "=", "m", "a")');
@@ -133,11 +133,11 @@ describe("snapshot MathTex content authorization", () => {
       message: expect.stringContaining("syntax-unsupported"),
       status: 400,
     });
-    expect(compilers.content).not.toHaveBeenCalled();
+    expect(compilers.staticRoot).not.toHaveBeenCalled();
   });
 
   it("reports a Rust content compiler rejection through the snapshot authorization boundary", async () => {
-    compilers.content.mockRejectedValue(new Error("content command rejected"));
+    compilers.staticRoot.mockRejectedValue(new Error("content command rejected"));
 
     await expect(lowerContent("rejected-content", "compiled")).rejects.toMatchObject({
       message: "The Rust core rejected the snapshot Program batch: content command rejected",

@@ -5,7 +5,6 @@ import { compileMathTexOutlineV1 } from "../src/engine/mathtex-outline";
 import {
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
-  compileApplyStudioMathTexContentEdit,
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
 } from "../src/engine/scene-authoring";
@@ -13,14 +12,12 @@ import { isExactStudioMathTexContentProgramBatch } from "../src/studio/operation
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
-  buildStudioMathTexContentEditCommand,
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
   isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
-  studioMathTexContentStudioEntities,
   studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
@@ -149,15 +146,17 @@ export async function authorizeSnapshotProgramWithSnapshot(
         400,
       );
     }
-    await compileApplyStudioMathTexContentEdit(
+    await compileApplyStaticRootTransformEdit(
       bundle,
-      buildStudioMathTexContentEditCommand({
+      buildStaticRootTransformEditCommand({
         expectedBaseRevision: snapshot.snapshotHash,
+        frame: input.frame,
         mathTexOutlines: [{ entityId: operation.entityId, path: response.result.path, texParts }],
         nextRevision,
         programs: input.programs,
         sourceRuntimeBindings,
-        studioEntities: studioMathTexContentStudioEntities(input.runtimeSceneState),
+        studioEntities: staticRootTransformStudioEntities(input.runtimeSceneState),
+        viewport: input.request.viewport,
       }),
     );
     return;
@@ -220,6 +219,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
     buildStaticRootTransformEditCommand({
       expectedBaseRevision: snapshot.snapshotHash,
       frame: input.frame,
+      mathTexOutlines: [],
       nextRevision,
       programs: input.programs,
       sourceRuntimeBindings,

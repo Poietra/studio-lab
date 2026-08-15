@@ -45,10 +45,6 @@ class GroupedEquation(Scene):
         # poietra:anchor 7.000
         self.wait(1)
 `;
-const sceneSourceWithZeroAnchor = sceneSource.replace(
-  "        self.add(equation)\n",
-  "        self.add(equation)\n        # poietra:anchor 0.000\n",
-);
 
 const sceneSourceWithDestination = `${sceneSource}
 class NextScene(Scene):
@@ -625,25 +621,6 @@ describe("Manim render request lowering", () => {
       message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });
-  });
-
-  it("routes one imported MathTex Inspector content replacement through snapshot authorization", async () => {
-    const program = mathTexContentProgram("authorized-mathtex-content");
-    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
-    const renderRequest = {
-      ...request(program),
-      sourceHash: createHash("sha256").update(sceneSourceWithZeroAnchor).digest("hex"),
-    };
-
-    const result = await lower(renderRequest, sceneSourceWithZeroAnchor, async (input) => {
-      authorizations.push(input);
-    });
-
-    expect(authorizations).toHaveLength(1);
-    expect(authorizations[0]?.programs).toEqual([program]);
-    expect(result.lowered.source).toContain(
-      'equation.become(MathTex("F", "=", "m", "a").match_style(equation).match_height(equation).move_to(equation.get_center()))',
-    );
   });
 
   it("fails an imported MathTex Inspector content replacement closed without snapshot authorization", async () => {
