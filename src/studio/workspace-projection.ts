@@ -4,6 +4,7 @@ import type {
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
+import { canonicalEditableContent } from "./editable-content";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
@@ -19,9 +20,10 @@ import {
 import {
   type CanonicalEditOperation,
   type CanonicalEditProgram,
-  isExactStaticRootTransformProgramBatch,
+  isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
 } from "./operations";
+import { normalizeContentSamples } from "./property-sampling";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -79,11 +81,35 @@ type CorrelatedStaticRootMutation = Readonly<{
   program: CanonicalEditProgram;
 }>;
 
+function sameStrings(left: readonly string[], right: readonly string[]) {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function mathTexContentMutationMatchesOperation(
+  mutation: StudioStaticRootMutationV1,
+  operation: CanonicalEditOperation,
+) {
+  const isContentOperation = operation.kind === "SetProperty" && operation.key === "content";
+  if (mutation.kind !== "math-tex-content" || !isContentOperation) {
+    return mutation.kind !== "math-tex-content" && !isContentOperation;
+  }
+  const expectedContent = canonicalEditableContent(operation.value, "MathTex");
+  return (
+    expectedContent?.texParts !== undefined &&
+    mutation.entityId === operation.entityId &&
+    mutation.interval.start === 0 &&
+    mutation.interval.end === 0 &&
+    mutation.content.label === expectedContent.label &&
+    sameStrings(mutation.content.displayLines, expectedContent.displayLines) &&
+    sameStrings(mutation.content.texParts, expectedContent.texParts)
+  );
+}
+
 function correlateStaticRootProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioStaticRootProjectionV1 | null,
 ): readonly CorrelatedStaticRootMutation[] | null {
-  if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+  if (!isExactStaticRootProjectionProgramBatch(programs)) return null;
   if (!projection) {
     throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
   }
@@ -100,7 +126,8 @@ function correlateStaticRootProjection(
     if (
       !expected ||
       operationIds.has(mutation.operationId) ||
-      mutation.transactionId !== expected.program.transactionId
+      mutation.transactionId !== expected.program.transactionId ||
+      !mathTexContentMutationMatchesOperation(mutation, expected.operation)
     ) {
       throw new TypeError(`Static-root operation ${mutation.operationId} is not correlated with the Rust projection.`);
     }
@@ -113,7 +140,7 @@ export function selectStaticRootProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioStaticRootProjectionV1 | null,
 ): StudioStaticRootProjectionV1 | null {
-  if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+  if (!isExactStaticRootProjectionProgramBatch(programs)) return null;
   const correlated = correlateStaticRootProjection(programs, projection);
   return correlated ? { mutations: correlated.map(({ mutation }) => mutation) } : null;
 }
@@ -126,7 +153,12 @@ function appendStaticRootSample(
 ) {
   const id = `${entityId}/${key}`;
   const channel = propertyChannels[id];
-  propertyChannels[id] = { entityId, key, samples: [...(channel?.samples ?? []), sample] };
+  const samples = [...(channel?.samples ?? []), sample];
+  propertyChannels[id] = {
+    entityId,
+    key,
+    samples: key === "content" ? normalizeContentSamples(samples) : samples,
+  };
 }
 
 function projectStaticRootWorkingState(
@@ -183,7 +215,7 @@ function projectStaticRootWorkingState(
         provenanceId,
         value: mutation.to,
       });
-    } else {
+    } else if (mutation.kind === "resize") {
       const kind = mutation.interval.end > mutation.interval.start ? "animated" : "exact";
       appendStaticRootSample(propertyChannels, mutation.entityId, "dimensions", {
         from: mutation.fromDimensions,
@@ -200,6 +232,14 @@ function projectStaticRootWorkingState(
         operationId: mutation.operationId,
         provenanceId,
         value: mutation.toPosition,
+      });
+    } else {
+      appendStaticRootSample(propertyChannels, mutation.entityId, "content", {
+        interval: mutation.interval,
+        kind: "exact",
+        operationId: mutation.operationId,
+        provenanceId,
+        value: mutation.content,
       });
     }
   });
@@ -264,7 +304,7 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
-  } else if (input.programAuthority === "static-imported-root" && isExactStaticRootTransformProgramBatch(programs)) {
+  } else if (input.programAuthority === "static-imported-root" && isExactStaticRootProjectionProgramBatch(programs)) {
     if (!input.staticRootProjection) {
       throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
     }

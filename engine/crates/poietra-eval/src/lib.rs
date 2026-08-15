@@ -25,7 +25,7 @@ pub use authoring::{
     StudioBoundEntityExecution, StudioBoundEntityOperation, StudioBoundEntityProgram,
     StudioBoundEntityScheduleMode, StudioCreationEntitySpec, StudioCreationMathTexOutline,
     StudioCreationOperation, StudioCreationOperationKind, StudioCreationProgram,
-    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOperation,
+    StudioMathTexContent, StudioMathTexTransformEntityIdentity, StudioMathTexTransformOperation,
     StudioMathTexTransformOutline, StudioMathTexTransformProgram,
     StudioMathTexTransformSourceBinding, StudioMathTexTransformStrategy, StudioMotionEasing,
     StudioMotionEntityIdentity, StudioMotionOperation, StudioMotionProgram,

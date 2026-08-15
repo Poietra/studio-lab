@@ -110,6 +110,11 @@ type StaticRootTransformOperation = Readonly<{
         toPosition: Readonly<{ x: number; y: number }>;
       }>
     | Readonly<{
+        content: StudioMathTexContentV1;
+        entityId: string;
+        kind: "math-tex-content";
+      }>
+    | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;
         delta: Readonly<{ x: number; y: number }>;
         easing: "linear" | "smooth";
@@ -135,6 +140,12 @@ export type StudioPersistentRemoveProjectionV1 = Readonly<{
   removals: readonly StudioPersistentRemoveProjectionEntryV1[];
 }>;
 
+export type StudioMathTexContentV1 = Readonly<{
+  displayLines: readonly string[];
+  label?: string;
+  texParts: readonly string[];
+}>;
+
 export type StudioStaticRootMutationV1 =
   | Readonly<{
       entityId: string;
@@ -143,6 +154,14 @@ export type StudioStaticRootMutationV1 =
       operationId: string;
       transactionId: string;
       value: Readonly<{ x: number; y: number }>;
+    }>
+  | Readonly<{
+      content: StudioMathTexContentV1;
+      entityId: string;
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "math-tex-content";
+      operationId: string;
+      transactionId: string;
     }>
   | Readonly<{
       entityId: string;
@@ -178,6 +197,11 @@ export type StudioAuthoringEditResultV1 = Readonly<{
 export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
+  mathTexOutlines: readonly Readonly<{
+    entityId: string;
+    path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    texParts: readonly string[];
+  }>[];
   nextRevision: string;
   programs: readonly StudioAuthoringProgramV1<StaticRootTransformOperation>[];
   schema: "poietra.apply-static-root-transform-edit";
@@ -312,6 +336,13 @@ const studioStaticRootDimensionsV1Schema = z
     width: finiteNumberSchema.optional(),
   })
   .strict();
+const studioMathTexContentV1Schema = z
+  .object({
+    displayLines: z.array(z.string()).min(1),
+    label: z.string().optional(),
+    texParts: z.array(z.string().min(1)).min(1),
+  })
+  .strict();
 const studioStaticRootProjectionV1Schema = z
   .object({
     mutations: z.array(
@@ -324,6 +355,16 @@ const studioStaticRootProjectionV1Schema = z
             operationId: z.string().min(1),
             transactionId: z.string().min(1),
             value: studioStaticRootPointV1Schema,
+          })
+          .strict(),
+        z
+          .object({
+            content: studioMathTexContentV1Schema,
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("math-tex-content"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
           })
           .strict(),
         z

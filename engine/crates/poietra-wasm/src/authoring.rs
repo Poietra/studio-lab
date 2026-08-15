@@ -66,6 +66,8 @@ enum ApplyStudioBoundEntityEditSchemaV1 {
 struct ApplyStaticRootTransformEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StaticRootTransformSize,
+    #[serde(default)]
+    math_tex_outlines: Vec<StudioCreationMathTexOutline>,
     next_revision: String,
     programs: Vec<StaticRootTransformProgram>,
     #[serde(rename = "schema")]
@@ -82,6 +84,7 @@ impl From<ApplyStaticRootTransformEditCommandJsonV1> for ApplyStaticRootTransfor
         Self {
             expected_base_revision: value.expected_base_revision,
             frame: value.frame,
+            math_tex_outlines: value.math_tex_outlines,
             next_revision: value.next_revision,
             programs: value.programs,
             source_runtime_bindings: value.source_runtime_bindings,
@@ -668,6 +671,76 @@ mod tests {
                 "type": "other"
             }],
             "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn static_root_math_tex_content_command_json() -> Vec<u8> {
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/engine-v1");
+        let source: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("mathtex-nested-radical-fraction.json")).unwrap(),
+        )
+        .unwrap();
+        let replacement: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("real-mathtex-morph-v5.json")).unwrap(),
+        )
+        .unwrap();
+        let runtime_entity_id = source["scene"]["entities"][0]["id"].as_str().unwrap();
+        serde_json::to_vec(&json!({
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "frame": { "height": 8.0, "width": 14.222_222_222_222_221 },
+            "mathTexOutlines": [{
+                "entityId": "source:formula",
+                "path": replacement["scene"]["entities"][0]["geometry"]["path"],
+                "texParts": ["F = ma"]
+            }],
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "programs": [{
+                "anchorCapturedPlayhead": 0.0,
+                "anchorResolvedSeconds": 0.0,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.0 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "content": {
+                        "displayLines": ["F = ma"],
+                        "label": "force",
+                        "texParts": ["F = ma"]
+                    },
+                    "dependsOn": [],
+                    "entityId": "source:formula",
+                    "id": "set-formula-content",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "kind": "math-tex-content",
+                    "origin": "studio-default"
+                }],
+                "origin": "studio-default",
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "parallel",
+                "scheduleOrder": ["set-formula-content"],
+                "transactionId": "set-formula-content"
+            }],
+            "schema": "poietra.apply-static-root-transform-edit",
+            "sourceRuntimeBindings": [{
+                "runtimeEntityId": runtime_entity_id,
+                "sourceIdentityKey": "formula",
+                "sourceName": "formula"
+            }],
+            "studioEntities": [{
+                "dimensions": {},
+                "id": "source:formula",
+                "kind": "math-tex",
+                "objectGraphKey": "source:formula",
+                "position": null,
+                "provisional": false,
+                "scale": 1.75,
+                "sourceIdentity": "formula",
+                "transactionId": null
+            }],
+            "version": 1,
+            "viewport": { "height": 360.0, "width": 640.0 }
         }))
         .unwrap()
     }
@@ -1526,6 +1599,63 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+    }
+
+    #[test]
+    fn math_tex_content_adapter_returns_the_correlated_static_root_projection() {
+        let response = apply_static_root_transform_edit_json(
+            &static_math_tex_fixture_json(),
+            &static_root_math_tex_content_command_json(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+
+        assert_eq!(
+            response["persistentRemoveProjection"]["removals"],
+            json!([])
+        );
+        assert_eq!(
+            response["staticRootProjection"]["mutations"],
+            json!([{
+                "content": {
+                    "displayLines": ["F = ma"],
+                    "label": "force",
+                    "texParts": ["F = ma"]
+                },
+                "entityId": "source:formula",
+                "interval": { "end": 0.0, "start": 0.0 },
+                "kind": "math-tex-content",
+                "operationId": "set-formula-content",
+                "transactionId": "set-formula-content"
+            }])
+        );
+        assert_eq!(bundle.scene.entities.len(), 1);
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+    }
+
+    #[test]
+    fn static_root_adapter_atomically_rejects_a_mismatched_math_tex_content_outline() {
+        let mut mismatch: serde_json::Value =
+            serde_json::from_slice(&static_root_math_tex_content_command_json()).unwrap();
+        mismatch["mathTexOutlines"][0]["texParts"] = json!(["mismatch"]);
+        let error = apply_static_root_transform_edit_json(
+            &static_math_tex_fixture_json(),
+            &serde_json::to_vec(&mismatch).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StaticRootTransformEdit(
+                ApplyStaticRootTransformEditError::Unsupported
+            )
         ));
     }
 

@@ -116,6 +116,39 @@ function staticRootMoveProgram(transactionId: string, anchor = 7): CanonicalEdit
   };
 }
 
+function mathTexContentProgram(transactionId: string): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: `tx:${transactionId}/operation:content`,
+    interval: { end: 0, start: 0 },
+    key: "content",
+    kind: "SetProperty",
+    provenance: { evidence: ["Inspector MathTex content"], origin: "studio-default" },
+    value: {
+      displayLines: ["F = ma"],
+      label: "F = ma",
+      texParts: ["F", "=", "m", "a"],
+    },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["source-time zero"],
+      resolvedSeconds: 0,
+      source: { kind: "playhead", referenceSeconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["Inspector MathTex content"], origin: "studio-default" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId,
+    version: 1,
+  };
+}
+
 function sceneBoundaryProgram(anchor: number, transactionId: string): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
     at: anchor,
@@ -585,6 +618,13 @@ describe("Manim render request lowering", () => {
 
   it("fails a complete MathTex transform Program closed without snapshot authorization", async () => {
     await expect(lower(request(mathTexTransformProgram("mathtex-transform-without-authority")))).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("fails an imported MathTex Inspector content replacement closed without snapshot authorization", async () => {
+    await expect(lower(request(mathTexContentProgram("mathtex-content-without-authority")))).rejects.toMatchObject({
       message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });

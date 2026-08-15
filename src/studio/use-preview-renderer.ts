@@ -7,6 +7,7 @@ import {
   compileMathTexOutlineV1,
   type MathTexOutlineArtifactV1,
   type MathTexOutlineCompilerV1,
+  type MathTexOutlineResponseV1,
   mathTexOutlineResponseV1Schema,
 } from "../engine/mathtex-outline";
 import {
@@ -43,6 +44,7 @@ import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity, RuntimeScen
 import {
   hasImportedRootTransformTarget,
   isExactStaticRootTransformProgramBatch,
+  isExactStudioMathTexContentProgramBatch,
   isSceneDurationOperation,
 } from "./operations";
 import {
@@ -88,6 +90,7 @@ import {
 } from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
+import { selectStaticRootProjection } from "./workspace-projection";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -457,10 +460,12 @@ function staticRootTransformEditCommand(
     workingState: WorkingState;
   }>,
   nextRevision: string,
+  mathTexOutlines: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"] = [],
 ): ApplyStaticRootTransformEditWireCommandV1 {
   return buildStaticRootTransformEditCommand({
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
+    mathTexOutlines,
     nextRevision,
     programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
@@ -706,6 +711,103 @@ export async function compileStudioPreviewSceneV1(
   }
   const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
   const exactStaticRootBatch = isExactStaticRootTransformProgramBatch(sourceProgramBatch);
+  if (
+    importedSource.kind === "imported-manim-server-snapshot" &&
+    isExactStudioMathTexContentProgramBatch(sourceProgramBatch)
+  ) {
+    if (!staticImportedSourceIsExact(input)) {
+      return {
+        error: "MathTex content editing requires one exactly correlated static Scene snapshot.",
+        kind: "unsupported",
+      };
+    }
+    const operation = sourceProgramBatch[0]?.operations[0];
+    if (operation?.kind !== "SetProperty" || operation.key !== "content") {
+      return { error: "MathTex content editing requires canonical non-empty TeX parts.", kind: "unsupported" };
+    }
+    const texParts = studioCreationMathTexParts(operation.value);
+    if (!texParts) {
+      return { error: "MathTex content editing requires canonical non-empty TeX parts.", kind: "unsupported" };
+    }
+    let outlineResponse: MathTexOutlineResponseV1;
+    try {
+      outlineResponse = mathTexOutlineResponseV1Schema.parse(
+        await (input.mathTexOutlineCompiler ?? compileMathTexOutlineV1)(texParts),
+      );
+    } catch (error) {
+      return {
+        error: `MathTex content outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+    if (outlineResponse.result.kind === "unsupported") {
+      return {
+        error: `MathTex content is unsupported (${outlineResponse.result.code}): ${outlineResponse.result.message}`,
+        kind: "unsupported",
+      };
+    }
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      mathTexOutlines: { [operation.entityId]: outlineResponse.result },
+      snapshot: input.snapshot,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    const mathTexOutlines: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"] = [
+      { entityId: operation.entityId, path: outlineResponse.result.path, texParts },
+    ];
+    const command = staticRootTransformEditCommand(input, engineRevisionHash, mathTexOutlines);
+    try {
+      const result = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
+        input.snapshot.snapshot,
+        command,
+      );
+      let staticRootProjection: StudioStaticRootProjectionV1 | null;
+      try {
+        staticRootProjection = selectStaticRootProjection(sourceProgramBatch, result.staticRootProjection ?? null);
+      } catch {
+        return { error: "Rust core returned an uncorrelated MathTex content projection.", kind: "unsupported" };
+      }
+      const projectedMutation = staticRootProjection?.mutations[0];
+      if (
+        !staticRootProjection ||
+        staticRootProjection.mutations.length !== 1 ||
+        projectedMutation?.kind !== "math-tex-content" ||
+        projectedMutation.entityId !== operation.entityId
+      ) {
+        return { error: "Rust core did not return the exact MathTex content projection.", kind: "unsupported" };
+      }
+      const bundle = result.bundle;
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds: studioPreviewInteractionEntityIdsV1(
+            input.snapshot.sourceRuntimeIdentity,
+            studioPreviewInteractionAuthority(
+              input.snapshot,
+              0,
+              input.workingState.runtimeSceneState.eventTrack.events,
+            ),
+            bundle.scene.entities,
+          ),
+          persistentRemoveProjection: result.persistentRemoveProjection,
+          programAuthority: "static-imported-root",
+          snapshot: input.snapshot,
+          staticRootProjection,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected the MathTex content edit: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+  }
   if (
     importedSource.kind === "imported-manim-server-snapshot" &&
     isExactStudioMathTexTransformProgramBatch(sourceProgramBatch)

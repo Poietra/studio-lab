@@ -3,6 +3,7 @@ import type {
   ApplyStudioCreationEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
+  StudioMathTexContentV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
@@ -11,9 +12,12 @@ import { isPointValue } from "./property-sampling";
 
 type StaticRootTransformCommandInput = Omit<
   ApplyStaticRootTransformEditWireCommandV1,
-  "programs" | "schema" | "version"
+  "mathTexOutlines" | "programs" | "schema" | "version"
 > &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{
+    mathTexOutlines?: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"];
+    programs: readonly CanonicalEditProgram[];
+  }>;
 
 type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "programs" | "schema" | "version"> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
@@ -56,6 +60,7 @@ export function buildStaticRootTransformEditCommand(
 ): ApplyStaticRootTransformEditWireCommandV1 {
   return {
     ...input,
+    mathTexOutlines: input.mathTexOutlines ?? [],
     programs: input.programs.map((program) => ({
       ...studioProgramEnvelope(program),
       operations: program.operations.map(
@@ -73,6 +78,17 @@ export function buildStaticRootTransformEditCommand(
               kind: "position",
               position: isPointValue(operation.value) ? operation.value : null,
             };
+          }
+          if (operation.kind === "SetProperty" && operation.key === "content") {
+            const content = canonicalEditableContent(operation.value, "MathTex");
+            if (content?.texParts) {
+              return {
+                ...common,
+                content: content as StudioMathTexContentV1,
+                entityId: operation.entityId,
+                kind: "math-tex-content",
+              };
+            }
           }
           if (operation.kind === "AnimateProperty" && operation.key === "scale") {
             return {

@@ -83,7 +83,7 @@ import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion
 import { programExecutionCapabilities } from "./studio/operation-registry";
 import {
   type CanonicalEditProgram,
-  isExactStaticRootTransformProgramBatch,
+  isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   type OperationOrigin,
 } from "./studio/operations";
@@ -881,7 +881,7 @@ export function App({
   }
   function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
-    if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+    if (!isExactStaticRootProjectionProgramBatch(programs)) return null;
     const authority = workspaceProgramAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "static-imported-root") return null;

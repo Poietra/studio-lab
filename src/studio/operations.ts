@@ -1,3 +1,4 @@
+import { canonicalEditableContent } from "./editable-content";
 import type { EntityContent, EntityDimensions, Interval, MotionEasing, Point } from "./model";
 import type { ResolvedTimeAnchor } from "./time";
 
@@ -195,6 +196,25 @@ export function isExactStaticRootTransformProgramBatch(programs: readonly Canoni
       (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
     )
   );
+}
+
+export function isExactStudioMathTexContentProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  if (programs.length !== 1 || programs[0]?.operations.length !== 1) return false;
+  const program = programs[0];
+  const operation = program.operations[0];
+  return (
+    program.anchor.capturedPlayhead === 0 &&
+    program.anchor.resolvedSeconds === 0 &&
+    operation?.kind === "SetProperty" &&
+    operation.key === "content" &&
+    operation.interval.start === 0 &&
+    operation.interval.end === 0 &&
+    canonicalEditableContent(operation.value, "MathTex") !== null
+  );
+}
+
+export function isExactStaticRootProjectionProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  return isExactStaticRootTransformProgramBatch(programs) || isExactStudioMathTexContentProgramBatch(programs);
 }
 
 export function hasImportedRootTransformTarget(programs: readonly CanonicalEditProgram[]) {

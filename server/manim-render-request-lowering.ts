@@ -9,6 +9,7 @@ import {
 import type { RuntimeSceneState } from "../src/studio/model";
 import {
   type CanonicalEditProgram,
+  isExactStudioMathTexContentProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
 } from "../src/studio/operations";
@@ -139,6 +140,7 @@ export async function lowerManimRenderRequest({
     sourceOrderedPrograms.some((program) => program.operations.some(isStaticRootTransformOperation)) &&
     sourceOrderedPrograms.some((program) => program.operations.some((operation) => operation.kind === "CreateMotion"));
   const isStudioMotionBatch = isExactStudioMotionProgramBatch(sourceOrderedPrograms);
+  const isStudioMathTexContentBatch = isExactStudioMathTexContentProgramBatch(sourceOrderedPrograms);
   const isStudioMathTexTransformBatch = isExactStudioMathTexTransformProgramBatch(sourceOrderedPrograms);
   const isStudioCreationBatch = isStudioCreationProgramBatch(sourceOrderedPrograms);
   if (request.sourceValidation === "runtime-trace") {
@@ -186,6 +188,7 @@ export async function lowerManimRenderRequest({
       isStaticRootTransformBatch ||
       isStaticRootTransformMotionBatch ||
       isStudioMotionBatch ||
+      isStudioMathTexContentBatch ||
       isStudioMathTexTransformBatch ||
       isStudioCreationBatch) &&
     !containsSceneDurationOperation
