@@ -35,6 +35,7 @@ import {
   compileApplyStudioTimelineEdit,
   type ProjectStudioTimelineCompiler,
   projectStudioTimeline,
+  type StudioMathTexTransformProjectionV1,
   type StudioPersistentRemoveProjectionV1,
   type StudioStaticRootProjectionV1,
   type StudioTimelineProjectionV1,
@@ -90,7 +91,7 @@ import {
 } from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
-import { selectStaticRootProjection } from "./workspace-projection";
+import { selectMathTexTransformProjection, selectStaticRootProjection } from "./workspace-projection";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -117,6 +118,8 @@ export type StudioPreviewRendererView = Readonly<{
   state: PreviewRendererHostStateV1;
   /** Rust-authorized lifetime and fade facts for persistent remove operations. */
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null;
+  /** Rust-authorized entity, lifetime, and channel facts for an exact MathTex transform batch. */
+  mathTexTransformProjection: StudioMathTexTransformProjectionV1 | null;
   /** Rust-authorized Studio channel facts for an exact imported static-root transform batch. */
   staticRootProjection: StudioStaticRootProjectionV1 | null;
   /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
@@ -193,6 +196,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   engineRevisionHash: string;
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
+  mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
   programAuthority?: StudioPreviewProgramAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
@@ -874,10 +878,27 @@ export async function compileStudioPreviewSceneV1(
       studioEntities: studioMathTexTransformStudioEntities(input.workingState.runtimeSceneState),
     });
     try {
-      const bundle = await (input.applyStudioMathTexTransformEditCompiler ?? compileApplyStudioMathTexTransformEdit)(
+      const result = await (input.applyStudioMathTexTransformEditCompiler ?? compileApplyStudioMathTexTransformEdit)(
         input.snapshot.snapshot,
         command,
       );
+      if (!result.mathTexTransformProjection) {
+        return { error: "Rust core did not return the complete MathTex transform projection.", kind: "unsupported" };
+      }
+      let mathTexTransformProjection: StudioMathTexTransformProjectionV1 | null;
+      try {
+        mathTexTransformProjection = selectMathTexTransformProjection(
+          input.snapshot.snapshot.scene.duration,
+          sourceProgramBatch,
+          result.mathTexTransformProjection,
+        );
+      } catch {
+        return { error: "Rust core returned an uncorrelated MathTex transform projection.", kind: "unsupported" };
+      }
+      if (!mathTexTransformProjection) {
+        return { error: "Rust core did not return the complete MathTex transform projection.", kind: "unsupported" };
+      }
+      const bundle = result.bundle;
       const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
       const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
       const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
@@ -900,6 +921,7 @@ export async function compileStudioPreviewSceneV1(
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
+          mathTexTransformProjection,
           programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
@@ -1575,6 +1597,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       sourceEvents,
     ),
     runtimeTraceProgramValidation,
+    mathTexTransformProjection:
+      state.phase === "presented" ? (currentCompiledScene?.mathTexTransformProjection ?? null) : null,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
     programAuthority: state.phase === "presented" ? (currentCompiledScene?.programAuthority ?? null) : null,
     staticRootProjection: state.phase === "presented" ? (currentCompiledScene?.staticRootProjection ?? null) : null,

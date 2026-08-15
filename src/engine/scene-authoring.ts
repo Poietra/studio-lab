@@ -188,8 +188,28 @@ export type StudioStaticRootProjectionV1 = Readonly<{
   mutations: readonly StudioStaticRootMutationV1[];
 }>;
 
+export type StudioMathTexTransformProjectionV1 = Readonly<{
+  insertions: readonly Readonly<{
+    at: number;
+    duration: number;
+    transactionId: string;
+  }>[];
+  projectedDuration: number;
+  replacements: readonly Readonly<{
+    content: StudioMathTexContentV1;
+    interval: Readonly<{ end: number; start: number }>;
+    operationId: string;
+    sourceEntityId: string;
+    targetEntityId: string;
+    targetLifetime: Readonly<{ end: number; start: number }>;
+    targetType: "math-tex";
+    transactionId: string;
+  }>[];
+}>;
+
 export type StudioAuthoringEditResultV1 = Readonly<{
   bundle: SceneIrBundleV1;
+  mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1;
   staticRootProjection?: StudioStaticRootProjectionV1;
 }>;
@@ -395,9 +415,38 @@ const studioStaticRootProjectionV1Schema = z
     ),
   })
   .strict();
+const studioMathTexTransformProjectionV1Schema = z
+  .object({
+    insertions: z.array(
+      z
+        .object({
+          at: finiteNumberSchema,
+          duration: finiteNumberSchema,
+          transactionId: z.string().min(1),
+        })
+        .strict(),
+    ),
+    projectedDuration: finiteNumberSchema,
+    replacements: z.array(
+      z
+        .object({
+          content: studioMathTexContentV1Schema,
+          interval: studioTimelineProjectionIntervalV1Schema,
+          operationId: z.string().min(1),
+          sourceEntityId: z.string().min(1),
+          targetEntityId: z.string().min(1),
+          targetLifetime: studioTimelineProjectionIntervalV1Schema,
+          targetType: z.literal("math-tex"),
+          transactionId: z.string().min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
 const studioAuthoringEditResultV1Schema = z
   .object({
     bundle: sceneIrBundleV1Schema,
+    mathTexTransformProjection: studioMathTexTransformProjectionV1Schema.optional(),
     persistentRemoveProjection: studioPersistentRemoveProjectionV1Schema,
     staticRootProjection: studioStaticRootProjectionV1Schema.optional(),
   })
@@ -567,7 +616,7 @@ type StudioMathTexTransformOperationV1 = Readonly<{
   (
     | Readonly<{
         kind: "transform-content";
-        replacementTexParts: readonly string[] | null;
+        replacement: StudioMathTexContentV1 | null;
         sourceEntityId: string;
         strategy: "replacement-transform" | "transform-matching-tex";
         targetEntityId: string;
@@ -604,7 +653,7 @@ export type ApplyStudioMathTexTransformEditWireCommandV1 = Readonly<{
 export type ApplyStudioMathTexTransformEditCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioMathTexTransformEditWireCommandV1,
-) => Promise<SceneIrBundleV1>;
+) => Promise<StudioAuthoringEditResultV1>;
 
 type ApplyStudioBoundEntityEditBindingsV1 = Readonly<{
   applyStudioBoundEntityEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
@@ -732,7 +781,7 @@ export function createApplyStudioMathTexTransformEditCompiler(
 ): ApplyStudioMathTexTransformEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioMathTexTransformEditV1);
+    return invokeStudioAuthoringEditCommand(snapshot, command, bindings.applyStudioMathTexTransformEditV1);
   };
 }
 

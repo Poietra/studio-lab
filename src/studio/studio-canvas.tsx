@@ -140,11 +140,11 @@ export function verifiedPreviewGeometryForStudioEntity(
   entity: ProjectedEntity,
 ) {
   if (!preview.interactionGeometry) return null;
-  if (entity.sourceIdentity.kind !== "known") {
-    if (!entity.transactionId || !entity.id.startsWith(`tx:${entity.transactionId}/entity:`)) return null;
+  if (entity.transactionId && entity.id.startsWith(`tx:${entity.transactionId}/entity:`)) {
     const geometry = preview.interactionGeometry.get(entity.id);
     return geometry ? { bindingId: null, geometry, runtimeEntityId: entity.id } : null;
   }
+  if (entity.sourceIdentity.kind !== "known") return null;
   if (!preview.sourceRuntimeIdentity) return null;
   const sourceName = entity.sourceIdentity.value;
   if (studioEntityIdByUniqueSourceName.get(sourceName) !== entity.id) return null;

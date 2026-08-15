@@ -269,10 +269,11 @@ export function buildStudioMathTexTransformEditCommand(
             origin: operation.provenance.origin,
           };
           if (operation.kind !== "TransformContent") return { ...common, kind: "unsupported" };
+          const replacement = canonicalEditableContent(operation.replacement, "MathTex");
           return {
             ...common,
             kind: "transform-content",
-            replacementTexParts: studioCreationMathTexParts(operation.replacement),
+            replacement: replacement?.texParts ? (replacement as StudioMathTexContentV1) : null,
             sourceEntityId: operation.sourceEntityId,
             strategy: operation.strategy,
             targetEntityId: operation.targetEntityId,

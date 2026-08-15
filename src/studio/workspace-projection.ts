@@ -1,13 +1,15 @@
 import type {
+  StudioMathTexTransformProjectionV1,
   StudioPersistentRemoveProjectionV1,
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
-import { evaluateWorkingState, projectProposedState } from "./evaluator";
+import { evaluateWorkingState, insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
+  type EntityContent,
   type ProgramBatchAuthority,
   type ProgramRecord,
   type ProjectedEntity,
@@ -24,6 +26,7 @@ import {
   isSceneDurationOperation,
 } from "./operations";
 import { normalizeContentSamples } from "./property-sampling";
+import { isExactStudioMathTexTransformProgramBatch } from "./scene-authoring-wire";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -83,6 +86,150 @@ type CorrelatedStaticRootMutation = Readonly<{
 
 function sameStrings(left: readonly string[], right: readonly string[]) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+const MATH_TEX_TRANSFORM_PROJECTION_EPSILON = 1e-9;
+
+function sameProjectionNumber(left: number, right: number) {
+  return (
+    Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= MATH_TEX_TRANSFORM_PROJECTION_EPSILON
+  );
+}
+
+function mathTexContentMatches(
+  left: StudioMathTexTransformProjectionV1["replacements"][number]["content"],
+  right: EntityContent,
+) {
+  return (
+    right.texParts !== undefined &&
+    left.label === right.label &&
+    sameStrings(left.displayLines, right.displayLines) &&
+    sameStrings(left.texParts, right.texParts)
+  );
+}
+
+type CorrelatedMathTexTransformReplacement = Readonly<{
+  operation: Extract<CanonicalEditOperation, { kind: "TransformContent" }>;
+  program: CanonicalEditProgram;
+  replacement: StudioMathTexTransformProjectionV1["replacements"][number];
+}>;
+
+function correlateMathTexTransformProjection(
+  baseDuration: number,
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioMathTexTransformProjectionV1 | null,
+): readonly CorrelatedMathTexTransformReplacement[] | null {
+  if (!isExactStudioMathTexTransformProgramBatch(programs)) return null;
+  if (!projection) {
+    throw new TypeError("A Rust MathTex transform projection is required to project TransformContent Programs.");
+  }
+  const operations = programs.flatMap((program) =>
+    program.operations.map((operation) => ({ operation, program }) as const),
+  );
+  const operationIds = operations.map(({ operation }) => operation.id);
+  const transactionIds = programs.map(({ transactionId }) => transactionId);
+  const projectedOperationIds = projection.replacements.map(({ operationId }) => operationId);
+  const projectedTransactionIds = projection.insertions.map(({ transactionId }) => transactionId);
+  if (
+    projection.replacements.length !== operations.length ||
+    projection.insertions.length !== programs.length ||
+    new Set(operationIds).size !== operationIds.length ||
+    new Set(transactionIds).size !== transactionIds.length ||
+    new Set(projectedOperationIds).size !== projectedOperationIds.length ||
+    new Set(projectedTransactionIds).size !== projectedTransactionIds.length
+  ) {
+    throw new TypeError(
+      "The Rust MathTex transform projection does not contain one unique result per Program operation.",
+    );
+  }
+  const operationsById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
+  const insertionsByTransactionId = new Map(
+    projection.insertions.map((insertion) => [insertion.transactionId, insertion] as const),
+  );
+  if (
+    projection.insertions.some(
+      ({ at, duration, transactionId }, index) =>
+        !Number.isFinite(at) ||
+        at < 0 ||
+        !Number.isFinite(duration) ||
+        duration <= 0 ||
+        !transactionIds.includes(transactionId) ||
+        (index > 0 &&
+          at + MATH_TEX_TRANSFORM_PROJECTION_EPSILON <
+            projection.insertions[index - 1]!.at + projection.insertions[index - 1]!.duration),
+    ) ||
+    !sameProjectionNumber(
+      projection.projectedDuration,
+      baseDuration + projection.insertions.reduce((duration, insertion) => duration + insertion.duration, 0),
+    )
+  ) {
+    throw new TypeError("The Rust MathTex transform projection returned a stale projected duration.");
+  }
+  const correlated = projection.replacements.map((replacement) => {
+    const expected = operationsById.get(replacement.operationId);
+    const operation = expected?.operation;
+    const content =
+      operation?.kind === "TransformContent" ? canonicalEditableContent(operation.replacement, "MathTex") : null;
+    const insertion = expected ? insertionsByTransactionId.get(expected.program.transactionId) : undefined;
+    if (
+      !expected ||
+      operation?.kind !== "TransformContent" ||
+      !content ||
+      !insertion ||
+      replacement.transactionId !== expected.program.transactionId ||
+      replacement.sourceEntityId !== operation.sourceEntityId ||
+      replacement.targetEntityId !== operation.targetEntityId ||
+      replacement.targetType !== "math-tex" ||
+      (operation.targetType !== undefined && operation.targetType !== "MathTex") ||
+      !mathTexContentMatches(replacement.content, content) ||
+      !Number.isFinite(replacement.interval.start) ||
+      !Number.isFinite(replacement.interval.end) ||
+      replacement.interval.start < insertion.at - MATH_TEX_TRANSFORM_PROJECTION_EPSILON ||
+      replacement.interval.end > insertion.at + insertion.duration + MATH_TEX_TRANSFORM_PROJECTION_EPSILON ||
+      !sameProjectionNumber(
+        replacement.interval.end - replacement.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) ||
+      !sameProjectionNumber(replacement.targetLifetime.start, replacement.interval.start) ||
+      !Number.isFinite(replacement.targetLifetime.end) ||
+      replacement.targetLifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON < replacement.interval.end
+    ) {
+      throw new TypeError(
+        `MathTex transform operation ${replacement.operationId} is not correlated with the Rust projection.`,
+      );
+    }
+    return { operation, program: expected.program, replacement };
+  });
+  correlated.forEach(({ replacement }, index) => {
+    const next = correlated[index + 1]?.replacement;
+    if (
+      (next &&
+        (next.sourceEntityId !== replacement.targetEntityId ||
+          next.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON < replacement.interval.end ||
+          !sameProjectionNumber(replacement.targetLifetime.end, next.interval.end))) ||
+      (!next && replacement.targetLifetime.end > projection.projectedDuration + MATH_TEX_TRANSFORM_PROJECTION_EPSILON)
+    ) {
+      throw new TypeError(
+        `MathTex transform lifetime ${replacement.operationId} is not correlated with the Rust chain.`,
+      );
+    }
+  });
+  return correlated;
+}
+
+export function selectMathTexTransformProjection(
+  baseDuration: number,
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioMathTexTransformProjectionV1 | null,
+): StudioMathTexTransformProjectionV1 | null {
+  const correlated = correlateMathTexTransformProjection(baseDuration, programs, projection);
+  if (!correlated) return null;
+  if (!projection) throw new TypeError("The correlated MathTex transform projection is missing.");
+  return {
+    insertions: projection.insertions,
+    projectedDuration: projection.projectedDuration,
+    replacements: correlated.map(({ replacement }) => replacement),
+  };
 }
 
 function mathTexContentMutationMatchesOperation(
@@ -145,7 +292,7 @@ export function selectStaticRootProjection(
   return correlated ? { mutations: correlated.map(({ mutation }) => mutation) } : null;
 }
 
-function appendStaticRootSample(
+function appendProjectedSample(
   propertyChannels: Record<string, PropertyChannel>,
   entityId: string,
   key: PropertyChannel["key"],
@@ -198,7 +345,7 @@ function projectStaticRootWorkingState(
       transactionId: program.transactionId,
     });
     if (mutation.kind === "position") {
-      appendStaticRootSample(propertyChannels, mutation.entityId, "position", {
+      appendProjectedSample(propertyChannels, mutation.entityId, "position", {
         interval: mutation.interval,
         kind: "exact",
         operationId: mutation.operationId,
@@ -206,7 +353,7 @@ function projectStaticRootWorkingState(
         value: mutation.value,
       });
     } else if (mutation.kind === "uniform-scale") {
-      appendStaticRootSample(propertyChannels, mutation.entityId, "scale", {
+      appendProjectedSample(propertyChannels, mutation.entityId, "scale", {
         easing: "smooth",
         from: mutation.from,
         interval: mutation.interval,
@@ -217,7 +364,7 @@ function projectStaticRootWorkingState(
       });
     } else if (mutation.kind === "resize") {
       const kind = mutation.interval.end > mutation.interval.start ? "animated" : "exact";
-      appendStaticRootSample(propertyChannels, mutation.entityId, "dimensions", {
+      appendProjectedSample(propertyChannels, mutation.entityId, "dimensions", {
         from: mutation.fromDimensions,
         interval: mutation.interval,
         kind,
@@ -225,7 +372,7 @@ function projectStaticRootWorkingState(
         provenanceId,
         value: mutation.toDimensions,
       });
-      appendStaticRootSample(propertyChannels, mutation.entityId, "position", {
+      appendProjectedSample(propertyChannels, mutation.entityId, "position", {
         from: mutation.fromPosition,
         interval: mutation.interval,
         kind,
@@ -234,7 +381,7 @@ function projectStaticRootWorkingState(
         value: mutation.toPosition,
       });
     } else {
-      appendStaticRootSample(propertyChannels, mutation.entityId, "content", {
+      appendProjectedSample(propertyChannels, mutation.entityId, "content", {
         interval: mutation.interval,
         kind: "exact",
         operationId: mutation.operationId,
@@ -261,6 +408,164 @@ function projectStaticRootWorkingState(
   };
 }
 
+function projectMathTexTransformWorkingState(
+  workingState: WorkingState,
+  projection: StudioMathTexTransformProjectionV1,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  const correlated = correlateMathTexTransformProjection(workingState.runtimeSceneState.duration, programs, projection);
+  if (!correlated) throw new TypeError("Only an exact TransformContent Program batch can use this projection.");
+  const draft = {
+    constraints: [...workingState.runtimeSceneState.constraintGraph.constraints],
+    duration: workingState.runtimeSceneState.duration,
+    entities: Object.fromEntries(
+      Object.entries(workingState.runtimeSceneState.objectGraph.entities).map(([id, entity]) => [
+        id,
+        { ...entity, lifetime: entity.lifetime.map((interval) => ({ ...interval })) },
+      ]),
+    ),
+    events: [...workingState.runtimeSceneState.eventTrack.events],
+    lineage: [...workingState.runtimeSceneState.objectGraph.lineage],
+    propertyChannels: Object.fromEntries(
+      Object.entries(workingState.runtimeSceneState.propertyChannels).map(([id, channel]) => [
+        id,
+        { ...channel, samples: [...channel.samples] },
+      ]),
+    ) as Record<string, PropertyChannel>,
+    provenance: [...workingState.runtimeSceneState.provenanceGraph.records],
+  };
+  for (const insertion of projection.insertions) insertSceneTime(draft, insertion.at, insertion.duration);
+  if (!sameProjectionNumber(draft.duration, projection.projectedDuration)) {
+    throw new TypeError("The Rust MathTex transform projection did not produce the projected Scene duration.");
+  }
+
+  const first = correlated[0]?.replacement;
+  const last = correlated.at(-1)?.replacement;
+  const initialSource = first ? draft.entities[first.sourceEntityId] : undefined;
+  const initialSourceLifetime = first
+    ? initialSource?.lifetime.find(
+        (lifetime) => first.interval.start >= lifetime.start && first.interval.start < lifetime.end,
+      )
+    : undefined;
+  if (!first || !last || !initialSource || !initialSourceLifetime) {
+    throw new TypeError("The Rust MathTex transform projection source is not active in the imported Scene.");
+  }
+  if (!sameProjectionNumber(initialSourceLifetime.end, last.targetLifetime.end)) {
+    throw new TypeError("The Rust MathTex transform projection returned a stale terminal lifetime.");
+  }
+
+  const appliedTransactionIds = new Set(workingState.appliedPrograms.map(({ program }) => program.transactionId));
+  for (const { operation, program, replacement } of correlated) {
+    const source = draft.entities[replacement.sourceEntityId];
+    const sourceLifetime = source?.lifetime.find(
+      (lifetime) => replacement.interval.start >= lifetime.start && replacement.interval.start < lifetime.end,
+    );
+    if (
+      !source ||
+      !sourceLifetime ||
+      sourceLifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON < replacement.interval.end ||
+      draft.entities[replacement.targetEntityId]
+    ) {
+      throw new TypeError(`MathTex transform ${replacement.operationId} is stale for the Studio workspace.`);
+    }
+    draft.entities[replacement.sourceEntityId] = {
+      ...source,
+      lifetime: source.lifetime.map((lifetime) =>
+        lifetime === sourceLifetime ? { ...lifetime, end: Math.min(lifetime.end, replacement.interval.end) } : lifetime,
+      ),
+    };
+    draft.entities[replacement.targetEntityId] = {
+      content: replacement.content,
+      geometry: source.geometry,
+      id: replacement.targetEntityId,
+      lifetime: [{ ...replacement.targetLifetime }],
+      provisional: !appliedTransactionIds.has(program.transactionId),
+      sourceIdentity: source.sourceIdentity,
+      transactionId: program.transactionId,
+      type: "MathTex",
+    };
+    draft.lineage.push({
+      at: replacement.interval.end,
+      from: replacement.sourceEntityId,
+      operationId: replacement.operationId,
+      relation: "replaces",
+      to: replacement.targetEntityId,
+    });
+    for (const channel of Object.values(draft.propertyChannels).filter(
+      (entry) => entry.entityId === replacement.sourceEntityId && entry.key !== "content",
+    )) {
+      draft.propertyChannels[`${replacement.targetEntityId}/${channel.key}`] = {
+        ...channel,
+        entityId: replacement.targetEntityId,
+        samples: [...channel.samples],
+      };
+    }
+
+    const provenanceId = `${replacement.operationId}/provenance`;
+    draft.provenance.push({
+      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
+      id: provenanceId,
+      operationId: replacement.operationId,
+      origin: operation.provenance.origin,
+      transactionId: program.transactionId,
+    });
+    draft.events.push({
+      id: `${replacement.operationId}/event`,
+      interval: replacement.interval,
+      kind: "operation",
+      label: operation.kind,
+      operationId: replacement.operationId,
+      transactionId: program.transactionId,
+    });
+    appendProjectedSample(draft.propertyChannels, replacement.targetEntityId, "content", {
+      interval: { end: replacement.targetLifetime.end, start: replacement.interval.end },
+      kind: "exact",
+      operationId: replacement.operationId,
+      provenanceId,
+      value: replacement.content,
+    });
+    appendProjectedSample(draft.propertyChannels, replacement.sourceEntityId, "appearance", {
+      easing: "smooth",
+      from: 1,
+      interval: replacement.interval,
+      kind: "animated",
+      operationId: replacement.operationId,
+      provenanceId,
+      value: 0,
+    });
+    appendProjectedSample(draft.propertyChannels, replacement.targetEntityId, "appearance", {
+      easing: "smooth",
+      from: 0,
+      interval: replacement.interval,
+      kind: "animated",
+      operationId: replacement.operationId,
+      provenanceId,
+      value: 1,
+    });
+  }
+
+  return {
+    base: workingState,
+    evaluatedScene: {
+      ...workingState.runtimeSceneState,
+      constraintGraph: { constraints: draft.constraints },
+      duration: projection.projectedDuration,
+      eventTrack: {
+        events: draft.events.sort(
+          (left, right) => (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0),
+        ),
+      },
+      objectGraph: { entities: draft.entities, lineage: draft.lineage },
+      propertyChannels: draft.propertyChannels,
+      provenanceGraph: { records: draft.provenance },
+    },
+    issues: [],
+    programs: records.map((record) => ({ ...record, validation: { issues: [], status: "valid" } })),
+    version: STUDIO_STATE_VERSION,
+  };
+}
+
 export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
@@ -268,6 +573,7 @@ export function projectStudioWorkspace(
     currentTime: number;
     draftProgram: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
+    mathTexTransformProjection?: StudioMathTexTransformProjectionV1 | null;
     persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
     programAuthority?: ProgramBatchAuthority | null;
     selectedObjectIds: readonly string[];
@@ -304,6 +610,14 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
+  } else if (
+    input.programAuthority === "rust-authorized-batch" &&
+    isExactStudioMathTexTransformProgramBatch(programs)
+  ) {
+    if (!input.mathTexTransformProjection) {
+      throw new TypeError("A Rust MathTex transform projection is required to project TransformContent Programs.");
+    }
+    proposedState = projectMathTexTransformWorkingState(workingState, input.mathTexTransformProjection);
   } else if (input.programAuthority === "static-imported-root" && isExactStaticRootProjectionProgramBatch(programs)) {
     if (!input.staticRootProjection) {
       throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
