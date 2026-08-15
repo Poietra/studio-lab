@@ -605,7 +605,7 @@ class GroupedEquation(Scene):
     expect(exported.source).toContain("FadeOut(");
   });
 
-  it("fails Studio-created MathTex delete closed without a server outline authority", async () => {
+  it("exports Studio-created MathTex delete through the server Rust creation planner", async () => {
     const { manager } = await fixture();
     const circleCreation = rustAuthorizableCircleCreationProgram("server-created-mathtex", "equation");
     const entityId = "tx:server-created-mathtex/entity:equation";
@@ -627,10 +627,10 @@ class GroupedEquation(Scene):
     const renderRequest = batchRequest([creation, removeCreatedEntityProgram(entityId)]);
     await installVerifiedSnapshot(manager, renderRequest);
 
-    await expect(manager.exportSource(renderRequest)).rejects.toMatchObject({
-      message: "Server rendering cannot yet authorize Studio-created MathTex outlines.",
-      status: 400,
-    });
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(exported.source).toContain('MathTex("E = mc^2")');
+    expect(exported.source).toContain("FadeOut(");
   });
 
   it("allocates distinct Python variables when transaction IDs normalize to the same token", async () => {

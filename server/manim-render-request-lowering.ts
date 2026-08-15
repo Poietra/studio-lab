@@ -14,6 +14,7 @@ import {
   isSceneDurationOperation,
   isStaticRootTransformOperation,
 } from "../src/studio/operations";
+import { studioCreationMathTexParts } from "../src/studio/scene-authoring-wire";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
 import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
@@ -40,6 +41,48 @@ export type ManimRenderRequestLoweringResult = Readonly<{
   lowered: LoweredProgramBatchSource;
   renderRequest: ProgramRenderRequest;
 }>;
+
+function isStudioCreationProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  const operations = programs.flatMap((program) => program.operations);
+  const createdEntityIds = new Set(
+    operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
+  );
+  if (createdEntityIds.size === 0) return false;
+  return operations.every((operation) => {
+    if (operation.kind === "CreateEntity") {
+      const { dimensions, type } = operation.entity;
+      if (type === "Circle") {
+        return (
+          typeof dimensions?.radius === "number" &&
+          Number.isFinite(dimensions.radius) &&
+          dimensions.radius > 0 &&
+          dimensions.width === undefined &&
+          dimensions.height === undefined
+        );
+      }
+      if (type === "Rectangle") {
+        return (
+          typeof dimensions?.width === "number" &&
+          Number.isFinite(dimensions.width) &&
+          dimensions.width > 0 &&
+          typeof dimensions.height === "number" &&
+          Number.isFinite(dimensions.height) &&
+          dimensions.height > 0 &&
+          dimensions.radius === undefined
+        );
+      }
+      return type === "MathTex" && studioCreationMathTexParts(operation.entity.content) !== null;
+    }
+    if (!("entityId" in operation) || !createdEntityIds.has(operation.entityId)) return false;
+    return (
+      operation.kind === "ResizeEntity" ||
+      (operation.kind === "SetProperty" && operation.key === "position") ||
+      (operation.kind === "AnimateProperty" && operation.key === "scale") ||
+      (operation.kind === "ChangePresence" &&
+        (operation.effect === "fade-in" || (operation.effect === "remove" && operation.persistent)))
+    );
+  });
+}
 
 export async function lowerManimRenderRequest({
   snapshotProgramAuthorizer,
@@ -85,6 +128,7 @@ export async function lowerManimRenderRequest({
     sourceOrderedPrograms.length === 1 &&
     sourceOrderedPrograms[0]?.operations.length === 1 &&
     sourceOrderedPrograms[0].operations[0]?.kind === "CreateMotion";
+  const isStudioCreationBatch = isStudioCreationProgramBatch(sourceOrderedPrograms);
   if (request.sourceValidation === "runtime-trace") {
     if (containsPersistentRemove) {
       throw new HttpError("Runtime Trace does not authorize persistent remove Programs.", 400);
@@ -126,7 +170,7 @@ export async function lowerManimRenderRequest({
       );
     }
   } else if (
-    (containsPersistentRemove || isStaticRootTransformBatch || isSingleCreateMotionProgram) &&
+    (containsPersistentRemove || isStaticRootTransformBatch || isSingleCreateMotionProgram || isStudioCreationBatch) &&
     !containsSceneDurationOperation
   ) {
     if (!snapshotProgramAuthorizer) {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { parseVerifiedSceneIrBundleV1, sceneIrSourceRevisionHash } from "../src/engine/contracts";
+import { compileMathTexOutlineV1 } from "../src/engine/mathtex-outline";
 import {
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
@@ -11,6 +12,7 @@ import {
   buildStudioCreationEditCommand,
   buildStudioMotionEditCommand,
   staticRootTransformStudioEntities,
+  studioCreationMathTexParts,
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
@@ -70,21 +72,38 @@ export async function authorizeSnapshotProgramWithSnapshot(
     program.operations.some((operation) => operation.kind === "CreateEntity"),
   );
   if (hasStudioCreation) {
-    if (
-      input.programs.some((program) =>
-        program.operations.some(
-          (operation) => operation.kind === "CreateEntity" && operation.entity.type === "MathTex",
-        ),
-      )
-    ) {
-      throw new HttpError("Server rendering cannot yet authorize Studio-created MathTex outlines.", 400);
+    const mathTexOutlines = [];
+    for (const program of input.programs) {
+      for (const operation of program.operations) {
+        if (operation.kind !== "CreateEntity" || operation.entity.type !== "MathTex") continue;
+        const texParts = studioCreationMathTexParts(operation.entity.content);
+        if (!texParts) {
+          throw new HttpError("Studio-created MathTex requires canonical non-empty TeX parts.", 400);
+        }
+        let response;
+        try {
+          response = await compileMathTexOutlineV1(texParts);
+        } catch {
+          throw new HttpError("The server MathTex outline compiler is unavailable.", 503);
+        }
+        if (response.result.kind === "unsupported") {
+          if (response.result.code === "internal-failure") {
+            throw new HttpError("The server MathTex outline compiler failed.", 500);
+          }
+          throw new HttpError(
+            `Studio-created MathTex is unsupported (${response.result.code}): ${response.result.message}`,
+            400,
+          );
+        }
+        mathTexOutlines.push({ entityId: operation.entity.id, path: response.result.path, texParts });
+      }
     }
     await compileApplyStudioCreationEdit(
       bundle,
       buildStudioCreationEditCommand({
         expectedBaseRevision: snapshot.snapshotHash,
         frame: input.frame,
-        mathTexOutlines: [],
+        mathTexOutlines,
         nextRevision,
         programs: input.programs,
         viewport: input.request.viewport,
