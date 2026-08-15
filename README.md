@@ -88,11 +88,18 @@ pnpm test:e2e:webkit-smoke
 cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
-Pull requests run the same build, unit, boundary/integration, browser, and Tauri
-checks in GitHub Actions. The stable required-check names are `Style checks`,
-`Web build`, `Unit and integration tests`, `Browser E2E`, and `Tauri cargo check`.
-Playwright diagnostics are retained as a workflow artifact when the browser job
-reaches its test step.
+Pull requests always run style and change-scope checks, then select only the
+Engine, WASM, web, test, storage, Chromium, or Electron lanes affected by the
+patch. `CI gate` is the stable required-check name; it accepts intentionally
+skipped lanes and fails when any selected lane fails or is cancelled.
+
+Pushes to `main` and manual runs execute the complete matrix, including the
+packaged Electron smoke, WebKit, retained WebGPU previews, and native/browser
+visual parity. The former Tauri prototype is checked only when its retained
+experiment changes; it is not a product gate. Real Manim remains a manual
+pre-release smoke because it tests an external renderer.
+Playwright diagnostics are retained as workflow artifacts when browser jobs
+reach their test steps.
 
 Biome provides the TypeScript/React lint and formatting baseline. Run `pnpm lint:fix`
 for safe lint fixes and `pnpm format` to format files changed from the pull request

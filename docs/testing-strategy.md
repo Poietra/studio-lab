@@ -13,6 +13,22 @@ Test count is not a coverage target.
 | WebKit minimum smoke | `pnpm test:e2e:webkit-smoke` | Workspace open, object creation, and export in WebKit at the supported 960×640 viewport. |
 | Real Manim smoke | Manual, before a render-pipeline release | One Docker-backed preview and discard or commit/undo. This checks the external renderer rather than duplicating deterministic lowering cases. |
 
+## CI lanes
+
+Pull requests use a change-scoped fast lane. Style and scope routing always run;
+Engine core, browser WASM, web builds, unit/integration tests, durable storage,
+Chromium journeys, and the packaged Electron smoke run only when their owned
+paths change. The final `CI gate` reports one stable result even when unrelated
+lanes are intentionally skipped.
+
+Pushes to `main` and manual workflow runs add full validation: native Lavapipe
+reference rendering, the complete Chromium/WebGPU/WebKit browser suite, retained
+WebGPU previews, visual parity, and the selected Electron package. Tauri remains
+source-controlled as an experiment and is checked only when that experiment
+changes; it is not a production gate. Real Manim is manual because it is an
+external integration with a release-specific cost and owner, not a weekly health
+signal.
+
 ## Large binary fixture assertions
 
 Cairo reference readers in the unit lane still read every PNG, validate its
