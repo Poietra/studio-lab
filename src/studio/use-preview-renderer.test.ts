@@ -1391,6 +1391,7 @@ describe("compileStudioPreviewSceneV1", () => {
       });
 
       if (result.kind !== "compiled") throw new Error(result.error);
+      expect(result.scene.programAuthority).toBe("static-imported-root");
       expect(commands).toHaveLength(1);
       expect(commands[0]).toMatchObject({
         expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
@@ -1487,6 +1488,8 @@ describe("compileStudioPreviewSceneV1", () => {
       expect.objectContaining({ entityId: "source:circle", kind: "persistent-remove", persistent: true }),
     ]);
     expect(result).toMatchObject({ kind: "compiled", scene: { persistentRemoveProjection: projection } });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.programAuthority).toBeUndefined();
   });
 
   it("rejects Runtime Trace persistent remove before invoking the static-root Rust use case", async () => {

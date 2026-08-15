@@ -15,7 +15,7 @@ import type {
 } from "./model";
 import { STUDIO_STATE_VERSION } from "./model";
 import { type EvaluationDraft, evaluateOperation } from "./operation-registry";
-import { isSceneDurationOperation } from "./operations";
+import { type CanonicalEditProgram, isSceneDurationOperation, isStaticRootTransformOperation } from "./operations";
 import {
   insertedProgramDuration,
   rebaseProgramTime,
@@ -125,6 +125,7 @@ function normalizePropertyChannels(draft: EvaluationDraft) {
 export function evaluateWorkingState(
   workingState: WorkingState,
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
+  programAuthority: "static-imported-root" | null = null,
 ): ProposedState {
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
@@ -153,14 +154,18 @@ export function evaluateWorkingState(
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
   for (const { applied, inputIndex, record } of programs) {
-    if (record.validation.status !== "valid") {
+    const staticRootTargetProgram =
+      programAuthority === "static-imported-root" ? authorizedStaticRootTargetProgram(record.program) : false;
+    if (record.validation.status !== "valid" && !staticRootTargetProgram) {
       evaluatedPrograms[inputIndex] = record;
       continue;
     }
     const sourceAnchor = record.program.anchor.resolvedSeconds;
     const priorInsertionOffset = timelineInsertionOffset(insertions, sourceAnchor);
     const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
-    const validation = validateAndScheduleProgram(rebasedProgram, freezeScene(workingState.runtimeSceneState, draft));
+    const validation = staticRootTargetProgram
+      ? { issues: [], kind: "valid" as const, program: rebasedProgram }
+      : validateAndScheduleProgram(rebasedProgram, freezeScene(workingState.runtimeSceneState, draft));
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms[inputIndex] = evaluatedRecord;
     if (validation.kind !== "valid") continue;
@@ -173,7 +178,14 @@ export function evaluateWorkingState(
       const operation = operationById.get(operationId);
       if (operation) {
         const removal = persistentRemoveByOperationId.get(operation.id);
-        evaluateOperation(draft, operation, validation.program, removal);
+        evaluateOperation(
+          draft,
+          staticRootTargetProgram && operation.kind === "AnimateProperty" && operation.key === "scale"
+            ? { ...operation, relativeFactor: undefined }
+            : operation,
+          validation.program,
+          removal,
+        );
         if (removal && operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
           usedPersistentRemoveOperationIds.add(operation.id);
         }
@@ -204,6 +216,18 @@ export function evaluateWorkingState(
     programs: evaluatedPrograms.filter((record): record is ProgramRecord => record !== undefined),
     version: STUDIO_STATE_VERSION,
   };
+}
+
+function authorizedStaticRootTargetProgram(program: CanonicalEditProgram) {
+  if (program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation)) return true;
+  if (
+    program.operations.length > 0 &&
+    program.operations.every(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
+    )
+  )
+    return false;
+  throw new TypeError("Static imported-root authority does not admit this Program operation mix.");
 }
 
 function isContent(value: PropertyValue | undefined): value is EntityContent {

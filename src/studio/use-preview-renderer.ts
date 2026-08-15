@@ -37,7 +37,7 @@ import {
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
-import { type CanonicalEditOperation, isSceneDurationOperation } from "./operations";
+import { type CanonicalEditOperation, hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
   evaluateStudioPreviewEligibility,
@@ -103,6 +103,8 @@ export type StudioPreviewRendererView = Readonly<{
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null;
   /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
   timelineProjection: StudioTimelineProjectionV1 | null;
+  /** Rust compiler path that admitted the exact current Program revision. */
+  programAuthority: StudioPreviewProgramAuthority | null;
   /** Preview-only endpoint authority; source lowering still verifies the exact boundary. */
   runtimeTraceEditAnchor: number | null;
   /** Validation bound to the staged Program and snapshot, independent of the playhead. */
@@ -110,6 +112,8 @@ export type StudioPreviewRendererView = Readonly<{
   /** Verified fast-manim base duration for the current source identity. */
   verifiedSourceDuration: number | null;
 }>;
+
+export type StudioPreviewProgramAuthority = "source-bound-endpoint" | "static-imported-root";
 
 export type StudioPreviewInteractionAuthority =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
@@ -172,7 +176,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
-  programAuthority?: "source-bound-endpoint";
+  programAuthority?: StudioPreviewProgramAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
   timelineProjection?: StudioTimelineProjectionV1;
   workingRevision: string;
@@ -778,6 +782,9 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           persistentRemoveProjection: result.persistentRemoveProjection,
+          ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
+            ? { programAuthority: "static-imported-root" as const }
+            : {}),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -975,6 +982,9 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           persistentRemoveProjection: result.persistentRemoveProjection,
+          ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
+            ? { programAuthority: "static-imported-root" as const }
+            : {}),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1387,6 +1397,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     ),
     runtimeTraceProgramValidation,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
+    programAuthority: state.phase === "presented" ? (currentCompiledScene?.programAuthority ?? null) : null,
     timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,
   };

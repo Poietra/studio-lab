@@ -157,6 +157,7 @@ function previewView(
     interactionGeometry,
     interactionAuthority,
     persistentRemoveProjection: null,
+    programAuthority: null,
     runtimeTraceEditAnchor,
     runtimeTraceEditCandidates,
     runtimeTraceOpaqueSelectionEntities,
