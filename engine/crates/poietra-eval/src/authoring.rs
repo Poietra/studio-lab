@@ -81,24 +81,23 @@ struct CreateSceneEntitiesCommand {
     timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
-/// Easing choices exposed by the Studio motion authoring command.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum CreateSceneMotionEasing {
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum StudioMotionEasing {
     Linear,
     Smooth,
 }
 
-/// One profile-free Studio command that adds the same world-space motion to root entities.
 #[derive(Clone, Debug, PartialEq)]
-pub struct CreateSceneMotionCommand {
-    pub control_offset: PointV1,
-    pub delta: PointV1,
-    pub easing: CreateSceneMotionEasing,
-    pub expected_base_revision: String,
-    pub interval: IntervalV1,
-    pub next_revision: String,
-    pub provenance: ProvenanceRecordV1,
-    pub target_entity_ids: Vec<String>,
+struct CreateSceneMotionCommand {
+    control_offset: PointV1,
+    delta: PointV1,
+    easing: StudioMotionEasing,
+    expected_base_revision: String,
+    interval: IntervalV1,
+    next_revision: String,
+    provenance: ProvenanceRecordV1,
+    target_entity_ids: Vec<String>,
 }
 
 /// One profile-free Studio command that rotates a root entity in world space.
@@ -182,6 +181,92 @@ pub enum StudioAuthoringOrigin {
     Fixture,
     RemoteModel,
     StudioDefault,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioMotionOperation {
+    CreateMotion {
+        control_offset: PointV1,
+        delta: PointV1,
+        easing: StudioMotionEasing,
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+        target_entity_ids: Vec<String>,
+    },
+    Unsupported {
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+    },
+}
+
+impl StudioMotionOperation {
+    fn id(&self) -> &str {
+        match self {
+            Self::CreateMotion { id, .. } | Self::Unsupported { id, .. } => id,
+        }
+    }
+
+    fn interval(&self) -> &IntervalV1 {
+        match self {
+            Self::CreateMotion { interval, .. } | Self::Unsupported { interval, .. } => interval,
+        }
+    }
+
+    fn origin(&self) -> StudioAuthoringOrigin {
+        match self {
+            Self::CreateMotion { origin, .. } | Self::Unsupported { origin, .. } => *origin,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMotionProgram {
+    pub anchor_seconds: f64,
+    pub lowering_supported: bool,
+    pub operations: Vec<StudioMotionOperation>,
+    pub origin: StudioAuthoringOrigin,
+    pub schedule_order: Vec<String>,
+    pub validation_valid: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMotionEntityIdentity {
+    pub object_graph_key: String,
+    pub provisional: bool,
+    pub source_identity: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMotionSourceBinding {
+    pub runtime_entity_id: String,
+    pub source_identity_key: String,
+    pub source_name: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyStudioMotionEditCommand {
+    pub base_studio_scene_id: String,
+    pub evaluated_duration: f64,
+    pub evaluated_scene_id: String,
+    pub expected_base_revision: String,
+    pub frame: StudioAuthoringSize,
+    pub next_revision: String,
+    pub programs: Vec<StudioMotionProgram>,
+    pub source_runtime_bindings: Vec<StudioMotionSourceBinding>,
+    pub studio_entities: Vec<StudioMotionEntityIdentity>,
+    pub viewport: StudioAuthoringSize,
 }
 
 pub type StaticRootTransformOrigin = StudioAuthoringOrigin;
@@ -508,7 +593,9 @@ pub enum CreateSceneEntitiesError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum CreateSceneMotionError {
+pub enum ApplyStudioMotionEditError {
+    #[error("the normalized Studio Programs do not authorize one imported Scene motion")]
+    Unsupported,
     #[error("the installed Scene revision does not match expectedBaseRevision")]
     StaleBaseRevision,
     #[error("the motion command must advance to a different Scene revision")]
@@ -529,8 +616,6 @@ pub enum CreateSceneMotionError {
     TargetInactive(String),
     #[error("world-space motion does not support an already animated transform target: {0}")]
     AnimatedTransformUnsupported(String),
-    #[error("the motion provenance must use the Studio Edit Program origin")]
-    InvalidProvenanceOrigin,
     #[error("the motion provenance ID already exists: {0}")]
     ProvenanceConflict(String),
     #[error("the authored motion Scene failed whole-bundle verification: {0}")]
@@ -976,6 +1061,26 @@ fn studio_point_to_scene_point(
     }
 }
 
+fn studio_vector_to_scene_vector(
+    vector: &PointV1,
+    frame: StudioAuthoringSize,
+    viewport: StudioAuthoringSize,
+) -> PointV1 {
+    PointV1 {
+        x: vector.x / viewport.width * frame.width,
+        y: -vector.y / viewport.height * frame.height,
+    }
+}
+
+fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
+    let Some(operation) = program.operations.first() else {
+        return false;
+    };
+    program.operations.len() == 1
+        && program.schedule_order.len() == 1
+        && program.schedule_order[0] == operation.id()
+}
+
 fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
     if program.operations.is_empty() || program.schedule_order.len() != program.operations.len() {
         return false;
@@ -1277,7 +1382,7 @@ fn studio_timeline_semantic_values_match(left: f64, right: f64) -> bool {
         && (left - right).abs() <= 1e-9 * left.abs().max(right.abs()).max(1.0)
 }
 
-fn studio_timeline_duration_matches(left: f64, right: f64) -> bool {
+fn studio_duration_matches(left: f64, right: f64) -> bool {
     left.is_finite() && right.is_finite() && (left - right).abs() < TIMELINE_ANCHOR_EPSILON
 }
 
@@ -1447,12 +1552,12 @@ fn quadratic_motion_path(start: PointV1, delta: &PointV1, control_offset: &Point
 fn validate_create_scene_motion_command(
     scene: &poietra_scene_ir::SceneIrV1,
     command: &CreateSceneMotionCommand,
-) -> Result<Vec<(String, PointV1)>, CreateSceneMotionError> {
+) -> Result<Vec<(String, PointV1)>, ApplyStudioMotionEditError> {
     if scene.source.revision_hash() != command.expected_base_revision {
-        return Err(CreateSceneMotionError::StaleBaseRevision);
+        return Err(ApplyStudioMotionEditError::StaleBaseRevision);
     }
     if command.next_revision == command.expected_base_revision {
-        return Err(CreateSceneMotionError::RevisionDidNotAdvance);
+        return Err(ApplyStudioMotionEditError::RevisionDidNotAdvance);
     }
     if !command.interval.start.is_finite()
         || !command.interval.end.is_finite()
@@ -1460,7 +1565,7 @@ fn validate_create_scene_motion_command(
         || command.interval.start >= command.interval.end
         || command.interval.end > scene.duration
     {
-        return Err(CreateSceneMotionError::InvalidInterval);
+        return Err(ApplyStudioMotionEditError::InvalidInterval);
     }
     if !command.delta.x.is_finite()
         || !command.delta.y.is_finite()
@@ -1471,26 +1576,25 @@ fn validate_create_scene_motion_command(
             && command.control_offset.x == 0.0
             && command.control_offset.y == 0.0)
     {
-        return Err(CreateSceneMotionError::InvalidMotion);
+        return Err(ApplyStudioMotionEditError::InvalidMotion);
     }
     if command.target_entity_ids.is_empty() {
-        return Err(CreateSceneMotionError::EmptyTargets);
+        return Err(ApplyStudioMotionEditError::EmptyTargets);
     }
     let mut unique_targets = BTreeSet::new();
     for entity_id in &command.target_entity_ids {
         if !unique_targets.insert(entity_id.as_str()) {
-            return Err(CreateSceneMotionError::DuplicateTarget(entity_id.clone()));
+            return Err(ApplyStudioMotionEditError::DuplicateTarget(
+                entity_id.clone(),
+            ));
         }
-    }
-    if command.provenance.origin != ProvenanceOriginV1::StudioEditProgram {
-        return Err(CreateSceneMotionError::InvalidProvenanceOrigin);
     }
     if scene
         .provenance
         .iter()
         .any(|record| record.id == command.provenance.id)
     {
-        return Err(CreateSceneMotionError::ProvenanceConflict(
+        return Err(ApplyStudioMotionEditError::ProvenanceConflict(
             command.provenance.id.clone(),
         ));
     }
@@ -1501,17 +1605,21 @@ fn validate_create_scene_motion_command(
             .entities
             .iter()
             .find(|entity| entity.id == *entity_id)
-            .ok_or_else(|| CreateSceneMotionError::TargetMissing(entity_id.clone()))?;
+            .ok_or_else(|| ApplyStudioMotionEditError::TargetMissing(entity_id.clone()))?;
         if target.parent_id.is_some() {
-            return Err(CreateSceneMotionError::TargetIsNotRoot(entity_id.clone()));
+            return Err(ApplyStudioMotionEditError::TargetIsNotRoot(
+                entity_id.clone(),
+            ));
         }
         if !target.lifetimes.iter().any(|lifetime| {
             command.interval.start >= lifetime.start && command.interval.end <= lifetime.end
         }) {
-            return Err(CreateSceneMotionError::TargetInactive(entity_id.clone()));
+            return Err(ApplyStudioMotionEditError::TargetInactive(
+                entity_id.clone(),
+            ));
         }
         if has_animated_transform(scene, entity_id) {
-            return Err(CreateSceneMotionError::AnimatedTransformUnsupported(
+            return Err(ApplyStudioMotionEditError::AnimatedTransformUnsupported(
                 entity_id.clone(),
             ));
         }
@@ -1771,7 +1879,7 @@ impl EngineSessionV1 {
                 }
             }
         }
-        if !studio_timeline_duration_matches(projected_duration, evaluated_duration) {
+        if !studio_duration_matches(projected_duration, evaluated_duration) {
             return Err(ApplyStudioTimelineEditError::Unsupported);
         }
 
@@ -2385,26 +2493,138 @@ impl EngineSessionV1 {
         .map_err(Into::into)
     }
 
-    /// Atomically adds one quadratic world-space motion to one or more root entities.
+    /// Authorizes one complete normalized Studio motion Program and applies it atomically.
     ///
-    /// Every target receives an independent cubic path beginning at its static translation. The
-    /// command is profile-free: source bindings and viewport coordinates must be lowered before
-    /// this boundary.
+    /// The caller sends every Program and operation. This method owns closed-subset admission,
+    /// Studio-to-runtime identity resolution, viewport conversion, and provenance construction.
     ///
     /// # Errors
     ///
-    /// Returns a command or whole-bundle validation error. Every failure preserves the installed
-    /// Scene, assets, and retained index.
-    pub fn create_scene_motion(
+    /// Returns `Unsupported` when the normalized edit is outside the imported static motion
+    /// subset, or a concrete motion mutation error. Every failure preserves the installed Scene.
+    #[allow(
+        clippy::float_cmp,
+        reason = "the Studio anchor and operation start are one normalized authority fact"
+    )]
+    pub fn apply_studio_motion_edit(
+        &mut self,
+        command: ApplyStudioMotionEditCommand,
+    ) -> Result<SceneIrBundleV1, ApplyStudioMotionEditError> {
+        let ApplyStudioMotionEditCommand {
+            base_studio_scene_id,
+            evaluated_duration,
+            evaluated_scene_id,
+            expected_base_revision,
+            frame,
+            next_revision,
+            programs,
+            source_runtime_bindings,
+            studio_entities,
+            viewport,
+        } = command;
+        let scene = self.scene();
+        if !matches!(
+            scene.source,
+            SceneSourceV1::ImportedManimServerSnapshot { .. }
+        ) || !scene.animation_channels.is_empty()
+            || base_studio_scene_id != evaluated_scene_id
+            || !studio_authoring_size_is_positive(frame)
+            || !studio_authoring_size_is_positive(viewport)
+            || frame.width != scene.camera.view.frame_width
+            || frame.height != scene.camera.view.frame_height
+            || programs.len() != 1
+        {
+            return Err(ApplyStudioMotionEditError::Unsupported);
+        }
+
+        let program = &programs[0];
+        let operation = program
+            .operations
+            .first()
+            .filter(|operation| {
+                program.validation_valid
+                    && program.lowering_supported
+                    && studio_motion_program_is_closed(program)
+                    && !operation.id().is_empty()
+                    && program.anchor_seconds == operation.interval().start
+                    && program.origin == operation.origin()
+            })
+            .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+        let StudioMotionOperation::CreateMotion {
+            control_offset,
+            delta,
+            easing,
+            id,
+            interval,
+            target_entity_ids,
+            ..
+        } = operation
+        else {
+            return Err(ApplyStudioMotionEditError::Unsupported);
+        };
+        if !studio_duration_matches(
+            scene.duration + interval.end - interval.start,
+            evaluated_duration,
+        ) {
+            return Err(ApplyStudioMotionEditError::Unsupported);
+        }
+
+        let mut runtime_entity_ids = Vec::with_capacity(target_entity_ids.len());
+        for studio_entity_id in target_entity_ids {
+            let mut matching_entities = studio_entities
+                .iter()
+                .filter(|entity| entity.object_graph_key == *studio_entity_id);
+            let entity = matching_entities
+                .next()
+                .filter(|entity| !entity.provisional && entity.source_identity.is_some())
+                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+            if matching_entities.next().is_some() {
+                return Err(ApplyStudioMotionEditError::Unsupported);
+            }
+            let source_identity = entity
+                .source_identity
+                .as_deref()
+                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+            let mut matching_bindings = source_runtime_bindings
+                .iter()
+                .filter(|binding| binding.source_identity_key == source_identity);
+            let binding = matching_bindings
+                .next()
+                .filter(|binding| binding.source_name == source_identity)
+                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+            if matching_bindings.next().is_some() {
+                return Err(ApplyStudioMotionEditError::Unsupported);
+            }
+            runtime_entity_ids.push(binding.runtime_entity_id.clone());
+        }
+
+        self.create_scene_motion(CreateSceneMotionCommand {
+            control_offset: studio_vector_to_scene_vector(control_offset, frame, viewport),
+            delta: studio_vector_to_scene_vector(delta, frame, viewport),
+            easing: *easing,
+            expected_base_revision,
+            interval: interval.clone(),
+            next_revision: next_revision.clone(),
+            provenance: ProvenanceRecordV1 {
+                evidence: vec![format!("authorized operation {id}")],
+                id: format!("studio-motion:{next_revision}"),
+                origin: ProvenanceOriginV1::StudioEditProgram,
+            },
+            target_entity_ids: runtime_entity_ids,
+        })
+    }
+
+    /// Atomically adds one quadratic world-space motion to one or more root entities.
+    fn create_scene_motion(
         &mut self,
         command: CreateSceneMotionCommand,
-    ) -> Result<SceneIrBundleV1, CreateSceneMotionError> {
+    ) -> Result<SceneIrBundleV1, ApplyStudioMotionEditError> {
         let scene = self.scene();
         let target_starts = validate_create_scene_motion_command(scene, &command)?;
 
         let easing = match command.easing {
-            CreateSceneMotionEasing::Linear => EasingV1::Linear {},
-            CreateSceneMotionEasing::Smooth => EasingV1::ManimSmooth {},
+            StudioMotionEasing::Linear => EasingV1::Linear {},
+            StudioMotionEasing::Smooth => EasingV1::ManimSmooth {},
         };
         let mut candidate = SceneIrBundleV1 {
             assets: self.assets().clone(),
@@ -3381,7 +3601,7 @@ mod tests {
         CreateSceneMotionCommand {
             control_offset: PointV1 { x: 0.0, y: 4.0 },
             delta: PointV1 { x: 6.0, y: 2.0 },
-            easing: CreateSceneMotionEasing::Smooth,
+            easing: StudioMotionEasing::Smooth,
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             interval: IntervalV1 {
                 end: 1.5,
@@ -3394,6 +3614,67 @@ mod tests {
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
             target_entity_ids: vec!["later".to_owned(), "stroke".to_owned()],
+        }
+    }
+
+    fn studio_motion_edit_command(bundle: &SceneIrBundleV1) -> ApplyStudioMotionEditCommand {
+        ApplyStudioMotionEditCommand {
+            base_studio_scene_id: "scene.py#CircleScene".to_owned(),
+            evaluated_duration: bundle.scene.duration + 1.0,
+            evaluated_scene_id: "scene.py#CircleScene".to_owned(),
+            expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
+            frame: StudioAuthoringSize {
+                height: 9.0,
+                width: 16.0,
+            },
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: vec![StudioMotionProgram {
+                anchor_seconds: 0.5,
+                lowering_supported: true,
+                operations: vec![StudioMotionOperation::CreateMotion {
+                    control_offset: PointV1 { x: 0.0, y: -160.0 },
+                    delta: PointV1 { x: 240.0, y: -80.0 },
+                    easing: StudioMotionEasing::Smooth,
+                    id: "create-motion".to_owned(),
+                    interval: IntervalV1 {
+                        end: 1.5,
+                        start: 0.5,
+                    },
+                    origin: StudioAuthoringOrigin::DirectManipulation,
+                    target_entity_ids: vec!["source:later".to_owned(), "source:stroke".to_owned()],
+                }],
+                origin: StudioAuthoringOrigin::DirectManipulation,
+                schedule_order: vec!["create-motion".to_owned()],
+                validation_valid: true,
+            }],
+            source_runtime_bindings: vec![
+                StudioMotionSourceBinding {
+                    runtime_entity_id: "later".to_owned(),
+                    source_identity_key: "later-source".to_owned(),
+                    source_name: "later-source".to_owned(),
+                },
+                StudioMotionSourceBinding {
+                    runtime_entity_id: "stroke".to_owned(),
+                    source_identity_key: "stroke-source".to_owned(),
+                    source_name: "stroke-source".to_owned(),
+                },
+            ],
+            studio_entities: vec![
+                StudioMotionEntityIdentity {
+                    object_graph_key: "source:later".to_owned(),
+                    provisional: false,
+                    source_identity: Some("later-source".to_owned()),
+                },
+                StudioMotionEntityIdentity {
+                    object_graph_key: "source:stroke".to_owned(),
+                    provisional: false,
+                    source_identity: Some("stroke-source".to_owned()),
+                },
+            ],
+            viewport: StudioAuthoringSize {
+                height: 360.0,
+                width: 640.0,
+            },
         }
     }
 
@@ -3862,11 +4143,25 @@ mod tests {
     fn rejected_motion(
         bundle: SceneIrBundleV1,
         command: CreateSceneMotionCommand,
-    ) -> CreateSceneMotionError {
+    ) -> ApplyStudioMotionEditError {
         let expected_scene = bundle.scene.clone();
         let expected_assets = bundle.assets.clone();
         let mut session = EngineSessionV1::new(bundle).unwrap();
         let error = session.create_scene_motion(command).unwrap_err();
+        assert_eq!(session.scene(), &expected_scene);
+        assert_eq!(session.assets(), &expected_assets);
+        assert_eq!(session.retained_index_stats().build_count, 1);
+        error
+    }
+
+    fn rejected_studio_motion(
+        bundle: SceneIrBundleV1,
+        command: ApplyStudioMotionEditCommand,
+    ) -> ApplyStudioMotionEditError {
+        let expected_scene = bundle.scene.clone();
+        let expected_assets = bundle.assets.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+        let error = session.apply_studio_motion_edit(command).unwrap_err();
         assert_eq!(session.scene(), &expected_scene);
         assert_eq!(session.assets(), &expected_assets);
         assert_eq!(session.retained_index_stats().build_count, 1);
@@ -5652,6 +5947,84 @@ mod tests {
     }
 
     #[test]
+    fn applies_one_complete_studio_motion_through_canonical_identity_and_coordinates() {
+        let bundle = static_imported_bundle();
+        let ir_scene_id = bundle.scene.scene_id.clone();
+        assert_ne!(ir_scene_id, "scene.py#CircleScene");
+        let command = studio_motion_edit_command(&bundle);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_motion_edit(command).unwrap();
+
+        assert_eq!(result.scene.scene_id, ir_scene_id);
+        assert!((result.scene.duration - 3.0).abs() < f64::EPSILON);
+        assert_eq!(
+            result.scene.provenance.last().unwrap().id,
+            format!("studio-motion:{NEXT_REVISION}")
+        );
+        let path = result
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id, path, ..
+                } if entity_id == "later" => Some(path),
+                _ => None,
+            })
+            .unwrap();
+        let subpath = &path.subpaths[0];
+        let segment = &subpath.segments[0];
+        assert_eq!(subpath.start, PointV1 { x: 0.0, y: 0.0 });
+        assert!((segment.control1.x - 2.0).abs() < 1e-12);
+        assert!((segment.control1.y - 10.0 / 3.0).abs() < 1e-12);
+        assert!((segment.control2.x - 4.0).abs() < 1e-12);
+        assert!((segment.control2.y - 4.0).abs() < 1e-12);
+        assert_eq!(segment.end, PointV1 { x: 6.0, y: 2.0 });
+    }
+
+    #[test]
+    fn rejected_studio_motion_facts_preserve_the_retained_scene() {
+        let bundle = static_imported_bundle();
+        let mut rejected = Vec::new();
+
+        let mut wrong_scene = studio_motion_edit_command(&bundle);
+        wrong_scene.evaluated_scene_id = "scene.py#OtherScene".to_owned();
+        rejected.push(wrong_scene);
+
+        let mut wrong_duration = studio_motion_edit_command(&bundle);
+        wrong_duration.evaluated_duration += 0.001;
+        rejected.push(wrong_duration);
+
+        let mut mixed = studio_motion_edit_command(&bundle);
+        mixed.programs[0]
+            .operations
+            .push(StudioMotionOperation::Unsupported {
+                id: "unsupported".to_owned(),
+                interval: IntervalV1 {
+                    end: 0.5,
+                    start: 0.5,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            });
+        mixed.programs[0]
+            .schedule_order
+            .push("unsupported".to_owned());
+        rejected.push(mixed);
+
+        let mut wrong_binding = studio_motion_edit_command(&bundle);
+        wrong_binding.source_runtime_bindings[0].source_name = "other-source".to_owned();
+        rejected.push(wrong_binding);
+
+        for command in rejected {
+            assert!(matches!(
+                rejected_studio_motion(bundle.clone(), command),
+                ApplyStudioMotionEditError::Unsupported
+            ));
+        }
+    }
+
+    #[test]
     #[allow(
         clippy::float_cmp,
         clippy::too_many_lines,
@@ -5809,7 +6182,7 @@ mod tests {
         duplicate.target_entity_ids = vec!["later".to_owned(), "later".to_owned()];
         assert!(matches!(
             rejected_motion(bundle.clone(), duplicate),
-            CreateSceneMotionError::DuplicateTarget(id) if id == "later"
+            ApplyStudioMotionEditError::DuplicateTarget(id) if id == "later"
         ));
 
         let mut no_op = motion_command(&bundle);
@@ -5817,7 +6190,7 @@ mod tests {
         no_op.control_offset = PointV1 { x: 0.0, y: 0.0 };
         assert!(matches!(
             rejected_motion(bundle.clone(), no_op),
-            CreateSceneMotionError::InvalidMotion
+            ApplyStudioMotionEditError::InvalidMotion
         ));
 
         let mut inactive_bundle = bundle.clone();
@@ -5832,7 +6205,7 @@ mod tests {
         let inactive = motion_command(&inactive_bundle);
         assert!(matches!(
             rejected_motion(inactive_bundle, inactive),
-            CreateSceneMotionError::TargetInactive(id) if id == "later"
+            ApplyStudioMotionEditError::TargetInactive(id) if id == "later"
         ));
 
         let animated = fixture_bundle("manim-motion-path.json");
@@ -5840,7 +6213,7 @@ mod tests {
         already_animated.target_entity_ids = vec!["mover".to_owned()];
         assert!(matches!(
             rejected_motion(animated, already_animated),
-            CreateSceneMotionError::AnimatedTransformUnsupported(id) if id == "mover"
+            ApplyStudioMotionEditError::AnimatedTransformUnsupported(id) if id == "mover"
         ));
 
         let nested = fixture_bundle("real-line-joints-v10.json");
@@ -5860,7 +6233,7 @@ mod tests {
         nested_target.target_entity_ids = vec![child_id.clone()];
         assert!(matches!(
             rejected_motion(nested, nested_target),
-            CreateSceneMotionError::TargetIsNotRoot(id) if id == child_id
+            ApplyStudioMotionEditError::TargetIsNotRoot(id) if id == child_id
         ));
     }
 }

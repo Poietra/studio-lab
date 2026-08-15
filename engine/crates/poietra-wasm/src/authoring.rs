@@ -1,18 +1,19 @@
 use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
-    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioTimelineEditCommand,
-    ApplyStudioTimelineEditError, CreateSceneMotionCommand, CreateSceneMotionEasing,
-    CreateSceneMotionError, EngineSessionV1, EvaluationError, RotateSceneEntityCommand,
-    RotateSceneEntityError, ScaleAboutPivot, SceneEntityAxisFactors,
-    SetSubtreeVectorPaintAlphaCommand, SetSubtreeVectorPaintAlphaError,
-    StaticRootTransformOperation, StaticRootTransformSize, StaticRootTransformSourceBinding,
-    StaticRootTransformStudioEntity, StudioAuthoringSize, StudioCreationEvaluatedEntity,
-    StudioCreationEvaluatedEvent, StudioCreationMathTexOutline, StudioCreationProgram,
-    StudioTimelineProgram, TransformSceneEntityAtTimeCommand, TransformSceneEntityCommand,
-    TransformSceneEntityError, TransformSceneEntityExpectedBaseline, TransformSceneEntityIntent,
+    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioMotionEditCommand,
+    ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
+    EngineSessionV1, EvaluationError, RotateSceneEntityCommand, RotateSceneEntityError,
+    ScaleAboutPivot, SceneEntityAxisFactors, SetSubtreeVectorPaintAlphaCommand,
+    SetSubtreeVectorPaintAlphaError, StaticRootTransformOperation, StaticRootTransformSize,
+    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringSize,
+    StudioCreationEvaluatedEntity, StudioCreationEvaluatedEvent, StudioCreationMathTexOutline,
+    StudioCreationProgram, StudioMotionEntityIdentity, StudioMotionProgram,
+    StudioMotionSourceBinding, StudioTimelineProgram, TransformSceneEntityAtTimeCommand,
+    TransformSceneEntityCommand, TransformSceneEntityError, TransformSceneEntityExpectedBaseline,
+    TransformSceneEntityIntent,
 };
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, IntervalV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
+    ContractJsonError, ContractVersionV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
     parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, de::DeserializeOwned};
@@ -51,57 +52,9 @@ enum ApplyStudioTimelineEditSchemaV1 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum CreateSceneMotionSchemaV1 {
-    #[serde(rename = "poietra.create-scene-motion")]
-    CreateSceneMotion,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum CreateSceneMotionEasingJsonV1 {
-    Linear,
-    Smooth,
-}
-
-impl From<CreateSceneMotionEasingJsonV1> for CreateSceneMotionEasing {
-    fn from(value: CreateSceneMotionEasingJsonV1) -> Self {
-        match value {
-            CreateSceneMotionEasingJsonV1::Linear => Self::Linear,
-            CreateSceneMotionEasingJsonV1::Smooth => Self::Smooth,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct CreateSceneMotionCommandJsonV1 {
-    control_offset: PointV1,
-    delta: PointV1,
-    easing: CreateSceneMotionEasingJsonV1,
-    expected_base_revision: String,
-    interval: IntervalV1,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: CreateSceneMotionSchemaV1,
-    target_entity_ids: Vec<String>,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<CreateSceneMotionCommandJsonV1> for CreateSceneMotionCommand {
-    fn from(value: CreateSceneMotionCommandJsonV1) -> Self {
-        Self {
-            control_offset: value.control_offset,
-            delta: value.delta,
-            easing: value.easing.into(),
-            expected_base_revision: value.expected_base_revision,
-            interval: value.interval,
-            next_revision: value.next_revision,
-            provenance: value.provenance,
-            target_entity_ids: value.target_entity_ids,
-        }
-    }
+enum ApplyStudioMotionEditSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-motion-edit")]
+    ApplyStudioMotionEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -394,6 +347,42 @@ impl From<ApplyStudioTimelineEditCommandJsonV1> for ApplyStudioTimelineEditComma
     }
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioMotionEditCommandJsonV1 {
+    base_studio_scene_id: String,
+    evaluated_duration: f64,
+    evaluated_scene_id: String,
+    expected_base_revision: String,
+    frame: StudioAuthoringSize,
+    next_revision: String,
+    programs: Vec<StudioMotionProgram>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioMotionEditSchemaV1,
+    source_runtime_bindings: Vec<StudioMotionSourceBinding>,
+    studio_entities: Vec<StudioMotionEntityIdentity>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+    viewport: StudioAuthoringSize,
+}
+
+impl From<ApplyStudioMotionEditCommandJsonV1> for ApplyStudioMotionEditCommand {
+    fn from(value: ApplyStudioMotionEditCommandJsonV1) -> Self {
+        Self {
+            base_studio_scene_id: value.base_studio_scene_id,
+            evaluated_duration: value.evaluated_duration,
+            evaluated_scene_id: value.evaluated_scene_id,
+            expected_base_revision: value.expected_base_revision,
+            frame: value.frame,
+            next_revision: value.next_revision,
+            programs: value.programs,
+            source_runtime_bindings: value.source_runtime_bindings,
+            studio_entities: value.studio_entities,
+            viewport: value.viewport,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 enum SceneAuthoringAdapterError {
     #[error("{command} command contains {actual_bytes} bytes; maximum is {maximum_bytes}")]
@@ -412,7 +401,7 @@ enum SceneAuthoringAdapterError {
     #[error("the Scene authoring snapshot could not create an Engine session: {0}")]
     Session(#[from] EvaluationError),
     #[error(transparent)]
-    CreateMotionCommand(#[from] CreateSceneMotionError),
+    StudioMotionEdit(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
     RotationCommand(#[from] RotateSceneEntityError),
     #[error(transparent)]
@@ -545,14 +534,17 @@ fn apply_studio_timeline_edit_json(
     scene_authoring_response(&result)
 }
 
-fn create_scene_motion_json(
+fn apply_studio_motion_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: CreateSceneMotionCommandJsonV1 =
-        parse_scene_authoring_command("create motion", command_json)?;
+    let command: ApplyStudioMotionEditCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "Studio motion edit",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
     let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.create_scene_motion(command.into())?;
+    let result = session.apply_studio_motion_edit(command.into())?;
     scene_authoring_response(&result)
 }
 
@@ -589,12 +581,12 @@ pub fn apply_studio_timeline_edit_v1(
 /// # Errors
 ///
 /// Returns a JavaScript error for an invalid snapshot, command, or authored result.
-#[wasm_bindgen(js_name = createSceneMotionV1)]
-pub fn create_scene_motion_v1(
+#[wasm_bindgen(js_name = applyStudioMotionEditV1)]
+pub fn apply_studio_motion_edit_v1(
     snapshot_json: &[u8],
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
-    create_scene_motion_json(snapshot_json, command_json)
+    apply_studio_motion_edit_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -993,22 +985,58 @@ mod tests {
         serde_json::to_vec(&command).unwrap()
     }
 
-    fn create_motion_command_json() -> Vec<u8> {
+    fn studio_motion_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
-            "controlOffset": { "x": 0.0, "y": 4.0 },
-            "delta": { "x": 6.0, "y": 2.0 },
-            "easing": "smooth",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "interval": { "end": 1.5, "start": 0.5 },
+            "baseStudioSceneId": "scene.py#CircleScene",
+            "evaluatedDuration": 3.0,
+            "evaluatedSceneId": "scene.py#CircleScene",
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "frame": { "height": 9.0, "width": 16.0 },
             "nextRevision": "9999999999999999999999999999999999999999999999999999999999999999",
-            "provenance": {
-                "evidence": ["WASM adapter motion test"],
-                "id": "wasm-create-motion",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.create-scene-motion",
-            "targetEntityIds": ["later", "stroke"],
-            "version": 1
+            "programs": [{
+                "anchorSeconds": 0.5,
+                "loweringSupported": true,
+                "operations": [{
+                    "controlOffset": { "x": 0.0, "y": -160.0 },
+                    "delta": { "x": 240.0, "y": -80.0 },
+                    "easing": "smooth",
+                    "id": "create-motion",
+                    "interval": { "end": 1.5, "start": 0.5 },
+                    "kind": "create-motion",
+                    "origin": "direct-manipulation",
+                    "targetEntityIds": ["source:later", "source:stroke"]
+                }],
+                "origin": "direct-manipulation",
+                "scheduleOrder": ["create-motion"],
+                "validationValid": true
+            }],
+            "schema": "poietra.apply-studio-motion-edit",
+            "sourceRuntimeBindings": [
+                {
+                    "runtimeEntityId": "later",
+                    "sourceIdentityKey": "later-source",
+                    "sourceName": "later-source"
+                },
+                {
+                    "runtimeEntityId": "stroke",
+                    "sourceIdentityKey": "stroke-source",
+                    "sourceName": "stroke-source"
+                }
+            ],
+            "studioEntities": [
+                {
+                    "objectGraphKey": "source:later",
+                    "provisional": false,
+                    "sourceIdentity": "later-source"
+                },
+                {
+                    "objectGraphKey": "source:stroke",
+                    "provisional": false,
+                    "sourceIdentity": "stroke-source"
+                }
+            ],
+            "version": 1,
+            "viewport": { "height": 360.0, "width": 640.0 }
         }))
         .unwrap()
     }
@@ -1599,9 +1627,12 @@ mod tests {
     }
 
     #[test]
-    fn motion_adapter_forwards_the_strict_command_to_the_core() {
-        let response =
-            create_scene_motion_json(&fixture_json(), &create_motion_command_json()).unwrap();
+    fn motion_adapter_forwards_the_complete_command_to_the_core() {
+        let response = apply_studio_motion_edit_json(
+            &static_fixture_json(),
+            &studio_motion_edit_command_json(),
+        )
+        .unwrap();
         let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
         let motions: Vec<_> = bundle
             .scene
@@ -1643,7 +1674,18 @@ mod tests {
             );
             assert_eq!(path.subpaths.len(), 1);
             assert_eq!(path.subpaths[0].segments.len(), 1);
-            assert_eq!(provenance_id, "wasm-create-motion");
+            let subpath = &path.subpaths[0];
+            let segment = &subpath.segments[0];
+            assert!((segment.control1.x - subpath.start.x - 2.0).abs() < 1e-12);
+            assert!((segment.control1.y - subpath.start.y - 10.0 / 3.0).abs() < 1e-12);
+            assert!((segment.control2.x - subpath.start.x - 4.0).abs() < 1e-12);
+            assert!((segment.control2.y - subpath.start.y - 4.0).abs() < 1e-12);
+            assert!((segment.end.x - subpath.start.x - 6.0).abs() < 1e-12);
+            assert!((segment.end.y - subpath.start.y - 2.0).abs() < 1e-12);
+            assert_eq!(
+                provenance_id,
+                "studio-motion:9999999999999999999999999999999999999999999999999999999999999999"
+            );
         }
         assert!(
             bundle
@@ -1661,22 +1703,27 @@ mod tests {
     #[test]
     fn motion_adapter_rejects_unknown_and_stale_commands() {
         let mut unknown: serde_json::Value =
-            serde_json::from_slice(&create_motion_command_json()).unwrap();
+            serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
         unknown["profile"] = json!("generic-runtime-trace-v3");
-        let error =
-            create_scene_motion_json(&fixture_json(), &serde_json::to_vec(&unknown).unwrap())
-                .unwrap_err();
+        let error = apply_studio_motion_edit_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&unknown).unwrap(),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("unknown field `profile`"));
 
         let mut stale: serde_json::Value =
-            serde_json::from_slice(&create_motion_command_json()).unwrap();
+            serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
         stale["expectedBaseRevision"] = json!("f".repeat(64));
-        let error = create_scene_motion_json(&fixture_json(), &serde_json::to_vec(&stale).unwrap())
-            .unwrap_err();
+        let error = apply_studio_motion_edit_json(
+            &static_fixture_json(),
+            &serde_json::to_vec(&stale).unwrap(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
-            SceneAuthoringAdapterError::CreateMotionCommand(
-                CreateSceneMotionError::StaleBaseRevision
+            SceneAuthoringAdapterError::StudioMotionEdit(
+                ApplyStudioMotionEditError::StaleBaseRevision
             )
         ));
     }

@@ -9,10 +9,10 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMotionEditCompiler,
+  ApplyStudioMotionEditWireCommandV1,
   ApplyStudioTimelineEditCompiler,
   ApplyStudioTimelineEditWireCommandV1,
-  CreateSceneMotionCompiler,
-  CreateSceneMotionWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -223,7 +223,7 @@ function recordingStudioTimelineCompiler(
   };
 }
 
-function recordingMotionCompiler(calls: CreateSceneMotionWireCommandV1[]): CreateSceneMotionCompiler {
+function recordingMotionCompiler(calls: ApplyStudioMotionEditWireCommandV1[]): ApplyStudioMotionEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
     return bundle;
@@ -1281,9 +1281,9 @@ describe("compileStudioPreviewSceneV1", () => {
         },
       },
     };
-    const commands: CreateSceneMotionWireCommandV1[] = [];
+    const commands: ApplyStudioMotionEditWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
-      createSceneMotionCompiler: recordingMotionCompiler(commands),
+      applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
       proposedState,
       snapshot,
@@ -1296,6 +1296,86 @@ describe("compileStudioPreviewSceneV1", () => {
       kind: "unsupported",
     });
     expect(commands).toHaveLength(0);
+  });
+
+  it("passes raw Studio motion facts and every operation to Rust", async () => {
+    const base = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(base);
+    const validation = validateMotionProgramFixture({
+      capturedPlayhead: 0.5,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1.5, start: 0.5 },
+      scene: workingBase.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "create-static-motion",
+    });
+    if (validation.kind !== "valid") throw new Error("Static motion fixture did not validate.");
+    const evaluated = evaluateWorkingState({
+      ...workingBase,
+      appliedPrograms: [programRecord(validation.program, validation)],
+    });
+    const motion = validation.program.operations[0];
+    if (!motion || motion.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
+    const unsupported = {
+      dependsOn: [],
+      entityId: "source:circle",
+      id: "unsupported-position",
+      interval: { end: 0.5, start: 0.5 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: motion.provenance,
+      value: { x: 320, y: 180 },
+    } as const;
+    const proposedState: ProposedState = {
+      ...evaluated,
+      programs: [
+        {
+          program: {
+            ...validation.program,
+            operations: [motion, unsupported],
+            schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
+          },
+          validation: { issues: [], status: "valid" },
+        },
+      ],
+    };
+    const commands: ApplyStudioMotionEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
+      frame: { height: 9, width: 16 },
+      proposedState,
+      snapshot: base.snapshot,
+      workingRevision: "studio-working-v1:create-static-motion",
+      workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      baseStudioSceneId: "scene.py#CircleScene",
+      evaluatedDuration: 3,
+      evaluatedSceneId: "scene.py#CircleScene",
+      frame: { height: 9, width: 16 },
+      programs: [
+        {
+          operations: [
+            {
+              controlOffset: { x: 32, y: 18 },
+              delta: { x: 64, y: -36 },
+              kind: "create-motion",
+              targetEntityIds: ["source:circle"],
+            },
+            { id: "unsupported-position", kind: "unsupported" },
+          ],
+          scheduleOrder: [motion.id, "unsupported-position"],
+        },
+      ],
+      sourceRuntimeBindings: [{ runtimeEntityId: "earlier", sourceIdentityKey: "circle", sourceName: "circle" }],
+      studioEntities: [{ objectGraphKey: "source:circle", provisional: false, sourceIdentity: "circle" }],
+      viewport: { height: 360, width: 640 },
+    });
   });
 
   it("passes a pristine verified Line snapshot through without invoking the narrower Studio adapter", async () => {
