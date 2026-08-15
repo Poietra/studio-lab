@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
+import type { StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
@@ -11,9 +12,13 @@ import {
 } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
-import type { Interval, ProgramBatchAuthority, ProgramRecord } from "./model";
+import type { Interval } from "./model";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
-import { projectStudioWorkspace, selectStudioWorkspaceProgramAuthority } from "./workspace-projection";
+import {
+  projectStudioWorkspace,
+  selectStaticRootProjection,
+  selectStudioWorkspaceProgramAuthority,
+} from "./workspace-projection";
 
 const source = `from manim import *
 
@@ -105,7 +110,7 @@ describe("Studio workspace projection", () => {
     expect(selectStudioWorkspaceProgramAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
   });
 
-  it("uses an authorized uniform scale's explicit target instead of reevaluating its relative factor", () => {
+  it("requires and mechanically applies Rust's static-root scale projection", () => {
     const imported = workspaceScene("Static", null);
     const base = projectStudioWorkspace({
       activeScene: imported,
@@ -148,22 +153,56 @@ describe("Studio workspace projection", () => {
       },
     } satisfies ManimWorkspaceScene;
     const record = programRecord(scale.program, scale);
-    const project = (programAuthority?: ProgramBatchAuthority, recordToProject: ProgramRecord = record) =>
+    const operation = scale.program.operations[0];
+    if (operation?.kind !== "AnimateProperty") throw new Error("Expected a scale operation.");
+    const staticRootProjection: StudioStaticRootProjectionV1 = {
+      mutations: [
+        {
+          entityId: entity.id,
+          from: 3,
+          interval: operation.interval,
+          kind: "uniform-scale",
+          operationId: operation.id,
+          to: 7,
+          transactionId: scale.program.transactionId,
+        },
+      ],
+    };
+    const project = (projection?: StudioStaticRootProjectionV1) =>
       projectStudioWorkspace({
         activeScene: rebased,
-        appliedPrograms: [recordToProject],
+        appliedPrograms: [record],
         currentTime: rebased.runtimeSceneState.duration,
         draftProgram: null,
         nextScene: null,
-        programAuthority,
+        programAuthority: "static-imported-root",
         selectedObjectIds: [],
+        staticRootProjection: projection,
       }).projection.canvas.entities[0]?.scale;
 
-    expect(project()).toBe(6);
-    expect(project("static-imported-root")).toBe(2);
-    const locallyRejected = { ...record, validation: { issues: [], status: "invalid" as const } };
-    expect(project(undefined, locallyRejected)).toBe(3);
-    expect(project("rust-authorized-batch", locallyRejected)).toBe(6);
+    expect(() => project()).toThrow("A Rust static-root projection is required");
+    expect(project(staticRootProjection)).toBe(7);
+    expect(
+      projectStudioWorkspace({
+        activeScene: rebased,
+        appliedPrograms: [record],
+        currentTime: rebased.runtimeSceneState.duration,
+        draftProgram: null,
+        nextScene: null,
+        programAuthority: "source-bound-endpoint",
+        selectedObjectIds: [],
+      }).projection.canvas.entities[0]?.scale,
+    ).toBe(6);
+    expect(() =>
+      selectStaticRootProjection([scale.program], {
+        mutations: [{ ...staticRootProjection.mutations[0]!, transactionId: "stale-transaction" }],
+      }),
+    ).toThrow("is not correlated");
+    expect(() =>
+      project({
+        mutations: [{ ...staticRootProjection.mutations[0]!, entityId: "source:missing" }],
+      }),
+    ).toThrow("is not in the imported Scene");
   });
 
   it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {

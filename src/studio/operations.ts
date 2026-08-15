@@ -188,6 +188,15 @@ export function isStaticRootTransformOperation(operation: CanonicalEditOperation
   );
 }
 
+export function isExactStaticRootTransformProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  return (
+    programs.length > 0 &&
+    programs.every(
+      (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
+    )
+  );
+}
+
 export function hasImportedRootTransformTarget(programs: readonly CanonicalEditProgram[]) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntityIds = new Set(

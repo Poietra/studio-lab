@@ -1,8 +1,27 @@
-import type { StudioPersistentRemoveProjectionV1, StudioTimelineProjectionV1 } from "../engine/scene-authoring";
+import type {
+  StudioPersistentRemoveProjectionV1,
+  StudioStaticRootMutationV1,
+  StudioStaticRootProjectionV1,
+  StudioTimelineProjectionV1,
+} from "../engine/scene-authoring";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
-import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity } from "./model";
-import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import {
+  type ProgramBatchAuthority,
+  type ProgramRecord,
+  type ProjectedEntity,
+  type PropertyChannel,
+  type PropertyChannelSample,
+  type ProposedState,
+  STUDIO_STATE_VERSION,
+  type WorkingState,
+} from "./model";
+import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  isExactStaticRootTransformProgramBatch,
+  isSceneDurationOperation,
+} from "./operations";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -54,6 +73,154 @@ export function selectPersistentRemoveProjection(
   };
 }
 
+type CorrelatedStaticRootMutation = Readonly<{
+  mutation: StudioStaticRootMutationV1;
+  operation: CanonicalEditOperation;
+  program: CanonicalEditProgram;
+}>;
+
+function correlateStaticRootProjection(
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioStaticRootProjectionV1 | null,
+): readonly CorrelatedStaticRootMutation[] | null {
+  if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+  if (!projection) {
+    throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
+  }
+  const operations = programs.flatMap((program) =>
+    program.operations.map((operation) => ({ operation, program }) as const),
+  );
+  const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
+  if (operationById.size !== operations.length || projection.mutations.length !== operations.length) {
+    throw new TypeError("The Rust static-root projection does not contain the complete Program batch.");
+  }
+  const operationIds = new Set<string>();
+  return projection.mutations.map((mutation) => {
+    const expected = operationById.get(mutation.operationId);
+    if (
+      !expected ||
+      operationIds.has(mutation.operationId) ||
+      mutation.transactionId !== expected.program.transactionId
+    ) {
+      throw new TypeError(`Static-root operation ${mutation.operationId} is not correlated with the Rust projection.`);
+    }
+    operationIds.add(mutation.operationId);
+    return { mutation, ...expected };
+  });
+}
+
+export function selectStaticRootProjection(
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioStaticRootProjectionV1 | null,
+): StudioStaticRootProjectionV1 | null {
+  if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+  const correlated = correlateStaticRootProjection(programs, projection);
+  return correlated ? { mutations: correlated.map(({ mutation }) => mutation) } : null;
+}
+
+function appendStaticRootSample(
+  propertyChannels: Record<string, PropertyChannel>,
+  entityId: string,
+  key: PropertyChannel["key"],
+  sample: PropertyChannelSample,
+) {
+  const id = `${entityId}/${key}`;
+  const channel = propertyChannels[id];
+  propertyChannels[id] = { entityId, key, samples: [...(channel?.samples ?? []), sample] };
+}
+
+function projectStaticRootWorkingState(
+  workingState: WorkingState,
+  projection: StudioStaticRootProjectionV1,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  const correlated = correlateStaticRootProjection(programs, projection);
+  if (!correlated) throw new TypeError("Only an exact static-root Program batch can use this projection.");
+  const propertyChannels: Record<string, PropertyChannel> = Object.fromEntries(
+    Object.entries(workingState.runtimeSceneState.propertyChannels).map(([id, channel]) => [
+      id,
+      { ...channel, samples: [...channel.samples] },
+    ]),
+  );
+  const events = [...workingState.runtimeSceneState.eventTrack.events];
+  const provenance = [...workingState.runtimeSceneState.provenanceGraph.records];
+  correlated.forEach(({ mutation, operation, program }) => {
+    if (!workingState.runtimeSceneState.objectGraph.entities[mutation.entityId]) {
+      throw new TypeError(`Rust static-root projection target ${mutation.entityId} is not in the imported Scene.`);
+    }
+    const provenanceId = `${operation.id}/provenance`;
+    provenance.push({
+      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
+      id: provenanceId,
+      operationId: operation.id,
+      origin: operation.provenance.origin,
+      transactionId: program.transactionId,
+    });
+    events.push({
+      id: `${operation.id}/event`,
+      interval: mutation.interval,
+      kind: "operation",
+      label: operation.kind,
+      operationId: operation.id,
+      transactionId: program.transactionId,
+    });
+    if (mutation.kind === "position") {
+      appendStaticRootSample(propertyChannels, mutation.entityId, "position", {
+        interval: mutation.interval,
+        kind: "exact",
+        operationId: mutation.operationId,
+        provenanceId,
+        value: mutation.value,
+      });
+    } else if (mutation.kind === "uniform-scale") {
+      appendStaticRootSample(propertyChannels, mutation.entityId, "scale", {
+        easing: "smooth",
+        from: mutation.from,
+        interval: mutation.interval,
+        kind: "animated",
+        operationId: mutation.operationId,
+        provenanceId,
+        value: mutation.to,
+      });
+    } else {
+      const kind = mutation.interval.end > mutation.interval.start ? "animated" : "exact";
+      appendStaticRootSample(propertyChannels, mutation.entityId, "dimensions", {
+        from: mutation.fromDimensions,
+        interval: mutation.interval,
+        kind,
+        operationId: mutation.operationId,
+        provenanceId,
+        value: mutation.toDimensions,
+      });
+      appendStaticRootSample(propertyChannels, mutation.entityId, "position", {
+        from: mutation.fromPosition,
+        interval: mutation.interval,
+        kind,
+        operationId: mutation.operationId,
+        provenanceId,
+        value: mutation.toPosition,
+      });
+    }
+  });
+  return {
+    base: workingState,
+    evaluatedScene: {
+      ...workingState.runtimeSceneState,
+      eventTrack: {
+        events: events.sort(
+          (left, right) => (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0),
+        ),
+      },
+      propertyChannels,
+      provenanceGraph: { records: provenance },
+    },
+    issues: [],
+    programs: records.map((record) => ({ ...record, validation: { issues: [], status: "valid" } })),
+    version: STUDIO_STATE_VERSION,
+  };
+}
+
 export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
@@ -64,6 +231,7 @@ export function projectStudioWorkspace(
     persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
     programAuthority?: ProgramBatchAuthority | null;
     selectedObjectIds: readonly string[];
+    staticRootProjection?: StudioStaticRootProjectionV1 | null;
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
 ) {
@@ -96,6 +264,11 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
+  } else if (input.programAuthority === "static-imported-root" && isExactStaticRootTransformProgramBatch(programs)) {
+    if (!input.staticRootProjection) {
+      throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
+    }
+    proposedState = projectStaticRootWorkingState(workingState, input.staticRootProjection);
   } else {
     proposedState = evaluateWorkingState(workingState, persistentRemoveProjection, input.programAuthority ?? null);
   }

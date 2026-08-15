@@ -81,7 +81,12 @@ import {
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
-import { type CanonicalEditProgram, isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
+import {
+  type CanonicalEditProgram,
+  isExactStaticRootTransformProgramBatch,
+  isSceneDurationOperation,
+  type OperationOrigin,
+} from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewRuntimeTraceEntityPresence,
@@ -155,6 +160,7 @@ import {
   isTransitionOverlay,
   projectStudioWorkspace,
   selectPersistentRemoveProjection,
+  selectStaticRootProjection,
   selectStudioWorkspaceProgramAuthority,
 } from "./studio/workspace-projection";
 
@@ -873,15 +879,30 @@ export function App({
       previewRenderer?.programAuthority ?? null,
     );
   }
+  function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
+    const programs = records.map((record) => record.program);
+    if (!isExactStaticRootTransformProgramBatch(programs)) return null;
+    const authority = workspaceProgramAuthorityForRecords(records);
+    if (authority === undefined) return undefined;
+    if (authority !== "static-imported-root") return null;
+    if (!previewRenderer?.staticRootProjection) return undefined;
+    try {
+      return selectStaticRootProjection(programs, previewRenderer.staticRootProjection);
+    } catch {
+      return undefined;
+    }
+  }
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
   const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);
   const workspaceProgramAuthority = workspaceProgramAuthorityForRecords(previewProgramRecords);
+  const workspaceStaticRootProjection = staticRootProjectionForRecords(previewProgramRecords);
   const workspaceProjection =
     editorDocumentPresentationReady &&
     projectedActiveScene &&
     workspaceTimelineProjection !== undefined &&
     workspacePersistentRemoveProjection !== undefined &&
-    workspaceProgramAuthority !== undefined
+    workspaceProgramAuthority !== undefined &&
+    workspaceStaticRootProjection !== undefined
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
           appliedPrograms: previewAppliedPrograms,
@@ -891,6 +912,7 @@ export function App({
           persistentRemoveProjection: workspacePersistentRemoveProjection,
           programAuthority: workspaceProgramAuthority,
           selectedObjectIds,
+          staticRootProjection: workspaceStaticRootProjection,
           timelineProjection: workspaceTimelineProjection,
         })
       : null;
@@ -1133,11 +1155,13 @@ export function App({
   const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
   const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingPrograms);
   const draftBaseProgramAuthority = workspaceProgramAuthorityForRecords(draftPrecedingPrograms);
+  const draftBaseStaticRootProjection = staticRootProjectionForRecords(draftPrecedingPrograms);
   const draftBaseProjection =
     editorDocumentPresentationReady && projectedActiveScene && draftProgram
       ? draftBaseTimelineProjection === undefined ||
         draftBasePersistentRemoveProjection === undefined ||
-        draftBaseProgramAuthority === undefined
+        draftBaseProgramAuthority === undefined ||
+        draftBaseStaticRootProjection === undefined
         ? null
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
@@ -1148,6 +1172,7 @@ export function App({
             persistentRemoveProjection: draftBasePersistentRemoveProjection,
             programAuthority: draftBaseProgramAuthority,
             selectedObjectIds,
+            staticRootProjection: draftBaseStaticRootProjection,
             timelineProjection: draftBaseTimelineProjection,
           })
       : workspaceProjection;
@@ -1612,10 +1637,12 @@ export function App({
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
     const precedingPersistentRemoveProjection = persistentRemoveProjectionForRecords(precedingRecords);
     const precedingProgramAuthority = workspaceProgramAuthorityForRecords(precedingRecords);
+    const precedingStaticRootProjection = staticRootProjectionForRecords(precedingRecords);
     if (
       precedingTimelineProjection === undefined ||
       precedingPersistentRemoveProjection === undefined ||
-      precedingProgramAuthority === undefined
+      precedingProgramAuthority === undefined ||
+      precedingStaticRootProjection === undefined
     ) {
       setDraftError("Wait for the Rust authoring projection before editing this Program.");
       return false;
@@ -1630,6 +1657,7 @@ export function App({
       persistentRemoveProjection: precedingPersistentRemoveProjection,
       programAuthority: precedingProgramAuthority,
       selectedObjectIds: metadata.selection,
+      staticRootProjection: precedingStaticRootProjection,
       timelineProjection: precedingTimelineProjection,
     });
     try {
@@ -1932,10 +1960,12 @@ export function App({
       const timelineProjection = timelineProjectionForRecords(preceding);
       const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
       const programAuthority = workspaceProgramAuthorityForRecords(preceding);
+      const staticRootProjection = staticRootProjectionForRecords(preceding);
       if (
         timelineProjection === undefined ||
         persistentRemoveProjection === undefined ||
-        programAuthority === undefined
+        programAuthority === undefined ||
+        staticRootProjection === undefined
       ) {
         throw new Error("Wait for the Rust authoring projection before editing this object lifetime.");
       }
@@ -1948,6 +1978,7 @@ export function App({
         persistentRemoveProjection,
         programAuthority,
         selectedObjectIds,
+        staticRootProjection,
         timelineProjection,
       }).proposedState.evaluatedScene;
       return {

@@ -278,6 +278,18 @@ describe("Scene authoring WASM adapter", () => {
           },
         ],
       },
+      staticRootProjection: {
+        mutations: [
+          {
+            entityId: "source:circle",
+            interval: { end: 0, start: 0 },
+            kind: "position",
+            operationId: "move-circle",
+            transactionId: "move-circle",
+            value: { x: 400, y: 180 },
+          },
+        ],
+      },
     } as const;
     const compile = createApplyStaticRootTransformEditCompiler(async () => ({
       applyStaticRootTransformEditV1: (snapshotJson, commandJson) => {
