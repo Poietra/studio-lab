@@ -37,7 +37,7 @@ pub use protocol::{
 pub use canvas::PoietraCanvasEngineV1;
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 18;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 19;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
 pub const POIETRA_CANVAS_ABI_VERSION: u32 = 5;
 
@@ -121,7 +121,7 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 18);
+        assert_eq!(poietra_engine_abi_version(), 19);
         assert_eq!(poietra_canvas_abi_version(), 5);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
     }
