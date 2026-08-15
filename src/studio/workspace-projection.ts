@@ -96,6 +96,10 @@ function sameProjectionNumber(left: number, right: number) {
   );
 }
 
+function isFiniteProjectionPoint(point: Readonly<{ x: number; y: number }>) {
+  return Number.isFinite(point.x) && Number.isFinite(point.y);
+}
+
 function mathTexContentMatches(
   left: StudioMathTexTransformProjectionV1["replacements"][number]["content"],
   right: EntityContent,
@@ -114,11 +118,22 @@ type CorrelatedMathTexTransformReplacement = Readonly<{
   replacement: StudioMathTexTransformProjectionV1["replacements"][number];
 }>;
 
+type CorrelatedMathTexTransformMotion = Readonly<{
+  motion: StudioMathTexTransformProjectionV1["motions"][number];
+  operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
+  program: CanonicalEditProgram;
+}>;
+
+type CorrelatedMathTexTransformProjection = Readonly<{
+  motions: readonly CorrelatedMathTexTransformMotion[];
+  replacements: readonly CorrelatedMathTexTransformReplacement[];
+}>;
+
 function correlateMathTexTransformProjection(
   baseDuration: number,
   programs: readonly CanonicalEditProgram[],
   projection: StudioMathTexTransformProjectionV1 | null,
-): readonly CorrelatedMathTexTransformReplacement[] | null {
+): CorrelatedMathTexTransformProjection | null {
   if (!isExactStudioMathTexTransformProgramBatch(programs)) return null;
   if (!projection) {
     throw new TypeError("A Rust MathTex transform projection is required to project TransformContent Programs.");
@@ -126,12 +141,32 @@ function correlateMathTexTransformProjection(
   const operations = programs.flatMap((program) =>
     program.operations.map((operation) => ({ operation, program }) as const),
   );
+  const transformOperations = operations.filter(
+    (
+      entry,
+    ): entry is Readonly<{
+      operation: Extract<CanonicalEditOperation, { kind: "TransformContent" }>;
+      program: CanonicalEditProgram;
+    }> => entry.operation.kind === "TransformContent",
+  );
+  const motionOperations = operations.filter(
+    (
+      entry,
+    ): entry is Readonly<{
+      operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
+      program: CanonicalEditProgram;
+    }> => entry.operation.kind === "CreateMotion",
+  );
   const operationIds = operations.map(({ operation }) => operation.id);
   const transactionIds = programs.map(({ transactionId }) => transactionId);
-  const projectedOperationIds = projection.replacements.map(({ operationId }) => operationId);
+  const projectedOperationIds = [
+    ...projection.replacements.map(({ operationId }) => operationId),
+    ...projection.motions.map(({ operationId }) => operationId),
+  ];
   const projectedTransactionIds = projection.insertions.map(({ transactionId }) => transactionId);
   if (
-    projection.replacements.length !== operations.length ||
+    projection.replacements.length !== transformOperations.length ||
+    projection.motions.length !== motionOperations.length ||
     projection.insertions.length !== programs.length ||
     new Set(operationIds).size !== operationIds.length ||
     new Set(transactionIds).size !== transactionIds.length ||
@@ -165,7 +200,7 @@ function correlateMathTexTransformProjection(
   ) {
     throw new TypeError("The Rust MathTex transform projection returned a stale projected duration.");
   }
-  const correlated = projection.replacements.map((replacement) => {
+  const correlatedReplacements = projection.replacements.map((replacement) => {
     const expected = operationsById.get(replacement.operationId);
     const operation = expected?.operation;
     const content =
@@ -200,8 +235,8 @@ function correlateMathTexTransformProjection(
     }
     return { operation, program: expected.program, replacement };
   });
-  correlated.forEach(({ replacement }, index) => {
-    const next = correlated[index + 1]?.replacement;
+  correlatedReplacements.forEach(({ replacement }, index) => {
+    const next = correlatedReplacements[index + 1]?.replacement;
     if (
       (next &&
         (next.sourceEntityId !== replacement.targetEntityId ||
@@ -214,7 +249,43 @@ function correlateMathTexTransformProjection(
       );
     }
   });
-  return correlated;
+  const correlatedMotions = projection.motions.map((motion) => {
+    const expected = operationsById.get(motion.operationId);
+    const operation = expected?.operation;
+    const insertion = expected ? insertionsByTransactionId.get(expected.program.transactionId) : undefined;
+    const resolvedOffset = insertion && expected ? insertion.at - expected.program.anchor.resolvedSeconds : null;
+    if (
+      !expected ||
+      operation?.kind !== "CreateMotion" ||
+      !insertion ||
+      operation.targetEntityIds.length !== 1 ||
+      motion.transactionId !== expected.program.transactionId ||
+      motion.targetEntityId !== operation.targetEntityIds[0] ||
+      motion.easing !== operation.easing ||
+      !Number.isFinite(motion.interval.start) ||
+      !Number.isFinite(motion.interval.end) ||
+      motion.interval.start < insertion.at - MATH_TEX_TRANSFORM_PROJECTION_EPSILON ||
+      motion.interval.end > insertion.at + insertion.duration + MATH_TEX_TRANSFORM_PROJECTION_EPSILON ||
+      resolvedOffset === null ||
+      !sameProjectionNumber(motion.interval.start, operation.interval.start + resolvedOffset) ||
+      !sameProjectionNumber(motion.interval.end, operation.interval.end + resolvedOffset) ||
+      !sameProjectionNumber(
+        motion.interval.end - motion.interval.start,
+        operation.interval.end - operation.interval.start,
+      ) ||
+      !isFiniteProjectionPoint(motion.from) ||
+      !isFiniteProjectionPoint(motion.to) ||
+      !isFiniteProjectionPoint(motion.control) ||
+      !sameProjectionNumber(motion.to.x - motion.from.x, operation.delta.x) ||
+      !sameProjectionNumber(motion.to.y - motion.from.y, operation.delta.y) ||
+      !sameProjectionNumber(motion.control.x - (motion.from.x + motion.to.x) / 2, operation.controlOffset.x) ||
+      !sameProjectionNumber(motion.control.y - (motion.from.y + motion.to.y) / 2, operation.controlOffset.y)
+    ) {
+      throw new TypeError(`MathTex motion operation ${motion.operationId} is not correlated with the Rust projection.`);
+    }
+    return { motion, operation, program: expected.program };
+  });
+  return { motions: correlatedMotions, replacements: correlatedReplacements };
 }
 
 export function selectMathTexTransformProjection(
@@ -227,8 +298,9 @@ export function selectMathTexTransformProjection(
   if (!projection) throw new TypeError("The correlated MathTex transform projection is missing.");
   return {
     insertions: projection.insertions,
+    motions: correlated.motions.map(({ motion }) => motion),
     projectedDuration: projection.projectedDuration,
-    replacements: correlated.map(({ replacement }) => replacement),
+    replacements: correlated.replacements.map(({ replacement }) => replacement),
   };
 }
 
@@ -440,8 +512,8 @@ function projectMathTexTransformWorkingState(
     throw new TypeError("The Rust MathTex transform projection did not produce the projected Scene duration.");
   }
 
-  const first = correlated[0]?.replacement;
-  const last = correlated.at(-1)?.replacement;
+  const first = correlated.replacements[0]?.replacement;
+  const last = correlated.replacements.at(-1)?.replacement;
   const initialSource = first ? draft.entities[first.sourceEntityId] : undefined;
   const initialSourceLifetime = first
     ? initialSource?.lifetime.find(
@@ -456,7 +528,7 @@ function projectMathTexTransformWorkingState(
   }
 
   const appliedTransactionIds = new Set(workingState.appliedPrograms.map(({ program }) => program.transactionId));
-  for (const { operation, program, replacement } of correlated) {
+  for (const { operation, program, replacement } of correlated.replacements) {
     const source = draft.entities[replacement.sourceEntityId];
     const sourceLifetime = source?.lifetime.find(
       (lifetime) => replacement.interval.start >= lifetime.start && replacement.interval.start < lifetime.end,
@@ -544,6 +616,45 @@ function projectMathTexTransformWorkingState(
       value: 1,
     });
   }
+  for (const { motion, operation, program } of correlated.motions) {
+    const target = draft.entities[motion.targetEntityId];
+    if (
+      !target ||
+      !target.lifetime.some(
+        (lifetime) =>
+          lifetime.start <= motion.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON &&
+          lifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON >= motion.interval.end,
+      )
+    ) {
+      throw new TypeError(`MathTex motion ${motion.operationId} targets an unavailable projected entity.`);
+    }
+    const provenanceId = `${motion.operationId}/provenance`;
+    draft.provenance.push({
+      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
+      id: provenanceId,
+      operationId: motion.operationId,
+      origin: operation.provenance.origin,
+      transactionId: program.transactionId,
+    });
+    draft.events.push({
+      id: `${motion.operationId}/event`,
+      interval: motion.interval,
+      kind: "operation",
+      label: operation.kind,
+      operationId: motion.operationId,
+      transactionId: program.transactionId,
+    });
+    appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
+      control: motion.control,
+      easing: motion.easing,
+      from: motion.from,
+      interval: motion.interval,
+      kind: "animated",
+      operationId: motion.operationId,
+      provenanceId,
+      value: motion.to,
+    });
+  }
 
   return {
     base: workingState,
@@ -612,8 +723,11 @@ export function projectStudioWorkspace(
     );
   } else if (
     input.programAuthority === "rust-authorized-batch" &&
-    isExactStudioMathTexTransformProgramBatch(programs)
+    programs.some((program) => program.operations.some(({ kind }) => kind === "TransformContent"))
   ) {
+    if (!isExactStudioMathTexTransformProgramBatch(programs)) {
+      throw new TypeError("TransformContent requires one closed Rust MathTex transform batch.");
+    }
     if (!input.mathTexTransformProjection) {
       throw new TypeError("A Rust MathTex transform projection is required to project TransformContent Programs.");
     }

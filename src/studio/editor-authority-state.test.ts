@@ -103,6 +103,7 @@ function mathTexTransformProgram(): CanonicalEditProgram {
 function acceptedMathTexProjection(): StudioMathTexTransformProjectionV1 {
   return {
     insertions: [{ at: 1, duration: 1, transactionId: "math-transform" }],
+    motions: [],
     projectedDuration: 6,
     replacements: [
       {
@@ -126,6 +127,32 @@ function acceptedMathTexProjection(): StudioMathTexTransformProjectionV1 {
         transactionId: "math-transform",
       },
     ],
+  };
+}
+
+function mathTexFinalTargetMotionProgram(): CanonicalEditProgram {
+  return {
+    anchor: { capturedPlayhead: 2, evidence: [], resolvedSeconds: 2, source: { kind: "absolute", seconds: 2 } },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [
+      {
+        controlOffset: { x: 10, y: 5 },
+        delta: { x: 40, y: -20 },
+        dependsOn: [],
+        easing: "smooth",
+        id: "math-motion/final-target",
+        interval: { end: 3, start: 2 },
+        kind: "CreateMotion",
+        provenance: { evidence: [], origin: "studio-default" },
+        targetEntityIds: ["equation-a-prime"],
+      },
+    ],
+    provenance: { evidence: [], origin: "studio-default" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: ["math-motion/final-target"] },
+    transactionId: "math-motion",
+    version: 1,
   };
 }
 
@@ -219,6 +246,47 @@ describe("authoritative Editor Program materialization", () => {
         ]),
       }),
     );
+  });
+
+  it("admits a later-Program final-target motion through the same Rust MathTex projector", async () => {
+    const transform = mathTexTransformProgram();
+    const motion = mathTexFinalTargetMotionProgram();
+    const transformProjection = acceptedMathTexProjection();
+    const compiler = vi.fn<ProjectStudioMathTexTransformCompiler>(async () => ({
+      ...transformProjection,
+      insertions: [...transformProjection.insertions, { at: 3, duration: 1, transactionId: motion.transactionId }],
+      motions: [
+        {
+          control: { x: 350, y: 175 },
+          easing: "smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 4, start: 3 },
+          operationId: motion.operations[0]!.id,
+          targetEntityId: "equation-a-prime",
+          to: { x: 360, y: 160 },
+          transactionId: motion.transactionId,
+        },
+      ],
+      projectedDuration: 7,
+      replacements: transformProjection.replacements.map((replacement, index, replacements) =>
+        index === replacements.length - 1
+          ? { ...replacement, targetLifetime: { ...replacement.targetLifetime, end: 7 } }
+          : replacement,
+      ),
+    }));
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(scene(), [], [transform, motion], undefined, compiler),
+    ).resolves.toHaveLength(2);
+    expect(compiler.mock.calls[0]?.[0]).toMatchObject({
+      programs: [
+        expect.anything(),
+        expect.objectContaining({ operations: [expect.objectContaining({ kind: "create-motion" })] }),
+      ],
+      studioEntities: expect.arrayContaining([
+        expect.objectContaining({ objectGraphKey: MATH_TEX_SOURCE_ID, position: { x: 320, y: 180 } }),
+      ]),
+    });
   });
 
   it("rejects malformed MathTex content through Rust admission", async () => {

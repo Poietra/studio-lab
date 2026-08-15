@@ -183,6 +183,7 @@ struct ApplyStudioMotionEditCommandJsonV1 {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioMathTexTransformEditCommandJsonV1 {
     expected_base_revision: String,
+    frame: StudioAuthoringSize,
     math_tex_outlines: Vec<StudioMathTexTransformOutline>,
     next_revision: String,
     programs: Vec<StudioMathTexTransformProgram>,
@@ -192,6 +193,7 @@ struct ApplyStudioMathTexTransformEditCommandJsonV1 {
     studio_entities: Vec<StudioMathTexTransformEntityIdentity>,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
+    viewport: StudioAuthoringSize,
 }
 
 #[derive(Debug, Deserialize)]
@@ -210,11 +212,13 @@ impl From<ApplyStudioMathTexTransformEditCommandJsonV1> for ApplyStudioMathTexTr
     fn from(value: ApplyStudioMathTexTransformEditCommandJsonV1) -> Self {
         Self {
             expected_base_revision: value.expected_base_revision,
+            frame: value.frame,
             math_tex_outlines: value.math_tex_outlines,
             next_revision: value.next_revision,
             programs: value.programs,
             source_runtime_bindings: value.source_runtime_bindings,
             studio_entities: value.studio_entities,
+            viewport: value.viewport,
         }
     }
 }
@@ -541,7 +545,7 @@ pub fn apply_studio_motion_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Applies one atomic static imported `MathTex` replacement chain through the shared core.
+/// Applies a static imported `MathTex` replacement chain and optional final motion.
 ///
 /// # Errors
 ///
@@ -555,7 +559,7 @@ pub fn apply_studio_math_tex_transform_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Authorizes and projects one static imported `MathTex` replacement chain without a snapshot.
+/// Projects a static imported `MathTex` replacement chain and optional final motion.
 ///
 /// # Errors
 ///
@@ -666,6 +670,7 @@ mod tests {
         let runtime_entity_id = source["scene"]["entities"][0]["id"].as_str().unwrap();
         serde_json::to_vec(&json!({
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "frame": { "height": 8.0, "width": 14.222_222_222_222_221 },
             "mathTexOutlines": [{
                 "entityId": "tx:math-tex-transform/entity:b",
                 "path": replacement["scene"]["entities"][0]["geometry"]["path"],
@@ -728,18 +733,21 @@ mod tests {
             }],
             "studioEntities": [{
                 "objectGraphKey": "source:formula",
+                "position": { "x": 800.0, "y": 450.0 },
                 "provisional": false,
                 "scale": 1.0,
                 "sourceIdentity": "formula",
                 "type": "math-tex"
             }, {
                 "objectGraphKey": "source:unrelated",
+                "position": null,
                 "provisional": false,
                 "scale": 1.0,
                 "sourceIdentity": "unrelated",
                 "type": "other"
             }],
-            "version": 1
+            "version": 1,
+            "viewport": { "height": 900.0, "width": 1600.0 }
         }))
         .unwrap()
     }
@@ -749,9 +757,56 @@ mod tests {
             serde_json::from_slice(&math_tex_transform_edit_command_json()).unwrap();
         let object = command.as_object_mut().unwrap();
         object.remove("expectedBaseRevision");
+        object.remove("frame");
         object.remove("mathTexOutlines");
         object.remove("nextRevision");
         object.remove("sourceRuntimeBindings");
+        object.remove("viewport");
+        object.insert("baseDuration".to_owned(), json!(2.4));
+        object.insert(
+            "schema".to_owned(),
+            json!("poietra.project-studio-math-tex-transform"),
+        );
+        for entity in object["studioEntities"].as_array_mut().unwrap() {
+            entity
+                .as_object_mut()
+                .unwrap()
+                .insert("lifetime".to_owned(), json!([{ "end": 2.4, "start": 0.0 }]));
+        }
+        serde_json::to_vec(&command).unwrap()
+    }
+
+    fn math_tex_transform_motion_edit_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&math_tex_transform_edit_command_json()).unwrap();
+        let program = &mut command["programs"][0];
+        program["intentCount"] = json!(3);
+        program["scheduleEdgeCount"] = json!(4);
+        program["scheduleOrder"] = json!(["transform-a-b", "transform-b-a", "move-restored"]);
+        program["operations"].as_array_mut().unwrap().push(json!({
+            "controlOffset": { "x": 0.0, "y": -160.0 },
+            "delta": { "x": 160.0, "y": 0.0 },
+            "dependsOn": ["transform-b-a"],
+            "easing": "smooth",
+            "id": "move-restored",
+            "interval": { "end": 1.75, "start": 1.5 },
+            "kind": "create-motion",
+            "origin": "remote-model",
+            "targetEntityIds": ["tx:math-tex-transform/entity:a-prime"]
+        }));
+        serde_json::to_vec(&command).unwrap()
+    }
+
+    fn math_tex_transform_motion_projection_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&math_tex_transform_motion_edit_command_json()).unwrap();
+        let object = command.as_object_mut().unwrap();
+        object.remove("expectedBaseRevision");
+        object.remove("frame");
+        object.remove("mathTexOutlines");
+        object.remove("nextRevision");
+        object.remove("sourceRuntimeBindings");
+        object.remove("viewport");
         object.insert("baseDuration".to_owned(), json!(2.4));
         object.insert(
             "schema".to_owned(),
@@ -1693,6 +1748,7 @@ mod tests {
                     "duration": 1.0,
                     "transactionId": "math-tex-transform"
                 }],
+                "motions": [],
                 "projectedDuration": 3.4,
                 "replacements": [{
                     "content": {
@@ -1751,6 +1807,51 @@ mod tests {
         assert_eq!(
             response["replacements"][1]["targetLifetime"],
             json!({ "end": 3.4, "start": 0.75 })
+        );
+        assert_eq!(response["motions"], json!([]));
+    }
+
+    #[test]
+    fn math_tex_transform_adapter_projects_and_applies_final_replacement_motion() {
+        let projection = project_studio_math_tex_transform_json(
+            &math_tex_transform_motion_projection_command_json(),
+        )
+        .unwrap();
+        let projection: serde_json::Value = serde_json::from_slice(&projection).unwrap();
+        assert_eq!(
+            projection["motions"],
+            json!([{
+                "control": { "x": 880.0, "y": 290.0 },
+                "easing": "smooth",
+                "from": { "x": 800.0, "y": 450.0 },
+                "interval": { "end": 1.75, "start": 1.5 },
+                "operationId": "move-restored",
+                "targetEntityId": "tx:math-tex-transform/entity:a-prime",
+                "to": { "x": 960.0, "y": 450.0 },
+                "transactionId": "math-tex-transform"
+            }])
+        );
+        assert_eq!(projection["projectedDuration"], json!(3.9));
+
+        let response = apply_studio_math_tex_transform_edit_json(
+            &static_math_tex_fixture_json(),
+            &math_tex_transform_motion_edit_command_json(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+        assert!(
+            bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| matches!(
+                    channel,
+                    poietra_scene_ir::AnimationChannelV1::MotionPath { entity_id, .. }
+                        if entity_id == "tx:math-tex-transform/entity:a-prime"
+                ))
         );
     }
 

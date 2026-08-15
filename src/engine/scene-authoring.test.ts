@@ -429,6 +429,7 @@ describe("Scene authoring WASM adapter", () => {
     const bundle = await fixtureBundle();
     const command = {
       expectedBaseRevision: "a".repeat(64),
+      frame: { height: 9, width: 16 },
       mathTexOutlines: [],
       nextRevision: "f".repeat(64),
       programs: [],
@@ -436,10 +437,11 @@ describe("Scene authoring WASM adapter", () => {
       sourceRuntimeBindings: [],
       studioEntities: [],
       version: 1,
+      viewport: { height: 360, width: 640 },
     } satisfies ApplyStudioMathTexTransformEditWireCommandV1;
     const response = {
       bundle,
-      mathTexTransformProjection: { insertions: [], projectedDuration: 2, replacements: [] },
+      mathTexTransformProjection: { insertions: [], motions: [], projectedDuration: 2, replacements: [] },
       persistentRemoveProjection: { removals: [] },
     } as const;
     const calls: unknown[] = [];
@@ -544,7 +546,23 @@ describe("Scene authoring WASM adapter", () => {
 
   it("projects normalized MathTex transform Programs without a Scene snapshot", async () => {
     const calls: unknown[] = [];
-    const projection = { insertions: [], projectedDuration: 2, replacements: [] } as const;
+    const projection = {
+      insertions: [],
+      motions: [
+        {
+          control: { x: 340, y: 180 },
+          easing: "smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 1, start: 0 },
+          operationId: "motion",
+          targetEntityId: "replacement",
+          to: { x: 360, y: 180 },
+          transactionId: "transform-motion",
+        },
+      ],
+      projectedDuration: 2,
+      replacements: [],
+    } as const;
     const project = createProjectStudioMathTexTransformCompiler(async () => ({
       projectStudioMathTexTransformV1: (commandJson) => {
         calls.push(JSON.parse(new TextDecoder().decode(commandJson)));

@@ -144,6 +144,7 @@ function mathTexTransformProjection(
   }
   return {
     insertions: [{ at: 0.3, duration: 0.5, transactionId: program.transactionId }],
+    motions: [],
     projectedDuration: baseDuration + 0.5,
     replacements: [
       {
@@ -168,6 +169,85 @@ function mathTexTransformProjection(
       },
     ],
   };
+}
+
+function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgram: boolean, baseDuration: number) {
+  const transformProgram = mathTexTransformProgram(sourceEntityId);
+  const finalTarget = transformProgram.operations[1];
+  if (finalTarget?.kind !== "TransformContent") throw new Error("Expected a final MathTex transform target.");
+  const motion = {
+    controlOffset: { x: 10, y: 5 },
+    delta: { x: 40, y: -20 },
+    dependsOn: splitMotionProgram ? [] : [finalTarget.id],
+    easing: "smooth" as const,
+    id: "tx:math-transform/operation:move-final",
+    interval: { end: 1, start: 0.75 },
+    kind: "CreateMotion" as const,
+    provenance: { evidence: ["move final"], origin: "remote-model" as const },
+    targetEntityIds: [finalTarget.targetEntityId],
+  };
+  const motionProgram: CanonicalEditProgram = {
+    anchor: {
+      capturedPlayhead: 0.75,
+      evidence: ["playhead:0.750"],
+      resolvedSeconds: 0.75,
+      source: { kind: "playhead", referenceSeconds: 0.75 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [motion],
+    provenance: { evidence: ["fixture"], origin: "remote-model" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: [motion.id] },
+    transactionId: "math-motion",
+    version: 1,
+  };
+  const programs: readonly CanonicalEditProgram[] = splitMotionProgram
+    ? [transformProgram, motionProgram]
+    : [
+        {
+          ...transformProgram,
+          intentCount: 3,
+          operations: [...transformProgram.operations, motion],
+          schedule: {
+            edges: [
+              ...transformProgram.schedule.edges,
+              { from: finalTarget.id, reason: "explicit" as const, to: motion.id },
+              { from: finalTarget.id, reason: "identity" as const, to: motion.id },
+            ],
+            mode: "sequence",
+            order: [...transformProgram.schedule.order, motion.id],
+          },
+        },
+      ];
+  const transformProjection = mathTexTransformProjection(transformProgram, baseDuration);
+  const resolvedMotionInterval = splitMotionProgram ? { end: 1.5, start: 1.25 } : { end: 1.05, start: 0.8 };
+  const projectedDuration = baseDuration + 0.75;
+  const projection: StudioMathTexTransformProjectionV1 = {
+    ...transformProjection,
+    insertions: splitMotionProgram
+      ? [...transformProjection.insertions, { at: 1.25, duration: 0.25, transactionId: motionProgram.transactionId }]
+      : [{ at: 0.3, duration: 0.75, transactionId: transformProgram.transactionId }],
+    motions: [
+      {
+        control: { x: 350, y: 175 },
+        easing: motion.easing,
+        from: { x: 320, y: 180 },
+        interval: resolvedMotionInterval,
+        operationId: motion.id,
+        targetEntityId: finalTarget.targetEntityId,
+        to: { x: 360, y: 160 },
+        transactionId: splitMotionProgram ? motionProgram.transactionId : transformProgram.transactionId,
+      },
+    ],
+    projectedDuration,
+    replacements: transformProjection.replacements.map((replacement, index, replacements) =>
+      index === replacements.length - 1
+        ? { ...replacement, targetLifetime: { ...replacement.targetLifetime, end: projectedDuration } }
+        : replacement,
+    ),
+  };
+  return { motion, programs, projection };
 }
 
 describe("Studio workspace projection", () => {
@@ -424,6 +504,7 @@ describe("Studio workspace projection", () => {
     };
     const singleProjection: StudioMathTexTransformProjectionV1 = {
       insertions: [{ at: first.interval.start, duration: 0.25, transactionId: program.transactionId }],
+      motions: [],
       projectedDuration: imported.runtimeSceneState.duration + 0.25,
       replacements: [
         {
@@ -509,6 +590,68 @@ describe("Studio workspace projection", () => {
       { interval: first.interval, value: 1 },
       { interval: second.interval, value: 1 },
     ]);
+  });
+
+  it.each([
+    ["same Program", false],
+    ["later Program", true],
+  ] as const)("installs Rust-projected final-target motion from a %s", (_label, splitMotionProgram) => {
+    const imported = workspaceScene("MathFormula", null);
+    const [sourceEntityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!sourceEntityId) throw new Error("MathTex fixture has no entity.");
+    const { motion, programs, projection } = mathTexTransformMotionFixture(
+      sourceEntityId,
+      splitMotionProgram,
+      imported.runtimeSceneState.duration,
+    );
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: programs.map((program) => programRecord(program, { issues: [], kind: "valid" })),
+      currentTime: projection.motions[0]!.interval.end,
+      draftProgram: null,
+      mathTexTransformProjection: projection,
+      nextScene: null,
+      programAuthority: "rust-authorized-batch",
+      selectedObjectIds: [],
+    });
+    const projectedMotion = projection.motions[0]!;
+    const samples =
+      projected.proposedState.evaluatedScene.propertyChannels[`${projectedMotion.targetEntityId}/position`]?.samples;
+
+    expect(samples?.at(-1)).toMatchObject({
+      control: projectedMotion.control,
+      easing: projectedMotion.easing,
+      from: projectedMotion.from,
+      interval: projectedMotion.interval,
+      kind: "animated",
+      operationId: motion.id,
+      value: projectedMotion.to,
+    });
+    expect(
+      projected.projection.canvas.entities.find(({ id }) => id === projectedMotion.targetEntityId)?.position,
+    ).toEqual(projectedMotion.to);
+  });
+
+  it("rejects a stale Rust MathTex motion delta or control correlation", () => {
+    const imported = workspaceScene("MathFormula", null);
+    const [sourceEntityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!sourceEntityId) throw new Error("MathTex fixture has no entity.");
+    const { programs, projection } = mathTexTransformMotionFixture(
+      sourceEntityId,
+      false,
+      imported.runtimeSceneState.duration,
+    );
+    const select = (motion: StudioMathTexTransformProjectionV1["motions"][number]) =>
+      selectMathTexTransformProjection(imported.runtimeSceneState.duration, programs, {
+        ...projection,
+        motions: [motion],
+      });
+
+    expect(() => select({ ...projection.motions[0]!, to: { x: 361, y: 160 } })).toThrow("is not correlated");
+    expect(() => select({ ...projection.motions[0]!, control: { x: 351, y: 175 } })).toThrow("is not correlated");
+    expect(() => select({ ...projection.motions[0]!, interval: { end: 1.04, start: 0.79 } })).toThrow(
+      "is not correlated",
+    );
   });
 
   it("fails closed for a missing, duplicate, or mismatched MathTex transform projection", () => {

@@ -14,6 +14,7 @@ import type {
   ApplyStudioMotionEditWireCommandV1,
   ApplyStudioTimelineEditCompiler,
   ApplyStudioTimelineEditWireCommandV1,
+  StudioMathTexTransformProjectionV1,
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
@@ -2191,6 +2192,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (!baseEntity) throw new Error("Imported MathTex Scene IR fixture is empty.");
     const mathTexTransformProjection = {
       insertions: [{ at: 0, duration: 2, transactionId: "mathtex-chain" }],
+      motions: [],
       projectedDuration: fixture.snapshot.snapshot.scene.duration + 2,
       replacements: [
         {
@@ -2301,6 +2303,132 @@ describe("compileStudioPreviewSceneV1", () => {
       error: "Rust core did not return the complete MathTex transform projection.",
       kind: "unsupported",
     });
+  });
+
+  it("passes a same-Program MathTex transform and final-target motion through one Rust command", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const targetEntityId = "tx:mathtex-motion/entity:target";
+    const transform = {
+      dependsOn: [],
+      id: "tx:mathtex-motion/operation:transform",
+      interval: { end: 1, start: 0 },
+      kind: "TransformContent" as const,
+      provenance: { evidence: [], origin: "remote-model" as const },
+      replacement: { displayLines: ["B"], texParts: ["B"] },
+      sourceEntityId: fixture.entityId,
+      strategy: "transform-matching-tex" as const,
+      targetEntityId,
+      targetType: "MathTex",
+    };
+    const motion = {
+      controlOffset: { x: 10, y: 5 },
+      delta: { x: 40, y: -20 },
+      dependsOn: [transform.id],
+      easing: "smooth" as const,
+      id: "tx:mathtex-motion/operation:motion",
+      interval: { end: 2, start: 1 },
+      kind: "CreateMotion" as const,
+      provenance: { evidence: [], origin: "remote-model" as const },
+      targetEntityIds: [targetEntityId],
+    };
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: [],
+        resolvedSeconds: 0,
+        source: { kind: "playhead", referenceSeconds: 0 },
+      },
+      intentCount: 2,
+      loweringStatus: "supported",
+      operations: [transform, motion],
+      provenance: { evidence: [], origin: "remote-model" },
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [
+          { from: transform.id, reason: "explicit", to: motion.id },
+          { from: transform.id, reason: "identity", to: motion.id },
+        ],
+        mode: "sequence",
+        order: [transform.id, motion.id],
+      },
+      transactionId: "mathtex-motion",
+      version: 1,
+    };
+    const commands: ApplyStudioMathTexTransformEditWireCommandV1[] = [];
+    const baseEntity = fixture.snapshot.snapshot.scene.entities[0];
+    if (!baseEntity) throw new Error("Imported MathTex Scene IR fixture is empty.");
+    const projection: StudioMathTexTransformProjectionV1 = {
+      insertions: [{ at: 0, duration: 2, transactionId: program.transactionId }],
+      motions: [
+        {
+          control: { x: 430, y: 215 },
+          easing: "smooth",
+          from: { x: 400, y: 220 },
+          interval: motion.interval,
+          operationId: motion.id,
+          targetEntityId,
+          to: { x: 440, y: 200 },
+          transactionId: program.transactionId,
+        },
+      ],
+      projectedDuration: fixture.snapshot.snapshot.scene.duration + 2,
+      replacements: [
+        {
+          content: transform.replacement,
+          interval: transform.interval,
+          operationId: transform.id,
+          sourceEntityId: transform.sourceEntityId,
+          targetEntityId,
+          targetLifetime: { end: fixture.snapshot.snapshot.scene.duration + 2, start: 0 },
+          targetType: "math-tex",
+          transactionId: program.transactionId,
+        },
+      ],
+    };
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMathTexTransformEditCompiler: async (bundle, command) => {
+        commands.push(command);
+        return {
+          bundle: {
+            ...bundle,
+            scene: { ...bundle.scene, entities: [...bundle.scene.entities, { ...baseEntity, id: targetEntityId }] },
+          },
+          mathTexTransformProjection: projection,
+          persistentRemoveProjection: { removals: [] },
+        };
+      },
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => compiledMathTexResponse(),
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.workingState,
+        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      },
+      workingRevision: "studio-working-v1:mathtex-motion",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+
+    expect(commands).toHaveLength(1);
+    expect(commands[0]).toMatchObject({
+      frame: { height: 9, width: 16 },
+      viewport: { height: 360, width: 640 },
+    });
+    expect(commands[0]?.programs[0]?.operations).toEqual([
+      expect.objectContaining({ kind: "transform-content", targetEntityId }),
+      expect.objectContaining({
+        controlOffset: motion.controlOffset,
+        delta: motion.delta,
+        easing: motion.easing,
+        kind: "create-motion",
+        targetEntityIds: [targetEntityId],
+      }),
+    ]);
+    expect(
+      commands[0]?.studioEntities.find(({ objectGraphKey }) => objectGraphKey === fixture.entityId)?.position,
+    ).toEqual({ x: 400, y: 220 });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.mathTexTransformProjection).toEqual(projection);
   });
 
   it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {
