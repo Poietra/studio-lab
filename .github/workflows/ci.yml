@@ -144,10 +144,10 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  tests:
-    name: Unit and integration tests
-    needs: changes
-    if: needs.changes.outputs.tests == 'true'
+  integration-tests:
+    name: Integration tests
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.tests == 'true' && needs.engine-wasm.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -166,6 +166,46 @@ jobs:
           python-version: "3.12"
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
+      - name: Install pinned Python test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --no-deps "Pillow==12.2.0"
+          python_interpreter="$(command -v python)"
+          printf 'PYTHON=%s\n' "$python_interpreter" >> "$GITHUB_ENV"
+      - name: Run boundary and integration tests
+        run: pnpm test:integration
+
+  unit-tests:
+    name: Unit tests
+    needs: [changes, engine-wasm]
+    if: always() && needs.changes.outputs.tests == 'true' && needs.engine-wasm.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+      - name: Set up Python test interpreter
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Download browser WASM bindings
+        uses: actions/download-artifact@v6
+        with:
+          name: poietra-engine-wasm
+          path: public/engine-wasm/
       - name: Install pinned Python test dependencies
         run: |
           python -m pip install --disable-pip-version-check --no-deps "Pillow==12.2.0"
@@ -173,8 +213,6 @@ jobs:
           printf 'PYTHON=%s\n' "$python_interpreter" >> "$GITHUB_ENV"
       - name: Run unit tests
         run: pnpm test:unit
-      - name: Run boundary and integration tests
-        run: pnpm test:integration
 
   storage-e2e:
     name: Durable storage E2E
@@ -414,7 +452,8 @@ jobs:
       - style
       - engine-core
       - engine-wasm
-      - tests
+      - integration-tests
+      - unit-tests
       - storage-e2e
       - web-build
       - browser-smoke
@@ -437,10 +476,11 @@ jobs:
           STORAGE_E2E: ${{ needs.storage-e2e.result }}
           STYLE: ${{ needs.style.result }}
           TAURI_CHECK: ${{ needs.tauri-check.result }}
-          TESTS: ${{ needs.tests.result }}
+          INTEGRATION_TESTS: ${{ needs.integration-tests.result }}
+          UNIT_TESTS: ${{ needs.unit-tests.result }}
           WEB_BUILD: ${{ needs.web-build.result }}
         run: |
-          for result in "$CHANGES" "$STYLE" "$ENGINE_CORE" "$ENGINE_WASM" "$TESTS" "$STORAGE_E2E" "$WEB_BUILD" "$BROWSER_SMOKE" "$ELECTRON_SMOKE" "$TAURI_CHECK" "$NATIVE_RENDER" "$FULL_BROWSER"; do
+          for result in "$CHANGES" "$STYLE" "$ENGINE_CORE" "$ENGINE_WASM" "$INTEGRATION_TESTS" "$UNIT_TESTS" "$STORAGE_E2E" "$WEB_BUILD" "$BROWSER_SMOKE" "$ELECTRON_SMOKE" "$TAURI_CHECK" "$NATIVE_RENDER" "$FULL_BROWSER"; do
             case "$result" in
               failure|cancelled)
                 echo "A selected CI lane ended with: $result" >&2

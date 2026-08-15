@@ -18,8 +18,9 @@ Test count is not a coverage target.
 Pull requests use a change-scoped fast lane. Style and scope routing always run;
 Engine core, browser WASM, web builds, unit/integration tests, durable storage,
 Chromium journeys, and the packaged Electron smoke run only when their owned
-paths change. The final `CI gate` reports one stable result even when unrelated
-lanes are intentionally skipped.
+paths change. Unit and integration tests both load the real WASM module, so they
+consume its artifact and then run in parallel. The final `CI gate` reports one
+stable result even when unrelated lanes are intentionally skipped.
 
 Pushes to `main` and manual workflow runs add full validation: native Lavapipe
 reference rendering, the complete Chromium/WebGPU/WebKit browser suite, retained
