@@ -30,11 +30,14 @@ import {
   compileApplyStudioCreationEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
+  type ProjectStudioTimelineCompiler,
+  projectStudioTimeline,
+  type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
-import type { ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
-import type { CanonicalEditOperation } from "./operations";
+import type { ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
+import { type CanonicalEditOperation, isSceneDurationOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
   evaluateStudioPreviewEligibility,
@@ -66,6 +69,7 @@ import {
 } from "./preview-temporal-rebase";
 import { isPointValue } from "./property-sampling";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
+import { normalizeTimelineProjectionCommand } from "./timeline-projection";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -90,6 +94,8 @@ export type StudioPreviewRendererView = Readonly<{
   /** Server-verified source name to runtime entity mapping for this snapshot. */
   sourceRuntimeIdentity: StudioPreviewSourceRuntimeIdentityV1 | null;
   state: PreviewRendererHostStateV1;
+  /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
+  timelineProjection: StudioTimelineProjectionV1 | null;
   /** Preview-only endpoint authority; source lowering still verifies the exact boundary. */
   runtimeTraceEditAnchor: number | null;
   /** Validation bound to the staged Program and snapshot, independent of the playhead. */
@@ -124,12 +130,12 @@ export type StudioPreviewInteractionAuthority =
 export type UseStudioPreviewRendererInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
-  proposedState: ProposedState | null;
   provider: StudioPreviewSnapshotProviderV1 | null;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
   sourceEvents: RuntimeSceneState["eventTrack"]["events"];
+  workingState: WorkingState | null;
 }>;
 
 // transferControlToOffscreen is irreversible per element, so a canvas that
@@ -160,6 +166,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   interactionEntityIds: readonly string[];
   programAuthority?: "source-bound-endpoint";
   snapshot: StudioVerifiedPreviewSnapshotV1;
+  timelineProjection?: StudioTimelineProjectionV1;
   workingRevision: string;
   workspaceKey: string;
 }>;
@@ -420,8 +427,8 @@ export async function digestStudioPreviewSceneRevisionV1(
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function sourceProgramRecords(proposedState: ProposedState): readonly ProgramRecord[] {
-  return [...proposedState.base.appliedPrograms, ...proposedState.base.stagedPrograms];
+function sourceProgramRecords(workingState: WorkingState): readonly ProgramRecord[] {
+  return [...workingState.appliedPrograms, ...workingState.stagedPrograms];
 }
 
 function studioProgramEnvelope(program: ProgramRecord["program"]) {
@@ -549,12 +556,12 @@ function normalizedStudioMotionOperation(
 function staticRootTransformEditCommand(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
-    proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    workingState: WorkingState;
   }>,
   nextRevision: string,
 ): ApplyStaticRootTransformEditWireCommandV1 {
-  const programs = sourceProgramRecords(input.proposedState).map(({ program }) => ({
+  const programs = sourceProgramRecords(input.workingState).map(({ program }) => ({
     ...studioProgramEnvelope(program),
     operations: program.operations.map(
       (operation): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] => {
@@ -607,7 +614,7 @@ function staticRootTransformEditCommand(
         sourceName,
       }),
     ),
-    studioEntities: Object.entries(input.proposedState.base.runtimeSceneState.objectGraph.entities).map(
+    studioEntities: Object.entries(input.workingState.runtimeSceneState.objectGraph.entities).map(
       ([objectGraphKey, entity]) => ({
         dimensions: entity.geometry?.dimensions.kind === "known" ? entity.geometry.dimensions.value : {},
         id: entity.id,
@@ -634,41 +641,12 @@ function staticRootTransformEditCommand(
   };
 }
 
-function normalizedStudioTimelineOperation(
-  operation: CanonicalEditOperation,
-): ApplyStudioTimelineEditWireCommandV1["programs"][number]["operations"][number] {
-  const common = {
-    dependsOn: operation.dependsOn,
-    id: operation.id,
-    interval: operation.interval,
-    origin: operation.provenance.origin,
-  };
-  if (operation.kind === "InsertTimelineEvent") {
-    return {
-      ...common,
-      eventKind: operation.eventKind,
-      kind: "insert-wait",
-      purpose: operation.purpose ?? null,
-    };
-  }
-  if (operation.kind === "TrimSceneDuration") {
-    return {
-      ...common,
-      kind: "trim-scene-duration",
-      removedDuration: operation.removedDuration,
-      targetDuration: operation.targetDuration,
-      waitOperationIds: operation.waitOperationIds,
-    };
-  }
-  return { ...common, kind: "unsupported" };
-}
-
 function staticImportedSourceIsExact(
-  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
+  input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
 ) {
   const scene = input.snapshot.snapshot.scene;
   const correlation = input.snapshot.correlation;
-  const base = input.proposedState.base;
+  const base = input.workingState;
   return (
     scene.source.kind === "imported-manim-server-snapshot" &&
     importedSnapshotCorrelationIsExact(input.snapshot, true) &&
@@ -682,8 +660,8 @@ function staticImportedSourceIsExact(
 function studioMotionEditCommand(
   input: Readonly<{
     frame: Readonly<{ height: number; width: number }>;
-    proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    workingState: WorkingState;
   }>,
   nextRevision: string,
 ): ApplyStudioMotionEditWireCommandV1 {
@@ -691,7 +669,7 @@ function studioMotionEditCommand(
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
     nextRevision,
-    programs: sourceProgramRecords(input.proposedState).map(({ program }) => ({
+    programs: sourceProgramRecords(input.workingState).map(({ program }) => ({
       ...studioProgramEnvelope(program),
       operations: program.operations.map(normalizedStudioMotionOperation),
     })),
@@ -703,7 +681,7 @@ function studioMotionEditCommand(
         sourceName,
       }),
     ),
-    studioEntities: Object.entries(input.proposedState.base.runtimeSceneState.objectGraph.entities).map(
+    studioEntities: Object.entries(input.workingState.runtimeSceneState.objectGraph.entities).map(
       ([objectGraphKey, entity]) => ({
         objectGraphKey,
         provisional: entity.provisional,
@@ -715,19 +693,26 @@ function studioMotionEditCommand(
   };
 }
 
-function studioTimelineEditCommand(
-  input: Readonly<{ proposedState: ProposedState; snapshot: StudioVerifiedPreviewSnapshotV1 }>,
+function studioTimelineCommands(
+  input: Readonly<{ snapshot: StudioVerifiedPreviewSnapshotV1; workingState: WorkingState }>,
   nextRevision: string,
-): ApplyStudioTimelineEditWireCommandV1 {
+): Readonly<{
+  apply: ApplyStudioTimelineEditWireCommandV1;
+  projection: Parameters<ProjectStudioTimelineCompiler>[0];
+}> {
+  const projection = normalizeTimelineProjectionCommand(
+    input.workingState.runtimeSceneState.duration,
+    sourceProgramRecords(input.workingState).map(({ program }) => program),
+  );
   return {
-    expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-    nextRevision,
-    programs: sourceProgramRecords(input.proposedState).map(({ program }) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(normalizedStudioTimelineOperation),
-    })),
-    schema: "poietra.apply-studio-timeline-edit",
-    version: 1,
+    apply: {
+      expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+      nextRevision,
+      programs: projection.programs,
+      schema: "poietra.apply-studio-timeline-edit",
+      version: 1,
+    },
+    projection,
   };
 }
 
@@ -740,16 +725,17 @@ export async function compileStudioPreviewSceneV1(
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
-    proposedState: ProposedState;
+    projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
+    workingState: WorkingState;
     workingRevision: string;
     workspaceKey: string;
   }>,
 ): Promise<
   Readonly<{ error: string; kind: "unsupported" }> | Readonly<{ kind: "compiled"; scene: CompiledStudioPreviewSceneV1 }>
 > {
-  const sourcePrograms = sourceProgramRecords(input.proposedState);
-  if (Math.abs(input.proposedState.base.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
+  const sourcePrograms = sourceProgramRecords(input.workingState);
+  if (Math.abs(input.workingState.runtimeSceneState.duration - input.snapshot.duration) >= 0.0005) {
     return {
       error: "Studio source state is not correlated with the verified imported Scene timing.",
       kind: "unsupported",
@@ -771,11 +757,7 @@ export async function compileStudioPreviewSceneV1(
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthority(
-            input.snapshot,
-            0,
-            input.proposedState.base.runtimeSceneState.eventTrack.events,
-          ),
+          studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
           snapshot.scene.entities,
         ),
         snapshot: input.snapshot,
@@ -865,11 +847,7 @@ export async function compileStudioPreviewSceneV1(
       const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
       const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
         input.snapshot.sourceRuntimeIdentity,
-        studioPreviewInteractionAuthority(
-          input.snapshot,
-          0,
-          input.proposedState.base.runtimeSceneState.eventTrack.events,
-        ),
+        studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
         bundle.scene.entities,
       );
       for (const entityId of createdEntityIds) {
@@ -899,10 +877,10 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const hasStudioTimelineEdit = sourcePrograms.some(({ program }) =>
-    program.operations.some(({ kind }) => kind === "InsertTimelineEvent" || kind === "TrimSceneDuration"),
+  const hasStudioSceneDurationEdit = sourcePrograms.some(({ program }) =>
+    program.operations.some(isSceneDurationOperation),
   );
-  if (hasStudioTimelineEdit) {
+  if (hasStudioSceneDurationEdit) {
     if (!staticImportedSourceIsExact(input)) {
       return {
         error: "The verified source snapshot is not one exact imported Scene.",
@@ -916,9 +894,13 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     try {
+      const timelineCommands = studioTimelineCommands(input, engineRevisionHash);
       const bundle = await (input.applyStudioTimelineEditCompiler ?? compileApplyStudioTimelineEdit)(
         input.snapshot.snapshot,
-        studioTimelineEditCommand(input, engineRevisionHash),
+        timelineCommands.apply,
+      );
+      const timelineProjection = await (input.projectStudioTimelineCompiler ?? projectStudioTimeline)(
+        timelineCommands.projection,
       );
       return {
         kind: "compiled",
@@ -931,11 +913,12 @@ export async function compileStudioPreviewSceneV1(
             studioPreviewInteractionAuthority(
               input.snapshot,
               0,
-              input.proposedState.base.runtimeSceneState.eventTrack.events,
+              input.workingState.runtimeSceneState.eventTrack.events,
             ),
             bundle.scene.entities,
           ),
           snapshot: input.snapshot,
+          timelineProjection,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
         },
@@ -981,7 +964,7 @@ export async function compileStudioPreviewSceneV1(
             studioPreviewInteractionAuthority(
               input.snapshot,
               0,
-              input.proposedState.base.runtimeSceneState.eventTrack.events,
+              input.workingState.runtimeSceneState.eventTrack.events,
             ),
             bundle.scene.entities,
           ),
@@ -1007,9 +990,9 @@ export async function compileStudioPreviewSceneV1(
     const rebased = await compileStudioPreviewRuntimeTraceEdit({
       boundEntityEditCompiler: input.applyStudioBoundEntityEditCompiler,
       frame: input.frame,
-      proposedState: input.proposedState,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
+      workingState: input.workingState,
     });
     if (rebased.kind === "unsupported") {
       return {
@@ -1026,11 +1009,7 @@ export async function compileStudioPreviewSceneV1(
         frame: { ...input.frame },
         interactionEntityIds: studioPreviewInteractionEntityIdsV1(
           input.snapshot.sourceRuntimeIdentity,
-          studioPreviewInteractionAuthority(
-            input.snapshot,
-            0,
-            input.proposedState.base.runtimeSceneState.eventTrack.events,
-          ),
+          studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
           rebased.scene.entities,
         ),
         programAuthority: "source-bound-endpoint",
@@ -1041,7 +1020,7 @@ export async function compileStudioPreviewSceneV1(
     };
   }
   if (importedSource.kind === "imported-manim-server-snapshot") {
-    const base = input.proposedState.base;
+    const base = input.workingState;
     const correlation = input.snapshot.correlation;
     if (
       !importedSnapshotCorrelationIsExact(input.snapshot, true) ||
@@ -1077,7 +1056,7 @@ export async function compileStudioPreviewSceneV1(
             studioPreviewInteractionAuthority(
               input.snapshot,
               0,
-              input.proposedState.base.runtimeSceneState.eventTrack.events,
+              input.workingState.runtimeSceneState.eventTrack.events,
             ),
             bundle.scene.entities,
           ),
@@ -1147,12 +1126,12 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const {
     context,
     frame,
-    proposedState,
     provider,
     retainedSourceDuration,
     sampleTime,
     sceneBoundaryActive,
     sourceEvents,
+    workingState,
   } = input;
   const [bound, setBound] = useState<BoundHostStateV1 | null>(null);
   const [canvasEl, setCanvasEl] = useState<HTMLCanvasElement | null>(null);
@@ -1161,8 +1140,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const [compilation, setCompilation] = useState<StudioPreviewCompilationStateV1>(INACTIVE_COMPILATION);
   const [installation, setInstallation] = useState<StudioPreviewHostInstallationV1 | null>(null);
   const [viewport, setViewport] = useState<PreviewViewportV1 | null>(null);
-  const latestProposedState = useRef(proposedState);
-  latestProposedState.current = proposedState;
+  const latestWorkingState = useRef(workingState);
+  latestWorkingState.current = workingState;
   const queuedScene = useRef<Readonly<{
     binding: StudioPreviewHostBinding;
     scene: CompiledStudioPreviewSceneV1;
@@ -1182,11 +1161,11 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     ? studioPreviewRuntimeTraceEditCandidates(snapshot, sampleTime, sourceEvents)
     : [];
   useEffect(() => {
-    const proposedState = latestProposedState.current;
+    const workingState = latestWorkingState.current;
     const workingRevision = context?.workingRevision;
     if (
       !snapshot ||
-      !proposedState ||
+      !workingState ||
       !workingRevision ||
       workspaceKey === null ||
       retainedSourceDuration === null ||
@@ -1198,8 +1177,8 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     const controller = new AbortController();
     void compileStudioPreviewSceneV1({
       frame,
-      proposedState,
       snapshot,
+      workingState,
       workingRevision,
       workspaceKey,
     }).then(
@@ -1243,7 +1222,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceProgramValidation: StudioPreviewRuntimeTraceProgramValidation =
     runtimeTraceSource?.kind !== "imported-manim-runtime-trace" ||
     runtimeTraceSource.traceVersion !== 3 ||
-    (proposedState?.programs.length ?? 0) === 0
+    (workingState === null ? 0 : sourceProgramRecords(workingState).length) === 0
       ? "not-applicable"
       : currentCompiledScene?.programAuthority === "source-bound-endpoint"
         ? "authorized"
@@ -1493,6 +1472,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
       sourceEvents,
     ),
     runtimeTraceProgramValidation,
+    timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,
   };
 }

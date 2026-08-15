@@ -133,6 +133,15 @@ export type TrimSceneDurationOperation = OperationBase &
     waitOperationIds: readonly string[];
   }>;
 
+export type SceneDurationWaitOperation = InsertTimelineEventOperation &
+  Readonly<{
+    eventKind: "wait";
+    provenance: InsertTimelineEventOperation["provenance"] & Readonly<{ origin: "studio-default" }>;
+    purpose: "scene-duration";
+  }>;
+
+export type SceneDurationOperation = SceneDurationWaitOperation | TrimSceneDurationOperation;
+
 export type InsertSceneBoundaryOperation = OperationBase &
   Readonly<{
     at: number;
@@ -160,6 +169,16 @@ export type CanonicalEditOperation =
   | SetRelationOperation
   | TransformContentOperation
   | TrimSceneDurationOperation;
+
+export function isSceneDurationOperation(operation: CanonicalEditOperation): operation is SceneDurationOperation {
+  return (
+    operation.kind === "TrimSceneDuration" ||
+    (operation.kind === "InsertTimelineEvent" &&
+      operation.eventKind === "wait" &&
+      operation.purpose === "scene-duration" &&
+      operation.provenance.origin === "studio-default")
+  );
+}
 
 export type DependencyReason = "explicit" | "identity" | "lifetime" | "read-after-write" | "write-conflict";
 

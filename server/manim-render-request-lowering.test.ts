@@ -133,7 +133,7 @@ function lower(renderRequest: ProgramRenderRequest, originalSource = sceneSource
 }
 
 describe("Manim render request lowering", () => {
-  it("routes one generic StaticSquare source-time-zero move through fresh V3 source evidence", () => {
+  it("routes one generic StaticSquare source-time-zero move through fresh V3 source evidence", async () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId: staticSquareEntityId,
@@ -161,7 +161,7 @@ describe("Manim render request lowering", () => {
       version: 1,
     };
 
-    const result = lowerManimRenderRequest({
+    const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
       projectId: "generic-preview",
@@ -191,7 +191,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("routes one generic StaticSquare source-time-zero uniform resize through fresh V3 source evidence", () => {
+  it("routes one generic StaticSquare source-time-zero uniform resize through fresh V3 source evidence", async () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       easing: "smooth",
@@ -222,7 +222,7 @@ describe("Manim render request lowering", () => {
       version: 1,
     };
 
-    const result = lowerManimRenderRequest({
+    const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
       projectId: "generic-preview",
@@ -252,7 +252,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("routes a former pinned Scene name through generic Runtime Trace evidence", () => {
+  it("routes a former pinned Scene name through generic Runtime Trace evidence", async () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       entityId: warpSquareEntityId,
@@ -279,7 +279,7 @@ describe("Manim render request lowering", () => {
       transactionId: "generic-warp-square-transform-edit",
       version: 1,
     };
-    const result = lowerManimRenderRequest({
+    const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
       projectId: "default",
@@ -301,7 +301,7 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("        square.move_to((2, 1, 0))\n        self.play(");
   });
 
-  it("routes a former Updaters profile resize through the generic five-second wait boundary", () => {
+  it("routes a former Updaters profile resize through the generic five-second wait boundary", async () => {
     const operation: CanonicalEditOperation = {
       dependsOn: [],
       easing: "smooth",
@@ -331,7 +331,7 @@ describe("Manim render request lowering", () => {
       transactionId: "updaters-terminal-v1-resize",
       version: 1,
     };
-    const result = lowerManimRenderRequest({
+    const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
       projectId: "default",
@@ -361,7 +361,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("routes a former Opening profile move through its generic terminal wait boundary", () => {
+  it("routes a former Opening profile move through its generic terminal wait boundary", async () => {
     const targetWorld = { x: 1.25, y: -0.5 };
     const viewport = { height: 360, width: 640 } as const;
     const operation: CanonicalEditOperation = {
@@ -394,7 +394,7 @@ describe("Manim render request lowering", () => {
       version: 1,
     };
 
-    const result = lowerManimRenderRequest({
+    const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: exampleScenesSource,
       projectId: "default",
@@ -427,7 +427,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("evaluates an out-of-order batch in source-anchor order without mutating the input", () => {
+  it("evaluates an out-of-order batch in source-anchor order without mutating the input", async () => {
     const later = motionProgram(7, "batch-later");
     const earlier = motionProgram(5, "batch-earlier");
     const renderRequest: ProgramRenderRequest = {
@@ -435,7 +435,7 @@ describe("Manim render request lowering", () => {
       programs: [later, earlier],
     };
 
-    const result = lower(renderRequest);
+    const result = await lower(renderRequest);
 
     expect(renderRequest.programs?.map((program) => program.transactionId)).toEqual(["batch-later", "batch-earlier"]);
     expect(result.renderRequest.program.transactionId).toBe("batch-earlier");
@@ -448,13 +448,13 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("rejects a source binding that is not proven by the imported Scene", () => {
+  it("rejects a source binding that is not proven by the imported Scene", async () => {
     const renderRequest: ProgramRenderRequest = {
       ...request(),
       sourceBindings: [{ entityId, sourceVariable: "other_equation" }],
     };
 
-    expect(() => lower(renderRequest)).toThrow(
+    await expect(lower(renderRequest)).rejects.toThrow(
       expect.objectContaining({
         message: `Source target binding ${entityId} → other_equation does not match the imported Scene.`,
         status: 400,
@@ -462,13 +462,13 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("rejects a destination when the evaluated batch has no Scene boundary", () => {
+  it("rejects a destination when the evaluated batch has no Scene boundary", async () => {
     const renderRequest: ProgramRenderRequest = {
       ...request(),
       destination: { sceneName: "NextScene", sourcePath },
     };
 
-    expect(() => lower(renderRequest)).toThrow(
+    await expect(lower(renderRequest)).rejects.toThrow(
       expect.objectContaining({
         message: "A render without a Scene boundary must not include a destination Scene.",
         status: 400,
@@ -476,7 +476,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("lowers a terminal Scene boundary into the next imported Scene", () => {
+  it("lowers a terminal Scene boundary into the next imported Scene", async () => {
     const boundary = sceneBoundaryProgram(7, "next-scene-boundary");
     const renderRequest: ProgramRenderRequest = {
       ...request(boundary),
@@ -484,7 +484,7 @@ describe("Manim render request lowering", () => {
       sourceHash: createHash("sha256").update(sceneSourceWithDestination).digest("hex"),
     };
 
-    const result = lower(renderRequest, sceneSourceWithDestination);
+    const result = await lower(renderRequest, sceneSourceWithDestination);
 
     expect(result.renderRequest.destination).toEqual({ sceneName: "NextScene", sourcePath });
     expect(result.lowered.insertedCode).toContain(
@@ -495,7 +495,7 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.insertedCode).toContain("return  # The imported next Scene now owns the composition.");
   });
 
-  it("rejects a Scene-boundary Program before the end of a batch", () => {
+  it("rejects a Scene-boundary Program before the end of a batch", async () => {
     const later = motionProgram(7, "motion-after-boundary");
     const boundary = sceneBoundaryProgram(5, "non-terminal-boundary");
     const renderRequest: ProgramRenderRequest = {
@@ -505,7 +505,7 @@ describe("Manim render request lowering", () => {
       sourceHash: createHash("sha256").update(sceneSourceWithDestination).digest("hex"),
     };
 
-    expect(() => lower(renderRequest, sceneSourceWithDestination)).toThrow(
+    await expect(lower(renderRequest, sceneSourceWithDestination)).rejects.toThrow(
       expect.objectContaining({
         message: "A Scene-boundary Program must be the final Program in a render batch.",
         status: 400,
@@ -513,10 +513,10 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("maps source lowering failures to a client-facing HttpError", () => {
+  it("maps source lowering failures to a client-facing HttpError", async () => {
     const renderRequest = request(motionProgram(6, "missing-anchor"));
 
-    expect(() => lower(renderRequest)).toThrow(
+    await expect(lower(renderRequest)).rejects.toThrow(
       expect.objectContaining({
         message: expect.stringMatching(/No # poietra:anchor 6\.000 .*marker exists/),
         status: 400,
@@ -524,13 +524,13 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("fails closed when an untrusted Runtime Trace validation request names an unsupported edit", () => {
+  it("fails closed when an untrusted Runtime Trace validation request names an unsupported edit", async () => {
     const renderRequest: ProgramRenderRequest = {
       ...request(motionProgram(7, "unsupported-runtime-trace-validation")),
       sourceValidation: "runtime-trace",
     };
 
-    expect(() => lower(renderRequest)).toThrow(
+    await expect(lower(renderRequest)).rejects.toThrow(
       expect.objectContaining({
         message: "The requested Runtime Trace validation does not support this edit.",
         status: 400,

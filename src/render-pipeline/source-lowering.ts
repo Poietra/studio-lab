@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { MAX_COORDINATE } from "../engine/primitives";
+import type { StudioTimelineEditTransformV1 } from "../engine/scene-authoring";
 import { canonicalEditableContent, type EditableContentType } from "../studio/editable-content";
 import { MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "../studio/magic-edit-capabilities";
 import type { EntityContent, MotionEasing } from "../studio/model";
@@ -167,6 +168,16 @@ const ANCHOR_PATTERN = /^\s*#\s*poietra:anchor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const CURSOR_PATTERN = /^\s*#\s*poietra:cursor\s+([0-9]+(?:\.[0-9]+)?)\s*$/;
 const SCENE_BOUNDARY_PATTERN = /^\s*#\s*poietra:scene-boundary\s+(.+)\s*$/;
 const EPSILON = 0.0005;
+
+function loweredProgramDuration(program: CanonicalEditProgram) {
+  const waitEnd = Math.max(
+    program.anchor.resolvedSeconds,
+    ...program.operations.flatMap((operation) =>
+      operation.kind === "InsertTimelineEvent" && operation.eventKind === "wait" ? [operation.interval.end] : [],
+    ),
+  );
+  return Math.max(insertedProgramDuration(program), waitEnd - program.anchor.resolvedSeconds);
+}
 type TemporalSourceMarker =
   | Readonly<{
       kind: "anchor" | "cursor";
@@ -1759,7 +1770,7 @@ export function lowerCanonicalProgramSource(
     entityId,
     sourceVariables: [...sourceVariables],
   }));
-  const insertedDuration = insertedProgramDuration(request.program);
+  const insertedDuration = loweredProgramDuration(request.program);
   rewriteSceneTemporalMetadata(source, request.sceneName, request.sourcePath, lines, [
     {
       anchorLine: anchor.line,
@@ -1834,71 +1845,51 @@ type MutableBatchGroup = {
   sourceAnchor: number;
 };
 
-function normalizeSceneDurationTrims(
+function applySceneDurationProjection(
   entries: readonly LoweredProgramBatchEntry[],
+  transforms: readonly StudioTimelineEditTransformV1[] | null,
 ): readonly LoweredProgramBatchEntry[] {
-  const remainingWaitDuration = new Map<string, number>();
-  const waitEntry = new Map<string, Readonly<{ entryIndex: number; sourceAnchor: number }>>();
+  const durationOperationIds = entries.flatMap((entry) =>
+    entry.program.operations.flatMap((operation) =>
+      operation.kind === "TrimSceneDuration" ||
+      (operation.kind === "InsertTimelineEvent" && operation.purpose === "scene-duration")
+        ? [operation.id]
+        : [],
+    ),
+  );
+  if (durationOperationIds.length === 0) return entries;
+  if (!transforms) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Scene duration source lowering requires the canonical Rust timeline projection.",
+    );
+  }
 
-  entries.forEach((entry, entryIndex) => {
-    for (const operation of entry.program.operations) {
-      if (
-        operation.kind === "InsertTimelineEvent" &&
-        operation.eventKind === "wait" &&
-        operation.purpose === "scene-duration"
-      ) {
-        if (entry.program.provenance.origin !== "studio-default" || operation.provenance.origin !== "studio-default") {
-          throw new ProgramLoweringError(
-            "operation-unsupported",
-            `Duration wait ${operation.id} was not authored by the Studio Scene duration control.`,
-          );
-        }
-        if (remainingWaitDuration.has(operation.id)) {
-          throw new ProgramLoweringError(
-            "operation-unsupported",
-            `Studio duration wait operation ID ${operation.id} occurs more than once in the render batch.`,
-          );
-        }
-        remainingWaitDuration.set(operation.id, operation.interval.end - operation.interval.start);
-        waitEntry.set(operation.id, { entryIndex, sourceAnchor: entry.sourceAnchor });
-      }
+  const remainingWaitDuration = new Map<string, number>();
+  const projectedOperationIds = new Set<string>();
+  for (const transform of transforms) {
+    projectedOperationIds.add(transform.operationId);
+    if (transform.kind === "insert") {
+      remainingWaitDuration.set(transform.operationId, transform.interval.end - transform.interval.start);
+      continue;
     }
-    const trims = entry.program.operations.filter((operation) => operation.kind === "TrimSceneDuration");
-    if (trims.length === 0) return;
-    if (trims.length !== entry.program.operations.length) {
-      throw new ProgramLoweringError(
-        "operation-unsupported",
-        "A Scene duration trim cannot be lowered together with unrelated operations in one Program.",
-      );
-    }
-    for (const trim of trims) {
-      let remaining = trim.removedDuration;
-      for (const waitOperationId of trim.waitOperationIds) {
-        const source = waitEntry.get(waitOperationId);
-        const available = remainingWaitDuration.get(waitOperationId) ?? 0;
-        if (
-          !source ||
-          source.entryIndex >= entryIndex ||
-          Math.abs(source.sourceAnchor - entry.sourceAnchor) >= EPSILON
-        ) {
-          throw new ProgramLoweringError(
-            "operation-unsupported",
-            `Scene duration trim ${trim.id} does not reference an earlier Studio duration wait at the same source anchor.`,
-          );
-        }
-        const removed = Math.min(available, remaining);
-        remainingWaitDuration.set(waitOperationId, available - removed);
-        remaining -= removed;
-        if (remaining <= EPSILON) break;
-      }
-      if (remaining > EPSILON) {
+    for (const reduction of transform.waitReductions) {
+      const available = remainingWaitDuration.get(reduction.operationId);
+      if (available === undefined || reduction.removedDuration > available + EPSILON) {
         throw new ProgramLoweringError(
           "operation-unsupported",
-          `Scene duration trim ${trim.id} would remove non-Studio source time.`,
+          `Rust timeline projection returned an uncorrelated wait reduction for ${reduction.operationId}.`,
         );
       }
+      remainingWaitDuration.set(reduction.operationId, Math.max(0, available - reduction.removedDuration));
     }
-  });
+  }
+  if (durationOperationIds.some((operationId) => !projectedOperationIds.has(operationId))) {
+    throw new ProgramLoweringError(
+      "operation-unsupported",
+      "Rust timeline projection did not correlate every Scene duration operation in the source batch.",
+    );
+  }
 
   return entries.flatMap((entry) => {
     const operations = entry.program.operations.flatMap((operation): readonly CanonicalEditOperation[] => {
@@ -1909,7 +1900,13 @@ function normalizeSceneDurationTrims(
         operation.purpose !== "scene-duration"
       )
         return [operation];
-      const duration = remainingWaitDuration.get(operation.id) ?? operation.interval.end - operation.interval.start;
+      const duration = remainingWaitDuration.get(operation.id);
+      if (duration === undefined) {
+        throw new ProgramLoweringError(
+          "operation-unsupported",
+          `Rust timeline projection did not return duration wait ${operation.id}.`,
+        );
+      }
       return duration > EPSILON
         ? [{ ...operation, interval: { end: operation.interval.start + duration, start: operation.interval.start } }]
         : [];
@@ -2971,6 +2968,7 @@ export function lowerCanonicalProgramBatchSource(
   entries: readonly LoweredProgramBatchEntry[],
   frame: Readonly<{ height: number; width: number }>,
   incoming: IncomingSceneSetup | null,
+  timelineTransforms: readonly StudioTimelineEditTransformV1[] | null = null,
 ): LoweredProgramBatchSource {
   if (entries.length === 0) {
     throw new ProgramLoweringError("operation-unsupported", "A source export batch must contain at least one Program.");
@@ -2990,7 +2988,7 @@ export function lowerCanonicalProgramBatchSource(
   const orderedEntries = sourceEntries
     .map((entry, inputIndex) => ({ ...entry, inputIndex }))
     .sort((left, right) => left.sourceAnchor - right.sourceAnchor || left.inputIndex - right.inputIndex);
-  const normalizedEntries = normalizeSceneDurationTrims(orderedEntries);
+  const normalizedEntries = applySceneDurationProjection(orderedEntries, timelineTransforms);
 
   if (normalizedEntries.length === 0) {
     const anchor = findSceneMotionAnchors(source, request.sceneName).find(
@@ -3052,7 +3050,7 @@ export function lowerCanonicalProgramBatchSource(
       };
       groups.push(group);
     }
-    group.duration += insertedProgramDuration(entry.program);
+    group.duration += loweredProgramDuration(entry.program);
     if (lowered.insertedCode) group.insertedLines.push(...lowered.insertedCode.split(/\r?\n/));
   }
 

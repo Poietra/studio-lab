@@ -9,14 +9,8 @@ import {
 } from "./authoring-commands";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
-import { rebaseProgramTime } from "./program-composition";
+import { buildLifetimeEditControls, findImportedLifetimeEdit, lifetimeControlKey } from "./lifetime-editing";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
-import {
-  buildLifetimeEditControls,
-  findImportedLifetimeEdit,
-  lifetimeControlKey,
-  studioLifetimeOwnerReason,
-} from "./lifetime-editing";
 
 describe("lifetime editing controls", () => {
   it("keeps an imported start read-only while offering safe end trims", () => {
@@ -43,7 +37,7 @@ describe("lifetime editing controls", () => {
     expect(controls.reason).toMatch(/original Python statement/i);
   });
 
-  it("keeps an appended imported trim inside applied source order", () => {
+  it("requires a Rust projection before building controls over timeline Programs", () => {
     const wait = createSceneDurationProgram({
       capturedPlayhead: 7,
       scene: STUDIO_FIXTURE_SCENE,
@@ -52,24 +46,23 @@ describe("lifetime editing controls", () => {
       transactionId: "later-source-program",
     });
     const record = programRecord(wait.program, wait);
-    const track = projectProposedState(
-      evaluateWorkingState(
-        createFixtureWorkingState({
-          appliedPrograms: [record],
-        }),
-      ),
-      5,
-    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
-    const controls = buildLifetimeEditControls({
-      anchors: [5, 7],
-      baseScene: STUDIO_FIXTURE_SCENE,
-      programs: [record],
-      sourceDuration: 12,
-      tracks: [track],
-    })[lifetimeControlKey("equation_1", 0)]!;
-
-    expect(controls.endTargets.map((target) => target.source.end)).toEqual([7]);
-    expect(controls.reason).toMatch(/applied source order/i);
+    const track = {
+      animatedChannels: [],
+      entityId: "equation_1",
+      label: "equation",
+      lifetimes: [{ end: 13, start: 0 }],
+      provisional: false,
+      type: "MathTex",
+    } as const;
+    expect(() =>
+      buildLifetimeEditControls({
+        anchors: [5, 7],
+        baseScene: STUDIO_FIXTURE_SCENE,
+        programs: [record],
+        sourceDuration: 12,
+        tracks: [track],
+      }),
+    ).toThrow(/Rust timeline projection/i);
   });
 
   it("does not misidentify a Delete Program as an editable imported lifetime trim", () => {
@@ -130,84 +123,7 @@ describe("lifetime editing controls", () => {
     expect(controls.endTargets.map((target) => target.source.end)).toEqual([5, 12]);
   });
 
-  it("keeps restore available when it repairs an out-of-order imported trim", () => {
-    const wait = createSceneDurationProgram({
-      capturedPlayhead: 7,
-      scene: STUDIO_FIXTURE_SCENE,
-      sourceAnchor: 7,
-      targetDuration: 13,
-      transactionId: "preceding-later-anchor",
-    });
-    const trim = createImportedEntityLifetimeProgram({
-      entityId: "equation_1",
-      original: { end: 12, start: 0 },
-      scene: STUDIO_FIXTURE_SCENE,
-      sourceAnchor: 5,
-      targetEnd: 5,
-      transactionId: "out-of-order-existing-trim",
-    });
-    const records = [programRecord(wait.program, wait), programRecord(trim.program, trim)];
-    const track = projectProposedState(
-      evaluateWorkingState(
-        createFixtureWorkingState({
-          appliedPrograms: records,
-        }),
-      ),
-      4,
-    ).timeline.objectTracks.find((candidate) => candidate.entityId === "equation_1")!;
-    const controls = buildLifetimeEditControls({
-      anchors: [5, 7],
-      baseScene: STUDIO_FIXTURE_SCENE,
-      programs: records,
-      sourceDuration: 12,
-      tracks: [track],
-    })[lifetimeControlKey("equation_1", 0)]!;
-
-    expect(findImportedLifetimeEdit(records, "equation_1", 0)?.index).toBe(1);
-    expect(controls.endTargets.map((target) => target.source.end)).toEqual([7, 12]);
-  });
-
-  it("projects imported lifetime targets through a later Scene duration trim", () => {
-    const extension = createSceneDurationProgram({
-      appliedPrograms: [],
-      capturedPlayhead: 7,
-      scene: STUDIO_FIXTURE_SCENE,
-      sourceAnchor: 7,
-      targetDuration: 15,
-      transactionId: "lifetime-duration-extension",
-    });
-    const extensionRecord = programRecord(extension.program, extension);
-    const extendedScene = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [extensionRecord],
-      }),
-    ).evaluatedScene;
-    const trim = createSceneDurationProgram({
-      appliedPrograms: [extensionRecord],
-      capturedPlayhead: 7,
-      scene: extendedScene,
-      sourceAnchor: 7,
-      targetDuration: 13,
-      transactionId: "lifetime-duration-trim",
-    });
-    const records = [extensionRecord, programRecord(trim.program, trim)];
-    const proposed = evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: records }));
-    const track = projectProposedState(proposed, 6).timeline.objectTracks.find(
-      (candidate) => candidate.entityId === "equation_1",
-    )!;
-    const controls = buildLifetimeEditControls({
-      anchors: [5, 7],
-      baseScene: STUDIO_FIXTURE_SCENE,
-      programs: records,
-      sourceDuration: 12,
-      tracks: [track],
-    })[lifetimeControlKey("equation_1", 0)]!;
-
-    expect(track.lifetimes).toEqual([{ end: 13, start: 0 }]);
-    expect(controls.endTargets.find((target) => target.source.end === 7)?.working).toEqual({ end: 7, start: 0 });
-  });
-
-  it("offers both edge edits and width-preserving moves for a Studio-owned interval", () => {
+  it("offers edge edits and width-preserving moves for a Studio-owned interval", () => {
     const insertion = createStudioEntitiesProgram({
       capturedPlayhead: 3,
       entities: [
@@ -220,7 +136,6 @@ describe("lifetime editing controls", () => {
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "owned-lifetime-controls",
     });
-    const create = insertion.validation.program.operations.find((operation) => operation.kind === "CreateEntity")!;
     const finiteProgram = {
       ...insertion.validation.program,
       operations: insertion.validation.program.operations.map((operation) =>
@@ -229,36 +144,15 @@ describe("lifetime editing controls", () => {
           : operation,
       ),
     };
-    expect(create.entity.id).toBe(insertion.entityIds[0]);
     const record = programRecord(finiteProgram, { issues: [], kind: "valid" });
-    const delayed = programRecord(
-      {
-        ...rebaseProgramTime(finiteProgram, 2),
-        anchor: finiteProgram.anchor,
-      },
-      { issues: [], kind: "valid" },
-    );
-    expect(studioLifetimeOwnerReason({ index: 0, record: delayed })).toMatch(/after its Program begins/i);
-    const wait = createSceneDurationProgram({
-      capturedPlayhead: 3,
-      scene: STUDIO_FIXTURE_SCENE,
-      sourceAnchor: 3,
-      targetDuration: 13,
-      transactionId: "same-anchor-wait",
-    });
-    const records = [record, programRecord(wait.program, wait)];
     const track = projectProposedState(
-      evaluateWorkingState(
-        createFixtureWorkingState({
-          appliedPrograms: records,
-        }),
-      ),
+      evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: [record] })),
       4,
     ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
     const controls = buildLifetimeEditControls({
       anchors: [1, 3, 5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
-      programs: records,
+      programs: [record],
       sourceDuration: 12,
       tracks: [track],
     })[lifetimeControlKey(insertion.entityIds[0]!, 0)]!;
@@ -266,8 +160,11 @@ describe("lifetime editing controls", () => {
     expect(controls.reason).toBeNull();
     expect(controls.startTargets.map((target) => target.source.start)).toEqual([1]);
     expect(controls.endTargets.map((target) => target.source.end)).toEqual([7, 12]);
-    expect(controls.endTargets.find((target) => target.source.end === 7)?.working).toEqual({ end: 8.4, start: 3 });
-    expect(controls.moveTargets.map((target) => target.source)).toEqual([{ end: 3, start: 1 }]);
+    expect(controls.endTargets.find((target) => target.source.end === 7)?.working).toEqual({ end: 7.4, start: 3 });
+    expect(controls.moveTargets.map((target) => target.source)).toEqual([
+      { end: 3, start: 1 },
+      { end: 7, start: 5 },
+    ]);
   });
 
   it("defers to a later Delete Program that owns a Studio-created lifetime end", () => {
@@ -373,23 +270,6 @@ describe("lifetime editing controls", () => {
     expect(trimmed.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([
       { end: 2, start: 0 },
       { end: 7, start: 5 },
-    ]);
-
-    const restore = createImportedEntityLifetimeProgram({
-      entityId: "equation_1",
-      original: { end: 9, start: 5 },
-      scene: repeatedScene,
-      sourceAnchor: 7,
-      targetEnd: 9,
-      transactionId: trim.program.transactionId,
-    });
-    const restored = evaluateWorkingState({
-      ...createFixtureWorkingState({ appliedPrograms: [programRecord(restore.program, restore)] }),
-      runtimeSceneState: repeatedScene,
-    });
-    expect(restored.evaluatedScene.objectGraph.entities.equation_1?.lifetime).toEqual([
-      { end: 2, start: 0 },
-      { end: 9, start: 5 },
     ]);
   });
 });

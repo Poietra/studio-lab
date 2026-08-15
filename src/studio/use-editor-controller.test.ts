@@ -43,6 +43,31 @@ function record(transactionId: string, resolvedSeconds = 5): ProgramRecord {
   };
 }
 
+function timelineRecord(transactionId: string, resolvedSeconds = 5): ProgramRecord {
+  const base = record(transactionId, resolvedSeconds);
+  const operationId = `${transactionId}/wait`;
+  return {
+    ...base,
+    program: {
+      ...base.program,
+      intentCount: 1,
+      operations: [
+        {
+          dependsOn: [],
+          eventKind: "wait",
+          id: operationId,
+          interval: { end: resolvedSeconds + 1, start: resolvedSeconds },
+          kind: "InsertTimelineEvent",
+          label: "Wait",
+          provenance: { evidence: [], origin: "studio-default" },
+          purpose: "scene-duration",
+        },
+      ],
+      schedule: { edges: [], mode: "sequence", order: [operationId] },
+    },
+  };
+}
+
 const motionOperation: EditSuggestionOperation = {
   anchor: { kind: "playhead", referenceSeconds: 5 },
   controlOffset: { x: 20, y: -10 },
@@ -288,6 +313,19 @@ describe("editor draft history", () => {
       redoPrograms: [],
       suggestionStatus: "idle",
     });
+  });
+
+  it("keeps the current time until Rust projects an applied timeline draft", () => {
+    const draft = timelineRecord("timeline-draft", 5);
+    const staged = stageEditorDraft(
+      { ...createInitialEditorState(), currentTime: 9 },
+      { operation: null, record: draft },
+    );
+
+    const applied = applyEditorDraft(staged);
+
+    expect(applied.appliedPrograms).toHaveLength(1);
+    expect(applied.currentTime).toBe(9);
   });
 
   it("preserves a direct-manipulation draft before staging the next ordered draft", () => {

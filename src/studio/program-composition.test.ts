@@ -37,6 +37,26 @@ function record(program: CanonicalEditProgram) {
   return programRecord(program, { issues: [], kind: "valid" });
 }
 
+function timelineWaitProgram(): CanonicalEditProgram {
+  const base = motionProgram(5, "timeline-wait");
+  return {
+    ...base,
+    operations: [
+      {
+        dependsOn: [],
+        eventKind: "wait",
+        id: "timeline-wait/operation",
+        interval: { end: 6, start: 5 },
+        kind: "InsertTimelineEvent",
+        label: "Wait",
+        provenance: { evidence: [], origin: "studio-default" },
+        purpose: "scene-duration",
+      },
+    ],
+    schedule: { edges: [], mode: "sequence", order: ["timeline-wait/operation"] },
+  };
+}
+
 describe("inserted Program timeline composition", () => {
   it("counts an animated scale as inserted playback time but not an immediate scale", () => {
     const base = motionProgram(5, "scale-duration");
@@ -77,6 +97,15 @@ describe("inserted Program timeline composition", () => {
     expect(workingTimeToSourceTime(programs, 6.5)).toBe(5.5);
     expect(workingTimeToSourceTime(programs, 8.5)).toBe(7);
     expect(workingTimeToSourceTime(programs, 10)).toBe(8);
+  });
+
+  it("does not re-evaluate or rebase timeline Programs in TypeScript", () => {
+    const timeline = timelineWaitProgram();
+
+    expect(() => sourceTimeToWorkingTime([timeline], 5)).toThrow(/Rust timeline projection/i);
+    expect(() => workingTimeToSourceTime([timeline], 5)).toThrow(/Rust timeline projection/i);
+    expect(() => latestSafeSourceAnchor([timeline], [5], 5)).toThrow(/Rust timeline projection/i);
+    expect(() => rebaseProgramTime(timeline, 1)).toThrow(/Rust timeline projection/i);
   });
 
   it("resolves manual edits to the latest prior safe anchor after existing insertions", () => {

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useReducer, useSyncExternalStore } from "react";
-import type { ProposedState } from "./model";
+import type { WorkingState } from "./model";
 import {
   createUnavailableStudioPreviewSnapshotProviderV1,
   resolveStudioPreviewSnapshotProvider,
@@ -38,11 +38,11 @@ export type StudioPreviewAuthorityAction =
 type UseStudioPreviewAuthorityControllerInput = Readonly<{
   context: StudioPreviewEditingContextV1 | null;
   frame: Readonly<{ height: number; width: number }>;
-  proposedState: ProposedState | null;
   retainedSourceDuration: number | null;
   sampleTime: number;
   sceneBoundaryActive: boolean;
-  sourceEvents: ProposedState["base"]["runtimeSceneState"]["eventTrack"]["events"];
+  sourceEvents: WorkingState["runtimeSceneState"]["eventTrack"]["events"];
+  workingState: WorkingState | null;
 }>;
 
 export type StudioPreviewAuthorityControllerView = Readonly<{
@@ -184,11 +184,11 @@ function activationIsAllowed() {
 export function useStudioPreviewAuthorityController({
   context,
   frame,
-  proposedState,
   retainedSourceDuration,
   sampleTime,
   sceneBoundaryActive,
   sourceEvents,
+  workingState,
 }: UseStudioPreviewAuthorityControllerInput): StudioPreviewAuthorityControllerView {
   const browserSearch = useSyncExternalStore(subscribeBrowserSearch, currentBrowserSearch, serverBrowserSearch);
   const providerKind = selectStudioPreviewProvider(browserSearch, import.meta.env.DEV);
@@ -231,12 +231,12 @@ export function useStudioPreviewAuthorityController({
   const renderer = useStudioPreviewRenderer({
     context,
     frame,
-    proposedState,
     provider,
     retainedSourceDuration,
     sampleTime,
     sceneBoundaryActive,
     sourceEvents,
+    workingState,
   });
   const allowed = activationIsAllowed();
   const activate = useCallback(() => {

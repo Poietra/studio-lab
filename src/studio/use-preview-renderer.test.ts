@@ -1002,8 +1002,8 @@ describe("studioPreviewInteractionAuthority", () => {
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: { height: 8, width: 14.222222222222221 },
-      proposedState,
       snapshot: v10,
+      workingState: proposedState.base,
       workingRevision: PRISTINE_WORKING_REVISION,
       workspaceKey: "project-a/example_scenes/basic.py/LineJoints",
     });
@@ -1073,8 +1073,8 @@ describe("studioPreviewInteractionAuthority", () => {
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: { height: 8, width: 14.222222222222221 },
-      proposedState,
       snapshot: v11,
+      workingState: proposedState.base,
       workingRevision: PRISTINE_WORKING_REVISION,
       workspaceKey: "project-a/example_scenes/basic.py/SpiralInExample",
     });
@@ -1152,8 +1152,8 @@ describe("studioPreviewInteractionAuthority", () => {
 
     const compiled = await compileStudioPreviewSceneV1({
       frame: { height: 8, width: 14.222222222222221 },
-      proposedState,
       snapshot: v12,
+      workingState: proposedState.base,
       workingRevision: PRISTINE_WORKING_REVISION,
       workspaceKey: "project-a/example_scenes/basic.py/WriteStuff",
     });
@@ -1285,8 +1285,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState,
       snapshot,
+      workingState: proposedState.base,
       workingRevision: "studio-working-v1:create-static-motion",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -1328,26 +1328,14 @@ describe("compileStudioPreviewSceneV1", () => {
       provenance: motion.provenance,
       value: { x: 320, y: 180 },
     } as const;
-    const proposedState: ProposedState = {
-      ...evaluated,
-      base: {
-        ...evaluated.base,
-        appliedPrograms: [
-          {
-            program: {
-              ...validation.program,
-              operations: [rawMotion, unsupported],
-              schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
-            },
-            validation: { issues: [], status: "valid" },
-          },
-        ],
-      },
-      programs: [
+    const workingState: WorkingState = {
+      ...evaluated.base,
+      appliedPrograms: [
         {
           program: {
             ...validation.program,
-            operations: [motion],
+            operations: [rawMotion, unsupported],
+            schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
           },
           validation: { issues: [], status: "valid" },
         },
@@ -1358,8 +1346,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState,
       snapshot: base.snapshot,
+      workingState,
       workingRevision: "studio-working-v1:create-static-motion",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
@@ -1401,8 +1389,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const { proposedState, snapshot } = await linePreviewInput();
     const result = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
-      proposedState,
       snapshot,
+      workingState: proposedState.base,
       workingRevision: PRISTINE_WORKING_REVISION,
       workspaceKey: "project-a/scene.py/LineScene",
     });
@@ -1426,20 +1414,39 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (extension.kind !== "valid") throw new Error(JSON.stringify(extension.issues));
     const extensionRecord = programRecord(extension.program, extension);
-    const proposedState = evaluateWorkingState({ ...workingBase, appliedPrograms: [extensionRecord] });
+    const timelineWorkingState = { ...workingBase, appliedPrograms: [extensionRecord] };
     const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioTimelineEditCompiler: recordingStudioTimelineCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState,
+      projectStudioTimelineCompiler: async () => ({
+        programProjections: [
+          {
+            operationId: extension.program.operations[0]!.id,
+            transactionId: extension.program.transactionId,
+            workingAnchor: 1,
+            workingInterval: { end: 2, start: 1 },
+          },
+        ],
+        projectedDuration: 3,
+        transforms: [
+          {
+            interval: { end: 2, start: 1 },
+            kind: "insert",
+            operationId: extension.program.operations[0]!.id,
+          },
+        ],
+      }),
       snapshot: base.snapshot,
+      workingState: timelineWorkingState,
       workingRevision: "studio-working-v1:extend-imported-scene",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
 
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
+    expect(result.scene.timelineProjection?.projectedDuration).toBe(3);
     expect(commands[0]).toMatchObject({
       expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
       nextRevision: result.scene.engineRevisionHash,
@@ -1480,14 +1487,11 @@ describe("compileStudioPreviewSceneV1", () => {
         return bundle;
       },
       frame: { height: 9, width: 16 },
-      proposedState: {
-        ...proposedState,
-        base: {
-          ...proposedState.base,
-          sourceSnapshot: { ...proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
-        },
-      },
       snapshot: base.snapshot,
+      workingState: {
+        ...timelineWorkingState,
+        sourceSnapshot: { ...timelineWorkingState.sourceSnapshot, hash: `sha256:${HASH_B}` },
+      },
       workingRevision: "studio-working-v1:inexact-imported-timeline-source",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
@@ -1502,8 +1506,8 @@ describe("compileStudioPreviewSceneV1", () => {
         throw "closed timeline authority rejected the edit";
       },
       frame: { height: 9, width: 16 },
-      proposedState,
       snapshot: base.snapshot,
+      workingState: timelineWorkingState,
       workingRevision: "studio-working-v1:core-rejected-imported-timeline",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
@@ -1556,11 +1560,11 @@ describe("compileStudioPreviewSceneV1", () => {
         return { ...bundle, scene: { ...bundle.scene, duration: 3 } };
       },
       frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({
+      snapshot,
+      workingState: {
         ...workingBase,
         appliedPrograms: [programRecord(extension.program, extension)],
-      }),
-      snapshot,
+      },
       workingRevision: "studio-working-v1:extend-animated-imported-scene",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
@@ -1572,7 +1576,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(compilerCalls).toBe(0);
   });
 
-  it("forwards every Program and unsupported operation without pre-authorizing them", async () => {
+  it("forwards every Program and reports a mixed-family core rejection", async () => {
     const base = await compilablePreviewInput();
     const workingBase = exactImportedTimelineWorkingBase(base);
     const extension = createSceneDurationProgram({
@@ -1604,22 +1608,25 @@ describe("compileStudioPreviewSceneV1", () => {
       },
       validation: { issues: [], status: "valid" },
     } as const;
-    const proposedState = evaluateWorkingState({
-      ...workingBase,
-      appliedPrograms: [extensionRecord, unsupportedRecord],
-    });
     const commands: ApplyStudioTimelineEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioTimelineEditCompiler: recordingStudioTimelineCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState,
+      projectStudioTimelineCompiler: async () => {
+        throw new Error("mixed timeline and appearance Programs are unsupported");
+      },
       snapshot: base.snapshot,
+      workingState: { ...workingBase, appliedPrograms: [extensionRecord, unsupportedRecord] },
       workingRevision: "studio-working-v1:timeline-with-appearance",
       workspaceKey: studioPreviewWorkspaceKeyV1(base.context),
     });
 
-    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result).toEqual({
+      error:
+        "Rust core rejected the imported Scene timeline edit: mixed timeline and appearance Programs are unsupported",
+      kind: "unsupported",
+    });
     expect(commands).toHaveLength(1);
     expect(commands[0]?.programs).toHaveLength(2);
     expect(commands[0]?.programs[0]?.operations[0]?.kind).toBe("insert-wait");
@@ -1651,8 +1658,8 @@ describe("compileStudioPreviewSceneV1", () => {
       const result = await compileStudioPreviewSceneV1({
         applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
         frame: { height: 9, width: 16 },
-        proposedState: fixture.proposedState,
         snapshot: fixture.snapshot,
+        workingState: fixture.proposedState.base,
         workingRevision: fixture.workingRevision,
         workspaceKey: fixture.workspaceKey,
       });
@@ -1726,8 +1733,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({ ...fixture.workingBase, appliedPrograms: [record] }),
       snapshot: fixture.snapshot,
+      workingState: { ...fixture.workingBase, appliedPrograms: [record] },
       workingRevision: canonicalEditorWorkingRevision({
         appliedPrograms: [record],
         draftProgram: null,
@@ -1752,8 +1759,8 @@ describe("compileStudioPreviewSceneV1", () => {
         throw new Error("the edit contains an unsupported operation");
       },
       frame: { height: 9, width: 16 },
-      proposedState: fixture.proposedState,
       snapshot: fixture.snapshot,
+      workingState: fixture.proposedState.base,
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
     });
@@ -1773,14 +1780,11 @@ describe("compileStudioPreviewSceneV1", () => {
         return bundle;
       },
       frame: { height: 9, width: 16 },
-      proposedState: {
-        ...fixture.proposedState,
-        base: {
-          ...fixture.proposedState.base,
-          sourceSnapshot: { ...fixture.proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
-        },
-      },
       snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.proposedState.base,
+        sourceSnapshot: { ...fixture.proposedState.base.sourceSnapshot, hash: `sha256:${HASH_B}` },
+      },
       workingRevision: fixture.workingRevision,
       workspaceKey: fixture.workspaceKey,
     });
@@ -1793,8 +1797,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const { proposedState, snapshot } = await linePreviewInput();
     const result = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
-      proposedState,
       snapshot,
+      workingState: proposedState.base,
       // The redo stack remains editor authority after Undo, so the revision is
       // intentionally not pristine even though no Program affects the Scene.
       workingRevision: "studio-working-v1:undo-with-redo-history",
@@ -1845,8 +1849,8 @@ describe("compileStudioPreviewSceneV1", () => {
         return bundle;
       },
       frame: { height: 9, width: 16 },
-      proposedState: edited,
       snapshot,
+      workingState: edited.base,
       workingRevision: "studio-working-v1:normalized-create",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -1927,8 +1931,8 @@ describe("compileStudioPreviewSceneV1", () => {
         compilerInputs.push([...input]);
         return outline;
       },
-      proposedState: edited,
       snapshot,
+      workingState: edited.base,
       workingRevision: "studio-working-v1:normalized-mathtex",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -1967,11 +1971,11 @@ describe("compileStudioPreviewSceneV1", () => {
         throw new Error("normalized Studio creation is unsupported");
       },
       frame: { height: 9, width: 16 },
-      proposedState: evaluateWorkingState({
+      snapshot,
+      workingState: {
         ...proposedState.base,
         appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-      }),
-      snapshot,
+      },
       workingRevision: "studio-working-v1:unsupported-text",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -1998,8 +2002,8 @@ describe("compileStudioPreviewSceneV1", () => {
         outlineCompilerCalls += 1;
         return compiledMathTexResponse();
       },
-      proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      workingState: fixture.edited.base,
       workingRevision: "studio-working-v1:edit-imported-mathtex",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2025,8 +2029,8 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: fixture.frame,
-      proposedState: fixture.edited,
       snapshot: fixture.snapshot,
+      workingState: fixture.edited.base,
       workingRevision: "studio-working-v1:edit-imported-image",
       workspaceKey: "project-a/image_scene.py/ImageScene",
     });
@@ -2070,8 +2074,8 @@ describe("compileStudioPreviewSceneV1", () => {
         outlineCompilerCalls += 1;
         return compiledMathTexResponse();
       },
-      proposedState,
       snapshot: fixture.snapshot,
+      workingState: proposedState.base,
       workingRevision: "studio-working-v1:edit-imported-mathtex-content",
       workspaceKey: "project-a/scene.py/MathTexScene",
     });
@@ -2132,14 +2136,11 @@ describe("compileStudioPreviewSceneV1", () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const result = await compileStudioPreviewSceneV1({
       frame: { height: 9, width: 16 },
-      proposedState: {
-        ...proposedState,
-        base: {
-          ...proposedState.base,
-          runtimeSceneState: { ...proposedState.base.runtimeSceneState, duration: 3 },
-        },
-      },
       snapshot,
+      workingState: {
+        ...proposedState.base,
+        runtimeSceneState: { ...proposedState.base.runtimeSceneState, duration: 3 },
+      },
       workingRevision: "studio-working-v1:stale-time",
       workspaceKey: "project-a/scene.py/CircleScene",
     });

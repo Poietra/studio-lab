@@ -85,6 +85,68 @@ function evaluateImportedContentEdit({
 }
 
 describe("Studio evaluator invariants", () => {
+  it("requires Rust projection for Scene duration operations", () => {
+    const operations: readonly CanonicalEditOperation[] = [
+      {
+        dependsOn: [],
+        eventKind: "wait",
+        id: operationId("timeline-insert", "wait"),
+        interval: { end: 9, start: 8 },
+        kind: "InsertTimelineEvent",
+        label: "Wait",
+        provenance: { evidence: [], origin: "studio-default" },
+        purpose: "scene-duration",
+      },
+      {
+        dependsOn: [],
+        id: operationId("timeline-trim", "trim"),
+        interval: { end: 8, start: 8 },
+        kind: "TrimSceneDuration",
+        provenance: { evidence: [], origin: "studio-default" },
+        removedDuration: 1,
+        targetDuration: STUDIO_FIXTURE_SCENE.duration - 1,
+        waitOperationIds: [operationId("timeline-insert", "wait")],
+      },
+    ];
+
+    for (const operation of operations) {
+      const program = {
+        ...programWith([operation], `timeline-projection-${operation.kind}`),
+        loweringStatus: "supported" as const,
+      };
+      expect(() =>
+        evaluateWorkingState(
+          createFixtureWorkingState({ stagedPrograms: [programRecord(program, { issues: [], kind: "valid" })] }),
+        ),
+      ).toThrow(`${operation.kind} requires the Rust timeline projection.`);
+    }
+  });
+
+  it("evaluates a zero-duration non-duration timeline event in TypeScript", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      eventKind: "wait",
+      id: operationId("lifetime-restore", "wait"),
+      interval: { end: 8, start: 8 },
+      kind: "InsertTimelineEvent",
+      label: "Restore imported lifetime",
+      provenance: { evidence: [], origin: "direct-manipulation" },
+    };
+    const program = {
+      ...programWith([operation], "lifetime-restore"),
+      loweringStatus: "supported" as const,
+    };
+
+    const proposed = evaluateWorkingState(
+      createFixtureWorkingState({ stagedPrograms: [programRecord(program, { issues: [], kind: "valid" })] }),
+    );
+
+    expect(proposed.evaluatedScene.duration).toBe(STUDIO_FIXTURE_SCENE.duration);
+    expect(proposed.evaluatedScene.eventTrack.events).toContainEqual(
+      expect.objectContaining({ id: `${operation.id}/timeline`, interval: { end: 8, start: 8 } }),
+    );
+  });
+
   it("rejects an EditProgram that declares an intent but contains no operations", () => {
     const validation = validateAndScheduleProgram(programWith([], "empty-program"), STUDIO_FIXTURE_SCENE);
 

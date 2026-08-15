@@ -24,6 +24,7 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity: null,
     state,
+    timelineProjection: null,
     verifiedSourceDuration: 1,
   };
 }

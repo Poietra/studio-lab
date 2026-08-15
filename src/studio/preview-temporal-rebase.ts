@@ -4,7 +4,7 @@ import {
   compileApplyStudioBoundEntityEdit,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
+import type { Point, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
@@ -499,12 +499,12 @@ export async function compileStudioPreviewRuntimeTraceEdit(
   input: Readonly<{
     boundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
-    proposedState: ProposedState;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
+    workingState: WorkingState;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
-  const sourcePrograms = [...input.proposedState.base.appliedPrograms, ...input.proposedState.base.stagedPrograms];
+  const sourcePrograms = [...input.workingState.appliedPrograms, ...input.workingState.stagedPrograms];
   const sourceAnchor = sourcePrograms[0]?.program.anchor.resolvedSeconds;
   const candidates =
     sourceAnchor === undefined
@@ -512,14 +512,14 @@ export async function compileStudioPreviewRuntimeTraceEdit(
       : studioPreviewRuntimeTraceEditCandidates(
           input.snapshot,
           sourceAnchor,
-          input.proposedState.base.runtimeSceneState.eventTrack.events,
+          input.workingState.runtimeSceneState.eventTrack.events,
         );
   if (candidates.length === 0) {
     return unsupported("source-correlation-invalid", "Runtime Trace edit evidence is unavailable at this time.");
   }
   const scene = input.snapshot.snapshot.scene;
   const context = input.snapshot.correlation.context;
-  const base = input.proposedState.base;
+  const base = input.workingState;
   const correlation = candidates[0]!;
   if (
     input.frame.width !== scene.camera.view.frameWidth ||

@@ -12,7 +12,13 @@ import type {
   SceneConstraint,
   TimelineEvent,
 } from "./model";
-import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
+import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  type ChannelAccess,
+  isSceneDurationOperation,
+  type ProgramValidationIssue,
+} from "./operations";
 import { insertedProgramDuration } from "./program-composition";
 import {
   isEntityDimensionsValue,
@@ -156,7 +162,7 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     reads: readonly ChannelAccess[];
     writes: readonly ChannelAccess[];
   }>;
-  evaluate: (
+  evaluate?: (
     draft: EvaluationDraft,
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
     program: CanonicalEditProgram,
@@ -447,74 +453,6 @@ function recordOperation(draft: EvaluationDraft, operation: CanonicalEditOperati
 }
 
 const TIME_EPSILON = 0.0005;
-
-function timeAfterRemoval(time: number, start: number, end: number) {
-  if (time <= start + TIME_EPSILON) return Math.min(time, start);
-  if (time >= end - TIME_EPSILON) return time - (end - start);
-  return start;
-}
-
-function intervalAfterRemoval(interval: Readonly<{ end: number; start: number }>, start: number, end: number) {
-  const nextStart = timeAfterRemoval(interval.start, start, end);
-  return {
-    end: Math.max(nextStart, timeAfterRemoval(interval.end, start, end)),
-    start: nextStart,
-  };
-}
-
-function removeSceneTime(
-  draft: EvaluationDraft,
-  end: number,
-  duration: number,
-  removedWaitOperationIds: ReadonlySet<string>,
-) {
-  const start = end - duration;
-  draft.duration -= duration;
-  draft.entities = Object.fromEntries(
-    Object.entries(draft.entities).map(([id, entity]) => [
-      id,
-      {
-        ...entity,
-        lifetime: entity.lifetime
-          .map((interval) => intervalAfterRemoval(interval, start, end))
-          .filter((interval) => interval.end - interval.start > TIME_EPSILON),
-      },
-    ]),
-  );
-  draft.events = draft.events
-    .map((event) => ({
-      ...event,
-      at: event.at === undefined ? undefined : timeAfterRemoval(event.at, start, end),
-      interval: event.interval ? intervalAfterRemoval(event.interval, start, end) : undefined,
-    }))
-    .filter(
-      (event) =>
-        !(
-          event.operationId &&
-          removedWaitOperationIds.has(event.operationId) &&
-          event.interval &&
-          event.interval.end - event.interval.start <= TIME_EPSILON
-        ),
-    );
-  draft.lineage = draft.lineage.map((lineage) => ({
-    ...lineage,
-    at: timeAfterRemoval(lineage.at, start, end),
-  }));
-  draft.propertyChannels = Object.fromEntries(
-    Object.entries(draft.propertyChannels).map(([id, channel]) => [
-      id,
-      {
-        ...channel,
-        samples: channel.samples
-          .map((sample) => ({
-            ...sample,
-            interval: intervalAfterRemoval(sample.interval, start, end),
-          }))
-          .filter((sample) => sample.interval.end - sample.interval.start > TIME_EPSILON),
-      },
-    ]),
-  );
-}
 
 function validCreateDimensions(type: string, dimensions: EntityDimensions | undefined) {
   if (dimensions === undefined) return true;
@@ -1210,6 +1148,9 @@ export const OPERATION_REGISTRY = {
   InsertTimelineEvent: {
     access: () => ({ reads: [], writes: [] }),
     evaluate: (draft, operation, program) => {
+      if (isSceneDurationOperation(operation)) {
+        throw new TypeError("InsertTimelineEvent scene-duration waits require the Rust timeline projection.");
+      }
       recordOperation(draft, operation, program);
       draft.events.push({
         id: `${operation.id}/timeline`,
@@ -1264,13 +1205,9 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"InsertTimelineEvent">,
   TrimSceneDuration: {
     access: () => ({ reads: [], writes: [] }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      removeSceneTime(draft, operation.interval.start, operation.removedDuration, new Set(operation.waitOperationIds));
-    },
     execution: () => SUPPORTED_EXECUTION,
-    validate: (operation, scene) => {
-      const issues = baseIssues(operation, scene);
+    validate: (operation) => {
+      const issues: ProgramValidationIssue[] = [];
       if (Math.abs(operation.interval.end - operation.interval.start) >= TIME_EPSILON) {
         issues.push({
           code: "interval-invalid",
@@ -1284,13 +1221,12 @@ export const OPERATION_REGISTRY = {
         !Number.isFinite(operation.removedDuration) ||
         operation.removedDuration < 0.1 - TIME_EPSILON ||
         !Number.isFinite(operation.targetDuration) ||
-        operation.targetDuration < 0.1 ||
-        Math.abs(scene.duration - operation.removedDuration - operation.targetDuration) >= 0.001
+        operation.targetDuration < 0.1
       ) {
         issues.push({
           code: "interval-invalid",
           field: "targetDuration",
-          message: "A Scene duration trim must remove at least 0.1 seconds and resolve to the requested duration.",
+          message: "A Scene duration trim must contain finite durations of at least 0.1 seconds.",
           operationId: operation.id,
           severity: "error",
         });
@@ -1423,5 +1359,9 @@ export function evaluateOperation(
   operation: CanonicalEditOperation,
   program: CanonicalEditProgram,
 ) {
-  operationCapability(operation).evaluate(draft, operation as never, program);
+  const evaluate = operationCapability(operation).evaluate;
+  if (!evaluate) {
+    throw new TypeError(`${operation.kind} requires the Rust timeline projection.`);
+  }
+  evaluate(draft, operation as never, program);
 }

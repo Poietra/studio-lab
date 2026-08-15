@@ -165,6 +165,7 @@ function previewView(
     sourceMetadataPhase: "ready",
     sourceRuntimeIdentity,
     state,
+    timelineProjection: null,
     verifiedSourceDuration: 2,
   };
 }

@@ -124,6 +124,15 @@ describe("Canonical EditProgram source lowering", () => {
       [extension, trim].map((program) => ({ program, sourceAnchor: 7 })),
       { height: 8, width: 14.222 },
       null,
+      [
+        { interval: { end: 10, start: 7 }, kind: "insert", operationId: wait.id },
+        {
+          interval: { end: 10, start: 9 },
+          kind: "remove",
+          operationId: trim.operations[0]!.id,
+          waitReductions: [{ operationId: wait.id, removedDuration: 1 }],
+        },
+      ],
     );
     const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
 
@@ -147,6 +156,15 @@ describe("Canonical EditProgram source lowering", () => {
       [extension, trim].map((program) => ({ program, sourceAnchor: 7 })),
       { height: 8, width: 14.222 },
       null,
+      [
+        { interval: { end: 10, start: 7 }, kind: "insert", operationId: wait.id },
+        {
+          interval: { end: 10, start: 7 },
+          kind: "remove",
+          operationId: trim.operations[0]!.id,
+          waitReductions: [{ operationId: wait.id, removedDuration: 3 }],
+        },
+      ],
     );
 
     expect(lowered.source).toBe(source);
@@ -168,7 +186,7 @@ describe("Canonical EditProgram source lowering", () => {
         { height: 8, width: 14.222 },
         null,
       ),
-    ).toThrow(/does not reference an earlier Studio duration wait/i);
+    ).toThrow(/requires the canonical Rust timeline projection/i);
   });
 
   it("lowers a quadratic screen-space motion to an exact Manim cubic path", () => {
