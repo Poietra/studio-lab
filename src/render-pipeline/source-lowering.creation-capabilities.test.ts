@@ -21,7 +21,7 @@ import {
 } from "./source-lowering.test-fixtures";
 
 describe("Canonical EditProgram source lowering", () => {
-  it("lowers manually inserted geometry with safe default constructors", () => {
+  it("lowers and reimports manually inserted geometry with safe default constructors", () => {
     const types = ["Circle", "Rectangle", "Square", "Line", "Arrow"] as const;
     const operations = types.flatMap((type, index): CanonicalEditOperation[] => {
       const entityId = `tx:manual-shapes/entity:shape-${index}`;
@@ -65,6 +65,8 @@ describe("Canonical EditProgram source lowering", () => {
     expect(lowered.insertedCode).toContain("Line(LEFT, RIGHT)");
     expect(lowered.insertedCode).toContain("Arrow(LEFT, RIGHT, buff=0)");
     expect(lowered.insertedCode.match(/FadeIn\(/g)).toHaveLength(types.length);
+    const imported = importManimScene(lowered.source, "examples/relativity.py", "GroupedEquation");
+    expect(imported?.runtimeSceneState.objectGraph.entities["tx:manual-shapes/entity:shape-3"]?.type).toBe("Line");
   });
 
   it("lowers a Scene duration extension to an explicit wait", () => {

@@ -1648,6 +1648,51 @@ mod tests {
     }
 
     #[test]
+    fn studio_creation_adapter_accepts_a_line() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        command["programs"].as_array_mut().unwrap().truncate(2);
+        command["programs"][0]["operations"][0]["entity"]["dimensions"] = json!({});
+        command["programs"][0]["operations"][0]["entity"]["kind"] = json!("line");
+        let command = serde_json::to_vec(&command).unwrap();
+
+        let response = apply_studio_creation_edit_json(&fixture_json(), &command).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+
+        assert_eq!(
+            response["creationProjection"]["entities"][0]["kind"],
+            "line"
+        );
+        assert!(matches!(
+            bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == "tx:create/entity:rectangle")
+                .unwrap()
+                .geometry,
+            SceneGeometryV1::Line { .. }
+        ));
+        assert!(bundle.scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::AffineTransform {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "tx:create/entity:rectangle"
+                    && keyframes.first().is_some_and(|keyframe| {
+                        (keyframe.value.m11 - 1.5).abs() < f64::EPSILON
+                            && (keyframe.value.m22 - 1.5).abs() < f64::EPSILON
+                    })
+            )
+        }));
+    }
+
+    #[test]
     fn studio_creation_adapter_rejects_invalid_ratio_and_stale_baseline() {
         let mut invalid_ratio: serde_json::Value =
             serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
