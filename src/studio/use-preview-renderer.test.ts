@@ -9,6 +9,7 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditCompiler,
   ApplyStudioMotionEditWireCommandV1,
   ApplyStudioTimelineEditCompiler,
@@ -26,6 +27,7 @@ import { canonicalEditorWorkingRevision } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import { validateMotionProgramFixture } from "./fixture";
 import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION, type WorkingState } from "./model";
+import type { CanonicalEditProgram } from "./operations";
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
@@ -1907,6 +1909,127 @@ describe("compileStudioPreviewSceneV1", () => {
       error: expect.stringContaining("normalized Studio creation is unsupported"),
       kind: "unsupported",
     });
+  });
+
+  it("passes one complete imported MathTex A-to-B-to-A Program with both outlines to Rust", async () => {
+    const fixture = await importedMathTexPreviewInput();
+    const firstTargetEntityId = "tx:mathtex-chain/entity:maxwell";
+    const finalTargetEntityId = "tx:mathtex-chain/entity:restored";
+    const maxwellTex = String.raw`\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}`;
+    const firstOperation = {
+      dependsOn: [],
+      id: "tx:mathtex-chain/operation:maxwell",
+      interval: { end: 1, start: 0 },
+      kind: "TransformContent" as const,
+      provenance: { evidence: [], origin: "remote-model" as const },
+      replacement: { displayLines: ["Maxwell equations"], texParts: [maxwellTex] },
+      sourceEntityId: fixture.entityId,
+      strategy: "transform-matching-tex" as const,
+      targetEntityId: firstTargetEntityId,
+      targetType: "MathTex",
+    };
+    const secondOperation = {
+      dependsOn: [firstOperation.id],
+      id: "tx:mathtex-chain/operation:restore",
+      interval: { end: 2, start: 1 },
+      kind: "TransformContent" as const,
+      provenance: { evidence: [], origin: "remote-model" as const },
+      replacement: { displayLines: ["E = mc^2"], texParts: ["E = mc^2"] },
+      sourceEntityId: firstTargetEntityId,
+      strategy: "transform-matching-tex" as const,
+      targetEntityId: finalTargetEntityId,
+      targetType: "MathTex",
+    };
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["captured-playhead:0.000"],
+        resolvedSeconds: 0,
+        source: { kind: "playhead", referenceSeconds: 0 },
+      },
+      intentCount: 2,
+      loweringStatus: "supported",
+      operations: [firstOperation, secondOperation],
+      provenance: { evidence: [], origin: "remote-model" },
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [
+          { from: firstOperation.id, reason: "explicit", to: secondOperation.id },
+          { from: firstOperation.id, reason: "identity", to: secondOperation.id },
+        ],
+        mode: "sequence",
+        order: [firstOperation.id, secondOperation.id],
+      },
+      transactionId: "mathtex-chain",
+      version: 1,
+    };
+    const commands: ApplyStudioMathTexTransformEditWireCommandV1[] = [];
+    const compilerInputs: string[][] = [];
+    const baseEntity = fixture.snapshot.snapshot.scene.entities[0];
+    if (!baseEntity) throw new Error("Imported MathTex Scene IR fixture is empty.");
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStudioMathTexTransformEditCompiler: async (bundle, command) => {
+        commands.push(command);
+        return {
+          ...bundle,
+          scene: {
+            ...bundle.scene,
+            entities: [
+              ...bundle.scene.entities,
+              { ...baseEntity, id: firstTargetEntityId },
+              { ...baseEntity, id: finalTargetEntityId },
+            ],
+          },
+        };
+      },
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async (texParts) => {
+        compilerInputs.push([...texParts]);
+        return compiledMathTexResponse({ content: `${compilerInputs.length}`.repeat(64) });
+      },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.workingState,
+        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      },
+      workingRevision: "studio-working-v1:mathtex-chain",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+
+    expect(compilerInputs).toEqual([[maxwellTex], ["E = mc^2"]]);
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.programs[0]).toMatchObject({
+      intentCount: 2,
+      requestedExecution: "sequence",
+      scheduleEdgeCount: 2,
+      scheduleOrder: [firstOperation.id, secondOperation.id],
+      transactionId: "mathtex-chain",
+    });
+    expect(commands[0]?.programs[0]?.operations).toEqual([
+      expect.objectContaining({
+        dependsOn: [],
+        kind: "transform-content",
+        replacementTexParts: [maxwellTex],
+        sourceEntityId: fixture.entityId,
+        strategy: "transform-matching-tex",
+        targetEntityId: firstTargetEntityId,
+      }),
+      expect.objectContaining({
+        dependsOn: [firstOperation.id],
+        kind: "transform-content",
+        replacementTexParts: ["E = mc^2"],
+        sourceEntityId: firstTargetEntityId,
+        strategy: "transform-matching-tex",
+        targetEntityId: finalTargetEntityId,
+      }),
+    ]);
+    expect(commands[0]?.mathTexOutlines.map(({ entityId, texParts }) => ({ entityId, texParts }))).toEqual([
+      { entityId: firstTargetEntityId, texParts: [maxwellTex] },
+      { entityId: finalTargetEntityId, texParts: ["E = mc^2"] },
+    ]);
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.interactionEntityIds).toContain(finalTargetEntityId);
   });
 
   it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {

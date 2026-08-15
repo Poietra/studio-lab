@@ -28,6 +28,7 @@ import {
   fakeRenderer,
   fixture,
   installVerifiedSnapshot,
+  mathTexTransformProgram,
   motionProgram,
   request,
   sceneSource,
@@ -537,6 +538,23 @@ class GroupedEquation(Scene):
     expect(exported.source).toContain("# poietra:cursor 8");
     expect(exported.source).toContain("# poietra:anchor 6");
     expect(exported.source).toContain("# poietra:anchor 9");
+  });
+
+  it("exports one verified MathTex A-to-B-to-A Program in transform order", async () => {
+    const { manager } = await fixture();
+    const program = mathTexTransformProgram("server-mathtex-transform");
+    const renderRequest = batchRequest([program]);
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
+
+    const exported = await manager.exportSource(renderRequest);
+    const transforms = [...exported.source.matchAll(/TransformMatchingTex\(([^\n]+)\)/g)];
+
+    expect(transforms).toHaveLength(2);
+    expect(transforms[0]?.[1]).toContain("poietra_server_mathtex_transform_1");
+    expect(transforms[1]?.[1]).toContain("poietra_server_mathtex_transform_2");
+    expect(exported.source.indexOf(transforms[0]?.[0] ?? "")).toBeLessThan(
+      exported.source.indexOf(transforms[1]?.[0] ?? ""),
+    );
   });
 
   it("exports and commits shifted temporal metadata while Undo restores the exact source", async () => {

@@ -1,6 +1,7 @@
 import type {
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
+  ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
@@ -18,6 +19,12 @@ type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "pr
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
+  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+
+type StudioMathTexTransformCommandInput = Omit<
+  ApplyStudioMathTexTransformEditWireCommandV1,
+  "programs" | "schema" | "version"
+> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 function studioProgramEnvelope(program: CanonicalEditProgram) {
@@ -188,6 +195,75 @@ export function buildStudioCreationEditCommand(
     schema: "poietra.apply-studio-creation-edit",
     version: 1,
   };
+}
+
+/** Selects only the bounded content-transform family; Rust owns its sequence and identity semantics. */
+export function isExactStudioMathTexTransformProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
+  const operationCount = programs.reduce((count, program) => count + program.operations.length, 0);
+  return (
+    programs.length > 0 &&
+    operationCount >= 1 &&
+    operationCount <= 2 &&
+    programs.every(
+      (program) => program.operations.length > 0 && program.operations.every(({ kind }) => kind === "TransformContent"),
+    )
+  );
+}
+
+/** Normalizes the complete MathTex content-transform batch without deciding its validity in TypeScript. */
+export function buildStudioMathTexTransformEditCommand(
+  input: StudioMathTexTransformCommandInput,
+): ApplyStudioMathTexTransformEditWireCommandV1 {
+  return {
+    ...input,
+    programs: input.programs.map((program) => ({
+      ...studioProgramEnvelope(program),
+      operations: program.operations.map(
+        (operation): ApplyStudioMathTexTransformEditWireCommandV1["programs"][number]["operations"][number] => {
+          const common = {
+            dependsOn: operation.dependsOn,
+            id: operation.id,
+            interval: operation.interval,
+            origin: operation.provenance.origin,
+          };
+          if (operation.kind !== "TransformContent") return { ...common, kind: "unsupported" };
+          return {
+            ...common,
+            kind: "transform-content",
+            replacementTexParts: studioCreationMathTexParts(operation.replacement),
+            sourceEntityId: operation.sourceEntityId,
+            strategy: operation.strategy,
+            targetEntityId: operation.targetEntityId,
+            targetType: operation.targetType ?? null,
+          };
+        },
+      ),
+    })),
+    schema: "poietra.apply-studio-math-tex-transform-edit",
+    version: 1,
+  };
+}
+
+/** Projects the imported Studio identity facts consumed by MathTex transform admission. */
+export function studioMathTexTransformStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): ApplyStudioMathTexTransformEditWireCommandV1["studioEntities"] {
+  return Object.entries(runtimeSceneState.objectGraph.entities).map(([objectGraphKey, entity]) => ({
+    objectGraphKey,
+    provisional: entity.provisional,
+    scale: entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null,
+    sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+    type:
+      entity.type === "Circle"
+        ? "circle"
+        : entity.type === "ImageMobject"
+          ? "image"
+          : entity.type === "MathTex"
+            ? "math-tex"
+            : entity.type === "Rectangle"
+              ? "rectangle"
+              : "other",
+  }));
 }
 
 function normalizedStudioMotionOperation(

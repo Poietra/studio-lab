@@ -5,6 +5,16 @@ import { defineConfig } from "@playwright/test";
 import { WEBGPU_CHROMIUM_CHANNEL, WEBGPU_CHROMIUM_LAUNCH_ARGS } from "./e2e/webgpu-launch";
 
 const workspaceDataRoot = join(process.cwd(), "test-results", `workspace-store-${process.pid}`);
+const fakeSnapshotProducerCommand = JSON.stringify([
+  process.execPath,
+  join(process.cwd(), "server/test-fixtures/fake-fast-manim-producer.mjs"),
+  `--bundle=${join(process.cwd(), "server/test-fixtures/fast-manim-static-bundle.json")}`,
+  "--mode=combined-identity",
+  "--identity-name=equation",
+  "--identity-ordinal=1",
+  "--identity-line=6",
+  "--duration=12",
+]);
 
 export default defineConfig({
   forbidOnly: true,
@@ -14,14 +24,14 @@ export default defineConfig({
       name: "chromium",
       // The retained-preview tests run on their own server via
       // playwright.preview.config.ts (pnpm test:e2e:preview).
-      testIgnore: ["**/*.webgpu.ts", "**/preview-renderer.e2e.ts"],
+      testIgnore: ["**/*.webgpu.ts", "**/magic-edit.e2e.ts", "**/preview-renderer.e2e.ts"],
       testMatch: "**/*.e2e.ts",
       use: { browserName: "chromium" },
     },
     {
       name: "chromium-webgpu",
       testIgnore: ["**/preview-renderer.webgpu.ts", "**/real-scene-preview.webgpu.ts", "**/visual-parity.webgpu.ts"],
-      testMatch: "**/*.webgpu.ts",
+      testMatch: ["**/*.webgpu.ts", "**/magic-edit.e2e.ts"],
       use: {
         browserName: "chromium",
         channel: WEBGPU_CHROMIUM_CHANNEL,
@@ -50,6 +60,9 @@ export default defineConfig({
     command: "pnpm dev:web --port 4173",
     env: {
       POIETRA_AI_DEBUG_LOG: "off",
+      POIETRA_FAST_MANIM_SNAPSHOT_COMMAND: fakeSnapshotProducerCommand,
+      POIETRA_FAST_MANIM_SNAPSHOT_DEV_OPT_IN: "1",
+      POIETRA_FAST_MANIM_SNAPSHOT_VERSION: "2",
       POIETRA_STUDIO_DATA_ROOT: workspaceDataRoot,
       POIETRA_MANIM_PROJECTS: JSON.stringify([
         { id: "studio-lab", name: "Studio Lab", root: "." },

@@ -1,12 +1,15 @@
 use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
-    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioMotionEditCommand,
-    ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
-    EngineSessionV1, EvaluationError, StaticRootTransformProgram, StaticRootTransformSize,
-    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringEditResult,
-    StudioAuthoringSize, StudioBoundEntityEditCandidate, StudioBoundEntityProgram,
-    StudioCreationMathTexOutline, StudioCreationProgram, StudioMotionEntityIdentity,
+    ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
+    ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
+    ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
+    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, StaticRootTransformProgram,
+    StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
+    StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
+    StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
+    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
+    StudioMathTexTransformProgram, StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity,
     StudioMotionProgram, StudioMotionSourceBinding, StudioTimelineProgram,
     StudioTimelineProjection, project_studio_timeline_programs,
 };
@@ -44,6 +47,12 @@ enum ProjectStudioTimelineSchemaV1 {
 enum ApplyStudioMotionEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-motion-edit")]
     ApplyStudioMotionEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStudioMathTexTransformEditSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-math-tex-transform-edit")]
+    ApplyStudioMathTexTransformEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -161,6 +170,34 @@ struct ApplyStudioMotionEditCommandJsonV1 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioMathTexTransformEditCommandJsonV1 {
+    expected_base_revision: String,
+    math_tex_outlines: Vec<StudioMathTexTransformOutline>,
+    next_revision: String,
+    programs: Vec<StudioMathTexTransformProgram>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioMathTexTransformEditSchemaV1,
+    source_runtime_bindings: Vec<StudioMathTexTransformSourceBinding>,
+    studio_entities: Vec<StudioMathTexTransformEntityIdentity>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStudioMathTexTransformEditCommandJsonV1> for ApplyStudioMathTexTransformEditCommand {
+    fn from(value: ApplyStudioMathTexTransformEditCommandJsonV1) -> Self {
+        Self {
+            expected_base_revision: value.expected_base_revision,
+            math_tex_outlines: value.math_tex_outlines,
+            next_revision: value.next_revision,
+            programs: value.programs,
+            source_runtime_bindings: value.source_runtime_bindings,
+            studio_entities: value.studio_entities,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioBoundEntityEditCommandJsonV1 {
     candidates: Vec<StudioBoundEntityEditCandidate>,
     expected_base_revision: String,
@@ -220,6 +257,8 @@ enum SceneAuthoringAdapterError {
     Session(#[from] EvaluationError),
     #[error(transparent)]
     StudioMotionEdit(#[from] ApplyStudioMotionEditError),
+    #[error(transparent)]
+    StudioMathTexTransformEdit(#[from] ApplyStudioMathTexTransformEditError),
     #[error(transparent)]
     StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
     #[error(transparent)]
@@ -366,6 +405,21 @@ fn apply_studio_motion_edit_json(
     scene_authoring_response(&result)
 }
 
+fn apply_studio_math_tex_transform_edit_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioMathTexTransformEditCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio MathTex transform edit",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_math_tex_transform_edit(command.into())?;
+    scene_authoring_response(&result)
+}
+
 fn apply_studio_bound_entity_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -434,6 +488,20 @@ pub fn apply_studio_motion_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
+/// Applies one atomic static imported `MathTex` replacement chain through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, or authored result.
+#[wasm_bindgen(js_name = applyStudioMathTexTransformEditV1)]
+pub fn apply_studio_math_tex_transform_edit_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_studio_math_tex_transform_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
 /// Authorizes and applies one edit to one integration-verified bound Scene root.
 ///
 /// # Errors
@@ -497,6 +565,111 @@ mod tests {
             "sourceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         });
         serde_json::to_vec(&fixture).unwrap()
+    }
+
+    fn static_math_tex_fixture_json() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/engine-v1/mathtex-nested-radical-fraction.json");
+        let mut fixture: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        fixture["scene"]["animationChannels"] = json!([]);
+        fixture["scene"]["requiredCapabilities"] = json!(["cubic-path-geometry"]);
+        fixture["scene"]["source"] = json!({
+            "kind": "imported-manim-server-snapshot",
+            "runtimeConfigHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "snapshotHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "snapshotVersion": 1,
+            "sourceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        });
+        serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"]
+        }))
+        .unwrap()
+    }
+
+    fn math_tex_transform_edit_command_json() -> Vec<u8> {
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/engine-v1");
+        let source: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("mathtex-nested-radical-fraction.json")).unwrap(),
+        )
+        .unwrap();
+        let replacement: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("real-mathtex-morph-v5.json")).unwrap(),
+        )
+        .unwrap();
+        let runtime_entity_id = source["scene"]["entities"][0]["id"].as_str().unwrap();
+        serde_json::to_vec(&json!({
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "mathTexOutlines": [{
+                "entityId": "tx:math-tex-transform/entity:b",
+                "path": replacement["scene"]["entities"][0]["geometry"]["path"],
+                "texParts": ["B"]
+            }, {
+                "entityId": "tx:math-tex-transform/entity:a-prime",
+                "path": source["scene"]["entities"][0]["geometry"]["path"],
+                "texParts": ["A"]
+            }],
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "programs": [{
+                "anchorCapturedPlayhead": 0.25,
+                "anchorResolvedSeconds": 0.25,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.25 },
+                "intentCount": 2,
+                "loweringSupported": true,
+                "operations": [{
+                    "dependsOn": [],
+                    "id": "transform-a-b",
+                    "interval": { "end": 0.75, "start": 0.25 },
+                    "kind": "transform-content",
+                    "origin": "remote-model",
+                    "replacementTexParts": ["B"],
+                    "sourceEntityId": "source:formula",
+                    "strategy": "transform-matching-tex",
+                    "targetEntityId": "tx:math-tex-transform/entity:b",
+                    "targetType": null
+                }, {
+                    "dependsOn": ["transform-a-b"],
+                    "id": "transform-b-a",
+                    "interval": { "end": 1.25, "start": 0.75 },
+                    "kind": "transform-content",
+                    "origin": "remote-model",
+                    "replacementTexParts": ["A"],
+                    "sourceEntityId": "tx:math-tex-transform/entity:b",
+                    "strategy": "transform-matching-tex",
+                    "targetEntityId": "tx:math-tex-transform/entity:a-prime",
+                    "targetType": "MathTex"
+                }],
+                "origin": "remote-model",
+                "requestedExecution": "sequence",
+                "scheduleEdgeCount": 2,
+                "scheduleMode": "sequence",
+                "scheduleOrder": ["transform-a-b", "transform-b-a"],
+                "transactionId": "math-tex-transform"
+            }],
+            "schema": "poietra.apply-studio-math-tex-transform-edit",
+            "sourceRuntimeBindings": [{
+                "runtimeEntityId": runtime_entity_id,
+                "sourceIdentityKey": "formula",
+                "sourceName": "formula"
+            }],
+            "studioEntities": [{
+                "objectGraphKey": "source:formula",
+                "provisional": false,
+                "scale": 1.0,
+                "sourceIdentity": "formula",
+                "type": "math-tex"
+            }, {
+                "objectGraphKey": "source:unrelated",
+                "provisional": false,
+                "scale": 1.0,
+                "sourceIdentity": "unrelated",
+                "type": "other"
+            }],
+            "version": 1
+        }))
+        .unwrap()
     }
 
     fn bound_entity_fixture_json() -> Vec<u8> {
@@ -1331,6 +1504,28 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "9999999999999999999999999999999999999999999999999999999999999999"
+        ));
+    }
+
+    #[test]
+    fn math_tex_transform_adapter_forwards_the_complete_chain_to_the_core() {
+        let response = apply_studio_math_tex_transform_edit_json(
+            &static_math_tex_fixture_json(),
+            &math_tex_transform_edit_command_json(),
+        )
+        .unwrap();
+        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+
+        assert_eq!(bundle.scene.entities.len(), 3);
+        assert_eq!(bundle.scene.animation_channels.len(), 3);
+        assert!(bundle.scene.entities.iter().any(|entity| {
+            entity.id == "tx:math-tex-transform/entity:a-prime"
+                && matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
+        }));
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         ));
     }
 

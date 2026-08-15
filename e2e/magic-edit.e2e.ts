@@ -1,11 +1,8 @@
 import { readFile } from "node:fs/promises";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 
-import type {
-  EditSuggestionRequest,
-  EditSuggestionResult,
-} from "../src/ai/edit-suggestions";
+import type { EditSuggestionRequest, EditSuggestionResult } from "../src/ai/edit-suggestions";
 import { openWorkspace } from "./workspace";
 
 const prompt = "Transform this equation to Maxwell's equations, then return to E = mc^2.";
@@ -78,6 +75,16 @@ async function exportedSource(page: Page) {
   return readFile(path, "utf8");
 }
 
+async function startCanonicalPreview(page: Page) {
+  await page.getByRole("button", { name: "Start preview…" }).click();
+  await expect(page.getByRole("alertdialog", { name: "Run workspace Scenes for WebGPU preview?" })).toBeVisible();
+  await page.getByRole("button", { name: "Run Scene preview" }).click();
+  await expect(page.getByRole("status").filter({ hasText: "WebGPU Preview · Verified" })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByRole("textbox", { name: "Describe an edit" })).toBeEnabled();
+}
+
 test("previews, applies, and exports two sequential transforms of the same MathTex", async ({ page }) => {
   const requests: EditSuggestionRequest[] = [];
   await page.route("**/api/ai/edit-suggestions", async (route) => {
@@ -86,6 +93,10 @@ test("previews, applies, and exports two sequential transforms of the same MathT
     await route.fulfill({ json: sequentialTransformResult(request) });
   });
   await openWorkspace(page);
+  await startCanonicalPreview(page);
+  const canvas = page.locator("[data-studio-canvas]");
+  const basePreviewRevision = await canvas.getAttribute("data-preview-revision");
+  expect(basePreviewRevision).toBeTruthy();
 
   await page.getByRole("textbox", { name: "Describe an edit" }).fill(prompt);
   await page.getByRole("button", { name: "Preview" }).click();
@@ -96,6 +107,17 @@ test("previews, applies, and exports two sequential transforms of the same MathT
   await expect(equationLabels).toHaveCount(2);
   await expect(equationLabels.nth(0)).toHaveValue("Maxwell equations");
   await expect(equationLabels.nth(1)).toHaveValue("Mass-energy equivalence");
+  await expect
+    .poll(
+      async () => {
+        const revision = await canvas.getAttribute("data-preview-revision");
+        return (await canvas.getAttribute("data-preview-renderer")) === "presented" && revision !== basePreviewRevision
+          ? revision
+          : null;
+      },
+      { timeout: 30_000 },
+    )
+    .not.toBeNull();
   await expect(page.getByRole("alert")).toHaveCount(0);
   expect(requests).toHaveLength(1);
   expect(requests[0]).toMatchObject({
@@ -104,8 +126,9 @@ test("previews, applies, and exports two sequential transforms of the same MathT
     prompt,
     selectedObjectIds: [expect.any(String)],
   });
-  expect(requests[0]?.objects.find((object) => object.id === requests[0]?.selectedObjectIds[0]))
-    .toMatchObject({ type: "MathTex" });
+  expect(requests[0]?.objects.find((object) => object.id === requests[0]?.selectedObjectIds[0])).toMatchObject({
+    type: "MathTex",
+  });
 
   await page.getByRole("button", { name: "Apply program" }).click();
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
@@ -123,27 +146,29 @@ test("continues a clarification choice into a fresh sequential-transform preview
   await page.route("**/api/ai/edit-suggestions", async (route) => {
     const request = route.request().postDataJSON() as EditSuggestionRequest;
     requests.push(request);
-    const result: EditSuggestionResult = requests.length === 1
-      ? {
-          kind: "clarification",
-          message: "Should both transformations run as one continuous preview?",
-          options: [
-            {
-              description: "Keep both transformations in one sequential Edit Program.",
-              id: "continuous",
-              label: "Continuous preview",
-            },
-            {
-              description: "Preview only the first transformation.",
-              id: "first-only",
-              label: "First transform only",
-            },
-          ],
-        }
-      : sequentialTransformResult(request);
+    const result: EditSuggestionResult =
+      requests.length === 1
+        ? {
+            kind: "clarification",
+            message: "Should both transformations run as one continuous preview?",
+            options: [
+              {
+                description: "Keep both transformations in one sequential Edit Program.",
+                id: "continuous",
+                label: "Continuous preview",
+              },
+              {
+                description: "Preview only the first transformation.",
+                id: "first-only",
+                label: "First transform only",
+              },
+            ],
+          }
+        : sequentialTransformResult(request);
     await route.fulfill({ json: result });
   });
   await openWorkspace(page);
+  await startCanonicalPreview(page);
 
   await page.getByRole("textbox", { name: "Describe an edit" }).fill(prompt);
   await page.getByRole("button", { name: "Preview" }).click();

@@ -22,11 +22,14 @@ import {
   type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioMathTexTransformEditCompiler,
+  type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
   type ApplyStudioTimelineEditCompiler,
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
   type ProjectStudioTimelineCompiler,
@@ -69,9 +72,12 @@ import {
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
+  isExactStudioMathTexTransformProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
@@ -534,6 +540,7 @@ export async function compileStudioPreviewSceneV1(
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioBoundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
+    applyStudioMathTexTransformEditCompiler?: ApplyStudioMathTexTransformEditCompiler;
     applyStudioMotionEditCompiler?: ApplyStudioMotionEditCompiler;
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
@@ -683,6 +690,113 @@ export async function compileStudioPreviewSceneV1(
     } catch (error) {
       return {
         error: `Rust core rejected Studio entity creation: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+  }
+  const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
+  if (
+    importedSource.kind === "imported-manim-server-snapshot" &&
+    isExactStudioMathTexTransformProgramBatch(sourceProgramBatch)
+  ) {
+    if (!staticImportedSourceIsExact(input)) {
+      return {
+        error: "MathTex content transform requires one exactly correlated static Scene snapshot.",
+        kind: "unsupported",
+      };
+    }
+    const outlineInputs = sourceProgramBatch.flatMap((program) =>
+      program.operations.flatMap((operation) => {
+        if (operation.kind !== "TransformContent") return [];
+        const texParts = studioCreationMathTexParts(operation.replacement);
+        return texParts ? [{ entityId: operation.targetEntityId, texParts }] : [];
+      }),
+    );
+    const mathTexOutlines: ApplyStudioMathTexTransformEditWireCommandV1["mathTexOutlines"][number][] = [];
+    const mathTexOutlineDigestMap: Record<string, MathTexOutlineArtifactV1> = {};
+    try {
+      const compiler = input.mathTexOutlineCompiler ?? compileMathTexOutlineV1;
+      const responses = await Promise.all(
+        outlineInputs.map(async ({ entityId, texParts }) => ({
+          entityId,
+          response: mathTexOutlineResponseV1Schema.parse(await compiler(texParts)),
+          texParts,
+        })),
+      );
+      for (const { entityId, response, texParts } of responses) {
+        if (response.result.kind === "unsupported") {
+          return {
+            error: `MathTex transform target ${entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+            kind: "unsupported",
+          };
+        }
+        mathTexOutlines.push({ entityId, path: response.result.path, texParts });
+        mathTexOutlineDigestMap[entityId] = response.result;
+      }
+    } catch (error) {
+      return {
+        error: `MathTex transform outline compilation failed: ${error instanceof Error ? error.message : String(error)}`,
+        kind: "unsupported",
+      };
+    }
+    const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
+      frame: input.frame,
+      mathTexOutlines: mathTexOutlineDigestMap,
+      snapshot: input.snapshot,
+      workingRevision: input.workingRevision,
+      workspaceKey: input.workspaceKey,
+    });
+    const command = buildStudioMathTexTransformEditCommand({
+      expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
+      mathTexOutlines,
+      nextRevision: engineRevisionHash,
+      programs: sourceProgramBatch,
+      sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
+        ([sourceIdentityKey, { entityId, sourceName }]) => ({
+          runtimeEntityId: entityId,
+          sourceIdentityKey,
+          sourceName,
+        }),
+      ),
+      studioEntities: studioMathTexTransformStudioEntities(input.workingState.runtimeSceneState),
+    });
+    try {
+      const bundle = await (input.applyStudioMathTexTransformEditCompiler ?? compileApplyStudioMathTexTransformEdit)(
+        input.snapshot.snapshot,
+        command,
+      );
+      const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
+      const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
+      const interactionEntityIds = studioPreviewInteractionEntityIdsV1(
+        input.snapshot.sourceRuntimeIdentity,
+        studioPreviewInteractionAuthority(input.snapshot, 0, input.workingState.runtimeSceneState.eventTrack.events),
+        bundle.scene.entities,
+      );
+      for (const entityId of createdEntityIds) {
+        if (
+          !interactionEntityIds.includes(entityId) &&
+          interactionEntityIds.length < MAX_CANVAS_INTERACTION_ENTITY_IDS
+        ) {
+          interactionEntityIds.push(entityId);
+        }
+      }
+      return {
+        kind: "compiled",
+        scene: {
+          bundle,
+          engineRevisionHash,
+          frame: { ...input.frame },
+          interactionEntityIds,
+          snapshot: input.snapshot,
+          workingRevision: input.workingRevision,
+          workspaceKey: input.workspaceKey,
+        },
+      };
+    } catch (error) {
+      return {
+        error: `Rust core rejected the MathTex content transform: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
         kind: "unsupported",
       };
     }

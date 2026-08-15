@@ -5,15 +5,19 @@ import { compileMathTexOutlineV1 } from "../src/engine/mathtex-outline";
 import {
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
 } from "../src/engine/scene-authoring";
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
+  isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
@@ -117,6 +121,44 @@ export async function authorizeSnapshotProgramWithSnapshot(
     sourceIdentityKey: mapping.binding.name,
     sourceName: mapping.binding.name,
   }));
+  if (isExactStudioMathTexTransformProgramBatch(input.programs)) {
+    const mathTexOutlines = [];
+    for (const program of input.programs) {
+      for (const operation of program.operations) {
+        if (operation.kind !== "TransformContent") continue;
+        const texParts = studioCreationMathTexParts(operation.replacement);
+        if (!texParts) continue;
+        let response;
+        try {
+          response = await compileMathTexOutlineV1(texParts);
+        } catch {
+          throw new HttpError("The server MathTex outline compiler is unavailable.", 503);
+        }
+        if (response.result.kind === "unsupported") {
+          if (response.result.code === "internal-failure") {
+            throw new HttpError("The server MathTex outline compiler failed.", 500);
+          }
+          throw new HttpError(
+            `MathTex transform target ${operation.targetEntityId} is unsupported (${response.result.code}): ${response.result.message}`,
+            400,
+          );
+        }
+        mathTexOutlines.push({ entityId: operation.targetEntityId, path: response.result.path, texParts });
+      }
+    }
+    await compileApplyStudioMathTexTransformEdit(
+      bundle,
+      buildStudioMathTexTransformEditCommand({
+        expectedBaseRevision: snapshot.snapshotHash,
+        mathTexOutlines,
+        nextRevision,
+        programs: input.programs,
+        sourceRuntimeBindings,
+        studioEntities: studioMathTexTransformStudioEntities(input.runtimeSceneState),
+      }),
+    );
+    return;
+  }
   if (isExactStudioMotionProgramBatch(input.programs)) {
     await compileApplyStudioMotionEdit(
       bundle,
