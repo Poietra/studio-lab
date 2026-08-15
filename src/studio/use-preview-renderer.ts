@@ -23,8 +23,6 @@ import {
   type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
-  type ApplyStudioMathTexContentEditCompiler,
-  type ApplyStudioMathTexContentEditWireCommandV1,
   type ApplyStudioMathTexTransformEditCompiler,
   type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
@@ -32,7 +30,6 @@ import {
   type ApplyStudioTimelineEditWireCommandV1,
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
-  compileApplyStudioMathTexContentEdit,
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
@@ -82,14 +79,12 @@ import {
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
-  buildStudioMathTexContentEditCommand,
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
   isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
-  studioMathTexContentStudioEntities,
   studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
@@ -465,10 +460,12 @@ function staticRootTransformEditCommand(
     workingState: WorkingState;
   }>,
   nextRevision: string,
+  mathTexOutlines: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"] = [],
 ): ApplyStaticRootTransformEditWireCommandV1 {
   return buildStaticRootTransformEditCommand({
     expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
     frame: input.frame,
+    mathTexOutlines,
     nextRevision,
     programs: sourceProgramRecords(input.workingState).map(({ program }) => program),
     sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
@@ -557,7 +554,6 @@ export async function compileStudioPreviewSceneV1(
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
     applyStudioBoundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
-    applyStudioMathTexContentEditCompiler?: ApplyStudioMathTexContentEditCompiler;
     applyStudioMathTexTransformEditCompiler?: ApplyStudioMathTexTransformEditCompiler;
     applyStudioMotionEditCompiler?: ApplyStudioMotionEditCompiler;
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
@@ -757,25 +753,12 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
-    const mathTexOutlines: ApplyStudioMathTexContentEditWireCommandV1["mathTexOutlines"] = [
+    const mathTexOutlines: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"] = [
       { entityId: operation.entityId, path: outlineResponse.result.path, texParts },
     ];
-    const command = buildStudioMathTexContentEditCommand({
-      expectedBaseRevision: input.snapshot.correlation.engineRevisionHash,
-      mathTexOutlines,
-      nextRevision: engineRevisionHash,
-      programs: sourceProgramBatch,
-      sourceRuntimeBindings: [...(input.snapshot.sourceRuntimeIdentity?.entries() ?? [])].map(
-        ([sourceIdentityKey, { entityId, sourceName }]) => ({
-          runtimeEntityId: entityId,
-          sourceIdentityKey,
-          sourceName,
-        }),
-      ),
-      studioEntities: studioMathTexContentStudioEntities(input.workingState.runtimeSceneState),
-    });
+    const command = staticRootTransformEditCommand(input, engineRevisionHash, mathTexOutlines);
     try {
-      const result = await (input.applyStudioMathTexContentEditCompiler ?? compileApplyStudioMathTexContentEdit)(
+      const result = await (input.applyStaticRootTransformEditCompiler ?? compileApplyStaticRootTransformEdit)(
         input.snapshot.snapshot,
         command,
       );

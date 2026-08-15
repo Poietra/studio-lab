@@ -110,6 +110,11 @@ type StaticRootTransformOperation = Readonly<{
         toPosition: Readonly<{ x: number; y: number }>;
       }>
     | Readonly<{
+        content: StudioMathTexContentV1;
+        entityId: string;
+        kind: "math-tex-content";
+      }>
+    | Readonly<{
         controlOffset: Readonly<{ x: number; y: number }>;
         delta: Readonly<{ x: number; y: number }>;
         easing: "linear" | "smooth";
@@ -192,6 +197,11 @@ export type StudioAuthoringEditResultV1 = Readonly<{
 export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
   expectedBaseRevision: string;
   frame: Readonly<{ height: number; width: number }>;
+  mathTexOutlines: readonly Readonly<{
+    entityId: string;
+    path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
+    texParts: readonly string[];
+  }>[];
   nextRevision: string;
   programs: readonly StudioAuthoringProgramV1<StaticRootTransformOperation>[];
   schema: "poietra.apply-static-root-transform-edit";
@@ -548,46 +558,6 @@ export type ApplyStudioMotionEditCompiler = (
   command: ApplyStudioMotionEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
-type StudioMathTexContentOperationV1 = Readonly<{
-  content: StudioMathTexContentV1;
-  dependsOn: readonly string[];
-  entityId: string;
-  id: string;
-  interval: Readonly<{ end: number; start: number }>;
-  kind: "math-tex-content";
-  origin: StudioAuthoringOrigin;
-}>;
-
-export type ApplyStudioMathTexContentEditWireCommandV1 = Readonly<{
-  expectedBaseRevision: string;
-  mathTexOutlines: readonly Readonly<{
-    entityId: string;
-    path: Extract<SceneIrBundleV1["scene"]["entities"][number]["geometry"], { kind: "cubic-path" }>["path"];
-    texParts: readonly string[];
-  }>[];
-  nextRevision: string;
-  programs: readonly StudioAuthoringProgramV1<StudioMathTexContentOperationV1>[];
-  schema: "poietra.apply-studio-math-tex-content-edit";
-  sourceRuntimeBindings: readonly Readonly<{
-    runtimeEntityId: string;
-    sourceIdentityKey: string;
-    sourceName: string;
-  }>[];
-  studioEntities: readonly Readonly<{
-    objectGraphKey: string;
-    provisional: boolean;
-    scale: number | null;
-    sourceIdentity: string | null;
-    type: StaticRootTransformEntityKind;
-  }>[];
-  version: 1;
-}>;
-
-export type ApplyStudioMathTexContentEditCompiler = (
-  snapshot: SceneIrBundleV1,
-  command: ApplyStudioMathTexContentEditWireCommandV1,
-) => Promise<StudioAuthoringEditResultV1>;
-
 type StudioMathTexTransformOperationV1 = Readonly<{
   dependsOn: readonly string[];
   id: string;
@@ -660,10 +630,6 @@ type ApplyStudioMotionEditBindingsV1 = Readonly<{
   applyStudioMotionEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
 
-type ApplyStudioMathTexContentEditBindingsV1 = Readonly<{
-  applyStudioMathTexContentEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
-}>;
-
 type ApplyStudioMathTexTransformEditBindingsV1 = Readonly<{
   applyStudioMathTexTransformEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -671,7 +637,6 @@ type ApplyStudioMathTexTransformEditBindingsV1 = Readonly<{
 type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioBoundEntityEditBindingsV1 &
   ApplyStudioCreationEditBindingsV1 &
-  ApplyStudioMathTexContentEditBindingsV1 &
   ApplyStudioMathTexTransformEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
@@ -687,7 +652,6 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStaticRootTransformEditV1 !== "function" ||
       typeof candidate.applyStudioBoundEntityEditV1 !== "function" ||
       typeof candidate.applyStudioCreationEditV1 !== "function" ||
-      typeof candidate.applyStudioMathTexContentEditV1 !== "function" ||
       typeof candidate.applyStudioMathTexTransformEditV1 !== "function" ||
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
@@ -702,8 +666,6 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStudioBoundEntityEditV1 as SceneAuthoringBindingsV1["applyStudioBoundEntityEditV1"],
       applyStudioCreationEditV1:
         candidate.applyStudioCreationEditV1 as SceneAuthoringBindingsV1["applyStudioCreationEditV1"],
-      applyStudioMathTexContentEditV1:
-        candidate.applyStudioMathTexContentEditV1 as SceneAuthoringBindingsV1["applyStudioMathTexContentEditV1"],
       applyStudioMathTexTransformEditV1:
         candidate.applyStudioMathTexTransformEditV1 as SceneAuthoringBindingsV1["applyStudioMathTexTransformEditV1"],
       applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
@@ -764,16 +726,6 @@ export function createApplyStudioMotionEditCompiler(
   };
 }
 
-/** Passes one exact imported static MathTex content replacement to the canonical core. */
-export function createApplyStudioMathTexContentEditCompiler(
-  getBindings: () => Promise<ApplyStudioMathTexContentEditBindingsV1>,
-): ApplyStudioMathTexContentEditCompiler {
-  return async (snapshot, command) => {
-    const bindings = await getBindings();
-    return invokeStudioAuthoringEditCommand(snapshot, command, bindings.applyStudioMathTexContentEditV1);
-  };
-}
-
 /** Passes one complete normalized MathTex content-transform batch to the canonical core. */
 export function createApplyStudioMathTexTransformEditCompiler(
   getBindings: () => Promise<ApplyStudioMathTexTransformEditBindingsV1>,
@@ -818,7 +770,6 @@ export function createProjectStudioTimelineCompiler(
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
-export const compileApplyStudioMathTexContentEdit = createApplyStudioMathTexContentEditCompiler(loadBindings);
 export const compileApplyStudioMathTexTransformEdit = createApplyStudioMathTexTransformEditCompiler(loadBindings);
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);

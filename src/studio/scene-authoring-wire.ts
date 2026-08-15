@@ -1,7 +1,6 @@
 import type {
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
-  ApplyStudioMathTexContentEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
   StudioMathTexContentV1,
@@ -13,20 +12,17 @@ import { isPointValue } from "./property-sampling";
 
 type StaticRootTransformCommandInput = Omit<
   ApplyStaticRootTransformEditWireCommandV1,
-  "programs" | "schema" | "version"
+  "mathTexOutlines" | "programs" | "schema" | "version"
 > &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{
+    mathTexOutlines?: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"];
+    programs: readonly CanonicalEditProgram[];
+  }>;
 
 type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "programs" | "schema" | "version"> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
-
-type StudioMathTexContentCommandInput = Omit<
-  ApplyStudioMathTexContentEditWireCommandV1,
-  "programs" | "schema" | "version"
-> &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 type StudioMathTexTransformCommandInput = Omit<
@@ -64,6 +60,7 @@ export function buildStaticRootTransformEditCommand(
 ): ApplyStaticRootTransformEditWireCommandV1 {
   return {
     ...input,
+    mathTexOutlines: input.mathTexOutlines ?? [],
     programs: input.programs.map((program) => ({
       ...studioProgramEnvelope(program),
       operations: program.operations.map(
@@ -81,6 +78,17 @@ export function buildStaticRootTransformEditCommand(
               kind: "position",
               position: isPointValue(operation.value) ? operation.value : null,
             };
+          }
+          if (operation.kind === "SetProperty" && operation.key === "content") {
+            const content = canonicalEditableContent(operation.value, "MathTex");
+            if (content?.texParts) {
+              return {
+                ...common,
+                content: content as StudioMathTexContentV1,
+                entityId: operation.entityId,
+                kind: "math-tex-content",
+              };
+            }
           }
           if (operation.kind === "AnimateProperty" && operation.key === "scale") {
             return {
@@ -130,38 +138,6 @@ export function buildStaticRootTransformEditCommand(
 
 export function studioCreationMathTexParts(value: unknown): readonly string[] | null {
   return canonicalEditableContent(value, "MathTex")?.texParts ?? null;
-}
-
-/** Normalizes one exact imported static MathTex content replacement without recreating its content. */
-export function buildStudioMathTexContentEditCommand(
-  input: StudioMathTexContentCommandInput,
-): ApplyStudioMathTexContentEditWireCommandV1 {
-  return {
-    ...input,
-    programs: input.programs.map((program) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map((operation) => {
-        if (operation.kind !== "SetProperty" || operation.key !== "content") {
-          throw new TypeError("MathTex content edit requires one canonical MathTex content operation.");
-        }
-        const content = canonicalEditableContent(operation.value, "MathTex");
-        if (!content?.texParts) {
-          throw new TypeError("MathTex content edit requires one canonical MathTex content operation.");
-        }
-        return {
-          content: content as StudioMathTexContentV1,
-          dependsOn: operation.dependsOn,
-          entityId: operation.entityId,
-          id: operation.id,
-          interval: operation.interval,
-          kind: "math-tex-content" as const,
-          origin: operation.provenance.origin,
-        };
-      }),
-    })),
-    schema: "poietra.apply-studio-math-tex-content-edit",
-    version: 1,
-  };
 }
 
 function normalizedStudioCreationOperation(
@@ -330,12 +306,6 @@ export function studioMathTexTransformStudioEntities(
               ? "rectangle"
               : "other",
   }));
-}
-
-export function studioMathTexContentStudioEntities(
-  runtimeSceneState: RuntimeSceneState,
-): ApplyStudioMathTexContentEditWireCommandV1["studioEntities"] {
-  return studioMathTexTransformStudioEntities(runtimeSceneState);
 }
 
 function normalizedStudioMotionOperation(

@@ -9,7 +9,6 @@ import type {
   ApplyStaticRootTransformEditCompiler,
   ApplyStaticRootTransformEditWireCommandV1,
   ApplyStudioCreationEditWireCommandV1,
-  ApplyStudioMathTexContentEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditCompiler,
   ApplyStudioMotionEditWireCommandV1,
@@ -497,11 +496,23 @@ function recordingStaticRootTransformEditCompiler(
       program.operations.map((operation) => ({ operation, transactionId: program.transactionId })),
     );
     let staticRootProjection: StudioStaticRootProjectionV1 | undefined;
-    if (operations.every(({ operation }) => ["position", "resize", "uniform-scale"].includes(operation.kind))) {
+    if (
+      operations.every(({ operation }) =>
+        ["math-tex-content", "position", "resize", "uniform-scale"].includes(operation.kind),
+      )
+    ) {
       const mutations: StudioStaticRootMutationV1[] = [];
       for (const { operation, transactionId } of operations) {
         const common = { operationId: operation.id, transactionId };
-        if (operation.kind === "position" && operation.position) {
+        if (operation.kind === "math-tex-content") {
+          mutations.push({
+            ...common,
+            content: operation.content,
+            entityId: operation.entityId,
+            interval: operation.interval,
+            kind: operation.kind,
+          });
+        } else if (operation.kind === "position" && operation.position) {
           mutations.push({
             ...common,
             entityId: operation.entityId,
@@ -2298,7 +2309,7 @@ describe("compileStudioPreviewSceneV1", () => {
     );
   });
 
-  it("compiles one imported static MathTex content edit through the dedicated Rust use case", async () => {
+  it("compiles one imported static MathTex content edit through the static-root Rust use case", async () => {
     const fixture = await importedMathTexPreviewInput();
     const content = { displayLines: ["F = ma"], label: "Force", texParts: ["F", "=", "ma"] } as const;
     const contentEdit = createInspectorEntityEditProgram({
@@ -2314,29 +2325,10 @@ describe("compileStudioPreviewSceneV1", () => {
       ...fixture.workingState,
       appliedPrograms: [programRecord(contentEdit.program, contentEdit)],
     });
-    const commands: ApplyStudioMathTexContentEditWireCommandV1[] = [];
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     let outlineCompilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
-      applyStudioMathTexContentEditCompiler: async (bundle, command) => {
-        commands.push(command);
-        const operation = command.programs[0]?.operations[0];
-        if (!operation) throw new Error("MathTex content command fixture is empty.");
-        return {
-          ...unchangedAuthoringResult(bundle),
-          staticRootProjection: {
-            mutations: [
-              {
-                content: operation.content,
-                entityId: operation.entityId,
-                interval: operation.interval,
-                kind: "math-tex-content",
-                operationId: operation.id,
-                transactionId: command.programs[0]!.transactionId,
-              },
-            ],
-          },
-        };
-      },
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async (texParts) => {
         outlineCompilerCalls += 1;
@@ -2351,6 +2343,7 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(outlineCompilerCalls).toBe(1);
     expect(commands).toHaveLength(1);
     expect(commands[0]).toMatchObject({
+      mathTexOutlines: [{ entityId: fixture.entityId, texParts: content.texParts }],
       programs: [
         {
           anchorCapturedPlayhead: 0,
@@ -2365,7 +2358,7 @@ describe("compileStudioPreviewSceneV1", () => {
           ],
         },
       ],
-      schema: "poietra.apply-studio-math-tex-content-edit",
+      schema: "poietra.apply-static-root-transform-edit",
     });
     expect(result).toMatchObject({
       kind: "compiled",
@@ -2389,7 +2382,7 @@ describe("compileStudioPreviewSceneV1", () => {
     if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
     let compilerCalls = 0;
     const result = await compileStudioPreviewSceneV1({
-      applyStudioMathTexContentEditCompiler: async (bundle) => {
+      applyStaticRootTransformEditCompiler: async (bundle) => {
         compilerCalls += 1;
         return unchangedAuthoringResult(bundle);
       },
@@ -2433,7 +2426,7 @@ describe("compileStudioPreviewSceneV1", () => {
     });
     if (contentEdit.kind !== "valid") throw new Error("Imported MathTex content edit fixture did not validate");
     const result = await compileStudioPreviewSceneV1({
-      applyStudioMathTexContentEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
+      applyStaticRootTransformEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async () => compiledMathTexResponse(),
       snapshot: fixture.snapshot,
