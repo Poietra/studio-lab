@@ -94,7 +94,7 @@ patch. `CI gate` is the stable required-check name; it accepts intentionally
 skipped lanes and fails when any selected lane fails or is cancelled.
 
 Pushes to `main` and manual runs execute the complete matrix, including the
-packaged Electron smoke, WebKit, retained WebGPU previews, and native/browser
+packaged Electron startup smoke, WebKit, retained WebGPU previews, and native/browser
 visual parity. The former Tauri prototype is checked only when its retained
 experiment changes; it is not a product gate. Real Manim remains a manual
 pre-release smoke because it tests an external renderer.
