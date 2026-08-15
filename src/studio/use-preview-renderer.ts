@@ -131,7 +131,7 @@ export type StudioPreviewInteractionAuthority =
     }>
   | Readonly<{
       kind: "display-only";
-      reason: "aggregate-mathtex-morph-lineage" | "source-runtime-identity-unverified" | "temporal-rebase-unavailable";
+      reason: "source-runtime-identity-unverified";
     }>;
 
 export type UseStudioPreviewRendererInput = Readonly<{
@@ -262,8 +262,7 @@ export function studioPreviewInteractionAuthority(
     const verifiedRuntimeEntityIds = snapshot.sourceRuntimeIdentity
       ? [...snapshot.sourceRuntimeIdentity.values()].map(({ entityId }) => entityId)
       : [];
-    const candidates =
-      source.traceVersion === 3 ? studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents) : [];
+    const candidates = studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents);
     if (
       candidates.length > 0 &&
       candidates.every(({ runtimeEntityId }) => verifiedRuntimeEntityIds.includes(runtimeEntityId))
@@ -291,29 +290,21 @@ export function studioPreviewInteractionAuthority(
     };
   }
   if (source.kind !== "imported-manim-server-snapshot") return { kind: "interactive" };
-  if (Number(source.snapshotVersion) === 5) {
-    return { kind: "display-only", reason: "aggregate-mathtex-morph-lineage" };
+  const identity = snapshot.sourceRuntimeIdentity;
+  if (!identity || identity.size === 0) {
+    return { kind: "display-only", reason: "source-runtime-identity-unverified" };
   }
-  const snapshotVersion = Number(source.snapshotVersion);
-  // Dynamic authoring belongs to the generic Runtime Trace authority above.
-  // A legacy server snapshot may still render, but it never advertises an
-  // editable target that cannot be reproduced by that canonical path.
   if (snapshot.snapshot.scene.animationChannels.length > 0) {
-    return (snapshot.sourceRuntimeIdentity?.size ?? 0) > 0
-      ? { kind: "selection-only", reason: "source-edit-unsupported" }
-      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
+    return { kind: "selection-only", reason: "source-edit-unsupported" };
   }
-  if (snapshotVersion === 6) {
-    return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
-      ? { kind: "interactive" }
-      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
-  }
-  if (snapshotVersion >= 7 && snapshotVersion <= 12) {
-    return (snapshot?.sourceRuntimeIdentity?.size ?? 0) > 0
-      ? { kind: "selection-only", reason: "source-edit-anchor-unavailable" }
-      : { kind: "display-only", reason: "source-runtime-identity-unverified" };
-  }
-  return { kind: "interactive" };
+  const entityById = new Map(snapshot.snapshot.scene.entities.map((entity) => [entity.id, entity] as const));
+  const hasOnlyEditableRoots = [...identity.values()].every(({ entityId }) => {
+    const entity = entityById.get(entityId);
+    return entity?.parentId === null && entity.geometry.kind !== "group";
+  });
+  return hasOnlyEditableRoots
+    ? { kind: "interactive" }
+    : { kind: "selection-only", reason: "source-edit-anchor-unavailable" };
 }
 
 /** Selects only IDs admitted by the server-verified source/runtime map. */
@@ -642,7 +633,7 @@ export async function compileStudioPreviewSceneV1(
   const importedSource = input.snapshot.snapshot.scene.source;
   if (
     input.snapshot.snapshot.scene.animationChannels.length > 0 &&
-    (importedSource.kind !== "imported-manim-runtime-trace" || importedSource.traceVersion !== 3)
+    importedSource.kind !== "imported-manim-runtime-trace"
   ) {
     return {
       error: "Editing an imported animation requires generic Runtime Trace authoring support.",
@@ -902,7 +893,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  if (importedSource.kind === "imported-manim-runtime-trace" && importedSource.traceVersion === 3) {
+  if (importedSource.kind === "imported-manim-runtime-trace") {
     const engineRevisionHash = await digestStudioPreviewSceneRevisionV1({
       frame: input.frame,
       snapshot: input.snapshot,
@@ -1145,7 +1136,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceSource = snapshot?.snapshot.scene.source;
   const runtimeTraceProgramValidation: StudioPreviewRuntimeTraceProgramValidation =
     runtimeTraceSource?.kind !== "imported-manim-runtime-trace" ||
-    runtimeTraceSource.traceVersion !== 3 ||
     (workingState === null ? 0 : sourceProgramRecords(workingState).length) === 0
       ? "not-applicable"
       : currentCompiledScene?.programAuthority === "source-bound-endpoint"
