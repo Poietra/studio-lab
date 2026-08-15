@@ -98,22 +98,35 @@ export type MathTexOutlineCompilerV1 = (texParts: readonly string[]) => Promise<
 
 type PoietraMathTexOutlineWasmModuleV1 = Readonly<{
   compileMathTexOutlineV1: (requestJson: Uint8Array) => Uint8Array;
-  default: () => Promise<unknown>;
+  default: (input?: unknown) => Promise<unknown>;
   poietraMathTexOutlineAbiVersion: () => number;
 }>;
 
-function browserBaseUrl() {
-  if (typeof document !== "undefined") return document.baseURI;
-  if (typeof location !== "undefined") return location.href;
-  throw new Error("A browser base URL is unavailable for the MathTex outline module.");
+function browserModuleUrl() {
+  if (typeof document === "undefined") return null;
+  return new URL("./engine-wasm/mathtex-outline/poietra_mathtex_wasm.js", document.baseURI);
 }
 
-function mathTexWasmModuleUrl() {
-  const base = new URL(browserBaseUrl());
-  const moduleUrl = new URL("./engine-wasm/mathtex-outline/poietra_mathtex_wasm.js", base);
-  if (moduleUrl.origin !== base.origin)
-    throw new Error("The MathTex outline module must use the application's origin.");
-  return moduleUrl;
+async function nodeAssetUrl(fileName: string) {
+  const currentUrl = import.meta.url;
+  const serverMarker = "/dist-server/";
+  const electronMarker = "/dist-electron/";
+  const serverIndex = currentUrl.lastIndexOf(serverMarker);
+  if (serverIndex >= 0) {
+    return new URL(`engine-wasm/mathtex-outline/${fileName}`, currentUrl.slice(0, serverIndex + serverMarker.length));
+  }
+  const electronIndex = currentUrl.lastIndexOf(electronMarker);
+  if (electronIndex >= 0) {
+    return new URL(`dist/engine-wasm/mathtex-outline/${fileName}`, currentUrl.slice(0, electronIndex + 1));
+  }
+
+  const pathSpecifier = "node:path";
+  const urlSpecifier = "node:url";
+  const [{ resolve }, { pathToFileURL }] = await Promise.all([
+    import(/* @vite-ignore */ pathSpecifier) as Promise<typeof import("node:path")>,
+    import(/* @vite-ignore */ urlSpecifier) as Promise<typeof import("node:url")>,
+  ]);
+  return pathToFileURL(resolve(process.cwd(), "public", "engine-wasm", "mathtex-outline", fileName));
 }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
@@ -122,11 +135,13 @@ function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
 
 export async function initializePoietraMathTexOutlineBindingsV1(
   candidate: unknown,
+  initInput?: unknown,
 ): Promise<PoietraMathTexOutlineWasmModuleV1> {
   if (!isRecord(candidate) || typeof candidate.default !== "function") {
     throw new Error("The MathTex outline module has no WASM initializer.");
   }
-  await candidate.default();
+  if (initInput === undefined) await candidate.default();
+  else await candidate.default(initInput);
   if (
     typeof candidate.poietraMathTexOutlineAbiVersion !== "function" ||
     candidate.poietraMathTexOutlineAbiVersion() !== POIETRA_MATHTEX_OUTLINE_ABI_VERSION ||
@@ -142,9 +157,16 @@ export async function initializePoietraMathTexOutlineBindingsV1(
 let bindingsPromise: Promise<PoietraMathTexOutlineWasmModuleV1> | null = null;
 
 async function loadPoietraMathTexOutlineBindingsV1() {
-  bindingsPromise ??= import(/* @vite-ignore */ mathTexWasmModuleUrl().href).then(
-    initializePoietraMathTexOutlineBindingsV1,
-  );
+  bindingsPromise ??= (async () => {
+    const browserUrl = browserModuleUrl();
+    const moduleUrl = browserUrl ?? (await nodeAssetUrl("poietra_mathtex_wasm.js"));
+    const candidate: unknown = await import(/* @vite-ignore */ moduleUrl.href);
+    if (browserUrl) return initializePoietraMathTexOutlineBindingsV1(candidate);
+    const fsSpecifier = "node:fs/promises";
+    const { readFile } = (await import(/* @vite-ignore */ fsSpecifier)) as typeof import("node:fs/promises");
+    const wasmBytes = await readFile(await nodeAssetUrl("poietra_mathtex_wasm_bg.wasm"));
+    return initializePoietraMathTexOutlineBindingsV1(candidate, { module_or_path: wasmBytes });
+  })();
   return bindingsPromise;
 }
 

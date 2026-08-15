@@ -75,7 +75,7 @@
     "build:web": "pnpm test:third-party-notices && pnpm test:engine:wasm-smoke && tsc --noEmit && vite build && node scripts/smoke-third-party-notices.mjs --web",
     "build:electron:main": "vite build --config vite.electron.config.ts",
     "build:electron": "pnpm build:web && pnpm build:electron:main",
-    "build:server": "pnpm test:third-party-notices && pnpm test:engine:wasm-smoke && vite build --config vite.server.config.ts && node scripts/smoke-third-party-notices.mjs --server",
+    "build:server": "pnpm test:third-party-notices && pnpm test:engine:wasm-smoke && vite build --config vite.server.config.ts && node scripts/smoke-server-mathtex-wasm.mjs && node scripts/smoke-third-party-notices.mjs --server",
     "build:account-worker": "wrangler deploy --dry-run --config wrangler.account-control-plane.example.jsonc --outdir dist-account-worker",
     "deploy:account-worker": "wrangler deploy --config wrangler.account-control-plane.jsonc",
     "build:billing-worker": "wrangler deploy --dry-run --config wrangler.billing-control-plane.example.jsonc --outdir dist-billing-worker",
