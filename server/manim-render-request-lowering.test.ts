@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
-import { createCircleProgram } from "./manim-render-pipeline-test-fixtures";
+import { createCircleProgram, mathTexTransformProgram } from "./manim-render-pipeline-test-fixtures";
 import { lowerManimRenderRequest, type SnapshotProgramAuthorizer } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
@@ -560,6 +560,59 @@ describe("Manim render request lowering", () => {
       message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });
+  });
+
+  it("routes one complete MathTex A-to-B-to-A Program through snapshot authorization", async () => {
+    const program = mathTexTransformProgram("authorized-mathtex-transform");
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(program), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([program]);
+    expect(result.lowered.source.match(/TransformMatchingTex\(/g)).toHaveLength(2);
+    expect(result.lowered.source.indexOf("poietra_authorized_mathtex_transform_1")).toBeLessThan(
+      result.lowered.source.indexOf("poietra_authorized_mathtex_transform_2"),
+    );
+  });
+
+  it("fails a complete MathTex transform Program closed without snapshot authorization", async () => {
+    await expect(lower(request(mathTexTransformProgram("mathtex-transform-without-authority")))).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("keeps a mixed MathTex transform and motion batch outside exact snapshot authorization", async () => {
+    const transform = mathTexTransformProgram("mixed-mathtex-transform");
+    const finalTargetEntityId = "tx:mixed-mathtex-transform/entity:restored";
+    const motion = motionProgram(7, "motion-after-mathtex-transform", finalTargetEntityId);
+    let authorizerCalls = 0;
+
+    const result = await lower({ ...request(transform), programs: [transform, motion] }, sceneSource, async () => {
+      authorizerCalls += 1;
+    });
+
+    expect(authorizerCalls).toBe(0);
+    expect(result.lowered.source.match(/TransformMatchingTex\(/g)).toHaveLength(2);
+    expect(result.lowered.source).toContain(".animate.shift(");
+  });
+
+  it("does not dispatch a Runtime Trace MathTex transform to snapshot authorization", async () => {
+    const program = mathTexTransformProgram("runtime-trace-mathtex-transform");
+    let authorizerCalls = 0;
+
+    await expect(
+      lower({ ...request(program), sourceValidation: "runtime-trace" }, sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject({
+      message: "The requested Runtime Trace validation does not support this edit.",
+      status: 400,
+    });
+    expect(authorizerCalls).toBe(0);
   });
 
   it("routes the complete Studio creation family through snapshot authorization", async () => {

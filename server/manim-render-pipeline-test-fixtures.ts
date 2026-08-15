@@ -120,6 +120,64 @@ export function motionProgram(
   };
 }
 
+export function mathTexTransformProgram(
+  transactionId = "mathtex-transform-chain",
+  sourceEntityId = "source:scene.py#GroupedEquation:equation",
+): CanonicalEditProgram {
+  const firstTargetEntityId = `tx:${transactionId}/entity:maxwell`;
+  const secondTargetEntityId = `tx:${transactionId}/entity:restored`;
+  const first: CanonicalEditOperation = {
+    dependsOn: [],
+    id: `tx:${transactionId}/operation:maxwell`,
+    interval: { end: 6, start: 5 },
+    kind: "TransformContent",
+    provenance: { evidence: [], origin: "remote-model" },
+    replacement: {
+      displayLines: ["Maxwell equations"],
+      texParts: [String.raw`\nabla \cdot \mathbf{E} = \frac{\rho}{\varepsilon_0}`],
+    },
+    sourceEntityId,
+    strategy: "transform-matching-tex",
+    targetEntityId: firstTargetEntityId,
+    targetType: "MathTex",
+  };
+  const second: CanonicalEditOperation = {
+    dependsOn: [first.id],
+    id: `tx:${transactionId}/operation:restore`,
+    interval: { end: 7, start: 6 },
+    kind: "TransformContent",
+    provenance: { evidence: [], origin: "remote-model" },
+    replacement: { displayLines: ["E = mc^2"], texParts: ["E", "=", "m", "c^2"] },
+    sourceEntityId: firstTargetEntityId,
+    strategy: "transform-matching-tex",
+    targetEntityId: secondTargetEntityId,
+    targetType: "MathTex",
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 5,
+      evidence: ["captured-playhead:5.000"],
+      resolvedSeconds: 5,
+      source: { kind: "playhead", referenceSeconds: 5 },
+    },
+    intentCount: 2,
+    loweringStatus: "supported",
+    operations: [first, second],
+    provenance: { evidence: [], origin: "remote-model" },
+    requestedExecution: "sequence",
+    schedule: {
+      edges: [
+        { from: first.id, reason: "explicit", to: second.id },
+        { from: first.id, reason: "identity", to: second.id },
+      ],
+      mode: "sequence",
+      order: [first.id, second.id],
+    },
+    transactionId,
+    version: 1,
+  };
+}
+
 export async function verifiedSnapshotView(
   renderRequest: ProgramRenderRequest,
   sourceBindingName?: string,
