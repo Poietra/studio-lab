@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import type { StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
+import type { StudioMathTexTransformProjectionV1, StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
@@ -13,9 +13,11 @@ import {
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
+import type { CanonicalEditProgram } from "./operations";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
 import {
   projectStudioWorkspace,
+  selectMathTexTransformProjection,
   selectStaticRootProjection,
   selectStudioWorkspaceProgramAuthority,
 } from "./workspace-projection";
@@ -77,6 +79,95 @@ function withOnlyEntityLifetimes(scene: ManimWorkspaceScene, lifetime: readonly 
       },
     },
   } satisfies ManimWorkspaceScene;
+}
+
+function mathTexTransformProgram(sourceEntityId: string): CanonicalEditProgram {
+  const firstOperationId = "tx:math-transform/operation:a-to-b";
+  const secondOperationId = "tx:math-transform/operation:b-to-a";
+  const firstTargetId = "tx:math-transform/entity:b";
+  return {
+    anchor: {
+      capturedPlayhead: 0.25,
+      evidence: ["playhead:0.250"],
+      resolvedSeconds: 0.25,
+      source: { kind: "playhead", referenceSeconds: 0.25 },
+    },
+    intentCount: 2,
+    loweringStatus: "supported",
+    operations: [
+      {
+        dependsOn: [],
+        id: firstOperationId,
+        interval: { end: 0.5, start: 0.25 },
+        kind: "TransformContent",
+        provenance: { evidence: ["A to B"], origin: "remote-model" },
+        replacement: { displayLines: ["B"], label: "middle", texParts: ["B"] },
+        sourceEntityId,
+        strategy: "transform-matching-tex",
+        targetEntityId: firstTargetId,
+      },
+      {
+        dependsOn: [firstOperationId],
+        id: secondOperationId,
+        interval: { end: 0.75, start: 0.5 },
+        kind: "TransformContent",
+        provenance: { evidence: ["B to A"], origin: "remote-model" },
+        replacement: { displayLines: ["A"], label: "final", texParts: ["A"] },
+        sourceEntityId: firstTargetId,
+        strategy: "transform-matching-tex",
+        targetEntityId: "tx:math-transform/entity:a-prime",
+        targetType: "MathTex",
+      },
+    ],
+    provenance: { evidence: ["fixture"], origin: "remote-model" },
+    requestedExecution: "sequence",
+    schedule: {
+      edges: [
+        { from: firstOperationId, reason: "explicit", to: secondOperationId },
+        { from: firstOperationId, reason: "identity", to: secondOperationId },
+      ],
+      mode: "sequence",
+      order: [firstOperationId, secondOperationId],
+    },
+    transactionId: "math-transform",
+    version: 1,
+  };
+}
+
+function mathTexTransformProjection(
+  program: CanonicalEditProgram,
+  baseDuration: number,
+): StudioMathTexTransformProjectionV1 {
+  const [first, second] = program.operations;
+  if (first?.kind !== "TransformContent" || second?.kind !== "TransformContent") {
+    throw new Error("Expected a two-step MathTex transform fixture.");
+  }
+  return {
+    insertions: [{ at: 0.3, duration: 0.5, transactionId: program.transactionId }],
+    projectedDuration: baseDuration + 0.5,
+    replacements: [
+      {
+        content: first.replacement as StudioMathTexTransformProjectionV1["replacements"][number]["content"],
+        interval: { end: 0.55, start: 0.3 },
+        operationId: first.id,
+        sourceEntityId: first.sourceEntityId,
+        targetEntityId: first.targetEntityId,
+        targetLifetime: { end: 0.8, start: 0.3 },
+        targetType: "math-tex",
+        transactionId: program.transactionId,
+      },
+      {
+        content: second.replacement as StudioMathTexTransformProjectionV1["replacements"][number]["content"],
+        interval: { end: 0.8, start: 0.55 },
+        operationId: second.id,
+        sourceEntityId: second.sourceEntityId,
+        targetEntityId: second.targetEntityId,
+        targetLifetime: { end: baseDuration + 0.5, start: 0.55 },
+        targetType: "math-tex",
+        transactionId: program.transactionId,
+      },
+    ],
+  };
 }
 
 describe("Studio workspace projection", () => {
@@ -314,6 +405,149 @@ describe("Studio workspace projection", () => {
         ({ operationId, provenanceId }) => operationId ?? provenanceId,
       ),
     ).toEqual(["imported-base-content", operation.id, "imported-future-content"]);
+  });
+
+  it("builds a two-step MathTex workspace from Rust projection facts without recomputing their timing", () => {
+    const imported = workspaceScene("MathFormula", null);
+    const [sourceEntityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!sourceEntityId) throw new Error("MathTex fixture has no entity.");
+    const program = mathTexTransformProgram(sourceEntityId);
+    const projection = mathTexTransformProjection(program, imported.runtimeSceneState.duration);
+    const [first, second] = projection.replacements;
+    if (!first || !second) throw new Error("Expected two projected replacements.");
+
+    const singleProgram: CanonicalEditProgram = {
+      ...program,
+      intentCount: 1,
+      operations: [program.operations[0]!],
+      schedule: { edges: [], mode: "sequence", order: [program.operations[0]!.id] },
+    };
+    const singleProjection: StudioMathTexTransformProjectionV1 = {
+      insertions: [{ at: first.interval.start, duration: 0.25, transactionId: program.transactionId }],
+      projectedDuration: imported.runtimeSceneState.duration + 0.25,
+      replacements: [
+        {
+          ...first,
+          targetLifetime: { end: imported.runtimeSceneState.duration + 0.25, start: first.interval.start },
+        },
+      ],
+    };
+    expect(
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [programRecord(singleProgram, { issues: [], kind: "valid" })],
+        currentTime: first.interval.end + 0.01,
+        draftProgram: null,
+        mathTexTransformProjection: singleProjection,
+        nextScene: null,
+        programAuthority: "rust-authorized-batch",
+        selectedObjectIds: [],
+      }).projection.inspector.entities.find(({ id }) => id === first.targetEntityId)?.content,
+    ).toEqual(first.content);
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      currentTime: 0.9,
+      draftProgram: null,
+      mathTexTransformProjection: projection,
+      nextScene: null,
+      programAuthority: "rust-authorized-batch",
+      selectedObjectIds: [],
+    });
+
+    expect(projected.proposedState.evaluatedScene.duration).toBe(projection.projectedDuration);
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[sourceEntityId]?.lifetime).toEqual([
+      { end: first.interval.end, start: 0 },
+    ]);
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[first.targetEntityId]).toMatchObject({
+      content: first.content,
+      lifetime: [first.targetLifetime],
+      provisional: false,
+      type: "MathTex",
+    });
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[second.targetEntityId]).toMatchObject({
+      content: second.content,
+      lifetime: [second.targetLifetime],
+      provisional: false,
+      type: "MathTex",
+    });
+    expect(projected.proposedState.evaluatedScene.objectGraph.lineage.slice(-2)).toEqual([
+      {
+        at: first.interval.end,
+        from: first.sourceEntityId,
+        operationId: first.operationId,
+        relation: "replaces",
+        to: first.targetEntityId,
+      },
+      {
+        at: second.interval.end,
+        from: second.sourceEntityId,
+        operationId: second.operationId,
+        relation: "replaces",
+        to: second.targetEntityId,
+      },
+    ]);
+    expect(
+      projected.proposedState.evaluatedScene.eventTrack.events
+        .filter(({ operationId }) => operationId === first.operationId || operationId === second.operationId)
+        .map(({ interval }) => interval),
+    ).toEqual([first.interval, second.interval]);
+    expect(projected.projection.inspector.entities.find(({ id }) => id === second.targetEntityId)?.content).toEqual(
+      second.content,
+    );
+    expect(projected.projection.objectList.entities.find(({ id }) => id === second.targetEntityId)?.present).toBe(true);
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${second.targetEntityId}/appearance`]?.samples.map(
+        ({ interval, value }) => ({ interval, value }),
+      ),
+    ).toEqual([
+      { interval: first.interval, value: 1 },
+      { interval: second.interval, value: 1 },
+    ]);
+  });
+
+  it("fails closed for a missing, duplicate, or mismatched MathTex transform projection", () => {
+    const imported = workspaceScene("MathFormula", null);
+    const [sourceEntityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!sourceEntityId) throw new Error("MathTex fixture has no entity.");
+    const program = mathTexTransformProgram(sourceEntityId);
+    const projection = mathTexTransformProjection(program, imported.runtimeSceneState.duration);
+    const record = programRecord(program, { issues: [], kind: "valid" });
+    const project = (candidate?: StudioMathTexTransformProjectionV1) =>
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [record],
+        currentTime: 0.9,
+        draftProgram: null,
+        mathTexTransformProjection: candidate,
+        nextScene: null,
+        programAuthority: "rust-authorized-batch",
+        selectedObjectIds: [],
+      });
+
+    expect(() => project()).toThrow("A Rust MathTex transform projection is required");
+    expect(() =>
+      selectMathTexTransformProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        replacements: [projection.replacements[0]!, projection.replacements[0]!],
+      }),
+    ).toThrow("one unique result");
+    expect(() =>
+      selectMathTexTransformProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        replacements: [
+          { ...projection.replacements[0]!, content: { displayLines: ["stale"], texParts: ["stale"] } },
+          projection.replacements[1]!,
+        ],
+      }),
+    ).toThrow("is not correlated");
+    expect(() =>
+      selectMathTexTransformProjection(imported.runtimeSceneState.duration, [program], {
+        ...projection,
+        projectedDuration: projection.projectedDuration + 1,
+      }),
+    ).toThrow("stale projected duration");
   });
 
   it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {
