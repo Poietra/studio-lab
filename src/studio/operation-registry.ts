@@ -959,71 +959,6 @@ export const OPERATION_REGISTRY = {
         { channel: "identity", entityId: operation.targetEntityId },
       ],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      const source = draft.entities[operation.sourceEntityId];
-      if (!source) return;
-      const sourceLifetime = source.lifetime.find(
-        (entry) => operation.interval.start >= entry.start && operation.interval.start < entry.end,
-      );
-      const inheritedEnd = sourceLifetime?.end ?? draft.duration;
-      draft.entities[operation.sourceEntityId] = {
-        ...source,
-        lifetime: source.lifetime.map((entry) =>
-          entry === sourceLifetime ? { ...entry, end: Math.min(entry.end, operation.interval.end) } : entry,
-        ),
-      };
-      draft.entities[operation.targetEntityId] = {
-        content: operation.replacement,
-        geometry: source.geometry,
-        id: operation.targetEntityId,
-        lifetime: [{ end: inheritedEnd, start: operation.interval.start }],
-        provisional: true,
-        sourceIdentity: source.sourceIdentity,
-        transactionId: program.transactionId,
-        type: operation.targetType ?? source.type,
-      };
-      draft.lineage.push({
-        at: operation.interval.end,
-        from: operation.sourceEntityId,
-        operationId: operation.id,
-        relation: "replaces",
-        to: operation.targetEntityId,
-      });
-      for (const channel of Object.values(draft.propertyChannels).filter(
-        (entry) => entry.entityId === operation.sourceEntityId && entry.key !== "content",
-      )) {
-        draft.propertyChannels[propertyKey(operation.targetEntityId, channel.key)] = {
-          ...channel,
-          entityId: operation.targetEntityId,
-        };
-      }
-      appendSample(draft, operation.targetEntityId, "content", {
-        interval: { end: inheritedEnd, start: operation.interval.end },
-        kind: "exact",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: operation.replacement,
-      });
-      appendSample(draft, operation.sourceEntityId, "appearance", {
-        easing: "smooth",
-        from: 1,
-        interval: operation.interval,
-        kind: "animated",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: 0,
-      });
-      appendSample(draft, operation.targetEntityId, "appearance", {
-        easing: "smooth",
-        from: 0,
-        interval: operation.interval,
-        kind: "animated",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: 1,
-      });
-    },
     execution: (operation) =>
       operation.interval.end - operation.interval.start > SOURCE_LOWERING_EPSILON
         ? SUPPORTED_EXECUTION
@@ -1399,7 +1334,7 @@ export function evaluateOperation(
   }
   const evaluate = operationCapability(operation).evaluate;
   if (!evaluate) {
-    throw new TypeError(`${operation.kind} requires the Rust timeline projection.`);
+    throw new TypeError(`${operation.kind} requires the Rust authoring projection.`);
   }
   evaluate(draft, operation as never, program);
 }

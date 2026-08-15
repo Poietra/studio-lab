@@ -9,9 +9,11 @@ use poietra_eval::{
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
     StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
-    StudioMathTexTransformProgram, StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity,
-    StudioMotionProgram, StudioMotionSourceBinding, StudioTimelineProgram,
-    StudioTimelineProjection, project_studio_timeline_programs,
+    StudioMathTexTransformProgram, StudioMathTexTransformProjection,
+    StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
+    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionSourceBinding,
+    StudioTimelineProgram, StudioTimelineProjection, project_studio_math_tex_transform_programs,
+    project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -53,6 +55,12 @@ enum ApplyStudioMotionEditSchemaV1 {
 enum ApplyStudioMathTexTransformEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-math-tex-transform-edit")]
     ApplyStudioMathTexTransformEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ProjectStudioMathTexTransformSchemaV1 {
+    #[serde(rename = "poietra.project-studio-math-tex-transform")]
+    ProjectStudioMathTexTransform,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -182,6 +190,18 @@ struct ApplyStudioMathTexTransformEditCommandJsonV1 {
     _schema: ApplyStudioMathTexTransformEditSchemaV1,
     source_runtime_bindings: Vec<StudioMathTexTransformSourceBinding>,
     studio_entities: Vec<StudioMathTexTransformEntityIdentity>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectStudioMathTexTransformCommandJsonV1 {
+    base_duration: f64,
+    programs: Vec<StudioMathTexTransformProgram>,
+    #[serde(rename = "schema")]
+    _schema: ProjectStudioMathTexTransformSchemaV1,
+    studio_entities: Vec<StudioMathTexTransformProjectionEntityIdentity>,
     #[serde(rename = "version")]
     _version: ContractVersionV1,
 }
@@ -327,6 +347,19 @@ fn studio_timeline_projection_response(
     Ok(response)
 }
 
+fn studio_math_tex_transform_projection_response(
+    projection: &StudioMathTexTransformProjection,
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let response =
+        serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
+    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
+        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
+            actual_bytes: response.len(),
+        });
+    }
+    Ok(response)
+}
+
 fn studio_authoring_edit_response(
     result: &StudioAuthoringEditResult,
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
@@ -423,6 +456,23 @@ fn apply_studio_math_tex_transform_edit_json(
     studio_authoring_edit_response(&result)
 }
 
+fn project_studio_math_tex_transform_json(
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ProjectStudioMathTexTransformCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio MathTex transform projection",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let projection = project_studio_math_tex_transform_programs(
+        command.base_duration,
+        &command.programs,
+        &command.studio_entities,
+    )?;
+    studio_math_tex_transform_projection_response(&projection)
+}
+
 fn apply_studio_bound_entity_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -502,6 +552,17 @@ pub fn apply_studio_math_tex_transform_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_math_tex_transform_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Authorizes and projects one static imported `MathTex` replacement chain without a snapshot.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for a malformed or unsupported closed-contract command.
+#[wasm_bindgen(js_name = projectStudioMathTexTransformV1)]
+pub fn project_studio_math_tex_transform_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+    project_studio_math_tex_transform_json(command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -681,6 +742,28 @@ mod tests {
             "version": 1
         }))
         .unwrap()
+    }
+
+    fn math_tex_transform_projection_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&math_tex_transform_edit_command_json()).unwrap();
+        let object = command.as_object_mut().unwrap();
+        object.remove("expectedBaseRevision");
+        object.remove("mathTexOutlines");
+        object.remove("nextRevision");
+        object.remove("sourceRuntimeBindings");
+        object.insert("baseDuration".to_owned(), json!(2.4));
+        object.insert(
+            "schema".to_owned(),
+            json!("poietra.project-studio-math-tex-transform"),
+        );
+        for entity in object["studioEntities"].as_array_mut().unwrap() {
+            entity
+                .as_object_mut()
+                .unwrap()
+                .insert("lifetime".to_owned(), json!([{ "end": 2.4, "start": 0.0 }]));
+        }
+        serde_json::to_vec(&command).unwrap()
     }
 
     fn static_root_math_tex_content_command_json() -> Vec<u8> {
@@ -1654,6 +1737,33 @@ mod tests {
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
         ));
+    }
+
+    #[test]
+    fn math_tex_transform_projector_forwards_logical_admission_to_the_core() {
+        let response =
+            project_studio_math_tex_transform_json(&math_tex_transform_projection_command_json())
+                .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+
+        assert_eq!(response["projectedDuration"], json!(3.4));
+        assert_eq!(response["replacements"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            response["replacements"][1]["targetLifetime"],
+            json!({ "end": 3.4, "start": 0.75 })
+        );
+    }
+
+    #[test]
+    fn math_tex_transform_projector_rejects_a_broken_chain() {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&math_tex_transform_projection_command_json()).unwrap();
+        command["programs"][0]["operations"][1]["sourceEntityId"] = json!("source:formula");
+
+        let error = project_studio_math_tex_transform_json(&serde_json::to_vec(&command).unwrap())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("do not authorize"));
     }
 
     #[test]

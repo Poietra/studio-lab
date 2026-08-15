@@ -655,6 +655,25 @@ export type ApplyStudioMathTexTransformEditCompiler = (
   command: ApplyStudioMathTexTransformEditWireCommandV1,
 ) => Promise<StudioAuthoringEditResultV1>;
 
+export type ProjectStudioMathTexTransformWireCommandV1 = Readonly<{
+  baseDuration: number;
+  programs: readonly StudioAuthoringProgramV1<StudioMathTexTransformOperationV1>[];
+  schema: "poietra.project-studio-math-tex-transform";
+  studioEntities: readonly Readonly<{
+    lifetime: readonly Readonly<{ end: number; start: number }>[];
+    objectGraphKey: string;
+    provisional: boolean;
+    scale: number | null;
+    sourceIdentity: string | null;
+    type: StaticRootTransformEntityKind;
+  }>[];
+  version: 1;
+}>;
+
+export type ProjectStudioMathTexTransformCompiler = (
+  command: ProjectStudioMathTexTransformWireCommandV1,
+) => Promise<StudioMathTexTransformProjectionV1>;
+
 type ApplyStudioBoundEntityEditBindingsV1 = Readonly<{
   applyStudioBoundEntityEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -669,6 +688,10 @@ type ApplyStudioTimelineEditBindingsV1 = Readonly<{
 
 type ProjectStudioTimelineBindingsV1 = Readonly<{
   projectStudioTimelineV1: (commandJson: Uint8Array) => Uint8Array;
+}>;
+
+type ProjectStudioMathTexTransformBindingsV1 = Readonly<{
+  projectStudioMathTexTransformV1: (commandJson: Uint8Array) => Uint8Array;
 }>;
 
 type ApplyStudioCreationEditBindingsV1 = Readonly<{
@@ -689,6 +712,7 @@ type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioMathTexTransformEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
+  ProjectStudioMathTexTransformBindingsV1 &
   ProjectStudioTimelineBindingsV1;
 
 let bindingsPromise: Promise<SceneAuthoringBindingsV1> | null = null;
@@ -704,6 +728,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStudioMathTexTransformEditV1 !== "function" ||
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
+      typeof candidate.projectStudioMathTexTransformV1 !== "function" ||
       typeof candidate.projectStudioTimelineV1 !== "function"
     ) {
       throw new Error("The Poietra WASM module does not export Scene authoring.");
@@ -720,6 +745,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       applyStudioMotionEditV1: candidate.applyStudioMotionEditV1 as SceneAuthoringBindingsV1["applyStudioMotionEditV1"],
       applyStudioTimelineEditV1:
         candidate.applyStudioTimelineEditV1 as SceneAuthoringBindingsV1["applyStudioTimelineEditV1"],
+      projectStudioMathTexTransformV1:
+        candidate.projectStudioMathTexTransformV1 as SceneAuthoringBindingsV1["projectStudioMathTexTransformV1"],
       projectStudioTimelineV1: candidate.projectStudioTimelineV1 as SceneAuthoringBindingsV1["projectStudioTimelineV1"],
     };
   })();
@@ -816,10 +843,22 @@ export function createProjectStudioTimelineCompiler(
   };
 }
 
+/** Projects one normalized MathTex transform batch without requiring a render snapshot. */
+export function createProjectStudioMathTexTransformCompiler(
+  getBindings: () => Promise<ProjectStudioMathTexTransformBindingsV1>,
+): ProjectStudioMathTexTransformCompiler {
+  return async (command) => {
+    const bindings = await getBindings();
+    const response = bindings.projectStudioMathTexTransformV1(encoder.encode(JSON.stringify(command)));
+    return studioMathTexTransformProjectionV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
+  };
+}
+
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
 export const compileApplyStudioMathTexTransformEdit = createApplyStudioMathTexTransformEditCompiler(loadBindings);
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);
+export const projectStudioMathTexTransform = createProjectStudioMathTexTransformCompiler(loadBindings);
 export const projectStudioTimeline = createProjectStudioTimelineCompiler(loadBindings);

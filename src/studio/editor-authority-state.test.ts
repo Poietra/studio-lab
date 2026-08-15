@@ -1,8 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import type { ProjectStudioTimelineCompiler } from "../engine/scene-authoring";
+import type {
+  ProjectStudioMathTexTransformCompiler,
+  ProjectStudioTimelineCompiler,
+  StudioMathTexTransformProjectionV1,
+} from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
+  EditorMathTexTransformAdmissionError,
   EditorTimelineAdmissionError,
   editorProgramsMatchAuthorityV1,
   materializeAuthoritativeEditorProgramsV1,
@@ -14,10 +19,12 @@ const source = `from manim import *
 
 class Demo(Scene):
     def construct(self):
-        label = Text("Demo")
-        self.add(label)
+        equation_a = MathTex("A")
+        self.add(equation_a)
         self.wait(5)
 `;
+
+const MATH_TEX_SOURCE_ID = "source:scene.py#Demo:equation_a";
 
 function scene() {
   const imported = importManimScene(source, "scene.py", "Demo");
@@ -47,6 +54,78 @@ function program(label = "wait"): CanonicalEditProgram {
     schedule: { edges: [], mode: "sequence", order: ["shared/wait"] },
     transactionId: "shared",
     version: 1,
+  };
+}
+
+function mathTexTransformProgram(): CanonicalEditProgram {
+  return {
+    anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+    intentCount: 2,
+    loweringStatus: "supported",
+    operations: [
+      {
+        dependsOn: [],
+        id: "math-transform/a-to-b",
+        interval: { end: 1.5, start: 1 },
+        kind: "TransformContent",
+        provenance: { evidence: [], origin: "studio-default" },
+        replacement: { displayLines: ["B"], label: "B", texParts: ["B"] },
+        sourceEntityId: MATH_TEX_SOURCE_ID,
+        strategy: "transform-matching-tex",
+        targetEntityId: "equation-b",
+        targetType: "MathTex",
+      },
+      {
+        dependsOn: ["math-transform/a-to-b"],
+        id: "math-transform/b-to-a",
+        interval: { end: 2, start: 1.5 },
+        kind: "TransformContent",
+        provenance: { evidence: [], origin: "studio-default" },
+        replacement: { displayLines: ["A"], label: "A", texParts: ["A"] },
+        sourceEntityId: "equation-b",
+        strategy: "transform-matching-tex",
+        targetEntityId: "equation-a-prime",
+        targetType: "MathTex",
+      },
+    ],
+    provenance: { evidence: [], origin: "studio-default" },
+    requestedExecution: "sequence",
+    schedule: {
+      edges: [{ from: "math-transform/a-to-b", reason: "explicit", to: "math-transform/b-to-a" }],
+      mode: "sequence",
+      order: ["math-transform/a-to-b", "math-transform/b-to-a"],
+    },
+    transactionId: "math-transform",
+    version: 1,
+  };
+}
+
+function acceptedMathTexProjection(): StudioMathTexTransformProjectionV1 {
+  return {
+    insertions: [{ at: 1, duration: 1, transactionId: "math-transform" }],
+    projectedDuration: 6,
+    replacements: [
+      {
+        content: { displayLines: ["B"], label: "B", texParts: ["B"] },
+        interval: { end: 1.5, start: 1 },
+        operationId: "math-transform/a-to-b",
+        sourceEntityId: MATH_TEX_SOURCE_ID,
+        targetEntityId: "equation-b",
+        targetLifetime: { end: 2, start: 1 },
+        targetType: "math-tex",
+        transactionId: "math-transform",
+      },
+      {
+        content: { displayLines: ["A"], label: "A", texParts: ["A"] },
+        interval: { end: 2, start: 1.5 },
+        operationId: "math-transform/b-to-a",
+        sourceEntityId: "equation-b",
+        targetEntityId: "equation-a-prime",
+        targetLifetime: { end: 6, start: 1.5 },
+        targetType: "math-tex",
+        transactionId: "math-transform",
+      },
+    ],
   };
 }
 
@@ -117,6 +196,107 @@ describe("authoritative Editor Program materialization", () => {
         acceptTimeline,
       ),
     ).rejects.toThrow(/invalid for the selected Scene/i);
+  });
+
+  it("materializes an exact authoritative MathTex A-to-B-to-A batch as valid records", async () => {
+    const remote = mathTexTransformProgram();
+    const compiler = vi.fn<ProjectStudioMathTexTransformCompiler>(async () => acceptedMathTexProjection());
+
+    const materialized = await materializeAuthoritativeEditorProgramsV1(scene(), [], [remote], undefined, compiler);
+
+    expect(materialized).toEqual([{ program: remote, validation: { issues: [], status: "valid" } }]);
+    expect(compiler).toHaveBeenCalledOnce();
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseDuration: 5,
+        schema: "poietra.project-studio-math-tex-transform",
+        studioEntities: expect.arrayContaining([
+          expect.objectContaining({
+            lifetime: [{ end: 5, start: 0 }],
+            objectGraphKey: MATH_TEX_SOURCE_ID,
+            type: "math-tex",
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it("rejects malformed MathTex content through Rust admission", async () => {
+    const remote = mathTexTransformProgram();
+    const malformed = {
+      ...remote,
+      operations: [{ ...remote.operations[0]!, replacement: { displayLines: [], texParts: [] } }],
+      intentCount: 1,
+      schedule: { edges: [], mode: "sequence" as const, order: [remote.operations[0]!.id] },
+    };
+    const compiler = vi.fn<ProjectStudioMathTexTransformCompiler>(async (command) => {
+      const replacement = command.programs[0]?.operations[0];
+      if (replacement?.kind === "transform-content" && replacement.replacement === null) {
+        throw new Error("unsupported MathTex content");
+      }
+      return acceptedMathTexProjection();
+    });
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(scene(), [], [malformed], undefined, compiler),
+    ).rejects.toThrow(/Rust MathTex transform admission rejected.*unsupported MathTex content/i);
+  });
+
+  it("rejects a MathTex transform whose source is absent from the selected Scene", async () => {
+    const remote = mathTexTransformProgram();
+    const missingSource = {
+      ...remote,
+      operations: [{ ...remote.operations[0]!, sourceEntityId: "missing" }],
+      intentCount: 1,
+      schedule: { edges: [], mode: "sequence" as const, order: [remote.operations[0]!.id] },
+    };
+    const compiler = vi.fn<ProjectStudioMathTexTransformCompiler>(async (command) => {
+      const sourceId =
+        command.programs[0]?.operations[0]?.kind === "transform-content"
+          ? command.programs[0].operations[0].sourceEntityId
+          : null;
+      if (!command.studioEntities.some(({ objectGraphKey }) => objectGraphKey === sourceId)) {
+        throw new Error("missing source entity");
+      }
+      return acceptedMathTexProjection();
+    });
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(scene(), [], [missingSource], undefined, compiler),
+    ).rejects.toThrow(/Rust MathTex transform admission rejected.*missing source entity/i);
+  });
+
+  it("rejects an uncorrelated MathTex projection returned by the compiler", async () => {
+    const remote = mathTexTransformProgram();
+    const projection = acceptedMathTexProjection();
+    const compiler: ProjectStudioMathTexTransformCompiler = async () => ({
+      ...projection,
+      replacements: [{ ...projection.replacements[0]!, targetEntityId: "wrong-target" }],
+    });
+
+    const admission = materializeAuthoritativeEditorProgramsV1(scene(), [], [remote], undefined, compiler);
+    await expect(admission).rejects.toBeInstanceOf(EditorMathTexTransformAdmissionError);
+    await expect(admission).rejects.toThrow(
+      /Rust MathTex transform admission rejected.*one unique result per Program operation/i,
+    );
+  });
+
+  it("rejects TransformContent mixed with a family that has no Rust batch authority", async () => {
+    const transform = mathTexTransformProgram();
+    const mixed: CanonicalEditProgram = {
+      ...transform,
+      intentCount: 3,
+      operations: [...transform.operations, program().operations[0]!],
+      schedule: {
+        edges: transform.schedule.edges,
+        mode: "sequence",
+        order: [...transform.schedule.order, "shared/wait"],
+      },
+    };
+
+    await expect(materializeAuthoritativeEditorProgramsV1(scene(), [], [mixed])).rejects.toThrow(
+      /TransformContent only as an exact Rust MathTex transform batch/i,
+    );
   });
 
   it("keeps authoritative source coordinates across timeline admission and re-materialization", async () => {

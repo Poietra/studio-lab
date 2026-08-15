@@ -3,6 +3,7 @@ import type {
   ApplyStudioCreationEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
+  ProjectStudioMathTexTransformWireCommandV1,
   StudioMathTexContentV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
@@ -27,6 +28,12 @@ type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "progra
 
 type StudioMathTexTransformCommandInput = Omit<
   ApplyStudioMathTexTransformEditWireCommandV1,
+  "programs" | "schema" | "version"
+> &
+  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+
+type StudioMathTexTransformProjectionCommandInput = Omit<
+  ProjectStudioMathTexTransformWireCommandV1,
   "programs" | "schema" | "version"
 > &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
@@ -258,31 +265,49 @@ export function buildStudioMathTexTransformEditCommand(
 ): ApplyStudioMathTexTransformEditWireCommandV1 {
   return {
     ...input,
-    programs: input.programs.map((program) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(
-        (operation): ApplyStudioMathTexTransformEditWireCommandV1["programs"][number]["operations"][number] => {
-          const common = {
-            dependsOn: operation.dependsOn,
-            id: operation.id,
-            interval: operation.interval,
-            origin: operation.provenance.origin,
-          };
-          if (operation.kind !== "TransformContent") return { ...common, kind: "unsupported" };
-          const replacement = canonicalEditableContent(operation.replacement, "MathTex");
-          return {
-            ...common,
-            kind: "transform-content",
-            replacement: replacement?.texParts ? (replacement as StudioMathTexContentV1) : null,
-            sourceEntityId: operation.sourceEntityId,
-            strategy: operation.strategy,
-            targetEntityId: operation.targetEntityId,
-            targetType: operation.targetType ?? null,
-          };
-        },
-      ),
-    })),
+    programs: normalizedStudioMathTexTransformPrograms(input.programs),
     schema: "poietra.apply-studio-math-tex-transform-edit",
+    version: 1,
+  };
+}
+
+function normalizedStudioMathTexTransformPrograms(
+  programs: readonly CanonicalEditProgram[],
+): ProjectStudioMathTexTransformWireCommandV1["programs"] {
+  return programs.map((program) => ({
+    ...studioProgramEnvelope(program),
+    operations: program.operations.map(
+      (operation): ProjectStudioMathTexTransformWireCommandV1["programs"][number]["operations"][number] => {
+        const common = {
+          dependsOn: operation.dependsOn,
+          id: operation.id,
+          interval: operation.interval,
+          origin: operation.provenance.origin,
+        };
+        if (operation.kind !== "TransformContent") return { ...common, kind: "unsupported" };
+        const replacement = canonicalEditableContent(operation.replacement, "MathTex");
+        return {
+          ...common,
+          kind: "transform-content",
+          replacement: replacement?.texParts ? (replacement as StudioMathTexContentV1) : null,
+          sourceEntityId: operation.sourceEntityId,
+          strategy: operation.strategy,
+          targetEntityId: operation.targetEntityId,
+          targetType: operation.targetType ?? null,
+        };
+      },
+    ),
+  }));
+}
+
+/** Normalizes the complete MathTex transform batch for snapshot-free Rust admission. */
+export function buildStudioMathTexTransformProjectionCommand(
+  input: StudioMathTexTransformProjectionCommandInput,
+): ProjectStudioMathTexTransformWireCommandV1 {
+  return {
+    ...input,
+    programs: normalizedStudioMathTexTransformPrograms(input.programs),
+    schema: "poietra.project-studio-math-tex-transform",
     version: 1,
   };
 }
@@ -306,6 +331,16 @@ export function studioMathTexTransformStudioEntities(
             : entity.type === "Rectangle"
               ? "rectangle"
               : "other",
+  }));
+}
+
+/** Projects imported identity and lifetime facts for snapshot-free MathTex admission. */
+export function studioMathTexTransformProjectionStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): ProjectStudioMathTexTransformWireCommandV1["studioEntities"] {
+  return studioMathTexTransformStudioEntities(runtimeSceneState).map((identity) => ({
+    ...identity,
+    lifetime: runtimeSceneState.objectGraph.entities[identity.objectGraphKey]?.lifetime ?? [],
   }));
 }
 

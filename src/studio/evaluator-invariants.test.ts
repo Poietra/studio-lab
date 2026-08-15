@@ -85,6 +85,31 @@ function evaluateImportedContentEdit({
 }
 
 describe("Studio evaluator invariants", () => {
+  it("requires the Rust authoring projection for TransformContent", () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      id: operationId("transform-projection", "transform"),
+      interval: { end: 9, start: 8 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "fixture" },
+      replacement: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] },
+      sourceEntityId: "equation_1",
+      strategy: "transform-matching-tex",
+      targetEntityId: provisionalEntityId("transform-projection", "replacement"),
+      targetType: "MathTex",
+    };
+    const program = {
+      ...programWith([operation], "transform-projection"),
+      loweringStatus: "supported" as const,
+    };
+
+    expect(() =>
+      evaluateWorkingState(
+        createFixtureWorkingState({ stagedPrograms: [programRecord(program, { issues: [], kind: "valid" })] }),
+      ),
+    ).toThrow("TransformContent requires the Rust authoring projection.");
+  });
+
   it("requires Rust projection for Scene duration operations", () => {
     const operations: readonly CanonicalEditOperation[] = [
       {
