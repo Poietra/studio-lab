@@ -2144,7 +2144,7 @@ describe("compileStudioPreviewSceneV1", () => {
       interval: { end: 1, start: 0 },
       kind: "TransformContent" as const,
       provenance: { evidence: [], origin: "remote-model" as const },
-      replacement: { displayLines: ["Maxwell equations"], texParts: [maxwellTex] },
+      replacement: { displayLines: ["Maxwell equations"], label: "Maxwell", texParts: [maxwellTex] },
       sourceEntityId: fixture.entityId,
       strategy: "transform-matching-tex" as const,
       targetEntityId: firstTargetEntityId,
@@ -2189,20 +2189,50 @@ describe("compileStudioPreviewSceneV1", () => {
     const compilerInputs: string[][] = [];
     const baseEntity = fixture.snapshot.snapshot.scene.entities[0];
     if (!baseEntity) throw new Error("Imported MathTex Scene IR fixture is empty.");
+    const mathTexTransformProjection = {
+      insertions: [{ at: 0, duration: 2, transactionId: "mathtex-chain" }],
+      projectedDuration: fixture.snapshot.snapshot.scene.duration + 2,
+      replacements: [
+        {
+          content: firstOperation.replacement,
+          interval: firstOperation.interval,
+          operationId: firstOperation.id,
+          sourceEntityId: firstOperation.sourceEntityId,
+          targetEntityId: firstOperation.targetEntityId,
+          targetLifetime: { end: 2, start: 0 },
+          targetType: "math-tex" as const,
+          transactionId: "mathtex-chain",
+        },
+        {
+          content: secondOperation.replacement,
+          interval: secondOperation.interval,
+          operationId: secondOperation.id,
+          sourceEntityId: secondOperation.sourceEntityId,
+          targetEntityId: secondOperation.targetEntityId,
+          targetLifetime: { end: fixture.snapshot.snapshot.scene.duration + 2, start: 1 },
+          targetType: "math-tex" as const,
+          transactionId: "mathtex-chain",
+        },
+      ],
+    };
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioMathTexTransformEditCompiler: async (bundle, command) => {
         commands.push(command);
         return {
-          ...bundle,
-          scene: {
-            ...bundle.scene,
-            entities: [
-              ...bundle.scene.entities,
-              { ...baseEntity, id: firstTargetEntityId },
-              { ...baseEntity, id: finalTargetEntityId },
-            ],
+          bundle: {
+            ...bundle,
+            scene: {
+              ...bundle.scene,
+              entities: [
+                ...bundle.scene.entities,
+                { ...baseEntity, id: firstTargetEntityId },
+                { ...baseEntity, id: finalTargetEntityId },
+              ],
+            },
           },
+          mathTexTransformProjection,
+          persistentRemoveProjection: { removals: [] },
         };
       },
       frame: { height: 9, width: 16 },
@@ -2232,7 +2262,7 @@ describe("compileStudioPreviewSceneV1", () => {
       expect.objectContaining({
         dependsOn: [],
         kind: "transform-content",
-        replacementTexParts: [maxwellTex],
+        replacement: firstOperation.replacement,
         sourceEntityId: fixture.entityId,
         strategy: "transform-matching-tex",
         targetEntityId: firstTargetEntityId,
@@ -2240,7 +2270,7 @@ describe("compileStudioPreviewSceneV1", () => {
       expect.objectContaining({
         dependsOn: [firstOperation.id],
         kind: "transform-content",
-        replacementTexParts: ["E = mc^2"],
+        replacement: secondOperation.replacement,
         sourceEntityId: firstTargetEntityId,
         strategy: "transform-matching-tex",
         targetEntityId: finalTargetEntityId,
@@ -2252,7 +2282,25 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.interactionEntityIds).toContain(finalTargetEntityId);
+    expect(result.scene.mathTexTransformProjection).toEqual(mathTexTransformProjection);
     expect(result.scene.programAuthority).toBe("rust-authorized-batch");
+
+    const missingProjection = await compileStudioPreviewSceneV1({
+      applyStudioMathTexTransformEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
+      frame: { height: 9, width: 16 },
+      mathTexOutlineCompiler: async () => compiledMathTexResponse(),
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.workingState,
+        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      },
+      workingRevision: "studio-working-v1:missing-mathtex-transform-projection",
+      workspaceKey: "project-a/scene.py/MathTexScene",
+    });
+    expect(missingProjection).toEqual({
+      error: "Rust core did not return the complete MathTex transform projection.",
+      kind: "unsupported",
+    });
   });
 
   it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {

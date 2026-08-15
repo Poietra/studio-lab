@@ -156,6 +156,7 @@ function previewView(
     epoch: 0,
     interactionGeometry,
     interactionAuthority,
+    mathTexTransformProjection: null,
     persistentRemoveProjection: null,
     staticRootProjection: null,
     programAuthority: null,

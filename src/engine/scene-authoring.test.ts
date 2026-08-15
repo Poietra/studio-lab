@@ -6,11 +6,13 @@ import {
   type ApplyStaticRootTransformEditWireCommandV1,
   type ApplyStudioBoundEntityEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
+  type ApplyStudioMathTexTransformEditWireCommandV1,
   type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
   createApplyStudioBoundEntityEditCompiler,
   createApplyStudioCreationEditCompiler,
+  createApplyStudioMathTexTransformEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
   createProjectStudioTimelineCompiler,
@@ -411,6 +413,38 @@ describe("Scene authoring WASM adapter", () => {
     const result = await compile(bundle, creationEditCommand);
     expect(result).toEqual(response);
     expect(calls[1]).toEqual(creationEditCommand);
+  });
+
+  it("returns the MathTex transform projection from the existing adapter", async () => {
+    const bundle = await fixtureBundle();
+    const command = {
+      expectedBaseRevision: "a".repeat(64),
+      mathTexOutlines: [],
+      nextRevision: "f".repeat(64),
+      programs: [],
+      schema: "poietra.apply-studio-math-tex-transform-edit",
+      sourceRuntimeBindings: [],
+      studioEntities: [],
+      version: 1,
+    } satisfies ApplyStudioMathTexTransformEditWireCommandV1;
+    const response = {
+      bundle,
+      mathTexTransformProjection: { insertions: [], projectedDuration: 2, replacements: [] },
+      persistentRemoveProjection: { removals: [] },
+    } as const;
+    const calls: unknown[] = [];
+    const compile = createApplyStudioMathTexTransformEditCompiler(async () => ({
+      applyStudioMathTexTransformEditV1: (snapshotJson, commandJson) => {
+        calls.push(
+          JSON.parse(new TextDecoder().decode(snapshotJson)),
+          JSON.parse(new TextDecoder().decode(commandJson)),
+        );
+        return new TextEncoder().encode(JSON.stringify(response));
+      },
+    }));
+
+    await expect(compile(bundle, command)).resolves.toEqual(response);
+    expect(calls[1]).toEqual(command);
   });
 
   it("forwards one complete source-bound endpoint edit without reconstructing it", async () => {
