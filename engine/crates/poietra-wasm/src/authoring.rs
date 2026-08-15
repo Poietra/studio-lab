@@ -1,37 +1,20 @@
 use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
+    ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioMotionEditCommand,
     ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
-    EngineSessionV1, EvaluationError, RotateSceneEntityCommand, RotateSceneEntityError,
-    ScaleAboutPivot, SceneEntityAxisFactors, SetSubtreeVectorPaintAlphaCommand,
-    SetSubtreeVectorPaintAlphaError, StaticRootTransformOperation, StaticRootTransformSize,
+    EngineSessionV1, EvaluationError, StaticRootTransformOperation, StaticRootTransformSize,
     StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringSize,
-    StudioCreationEvaluatedEntity, StudioCreationEvaluatedEvent, StudioCreationMathTexOutline,
-    StudioCreationProgram, StudioMotionEntityIdentity, StudioMotionProgram,
-    StudioMotionSourceBinding, StudioTimelineProgram, TransformSceneEntityAtTimeCommand,
-    TransformSceneEntityCommand, TransformSceneEntityError, TransformSceneEntityExpectedBaseline,
-    TransformSceneEntityIntent,
+    StudioBoundEntityEditCandidate, StudioBoundEntityProgram, StudioCreationEvaluatedEntity,
+    StudioCreationEvaluatedEvent, StudioCreationMathTexOutline, StudioCreationProgram,
+    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionSourceBinding,
+    StudioTimelineProgram,
 };
 use poietra_scene_ir::{
-    ContractJsonError, ContractVersionV1, PointV1, ProvenanceRecordV1, SceneIrBundleV1,
-    parse_scene_ir_bundle_json_v1,
+    ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
 };
 use serde::{Deserialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
-
-const MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1: usize = 64 * 1024;
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum TransformSceneEntitySchemaV1 {
-    #[serde(rename = "poietra.transform-scene-entity")]
-    TransformSceneEntity,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum TransformSceneEntityAtTimeSchemaV1 {
-    #[serde(rename = "poietra.transform-scene-entity-at-time")]
-    TransformSceneEntityAtTime,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum ApplyStaticRootTransformEditSchemaV1 {
@@ -58,201 +41,9 @@ enum ApplyStudioMotionEditSchemaV1 {
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
-enum SetSubtreeVectorPaintAlphaSchemaV1 {
-    #[serde(rename = "poietra.set-subtree-vector-paint-alpha")]
-    SetSubtreeVectorPaintAlpha,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SetSubtreeVectorPaintAlphaCommandJsonV1 {
-    alpha: f64,
-    expected_base_revision: String,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    root_entity_id: String,
-    #[serde(rename = "schema")]
-    _schema: SetSubtreeVectorPaintAlphaSchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<SetSubtreeVectorPaintAlphaCommandJsonV1> for SetSubtreeVectorPaintAlphaCommand {
-    fn from(value: SetSubtreeVectorPaintAlphaCommandJsonV1) -> Self {
-        Self {
-            alpha: value.alpha,
-            expected_base_revision: value.expected_base_revision,
-            next_revision: value.next_revision,
-            provenance: value.provenance,
-            root_entity_id: value.root_entity_id,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ScaleAboutPivotJsonV1 {
-    pivot: PointV1,
-    x_factor: f64,
-    y_factor: f64,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct SceneEntityAxisFactorsJsonV1 {
-    x_factor: f64,
-    y_factor: f64,
-}
-
-impl From<SceneEntityAxisFactorsJsonV1> for SceneEntityAxisFactors {
-    fn from(value: SceneEntityAxisFactorsJsonV1) -> Self {
-        Self {
-            x_factor: value.x_factor,
-            y_factor: value.y_factor,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum TransformSceneEntityExpectedBaselineJsonV1 {
-    CurrentCenter,
-    CurrentUniformAffine,
-    WorldSize {
-        height: f64,
-        width: f64,
-        world_center: PointV1,
-    },
-}
-
-impl From<TransformSceneEntityExpectedBaselineJsonV1> for TransformSceneEntityExpectedBaseline {
-    fn from(value: TransformSceneEntityExpectedBaselineJsonV1) -> Self {
-        match value {
-            TransformSceneEntityExpectedBaselineJsonV1::CurrentCenter => Self::CurrentCenter,
-            TransformSceneEntityExpectedBaselineJsonV1::CurrentUniformAffine => {
-                Self::CurrentUniformAffine
-            }
-            TransformSceneEntityExpectedBaselineJsonV1::WorldSize {
-                height,
-                width,
-                world_center,
-            } => Self::WorldSize {
-                height,
-                width,
-                world_center,
-            },
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "kebab-case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-enum TransformSceneEntityIntentJsonV1 {
-    Relative {
-        delta: PointV1,
-        scale: Option<ScaleAboutPivotJsonV1>,
-    },
-    FromBaseline {
-        baseline: TransformSceneEntityExpectedBaselineJsonV1,
-        scale: Option<SceneEntityAxisFactorsJsonV1>,
-        target_center: Option<PointV1>,
-    },
-}
-
-impl From<TransformSceneEntityIntentJsonV1> for TransformSceneEntityIntent {
-    fn from(value: TransformSceneEntityIntentJsonV1) -> Self {
-        match value {
-            TransformSceneEntityIntentJsonV1::Relative { delta, scale } => Self::Relative {
-                delta,
-                scale: scale.map(Into::into),
-            },
-            TransformSceneEntityIntentJsonV1::FromBaseline {
-                baseline,
-                scale,
-                target_center,
-            } => Self::FromBaseline {
-                expected_baseline: baseline.into(),
-                scale: scale.map(Into::into),
-                target_center,
-            },
-        }
-    }
-}
-
-impl From<ScaleAboutPivotJsonV1> for ScaleAboutPivot {
-    fn from(value: ScaleAboutPivotJsonV1) -> Self {
-        Self {
-            pivot: value.pivot,
-            x_factor: value.x_factor,
-            y_factor: value.y_factor,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TransformSceneEntityCommandJsonV1 {
-    entity_id: String,
-    expected_base_revision: String,
-    intent: TransformSceneEntityIntentJsonV1,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: TransformSceneEntitySchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<TransformSceneEntityCommandJsonV1> for TransformSceneEntityCommand {
-    fn from(value: TransformSceneEntityCommandJsonV1) -> Self {
-        Self {
-            entity_id: value.entity_id,
-            expected_base_revision: value.expected_base_revision,
-            intent: value.intent.into(),
-            next_revision: value.next_revision,
-            provenance: value.provenance,
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TransformSceneEntityAtTimeCommandJsonV1 {
-    at: f64,
-    delta: PointV1,
-    entity_id: String,
-    expected_base_revision: String,
-    next_revision: String,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: TransformSceneEntityAtTimeSchemaV1,
-    scale: Option<ScaleAboutPivotJsonV1>,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<TransformSceneEntityAtTimeCommandJsonV1> for TransformSceneEntityAtTimeCommand {
-    fn from(value: TransformSceneEntityAtTimeCommandJsonV1) -> Self {
-        Self {
-            at: value.at,
-            delta: value.delta,
-            entity_id: value.entity_id,
-            expected_base_revision: value.expected_base_revision,
-            next_revision: value.next_revision,
-            provenance: value.provenance,
-            scale: value.scale.map(Into::into),
-        }
-    }
+enum ApplyStudioBoundEntityEditSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-bound-entity-edit")]
+    ApplyStudioBoundEntityEdit,
 }
 
 #[derive(Debug, Deserialize)]
@@ -366,6 +157,40 @@ struct ApplyStudioMotionEditCommandJsonV1 {
     viewport: StudioAuthoringSize,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioBoundEntityEditCommandJsonV1 {
+    base_studio_scene_id: String,
+    candidates: Vec<StudioBoundEntityEditCandidate>,
+    evaluated_duration: f64,
+    evaluated_scene_id: String,
+    expected_base_revision: String,
+    frame: StudioAuthoringSize,
+    next_revision: String,
+    programs: Vec<StudioBoundEntityProgram>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioBoundEntityEditSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+    viewport: StudioAuthoringSize,
+}
+
+impl From<ApplyStudioBoundEntityEditCommandJsonV1> for ApplyStudioBoundEntityEditCommand {
+    fn from(value: ApplyStudioBoundEntityEditCommandJsonV1) -> Self {
+        Self {
+            base_studio_scene_id: value.base_studio_scene_id,
+            candidates: value.candidates,
+            evaluated_duration: value.evaluated_duration,
+            evaluated_scene_id: value.evaluated_scene_id,
+            expected_base_revision: value.expected_base_revision,
+            frame: value.frame,
+            next_revision: value.next_revision,
+            programs: value.programs,
+            viewport: value.viewport,
+        }
+    }
+}
+
 impl From<ApplyStudioMotionEditCommandJsonV1> for ApplyStudioMotionEditCommand {
     fn from(value: ApplyStudioMotionEditCommandJsonV1) -> Self {
         Self {
@@ -403,17 +228,13 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     StudioMotionEdit(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
-    RotationCommand(#[from] RotateSceneEntityError),
-    #[error(transparent)]
-    TransformCommand(#[from] TransformSceneEntityError),
-    #[error(transparent)]
     StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
+    #[error(transparent)]
+    StudioBoundEntityEdit(#[from] ApplyStudioBoundEntityEditError),
     #[error(transparent)]
     StudioCreationEdit(#[from] ApplyStudioCreationEditError),
     #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
-    #[error(transparent)]
-    SetSubtreeVectorPaintAlphaCommand(#[from] SetSubtreeVectorPaintAlphaError),
     #[error("the authored Scene bundle could not be serialized: {0}")]
     ResponseJson(serde_json::Error),
     #[error(
@@ -421,17 +242,6 @@ enum SceneAuthoringAdapterError {
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1
     )]
     ResponseTooLarge { actual_bytes: usize },
-}
-
-fn parse_scene_authoring_command<T: DeserializeOwned>(
-    command: &'static str,
-    command_json: &[u8],
-) -> Result<T, SceneAuthoringAdapterError> {
-    parse_scene_authoring_command_with_limit(
-        command,
-        command_json,
-        MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
-    )
 }
 
 fn parse_scene_authoring_command_with_limit<T: DeserializeOwned>(
@@ -467,28 +277,6 @@ fn scene_authoring_response(
         });
     }
     Ok(response)
-}
-
-fn transform_scene_entity_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: TransformSceneEntityCommandJsonV1 =
-        parse_scene_authoring_command("transform", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.transform_scene_entity(command.into())?;
-    scene_authoring_response(&result)
-}
-
-fn transform_scene_entity_at_time_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: TransformSceneEntityAtTimeCommandJsonV1 =
-        parse_scene_authoring_command("transform at time", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.transform_scene_entity_at_time(command.into())?;
-    scene_authoring_response(&result)
 }
 
 fn apply_static_root_transform_edit_json(
@@ -548,6 +336,21 @@ fn apply_studio_motion_edit_json(
     scene_authoring_response(&result)
 }
 
+fn apply_studio_bound_entity_edit_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioBoundEntityEditCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio bound entity edit",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_bound_entity_edit(command.into())?;
+    scene_authoring_response(&result)
+}
+
 /// Applies one complete normalized Studio creation edit through the shared core.
 ///
 /// # Errors
@@ -590,31 +393,17 @@ pub fn apply_studio_motion_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-/// Resolves and applies one atomic transform intent through the shared core.
+/// Authorizes and applies one edit to one integration-verified bound Scene root.
 ///
 /// # Errors
 ///
-/// Returns a JavaScript error for an invalid snapshot, command, or transformed result.
-#[wasm_bindgen(js_name = transformSceneEntityV1)]
-pub fn transform_scene_entity_v1(
+/// Returns a JavaScript error for an invalid snapshot, command, or authored result.
+#[wasm_bindgen(js_name = applyStudioBoundEntityEditV1)]
+pub fn apply_studio_bound_entity_edit_v1(
     snapshot_json: &[u8],
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
-    transform_scene_entity_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
-/// Applies one root transform from an exact Scene time through the shared core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or transformed result.
-#[wasm_bindgen(js_name = transformSceneEntityAtTimeV1)]
-pub fn transform_scene_entity_at_time_v1(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, JsValue> {
-    transform_scene_entity_at_time_json(snapshot_json, command_json)
+    apply_studio_bound_entity_edit_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -632,103 +421,17 @@ pub fn apply_static_root_transform_edit_v1(
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
-fn set_subtree_vector_paint_alpha_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: SetSubtreeVectorPaintAlphaCommandJsonV1 =
-        parse_scene_authoring_command("set subtree vector paint alpha", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.set_subtree_vector_paint_alpha(command.into())?;
-    scene_authoring_response(&result)
-}
-
-/// Sets vector paint alpha for one concrete Scene subtree through the shared core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or authored result.
-#[wasm_bindgen(js_name = setSubtreeVectorPaintAlphaV1)]
-pub fn set_subtree_vector_paint_alpha_v1(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, JsValue> {
-    set_subtree_vector_paint_alpha_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
-#[derive(Clone, Copy, Debug, Deserialize)]
-enum RotateSceneEntitySchemaV1 {
-    #[serde(rename = "poietra.rotate-scene-entity")]
-    RotateSceneEntity,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct RotateSceneEntityCommandJsonV1 {
-    angle_radians: f64,
-    entity_id: String,
-    expected_base_revision: String,
-    next_revision: String,
-    pivot: PointV1,
-    provenance: ProvenanceRecordV1,
-    #[serde(rename = "schema")]
-    _schema: RotateSceneEntitySchemaV1,
-    #[serde(rename = "version")]
-    _version: ContractVersionV1,
-}
-
-impl From<RotateSceneEntityCommandJsonV1> for RotateSceneEntityCommand {
-    fn from(value: RotateSceneEntityCommandJsonV1) -> Self {
-        Self {
-            angle_radians: value.angle_radians,
-            entity_id: value.entity_id,
-            expected_base_revision: value.expected_base_revision,
-            next_revision: value.next_revision,
-            pivot: value.pivot,
-            provenance: value.provenance,
-        }
-    }
-}
-
-fn rotate_scene_entity_json(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let command: RotateSceneEntityCommandJsonV1 =
-        parse_scene_authoring_command("rotation", command_json)?;
-    let mut session = scene_authoring_session(snapshot_json)?;
-    let result = session.rotate_scene_entity(command.into())?;
-    scene_authoring_response(&result)
-}
-
-/// Applies one concrete Scene rotation through the shared native/WASM core.
-///
-/// # Errors
-///
-/// Returns a JavaScript error for an invalid snapshot, command, or rotated result.
-#[wasm_bindgen(js_name = rotateSceneEntityV1)]
-pub fn rotate_scene_entity_v1(
-    snapshot_json: &[u8],
-    command_json: &[u8],
-) -> Result<Vec<u8>, JsValue> {
-    rotate_scene_entity_json(snapshot_json, command_json)
-        .map_err(|error| JsValue::from_str(&error.to_string()))
-}
-
 #[cfg(test)]
 mod tests {
     use std::{fs, path::PathBuf};
 
     use poietra_scene_ir::{
-        AnimationChannelV1, RenderDrawV1, SceneAppearanceV1, SceneGeometryV1, SceneSourceV1,
+        AnimationChannelV1, SceneAppearanceV1, SceneGeometryV1, SceneSourceV1,
         parse_scene_ir_bundle_json_v1,
     };
     use serde_json::json;
 
     use super::*;
-    use crate::EngineWorkerSessionV1;
-
     fn fixture_json() -> Vec<u8> {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../../fixtures/engine-v1/shared-circle-opacity.json");
@@ -753,6 +456,77 @@ mod tests {
             "sourceHash": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
         });
         serde_json::to_vec(&fixture).unwrap()
+    }
+
+    fn bound_entity_fixture_json() -> Vec<u8> {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
+        let fixture: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        serde_json::to_vec(&json!({
+            "assets": fixture["assets"],
+            "scene": fixture["scene"],
+        }))
+        .unwrap()
+    }
+
+    fn bound_entity_edit_command_json() -> Vec<u8> {
+        let snapshot = parse_scene_ir_bundle_json_v1(&bound_entity_fixture_json()).unwrap();
+        let root_id = snapshot
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap()
+            .id
+            .clone();
+        serde_json::to_vec(&json!({
+            "baseStudioSceneId": "scene.py#LineJoints",
+            "candidates": [{
+                "baseCenter": { "x": 320.0, "y": 180.0 },
+                "baseOpacity": null,
+                "capabilities": {
+                    "paintOpacity": true,
+                    "rotation": true,
+                    "uniformScale": true
+                },
+                "evidenceId": "line-joints:root",
+                "phase": "construction",
+                "sceneEntityId": root_id,
+                "sourceAnchor": 0.0,
+                "studioEntityId": "source:root"
+            }],
+            "evaluatedDuration": 1.0,
+            "evaluatedSceneId": "scene.py#LineJoints",
+            "expectedBaseRevision": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
+            "frame": { "height": 8.0, "width": 14.222_222_222_222_221 },
+            "nextRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "programs": [{
+                "anchorCapturedPlayhead": 0.0,
+                "anchorResolvedSeconds": 0.0,
+                "anchorSource": { "kind": "absolute", "seconds": 0.0 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "dependsOn": [],
+                    "entityId": "source:root",
+                    "id": "move-root",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "kind": "move",
+                    "origin": "direct-manipulation",
+                    "position": { "x": 360.0, "y": 180.0 }
+                }],
+                "origin": "direct-manipulation",
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "parallel",
+                "scheduleOrder": ["move-root"],
+                "validationValid": true
+            }],
+            "schema": "poietra.apply-studio-bound-entity-edit",
+            "version": 1,
+            "viewport": { "height": 360.0, "width": 640.0 }
+        }))
+        .unwrap()
     }
 
     fn static_root_transform_command_json() -> Vec<u8> {
@@ -902,89 +676,6 @@ mod tests {
         .unwrap()
     }
 
-    fn command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "angleRadians": std::f64::consts::FRAC_PI_2,
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "nextRevision": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-            "pivot": { "x": 1.0, "y": 0.0 },
-            "provenance": {
-                "evidence": ["WASM adapter rotation test"],
-                "id": "wasm-rotation",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.rotate-scene-entity",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn timed_transform_command_json() -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "at": 1.0,
-            "delta": { "x": 2.0, "y": -1.0 },
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "provenance": {
-                "evidence": ["WASM adapter endpoint transform test"],
-                "id": "wasm-endpoint-transform",
-                "origin": "studio-edit-program"
-            },
-            "scale": {
-                "pivot": { "x": 1.0, "y": 0.0 },
-                "xFactor": 1.5,
-                "yFactor": 1.5
-            },
-            "schema": "poietra.transform-scene-entity-at-time",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn baseline_transform_command_json(world_center_x: f64) -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "intent": {
-                "baseline": {
-                    "height": 1.0,
-                    "kind": "world-size",
-                    "width": 1.0,
-                    "worldCenter": { "x": world_center_x, "y": 0.0 }
-                },
-                "kind": "from-baseline",
-                "scale": { "xFactor": 1.5, "yFactor": 1.5 },
-                "targetCenter": { "x": 3.0, "y": -1.0 }
-            },
-            "nextRevision": "8888888888888888888888888888888888888888888888888888888888888888",
-            "provenance": {
-                "evidence": ["WASM adapter verified transform baseline"],
-                "id": "wasm-baseline-transform",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.transform-scene-entity",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn current_uniform_transform_command_json() -> Vec<u8> {
-        let mut command: serde_json::Value =
-            serde_json::from_slice(&baseline_transform_command_json(1.0)).unwrap();
-        command["intent"]["baseline"] = json!({ "kind": "current-uniform-affine" });
-        serde_json::to_vec(&command).unwrap()
-    }
-
-    fn current_center_transform_command_json() -> Vec<u8> {
-        let mut command: serde_json::Value =
-            serde_json::from_slice(&baseline_transform_command_json(1.0)).unwrap();
-        command["intent"]["baseline"] = json!({ "kind": "current-center" });
-        command["intent"].as_object_mut().unwrap().remove("scale");
-        serde_json::to_vec(&command).unwrap()
-    }
-
     fn studio_motion_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "baseStudioSceneId": "scene.py#CircleScene",
@@ -1041,448 +732,172 @@ mod tests {
         .unwrap()
     }
 
-    fn set_subtree_vector_paint_alpha_command_json(root_entity_id: &str) -> Vec<u8> {
-        serde_json::to_vec(&json!({
-            "alpha": 0.25,
-            "expectedBaseRevision": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
-            "nextRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
-            "provenance": {
-                "evidence": ["WASM adapter subtree vector paint alpha test"],
-                "id": "wasm-subtree-vector-paint-alpha",
-                "origin": "studio-edit-program"
-            },
-            "rootEntityId": root_entity_id,
-            "schema": "poietra.set-subtree-vector-paint-alpha",
-            "version": 1
-        }))
-        .unwrap()
-    }
-
-    fn interaction_clip_bounds(
-        snapshot_json: &[u8],
-        entity_id: &str,
-        sample_time: f64,
-    ) -> ([f32; 4], f64, f64) {
-        let session = EngineWorkerSessionV1::from_snapshot_json(snapshot_json).unwrap();
-        let request = serde_json::to_vec(&json!({
-            "evidence": ["WASM authoring interaction bounds test"],
-            "interactionEntityIds": [entity_id],
-            "packetId": "wasm-authoring:interaction-bounds",
-            "sampleTime": sample_time,
-            "schema": "poietra.engine-sample-request",
-            "version": 1,
-            "viewport": { "heightPx": 90, "widthPx": 160 }
-        }))
-        .unwrap();
-        let sampled = session.sample_packet_json(&request).unwrap();
-        let camera_width = sampled.packet.camera.right - sampled.packet.camera.left;
-        let camera_height = sampled.packet.camera.top - sampled.packet.camera.bottom;
-        let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
-        let bounds = prepared
-            .interaction_clip_bounds_by_entity(session.scene())
-            .unwrap()
-            .get(entity_id)
-            .copied()
-            .unwrap();
-
-        (bounds, camera_width, camera_height)
-    }
-
-    #[test]
-    fn moved_real_top_level_group_shifts_its_prepared_descendant_bounds() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
-        let fixture: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let snapshot = serde_json::to_vec(&json!({
-            "assets": fixture["assets"],
-            "scene": fixture["scene"],
-        }))
-        .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
+    fn assert_bound_entity_effect(case: &str, bundle: &SceneIrBundleV1) {
         let root = bundle
             .scene
             .entities
             .iter()
-            .find(|entity| {
-                entity.parent_id.is_none() && matches!(entity.geometry, SceneGeometryV1::Group {})
-            })
-            .expect("the real LineJoints fixture must retain its top-level VGroup");
-        let root_id = root.id.clone();
-        let command = serde_json::to_vec(&json!({
-            "entityId": root_id,
-            "expectedBaseRevision": bundle.scene.source.revision_hash(),
-            "intent": {
-                "delta": { "x": 2.5, "y": -1.5 },
-                "kind": "relative"
-            },
-            "nextRevision": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-            "provenance": {
-                "evidence": ["WASM adapter real top-level group move test"],
-                "id": "wasm-real-group-move",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.transform-scene-entity",
-            "version": 1
-        }))
-        .unwrap();
-        let (before, camera_width, camera_height) =
-            interaction_clip_bounds(&snapshot, &root_id, 0.5);
-        let moved_snapshot = transform_scene_entity_json(&snapshot, &command).unwrap();
-        let (after, moved_camera_width, moved_camera_height) =
-            interaction_clip_bounds(&moved_snapshot, &root_id, 0.5);
-
-        assert!((moved_camera_width - camera_width).abs() < 1e-12);
-        assert!((moved_camera_height - camera_height).abs() < 1e-12);
-        let expected_clip_delta = [2.0 * 2.5 / camera_width, 2.0 * -1.5 / camera_height];
-        for (edge, (before_edge, after_edge)) in before.into_iter().zip(after).enumerate() {
-            let expected = f64::from(before_edge) + expected_clip_delta[edge % 2];
-            assert!(
-                (f64::from(after_edge) - expected).abs() < 1e-5,
-                "edge {edge} moved to {after_edge}, expected {expected}"
-            );
-        }
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "the wire command applies exact finite values around its derived center"
-    )]
-    fn baseline_transform_intent_verifies_the_baseline_before_mutation() {
-        let snapshot = fixture_json();
-        let response =
-            transform_scene_entity_json(&snapshot, &baseline_transform_command_json(1.0)).unwrap();
-        let authored = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let target = authored
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == "later")
+            .find(|entity| entity.parent_id.is_none())
             .unwrap();
-        assert_eq!(target.transform.m11, 1.5);
-        assert_eq!(target.transform.m22, 1.5);
-        assert_eq!(target.transform.tx, 1.5);
-        assert_eq!(target.transform.ty, -1.0);
-        assert!(matches!(
-            transform_scene_entity_json(&snapshot, &baseline_transform_command_json(1.25)),
-            Err(SceneAuthoringAdapterError::TransformCommand(
-                TransformSceneEntityError::BaselineMismatch
-            ))
-        ));
-        assert!(
-            transform_scene_entity_json(&snapshot, &current_uniform_transform_command_json())
-                .is_ok()
-        );
-        assert!(
-            transform_scene_entity_json(&snapshot, &current_center_transform_command_json())
-                .is_ok()
-        );
-
-        let mut centered = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
-        let centered_target = centered
-            .scene
-            .entities
-            .iter_mut()
-            .find(|entity| entity.id == "later")
-            .unwrap();
-        let SceneGeometryV1::Circle { center, .. } = &mut centered_target.geometry else {
-            panic!("fixture target must be a Circle");
-        };
-        *center = PointV1 { x: 0.0, y: 0.0 };
-        centered_target.transform.tx = 3.0;
-        centered_target.transform.ty = -2.0;
-        let centered_snapshot = serde_json::to_vec(&centered).unwrap();
-        let mut scale_only: serde_json::Value =
-            serde_json::from_slice(&baseline_transform_command_json(3.0 + 1.0e-10)).unwrap();
-        scale_only["intent"]["baseline"]["worldCenter"]["y"] = json!(-2.0);
-        scale_only["intent"]
-            .as_object_mut()
-            .unwrap()
-            .remove("targetCenter");
-        let scale_only_response = transform_scene_entity_json(
-            &centered_snapshot,
-            &serde_json::to_vec(&scale_only).unwrap(),
-        )
-        .unwrap();
-        let scale_only_authored = parse_scene_ir_bundle_json_v1(&scale_only_response).unwrap();
-        let scale_only_target = scale_only_authored
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == "later")
-            .unwrap();
-        assert_eq!(scale_only_target.transform.tx, 3.0);
-        assert_eq!(scale_only_target.transform.ty, -2.0);
-    }
-
-    #[test]
-    #[allow(
-        clippy::float_cmp,
-        reason = "the adapter must preserve prior prepared bounds and exact stored affine values"
-    )]
-    fn timed_transform_wire_preserves_prior_frames_and_existing_channels() {
-        let snapshot = fixture_json();
-        let original = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
-        let original_channels = original.scene.animation_channels.clone();
-        let (before_original, _, _) = interaction_clip_bounds(&snapshot, "later", 0.5);
-
-        let response =
-            transform_scene_entity_at_time_json(&snapshot, &timed_transform_command_json())
-                .unwrap();
-        let authored = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let (before_authored, _, _) = interaction_clip_bounds(&response, "later", 0.5);
-        let (at_authored, camera_width, camera_height) =
-            interaction_clip_bounds(&response, "later", 1.0);
-
-        assert_eq!(before_authored, before_original);
-        assert_eq!(
-            &authored.scene.animation_channels[..original_channels.len()],
-            original_channels
-        );
-        assert!(matches!(
-            authored.scene.animation_channels.last(),
-            Some(AnimationChannelV1::AffineTransform {
-                entity_id,
-                keyframes,
-                provenance_id,
-                ..
-            }) if entity_id == "later"
-                && provenance_id == "wasm-endpoint-transform"
-                && keyframes[0].at == 1.0
-                && keyframes[0].value.m11 == 1.5
-                && keyframes[0].value.m22 == 1.5
-                && keyframes[0].value.tx == 1.5
-                && keyframes[0].value.ty == -1.0
-                && keyframes[1].value == keyframes[0].value
-        ));
-        let before_width = before_original[2] - before_original[0];
-        let before_height = before_original[3] - before_original[1];
-        assert!(((at_authored[2] - at_authored[0]) / before_width - 1.5).abs() < 1e-5);
-        assert!(((at_authored[3] - at_authored[1]) / before_height - 1.5).abs() < 1e-5);
-        let expected_clip_delta = [4.0 / camera_width, -2.0 / camera_height];
-        let before_center = [
-            before_original[0].midpoint(before_original[2]),
-            before_original[1].midpoint(before_original[3]),
-        ];
-        let at_center = [
-            at_authored[0].midpoint(at_authored[2]),
-            at_authored[1].midpoint(at_authored[3]),
-        ];
-        for axis in 0..2 {
-            assert!(
-                (f64::from(at_center[axis] - before_center[axis]) - expected_clip_delta[axis])
-                    .abs()
-                    < 1e-5
-            );
-        }
-    }
-
-    #[test]
-    fn axis_scaled_real_top_level_group_changes_its_prepared_aggregate_bounds() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
-        let fixture: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let snapshot = serde_json::to_vec(&json!({
-            "assets": fixture["assets"],
-            "scene": fixture["scene"],
-        }))
-        .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
-        let root = bundle
-            .scene
-            .entities
-            .iter()
-            .find(|entity| {
-                entity.parent_id.is_none() && matches!(entity.geometry, SceneGeometryV1::Group {})
-            })
-            .expect("the real LineJoints fixture must retain its top-level VGroup");
-        let root_id = root.id.clone();
-        let command = serde_json::to_vec(&json!({
-            "entityId": root_id,
-            "expectedBaseRevision": bundle.scene.source.revision_hash(),
-            "intent": {
-                "delta": { "x": 0.0, "y": 0.0 },
-                "kind": "relative",
-                "scale": {
-                    "pivot": { "x": 1.0, "y": -0.5 },
-                    "xFactor": 0.5,
-                    "yFactor": 0.75
+        match case {
+            "construction-move" => {
+                assert!((root.transform.tx - 8.0 / 9.0).abs() < 1e-12);
+                assert!(root.transform.ty.abs() < 1e-12);
+            }
+            "construction-opacity" => {
+                let mut alphas = Vec::new();
+                for entity in &bundle.scene.entities {
+                    if let SceneAppearanceV1::Vector { fill, stroke, .. } = &entity.appearance {
+                        if let Some(fill) = fill {
+                            alphas.push(fill.color.alpha);
+                        }
+                        if let Some(stroke) = stroke {
+                            alphas.push(stroke.color.alpha);
+                        }
+                    }
                 }
-            },
-            "nextRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-            "provenance": {
-                "evidence": ["WASM adapter real top-level group axis scale test"],
-                "id": "wasm-real-group-axis-scale",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.transform-scene-entity",
-            "version": 1
-        }))
-        .unwrap();
-        let (before, camera_width, camera_height) =
-            interaction_clip_bounds(&snapshot, &root_id, 0.5);
-        let scaled_snapshot = transform_scene_entity_json(&snapshot, &command).unwrap();
-        let (after, scaled_camera_width, scaled_camera_height) =
-            interaction_clip_bounds(&scaled_snapshot, &root_id, 0.5);
-
-        assert!((scaled_camera_width - camera_width).abs() < 1e-12);
-        assert!((scaled_camera_height - camera_height).abs() < 1e-12);
-        assert!(
-            after
-                .into_iter()
-                .zip(before)
-                .any(|(left, right)| left.to_bits() != right.to_bits())
-        );
-        assert!(after.into_iter().all(f32::is_finite));
-        assert!(after[0] < after[2]);
-        assert!(after[1] < after[3]);
-        assert!(after[2] - after[0] < before[2] - before[0]);
-        assert!(after[3] - after[1] < before[3] - before[1]);
-        let scaled = parse_scene_ir_bundle_json_v1(&scaled_snapshot).unwrap();
-        let scaled_root = scaled
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == root_id)
-            .unwrap();
-        assert!((scaled_root.transform.m11 - 0.5).abs() < 1e-12);
-        assert!((scaled_root.transform.m22 - 0.75).abs() < 1e-12);
-        assert!((scaled_root.transform.tx - 0.5).abs() < 1e-12);
-        assert!((scaled_root.transform.ty + 0.125).abs() < 1e-12);
-        assert_eq!(scaled_root.provenance_id, "wasm-real-group-axis-scale");
-        assert!(matches!(
-            scaled.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-        ));
-    }
-
-    #[test]
-    fn subtree_vector_paint_alpha_updates_real_strokes_and_sampled_materials() {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../../fixtures/engine-v1/real-line-joints-v10.json");
-        let fixture: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let snapshot = serde_json::to_vec(&json!({
-            "assets": fixture["assets"],
-            "scene": fixture["scene"],
-        }))
-        .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&snapshot).unwrap();
-        let root = bundle
-            .scene
-            .entities
-            .iter()
-            .find(|entity| {
-                entity.parent_id.is_none() && matches!(entity.geometry, SceneGeometryV1::Group {})
-            })
-            .expect("the real LineJoints fixture must retain its top-level VGroup");
-        let response = set_subtree_vector_paint_alpha_json(
-            &snapshot,
-            &set_subtree_vector_paint_alpha_command_json(&root.id),
-        )
-        .unwrap();
-        let authored = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let changed_vectors: Vec<_> = authored
-            .scene
-            .entities
-            .iter()
-            .filter_map(|entity| match &entity.appearance {
-                SceneAppearanceV1::Vector {
-                    fill: None,
-                    stroke: Some(stroke),
-                    ..
-                } => Some((entity, stroke)),
-                _ => None,
-            })
-            .collect();
-
-        assert_eq!(changed_vectors.len(), 3);
-        for (entity, stroke) in changed_vectors {
-            assert!((stroke.color.alpha - 0.25).abs() < 1e-12);
-            assert_eq!(entity.provenance_id, "wasm-subtree-vector-paint-alpha");
+                assert!(!alphas.is_empty());
+                assert!(alphas.iter().all(|alpha| (*alpha - 0.25).abs() < 1e-12));
+            }
+            "construction-rotation" => {
+                assert!(root.transform.m11.abs() < 1e-12);
+                assert!((root.transform.m12 + 1.0).abs() < 1e-12);
+                assert!((root.transform.m21 - 1.0).abs() < 1e-12);
+                assert!(root.transform.m22.abs() < 1e-12);
+            }
+            "construction-scale" => {
+                assert!((root.transform.m11 - 1.5).abs() < 1e-12);
+                assert!((root.transform.m22 - 1.5).abs() < 1e-12);
+            }
+            "settled-move" => {
+                assert!(root.transform.tx.abs() < 1e-12);
+                let channel = bundle
+                    .scene
+                    .animation_channels
+                    .iter()
+                    .find(|channel| matches!(channel, AnimationChannelV1::AffineTransform { .. }))
+                    .unwrap();
+                let AnimationChannelV1::AffineTransform { keyframes, .. } = channel else {
+                    unreachable!();
+                };
+                assert!((keyframes[0].at - 0.5).abs() < f64::EPSILON);
+                assert!((keyframes[0].value.tx - 8.0 / 9.0).abs() < 1e-12);
+            }
+            _ => unreachable!(),
         }
-        assert!(matches!(
-            authored.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-        ));
-
-        let session = EngineWorkerSessionV1::from_snapshot_json(&response).unwrap();
-        let request = serde_json::to_vec(&json!({
-            "evidence": ["WASM subtree paint alpha sampled material test"],
-            "interactionEntityIds": [],
-            "packetId": "wasm-authoring:subtree-paint-alpha",
-            "sampleTime": 0.5,
-            "schema": "poietra.engine-sample-request",
-            "version": 1,
-            "viewport": { "heightPx": 90, "widthPx": 160 }
-        }))
-        .unwrap();
-        let sampled = session.sample_packet_json(&request).unwrap();
-        let stroke_alphas: Vec<_> = sampled
-            .packet
-            .draws
-            .iter()
-            .filter_map(|draw| match draw {
-                RenderDrawV1::Path {
-                    stroke: Some(stroke),
-                    ..
-                } => Some(stroke.color.alpha),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(stroke_alphas, vec![0.25; 3]);
-        let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
-        assert_eq!(prepared.material_plan().materials().len(), 3);
-        assert!(prepared.material_plan().materials().iter().all(|material| {
-            (material.premultiplied_linear_color()[3] - 0.25).abs() < f32::EPSILON
-        }));
     }
 
     #[test]
-    fn subtree_vector_paint_alpha_adapter_rejects_unknown_and_oversized_commands() {
-        let mut command: serde_json::Value =
-            serde_json::from_slice(&set_subtree_vector_paint_alpha_command_json("root")).unwrap();
-        command["profile"] = json!("generic-runtime-trace-v3");
-        let error = set_subtree_vector_paint_alpha_json(
-            &fixture_json(),
-            &serde_json::to_vec(&command).unwrap(),
+    fn bound_entity_adapter_deserializes_and_dispatches_every_edit_kind_and_phase() {
+        let cases = [
+            (
+                "construction-move",
+                "construction",
+                0.0,
+                json!({ "kind": "move", "position": { "x": 360.0, "y": 180.0 } }),
+                "move",
+            ),
+            (
+                "construction-opacity",
+                "construction",
+                0.0,
+                json!({ "alpha": 0.25, "kind": "opacity" }),
+                "opacity",
+            ),
+            (
+                "construction-rotation",
+                "construction",
+                0.0,
+                json!({
+                    "controlPresent": false,
+                    "from": 0.0,
+                    "kind": "rotation",
+                    "relativeDelta": std::f64::consts::FRAC_PI_2,
+                    "to": std::f64::consts::FRAC_PI_2
+                }),
+                "rotation",
+            ),
+            (
+                "construction-scale",
+                "construction",
+                0.0,
+                json!({
+                    "controlPresent": false,
+                    "from": 1.0,
+                    "kind": "uniform-scale",
+                    "relativeFactor": 1.5,
+                    "to": 1.5
+                }),
+                "resize",
+            ),
+            (
+                "settled-move",
+                "settled",
+                0.5,
+                json!({ "kind": "move", "position": { "x": 360.0, "y": 180.0 } }),
+                "move",
+            ),
+        ];
+
+        for (case, phase, anchor, mut operation, provenance_kind) in cases {
+            let fixture = bound_entity_fixture_json();
+            let mut command: serde_json::Value =
+                serde_json::from_slice(&bound_entity_edit_command_json()).unwrap();
+            command["candidates"][0]["phase"] = json!(phase);
+            command["candidates"][0]["sourceAnchor"] = json!(anchor);
+            command["programs"][0]["anchorCapturedPlayhead"] = json!(anchor);
+            command["programs"][0]["anchorResolvedSeconds"] = json!(anchor);
+            command["programs"][0]["anchorSource"] =
+                json!({ "kind": "absolute", "seconds": anchor });
+            operation["dependsOn"] = json!([]);
+            operation["entityId"] = json!("source:root");
+            operation["id"] = json!(case);
+            operation["interval"] = json!({ "end": anchor, "start": anchor });
+            operation["origin"] = json!("direct-manipulation");
+            command["programs"][0]["operations"] = json!([operation]);
+            command["programs"][0]["scheduleOrder"] = json!([case]);
+
+            let response = apply_studio_bound_entity_edit_json(
+                &fixture,
+                &serde_json::to_vec(&command).unwrap(),
+            )
+            .unwrap();
+            let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+            let provenance_id = format!(
+                "studio-bound-endpoint-{phase}-{provenance_kind}:{}",
+                "e".repeat(64)
+            );
+
+            assert_eq!(bundle.scene.provenance.last().unwrap().id, provenance_id);
+            assert_bound_entity_effect(case, &bundle);
+        }
+    }
+
+    #[test]
+    fn bound_entity_adapter_rejects_unknown_and_unsupported_commands() {
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(&bound_entity_edit_command_json()).unwrap();
+        unknown["profile"] = json!("legacy");
+        let error = apply_studio_bound_entity_edit_json(
+            &bound_entity_fixture_json(),
+            &serde_json::to_vec(&unknown).unwrap(),
         )
         .unwrap_err();
         assert!(error.to_string().contains("unknown field `profile`"));
 
-        let oversized = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
-        let error = set_subtree_vector_paint_alpha_json(&fixture_json(), &oversized).unwrap_err();
+        let mut unsupported: serde_json::Value =
+            serde_json::from_slice(&bound_entity_edit_command_json()).unwrap();
+        unsupported["programs"][0]["validationValid"] = json!(false);
+        let error = apply_studio_bound_entity_edit_json(
+            &bound_entity_fixture_json(),
+            &serde_json::to_vec(&unsupported).unwrap(),
+        )
+        .unwrap_err();
         assert!(matches!(
             error,
-            SceneAuthoringAdapterError::CommandTooLarge {
-                command: "set subtree vector paint alpha",
-                actual_bytes,
-                maximum_bytes: MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
-            } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
-        ));
-    }
-
-    #[test]
-    fn adapter_parses_the_wire_command_and_returns_the_complete_bundle() {
-        let response = rotate_scene_entity_json(&fixture_json(), &command_json()).unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
-        let rotated = bundle
-            .scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == "later")
-            .unwrap();
-
-        assert!(rotated.transform.m11.abs() < 1e-12);
-        assert!((rotated.transform.m12 + 1.0).abs() < 1e-12);
-        assert!((rotated.transform.m21 - 1.0).abs() < 1e-12);
-        assert!(rotated.transform.m22.abs() < 1e-12);
-        assert_eq!(rotated.provenance_id, "wasm-rotation");
-        assert!(matches!(
-            bundle.scene.source,
-            SceneSourceV1::StudioEditProgram { revision_hash, .. }
-                if revision_hash == "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            SceneAuthoringAdapterError::StudioBoundEntityEdit(
+                ApplyStudioBoundEntityEditError::Unsupported
+            )
         ));
     }
 
@@ -1725,45 +1140,6 @@ mod tests {
             SceneAuthoringAdapterError::StudioMotionEdit(
                 ApplyStudioMotionEditError::StaleBaseRevision
             )
-        ));
-    }
-
-    #[test]
-    fn transform_adapter_rejects_unknown_and_oversized_commands() {
-        let mut command = json!({
-            "entityId": "later",
-            "expectedBaseRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "intent": {
-                "delta": { "x": 1.0, "y": 0.0 },
-                "kind": "relative"
-            },
-            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
-            "provenance": {
-                "evidence": ["WASM adapter transform validation"],
-                "id": "wasm-transform-validation",
-                "origin": "studio-edit-program"
-            },
-            "schema": "poietra.transform-scene-entity",
-            "version": 1
-        });
-        command["profile"] = json!("generic-runtime-trace-v3");
-
-        let error =
-            transform_scene_entity_json(&fixture_json(), &serde_json::to_vec(&command).unwrap())
-                .unwrap_err();
-
-        assert!(error.to_string().contains("unknown field `profile`"));
-
-        let oversized = vec![b' '; MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1];
-        let error = transform_scene_entity_json(&fixture_json(), &oversized).unwrap_err();
-
-        assert!(matches!(
-            error,
-            SceneAuthoringAdapterError::CommandTooLarge {
-                command: "transform",
-                actual_bytes,
-                maximum_bytes: MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1,
-            } if actual_bytes == MAX_SCENE_AUTHORING_COMMAND_JSON_BYTES_V1 + 1
         ));
     }
 

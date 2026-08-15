@@ -19,6 +19,7 @@ import { sourceIdentityV1Schema } from "../engine/primitives";
 import {
   type ApplyStaticRootTransformEditCompiler,
   type ApplyStaticRootTransformEditWireCommandV1,
+  type ApplyStudioBoundEntityEditCompiler,
   type ApplyStudioCreationEditCompiler,
   type ApplyStudioCreationEditWireCommandV1,
   type ApplyStudioMotionEditCompiler,
@@ -29,10 +30,6 @@ import {
   compileApplyStudioCreationEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
-  type RotateSceneEntityCompiler,
-  type SetSubtreeVectorPaintAlphaCompiler,
-  type TransformSceneEntityAtTimeCompiler,
-  type TransformSceneEntityCompiler,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import { canonicalEditableContent } from "./editable-content";
@@ -66,7 +63,6 @@ import {
   type StudioPreviewRuntimeTraceProgramValidation,
   studioPreviewRuntimeTraceEditAnchor,
   studioPreviewRuntimeTraceEditCandidates,
-  studioPreviewRuntimeTraceProgramValidation,
 } from "./preview-temporal-rebase";
 import { isPointValue } from "./property-sampling";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
@@ -162,6 +158,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   engineRevisionHash: string;
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
+  programAuthority?: "source-bound-endpoint";
   snapshot: StudioVerifiedPreviewSnapshotV1;
   workingRevision: string;
   workspaceKey: string;
@@ -706,17 +703,14 @@ function studioTimelineEditCommand(
 export async function compileStudioPreviewSceneV1(
   input: Readonly<{
     applyStaticRootTransformEditCompiler?: ApplyStaticRootTransformEditCompiler;
+    applyStudioBoundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     applyStudioCreationEditCompiler?: ApplyStudioCreationEditCompiler;
     applyStudioMotionEditCompiler?: ApplyStudioMotionEditCompiler;
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
     proposedState: ProposedState;
-    rotationCompiler?: RotateSceneEntityCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
-    subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
-    transformAtTimeCompiler?: TransformSceneEntityAtTimeCompiler;
-    transformCompiler?: TransformSceneEntityCompiler;
     workingRevision: string;
     workspaceKey: string;
   }>,
@@ -1006,14 +1000,11 @@ export async function compileStudioPreviewSceneV1(
       workspaceKey: input.workspaceKey,
     });
     const rebased = await compileStudioPreviewRuntimeTraceEdit({
+      boundEntityEditCompiler: input.applyStudioBoundEntityEditCompiler,
       frame: input.frame,
       proposedState: input.proposedState,
-      rotationCompiler: input.rotationCompiler,
       snapshot: input.snapshot,
       sourceRevisionHash: engineRevisionHash,
-      subtreePaintAlphaCompiler: input.subtreePaintAlphaCompiler,
-      transformAtTimeCompiler: input.transformAtTimeCompiler,
-      transformCompiler: input.transformCompiler,
     });
     if (rebased.kind === "unsupported") {
       return {
@@ -1037,6 +1028,7 @@ export async function compileStudioPreviewSceneV1(
           ),
           rebased.scene.entities,
         ),
+        programAuthority: "source-bound-endpoint",
         snapshot: input.snapshot,
         workingRevision: input.workingRevision,
         workspaceKey: input.workspaceKey,
@@ -1186,10 +1178,6 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   const runtimeTraceEditCandidates = snapshot
     ? studioPreviewRuntimeTraceEditCandidates(snapshot, sampleTime, sourceEvents)
     : [];
-  const runtimeTraceProgramValidation = snapshot
-    ? studioPreviewRuntimeTraceProgramValidation(snapshot, proposedState?.programs ?? [], sourceEvents)
-    : "not-applicable";
-
   useEffect(() => {
     const proposedState = latestProposedState.current;
     const workingRevision = context?.workingRevision;
@@ -1248,6 +1236,15 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     compilation.workingRevision === context?.workingRevision
       ? compilation.error
       : null;
+  const runtimeTraceSource = snapshot?.snapshot.scene.source;
+  const runtimeTraceProgramValidation: StudioPreviewRuntimeTraceProgramValidation =
+    runtimeTraceSource?.kind !== "imported-manim-runtime-trace" ||
+    runtimeTraceSource.traceVersion !== 3 ||
+    (proposedState?.programs.length ?? 0) === 0
+      ? "not-applicable"
+      : currentCompiledScene?.programAuthority === "source-bound-endpoint"
+        ? "authorized"
+        : "rejected";
   const interactionEntityIds = currentCompiledScene?.interactionEntityIds ?? [];
 
   useEffect(() => {
