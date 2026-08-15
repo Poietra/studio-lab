@@ -35,11 +35,16 @@ import {
   type ProjectStudioTimelineCompiler,
   projectStudioTimeline,
   type StudioPersistentRemoveProjectionV1,
+  type StudioStaticRootProjectionV1,
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
-import { hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
+import {
+  hasImportedRootTransformTarget,
+  isExactStaticRootTransformProgramBatch,
+  isSceneDurationOperation,
+} from "./operations";
 import {
   detectStudioPreviewCapabilities,
   evaluateStudioPreviewEligibility,
@@ -109,6 +114,8 @@ export type StudioPreviewRendererView = Readonly<{
   state: PreviewRendererHostStateV1;
   /** Rust-authorized lifetime and fade facts for persistent remove operations. */
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null;
+  /** Rust-authorized Studio channel facts for an exact imported static-root transform batch. */
+  staticRootProjection: StudioStaticRootProjectionV1 | null;
   /** Rust-authorized source-to-working timeline projection for timeline-only edits. */
   timelineProjection: StudioTimelineProjectionV1 | null;
   /** Rust compiler path that admitted the exact current Program revision. */
@@ -186,6 +193,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
   programAuthority?: StudioPreviewProgramAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
+  staticRootProjection?: StudioStaticRootProjectionV1;
   timelineProjection?: StudioTimelineProjectionV1;
   workingRevision: string;
   workspaceKey: string;
@@ -697,6 +705,7 @@ export async function compileStudioPreviewSceneV1(
     }
   }
   const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
+  const exactStaticRootBatch = isExactStaticRootTransformProgramBatch(sourceProgramBatch);
   if (
     importedSource.kind === "imported-manim-server-snapshot" &&
     isExactStudioMathTexTransformProgramBatch(sourceProgramBatch)
@@ -1026,6 +1035,12 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         staticRootTransformEditCommand(input, engineRevisionHash),
       );
+      if (exactStaticRootBatch && !result.staticRootProjection) {
+        return {
+          error: "Rust core did not return the static-root projection for the exact current Program batch.",
+          kind: "unsupported",
+        };
+      }
       const bundle = result.bundle;
       return {
         kind: "compiled",
@@ -1043,6 +1058,7 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           persistentRemoveProjection: result.persistentRemoveProjection,
+          ...(result.staticRootProjection ? { staticRootProjection: result.staticRootProjection } : {}),
           ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
             ? { programAuthority: "static-imported-root" as const }
             : { programAuthority: "rust-authorized-batch" as const }),
@@ -1459,6 +1475,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     runtimeTraceProgramValidation,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
     programAuthority: state.phase === "presented" ? (currentCompiledScene?.programAuthority ?? null) : null,
+    staticRootProjection: state.phase === "presented" ? (currentCompiledScene?.staticRootProjection ?? null) : null,
     timelineProjection: currentCompiledScene?.timelineProjection ?? null,
     verifiedSourceDuration,
   };

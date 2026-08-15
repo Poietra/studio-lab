@@ -14,6 +14,8 @@ import type {
   ApplyStudioMotionEditWireCommandV1,
   ApplyStudioTimelineEditCompiler,
   ApplyStudioTimelineEditWireCommandV1,
+  StudioStaticRootMutationV1,
+  StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
 import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/runtime-trace-v3-shared-contract";
 import { importManimScene } from "../render-pipeline/source-import";
@@ -485,11 +487,52 @@ async function verifiedStaticPrimitivePreviewInput(type: "Circle" | "Rectangle")
 
 function recordingStaticRootTransformEditCompiler(
   calls: ApplyStaticRootTransformEditWireCommandV1[],
-  compile: ApplyStaticRootTransformEditCompiler = async (bundle) => unchangedAuthoringResult(bundle),
+  compile?: ApplyStaticRootTransformEditCompiler,
 ): ApplyStaticRootTransformEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
-    return compile(bundle, command);
+    if (compile) return compile(bundle, command);
+    const operations = command.programs.flatMap((program) =>
+      program.operations.map((operation) => ({ operation, transactionId: program.transactionId })),
+    );
+    let staticRootProjection: StudioStaticRootProjectionV1 | undefined;
+    if (operations.every(({ operation }) => ["position", "resize", "uniform-scale"].includes(operation.kind))) {
+      const mutations: StudioStaticRootMutationV1[] = [];
+      for (const { operation, transactionId } of operations) {
+        const common = { operationId: operation.id, transactionId };
+        if (operation.kind === "position" && operation.position) {
+          mutations.push({
+            ...common,
+            entityId: operation.entityId,
+            interval: operation.interval,
+            kind: operation.kind,
+            value: operation.position,
+          });
+        } else if (operation.kind === "uniform-scale" && operation.from !== null && operation.to !== null) {
+          mutations.push({
+            ...common,
+            entityId: operation.entityId,
+            from: operation.from,
+            interval: operation.interval,
+            kind: operation.kind,
+            to: operation.to,
+          });
+        } else if (operation.kind === "resize") {
+          mutations.push({
+            ...common,
+            entityId: operation.entityId,
+            fromDimensions: operation.fromDimensions,
+            fromPosition: operation.fromPosition,
+            interval: operation.interval,
+            kind: operation.kind,
+            toDimensions: operation.toDimensions,
+            toPosition: operation.toPosition,
+          });
+        }
+      }
+      staticRootProjection = { mutations };
+    }
+    return { ...unchangedAuthoringResult(bundle), ...(staticRootProjection ? { staticRootProjection } : {}) };
   };
 }
 
@@ -1456,6 +1499,9 @@ describe("compileStudioPreviewSceneV1", () => {
 
       if (result.kind !== "compiled") throw new Error(result.error);
       expect(result.scene.programAuthority).toBe("static-imported-root");
+      expect(result.scene.staticRootProjection?.mutations).toEqual([
+        expect.objectContaining({ kind: "position", operationId: fixture.operationId }),
+      ]);
       expect(commands).toHaveLength(1);
       expect(commands[0]).toMatchObject({
         expectedBaseRevision: fixture.snapshot.correlation.engineRevisionHash,
@@ -1752,6 +1798,23 @@ describe("compileStudioPreviewSceneV1", () => {
 
     expect(result).toMatchObject({
       error: expect.stringContaining("the edit contains an unsupported operation"),
+      kind: "unsupported",
+    });
+  });
+
+  it("withholds an exact static-root preview when Rust omits its workspace projection", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: async (bundle) => unchangedAuthoringResult(bundle),
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: fixture.proposedState.base,
+      workingRevision: fixture.workingRevision,
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    expect(result).toEqual({
+      error: "Rust core did not return the static-root projection for the exact current Program batch.",
       kind: "unsupported",
     });
   });

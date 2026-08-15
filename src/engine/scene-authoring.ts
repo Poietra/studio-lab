@@ -135,9 +135,44 @@ export type StudioPersistentRemoveProjectionV1 = Readonly<{
   removals: readonly StudioPersistentRemoveProjectionEntryV1[];
 }>;
 
+export type StudioStaticRootMutationV1 =
+  | Readonly<{
+      entityId: string;
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "position";
+      operationId: string;
+      transactionId: string;
+      value: Readonly<{ x: number; y: number }>;
+    }>
+  | Readonly<{
+      entityId: string;
+      from: number;
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "uniform-scale";
+      operationId: string;
+      to: number;
+      transactionId: string;
+    }>
+  | Readonly<{
+      entityId: string;
+      fromDimensions: StaticRootTransformDimensions;
+      fromPosition: Readonly<{ x: number; y: number }>;
+      interval: Readonly<{ end: number; start: number }>;
+      kind: "resize";
+      operationId: string;
+      toDimensions: StaticRootTransformDimensions;
+      toPosition: Readonly<{ x: number; y: number }>;
+      transactionId: string;
+    }>;
+
+export type StudioStaticRootProjectionV1 = Readonly<{
+  mutations: readonly StudioStaticRootMutationV1[];
+}>;
+
 export type StudioAuthoringEditResultV1 = Readonly<{
   bundle: SceneIrBundleV1;
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1;
+  staticRootProjection?: StudioStaticRootProjectionV1;
 }>;
 
 export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
@@ -269,10 +304,61 @@ const studioPersistentRemoveProjectionV1Schema = z
     ),
   })
   .strict();
+const studioStaticRootPointV1Schema = z.object({ x: finiteNumberSchema, y: finiteNumberSchema }).strict();
+const studioStaticRootDimensionsV1Schema = z
+  .object({
+    height: finiteNumberSchema.optional(),
+    radius: finiteNumberSchema.optional(),
+    width: finiteNumberSchema.optional(),
+  })
+  .strict();
+const studioStaticRootProjectionV1Schema = z
+  .object({
+    mutations: z.array(
+      z.discriminatedUnion("kind", [
+        z
+          .object({
+            entityId: z.string().min(1),
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("position"),
+            operationId: z.string().min(1),
+            transactionId: z.string().min(1),
+            value: studioStaticRootPointV1Schema,
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            from: finiteNumberSchema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("uniform-scale"),
+            operationId: z.string().min(1),
+            to: finiteNumberSchema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+        z
+          .object({
+            entityId: z.string().min(1),
+            fromDimensions: studioStaticRootDimensionsV1Schema,
+            fromPosition: studioStaticRootPointV1Schema,
+            interval: studioTimelineProjectionIntervalV1Schema,
+            kind: z.literal("resize"),
+            operationId: z.string().min(1),
+            toDimensions: studioStaticRootDimensionsV1Schema,
+            toPosition: studioStaticRootPointV1Schema,
+            transactionId: z.string().min(1),
+          })
+          .strict(),
+      ]),
+    ),
+  })
+  .strict();
 const studioAuthoringEditResultV1Schema = z
   .object({
     bundle: sceneIrBundleV1Schema,
     persistentRemoveProjection: studioPersistentRemoveProjectionV1Schema,
+    staticRootProjection: studioStaticRootProjectionV1Schema.optional(),
   })
   .strict();
 const studioTimelineProjectionV1Schema = z
