@@ -2,7 +2,7 @@ import type { StudioPersistentRemoveProjectionV1, StudioTimelineProjectionV1 } f
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import type { ProgramRecord, ProjectedEntity } from "./model";
-import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import { type CanonicalEditProgram, hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -11,6 +11,16 @@ import {
 
 export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
   return entity.type.startsWith("TransitionOverlay:");
+}
+
+export function selectStudioWorkspaceProgramAuthority(
+  programs: readonly CanonicalEditProgram[],
+  authority: "source-bound-endpoint" | "static-imported-root" | null,
+) {
+  if (!hasImportedRootTransformTarget(programs)) return null;
+  if (authority === "static-imported-root") return authority;
+  if (authority === "source-bound-endpoint") return null;
+  return undefined;
 }
 
 export function selectPersistentRemoveProjection(
@@ -51,6 +61,7 @@ export function projectStudioWorkspace(
     draftProgram: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
     persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
+    programAuthority?: "static-imported-root" | null;
     selectedObjectIds: readonly string[];
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
@@ -85,7 +96,7 @@ export function projectStudioWorkspace(
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
   } else {
-    proposedState = evaluateWorkingState(workingState, persistentRemoveProjection);
+    proposedState = evaluateWorkingState(workingState, persistentRemoveProjection, input.programAuthority ?? null);
   }
   const projection = projectProposedState(proposedState, input.currentTime);
   const boundary =

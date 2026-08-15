@@ -155,6 +155,7 @@ import {
   isTransitionOverlay,
   projectStudioWorkspace,
   selectPersistentRemoveProjection,
+  selectStudioWorkspaceProgramAuthority,
 } from "./studio/workspace-projection";
 
 type Shell = "Browser" | "Electron" | "Tauri";
@@ -865,13 +866,24 @@ export function App({
     ...previewAppliedPrograms,
     ...(editingAppliedProgram || !draftProgram ? [] : [draftProgram]),
   ];
+  function workspaceProgramAuthorityForRecords(records: readonly ProgramRecord[]) {
+    const programs = records.map(({ program }) => program);
+    const authority = selectStudioWorkspaceProgramAuthority(programs, previewRenderer?.programAuthority ?? null);
+    if (authority !== "static-imported-root") return authority;
+    const exactPreviewBatch =
+      records.length === previewProgramRecords.length &&
+      records.every((record, index) => record === previewProgramRecords[index]);
+    return exactPreviewBatch ? authority : undefined;
+  }
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
   const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);
+  const workspaceProgramAuthority = workspaceProgramAuthorityForRecords(previewProgramRecords);
   const workspaceProjection =
     editorDocumentPresentationReady &&
     projectedActiveScene &&
     workspaceTimelineProjection !== undefined &&
-    workspacePersistentRemoveProjection !== undefined
+    workspacePersistentRemoveProjection !== undefined &&
+    workspaceProgramAuthority !== undefined
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
           appliedPrograms: previewAppliedPrograms,
@@ -879,6 +891,7 @@ export function App({
           draftProgram: editingAppliedProgram ? null : draftProgram,
           nextScene,
           persistentRemoveProjection: workspacePersistentRemoveProjection,
+          programAuthority: workspaceProgramAuthority,
           selectedObjectIds,
           timelineProjection: workspaceTimelineProjection,
         })
@@ -1121,9 +1134,12 @@ export function App({
 
   const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
   const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingPrograms);
+  const draftBaseProgramAuthority = workspaceProgramAuthorityForRecords(draftPrecedingPrograms);
   const draftBaseProjection =
     editorDocumentPresentationReady && projectedActiveScene && draftProgram
-      ? draftBaseTimelineProjection === undefined || draftBasePersistentRemoveProjection === undefined
+      ? draftBaseTimelineProjection === undefined ||
+        draftBasePersistentRemoveProjection === undefined ||
+        draftBaseProgramAuthority === undefined
         ? null
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
@@ -1132,6 +1148,7 @@ export function App({
             draftProgram: null,
             nextScene,
             persistentRemoveProjection: draftBasePersistentRemoveProjection,
+            programAuthority: draftBaseProgramAuthority,
             selectedObjectIds,
             timelineProjection: draftBaseTimelineProjection,
           })
@@ -1596,7 +1613,12 @@ export function App({
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
     const precedingPersistentRemoveProjection = persistentRemoveProjectionForRecords(precedingRecords);
-    if (precedingTimelineProjection === undefined || precedingPersistentRemoveProjection === undefined) {
+    const precedingProgramAuthority = workspaceProgramAuthorityForRecords(precedingRecords);
+    if (
+      precedingTimelineProjection === undefined ||
+      precedingPersistentRemoveProjection === undefined ||
+      precedingProgramAuthority === undefined
+    ) {
       setDraftError("Wait for the Rust authoring projection before editing this Program.");
       return false;
     }
@@ -1608,6 +1630,7 @@ export function App({
       draftProgram: null,
       nextScene,
       persistentRemoveProjection: precedingPersistentRemoveProjection,
+      programAuthority: precedingProgramAuthority,
       selectedObjectIds: metadata.selection,
       timelineProjection: precedingTimelineProjection,
     });
@@ -1910,7 +1933,12 @@ export function App({
       const preceding = appliedPrograms.slice(0, index);
       const timelineProjection = timelineProjectionForRecords(preceding);
       const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
-      if (timelineProjection === undefined || persistentRemoveProjection === undefined) {
+      const programAuthority = workspaceProgramAuthorityForRecords(preceding);
+      if (
+        timelineProjection === undefined ||
+        persistentRemoveProjection === undefined ||
+        programAuthority === undefined
+      ) {
         throw new Error("Wait for the Rust authoring projection before editing this object lifetime.");
       }
       const state = projectStudioWorkspace({
@@ -1920,6 +1948,7 @@ export function App({
         draftProgram: null,
         nextScene,
         persistentRemoveProjection,
+        programAuthority,
         selectedObjectIds,
         timelineProjection,
       }).proposedState.evaluatedScene;

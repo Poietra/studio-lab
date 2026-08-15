@@ -12,7 +12,9 @@ import {
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
-import { projectStudioWorkspace } from "./workspace-projection";
+import { hasImportedRootTransformTarget } from "./operations";
+import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
+import { projectStudioWorkspace, selectStudioWorkspaceProgramAuthority } from "./workspace-projection";
 
 const source = `from manim import *
 
@@ -65,6 +67,112 @@ function withOnlyEntityLifetimes(scene: ManimWorkspaceScene, lifetime: readonly 
 }
 
 describe("Studio workspace projection", () => {
+  it("waits for imported-root authority while leaving created and source-bound targets on their existing paths", () => {
+    const imported = workspaceScene("Static", null);
+    const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!entityId) throw new Error("Static fixture has no entity.");
+    const validation = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 20, y: -10 },
+      positions: { [entityId]: { x: 400, y: 225 } },
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [entityId],
+      transactionId: "authority-target",
+    });
+    if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+
+    expect(hasImportedRootTransformTarget([validation.program])).toBe(true);
+    expect(selectStudioWorkspaceProgramAuthority([validation.program], null)).toBeUndefined();
+    expect(selectStudioWorkspaceProgramAuthority([validation.program], "static-imported-root")).toBe(
+      "static-imported-root",
+    );
+    expect(selectStudioWorkspaceProgramAuthority([validation.program], "source-bound-endpoint")).toBeNull();
+
+    const position = validation.program.operations[0];
+    if (!position || position.kind !== "SetProperty") throw new Error("Position fixture is malformed.");
+    const createOperation = {
+      dependsOn: [],
+      entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
+      id: "created-target",
+      interval: { end: 0, start: 0 },
+      kind: "CreateEntity" as const,
+      provenance: position.provenance,
+    };
+    const createdProgram = {
+      ...validation.program,
+      operations: [createOperation, position],
+    };
+    expect(hasImportedRootTransformTarget([createdProgram])).toBe(false);
+    expect(selectStudioWorkspaceProgramAuthority([createdProgram], null)).toBeNull();
+    expect(
+      hasImportedRootTransformTarget([
+        {
+          ...createdProgram,
+          operations: [{ ...createOperation, entity: { ...createOperation.entity, id: "tx:created" } }, position],
+        },
+      ]),
+    ).toBe(true);
+  });
+
+  it("uses an authorized uniform scale's explicit target instead of reevaluating its relative factor", () => {
+    const imported = workspaceScene("Static", null);
+    const base = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: [],
+      currentTime: 0,
+      draftProgram: null,
+      nextScene: null,
+      selectedObjectIds: [],
+    });
+    const entity = base.projection.canvas.entities[0];
+    if (!entity) throw new Error("Static fixture has no entity.");
+    const scale = createDirectManipulationScaleProgram({
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
+      scales: { [entity.id]: { from: entity.scale, to: 2 } },
+      scene: imported.runtimeSceneState,
+      targetEntityIds: [entity.id],
+      transactionId: "authorized-scale",
+    });
+    if (scale.kind !== "valid") throw new Error(JSON.stringify(scale.issues));
+    const rebased = {
+      ...imported,
+      runtimeSceneState: {
+        ...imported.runtimeSceneState,
+        propertyChannels: {
+          ...imported.runtimeSceneState.propertyChannels,
+          [`${entity.id}/scale`]: {
+            entityId: entity.id,
+            key: "scale" as const,
+            samples: [
+              {
+                interval: { end: imported.runtimeSceneState.duration, start: 0 },
+                kind: "exact" as const,
+                provenanceId: "rebased-scale",
+                value: 3,
+              },
+            ],
+          },
+        },
+      },
+    } satisfies ManimWorkspaceScene;
+    const record = programRecord(scale.program, scale);
+    const project = (programAuthority?: "static-imported-root") =>
+      projectStudioWorkspace({
+        activeScene: rebased,
+        appliedPrograms: [record],
+        currentTime: rebased.runtimeSceneState.duration,
+        draftProgram: null,
+        nextScene: null,
+        programAuthority,
+        selectedObjectIds: [],
+      }).projection.canvas.entities[0]?.scale;
+
+    expect(project()).toBe(6);
+    expect(project("static-imported-root")).toBe(2);
+  });
+
   it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {
     const unresolved = resolveVerifiedSourceDurationBasis({
       candidate: null,

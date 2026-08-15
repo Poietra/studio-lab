@@ -180,6 +180,25 @@ export function isSceneDurationOperation(operation: CanonicalEditOperation): ope
   );
 }
 
+export function isStaticRootTransformOperation(operation: CanonicalEditOperation) {
+  return (
+    operation.kind === "ResizeEntity" ||
+    (operation.kind === "SetProperty" && operation.key === "position") ||
+    (operation.kind === "AnimateProperty" && operation.key === "scale")
+  );
+}
+
+export function hasImportedRootTransformTarget(programs: readonly CanonicalEditProgram[]) {
+  const operations = programs.flatMap((program) => program.operations);
+  const createdEntityIds = new Set(
+    operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
+  );
+  return operations.some(
+    (operation) =>
+      "entityId" in operation && !createdEntityIds.has(operation.entityId) && isStaticRootTransformOperation(operation),
+  );
+}
+
 export type DependencyReason = "explicit" | "identity" | "lifetime" | "read-after-write" | "write-conflict";
 
 export type DependencyEdge = Readonly<{
