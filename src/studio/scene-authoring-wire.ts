@@ -3,6 +3,7 @@ import type {
   ApplyStudioCreationEditWireCommandV1,
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
+  ProjectStudioCreationEditWireCommandV1,
   ProjectStudioMathTexTransformWireCommandV1,
   ProjectStudioMotionEditWireCommandV1,
   StudioMathTexContentV1,
@@ -44,6 +45,12 @@ type StudioMotionProjectionCommandInput = Readonly<{
   programs: readonly CanonicalEditProgram[];
   runtimeSceneState: RuntimeSceneState;
 }>;
+
+type StudioCreationProjectionCommandInput = Omit<
+  ProjectStudioCreationEditWireCommandV1,
+  "programs" | "schema" | "version"
+> &
+  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
 function studioProgramEnvelope(program: CanonicalEditProgram) {
   const source = program.anchor.source;
@@ -259,6 +266,21 @@ export function buildStudioCreationEditCommand(
   };
 }
 
+/** Normalizes one complete creation history for snapshot-free Rust admission. */
+export function buildStudioCreationProjectionCommand(
+  input: StudioCreationProjectionCommandInput,
+): ProjectStudioCreationEditWireCommandV1 {
+  return {
+    ...input,
+    programs: input.programs.map((program) => ({
+      ...studioProgramEnvelope(program),
+      operations: program.operations.map(normalizedStudioCreationOperation),
+    })),
+    schema: "poietra.project-studio-creation-edit",
+    version: 1,
+  };
+}
+
 /** Selects the bounded MathTex transform family; Rust owns sequence, target, and motion semantics. */
 export function isExactStudioMathTexTransformProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
   const operations = programs.flatMap(({ operations }) => operations);
@@ -415,7 +437,7 @@ export function buildStudioMotionEditCommand(input: StudioMotionCommandInput): A
   };
 }
 
-export type StudioMotionProjectionBatchKind = "creation" | "standalone" | "static-root";
+export type StudioMotionProjectionBatchKind = "standalone" | "static-root";
 
 /** Coarsely selects a Rust motion planner; exact family admission remains in Rust. */
 export function studioMotionProjectionBatchKind(
@@ -425,7 +447,7 @@ export function studioMotionProjectionBatchKind(
   const operations = programs.flatMap(({ operations }) => operations);
   if (!operations.some(({ kind }) => kind === "CreateMotion")) return null;
   if (operations.some(({ kind }) => kind === "TransformContent")) return null;
-  if (operations.some(({ kind }) => kind === "CreateEntity")) return "creation";
+  if (operations.some(({ kind }) => kind === "CreateEntity")) return null;
   if (operations.every(({ kind }) => kind === "CreateMotion")) return "standalone";
   if (
     operations.every(
@@ -453,18 +475,6 @@ export function buildStudioMotionProjectionCommand(
     schema: "poietra.project-studio-motion-edit" as const,
     version: 1 as const,
   };
-  if (kind === "creation") {
-    return {
-      ...base,
-      batch: {
-        kind,
-        programs: input.programs.map((program) => ({
-          ...studioProgramEnvelope(program),
-          operations: program.operations.map(normalizedStudioCreationOperation),
-        })),
-      },
-    };
-  }
   if (kind === "standalone") {
     return {
       ...base,

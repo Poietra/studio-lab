@@ -20,7 +20,6 @@ import {
   isSceneDurationOperation,
   type ProgramValidationIssue,
 } from "./operations";
-import { insertedProgramDuration } from "./program-composition";
 import {
   isEntityDimensionsValue,
   isPointValue,
@@ -462,13 +461,6 @@ function validCreateDimensions(type: string, dimensions: EntityDimensions | unde
   return false;
 }
 
-function createDimensions(type: string, dimensions: EntityDimensions | undefined) {
-  if (dimensions) return dimensions;
-  if (type === "Circle") return { radius: 1 };
-  if (type === "Rectangle") return { height: 2, width: 4 };
-  return undefined;
-}
-
 function exactShapeDimensions(shape: "circle" | "rectangle", dimensions: EntityDimensions) {
   return shape === "circle"
     ? dimensions.radius !== undefined && dimensions.height === undefined && dimensions.width === undefined
@@ -610,57 +602,6 @@ export const OPERATION_REGISTRY = {
         { channel: "presence", entityId: operation.entity.id },
       ],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      // Studio-owned finite endpoints use source coordinates, so their working
-      // endpoint includes the creation Program's insertion duration. Transition
-      // overlays already use their animation endpoint and are the exception.
-      const finiteEnd = operation.entity.lifetime.end;
-      const end =
-        finiteEnd === null
-          ? draft.duration
-          : operation.entity.type.startsWith("TransitionOverlay:")
-            ? finiteEnd
-            : Math.min(draft.duration, finiteEnd + insertedProgramDuration(program));
-      const dimensions = createDimensions(operation.entity.type, operation.entity.dimensions);
-      draft.entities[operation.entity.id] = {
-        content: operation.entity.content,
-        ...(dimensions
-          ? {
-              geometry: {
-                dimensions: { kind: "known" as const, value: dimensions },
-                position: { kind: "unknown" as const, reason: "Position has not been assigned yet." },
-                scale: { kind: "known" as const, value: 1 },
-                style: { kind: "known" as const, value: {} },
-              },
-            }
-          : {}),
-        id: operation.entity.id,
-        lifetime: [{ end, start: operation.entity.lifetime.start }],
-        provisional: true,
-        sourceIdentity: {
-          evidence: [operation.id],
-          kind: "unknown",
-          reason: "Entity has not been lowered to source yet.",
-        },
-        transactionId: program.transactionId,
-        type: operation.entity.type,
-      };
-      draft.lineage.push({
-        at: operation.interval.start,
-        from: operation.entity.id,
-        operationId: operation.id,
-        relation: "created",
-        to: operation.entity.id,
-      });
-      appendSample(draft, operation.entity.id, "presence", {
-        interval: { end, start: operation.entity.lifetime.start },
-        kind: "exact",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: true,
-      });
-    },
     execution: createEntityExecution,
     validate: (operation, scene) => {
       const issues = baseIssues(operation, scene);

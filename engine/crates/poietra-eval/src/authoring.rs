@@ -211,6 +211,8 @@ pub struct StudioMathTexTransformProjection {
 pub struct StudioAuthoringEditResult {
     pub bundle: SceneIrBundleV1,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub creation_projection: Option<StudioCreationProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub math_tex_transform_projection: Option<StudioMathTexTransformProjection>,
     pub persistent_remove_projection: StudioPersistentRemoveProjection,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -233,6 +235,71 @@ pub struct StudioMotionProjection {
     pub insertions: Vec<StudioMotionProjectionInsertion>,
     pub motions: Vec<StudioProjectedMotion>,
     pub projected_duration: f64,
+}
+
+/// One Studio-owned entity created by an admitted creation Program.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioProjectedCreationEntity {
+    pub created_lifetime: IntervalV1,
+    pub entity_id: String,
+    pub initial_dimensions: StudioAuthoringDimensions,
+    pub initial_scale: f64,
+    pub kind: StudioAuthoringEntityKind,
+    pub operation_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tex_parts: Option<Vec<String>>,
+    pub transaction_id: String,
+}
+
+/// One exact property mutation resolved by the shared creation planner.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StudioCreationProjectedMutationKind {
+    Position {
+        value: PointV1,
+    },
+    FadeIn {
+        from: f64,
+        to: f64,
+    },
+    UniformScale {
+        from: f64,
+        to: f64,
+    },
+    Resize {
+        from_dimensions: StudioAuthoringDimensions,
+        from_position: PointV1,
+        to_dimensions: StudioAuthoringDimensions,
+        to_position: PointV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioCreationProjectedMutation {
+    pub entity_id: String,
+    pub interval: IntervalV1,
+    #[serde(flatten)]
+    pub kind: StudioCreationProjectedMutationKind,
+    pub operation_id: String,
+    pub transaction_id: String,
+}
+
+/// Complete snapshot-free projection of one admitted Studio creation batch.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioCreationProjection {
+    pub entities: Vec<StudioProjectedCreationEntity>,
+    pub insertions: Vec<StudioMotionProjectionInsertion>,
+    pub motions: Vec<StudioProjectedMotion>,
+    pub mutations: Vec<StudioCreationProjectedMutation>,
+    pub projected_duration: f64,
+    pub removals: Vec<StudioPersistentRemoveProjectionEntry>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -560,9 +627,6 @@ pub enum StudioMotionProjectionBatch {
     StaticRoot {
         programs: Vec<StaticRootTransformProgram>,
         studio_entities: Vec<StaticRootMotionProjectionEntityIdentity>,
-    },
-    Creation {
-        programs: Vec<StudioCreationProgram>,
     },
 }
 
@@ -1383,6 +1447,12 @@ pub enum ApplyStudioMotionEditError {
 #[derive(Debug, thiserror::Error)]
 pub enum ProjectStudioMotionEditError {
     #[error("the normalized Studio Programs do not authorize one motion-bearing batch")]
+    Unsupported,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectStudioCreationEditError {
+    #[error("the normalized Studio Programs do not authorize one creation batch")]
     Unsupported,
 }
 
@@ -3524,522 +3594,6 @@ fn project_static_root_motion_programs(
     project_studio_motion_plan(&plan, targets)
 }
 
-#[allow(
-    clippy::too_many_lines,
-    reason = "the creation family must admit its complete normalized batch before exposing any motion fact"
-)]
-fn project_creation_motion_programs(
-    base_duration: f64,
-    programs: &[StudioCreationProgram],
-) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
-    if !base_duration.is_finite()
-        || base_duration <= 0.0
-        || programs.is_empty()
-        || programs.iter().any(|program| {
-            !program.lowering_supported
-                || program.transaction_id.is_empty()
-                || !studio_program_anchor_is_closed(
-                    &program.anchor_source,
-                    program.anchor_captured_playhead,
-                    program.anchor_resolved_seconds,
-                    base_duration,
-                )
-                || !studio_creation_program_is_closed(program)
-        })
-    {
-        return Err(ProjectStudioMotionEditError::Unsupported);
-    }
-    let mut operation_ids = BTreeSet::new();
-    if programs
-        .iter()
-        .flat_map(|program| &program.operations)
-        .any(|operation| {
-            operation.id.is_empty()
-                || !operation.interval.start.is_finite()
-                || !operation.interval.end.is_finite()
-                || operation.interval.end < operation.interval.start
-                || !operation_ids.insert(operation.id.as_str())
-        })
-    {
-        return Err(ProjectStudioMotionEditError::Unsupported);
-    }
-
-    let mut ordered = (0..programs.len()).collect::<Vec<_>>();
-    ordered.sort_by(|left, right| {
-        programs[*left]
-            .anchor_resolved_seconds
-            .total_cmp(&programs[*right].anchor_resolved_seconds)
-            .then(left.cmp(right))
-    });
-    let mut create_indexes = Vec::new();
-    let mut motion_indexes = Vec::new();
-    let mut other_followup_indexes = Vec::new();
-    let mut reached_followup = false;
-    for index in &ordered {
-        let program = &programs[*index];
-        let contains_create = program
-            .operations
-            .iter()
-            .any(|operation| matches!(operation.kind, StudioCreationOperationKind::Create { .. }));
-        let contains_motion = program.operations.iter().any(|operation| {
-            matches!(
-                operation.kind,
-                StudioCreationOperationKind::CreateMotion { .. }
-            )
-        });
-        if contains_create {
-            if reached_followup
-                || contains_motion
-                || program.operations.iter().any(|operation| {
-                    !matches!(
-                        operation.kind,
-                        StudioCreationOperationKind::Create { .. }
-                            | StudioCreationOperationKind::Position { .. }
-                            | StudioCreationOperationKind::FadeIn { .. }
-                    )
-                })
-            {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            create_indexes.push(*index);
-        } else if contains_motion {
-            if program.operations.iter().any(|operation| {
-                !matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::CreateMotion { .. }
-                )
-            }) {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            reached_followup = true;
-            motion_indexes.push(*index);
-        } else {
-            reached_followup = true;
-            other_followup_indexes.push(*index);
-        }
-    }
-    if create_indexes.is_empty() || motion_indexes.is_empty() {
-        return Err(ProjectStudioMotionEditError::Unsupported);
-    }
-
-    let mut offsets = vec![0.0; programs.len()];
-    let mut ranks = vec![0_usize; programs.len()];
-    let mut ranked_insertions = Vec::new();
-    let mut insertions = Vec::new();
-    let mut projected_duration = base_duration;
-    let mut resolved_offset = 0.0;
-    for (rank, index) in ordered.iter().copied().enumerate() {
-        let program = &programs[index];
-        let duration = if create_indexes.contains(&index) {
-            program
-                .operations
-                .iter()
-                .filter(|operation| {
-                    matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
-                })
-                .map(|operation| operation.interval.end)
-                .fold(program.anchor_resolved_seconds, f64::max)
-                - program.anchor_resolved_seconds
-        } else if motion_indexes.contains(&index) {
-            program
-                .operations
-                .iter()
-                .map(|operation| operation.interval.end)
-                .fold(program.anchor_resolved_seconds, f64::max)
-                - program.anchor_resolved_seconds
-        } else {
-            0.0
-        };
-        let at = program.anchor_resolved_seconds + resolved_offset;
-        if !duration.is_finite()
-            || duration < 0.0
-            || !at.is_finite()
-            || at > projected_duration + TIMELINE_ANCHOR_EPSILON
-        {
-            return Err(ProjectStudioMotionEditError::Unsupported);
-        }
-        offsets[index] = resolved_offset;
-        ranks[index] = rank;
-        if duration > 0.0 {
-            let insertion = SceneTimelineInsertion { at, duration };
-            ranked_insertions.push((rank, insertion.clone()));
-            insertions.push(StudioMotionProjectionInsertion {
-                at,
-                duration,
-                transaction_id: program.transaction_id.clone(),
-            });
-            resolved_offset += duration;
-            projected_duration += duration;
-        }
-    }
-
-    let mut targets = BTreeMap::new();
-    for index in create_indexes {
-        let program = &programs[index];
-        let created_ids = program
-            .operations
-            .iter()
-            .filter_map(|operation| match &operation.kind {
-                StudioCreationOperationKind::Create { entity } => Some(entity.id.as_str()),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>();
-        let mut scheduled_created_ids = BTreeSet::new();
-        for operation_id in &program.schedule_order {
-            let operation = program
-                .operations
-                .iter()
-                .find(|operation| operation.id == *operation_id)
-                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-            match &operation.kind {
-                StudioCreationOperationKind::Create { entity } => {
-                    if operation.entity_id.is_some()
-                        || !studio_timeline_semantic_values_match(
-                            operation.interval.start,
-                            program.anchor_resolved_seconds,
-                        )
-                        || !studio_timeline_semantic_values_match(
-                            operation.interval.end,
-                            program.anchor_resolved_seconds,
-                        )
-                    {
-                        return Err(ProjectStudioMotionEditError::Unsupported);
-                    }
-                    scheduled_created_ids.insert(entity.id.as_str());
-                }
-                StudioCreationOperationKind::Position { position } => {
-                    if operation
-                        .entity_id
-                        .as_deref()
-                        .is_none_or(|entity_id| !scheduled_created_ids.contains(entity_id))
-                        || position
-                            .as_ref()
-                            .is_none_or(|position| !studio_authoring_point_is_finite(position))
-                        || !studio_timeline_semantic_values_match(
-                            operation.interval.start,
-                            program.anchor_resolved_seconds,
-                        )
-                        || !studio_timeline_semantic_values_match(
-                            operation.interval.end,
-                            program.anchor_resolved_seconds,
-                        )
-                    {
-                        return Err(ProjectStudioMotionEditError::Unsupported);
-                    }
-                }
-                StudioCreationOperationKind::FadeIn { persistent } => {
-                    if !persistent
-                        || operation
-                            .entity_id
-                            .as_deref()
-                            .is_none_or(|entity_id| !scheduled_created_ids.contains(entity_id))
-                        || !studio_timeline_semantic_values_match(
-                            operation.interval.start,
-                            program.anchor_resolved_seconds,
-                        )
-                        || operation.interval.end <= operation.interval.start
-                    {
-                        return Err(ProjectStudioMotionEditError::Unsupported);
-                    }
-                }
-                StudioCreationOperationKind::UniformScale { .. }
-                | StudioCreationOperationKind::Resize { .. }
-                | StudioCreationOperationKind::PersistentRemove { .. }
-                | StudioCreationOperationKind::CreateMotion { .. }
-                | StudioCreationOperationKind::Unsupported => {
-                    return Err(ProjectStudioMotionEditError::Unsupported);
-                }
-            }
-        }
-        for entity_id in created_ids {
-            let create = program
-                .operations
-                .iter()
-                .find_map(|operation| match &operation.kind {
-                    StudioCreationOperationKind::Create { entity } if entity.id == entity_id => {
-                        Some(entity)
-                    }
-                    _ => None,
-                })
-                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-            if targets.contains_key(entity_id)
-                || !create
-                    .id
-                    .starts_with(&format!("tx:{}/entity:", program.transaction_id))
-                || !studio_timeline_semantic_values_match(
-                    create.lifetime_start,
-                    program.anchor_resolved_seconds,
-                )
-                || create
-                    .lifetime_end
-                    .is_some_and(|end| !end.is_finite() || end <= create.lifetime_start)
-                || !matches!(
-                    create.kind,
-                    StudioAuthoringEntityKind::Circle
-                        | StudioAuthoringEntityKind::MathTex
-                        | StudioAuthoringEntityKind::Rectangle
-                )
-            {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            if create.kind == StudioAuthoringEntityKind::MathTex {
-                if create.tex_parts.as_ref().is_none_or(|parts| {
-                    parts.is_empty() || parts.iter().any(|part| part.trim().is_empty())
-                }) {
-                    return Err(ProjectStudioMotionEditError::Unsupported);
-                }
-            } else if create.tex_parts.is_some()
-                || studio_authoring_shape_size(create.kind, create.dimensions).is_none()
-            {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            let positions = program
-                .operations
-                .iter()
-                .filter(|operation| operation.entity_id.as_deref() == Some(entity_id))
-                .filter_map(|operation| match &operation.kind {
-                    StudioCreationOperationKind::Position {
-                        position: Some(position),
-                    } => Some(position),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let fades = program
-                .operations
-                .iter()
-                .filter(|operation| operation.entity_id.as_deref() == Some(entity_id))
-                .filter(|operation| {
-                    matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
-                })
-                .collect::<Vec<_>>();
-            if positions.len() != 1 || fades.len() > 1 {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            let insertion_duration = ranked_insertions
-                .iter()
-                .find(|(rank, _)| *rank == ranks[index])
-                .map_or(0.0, |(_, insertion)| insertion.duration);
-            let duration_after_program = base_duration
-                + ranked_insertions
-                    .iter()
-                    .filter(|(rank, _)| *rank <= ranks[index])
-                    .map(|(_, insertion)| insertion.duration)
-                    .sum::<f64>();
-            let mut lifetime = IntervalV1 {
-                end: create.lifetime_end.map_or(duration_after_program, |end| {
-                    (end + offsets[index] + insertion_duration).min(duration_after_program)
-                }),
-                start: create.lifetime_start + offsets[index],
-            };
-            for (rank, insertion) in &ranked_insertions {
-                if *rank > ranks[index] {
-                    shift_interval_for_insertion(&mut lifetime, insertion);
-                }
-            }
-            let mut usable_start = lifetime.start;
-            if let Some(fade) = fades.first() {
-                let mut fade_interval = IntervalV1 {
-                    end: fade.interval.end + offsets[index],
-                    start: fade.interval.start + offsets[index],
-                };
-                for (rank, insertion) in &ranked_insertions {
-                    if *rank > ranks[index] {
-                        shift_interval_for_insertion(&mut fade_interval, insertion);
-                    }
-                }
-                if !studio_timeline_semantic_values_match(fade_interval.start, lifetime.start)
-                    || fade_interval.end > lifetime.end
-                {
-                    return Err(ProjectStudioMotionEditError::Unsupported);
-                }
-                usable_start = fade_interval.end;
-            }
-            lifetime.start = usable_start;
-            targets.insert(
-                entity_id.to_owned(),
-                StudioMotionProjectionTarget {
-                    lifetime,
-                    position: positions[0].clone(),
-                },
-            );
-        }
-    }
-
-    let mut scales = targets
-        .keys()
-        .map(|entity_id| (entity_id.clone(), 1.0_f64))
-        .collect::<BTreeMap<_, _>>();
-    let mut motion_deadlines: BTreeMap<String, f64> = BTreeMap::new();
-    for index in other_followup_indexes {
-        let program = &programs[index];
-        let contains_removal = program.operations.iter().any(|operation| {
-            matches!(
-                operation.kind,
-                StudioCreationOperationKind::PersistentRemove { .. }
-            )
-        });
-        if contains_removal
-            && program.operations.iter().any(|operation| {
-                !matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::PersistentRemove { .. }
-                )
-            })
-        {
-            return Err(ProjectStudioMotionEditError::Unsupported);
-        }
-        for operation_id in &program.schedule_order {
-            let operation = program
-                .operations
-                .iter()
-                .find(|operation| operation.id == *operation_id)
-                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-            let entity_id = operation
-                .entity_id
-                .as_deref()
-                .filter(|entity_id| targets.contains_key(*entity_id))
-                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-            if !studio_timeline_semantic_values_match(
-                operation.interval.start,
-                program.anchor_resolved_seconds,
-            ) {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            let mut deadline = operation.interval.start + offsets[index];
-            for (rank, insertion) in &ranked_insertions {
-                if *rank > ranks[index] && deadline >= insertion.at - TIMELINE_ANCHOR_EPSILON {
-                    deadline += insertion.duration;
-                }
-            }
-            match &operation.kind {
-                StudioCreationOperationKind::UniformScale {
-                    control_present,
-                    from: Some(from),
-                    relative_factor: Some(relative_factor),
-                    to: Some(to),
-                } if !*control_present
-                    && studio_timeline_semantic_values_match(
-                        operation.interval.end,
-                        program.anchor_resolved_seconds,
-                    )
-                    && from.is_finite()
-                    && *from > 0.0
-                    && relative_factor.is_finite()
-                    && *relative_factor > 0.0
-                    && to.is_finite()
-                    && *to > 0.0
-                    && close_transform_baseline_value(*to / *from, *relative_factor)
-                    && scales
-                        .get(entity_id)
-                        .is_some_and(|scale| close_transform_baseline_value(*scale, *from)) =>
-                {
-                    scales.insert(entity_id.to_owned(), *to);
-                }
-                StudioCreationOperationKind::PersistentRemove { persistent }
-                    if *persistent
-                        && matches!(
-                            operation.origin,
-                            StudioAuthoringOrigin::DirectManipulation
-                                | StudioAuthoringOrigin::StudioDefault
-                        )
-                        && operation.interval.end.is_finite()
-                        && operation.interval.end >= operation.interval.start => {}
-                StudioCreationOperationKind::Create { .. }
-                | StudioCreationOperationKind::Position { .. }
-                | StudioCreationOperationKind::FadeIn { .. }
-                | StudioCreationOperationKind::UniformScale { .. }
-                | StudioCreationOperationKind::Resize { .. }
-                | StudioCreationOperationKind::PersistentRemove { .. }
-                | StudioCreationOperationKind::CreateMotion { .. }
-                | StudioCreationOperationKind::Unsupported => {
-                    return Err(ProjectStudioMotionEditError::Unsupported);
-                }
-            }
-            motion_deadlines
-                .entry(entity_id.to_owned())
-                .and_modify(|current| *current = current.min(deadline))
-                .or_insert(deadline);
-        }
-    }
-    for (entity_id, deadline) in motion_deadlines {
-        let target = targets
-            .get_mut(&entity_id)
-            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-        target.lifetime.end = target.lifetime.end.min(deadline);
-    }
-
-    let mut motions = Vec::new();
-    for index in motion_indexes {
-        let program = &programs[index];
-        let operations = closed_studio_creation_motion_operations(program, base_duration)
-            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
-        let mut parallel_bucket_start: Option<f64> = None;
-        let mut parallel_targets = BTreeSet::new();
-        for operation in operations {
-            let StudioCreationOperationKind::CreateMotion {
-                control_offset,
-                delta,
-                easing,
-                target_entity_ids,
-            } = &operation.kind
-            else {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            };
-            let mut operation_targets = BTreeSet::new();
-            if target_entity_ids.is_empty()
-                || target_entity_ids.iter().any(|target| {
-                    !targets.contains_key(target) || !operation_targets.insert(target.as_str())
-                })
-                || !studio_authoring_point_is_finite(control_offset)
-                || !studio_authoring_point_is_finite(delta)
-                || (control_offset.x == 0.0
-                    && control_offset.y == 0.0
-                    && delta.x == 0.0
-                    && delta.y == 0.0)
-            {
-                return Err(ProjectStudioMotionEditError::Unsupported);
-            }
-            if program.requested_execution == StudioProgramExecution::Parallel {
-                if parallel_bucket_start.is_none_or(|bucket_start| {
-                    (operation.interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
-                }) {
-                    parallel_bucket_start = Some(operation.interval.start);
-                    parallel_targets.clear();
-                }
-                if target_entity_ids
-                    .iter()
-                    .any(|target| !parallel_targets.insert(target.as_str()))
-                {
-                    return Err(ProjectStudioMotionEditError::Unsupported);
-                }
-            }
-            motions.push(PlannedStudioMotion {
-                base_interval: operation.interval.clone(),
-                control_offset: control_offset.clone(),
-                delta: delta.clone(),
-                easing: *easing,
-                interval: IntervalV1 {
-                    end: operation.interval.end + offsets[index],
-                    start: operation.interval.start + offsets[index],
-                },
-                operation_id: operation.id.clone(),
-                parallel: program.requested_execution == StudioProgramExecution::Parallel,
-                target_entity_ids: target_entity_ids.clone(),
-                transaction_id: program.transaction_id.clone(),
-            });
-        }
-    }
-    project_studio_motion_plan(
-        &StudioMotionPlan {
-            insertions,
-            motions,
-            projected_duration,
-            timeline_insertions: Vec::new(),
-        },
-        targets,
-    )
-}
-
 /// Projects one exact supported motion-bearing Studio batch without a Scene snapshot.
 ///
 /// # Errors
@@ -4058,13 +3612,12 @@ pub fn project_studio_motion_edit(
             programs,
             studio_entities,
         } => project_static_root_motion_programs(command.base_duration, programs, studio_entities),
-        StudioMotionProjectionBatch::Creation { programs } => {
-            project_creation_motion_programs(command.base_duration, programs)
-        }
     }
 }
 
-struct PendingStudioCreation {
+struct PlannedStudioCreationEntity {
+    create_operation_id: String,
+    creation_transaction_id: String,
     creation_program_rank: usize,
     current_dimensions: StudioAuthoringDimensions,
     fade_interval: Option<IntervalV1>,
@@ -4080,22 +3633,881 @@ struct PendingStudioCreation {
     spec: StudioCreationEntitySpec,
 }
 
-fn record_studio_creation_instant(
-    state: &mut PendingStudioCreation,
-    program: &StudioCreationProgram,
-    program_index: usize,
-    program_offsets: &[f64],
-    program_ranks: &[usize],
-    ranked_insertions: &[(usize, SceneTimelineInsertion)],
-) -> Result<(), ApplyStudioCreationEditError> {
-    let mut instant_at = program.anchor_resolved_seconds + program_offsets[program_index];
-    for (rank, insertion) in ranked_insertions {
-        if *rank > program_ranks[program_index]
-            && instant_at >= insertion.at - TIMELINE_ANCHOR_EPSILON
+struct StudioCreationTimelinePlan {
+    insertions: Vec<StudioMotionProjectionInsertion>,
+    offsets: Vec<f64>,
+    ordered_programs: Vec<usize>,
+    projected_duration: f64,
+    ranked_insertions: Vec<(usize, SceneTimelineInsertion)>,
+    ranks: Vec<usize>,
+}
+
+fn studio_creation_insertion_duration(program: &StudioCreationProgram) -> f64 {
+    let creates_entity = program
+        .operations
+        .iter()
+        .any(|operation| matches!(operation.kind, StudioCreationOperationKind::Create { .. }));
+    let maximum_end = program
+        .operations
+        .iter()
+        .filter(|operation| {
+            if creates_entity {
+                matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+            } else {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            }
+        })
+        .map(|operation| operation.interval.end)
+        .fold(program.anchor_resolved_seconds, f64::max);
+    maximum_end - program.anchor_resolved_seconds
+}
+
+fn plan_studio_creation_timeline(
+    base_duration: f64,
+    programs: &[StudioCreationProgram],
+) -> Result<StudioCreationTimelinePlan, ProjectStudioCreationEditError> {
+    if !base_duration.is_finite()
+        || base_duration <= 0.0
+        || programs.is_empty()
+        || programs.iter().any(|program| {
+            !program.lowering_supported
+                || program.transaction_id.is_empty()
+                || !studio_program_anchor_is_closed(
+                    &program.anchor_source,
+                    program.anchor_captured_playhead,
+                    program.anchor_resolved_seconds,
+                    base_duration,
+                )
+                || !studio_creation_program_is_closed(program)
+        })
+    {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+    let mut transaction_ids = BTreeSet::new();
+    if programs
+        .iter()
+        .any(|program| !transaction_ids.insert(program.transaction_id.as_str()))
+    {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+    let mut operation_ids = BTreeSet::new();
+    if programs
+        .iter()
+        .flat_map(|program| &program.operations)
+        .any(|operation| {
+            operation.id.is_empty()
+                || !operation.interval.start.is_finite()
+                || !operation.interval.end.is_finite()
+                || operation.interval.end < operation.interval.start
+                || !operation_ids.insert(operation.id.as_str())
+        })
+    {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+
+    let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
+    ordered_programs.sort_by(|left, right| {
+        programs[*left]
+            .anchor_resolved_seconds
+            .total_cmp(&programs[*right].anchor_resolved_seconds)
+            .then(left.cmp(right))
+    });
+    let mut offsets = vec![0.0; programs.len()];
+    let mut ranks = vec![0; programs.len()];
+    let mut insertions = Vec::new();
+    let mut ranked_insertions = Vec::new();
+    let mut resolved_offset = 0.0;
+    let mut projected_duration = base_duration;
+    for (rank, program_index) in ordered_programs.iter().copied().enumerate() {
+        let program = &programs[program_index];
+        let insertion_duration = studio_creation_insertion_duration(program);
+        let at = program.anchor_resolved_seconds + resolved_offset;
+        if !insertion_duration.is_finite()
+            || insertion_duration < 0.0
+            || !at.is_finite()
+            || at > projected_duration + TIMELINE_ANCHOR_EPSILON
         {
-            instant_at += insertion.duration;
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        offsets[program_index] = resolved_offset;
+        ranks[program_index] = rank;
+        if insertion_duration > 0.0 {
+            let insertion = SceneTimelineInsertion {
+                at,
+                duration: insertion_duration,
+            };
+            insertions.push(StudioMotionProjectionInsertion {
+                at,
+                duration: insertion_duration,
+                transaction_id: program.transaction_id.clone(),
+            });
+            ranked_insertions.push((rank, insertion));
+            resolved_offset += insertion_duration;
+            projected_duration += insertion_duration;
         }
     }
+    Ok(StudioCreationTimelinePlan {
+        insertions,
+        offsets,
+        ordered_programs,
+        projected_duration,
+        ranked_insertions,
+        ranks,
+    })
+}
+
+fn shift_studio_creation_time(
+    mut at: f64,
+    program_rank: usize,
+    ranked_insertions: &[(usize, SceneTimelineInsertion)],
+) -> f64 {
+    for (rank, insertion) in ranked_insertions {
+        if *rank > program_rank && at >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+            at += insertion.duration;
+        }
+    }
+    at
+}
+
+struct StudioCreationPlan {
+    entities: Vec<PlannedStudioCreationEntity>,
+    motion_projection: StudioMotionProjection,
+    mutations: Vec<StudioCreationProjectedMutation>,
+    timeline_insertions: Vec<SceneTimelineInsertion>,
+}
+
+impl StudioCreationPlan {
+    fn projection(&self) -> StudioCreationProjection {
+        let entities = self
+            .entities
+            .iter()
+            .map(|state| StudioProjectedCreationEntity {
+                created_lifetime: state.lifetime.clone(),
+                entity_id: state.spec.id.clone(),
+                initial_dimensions: state.initial_dimensions,
+                initial_scale: 1.0,
+                kind: state.kind,
+                operation_id: state.create_operation_id.clone(),
+                tex_parts: state.spec.tex_parts.clone(),
+                transaction_id: state.creation_transaction_id.clone(),
+            })
+            .collect();
+        let removals = self
+            .entities
+            .iter()
+            .filter_map(|state| state.persistent_removal.as_ref())
+            .map(|removal| StudioPersistentRemoveProjectionEntry {
+                affected_scene_entity_ids: vec![removal.entity_id.clone()],
+                fade_interval: (removal.interval.start < removal.interval.end)
+                    .then_some(removal.interval.clone()),
+                operation_id: removal.operation_id.clone(),
+                removed_at: removal.interval.end,
+                resulting_lifetime_end: removal.interval.end,
+                scene_entity_id: removal.entity_id.clone(),
+                studio_entity_id: removal.studio_entity_id.clone(),
+                transaction_id: removal.transaction_id.clone(),
+            })
+            .collect();
+        StudioCreationProjection {
+            entities,
+            insertions: self.motion_projection.insertions.clone(),
+            motions: self.motion_projection.motions.clone(),
+            mutations: self.mutations.clone(),
+            projected_duration: self.motion_projection.projected_duration,
+            removals,
+        }
+    }
+}
+
+fn studio_creation_motion_is_compatible(
+    state: &PlannedStudioCreationEntity,
+    motion_interval: &IntervalV1,
+) -> bool {
+    let fade_end = state.fade_interval.as_ref().map(|interval| interval.end);
+    !state.has_position_or_resize_instant
+        && motion_interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
+        && motion_interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
+        && fade_end.is_none_or(|end| motion_interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        && state
+            .instant_at
+            .is_none_or(|at| at >= motion_interval.end - TIMELINE_ANCHOR_EPSILON)
+        && state.persistent_removal.as_ref().is_none_or(|removal| {
+            removal.interval.start >= motion_interval.end - TIMELINE_ANCHOR_EPSILON
+                && state
+                    .instant_at
+                    .is_none_or(|at| removal.interval.start >= at - TIMELINE_ANCHOR_EPSILON)
+                && fade_end
+                    .is_none_or(|end| removal.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
+        })
+}
+
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "one creation planner owns complete batch admission, ordering, and logical state"
+)]
+fn plan_studio_creation_programs(
+    base_duration: f64,
+    programs: &[StudioCreationProgram],
+) -> Result<StudioCreationPlan, ProjectStudioCreationEditError> {
+    let timeline = plan_studio_creation_timeline(base_duration, programs)?;
+    let create_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| {
+            programs[*index].operations.iter().any(|operation| {
+                matches!(operation.kind, StudioCreationOperationKind::Create { .. })
+            })
+        })
+        .collect::<Vec<_>>();
+    if create_programs.is_empty() {
+        return Err(ProjectStudioCreationEditError::Unsupported);
+    }
+    let followup_programs = timeline
+        .ordered_programs
+        .iter()
+        .copied()
+        .filter(|index| !create_programs.contains(index))
+        .collect::<Vec<_>>();
+
+    let mut create_records = Vec::new();
+    let mut created_ids = BTreeSet::new();
+    for program_index in &create_programs {
+        let program = &programs[*program_index];
+        let program_created_ids = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                StudioCreationOperationKind::Create { entity } => Some(entity.id.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        if program
+            .operations
+            .iter()
+            .any(|operation| match &operation.kind {
+                StudioCreationOperationKind::Create { .. } => {
+                    operation.entity_id.is_some()
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                }
+                StudioCreationOperationKind::Position { position } => {
+                    operation
+                        .entity_id
+                        .as_deref()
+                        .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                        || position
+                            .as_ref()
+                            .is_none_or(|position| !studio_authoring_point_is_finite(position))
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                }
+                StudioCreationOperationKind::FadeIn { persistent } => {
+                    !persistent
+                        || operation
+                            .entity_id
+                            .as_deref()
+                            .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || operation.interval.end <= operation.interval.start
+                }
+                StudioCreationOperationKind::UniformScale { .. }
+                | StudioCreationOperationKind::Resize { .. }
+                | StudioCreationOperationKind::PersistentRemove { .. }
+                | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Unsupported => true,
+            })
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let mut scheduled_created_ids = BTreeSet::new();
+        for operation_id in &program.schedule_order {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            match &operation.kind {
+                StudioCreationOperationKind::Create { entity } => {
+                    scheduled_created_ids.insert(entity.id.as_str());
+                }
+                StudioCreationOperationKind::Position { .. }
+                | StudioCreationOperationKind::FadeIn { .. }
+                    if operation
+                        .entity_id
+                        .as_deref()
+                        .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {}
+                StudioCreationOperationKind::Position { .. }
+                | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::UniformScale { .. }
+                | StudioCreationOperationKind::Resize { .. }
+                | StudioCreationOperationKind::PersistentRemove { .. }
+                | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Unsupported => {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+            }
+        }
+        for operation_id in &program.schedule_order {
+            let operation_index = program
+                .operations
+                .iter()
+                .position(|operation| operation.id == *operation_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let StudioCreationOperationKind::Create { entity } =
+                &program.operations[operation_index].kind
+            else {
+                continue;
+            };
+            if !created_ids.insert(entity.id.as_str())
+                || !matches!(
+                    entity.kind,
+                    StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::MathTex
+                        | StudioAuthoringEntityKind::Rectangle
+                )
+            {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            create_records.push((*program_index, operation_index));
+        }
+    }
+
+    let mut entities = Vec::with_capacity(create_records.len());
+    let mut ranked_mutations = Vec::new();
+    for (program_index, operation_index) in create_records {
+        let program = &programs[program_index];
+        let create_operation = &program.operations[operation_index];
+        let StudioCreationOperationKind::Create { entity: spec } = &create_operation.kind else {
+            unreachable!();
+        };
+        let program_rank = timeline.ranks[program_index];
+        let program_offset = timeline.offsets[program_index];
+        let insertion_duration = timeline
+            .ranked_insertions
+            .iter()
+            .find(|(rank, _)| *rank == program_rank)
+            .map_or(0.0, |(_, insertion)| insertion.duration);
+        let duration_after_program = base_duration
+            + timeline
+                .ranked_insertions
+                .iter()
+                .filter(|(rank, _)| *rank <= program_rank)
+                .map(|(_, insertion)| insertion.duration)
+                .sum::<f64>();
+        let mut lifetime = IntervalV1 {
+            end: spec.lifetime_end.map_or(duration_after_program, |end| {
+                (end + program_offset + insertion_duration).min(duration_after_program)
+            }),
+            start: spec.lifetime_start + program_offset,
+        };
+        if !spec
+            .id
+            .starts_with(&format!("tx:{}/entity:", program.transaction_id))
+            || !studio_timeline_semantic_values_match(
+                spec.lifetime_start,
+                program.anchor_resolved_seconds,
+            )
+            || spec
+                .lifetime_end
+                .is_some_and(|end| !end.is_finite() || end <= spec.lifetime_start)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        for (rank, insertion) in &timeline.ranked_insertions {
+            if *rank > program_rank {
+                shift_interval_for_insertion(&mut lifetime, insertion);
+            }
+        }
+        if !lifetime.start.is_finite()
+            || !lifetime.end.is_finite()
+            || lifetime.end <= lifetime.start
+            || (spec.kind == StudioAuthoringEntityKind::MathTex
+                && spec.tex_parts.as_ref().is_none_or(|parts| {
+                    parts.is_empty() || parts.iter().any(|part| part.trim().is_empty())
+                }))
+            || (spec.kind != StudioAuthoringEntityKind::MathTex
+                && (spec.tex_parts.is_some()
+                    || studio_authoring_shape_size(spec.kind, spec.dimensions).is_none()))
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let positions = program
+            .operations
+            .iter()
+            .filter(|operation| operation.entity_id.as_deref() == Some(spec.id.as_str()))
+            .filter_map(|operation| match &operation.kind {
+                StudioCreationOperationKind::Position {
+                    position: Some(position),
+                } => Some((operation, position)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let fades = program
+            .operations
+            .iter()
+            .filter(|operation| operation.entity_id.as_deref() == Some(spec.id.as_str()))
+            .filter(|operation| {
+                matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+            })
+            .collect::<Vec<_>>();
+        if positions.len() != 1 || fades.len() > 1 {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        let (position_operation, initial_position) = positions[0];
+        let position_interval = IntervalV1 {
+            end: lifetime.start,
+            start: lifetime.start,
+        };
+        let position_order = program
+            .schedule_order
+            .iter()
+            .position(|operation_id| operation_id == &position_operation.id)
+            .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+        ranked_mutations.push((
+            program_rank,
+            position_order,
+            StudioCreationProjectedMutation {
+                entity_id: spec.id.clone(),
+                interval: position_interval,
+                kind: StudioCreationProjectedMutationKind::Position {
+                    value: initial_position.clone(),
+                },
+                operation_id: position_operation.id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            },
+        ));
+        let mut fade_interval = fades.first().map(|fade| IntervalV1 {
+            end: fade.interval.end + program_offset,
+            start: fade.interval.start + program_offset,
+        });
+        if let Some(fade) = &mut fade_interval {
+            for (rank, insertion) in &timeline.ranked_insertions {
+                if *rank > program_rank {
+                    shift_interval_for_insertion(fade, insertion);
+                }
+            }
+        }
+        if fade_interval.as_ref().is_some_and(|fade| {
+            !studio_timeline_semantic_values_match(fade.start, lifetime.start)
+                || fade.end > lifetime.end
+        }) {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        if let (Some(fade), Some(interval)) = (fades.first(), fade_interval.as_ref()) {
+            let fade_order = program
+                .schedule_order
+                .iter()
+                .position(|operation_id| operation_id == &fade.id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            ranked_mutations.push((
+                program_rank,
+                fade_order,
+                StudioCreationProjectedMutation {
+                    entity_id: spec.id.clone(),
+                    interval: interval.clone(),
+                    kind: StudioCreationProjectedMutationKind::FadeIn { from: 0.0, to: 1.0 },
+                    operation_id: fade.id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                },
+            ));
+        }
+        entities.push(PlannedStudioCreationEntity {
+            create_operation_id: create_operation.id.clone(),
+            creation_program_rank: program_rank,
+            creation_transaction_id: program.transaction_id.clone(),
+            current_dimensions: spec.dimensions,
+            fade_interval,
+            has_position_or_resize_instant: false,
+            initial_dimensions: spec.dimensions,
+            initial_position: initial_position.clone(),
+            instant_at: None,
+            kind: spec.kind,
+            lifetime,
+            persistent_removal: None,
+            position: initial_position.clone(),
+            scale: 1.0,
+            spec: spec.clone(),
+        });
+    }
+
+    let mut planned_motions = Vec::new();
+    for program_index in followup_programs {
+        let program = &programs[program_index];
+        let contains_motion = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::CreateMotion { .. }
+            )
+        });
+        if contains_motion {
+            if program.operations.iter().any(|operation| {
+                !matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            }) {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let operations = closed_studio_creation_motion_operations(program, base_duration)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let mut parallel_bucket_start: Option<f64> = None;
+            let mut parallel_targets = BTreeSet::new();
+            for operation in operations {
+                let StudioCreationOperationKind::CreateMotion {
+                    control_offset,
+                    delta,
+                    easing,
+                    target_entity_ids,
+                } = &operation.kind
+                else {
+                    unreachable!();
+                };
+                if target_entity_ids.is_empty()
+                    || !studio_authoring_point_is_finite(control_offset)
+                    || !studio_authoring_point_is_finite(delta)
+                    || (control_offset.x == 0.0
+                        && control_offset.y == 0.0
+                        && delta.x == 0.0
+                        && delta.y == 0.0)
+                {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+                if program.requested_execution == StudioProgramExecution::Parallel
+                    && parallel_bucket_start.is_none_or(|bucket_start| {
+                        (operation.interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
+                    })
+                {
+                    parallel_bucket_start = Some(operation.interval.start);
+                    parallel_targets.clear();
+                }
+                let mut operation_targets = BTreeSet::new();
+                for entity_id in target_entity_ids {
+                    let state = entities
+                        .iter()
+                        .find(|state| state.spec.id == *entity_id)
+                        .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+                    if state.creation_program_rank >= timeline.ranks[program_index]
+                        || !operation_targets.insert(entity_id.as_str())
+                        || (program.requested_execution == StudioProgramExecution::Parallel
+                            && !parallel_targets.insert(entity_id.clone()))
+                    {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                }
+                planned_motions.push(PlannedStudioMotion {
+                    base_interval: operation.interval.clone(),
+                    control_offset: control_offset.clone(),
+                    delta: delta.clone(),
+                    easing: *easing,
+                    interval: IntervalV1 {
+                        end: operation.interval.end + timeline.offsets[program_index],
+                        start: operation.interval.start + timeline.offsets[program_index],
+                    },
+                    operation_id: operation.id.clone(),
+                    parallel: program.requested_execution == StudioProgramExecution::Parallel,
+                    target_entity_ids: target_entity_ids.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                });
+            }
+            continue;
+        }
+
+        let contains_persistent_remove = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::PersistentRemove { .. }
+            )
+        });
+        if contains_persistent_remove
+            && program.operations.iter().any(|operation| {
+                !matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::PersistentRemove { .. }
+                )
+            })
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        for (schedule_index, operation_id) in program.schedule_order.iter().enumerate() {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            if !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            ) {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+            let entity_id = operation
+                .entity_id
+                .as_deref()
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let state = entities
+                .iter_mut()
+                .find(|state| state.spec.id == entity_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            let instant_at = shift_studio_creation_time(
+                program.anchor_resolved_seconds + timeline.offsets[program_index],
+                timeline.ranks[program_index],
+                &timeline.ranked_insertions,
+            );
+            let instant_interval = IntervalV1 {
+                end: instant_at,
+                start: instant_at,
+            };
+            match &operation.kind {
+                StudioCreationOperationKind::Position {
+                    position: Some(position),
+                } if studio_timeline_semantic_values_match(
+                    operation.interval.end,
+                    program.anchor_resolved_seconds,
+                ) && studio_authoring_point_is_finite(position) =>
+                {
+                    record_planned_studio_creation_instant(state, instant_at)?;
+                    state.has_position_or_resize_instant = true;
+                    state.position = position.clone();
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::Position {
+                                value: position.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::UniformScale {
+                    control_present,
+                    from: Some(from),
+                    relative_factor: Some(relative_factor),
+                    to: Some(to),
+                } if !control_present
+                    && from.is_finite()
+                    && *from > 0.0
+                    && to.is_finite()
+                    && *to > 0.0
+                    && relative_factor.is_finite()
+                    && *relative_factor > 0.0
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
+                    && close_transform_baseline_value(*to / *from, *relative_factor) =>
+                {
+                    record_planned_studio_creation_instant(state, instant_at)?;
+                    let projected_from = state.scale;
+                    let projected_to = state.scale * relative_factor;
+                    if !projected_to.is_finite() || projected_to <= 0.0 {
+                        return Err(ProjectStudioCreationEditError::Unsupported);
+                    }
+                    state.scale = projected_to;
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::UniformScale {
+                                from: projected_from,
+                                to: projected_to,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::Resize {
+                    from_dimensions,
+                    from_position,
+                    from_scale,
+                    shape,
+                    to_dimensions,
+                    to_position,
+                } if *shape == state.kind
+                    && matches!(
+                        shape,
+                        StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+                    )
+                    && *from_dimensions == state.current_dimensions
+                    && studio_authoring_shape_size(*shape, *from_dimensions).is_some()
+                    && studio_authoring_point_is_finite(from_position)
+                    && close_transform_baseline_value(from_position.x, state.position.x)
+                    && close_transform_baseline_value(from_position.y, state.position.y)
+                    && from_scale.is_finite()
+                    && *from_scale > 0.0
+                    && close_transform_baseline_value(*from_scale, state.scale)
+                    && studio_authoring_shape_size(*shape, *to_dimensions).is_some()
+                    && studio_authoring_point_is_finite(to_position)
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    ) =>
+                {
+                    record_planned_studio_creation_instant(state, instant_at)?;
+                    state.has_position_or_resize_instant = true;
+                    state.current_dimensions = *to_dimensions;
+                    state.position = to_position.clone();
+                    ranked_mutations.push((
+                        timeline.ranks[program_index],
+                        schedule_index,
+                        StudioCreationProjectedMutation {
+                            entity_id: entity_id.to_owned(),
+                            interval: instant_interval,
+                            kind: StudioCreationProjectedMutationKind::Resize {
+                                from_dimensions: *from_dimensions,
+                                from_position: from_position.clone(),
+                                to_dimensions: *to_dimensions,
+                                to_position: to_position.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        },
+                    ));
+                }
+                StudioCreationOperationKind::PersistentRemove { persistent }
+                    if *persistent
+                        && matches!(
+                            operation.origin,
+                            StudioAuthoringOrigin::DirectManipulation
+                                | StudioAuthoringOrigin::StudioDefault
+                        )
+                        && operation.interval.end.is_finite()
+                        && operation.interval.end >= operation.interval.start
+                        && state.persistent_removal.is_none() =>
+                {
+                    let mut interval = IntervalV1 {
+                        end: operation.interval.end + timeline.offsets[program_index],
+                        start: operation.interval.start + timeline.offsets[program_index],
+                    };
+                    for (rank, insertion) in &timeline.ranked_insertions {
+                        if *rank > timeline.ranks[program_index] {
+                            shift_interval_for_insertion(&mut interval, insertion);
+                        }
+                    }
+                    state.persistent_removal = Some(PersistentSceneRemoval {
+                        entity_id: entity_id.to_owned(),
+                        interval,
+                        operation_id: operation.id.clone(),
+                        studio_entity_id: entity_id.to_owned(),
+                        transaction_id: program.transaction_id.clone(),
+                    });
+                }
+                StudioCreationOperationKind::Create { .. }
+                | StudioCreationOperationKind::Position { .. }
+                | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::UniformScale { .. }
+                | StudioCreationOperationKind::Resize { .. }
+                | StudioCreationOperationKind::PersistentRemove { .. }
+                | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Unsupported => {
+                    return Err(ProjectStudioCreationEditError::Unsupported);
+                }
+            }
+        }
+    }
+
+    for state in &entities {
+        if state
+            .instant_at
+            .is_some_and(|at| at <= state.lifetime.start || at >= state.lifetime.end)
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+        if let Some(removal) = &state.persistent_removal
+            && (removal.interval.start < state.lifetime.start
+                || removal.interval.start >= state.lifetime.end
+                || removal.interval.end <= state.lifetime.start
+                || removal.interval.end > state.lifetime.end
+                || state
+                    .fade_interval
+                    .as_ref()
+                    .is_some_and(|fade| removal.interval.start < fade.end)
+                || state
+                    .instant_at
+                    .is_some_and(|at| removal.interval.start < at))
+        {
+            return Err(ProjectStudioCreationEditError::Unsupported);
+        }
+    }
+    for motion in &planned_motions {
+        for entity_id in &motion.target_entity_ids {
+            let state = entities
+                .iter()
+                .find(|state| state.spec.id == *entity_id)
+                .ok_or(ProjectStudioCreationEditError::Unsupported)?;
+            if !studio_creation_motion_is_compatible(state, &motion.interval) {
+                return Err(ProjectStudioCreationEditError::Unsupported);
+            }
+        }
+    }
+    let targets = entities
+        .iter()
+        .map(|state| {
+            (
+                state.spec.id.clone(),
+                StudioMotionProjectionTarget {
+                    lifetime: state.lifetime.clone(),
+                    position: state.initial_position.clone(),
+                },
+            )
+        })
+        .collect();
+    let motion_projection = project_studio_motion_plan(
+        &StudioMotionPlan {
+            insertions: timeline.insertions,
+            motions: planned_motions,
+            projected_duration: timeline.projected_duration,
+            timeline_insertions: Vec::new(),
+        },
+        targets,
+    )
+    .map_err(|_| ProjectStudioCreationEditError::Unsupported)?;
+    ranked_mutations.sort_by_key(|(rank, schedule_index, _)| (*rank, *schedule_index));
+    Ok(StudioCreationPlan {
+        entities,
+        motion_projection,
+        mutations: ranked_mutations
+            .into_iter()
+            .map(|(_, _, mutation)| mutation)
+            .collect(),
+        timeline_insertions: timeline
+            .ranked_insertions
+            .into_iter()
+            .map(|(_, insertion)| insertion)
+            .collect(),
+    })
+}
+
+fn record_planned_studio_creation_instant(
+    state: &mut PlannedStudioCreationEntity,
+    instant_at: f64,
+) -> Result<(), ProjectStudioCreationEditError> {
     if state
         .instant_at
         .is_some_and(|prior| (prior - instant_at).abs() > 1e-9)
@@ -4104,32 +4516,22 @@ fn record_studio_creation_instant(
             .as_ref()
             .is_some_and(|removal| instant_at >= removal.interval.start - TIMELINE_ANCHOR_EPSILON)
     {
-        return Err(ApplyStudioCreationEditError::Unsupported);
+        return Err(ProjectStudioCreationEditError::Unsupported);
     }
     state.instant_at = Some(instant_at);
     Ok(())
 }
 
-fn studio_creation_motion_is_compatible(
-    state: &PendingStudioCreation,
-    motion: &PlannedSceneMotion,
-) -> bool {
-    let fade_end = state.fade_interval.as_ref().map(|interval| interval.end);
-    !state.has_position_or_resize_instant
-        && motion.interval.start >= state.lifetime.start - TIMELINE_ANCHOR_EPSILON
-        && motion.interval.end <= state.lifetime.end + TIMELINE_ANCHOR_EPSILON
-        && fade_end.is_none_or(|end| motion.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
-        && state
-            .instant_at
-            .is_none_or(|at| at >= motion.interval.end - TIMELINE_ANCHOR_EPSILON)
-        && state.persistent_removal.as_ref().is_none_or(|removal| {
-            removal.interval.start >= motion.interval.end - TIMELINE_ANCHOR_EPSILON
-                && state
-                    .instant_at
-                    .is_none_or(|at| removal.interval.start >= at - TIMELINE_ANCHOR_EPSILON)
-                && fade_end
-                    .is_none_or(|end| removal.interval.start >= end - TIMELINE_ANCHOR_EPSILON)
-        })
+/// Projects one complete supported Studio creation batch without a Scene snapshot.
+///
+/// # Errors
+///
+/// Returns `Unsupported` when the complete normalized batch is outside the closed creation subset.
+pub fn project_studio_creation_programs(
+    base_duration: f64,
+    programs: &[StudioCreationProgram],
+) -> Result<StudioCreationProjection, ProjectStudioCreationEditError> {
+    Ok(plan_studio_creation_programs(base_duration, programs)?.projection())
 }
 
 fn static_transform_geometry_matches(
@@ -5834,6 +6236,7 @@ impl EngineSessionV1 {
 
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
+            creation_projection: None,
             math_tex_transform_projection: None,
             motion_projection: None,
             persistent_remove_projection,
@@ -5853,7 +6256,7 @@ impl EngineSessionV1 {
     #[allow(
         clippy::float_cmp,
         clippy::too_many_lines,
-        reason = "exact normalized anchors are authority facts; keeping this closed state machine contiguous makes its admission rules auditable"
+        reason = "the bounded adapter materializes one already-admitted creation plan into Scene coordinates"
     )]
     pub fn apply_studio_creation_edit(
         &mut self,
@@ -5873,685 +6276,33 @@ impl EngineSessionV1 {
         if next_revision == expected_base_revision {
             return Err(CreateSceneEntitiesError::RevisionDidNotAdvance.into());
         }
-        let base_duration = self.scene().duration;
-        if programs.is_empty()
-            || !studio_authoring_size_is_positive(frame)
+        if !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != self.scene().camera.view.frame_width
             || frame.height != self.scene().camera.view.frame_height
-            || programs.iter().any(|program| {
-                !studio_program_anchor_is_closed(
-                    &program.anchor_source,
-                    program.anchor_captured_playhead,
-                    program.anchor_resolved_seconds,
-                    base_duration,
-                ) || program.transaction_id.is_empty()
-                    || !program.lowering_supported
-                    || !studio_creation_program_is_closed(program)
-            })
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
-        let motion_projection = if programs.iter().any(|program| {
-            program.operations.iter().any(|operation| {
-                matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::CreateMotion { .. }
-                )
-            })
-        }) {
-            Some(
-                project_creation_motion_programs(base_duration, &programs)
-                    .map_err(|_| ApplyStudioCreationEditError::Unsupported)?,
-            )
-        } else {
-            None
-        };
-
-        let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
-        ordered_programs.sort_by(|left, right| {
-            programs[*left]
-                .anchor_resolved_seconds
-                .total_cmp(&programs[*right].anchor_resolved_seconds)
-                .then(left.cmp(right))
-        });
-        let mut operation_ids = BTreeSet::new();
-        if programs
-            .iter()
-            .flat_map(|program| &program.operations)
-            .any(|operation| {
-                operation.id.is_empty()
-                    || !operation.interval.start.is_finite()
-                    || !operation.interval.end.is_finite()
-                    || operation.interval.end < operation.interval.start
-                    || !operation_ids.insert(operation.id.as_str())
-            })
-        {
-            return Err(ApplyStudioCreationEditError::Unsupported);
-        }
-
-        let mut program_offsets = vec![0.0; programs.len()];
-        let mut program_ranks = vec![0; programs.len()];
-        let mut ranked_insertions = Vec::new();
-        let mut resolved_offset = 0.0;
-        let mut projected_duration = base_duration;
-        for (rank, program_index) in ordered_programs.iter().copied().enumerate() {
-            let program = &programs[program_index];
-            let insertion_duration = if program.operations.iter().any(|operation| {
-                matches!(operation.kind, StudioCreationOperationKind::Create { .. })
-            }) {
-                program
-                    .operations
+        let plan = plan_studio_creation_programs(self.scene().duration, &programs)
+            .map_err(|_| ApplyStudioCreationEditError::Unsupported)?;
+        for state in &plan.entities {
+            if state.kind == StudioAuthoringEntityKind::MathTex
+                && math_tex_outlines
                     .iter()
-                    .filter(|operation| {
-                        matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                    .filter(|outline| {
+                        outline.entity_id == state.spec.id
+                            && Some(&outline.tex_parts) == state.spec.tex_parts.as_ref()
                     })
-                    .map(|operation| operation.interval.end)
-                    .fold(program.anchor_resolved_seconds, f64::max)
-                    - program.anchor_resolved_seconds
-            } else if program.operations.iter().any(|operation| {
-                matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::CreateMotion { .. }
-                )
-            }) {
-                program
-                    .operations
-                    .iter()
-                    .filter(|operation| {
-                        matches!(
-                            operation.kind,
-                            StudioCreationOperationKind::CreateMotion { .. }
-                        )
-                    })
-                    .map(|operation| operation.interval.end)
-                    .fold(program.anchor_resolved_seconds, f64::max)
-                    - program.anchor_resolved_seconds
-            } else {
-                0.0
-            };
-            let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
-            if !insertion_duration.is_finite()
-                || insertion_duration < 0.0
-                || !resolved_anchor.is_finite()
-                || resolved_anchor > projected_duration + TIMELINE_ANCHOR_EPSILON
+                    .count()
+                    != 1
             {
                 return Err(ApplyStudioCreationEditError::Unsupported);
             }
-            program_offsets[program_index] = resolved_offset;
-            program_ranks[program_index] = rank;
-            if insertion_duration > 0.0 {
-                ranked_insertions.push((
-                    rank,
-                    SceneTimelineInsertion {
-                        at: resolved_anchor,
-                        duration: insertion_duration,
-                    },
-                ));
-                resolved_offset += insertion_duration;
-                projected_duration += insertion_duration;
-            }
-        }
-        let create_programs = ordered_programs
-            .iter()
-            .copied()
-            .filter(|index| {
-                programs[*index].operations.iter().any(|operation| {
-                    matches!(operation.kind, StudioCreationOperationKind::Create { .. })
-                })
-            })
-            .collect::<Vec<_>>();
-        if create_programs.is_empty() {
-            return Err(ApplyStudioCreationEditError::Unsupported);
-        }
-        let followup_programs = ordered_programs
-            .iter()
-            .copied()
-            .filter(|index| !create_programs.contains(index))
-            .collect::<Vec<_>>();
-
-        let mut create_records = Vec::new();
-        let mut created_ids = BTreeSet::new();
-        for program_index in &create_programs {
-            let program = &programs[*program_index];
-            let program_created_ids = program
-                .operations
-                .iter()
-                .filter_map(|operation| match &operation.kind {
-                    StudioCreationOperationKind::Create { entity } => Some(entity.id.as_str()),
-                    _ => None,
-                })
-                .collect::<BTreeSet<_>>();
-            if program
-                .operations
-                .iter()
-                .any(|operation| match &operation.kind {
-                    StudioCreationOperationKind::Create { .. } => {
-                        operation.entity_id.is_some()
-                            || !studio_timeline_semantic_values_match(
-                                operation.interval.start,
-                                program.anchor_resolved_seconds,
-                            )
-                            || !studio_timeline_semantic_values_match(
-                                operation.interval.end,
-                                program.anchor_resolved_seconds,
-                            )
-                    }
-                    StudioCreationOperationKind::Position { position } => {
-                        operation
-                            .entity_id
-                            .as_deref()
-                            .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
-                            || position
-                                .as_ref()
-                                .is_none_or(|position| !studio_authoring_point_is_finite(position))
-                            || !studio_timeline_semantic_values_match(
-                                operation.interval.start,
-                                program.anchor_resolved_seconds,
-                            )
-                            || !studio_timeline_semantic_values_match(
-                                operation.interval.end,
-                                program.anchor_resolved_seconds,
-                            )
-                    }
-                    StudioCreationOperationKind::FadeIn { persistent } => {
-                        !persistent
-                            || operation
-                                .entity_id
-                                .as_deref()
-                                .is_none_or(|entity_id| !program_created_ids.contains(entity_id))
-                            || !studio_timeline_semantic_values_match(
-                                operation.interval.start,
-                                program.anchor_resolved_seconds,
-                            )
-                            || operation.interval.end <= operation.interval.start
-                    }
-                    StudioCreationOperationKind::UniformScale { .. }
-                    | StudioCreationOperationKind::Resize { .. }
-                    | StudioCreationOperationKind::PersistentRemove { .. }
-                    | StudioCreationOperationKind::CreateMotion { .. }
-                    | StudioCreationOperationKind::Unsupported => true,
-                })
-            {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-            let mut scheduled_created_ids = BTreeSet::new();
-            for operation_id in &program.schedule_order {
-                let operation = program
-                    .operations
-                    .iter()
-                    .find(|operation| operation.id == *operation_id)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                match &operation.kind {
-                    StudioCreationOperationKind::Create { entity } => {
-                        scheduled_created_ids.insert(entity.id.as_str());
-                    }
-                    StudioCreationOperationKind::Position { .. }
-                    | StudioCreationOperationKind::FadeIn { .. }
-                        if operation
-                            .entity_id
-                            .as_deref()
-                            .is_some_and(|entity_id| scheduled_created_ids.contains(entity_id)) => {
-                    }
-                    StudioCreationOperationKind::Position { .. }
-                    | StudioCreationOperationKind::FadeIn { .. }
-                    | StudioCreationOperationKind::UniformScale { .. }
-                    | StudioCreationOperationKind::Resize { .. }
-                    | StudioCreationOperationKind::PersistentRemove { .. }
-                    | StudioCreationOperationKind::CreateMotion { .. }
-                    | StudioCreationOperationKind::Unsupported => {
-                        return Err(ApplyStudioCreationEditError::Unsupported);
-                    }
-                }
-            }
-            for operation_id in &program.schedule_order {
-                let operation_index = program
-                    .operations
-                    .iter()
-                    .position(|operation| operation.id == *operation_id)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                let operation = &program.operations[operation_index];
-                let StudioCreationOperationKind::Create { entity } = &operation.kind else {
-                    continue;
-                };
-                if !created_ids.insert(entity.id.as_str())
-                    || !matches!(
-                        entity.kind,
-                        StudioAuthoringEntityKind::Circle
-                            | StudioAuthoringEntityKind::MathTex
-                            | StudioAuthoringEntityKind::Rectangle
-                    )
-                {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-                create_records.push((*program_index, operation_index));
-            }
         }
 
-        let mut pending = Vec::with_capacity(create_records.len());
-        for (creation_order, (program_index, operation_index)) in
-            create_records.into_iter().enumerate()
-        {
-            let program = &programs[program_index];
-            let StudioCreationOperationKind::Create { entity: spec } =
-                &program.operations[operation_index].kind
-            else {
-                unreachable!();
-            };
-            let create_interval = &program.operations[operation_index].interval;
-            if !studio_timeline_semantic_values_match(
-                create_interval.start,
-                program.anchor_resolved_seconds,
-            ) || !studio_timeline_semantic_values_match(
-                create_interval.end,
-                program.anchor_resolved_seconds,
-            ) {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-            let program_offset = program_offsets[program_index];
-            let insertion_duration = ranked_insertions
-                .iter()
-                .find(|(rank, _)| *rank == program_ranks[program_index])
-                .map_or(0.0, |(_, insertion)| insertion.duration);
-            let duration_after_program = base_duration
-                + ranked_insertions
-                    .iter()
-                    .filter(|(rank, _)| *rank <= program_ranks[program_index])
-                    .map(|(_, insertion)| insertion.duration)
-                    .sum::<f64>();
-            let mut lifetime = IntervalV1 {
-                end: spec.lifetime_end.map_or(duration_after_program, |end| {
-                    (end + program_offset + insertion_duration).min(duration_after_program)
-                }),
-                start: spec.lifetime_start + program_offset,
-            };
-            if !spec
-                .id
-                .starts_with(&format!("tx:{}/entity:", program.transaction_id))
-                || !studio_timeline_semantic_values_match(
-                    spec.lifetime_start,
-                    program.anchor_resolved_seconds,
-                )
-                || spec
-                    .lifetime_end
-                    .is_some_and(|end| !end.is_finite() || end <= spec.lifetime_start)
-                || !lifetime.start.is_finite()
-                || !lifetime.end.is_finite()
-                || lifetime.end <= lifetime.start
-            {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-            for (rank, insertion) in &ranked_insertions {
-                if *rank > program_ranks[program_index] {
-                    shift_interval_for_insertion(&mut lifetime, insertion);
-                }
-            }
-            if spec.kind == StudioAuthoringEntityKind::MathTex {
-                let Some(tex_parts) = spec.tex_parts.as_ref() else {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                };
-                if tex_parts.is_empty()
-                    || tex_parts.iter().any(|part| part.trim().is_empty())
-                    || math_tex_outlines
-                        .iter()
-                        .filter(|outline| {
-                            outline.entity_id == spec.id && outline.tex_parts == *tex_parts
-                        })
-                        .count()
-                        != 1
-                {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-            } else if spec.tex_parts.is_some() {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-
-            let positions = program
-                .operations
-                .iter()
-                .filter_map(|operation| {
-                    (operation.entity_id.as_deref() == Some(spec.id.as_str()))
-                        .then_some(&operation.kind)
-                })
-                .filter_map(|kind| match kind {
-                    StudioCreationOperationKind::Position {
-                        position: Some(position),
-                    } if studio_authoring_point_is_finite(position) => Some(position),
-                    _ => None,
-                })
-                .collect::<Vec<_>>();
-            let fades = program
-                .operations
-                .iter()
-                .filter(|operation| operation.entity_id.as_deref() == Some(spec.id.as_str()))
-                .filter(|operation| {
-                    matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
-                })
-                .collect::<Vec<_>>();
-            let mut fade_interval = fades.first().map(|fade| IntervalV1 {
-                end: fade.interval.end + program_offset,
-                start: fade.interval.start + program_offset,
-            });
-            if let Some(fade) = &mut fade_interval {
-                for (rank, insertion) in &ranked_insertions {
-                    if *rank > program_ranks[program_index] {
-                        shift_interval_for_insertion(fade, insertion);
-                    }
-                }
-            }
-            if positions.len() != 1
-                || fades.len() > 1
-                || fades.first().is_some_and(|fade| {
-                    !studio_timeline_semantic_values_match(
-                        fade.interval.start,
-                        program.anchor_resolved_seconds,
-                    ) || !fade.interval.end.is_finite()
-                        || fade.interval.end <= fade.interval.start
-                })
-                || fade_interval.as_ref().is_some_and(|fade| {
-                    !studio_timeline_semantic_values_match(fade.start, lifetime.start)
-                        || fade.end > lifetime.end
-                })
-                || (spec.kind != StudioAuthoringEntityKind::MathTex
-                    && studio_authoring_shape_size(spec.kind, spec.dimensions).is_none())
-            {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-            pending.push((
-                creation_order,
-                PendingStudioCreation {
-                    creation_program_rank: program_ranks[program_index],
-                    current_dimensions: spec.dimensions,
-                    fade_interval,
-                    initial_dimensions: spec.dimensions,
-                    initial_position: (*positions[0]).clone(),
-                    instant_at: None,
-                    has_position_or_resize_instant: false,
-                    kind: spec.kind,
-                    lifetime,
-                    persistent_removal: None,
-                    position: (*positions[0]).clone(),
-                    scale: 1.0,
-                    spec: spec.clone(),
-                },
-            ));
-        }
-        pending.sort_by_key(|(evaluated_order, _)| *evaluated_order);
-
-        let mut planned_motions = Vec::new();
-        for program_index in followup_programs {
-            let program = &programs[program_index];
-            let contains_motion = program.operations.iter().any(|operation| {
-                matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::CreateMotion { .. }
-                )
-            });
-            if contains_motion {
-                if program.operations.iter().any(|operation| {
-                    !matches!(
-                        operation.kind,
-                        StudioCreationOperationKind::CreateMotion { .. }
-                    )
-                }) {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-                let operations = closed_studio_creation_motion_operations(program, base_duration)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                let mut parallel_bucket_start: Option<f64> = None;
-                let mut parallel_targets = BTreeSet::new();
-                for operation in operations {
-                    let StudioCreationOperationKind::CreateMotion {
-                        control_offset,
-                        delta,
-                        easing,
-                        target_entity_ids,
-                    } = &operation.kind
-                    else {
-                        unreachable!();
-                    };
-                    if target_entity_ids.is_empty()
-                        || !control_offset.x.is_finite()
-                        || !control_offset.y.is_finite()
-                        || !delta.x.is_finite()
-                        || !delta.y.is_finite()
-                        || (control_offset.x == 0.0
-                            && control_offset.y == 0.0
-                            && delta.x == 0.0
-                            && delta.y == 0.0)
-                    {
-                        return Err(ApplyStudioCreationEditError::Unsupported);
-                    }
-                    if program.requested_execution == StudioProgramExecution::Parallel
-                        && parallel_bucket_start.is_none_or(|bucket_start| {
-                            (operation.interval.start - bucket_start).abs()
-                                > TIMELINE_ANCHOR_EPSILON
-                        })
-                    {
-                        parallel_bucket_start = Some(operation.interval.start);
-                        parallel_targets.clear();
-                    }
-                    let mut operation_targets = BTreeSet::new();
-                    for entity_id in target_entity_ids {
-                        let state = pending
-                            .iter()
-                            .find(|(_, state)| state.spec.id == *entity_id)
-                            .map(|(_, state)| state)
-                            .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                        if state.creation_program_rank >= program_ranks[program_index]
-                            || !operation_targets.insert(entity_id.as_str())
-                            || (program.requested_execution == StudioProgramExecution::Parallel
-                                && !parallel_targets.insert(entity_id.clone()))
-                        {
-                            return Err(ApplyStudioCreationEditError::Unsupported);
-                        }
-                    }
-                    planned_motions.push(PlannedSceneMotion {
-                        control_offset: studio_vector_to_scene_vector(
-                            control_offset,
-                            frame,
-                            viewport,
-                        ),
-                        delta: studio_vector_to_scene_vector(delta, frame, viewport),
-                        easing: *easing,
-                        interval: IntervalV1 {
-                            end: operation.interval.end + program_offsets[program_index],
-                            start: operation.interval.start + program_offsets[program_index],
-                        },
-                        target_entity_ids: target_entity_ids.clone(),
-                    });
-                }
-                continue;
-            }
-            let contains_persistent_remove = program.operations.iter().any(|operation| {
-                matches!(
-                    operation.kind,
-                    StudioCreationOperationKind::PersistentRemove { .. }
-                )
-            });
-            if contains_persistent_remove
-                && program.operations.iter().any(|operation| {
-                    !matches!(
-                        operation.kind,
-                        StudioCreationOperationKind::PersistentRemove { .. }
-                    )
-                })
-            {
-                return Err(ApplyStudioCreationEditError::Unsupported);
-            }
-            for operation_id in &program.schedule_order {
-                let operation = program
-                    .operations
-                    .iter()
-                    .find(|operation| operation.id == *operation_id)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                if !studio_timeline_semantic_values_match(
-                    operation.interval.start,
-                    program.anchor_resolved_seconds,
-                ) {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-                let entity_id = operation
-                    .entity_id
-                    .as_deref()
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                let state = pending
-                    .iter_mut()
-                    .find(|(_, state)| state.spec.id == entity_id)
-                    .map(|(_, state)| state)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                match &operation.kind {
-                    StudioCreationOperationKind::Position {
-                        position: Some(position),
-                    } if studio_timeline_semantic_values_match(
-                        operation.interval.end,
-                        program.anchor_resolved_seconds,
-                    ) && studio_authoring_point_is_finite(position) =>
-                    {
-                        record_studio_creation_instant(
-                            state,
-                            program,
-                            program_index,
-                            &program_offsets,
-                            &program_ranks,
-                            &ranked_insertions,
-                        )?;
-                        state.has_position_or_resize_instant = true;
-                        state.position = position.clone();
-                    }
-                    StudioCreationOperationKind::UniformScale {
-                        control_present,
-                        from: Some(from),
-                        relative_factor: Some(relative_factor),
-                        to: Some(to),
-                    } if !control_present
-                        && from.is_finite()
-                        && *from > 0.0
-                        && to.is_finite()
-                        && *to > 0.0
-                        && relative_factor.is_finite()
-                        && *relative_factor > 0.0
-                        && studio_timeline_semantic_values_match(
-                            operation.interval.end,
-                            program.anchor_resolved_seconds,
-                        )
-                        && close_transform_baseline_value(*to / *from, *relative_factor) =>
-                    {
-                        record_studio_creation_instant(
-                            state,
-                            program,
-                            program_index,
-                            &program_offsets,
-                            &program_ranks,
-                            &ranked_insertions,
-                        )?;
-                        state.scale *= relative_factor;
-                    }
-                    StudioCreationOperationKind::Resize {
-                        from_dimensions,
-                        from_position,
-                        from_scale,
-                        shape,
-                        to_dimensions,
-                        to_position,
-                    } if *shape == state.kind
-                        && matches!(
-                            shape,
-                            StudioAuthoringEntityKind::Circle
-                                | StudioAuthoringEntityKind::Rectangle
-                        )
-                        && *from_dimensions == state.current_dimensions
-                        && studio_authoring_shape_size(*shape, *from_dimensions).is_some()
-                        && studio_authoring_point_is_finite(from_position)
-                        && close_transform_baseline_value(from_position.x, state.position.x)
-                        && close_transform_baseline_value(from_position.y, state.position.y)
-                        && from_scale.is_finite()
-                        && *from_scale > 0.0
-                        && close_transform_baseline_value(*from_scale, state.scale)
-                        && studio_authoring_shape_size(*shape, *to_dimensions).is_some()
-                        && studio_authoring_point_is_finite(to_position)
-                        && studio_timeline_semantic_values_match(
-                            operation.interval.end,
-                            program.anchor_resolved_seconds,
-                        ) =>
-                    {
-                        record_studio_creation_instant(
-                            state,
-                            program,
-                            program_index,
-                            &program_offsets,
-                            &program_ranks,
-                            &ranked_insertions,
-                        )?;
-                        state.has_position_or_resize_instant = true;
-                        state.current_dimensions = *to_dimensions;
-                        state.position = to_position.clone();
-                    }
-                    StudioCreationOperationKind::PersistentRemove { persistent }
-                        if *persistent
-                            && matches!(
-                                operation.origin,
-                                StudioAuthoringOrigin::DirectManipulation
-                                    | StudioAuthoringOrigin::StudioDefault
-                            )
-                            && operation.interval.end.is_finite()
-                            && operation.interval.end >= operation.interval.start
-                            && state.persistent_removal.is_none() =>
-                    {
-                        let mut interval = IntervalV1 {
-                            end: operation.interval.end + program_offsets[program_index],
-                            start: operation.interval.start + program_offsets[program_index],
-                        };
-                        for (rank, insertion) in &ranked_insertions {
-                            if *rank > program_ranks[program_index] {
-                                shift_interval_for_insertion(&mut interval, insertion);
-                            }
-                        }
-                        state.persistent_removal = Some(PersistentSceneRemoval {
-                            entity_id: entity_id.to_owned(),
-                            interval,
-                            operation_id: operation.id.clone(),
-                            studio_entity_id: entity_id.to_owned(),
-                            transaction_id: program.transaction_id.clone(),
-                        });
-                    }
-                    StudioCreationOperationKind::Create { .. }
-                    | StudioCreationOperationKind::Position { .. }
-                    | StudioCreationOperationKind::FadeIn { .. }
-                    | StudioCreationOperationKind::UniformScale { .. }
-                    | StudioCreationOperationKind::Resize { .. }
-                    | StudioCreationOperationKind::PersistentRemove { .. }
-                    | StudioCreationOperationKind::CreateMotion { .. }
-                    | StudioCreationOperationKind::Unsupported => {
-                        return Err(ApplyStudioCreationEditError::Unsupported);
-                    }
-                }
-            }
-        }
-
-        for motion in &planned_motions {
-            for entity_id in &motion.target_entity_ids {
-                let state = pending
-                    .iter()
-                    .find(|(_, state)| state.spec.id == *entity_id)
-                    .map(|(_, state)| state)
-                    .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                if !studio_creation_motion_is_compatible(state, motion) {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-            }
-        }
-        let timeline_insertions = ranked_insertions
-            .into_iter()
-            .map(|(_, insertion)| insertion)
-            .collect::<Vec<_>>();
-        if pending.is_empty() || !projected_duration.is_finite() {
-            return Err(ApplyStudioCreationEditError::Unsupported);
-        }
-
-        let mut entities = Vec::with_capacity(pending.len());
+        let mut entities = Vec::with_capacity(plan.entities.len());
         let mut persistent_removals = Vec::new();
-        for (_, state) in pending {
+        for state in &plan.entities {
             let geometry = match state.kind {
                 StudioAuthoringEntityKind::Circle => {
                     let size = studio_authoring_shape_size(state.kind, state.initial_dimensions)
@@ -6603,15 +6354,6 @@ impl EngineSessionV1 {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
                 };
-                if !state.scale.is_finite()
-                    || state.scale <= 0.0
-                    || !x_ratio.is_finite()
-                    || x_ratio <= 0.0
-                    || !y_ratio.is_finite()
-                    || y_ratio <= 0.0
-                {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
                 Some(CreateSceneEntityInstantTransform {
                     at,
                     position: studio_point_to_scene_point(
@@ -6626,17 +6368,18 @@ impl EngineSessionV1 {
             } else {
                 None
             };
-            if let Some(removal) = state.persistent_removal.clone() {
-                persistent_removals.push(removal);
+            if let Some(removal) = &state.persistent_removal {
+                persistent_removals.push(removal.clone());
             }
             entities.push(CreateSceneEntity {
                 fade_in: state
                     .fade_interval
+                    .as_ref()
                     .map(|interval| CreateSceneEntityFadeIn { end: interval.end }),
                 geometry,
-                id: state.spec.id,
+                id: state.spec.id.clone(),
                 instant_transform,
-                lifetime: state.lifetime,
+                lifetime: state.lifetime.clone(),
                 position: studio_point_to_scene_point(
                     &state.initial_position,
                     frame,
@@ -6646,32 +6389,31 @@ impl EngineSessionV1 {
                 scale: 1.0,
             });
         }
-
-        if let Some(projection) = &motion_projection {
-            planned_motions = projection
-                .motions
-                .iter()
-                .map(|motion| PlannedSceneMotion {
-                    control_offset: studio_vector_to_scene_vector(
-                        &motion.control_offset,
-                        frame,
-                        viewport,
-                    ),
-                    delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
-                    easing: motion.easing,
-                    interval: motion.interval.clone(),
-                    target_entity_ids: vec![motion.target_entity_id.clone()],
-                })
-                .collect();
-        }
+        let motions = plan
+            .motion_projection
+            .motions
+            .iter()
+            .map(|motion| PlannedSceneMotion {
+                control_offset: studio_vector_to_scene_vector(
+                    &motion.control_offset,
+                    frame,
+                    viewport,
+                ),
+                delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
+                easing: motion.easing,
+                interval: motion.interval.clone(),
+                target_entity_ids: vec![motion.target_entity_id.clone()],
+            })
+            .collect();
         let operation_count = programs
             .iter()
             .map(|program| program.operations.len())
             .sum::<usize>();
+        let creation_projection = plan.projection();
         let mut result = self.create_scene_entities(CreateSceneEntitiesCommand {
             entities,
             expected_base_revision,
-            motions: planned_motions,
+            motions,
             next_revision: next_revision.clone(),
             persistent_removals,
             provenance: ProvenanceRecordV1 {
@@ -6682,9 +6424,9 @@ impl EngineSessionV1 {
                 id: format!("studio-create:{next_revision}"),
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
-            timeline_insertions,
+            timeline_insertions: plan.timeline_insertions,
         })?;
-        result.motion_projection = motion_projection;
+        result.creation_projection = Some(creation_projection);
         Ok(result)
     }
 
@@ -7099,6 +6841,7 @@ impl EngineSessionV1 {
 
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
+            creation_projection: None,
             math_tex_transform_projection: Some(projection),
             motion_projection: None,
             persistent_remove_projection: StudioPersistentRemoveProjection::default(),
@@ -7260,6 +7003,7 @@ impl EngineSessionV1 {
         };
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
+            creation_projection: None,
             math_tex_transform_projection: None,
             motion_projection: None,
             persistent_remove_projection: StudioPersistentRemoveProjection::default(),
@@ -8238,6 +7982,7 @@ impl EngineSessionV1 {
             };
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
+            creation_projection: None,
             math_tex_transform_projection: None,
             motion_projection,
             persistent_remove_projection,
@@ -11215,10 +10960,23 @@ mod tests {
         command
             .programs
             .push(studio_persistent_remove_program(entity_id, 1.8, 2.0));
+        let projection =
+            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
-        assert!(result.motion_projection.is_some());
+        assert!(result.motion_projection.is_none());
+        assert_eq!(result.creation_projection.as_ref(), Some(&projection));
+        assert_eq!(projection.motions.len(), 1);
+        assert!(projection.mutations.iter().any(|mutation| matches!(
+            mutation.kind,
+            StudioCreationProjectedMutationKind::UniformScale { from: 1.0, to: 1.5 }
+        )));
+        assert_eq!(projection.removals.len(), 1);
+        assert_eq!(
+            result.persistent_remove_projection.removals,
+            projection.removals
+        );
         assert_eq!(result.bundle.scene.duration, 3.4);
         assert_eq!(result.persistent_remove_projection.removals.len(), 1);
         assert!(
@@ -11594,6 +11352,9 @@ mod tests {
         malformed_interval.programs[1].operations[0].interval.end += 0.1;
         let mut missing_dependency = studio_creation_command(&bundle);
         missing_dependency.programs[0].operations[1].depends_on = vec!["missing".to_owned()];
+        let mut duplicate_transaction = studio_creation_command(&bundle);
+        duplicate_transaction.programs[1].transaction_id =
+            duplicate_transaction.programs[0].transaction_id.clone();
         let mut scale_ratio_mismatch = studio_creation_command(&bundle);
         scale_ratio_mismatch.programs[1].operations[0].kind =
             StudioCreationOperationKind::UniformScale {
@@ -11616,6 +11377,7 @@ mod tests {
             malformed_anchor,
             malformed_interval,
             missing_dependency,
+            duplicate_transaction,
             scale_ratio_mismatch,
             stale_resize_baseline,
         ] {
@@ -15027,7 +14789,7 @@ mod tests {
     }
 
     #[test]
-    fn creation_motion_projector_rebases_fade_and_motion_from_the_created_position() {
+    fn creation_projector_rebases_fade_and_motion_from_the_created_position() {
         let bundle = static_imported_bundle();
         let entity_id = "tx:create/entity:circle";
         let mut command = studio_creation_command(&bundle);
@@ -15035,13 +14797,8 @@ mod tests {
         command
             .programs
             .push(studio_created_motion_program(vec![entity_id.to_owned()]));
-        let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
-            base_duration: bundle.scene.duration,
-            batch: StudioMotionProjectionBatch::Creation {
-                programs: command.programs,
-            },
-        })
-        .unwrap();
+        let projection =
+            project_studio_creation_programs(bundle.scene.duration, &command.programs).unwrap();
 
         assert_eq!(projection.insertions.len(), 2);
         assert_eq!(projection.motions.len(), 1);

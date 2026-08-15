@@ -322,6 +322,43 @@ function canonicalize(operation: EditSuggestionOperation, transactionId = "test-
   });
 }
 
+function studioOwnedMathTexScene(program: CanonicalEditProgram, provisional: boolean) {
+  const create = program.operations.find(
+    (operation) => operation.kind === "CreateEntity" && operation.entity.type === "MathTex",
+  );
+  if (create?.kind !== "CreateEntity") throw new Error("Expected one canonical MathTex creation fixture.");
+  const source = STUDIO_FIXTURE_SCENE.objectGraph.entities.equation_1!;
+  const position = STUDIO_FIXTURE_SCENE.propertyChannels["equation_1/position"]!;
+  return {
+    ...STUDIO_FIXTURE_SCENE,
+    objectGraph: {
+      ...STUDIO_FIXTURE_SCENE.objectGraph,
+      entities: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+        [create.entity.id]: {
+          ...source,
+          content: create.entity.content,
+          id: create.entity.id,
+          lifetime: [
+            { end: create.entity.lifetime.end ?? STUDIO_FIXTURE_SCENE.duration, start: create.entity.lifetime.start },
+          ],
+          provisional,
+          sourceIdentity: { kind: "unknown" as const, reason: "Studio-owned test entity." },
+          transactionId: program.transactionId,
+          type: "MathTex",
+        },
+      },
+    },
+    propertyChannels: {
+      ...STUDIO_FIXTURE_SCENE.propertyChannels,
+      [`${create.entity.id}/position`]: {
+        ...position,
+        entityId: create.entity.id,
+      },
+    },
+  };
+}
+
 describe("Studio time and transaction invariants", () => {
   it("enforces remote motion bounds instead of relying on browser clamping", () => {
     const operation = motionSuggestion();
@@ -759,27 +796,26 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(transform?.replacement.text).toContain("この式の意味");
   });
 
-  it("creates a visible provisional MathTex without requiring selection", () => {
+  it("creates a canonical MathTex Program without requiring selection", () => {
     const operation = newEquationSuggestion();
     expect(operation.kind).toBe("create-equation");
     if (operation.kind !== "create-equation") return;
     expect(operation.target.displayLines).toEqual(["F = ma"]);
     const validation = canonicalize(operation, "new-equation", 5);
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
+    expect(validation.program.operations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          entity: expect.objectContaining({
+            content: expect.objectContaining({ displayLines: ["F = ma"] }),
+            type: "MathTex",
+          }),
+          kind: "CreateEntity",
+        }),
+        expect.objectContaining({ key: "position", kind: "SetProperty", value: { x: 480, y: 180 } }),
+        expect.objectContaining({ effect: "fade-in", kind: "ChangePresence" }),
+      ]),
     );
-    const projection = projectProposedState(proposed, operation.end);
-    const equation = projection.canvas.entities.find(
-      (entity) => entity.present && entity.provisional && entity.type === "MathTex",
-    );
-    expect(equation?.content?.displayLines).toEqual(["F = ma"]);
-    expect(equation?.position).toEqual({ x: 480, y: 180 });
-    expect(projection.objectList.entities.find((entity) => entity.id === equation?.id)).toBe(equation);
-    expect(projection.timeline.events.some((event) => event.transactionId === "new-equation")).toBe(true);
   });
 
   it("creates a new equation and explanation as one atomic program", () => {
@@ -814,18 +850,8 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(relation.sourceEntityId).toBe(explanation.entity.id);
     expect(relation.targetEntityId).toBe(equation.entity.id);
 
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const projection = projectProposedState(proposed, operation.end);
-    expect(
-      projection.canvas.entities.find((entity) => entity.id === equation.entity.id)?.content?.displayLines,
-    ).toEqual(MAXWELL_TARGET.displayLines);
-    expect(projection.canvas.entities.find((entity) => entity.id === explanation.entity.id)?.content?.text).toBe(
-      operation.explanation.text,
-    );
+    expect(equation.entity.content).toEqual(expect.objectContaining({ displayLines: MAXWELL_TARGET.displayLines }));
+    expect(explanation.entity.content).toEqual(expect.objectContaining({ text: operation.explanation.text }));
   });
 
   it("creates an explained Maxwell equation and then transitions Scene in one transaction", () => {
@@ -875,25 +901,34 @@ describe("one ProposedState feeds every Studio projection", () => {
       validation.program.operations.find((candidate) => candidate.kind === "InsertSceneBoundary")?.interval.start,
     ).toBe(7.25);
 
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
+    expect(
+      validation.program.operations.find(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "MathTex",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ content: expect.objectContaining({ label: MAXWELL_TARGET.label }) }),
       }),
     );
-    const beforeTransition = projectProposedState(proposed, 6.5);
     expect(
-      beforeTransition.canvas.entities.some(
-        (entity) => entity.present && entity.type === "MathTex" && entity.content?.label === MAXWELL_TARGET.label,
+      validation.program.operations.find(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "Text",
       ),
-    ).toBe(true);
-    expect(
-      beforeTransition.canvas.entities.some(
-        (entity) => entity.present && entity.type === "Text" && entity.content?.text?.includes("電場と磁場"),
+    ).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({
+          content: expect.objectContaining({ text: expect.stringContaining("電場と磁場") }),
+        }),
+      }),
+    );
+    expect(validation.program.operations.find((candidate) => candidate.kind === "InsertSceneBoundary")).toEqual(
+      expect.objectContaining({ interval: expect.objectContaining({ start: 7.25 }) }),
+    );
+    expect(() =>
+      evaluateWorkingState(
+        createFixtureWorkingState({ stagedPrograms: [programRecord(validation.program, validation)] }),
       ),
-    ).toBe(true);
-    expect(
-      proposed.evaluatedScene.eventTrack.events.some((event) => event.kind === "scene-boundary" && event.at === 7.25),
-    ).toBe(true);
+    ).toThrow(/Rust authoring projection/i);
   });
 
   it("accepts an applied created entity as the target of the next direct edit", () => {
@@ -902,12 +937,7 @@ describe("one ProposedState feeds every Studio projection", () => {
     if (operation.kind !== "create-equation") return;
     const creation = canonicalize(operation, "editable-equation", 5);
     expect(creation.kind).toBe("valid");
-    const creationRecord = programRecord(creation.program, creation);
-    const createdState = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [creationRecord],
-      }),
-    );
+    const createdScene = studioOwnedMathTexScene(creation.program, false);
     const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")?.entity.id;
     expect(createdId).toBeDefined();
     if (!createdId) return;
@@ -917,7 +947,7 @@ describe("one ProposedState feeds every Studio projection", () => {
       controlOffset: { x: 0, y: 0 },
       delta: { x: 64, y: 0 },
       interval: { end: operation.end + 1, start: operation.end },
-      scene: createdState.evaluatedScene,
+      scene: createdScene,
       targetEntityIds: [createdId],
       transactionId: "move-created-equation",
     });
@@ -936,12 +966,7 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(operation.kind).toBe("create-equation");
     if (operation.kind !== "create-equation") return;
     const creation = canonicalize(operation, "preview-equation", 5);
-    const creationRecord = programRecord(creation.program, creation);
-    const previewState = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [creationRecord],
-      }),
-    );
+    const previewScene = studioOwnedMathTexScene(creation.program, true);
     const createdId = creation.program.operations.find((candidate) => candidate.kind === "CreateEntity")?.entity.id;
     expect(createdId).toBeDefined();
     if (!createdId) return;
@@ -951,7 +976,7 @@ describe("one ProposedState feeds every Studio projection", () => {
       controlOffset: { x: 0, y: 0 },
       delta: { x: 64, y: 0 },
       interval: { end: operation.end + 1, start: operation.end },
-      scene: previewState.evaluatedScene,
+      scene: previewScene,
       targetEntityIds: [createdId],
       transactionId: "move-unapplied-equation",
     });
@@ -959,41 +984,26 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(movement.issues.some((issue) => issue.code === "provisional-id-invalid")).toBe(true);
   });
 
-  it("shows a provisional Text consistently on canvas, object list, timeline and playback", () => {
+  it("keeps unsupported Text creation explicit instead of using a second evaluator", () => {
     const validation = canonicalize(explanationSuggestion(), "projection-program", 3);
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const projection = projectProposedState(proposed, 3.5);
-    const explanation = projection.canvas.entities.find((entity) => entity.type === "Text" && entity.provisional);
-    expect(explanation?.id).toMatch(/^tx:projection-program\/entity:explanation-/);
-    expect(projection.objectList.entities).toBe(projection.canvas.entities);
-    expect(projection.semanticThumbnail.entities).toBe(projection.canvas.entities);
-    expect(projection.workingPlayback.entities).toBe(projection.canvas.entities);
-    expect(projection.objectList.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.inspector.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.semanticThumbnail.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.sourcePreview.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.timeline.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.workingPlayback.sampleId).toBe(projection.canvas.sampleId);
-    expect(projection.timeline.events.some((event) => event.transactionId === "projection-program")).toBe(true);
-    expect(projection.timeline.objectTracks).toContainEqual(
-      expect.objectContaining({
-        entityId: explanation?.id,
-        provisional: true,
-        type: "Text",
-      }),
-    );
     expect(
-      proposed.evaluatedScene.constraintGraph.constraints.some(
-        (constraint) => constraint.sourceEntityId === explanation?.id && constraint.mode === "snapshot",
+      validation.program.operations.find(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "Text",
       ),
-    ).toBe(true);
+    ).toEqual(
+      expect.objectContaining({
+        entity: expect.objectContaining({ id: expect.stringMatching(/^tx:projection-program\/entity:explanation-/) }),
+      }),
+    );
+    expect(validation.program.operations.some((candidate) => candidate.kind === "SetRelation")).toBe(true);
+    expect(() =>
+      evaluateWorkingState(
+        createFixtureWorkingState({ stagedPrograms: [programRecord(validation.program, validation)] }),
+      ),
+    ).toThrow(/Rust authoring projection/i);
   });
 
-  it("creates a Scene-level transition without selection and exposes the full-cover boundary", () => {
+  it("keeps Scene-level transition creation explicit until Rust supports its overlay", () => {
     const operation = sceneTransitionSuggestion();
     expect(operation.kind).toBe("create-scene-transition");
     if (operation.kind !== "create-scene-transition") return;
@@ -1001,21 +1011,14 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(operation.color).toBe("sky");
     const validation = canonicalize(operation, "scene-transition", 5);
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        editorContext: { ...createFixtureWorkingState().editorContext, playhead: 5, selection: [] },
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
+    expect(
+      validation.program.operations.find(
+        (candidate) => candidate.kind === "CreateEntity" && candidate.entity.type === "TransitionOverlay:diamond:sky",
+      ),
+    ).toEqual(expect.objectContaining({ entity: expect.objectContaining({ lifetime: { end: 6.5, start: 5 } }) }));
+    expect(validation.program.operations.find((candidate) => candidate.kind === "InsertSceneBoundary")).toEqual(
+      expect.objectContaining({ destination: "next-scene", interval: { end: 5.75, start: 5.75 } }),
     );
-    const boundary = proposed.evaluatedScene.eventTrack.events.find((event) => event.kind === "scene-boundary");
-    expect(boundary?.at).toBe(5.75);
-    expect(boundary?.label).toBe("Full-cover Scene boundary");
-    const projection = projectProposedState(proposed, 5.25);
-    const overlay = projection.canvas.entities.find((entity) => entity.type === "TransitionOverlay:diamond:sky");
-    expect(overlay).toBeDefined();
-    expect(proposed.evaluatedScene.objectGraph.entities[overlay!.id]?.lifetime).toEqual([{ end: 6.5, start: 5 }]);
-    expect(projection.objectList.entities.find((entity) => entity.id === overlay?.id)).toBe(overlay);
-    expect(projection.timeline.events.some((event) => event.transactionId === "scene-transition")).toBe(true);
   });
 
   it("rejects destructive transforms whose source identity is Unknown", () => {

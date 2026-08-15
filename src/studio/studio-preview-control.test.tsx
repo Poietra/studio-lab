@@ -12,6 +12,7 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
+    creationProjection: null,
     epoch: 0,
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,

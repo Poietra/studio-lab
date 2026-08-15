@@ -1,22 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type {
+  StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
   StudioMotionProjectionV1,
-  StudioPersistentRemoveProjectionV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createSceneDurationProgram } from "./authoring-commands";
-import { validateSuggestionDraft } from "./draft-validation";
 import {
   canResolveSourceDurationMismatch,
   clampPlayheadToResolvedSourceDuration,
   resolveVerifiedSourceDurationBasis,
 } from "./editor-revision-policy";
-import { evaluateWorkingState, programRecord } from "./evaluator";
-import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
+import { programRecord } from "./evaluator";
+import { type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
 import type { Interval } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
@@ -327,9 +325,9 @@ describe("Studio workspace projection", () => {
   });
 
   it("installs a Studio-created entity follow-up motion from the same Rust projection", () => {
-    const imported = workspaceScene("Static", null);
+    const imported = workspaceScene("First", null);
     const entityId = "tx:create/entity:circle";
-    const program: CanonicalEditProgram = {
+    const creationProgram: CanonicalEditProgram = {
       anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
       intentCount: 3,
       loweringStatus: "supported",
@@ -353,15 +351,14 @@ describe("Studio workspace projection", () => {
           value: { x: 100, y: 120 },
         },
         {
-          controlOffset: { x: 0, y: 10 },
-          delta: { x: 50, y: 20 },
           dependsOn: ["create/position"],
-          easing: "smooth",
-          id: "create/motion",
-          interval: { end: 1, start: 0 },
-          kind: "CreateMotion",
+          effect: "fade-in",
+          entityId,
+          id: "create/fade",
+          interval: { end: 0.4, start: 0 },
+          kind: "ChangePresence",
+          persistent: true,
           provenance: { evidence: [], origin: "studio-default" },
-          targetEntityIds: [entityId],
         },
       ],
       provenance: { evidence: [], origin: "studio-default" },
@@ -369,16 +366,53 @@ describe("Studio workspace projection", () => {
       schedule: {
         edges: [
           { from: "create/circle", reason: "explicit", to: "create/position" },
-          { from: "create/position", reason: "explicit", to: "create/motion" },
+          { from: "create/position", reason: "explicit", to: "create/fade" },
         ],
         mode: "sequence",
-        order: ["create/circle", "create/position", "create/motion"],
+        order: ["create/circle", "create/position", "create/fade"],
       },
       transactionId: "create",
       version: 1,
     };
-    const projection: StudioMotionProjectionV1 = {
-      insertions: [{ at: 0, duration: 1, transactionId: program.transactionId }],
+    const motionProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          controlOffset: { x: 0, y: 10 },
+          delta: { x: 50, y: 20 },
+          dependsOn: [],
+          easing: "smooth",
+          id: "create/motion",
+          interval: { end: 1, start: 0 },
+          kind: "CreateMotion",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          targetEntityIds: [entityId],
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["create/motion"] },
+      transactionId: "motion-created",
+      version: 1,
+    };
+    const projection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: { end: imported.runtimeSceneState.duration + 1.4, start: 0 },
+          entityId,
+          initialDimensions: { radius: 40 },
+          initialScale: 1,
+          kind: "circle",
+          operationId: "create/circle",
+          transactionId: creationProgram.transactionId,
+        },
+      ],
+      insertions: [
+        { at: 0, duration: 0.4, transactionId: creationProgram.transactionId },
+        { at: 0.4, duration: 1, transactionId: motionProgram.transactionId },
+      ],
       motions: [
         {
           control: { x: 125, y: 140 },
@@ -386,15 +420,46 @@ describe("Studio workspace projection", () => {
           delta: { x: 50, y: 20 },
           easing: "smooth",
           from: { x: 100, y: 120 },
-          interval: { end: 1, start: 0 },
+          interval: { end: 1.4, start: 0.4 },
           operationId: "create/motion",
           sourceInterval: { end: 1, start: 0 },
           targetEntityId: entityId,
           to: { x: 150, y: 140 },
-          transactionId: program.transactionId,
+          transactionId: motionProgram.transactionId,
         },
       ],
-      projectedDuration: imported.runtimeSceneState.duration + 1,
+      mutations: [
+        {
+          entityId,
+          interval: { end: 0, start: 0 },
+          kind: "position",
+          operationId: "create/position",
+          transactionId: creationProgram.transactionId,
+          value: { x: 100, y: 120 },
+        },
+        {
+          entityId,
+          from: 0,
+          interval: { end: 0.4, start: 0 },
+          kind: "fade-in",
+          operationId: "create/fade",
+          to: 1,
+          transactionId: creationProgram.transactionId,
+        },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration + 1.4,
+      removals: [
+        {
+          affectedSceneEntityIds: [entityId],
+          fadeInterval: { end: 2.7, start: 2.5 },
+          operationId: "create/remove",
+          removedAt: 2.7,
+          resultingLifetimeEnd: 2.7,
+          sceneEntityId: entityId,
+          studioEntityId: entityId,
+          transactionId: "remove-created",
+        },
+      ],
     };
     const removeProgram: CanonicalEditProgram = {
       anchor: {
@@ -423,32 +488,17 @@ describe("Studio workspace projection", () => {
       transactionId: "remove-created",
       version: 1,
     };
-    const persistentRemoveProjection: StudioPersistentRemoveProjectionV1 = {
-      removals: [
-        {
-          affectedSceneEntityIds: [entityId],
-          fadeInterval: { end: 2.3, start: 2.1 },
-          operationId: "create/remove",
-          removedAt: 2.3,
-          resultingLifetimeEnd: 2.3,
-          sceneEntityId: entityId,
-          studioEntityId: entityId,
-          transactionId: removeProgram.transactionId,
-        },
-      ],
-    };
-
     const projected = projectStudioWorkspace({
       activeScene: imported,
       appliedPrograms: [
-        programRecord(program, { issues: [], kind: "valid" }),
+        programRecord(creationProgram, { issues: [], kind: "valid" }),
+        programRecord(motionProgram, { issues: [], kind: "valid" }),
         programRecord(removeProgram, { issues: [], kind: "valid" }),
       ],
+      creationProjection: projection,
       currentTime: 1,
       draftProgram: null,
-      motionProjection: projection,
       nextScene: null,
-      persistentRemoveProjection,
       programAuthority: "rust-authorized-batch",
       selectedObjectIds: [],
     });
@@ -462,6 +512,9 @@ describe("Studio workspace projection", () => {
       from: projection.motions[0]?.from,
       value: projection.motions[0]?.to,
     });
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[entityId]?.lifetime).toEqual([
+      { end: 2.7, start: 0 },
+    ]);
   });
 
   it("waits for exact Rust authority for non-timeline Program batches", () => {
@@ -1175,32 +1228,38 @@ describe("Studio workspace projection", () => {
   it("replaces outgoing objects with the actual imported next Scene after the boundary", () => {
     const nextScene = workspaceScene("Second", null);
     const activeScene = workspaceScene("First", nextScene.sceneId);
-    const transition: EditSuggestionOperation = {
-      anchor: { kind: "playhead", referenceSeconds: 5 },
-      color: "sky",
-      destination: "next-scene",
-      easing: "smooth",
-      end: 6.5,
-      kind: "create-scene-transition",
-      shape: "circle",
-      start: 5,
-      style: "cover-reveal",
+    const overlayId = "transition-overlay";
+    const activeSceneWithBoundary: ManimWorkspaceScene = {
+      ...activeScene,
+      runtimeSceneState: {
+        ...activeScene.runtimeSceneState,
+        eventTrack: {
+          events: [
+            ...activeScene.runtimeSceneState.eventTrack.events,
+            { at: 5, id: "scene-boundary", kind: "scene-boundary", label: "Next Scene" },
+          ],
+        },
+        objectGraph: {
+          ...activeScene.runtimeSceneState.objectGraph,
+          entities: {
+            ...activeScene.runtimeSceneState.objectGraph.entities,
+            [overlayId]: {
+              id: overlayId,
+              lifetime: [{ end: 6.5, start: 5 }],
+              provisional: false,
+              sourceIdentity: { kind: "unknown", reason: "Transition overlay is a presentation fixture." },
+              type: "TransitionOverlay:circle:sky",
+            },
+          },
+        },
+      },
     };
-    const draft = validateSuggestionDraft(transition, {
-      capturedPlayhead: 5,
-      hasNextScene: true,
-      origin: "remote-model",
-      proposedState: evaluateWorkingState(importedWorkingState(activeScene, { playhead: 5, selection: [] })),
-      selectedObjectIds: [],
-      transactionId: "transition",
-    });
-    if (draft.kind !== "valid") throw new Error(draft.message);
 
     const projected = projectStudioWorkspace({
-      activeScene,
+      activeScene: activeSceneWithBoundary,
       appliedPrograms: [],
       currentTime: 6,
-      draftProgram: draft.record,
+      draftProgram: null,
       nextScene,
       selectedObjectIds: [],
     });

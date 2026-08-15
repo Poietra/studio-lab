@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type {
+  ProjectStudioCreationCompiler,
   ProjectStudioMathTexTransformCompiler,
   ProjectStudioMotionCompiler,
   ProjectStudioTimelineCompiler,
@@ -8,7 +9,9 @@ import type {
   StudioMotionProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
+import { createStudioEntitiesProgram } from "./authoring-commands";
 import {
+  EditorCreationAdmissionError,
   EditorMathTexTransformAdmissionError,
   EditorTimelineAdmissionError,
   editorProgramsMatchAuthorityV1,
@@ -202,6 +205,26 @@ const acceptTimeline: ProjectStudioTimelineCompiler = async (command) => {
 };
 
 describe("authoritative Editor Program materialization", () => {
+  it("admits authoritative Studio creation only through the Rust projector", async () => {
+    const targetScene = scene();
+    const remote = createStudioEntitiesProgram({
+      capturedPlayhead: 1,
+      entities: [{ dimensions: { radius: 2 }, position: { x: 200, y: 120 }, type: "Circle" }],
+      scene: targetScene.runtimeSceneState,
+      transactionId: "editor-create",
+    }).validation.program;
+    const compiler = vi.fn<ProjectStudioCreationCompiler>(async () => {
+      throw new Error("unsupported creation");
+    });
+
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(targetScene, [], [remote], undefined, undefined, undefined, compiler),
+    ).rejects.toThrow(EditorCreationAdmissionError);
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({ baseDuration: 5, schema: "poietra.project-studio-creation-edit" }),
+    );
+  });
+
   it("admits standalone motion only through the snapshot-free Rust projector", async () => {
     const remote = standaloneMotionProgram();
     const projection: StudioMotionProjectionV1 = {

@@ -15,9 +15,48 @@ import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
 import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
-import { createDirectManipulationResizeProgram } from "./suggestion-program";
 
 describe("manual Studio authoring commands", () => {
+  function studioOwnedCircleScene(
+    id: string,
+    transactionId: string,
+    lifetime: Readonly<{ end: number; start: number }> = { end: STUDIO_FIXTURE_SCENE.duration, start: 1 },
+  ) {
+    const source = STUDIO_FIXTURE_SCENE.objectGraph.entities.proof_box!;
+    const position = STUDIO_FIXTURE_SCENE.propertyChannels["proof_box/position"]!;
+    return {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          [id]: {
+            ...source,
+            geometry: {
+              dimensions: { kind: "known" as const, value: { radius: 2 } },
+              position: { kind: "known" as const, value: { x: 180, y: 120 } },
+              scale: { kind: "known" as const, value: 1 },
+              style: { kind: "known" as const, value: {} },
+            },
+            id,
+            lifetime: [lifetime],
+            sourceIdentity: { kind: "unknown" as const, reason: "Studio-owned test entity." },
+            transactionId,
+            type: "Circle",
+          },
+        },
+      },
+      propertyChannels: {
+        ...STUDIO_FIXTURE_SCENE.propertyChannels,
+        [`${id}/position`]: {
+          ...position,
+          entityId: id,
+          samples: position.samples.map((sample) => ({ ...sample, value: { x: 180, y: 120 } })),
+        },
+      },
+    };
+  }
+
   function trimAvailability(waitOperationId: string) {
     return {
       anchor: 7,
@@ -73,7 +112,7 @@ describe("manual Studio authoring commands", () => {
     );
   });
 
-  it("keeps Studio-created content visible before a later Inspector edit", () => {
+  it("preserves requested Text content in the canonical creation Program", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 1,
       entities: [
@@ -86,37 +125,10 @@ describe("manual Studio authoring commands", () => {
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "inspector-text-source",
     });
-    const createdScene = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-      }),
-    ).evaluatedScene;
-    const edit = createInspectorEntityEditProgram({
-      capturedPlayhead: 5,
-      edits: { content: defaultEntityContent("Text", "after") },
-      entityId: creation.entityIds[0],
-      from: { position: { x: 200, y: 120 }, scale: 1 },
-      scene: createdScene,
-      transactionId: "inspector-text-edit",
-    });
-    expect(edit.kind, JSON.stringify(edit.issues)).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(edit.program, edit),
-        ],
-      }),
-    );
-
-    expect(
-      projectProposedState(proposed, 2).canvas.entities.find((entity) => entity.id === creation.entityIds[0])?.content
-        ?.text,
-    ).toBe("before");
-    expect(
-      projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === creation.entityIds[0])?.content
-        ?.text,
-    ).toBe("after");
+    const create = creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity");
+    expect(create?.kind).toBe("CreateEntity");
+    if (create?.kind !== "CreateEntity") return;
+    expect(create.entity.content).toEqual(defaultEntityContent("Text", "before"));
   });
 
   it("combines Inspector position and shape dimensions into the existing ResizeEntity operation", () => {
@@ -126,11 +138,7 @@ describe("manual Studio authoring commands", () => {
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "inspector-circle-source",
     });
-    const scene = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-      }),
-    ).evaluatedScene;
+    const scene = studioOwnedCircleScene(creation.entityIds[0]!, creation.validation.program.transactionId);
     const validation = createInspectorEntityEditProgram({
       capturedPlayhead: 5,
       edits: { dimensions: { radius: 3 }, position: { x: 210, y: 150 } },
@@ -231,7 +239,7 @@ describe("manual Studio authoring commands", () => {
     );
   });
 
-  it("creates and positions an entity through the canonical operation pipeline", () => {
+  it("creates and positions an entity in one canonical Program", () => {
     const result = createStudioEntitiesProgram({
       capturedPlayhead: 5,
       entities: [
@@ -251,20 +259,19 @@ describe("manual Studio authoring commands", () => {
       "ChangePresence",
     ]);
 
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(result.validation.program, result.validation)],
-      }),
-    );
-    const inserted = projectProposedState(proposed, 5.4).canvas.entities.find(
-      (entity) => entity.id === result.entityIds[0],
-    );
-    expect(inserted).toEqual(
+    expect(result.validation.program.operations).toEqual([
       expect.objectContaining({
-        position: { x: 180, y: 120 },
-        type: "Circle",
+        entity: expect.objectContaining({ id: result.entityIds[0], type: "Circle" }),
+        kind: "CreateEntity",
       }),
-    );
+      expect.objectContaining({
+        entityId: result.entityIds[0],
+        key: "position",
+        kind: "SetProperty",
+        value: { x: 180, y: 120 },
+      }),
+      expect.objectContaining({ effect: "fade-in", entityId: result.entityIds[0], kind: "ChangePresence" }),
+    ]);
   });
 
   it("rejects creation dimensions that do not match the entity type", () => {
@@ -288,7 +295,7 @@ describe("manual Studio authoring commands", () => {
     );
   });
 
-  it("resizes a newly created shape from its custom dimensions", () => {
+  it("preserves custom shape dimensions in the canonical creation Program", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 5,
       entities: [{ dimensions: { radius: 2 }, position: { x: 180, y: 120 }, type: "Circle" }],
@@ -296,51 +303,21 @@ describe("manual Studio authoring commands", () => {
       transactionId: "custom-circle",
     });
     expect(creation.validation.kind).toBe("valid");
-    const scene = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-      }),
-    ).evaluatedScene;
-    const resize = createDirectManipulationResizeProgram({
-      capturedPlayhead: 5,
-      entityId: creation.entityIds[0],
-      from: { dimensions: { radius: 2 }, position: { x: 180, y: 120 } },
-      interval: { end: 5, start: 5 },
-      scale: 1,
-      scene,
-      shape: "circle",
-      to: { dimensions: { radius: 3 }, position: { x: 200, y: 140 } },
-      transactionId: "resize-custom-circle",
-    });
-
-    expect(resize.kind, JSON.stringify(resize.issues)).toBe("valid");
+    expect(creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity")).toEqual(
+      expect.objectContaining({ entity: expect.objectContaining({ dimensions: { radius: 2 } }) }),
+    );
   });
 
-  it("projects canonical defaults when shape creation omits dimensions", () => {
+  it("writes canonical shape defaults into the creation Program", () => {
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 5,
       entities: [{ position: { x: 180, y: 120 }, type: "Circle" }],
       scene: STUDIO_FIXTURE_SCENE,
       transactionId: "default-circle",
     });
-    const operations = creation.validation.program.operations.map((operation) => {
-      if (operation.kind !== "CreateEntity") return operation;
-      const { dimensions: _dimensions, ...entity } = operation.entity;
-      return { ...operation, entity };
-    });
-    const program = { ...creation.validation.program, operations };
-    const validation = validateAndScheduleProgram(program, STUDIO_FIXTURE_SCENE);
-    expect(validation.kind).toBe("valid");
-    const projected = projectProposedState(
-      evaluateWorkingState(
-        createFixtureWorkingState({
-          appliedPrograms: [programRecord(validation.program, validation)],
-        }),
-      ),
-      5,
-    ).canvas.entities.find((entity) => entity.id === creation.entityIds[0]);
-
-    expect(projected?.geometry.dimensions).toEqual({ kind: "known", value: { radius: 1 } });
+    expect(creation.validation.program.operations.find((operation) => operation.kind === "CreateEntity")).toEqual(
+      expect.objectContaining({ entity: expect.objectContaining({ dimensions: { radius: 1 } }) }),
+    );
   });
 
   it("rejects resize of an entity created in the same unapplied program", () => {
@@ -560,13 +537,12 @@ describe("manual Studio authoring commands", () => {
       sourceAnchors: [5, 7],
       target: { end: 7, start: 5 },
     });
-    const record = programRecord(replacement.program, replacement);
-    const evaluated = evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: [record] }));
-    expect(evaluated.evaluatedScene.objectGraph.entities[insertion.entityIds[0]!]?.lifetime).toEqual([
-      { end: 7.4, start: 5 },
-    ]);
+    const evaluatedScene = studioOwnedCircleScene(insertion.entityIds[0]!, replacement.program.transactionId, {
+      end: 7.4,
+      start: 5,
+    });
     expect(
-      projectRuntimeSceneToSourceTimeline(evaluated.evaluatedScene, [replacement.program]).objectGraph.entities[
+      projectRuntimeSceneToSourceTimeline(evaluatedScene, [replacement.program]).objectGraph.entities[
         insertion.entityIds[0]!
       ]?.lifetime,
     ).toEqual([{ end: 7, start: 5 }]);

@@ -4,22 +4,22 @@ use poietra_eval::{
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
-    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioMotionEditCommand,
-    ProjectStudioMotionEditError, StaticRootTransformProgram, StaticRootTransformSize,
-    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringEditResult,
-    StudioAuthoringSize, StudioBoundEntityEditCandidate, StudioBoundEntityProgram,
-    StudioCreationMathTexOutline, StudioCreationProgram, StudioMathTexTransformEntityIdentity,
-    StudioMathTexTransformOutline, StudioMathTexTransformProgram, StudioMathTexTransformProjection,
-    StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
-    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionProjection,
+    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioCreationEditError,
+    ProjectStudioMotionEditCommand, ProjectStudioMotionEditError, StaticRootTransformProgram,
+    StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
+    StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
+    StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
+    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
+    StudioMathTexTransformProgram, StudioMathTexTransformProjectionEntityIdentity,
+    StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity, StudioMotionProgram,
     StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineProgram,
-    StudioTimelineProjection, project_studio_math_tex_transform_programs,
+    project_studio_creation_programs, project_studio_math_tex_transform_programs,
     project_studio_motion_edit, project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
 };
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use wasm_bindgen::prelude::*;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -32,6 +32,12 @@ enum ApplyStaticRootTransformEditSchemaV1 {
 enum ApplyStudioCreationEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-creation-edit")]
     ApplyStudioCreationEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ProjectStudioCreationEditSchemaV1 {
+    #[serde(rename = "poietra.project-studio-creation-edit")]
+    ProjectStudioCreationEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -122,6 +128,17 @@ struct ApplyStudioCreationEditCommandJsonV1 {
     #[serde(rename = "version")]
     _version: ContractVersionV1,
     viewport: StudioAuthoringSize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectStudioCreationEditCommandJsonV1 {
+    base_duration: f64,
+    programs: Vec<StudioCreationProgram>,
+    #[serde(rename = "schema")]
+    _schema: ProjectStudioCreationEditSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
 }
 
 impl From<ApplyStudioCreationEditCommandJsonV1> for ApplyStudioCreationEditCommand {
@@ -313,6 +330,8 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     StudioCreationEdit(#[from] ApplyStudioCreationEditError),
     #[error(transparent)]
+    StudioCreationProjection(#[from] ProjectStudioCreationEditError),
+    #[error(transparent)]
     StudioTimelineEdit(#[from] ApplyStudioTimelineEditError),
     #[error("the Scene authoring response could not be serialized: {0}")]
     ResponseJson(serde_json::Error),
@@ -358,34 +377,8 @@ fn scene_authoring_response(
     Ok(response)
 }
 
-fn studio_timeline_projection_response(
-    projection: &StudioTimelineProjection,
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let response =
-        serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
-    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
-        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
-            actual_bytes: response.len(),
-        });
-    }
-    Ok(response)
-}
-
-fn studio_math_tex_transform_projection_response(
-    projection: &StudioMathTexTransformProjection,
-) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
-    let response =
-        serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
-    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
-        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
-            actual_bytes: response.len(),
-        });
-    }
-    Ok(response)
-}
-
-fn studio_motion_projection_response(
-    projection: &StudioMotionProjection,
+fn studio_projection_response<T: Serialize>(
+    projection: &T,
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
     let response =
         serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
@@ -438,6 +431,18 @@ fn apply_studio_creation_edit_json(
     studio_authoring_edit_response(&result)
 }
 
+fn project_studio_creation_edit_json(
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ProjectStudioCreationEditCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "Studio creation projection",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
+    let projection = project_studio_creation_programs(command.base_duration, &command.programs)?;
+    studio_projection_response(&projection)
+}
+
 fn apply_studio_timeline_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -461,7 +466,7 @@ fn project_studio_timeline_json(
         poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
     )?;
     let projection = project_studio_timeline_programs(command.base_duration, &command.programs)?;
-    studio_timeline_projection_response(&projection)
+    studio_projection_response(&projection)
 }
 
 fn apply_studio_motion_edit_json(
@@ -490,7 +495,7 @@ fn project_studio_motion_edit_json(
         base_duration: command.base_duration,
         batch: command.batch,
     })?;
-    studio_motion_projection_response(&projection)
+    studio_projection_response(&projection)
 }
 
 fn apply_studio_math_tex_transform_edit_json(
@@ -522,7 +527,7 @@ fn project_studio_math_tex_transform_json(
         &command.programs,
         &command.studio_entities,
     )?;
-    studio_math_tex_transform_projection_response(&projection)
+    studio_projection_response(&projection)
 }
 
 fn apply_studio_bound_entity_edit_json(
@@ -551,6 +556,17 @@ pub fn apply_studio_creation_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_creation_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Projects one complete supported Studio creation edit without requiring a Scene snapshot.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for a malformed or unsupported closed-contract command.
+#[wasm_bindgen(js_name = projectStudioCreationEditV1)]
+pub fn project_studio_creation_edit_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+    project_studio_creation_edit_json(command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -1182,6 +1198,23 @@ mod tests {
         .unwrap()
     }
 
+    fn studio_creation_projection_command_json() -> Vec<u8> {
+        let mut command: serde_json::Value =
+            serde_json::from_slice(&studio_creation_edit_command_json()).unwrap();
+        let object = command.as_object_mut().unwrap();
+        object.remove("expectedBaseRevision");
+        object.remove("frame");
+        object.remove("mathTexOutlines");
+        object.remove("nextRevision");
+        object.remove("viewport");
+        object.insert("baseDuration".to_owned(), json!(2.0));
+        object.insert(
+            "schema".to_owned(),
+            json!("poietra.project-studio-creation-edit"),
+        );
+        serde_json::to_vec(&command).unwrap()
+    }
+
     fn studio_timeline_edit_command_json() -> Vec<u8> {
         serde_json::to_vec(&json!({
             "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -1593,6 +1626,25 @@ mod tests {
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
         ));
+    }
+
+    #[test]
+    fn studio_creation_projection_matches_the_full_apply_plan() {
+        let projected =
+            project_studio_creation_edit_json(&studio_creation_projection_command_json()).unwrap();
+        let applied =
+            apply_studio_creation_edit_json(&fixture_json(), &studio_creation_edit_command_json())
+                .unwrap();
+        let projected: serde_json::Value = serde_json::from_slice(&projected).unwrap();
+        let applied: serde_json::Value = serde_json::from_slice(&applied).unwrap();
+
+        assert_eq!(applied["creationProjection"], projected);
+        assert_eq!(projected["projectedDuration"], json!(2.4));
+        assert_eq!(
+            projected["entities"][0]["createdLifetime"]["end"],
+            json!(2.4)
+        );
+        assert_eq!(projected["mutations"].as_array().unwrap().len(), 4);
     }
 
     #[test]

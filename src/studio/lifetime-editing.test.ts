@@ -11,7 +11,6 @@ import { evaluateWorkingState, programRecord, projectProposedState } from "./eva
 import { createFixtureWorkingState, persistentRemoveProjectionFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { buildLifetimeEditControls, findImportedLifetimeEdit, lifetimeControlKey } from "./lifetime-editing";
 import { insertedProgramDuration } from "./program-composition";
-import { projectRuntimeSceneToSourceTimeline } from "./source-timeline";
 
 describe("lifetime editing controls", () => {
   it("keeps an imported start read-only while offering safe end trims", () => {
@@ -148,10 +147,14 @@ describe("lifetime editing controls", () => {
       ),
     };
     const record = programRecord(finiteProgram, { issues: [], kind: "valid" });
-    const track = projectProposedState(
-      evaluateWorkingState(createFixtureWorkingState({ appliedPrograms: [record] })),
-      4,
-    ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
+    const track = {
+      animatedChannels: [],
+      entityId: insertion.entityIds[0]!,
+      label: "Circle",
+      lifetimes: [{ end: 5.4, start: 3 }],
+      provisional: false,
+      type: "Circle",
+    };
     const controls = buildLifetimeEditControls({
       anchors: [1, 3, 5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
@@ -184,34 +187,46 @@ describe("lifetime editing controls", () => {
       transactionId: "owned-then-deleted",
     });
     const owner = programRecord(insertion.validation.program, insertion.validation);
-    const ownedScene = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [owner],
-      }),
-    ).evaluatedScene;
+    const entityId = insertion.entityIds[0]!;
+    const ownedScene = {
+      ...STUDIO_FIXTURE_SCENE,
+      objectGraph: {
+        ...STUDIO_FIXTURE_SCENE.objectGraph,
+        entities: {
+          ...STUDIO_FIXTURE_SCENE.objectGraph.entities,
+          [entityId]: {
+            ...STUDIO_FIXTURE_SCENE.objectGraph.entities.proof_box!,
+            id: entityId,
+            lifetime: [{ end: STUDIO_FIXTURE_SCENE.duration, start: 5 }],
+            sourceIdentity: { kind: "unknown" as const, reason: "Studio-owned test entity." },
+            transactionId: owner.program.transactionId,
+            type: "Circle",
+          },
+        },
+      },
+    };
     const removal = createRemoveEntitiesProgram({
       capturedPlayhead: 7,
-      entityIds: [insertion.entityIds[0]!],
-      scene: projectRuntimeSceneToSourceTimeline(ownedScene, [owner.program]),
+      entityIds: [entityId],
+      scene: ownedScene,
       transactionId: "delete-owned-circle",
     });
     const records = [owner, programRecord(removal.program, removal)];
-    const track = projectProposedState(
-      evaluateWorkingState(
-        createFixtureWorkingState({
-          appliedPrograms: records,
-        }),
-        persistentRemoveProjectionFixture(removal.program, insertedProgramDuration(owner.program)),
-      ),
-      6,
-    ).timeline.objectTracks.find((candidate) => candidate.entityId === insertion.entityIds[0])!;
+    const track = {
+      animatedChannels: [],
+      entityId,
+      label: "Circle",
+      lifetimes: [{ end: 7.4 + insertedProgramDuration(owner.program), start: 5 }],
+      provisional: false,
+      type: "Circle",
+    };
     const controls = buildLifetimeEditControls({
       anchors: [5, 7],
       baseScene: STUDIO_FIXTURE_SCENE,
       programs: records,
       sourceDuration: 12,
       tracks: [track],
-    })[lifetimeControlKey(insertion.entityIds[0]!, 0)]!;
+    })[lifetimeControlKey(entityId, 0)]!;
 
     expect(controls.startTargets).toEqual([]);
     expect(controls.endTargets).toEqual([]);
