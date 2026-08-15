@@ -2,16 +2,19 @@ use poietra_eval::{
     ApplyStaticRootTransformEditCommand, ApplyStaticRootTransformEditError,
     ApplyStudioBoundEntityEditCommand, ApplyStudioBoundEntityEditError,
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
+    ApplyStudioMathTexContentEditCommand, ApplyStudioMathTexContentEditError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
     ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, StaticRootTransformProgram,
     StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
     StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
     StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
-    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
-    StudioMathTexTransformProgram, StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity,
-    StudioMotionProgram, StudioMotionSourceBinding, StudioTimelineProgram,
-    StudioTimelineProjection, project_studio_timeline_programs,
+    StudioMathTexContentEntityIdentity, StudioMathTexContentOutline, StudioMathTexContentProgram,
+    StudioMathTexContentSourceBinding, StudioMathTexTransformEntityIdentity,
+    StudioMathTexTransformOutline, StudioMathTexTransformProgram,
+    StudioMathTexTransformSourceBinding, StudioMotionEntityIdentity, StudioMotionProgram,
+    StudioMotionSourceBinding, StudioTimelineProgram, StudioTimelineProjection,
+    project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -53,6 +56,12 @@ enum ApplyStudioMotionEditSchemaV1 {
 enum ApplyStudioMathTexTransformEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-math-tex-transform-edit")]
     ApplyStudioMathTexTransformEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ApplyStudioMathTexContentEditSchemaV1 {
+    #[serde(rename = "poietra.apply-studio-math-tex-content-edit")]
+    ApplyStudioMathTexContentEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -198,6 +207,34 @@ impl From<ApplyStudioMathTexTransformEditCommandJsonV1> for ApplyStudioMathTexTr
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ApplyStudioMathTexContentEditCommandJsonV1 {
+    expected_base_revision: String,
+    math_tex_outlines: Vec<StudioMathTexContentOutline>,
+    next_revision: String,
+    programs: Vec<StudioMathTexContentProgram>,
+    #[serde(rename = "schema")]
+    _schema: ApplyStudioMathTexContentEditSchemaV1,
+    source_runtime_bindings: Vec<StudioMathTexContentSourceBinding>,
+    studio_entities: Vec<StudioMathTexContentEntityIdentity>,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+impl From<ApplyStudioMathTexContentEditCommandJsonV1> for ApplyStudioMathTexContentEditCommand {
+    fn from(value: ApplyStudioMathTexContentEditCommandJsonV1) -> Self {
+        Self {
+            expected_base_revision: value.expected_base_revision,
+            math_tex_outlines: value.math_tex_outlines,
+            next_revision: value.next_revision,
+            programs: value.programs,
+            source_runtime_bindings: value.source_runtime_bindings,
+            studio_entities: value.studio_entities,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioBoundEntityEditCommandJsonV1 {
     candidates: Vec<StudioBoundEntityEditCandidate>,
     expected_base_revision: String,
@@ -259,6 +296,8 @@ enum SceneAuthoringAdapterError {
     StudioMotionEdit(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
     StudioMathTexTransformEdit(#[from] ApplyStudioMathTexTransformEditError),
+    #[error(transparent)]
+    StudioMathTexContentEdit(#[from] ApplyStudioMathTexContentEditError),
     #[error(transparent)]
     StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
     #[error(transparent)]
@@ -420,6 +459,21 @@ fn apply_studio_math_tex_transform_edit_json(
     scene_authoring_response(&result)
 }
 
+fn apply_studio_math_tex_content_edit_json(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ApplyStudioMathTexContentEditCommandJsonV1 =
+        parse_scene_authoring_command_with_limit(
+            "Studio MathTex content edit",
+            command_json,
+            poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+        )?;
+    let mut session = scene_authoring_session(snapshot_json)?;
+    let result = session.apply_studio_math_tex_content_edit(command.into())?;
+    studio_authoring_edit_response(&result)
+}
+
 fn apply_studio_bound_entity_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -499,6 +553,20 @@ pub fn apply_studio_math_tex_transform_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_math_tex_transform_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Applies one static imported `MathTex` Inspector content replacement through the shared core.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for an invalid snapshot, command, binding, outline, or result.
+#[wasm_bindgen(js_name = applyStudioMathTexContentEditV1)]
+pub fn apply_studio_math_tex_content_edit_v1(
+    snapshot_json: &[u8],
+    command_json: &[u8],
+) -> Result<Vec<u8>, JsValue> {
+    apply_studio_math_tex_content_edit_json(snapshot_json, command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -666,6 +734,70 @@ mod tests {
                 "scale": 1.0,
                 "sourceIdentity": "unrelated",
                 "type": "other"
+            }],
+            "version": 1
+        }))
+        .unwrap()
+    }
+
+    fn math_tex_content_edit_command_json() -> Vec<u8> {
+        let fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../fixtures/engine-v1");
+        let source: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("mathtex-nested-radical-fraction.json")).unwrap(),
+        )
+        .unwrap();
+        let replacement: serde_json::Value = serde_json::from_slice(
+            &fs::read(fixture_path.join("real-mathtex-morph-v5.json")).unwrap(),
+        )
+        .unwrap();
+        let runtime_entity_id = source["scene"]["entities"][0]["id"].as_str().unwrap();
+        serde_json::to_vec(&json!({
+            "expectedBaseRevision": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "mathTexOutlines": [{
+                "entityId": "source:formula",
+                "path": replacement["scene"]["entities"][0]["geometry"]["path"],
+                "texParts": ["F = ma"]
+            }],
+            "nextRevision": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "programs": [{
+                "anchorCapturedPlayhead": 0.0,
+                "anchorResolvedSeconds": 0.0,
+                "anchorSource": { "kind": "playhead", "referenceSeconds": 0.0 },
+                "intentCount": 1,
+                "loweringSupported": true,
+                "operations": [{
+                    "content": {
+                        "displayLines": ["F = ma"],
+                        "label": "force",
+                        "texParts": ["F = ma"]
+                    },
+                    "dependsOn": [],
+                    "entityId": "source:formula",
+                    "id": "set-formula-content",
+                    "interval": { "end": 0.0, "start": 0.0 },
+                    "kind": "math-tex-content",
+                    "origin": "studio-default"
+                }],
+                "origin": "studio-default",
+                "requestedExecution": "parallel",
+                "scheduleEdgeCount": 0,
+                "scheduleMode": "parallel",
+                "scheduleOrder": ["set-formula-content"],
+                "transactionId": "set-formula-content"
+            }],
+            "schema": "poietra.apply-studio-math-tex-content-edit",
+            "sourceRuntimeBindings": [{
+                "runtimeEntityId": runtime_entity_id,
+                "sourceIdentityKey": "formula",
+                "sourceName": "formula"
+            }],
+            "studioEntities": [{
+                "objectGraphKey": "source:formula",
+                "provisional": false,
+                "scale": 1.75,
+                "sourceIdentity": "formula",
+                "type": "math-tex"
             }],
             "version": 1
         }))
@@ -1526,6 +1658,73 @@ mod tests {
             bundle.scene.source,
             SceneSourceV1::StudioEditProgram { revision_hash, .. }
                 if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+    }
+
+    #[test]
+    fn math_tex_content_adapter_returns_the_correlated_static_root_projection() {
+        let response = apply_studio_math_tex_content_edit_json(
+            &static_math_tex_fixture_json(),
+            &math_tex_content_edit_command_json(),
+        )
+        .unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+
+        assert_eq!(
+            response["persistentRemoveProjection"]["removals"],
+            json!([])
+        );
+        assert_eq!(
+            response["staticRootProjection"]["mutations"],
+            json!([{
+                "content": {
+                    "displayLines": ["F = ma"],
+                    "label": "force",
+                    "texParts": ["F = ma"]
+                },
+                "entityId": "source:formula",
+                "interval": { "end": 0.0, "start": 0.0 },
+                "kind": "math-tex-content",
+                "operationId": "set-formula-content",
+                "transactionId": "set-formula-content"
+            }])
+        );
+        assert_eq!(bundle.scene.entities.len(), 1);
+        assert!(matches!(
+            bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. }
+                if revision_hash == "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+        ));
+    }
+
+    #[test]
+    fn math_tex_content_adapter_rejects_unknown_fields_and_mismatched_outlines() {
+        let mut unknown: serde_json::Value =
+            serde_json::from_slice(&math_tex_content_edit_command_json()).unwrap();
+        unknown["profile"] = json!("legacy");
+        let error = apply_studio_math_tex_content_edit_json(
+            &static_math_tex_fixture_json(),
+            &serde_json::to_vec(&unknown).unwrap(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unknown field `profile`"));
+
+        let mut mismatch: serde_json::Value =
+            serde_json::from_slice(&math_tex_content_edit_command_json()).unwrap();
+        mismatch["mathTexOutlines"][0]["texParts"] = json!(["mismatch"]);
+        let error = apply_studio_math_tex_content_edit_json(
+            &static_math_tex_fixture_json(),
+            &serde_json::to_vec(&mismatch).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            SceneAuthoringAdapterError::StudioMathTexContentEdit(
+                ApplyStudioMathTexContentEditError::Unsupported
+            )
         ));
     }
 

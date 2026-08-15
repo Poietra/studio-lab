@@ -138,6 +138,11 @@ pub enum StudioStaticRootMutation {
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
     },
+    MathTexContent {
+        content: StudioMathTexContent,
+        entity_id: String,
+        interval: IntervalV1,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -528,6 +533,95 @@ pub struct ApplyStudioMathTexTransformEditCommand {
     pub programs: Vec<StudioMathTexTransformProgram>,
     pub source_runtime_bindings: Vec<StudioMathTexTransformSourceBinding>,
     pub studio_entities: Vec<StudioMathTexTransformEntityIdentity>,
+}
+
+/// Canonical editable content carried by one static `MathTex` replacement.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMathTexContent {
+    pub display_lines: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    pub tex_parts: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioMathTexContentOperation {
+    MathTexContent {
+        content: StudioMathTexContent,
+        depends_on: Vec<String>,
+        entity_id: String,
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+    },
+    Unsupported {
+        depends_on: Vec<String>,
+        id: String,
+        interval: IntervalV1,
+        origin: StudioAuthoringOrigin,
+    },
+}
+
+impl StudioMathTexContentOperation {
+    fn depends_on(&self) -> &[String] {
+        match self {
+            Self::MathTexContent { depends_on, .. } | Self::Unsupported { depends_on, .. } => {
+                depends_on
+            }
+        }
+    }
+
+    fn id(&self) -> &str {
+        match self {
+            Self::MathTexContent { id, .. } | Self::Unsupported { id, .. } => id,
+        }
+    }
+
+    fn origin(&self) -> StudioAuthoringOrigin {
+        match self {
+            Self::MathTexContent { origin, .. } | Self::Unsupported { origin, .. } => *origin,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMathTexContentProgram {
+    pub anchor_captured_playhead: f64,
+    pub anchor_resolved_seconds: f64,
+    pub anchor_source: StudioProgramAnchorSource,
+    pub intent_count: usize,
+    pub lowering_supported: bool,
+    pub operations: Vec<StudioMathTexContentOperation>,
+    pub origin: StudioAuthoringOrigin,
+    pub requested_execution: StudioProgramExecution,
+    pub schedule_edge_count: usize,
+    pub schedule_mode: StudioProgramScheduleMode,
+    pub schedule_order: Vec<String>,
+    pub transaction_id: String,
+}
+
+pub type StudioMathTexContentEntityIdentity = StudioMathTexTransformEntityIdentity;
+pub type StudioMathTexContentOutline = StudioCreationMathTexOutline;
+pub type StudioMathTexContentSourceBinding = StudioMotionSourceBinding;
+
+/// One exact imported static `MathTex` content edit authorized by the Scene core.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ApplyStudioMathTexContentEditCommand {
+    pub expected_base_revision: String,
+    pub math_tex_outlines: Vec<StudioMathTexContentOutline>,
+    pub next_revision: String,
+    pub programs: Vec<StudioMathTexContentProgram>,
+    pub source_runtime_bindings: Vec<StudioMathTexContentSourceBinding>,
+    pub studio_entities: Vec<StudioMathTexContentEntityIdentity>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -1191,6 +1285,18 @@ pub enum ApplyStudioMathTexTransformEditError {
 }
 
 #[derive(Debug, thiserror::Error)]
+pub enum ApplyStudioMathTexContentEditError {
+    #[error("the normalized Studio Program does not authorize one static MathTex content edit")]
+    Unsupported,
+    #[error("the installed Scene revision does not match expectedBaseRevision")]
+    StaleBaseRevision,
+    #[error("the MathTex content edit must advance to a different Scene revision")]
+    RevisionDidNotAdvance,
+    #[error("the authored MathTex content Scene failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
 pub enum ApplyStudioBoundEntityEditError {
     #[error("the normalized Studio Programs do not authorize one bound root entity edit")]
     Unsupported,
@@ -1389,6 +1495,30 @@ struct SceneEntityLocalBounds {
     top: f64,
 }
 
+fn cubic_path_local_bounds(path: &CubicPathV1) -> Option<SceneEntityLocalBounds> {
+    let first = path.subpaths.first()?;
+    let mut bounds = SceneEntityLocalBounds {
+        bottom: first.start.y,
+        left: first.start.x,
+        right: first.start.x,
+        top: first.start.y,
+    };
+    for subpath in &path.subpaths {
+        for point in std::iter::once(&subpath.start).chain(
+            subpath
+                .segments
+                .iter()
+                .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end]),
+        ) {
+            bounds.bottom = bounds.bottom.min(point.y);
+            bounds.left = bounds.left.min(point.x);
+            bounds.right = bounds.right.max(point.x);
+            bounds.top = bounds.top.max(point.y);
+        }
+    }
+    Some(bounds)
+}
+
 fn scene_entity_local_bounds(entity: &SceneEntityV1) -> Option<SceneEntityLocalBounds> {
     match &entity.geometry {
         SceneGeometryV1::Circle { center, radius } => Some(SceneEntityLocalBounds {
@@ -1414,31 +1544,56 @@ fn scene_entity_local_bounds(entity: &SceneEntityV1) -> Option<SceneEntityLocalB
             right: local_rect.right,
             top: local_rect.top,
         }),
-        SceneGeometryV1::CubicPath { path } => {
-            let first = path.subpaths.first()?;
-            let mut bounds = SceneEntityLocalBounds {
-                bottom: first.start.y,
-                left: first.start.x,
-                right: first.start.x,
-                top: first.start.y,
-            };
-            for subpath in &path.subpaths {
-                for point in std::iter::once(&subpath.start).chain(
-                    subpath
-                        .segments
-                        .iter()
-                        .flat_map(|segment| [&segment.control1, &segment.control2, &segment.end]),
-                ) {
-                    bounds.bottom = bounds.bottom.min(point.y);
-                    bounds.left = bounds.left.min(point.x);
-                    bounds.right = bounds.right.max(point.x);
-                    bounds.top = bounds.top.max(point.y);
-                }
-            }
-            Some(bounds)
-        }
+        SceneGeometryV1::CubicPath { path } => cubic_path_local_bounds(path),
         SceneGeometryV1::Group {} | SceneGeometryV1::Line { .. } => None,
     }
+}
+
+fn fit_cubic_path_to_local_height_and_center(
+    path: &CubicPathV1,
+    source_bounds: &SceneEntityLocalBounds,
+) -> Option<CubicPathV1> {
+    let outline_bounds = cubic_path_local_bounds(path)?;
+    let source_height = source_bounds.top - source_bounds.bottom;
+    let outline_height = outline_bounds.top - outline_bounds.bottom;
+    if !source_height.is_finite()
+        || !outline_height.is_finite()
+        || source_height <= 0.0
+        || outline_height <= 0.0
+    {
+        return None;
+    }
+    let scale = source_height / outline_height;
+    let source_center = PointV1 {
+        x: source_bounds.left.midpoint(source_bounds.right),
+        y: source_bounds.bottom.midpoint(source_bounds.top),
+    };
+    let outline_center = PointV1 {
+        x: outline_bounds.left.midpoint(outline_bounds.right),
+        y: outline_bounds.bottom.midpoint(outline_bounds.top),
+    };
+    if !scale.is_finite()
+        || !source_center.x.is_finite()
+        || !source_center.y.is_finite()
+        || !outline_center.x.is_finite()
+        || !outline_center.y.is_finite()
+    {
+        return None;
+    }
+    let transform = |point: &mut PointV1| {
+        point.x = source_center.x + (point.x - outline_center.x) * scale;
+        point.y = source_center.y + (point.y - outline_center.y) * scale;
+    };
+    let mut fitted = path.clone();
+    for subpath in &mut fitted.subpaths {
+        transform(&mut subpath.start);
+        for segment in &mut subpath.segments {
+            transform(&mut segment.control1);
+            transform(&mut segment.control2);
+            transform(&mut segment.end);
+        }
+    }
+    Some(fitted)
 }
 
 fn close_transform_baseline_value(left: f64, right: f64) -> bool {
@@ -1844,6 +1999,40 @@ fn studio_math_tex_transform_program_is_closed(program: &StudioMathTexTransformP
         )
 }
 
+fn studio_math_tex_content_program_is_closed(program: &StudioMathTexContentProgram) -> bool {
+    let operations = program
+        .operations
+        .iter()
+        .map(|operation| StudioProgramOperationFacts {
+            depends_on: operation.depends_on(),
+            id: operation.id(),
+        })
+        .collect::<Vec<_>>();
+    program.intent_count == 1
+        && program.operations.len() == 1
+        && program.requested_execution == StudioProgramExecution::Parallel
+        && program.operations.iter().all(|operation| {
+            matches!(
+                operation,
+                StudioMathTexContentOperation::MathTexContent { .. }
+            ) && operation.origin() == program.origin
+        })
+        && studio_program_structure_is_closed(
+            &operations,
+            program.requested_execution,
+            program.schedule_edge_count,
+            program.schedule_mode,
+            &program.schedule_order,
+            &[],
+        )
+}
+
+fn studio_math_tex_content_is_canonical(content: &StudioMathTexContent) -> bool {
+    !content.display_lines.is_empty()
+        && !content.tex_parts.is_empty()
+        && content.tex_parts.iter().all(|part| !part.trim().is_empty())
+}
+
 fn closed_studio_motion_operations(
     program: &StudioMotionProgram,
     scene_duration: f64,
@@ -1964,22 +2153,20 @@ fn resolve_studio_motion_targets(
     Some(runtime_entity_ids)
 }
 
-#[allow(
-    clippy::float_cmp,
-    reason = "exact one is the normalized known-scale authority fact"
-)]
-fn resolve_imported_math_tex_transform_source(
+fn resolve_imported_math_tex_source<'a>(
     studio_entity_id: &str,
-    studio_entities: &[StudioMathTexTransformEntityIdentity],
-    source_runtime_bindings: &[StudioMathTexTransformSourceBinding],
-) -> Option<String> {
+    studio_entities: &'a [StudioMathTexTransformEntityIdentity],
+    source_runtime_bindings: &'a [StudioMathTexTransformSourceBinding],
+) -> Option<(
+    &'a StudioMathTexTransformEntityIdentity,
+    &'a StudioMathTexTransformSourceBinding,
+)> {
     let mut matching_entities = studio_entities
         .iter()
         .filter(|entity| entity.object_graph_key == studio_entity_id);
     let entity = matching_entities.next().filter(|entity| {
         !entity.provisional
             && entity.entity_type == StudioAuthoringEntityKind::MathTex
-            && entity.scale == Some(1.0)
             && entity.source_identity.is_some()
     })?;
     if matching_entities.next().is_some() {
@@ -2001,7 +2188,24 @@ fn resolve_imported_math_tex_transform_source(
     {
         return None;
     }
-    Some(binding.runtime_entity_id.clone())
+    Some((entity, binding))
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "exact one is the normalized known-scale authority fact"
+)]
+fn resolve_imported_math_tex_transform_source(
+    studio_entity_id: &str,
+    studio_entities: &[StudioMathTexTransformEntityIdentity],
+    source_runtime_bindings: &[StudioMathTexTransformSourceBinding],
+) -> Option<String> {
+    let (entity, binding) = resolve_imported_math_tex_source(
+        studio_entity_id,
+        studio_entities,
+        source_runtime_bindings,
+    )?;
+    (entity.scale == Some(1.0)).then(|| binding.runtime_entity_id.clone())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -5474,6 +5678,173 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
+    /// Authorizes and applies one static imported `MathTex` Inspector content edit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Unsupported` outside the exact one-Program, zero-duration, source-bound root
+    /// subset. Every failure preserves the installed Scene.
+    #[allow(
+        clippy::float_cmp,
+        clippy::too_many_lines,
+        reason = "zero-duration admission and the single plan-before-commit path are one closed authoring contract"
+    )]
+    pub fn apply_studio_math_tex_content_edit(
+        &mut self,
+        command: ApplyStudioMathTexContentEditCommand,
+    ) -> Result<StudioAuthoringEditResult, ApplyStudioMathTexContentEditError> {
+        let ApplyStudioMathTexContentEditCommand {
+            expected_base_revision,
+            math_tex_outlines,
+            next_revision,
+            programs,
+            source_runtime_bindings,
+            studio_entities,
+        } = command;
+        let scene = self.scene();
+        if scene.source.revision_hash() != expected_base_revision {
+            return Err(ApplyStudioMathTexContentEditError::StaleBaseRevision);
+        }
+        if next_revision == expected_base_revision {
+            return Err(ApplyStudioMathTexContentEditError::RevisionDidNotAdvance);
+        }
+        let provenance_id = format!("studio-math-tex-content:{next_revision}");
+        if !matches!(
+            scene.source,
+            SceneSourceV1::ImportedManimServerSnapshot { .. }
+        ) || !scene.animation_channels.is_empty()
+            || programs.len() != 1
+            || math_tex_outlines.len() != 1
+            || scene
+                .provenance
+                .iter()
+                .any(|record| record.id == provenance_id)
+        {
+            return Err(ApplyStudioMathTexContentEditError::Unsupported);
+        }
+
+        let program = &programs[0];
+        if !program.lowering_supported
+            || program.origin != StudioAuthoringOrigin::StudioDefault
+            || program.transaction_id.is_empty()
+            || !studio_math_tex_content_program_is_closed(program)
+            || !studio_program_anchor_is_closed(
+                &program.anchor_source,
+                program.anchor_captured_playhead,
+                program.anchor_resolved_seconds,
+                scene.duration,
+            )
+            || !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
+        {
+            return Err(ApplyStudioMathTexContentEditError::Unsupported);
+        }
+        let operation = &program.operations[0];
+        let StudioMathTexContentOperation::MathTexContent {
+            content,
+            entity_id,
+            id: operation_id,
+            interval,
+            ..
+        } = operation
+        else {
+            return Err(ApplyStudioMathTexContentEditError::Unsupported);
+        };
+        if entity_id.is_empty()
+            || operation_id.is_empty()
+            || !studio_math_tex_content_is_canonical(content)
+            || !studio_timeline_semantic_values_match(interval.start, 0.0)
+            || !studio_timeline_semantic_values_match(interval.end, 0.0)
+        {
+            return Err(ApplyStudioMathTexContentEditError::Unsupported);
+        }
+
+        let (_, binding) =
+            resolve_imported_math_tex_source(entity_id, &studio_entities, &source_runtime_bindings)
+                .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+        let mut matching_outlines = math_tex_outlines.iter().filter(|outline| {
+            outline.entity_id == *entity_id && outline.tex_parts == content.tex_parts
+        });
+        let outline = matching_outlines
+            .next()
+            .filter(|_| matching_outlines.next().is_none())
+            .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+        let source_index = scene
+            .entities
+            .iter()
+            .position(|entity| entity.id == binding.runtime_entity_id)
+            .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+        let source = &scene.entities[source_index];
+        let source_lifetime = source
+            .lifetimes
+            .first()
+            .filter(|_| source.lifetimes.len() == 1)
+            .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+        if source.parent_id.is_some()
+            || !matches!(source.geometry, SceneGeometryV1::CubicPath { .. })
+            || !matches!(
+                &source.appearance,
+                SceneAppearanceV1::Vector {
+                    fill: Some(_),
+                    opacity,
+                    stroke: None,
+                } if *opacity == 1.0
+            )
+            || source_lifetime.start > 0.0
+            || source_lifetime.end <= 0.0
+        {
+            return Err(ApplyStudioMathTexContentEditError::Unsupported);
+        }
+        let source_bounds = scene_entity_local_bounds(source)
+            .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+        let fitted_path = fit_cubic_path_to_local_height_and_center(&outline.path, &source_bounds)
+            .ok_or(ApplyStudioMathTexContentEditError::Unsupported)?;
+
+        let mut candidate = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: scene.clone(),
+        };
+        candidate.scene.entities[source_index].geometry =
+            SceneGeometryV1::CubicPath { path: fitted_path };
+        provenance_id.clone_into(&mut candidate.scene.entities[source_index].provenance_id);
+        candidate.scene.provenance.push(ProvenanceRecordV1 {
+            evidence: vec![
+                "Studio MathTex content replacement uses one correlated compiled outline."
+                    .to_owned(),
+            ],
+            id: provenance_id,
+            origin: ProvenanceOriginV1::StudioEditProgram,
+        });
+        if matches!(candidate.scene.fidelity, FidelityV1::Exact {}) {
+            candidate.scene.fidelity = FidelityV1::Approximate {
+                evidence: vec![
+                    "Studio MathTex content replacement uses a browser-compiled outline."
+                        .to_owned(),
+                ],
+            };
+        }
+        candidate.scene.source = SceneSourceV1::StudioEditProgram {
+            edit_program_version: ContractVersionV1,
+            revision_hash: next_revision,
+        };
+        let result = StudioAuthoringEditResult {
+            bundle: candidate.clone(),
+            persistent_remove_projection: StudioPersistentRemoveProjection::default(),
+            static_root_projection: Some(StudioStaticRootProjection {
+                mutations: vec![StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::MathTexContent {
+                        content: content.clone(),
+                        entity_id: entity_id.clone(),
+                        interval: interval.clone(),
+                    },
+                    operation_id: operation_id.clone(),
+                    transaction_id: program.transaction_id.clone(),
+                }],
+            }),
+        };
+        self.replace_snapshot(candidate)?;
+        Ok(result)
+    }
+
     /// Authorizes complete normalized Studio motion Programs and applies them atomically.
     ///
     /// The caller sends every Program and operation. This method owns closed-subset admission,
@@ -7022,6 +7393,61 @@ mod tests {
                 object_graph_key: "source:formula".to_owned(),
                 provisional: false,
                 scale: Some(1.0),
+                source_identity: Some("formula".to_owned()),
+            }],
+        }
+    }
+
+    fn math_tex_content_command() -> ApplyStudioMathTexContentEditCommand {
+        let content = StudioMathTexContent {
+            display_lines: vec!["F = ma".to_owned()],
+            label: Some("force".to_owned()),
+            tex_parts: vec!["F = ma".to_owned()],
+        };
+        ApplyStudioMathTexContentEditCommand {
+            expected_base_revision: BASE_REVISION.to_owned(),
+            math_tex_outlines: vec![StudioMathTexContentOutline {
+                entity_id: "source:formula".to_owned(),
+                path: math_tex_fixture_path("real-mathtex-morph-v5.json"),
+                tex_parts: content.tex_parts.clone(),
+            }],
+            next_revision: NEXT_REVISION.to_owned(),
+            programs: vec![StudioMathTexContentProgram {
+                anchor_captured_playhead: 0.0,
+                anchor_resolved_seconds: 0.0,
+                anchor_source: StudioProgramAnchorSource::Playhead {
+                    reference_seconds: Some(0.0),
+                },
+                intent_count: 1,
+                lowering_supported: true,
+                operations: vec![StudioMathTexContentOperation::MathTexContent {
+                    content,
+                    depends_on: vec![],
+                    entity_id: "source:formula".to_owned(),
+                    id: "set-formula-content".to_owned(),
+                    interval: IntervalV1 {
+                        end: 0.0,
+                        start: 0.0,
+                    },
+                    origin: StudioAuthoringOrigin::StudioDefault,
+                }],
+                origin: StudioAuthoringOrigin::StudioDefault,
+                requested_execution: StudioProgramExecution::Parallel,
+                schedule_edge_count: 0,
+                schedule_mode: StudioProgramScheduleMode::Parallel,
+                schedule_order: vec!["set-formula-content".to_owned()],
+                transaction_id: "set-formula-content".to_owned(),
+            }],
+            source_runtime_bindings: vec![StudioMathTexContentSourceBinding {
+                runtime_entity_id: "later".to_owned(),
+                source_identity_key: "formula".to_owned(),
+                source_name: "formula".to_owned(),
+            }],
+            studio_entities: vec![StudioMathTexContentEntityIdentity {
+                entity_type: StudioAuthoringEntityKind::MathTex,
+                object_graph_key: "source:formula".to_owned(),
+                provisional: false,
+                scale: Some(1.75),
                 source_identity: Some("formula".to_owned()),
             }],
         }
@@ -12126,6 +12552,176 @@ mod tests {
             rejected_motion(nested, nested_target),
             ApplyStudioMotionEditError::TargetIsNotRoot(id) if id == child_id
         ));
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the edit must preserve the exact source z-index and zero-duration correlation"
+    )]
+    fn math_tex_content_replaces_one_identity_and_preserves_local_height_and_center() {
+        let bundle = static_imported_math_tex_bundle();
+        let entity_count_before = bundle.scene.entities.len();
+        let source_before = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .clone();
+        let bounds_before = scene_entity_local_bounds(&source_before).unwrap();
+        let command = math_tex_content_command();
+        let expected_content = match &command.programs[0].operations[0] {
+            StudioMathTexContentOperation::MathTexContent { content, .. } => content.clone(),
+            StudioMathTexContentOperation::Unsupported { .. } => unreachable!(),
+        };
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_math_tex_content_edit(command).unwrap();
+
+        assert_eq!(result.bundle.scene.entities.len(), entity_count_before);
+        assert!(result.bundle.scene.animation_channels.is_empty());
+        let source_after = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(source_after.id, source_before.id);
+        assert_eq!(source_after.appearance, source_before.appearance);
+        assert_eq!(source_after.lifetimes, source_before.lifetimes);
+        assert_eq!(source_after.parent_id, source_before.parent_id);
+        assert_eq!(source_after.scene_order, source_before.scene_order);
+        assert_eq!(source_after.source_z_index, source_before.source_z_index);
+        assert_eq!(source_after.transform, source_before.transform);
+        assert_ne!(source_after.geometry, source_before.geometry);
+        let bounds_after = scene_entity_local_bounds(source_after).unwrap();
+        assert!(
+            (bounds_after.top - bounds_after.bottom - (bounds_before.top - bounds_before.bottom))
+                .abs()
+                < 1e-10
+        );
+        assert!(
+            (bounds_after.left.midpoint(bounds_after.right)
+                - bounds_before.left.midpoint(bounds_before.right))
+            .abs()
+                < 1e-10
+        );
+        assert!(
+            (bounds_after.bottom.midpoint(bounds_after.top)
+                - bounds_before.bottom.midpoint(bounds_before.top))
+            .abs()
+                < 1e-10
+        );
+        assert_eq!(session.scene(), &result.bundle.scene);
+        assert_eq!(session.retained_index_stats().build_count, 2);
+        assert!(matches!(
+            result.bundle.scene.source,
+            SceneSourceV1::StudioEditProgram { revision_hash, .. } if revision_hash == NEXT_REVISION
+        ));
+        let projection = result.static_root_projection.unwrap();
+        assert_eq!(projection.mutations.len(), 1);
+        assert!(matches!(
+            &projection.mutations[0],
+            StudioStaticRootProjectedMutation {
+                mutation: StudioStaticRootMutation::MathTexContent { content, entity_id, interval },
+                operation_id,
+                transaction_id,
+            } if *content == expected_content
+                && entity_id == "source:formula"
+                && interval.start == 0.0
+                && interval.end == 0.0
+                && operation_id == "set-formula-content"
+                && transaction_id == "set-formula-content"
+        ));
+    }
+
+    #[test]
+    fn rejected_math_tex_content_edits_preserve_the_retained_scene() {
+        let mut missing_outline = math_tex_content_command();
+        missing_outline.math_tex_outlines.clear();
+
+        let mut mismatched_outline = math_tex_content_command();
+        mismatched_outline.math_tex_outlines[0].tex_parts = vec!["not F = ma".to_owned()];
+
+        let mut stale_binding = math_tex_content_command();
+        stale_binding.source_runtime_bindings[0].runtime_entity_id = "missing".to_owned();
+
+        let mut wrong_type = math_tex_content_command();
+        wrong_type.studio_entities[0].entity_type = StudioAuthoringEntityKind::Other;
+
+        let mut nonzero_interval = math_tex_content_command();
+        let StudioMathTexContentOperation::MathTexContent { interval, .. } =
+            &mut nonzero_interval.programs[0].operations[0]
+        else {
+            unreachable!();
+        };
+        interval.end = 0.25;
+
+        let mut mixed_family = math_tex_content_command();
+        mixed_family.programs[0]
+            .operations
+            .push(StudioMathTexContentOperation::Unsupported {
+                depends_on: vec![],
+                id: "move-formula".to_owned(),
+                interval: IntervalV1 {
+                    end: 0.0,
+                    start: 0.0,
+                },
+                origin: StudioAuthoringOrigin::StudioDefault,
+            });
+
+        let mut nested_bundle = static_imported_math_tex_bundle();
+        nested_bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .parent_id = Some("earlier".to_owned());
+
+        let mut animated_bundle = static_imported_math_tex_bundle();
+        animated_bundle.scene.animation_channels = fixture_bundle("shared-circle-opacity.json")
+            .scene
+            .animation_channels;
+        animated_bundle
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::OpacityAnimation);
+        animated_bundle.scene.required_capabilities.sort();
+        animated_bundle.scene.required_capabilities.dedup();
+
+        let cases = vec![
+            (static_imported_math_tex_bundle(), missing_outline),
+            (static_imported_math_tex_bundle(), mismatched_outline),
+            (static_imported_math_tex_bundle(), stale_binding),
+            (static_imported_math_tex_bundle(), wrong_type),
+            (static_imported_math_tex_bundle(), nonzero_interval),
+            (static_imported_math_tex_bundle(), mixed_family),
+            (nested_bundle, math_tex_content_command()),
+            (animated_bundle, math_tex_content_command()),
+        ];
+        for (bundle, command) in cases {
+            let mut session = EngineSessionV1::new(bundle).unwrap();
+            let before = session.scene().clone();
+            assert!(matches!(
+                session.apply_studio_math_tex_content_edit(command),
+                Err(ApplyStudioMathTexContentEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &before);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
+
+        let mut stale_revision = math_tex_content_command();
+        stale_revision.expected_base_revision = "stale".to_owned();
+        let mut session = EngineSessionV1::new(static_imported_math_tex_bundle()).unwrap();
+        let before = session.scene().clone();
+        assert!(matches!(
+            session.apply_studio_math_tex_content_edit(stale_revision),
+            Err(ApplyStudioMathTexContentEditError::StaleBaseRevision)
+        ));
+        assert_eq!(session.scene(), &before);
     }
 
     #[test]

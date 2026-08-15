@@ -20,8 +20,9 @@ use wasm_bindgen::prelude::*;
 
 pub use authoring::{
     apply_static_root_transform_edit_v1, apply_studio_bound_entity_edit_v1,
-    apply_studio_creation_edit_v1, apply_studio_math_tex_transform_edit_v1,
-    apply_studio_motion_edit_v1, apply_studio_timeline_edit_v1, project_studio_timeline_v1,
+    apply_studio_creation_edit_v1, apply_studio_math_tex_content_edit_v1,
+    apply_studio_math_tex_transform_edit_v1, apply_studio_motion_edit_v1,
+    apply_studio_timeline_edit_v1, project_studio_timeline_v1,
 };
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
