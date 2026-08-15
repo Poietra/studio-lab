@@ -489,6 +489,10 @@ describe("Studio workspace projection", () => {
       },
     ]);
     expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${first.targetEntityId}/content`]?.samples.at(-1)
+        ?.interval,
+    ).toEqual({ end: first.targetLifetime.end, start: first.interval.end });
+    expect(
       projected.proposedState.evaluatedScene.eventTrack.events
         .filter(({ operationId }) => operationId === first.operationId || operationId === second.operationId)
         .map(({ interval }) => interval),

@@ -519,7 +519,7 @@ function projectMathTexTransformWorkingState(
       transactionId: program.transactionId,
     });
     appendProjectedSample(draft.propertyChannels, replacement.targetEntityId, "content", {
-      interval: { end: last.targetLifetime.end, start: replacement.interval.end },
+      interval: { end: replacement.targetLifetime.end, start: replacement.interval.end },
       kind: "exact",
       operationId: replacement.operationId,
       provenanceId,
