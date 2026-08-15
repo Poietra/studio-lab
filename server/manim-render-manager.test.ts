@@ -593,20 +593,16 @@ class GroupedEquation(Scene):
     expect(await readFile(join(projectRoot, "scene.py"), "utf8")).toBe(temporalMetadataSource);
   });
 
-  it("carries a generated entity binding into a later source-anchor Program", async () => {
+  it("rejects a generated entity motion until Rust authorizes the complete batch", async () => {
     const { manager } = await fixture();
     const creation = createCircleProgram();
     const entityId = "tx:batch-create/entity:circle";
     const movement = motionProgram(7, "batch-move-created", entityId);
 
-    const exported = await manager.exportSource(batchRequest([creation, movement]));
-    const marker = exported.source.match(
-      new RegExp(`# poietra:entity \\{\\"id\\":\\"${entityId}\\",\\"variable\\":\\"([^\\"]+)\\"\\}`),
-    );
-
-    expect(marker?.[1]).toBeTruthy();
-    expect(exported.source).toContain(`${marker?.[1]}.animate.shift(`);
-    expect(exported.source).toContain("# poietra:cursor 7.4");
+    await expect(manager.exportSource(batchRequest([creation, movement]))).rejects.toMatchObject({
+      message: "The Rust Scene core does not support this complete Program batch.",
+      status: 400,
+    });
   });
 
   it("routes a complete Studio-created Circle scale and delete batch through the Rust creation planner", async () => {
@@ -656,11 +652,13 @@ class GroupedEquation(Scene):
   it("allocates distinct Python variables when transaction IDs normalize to the same token", async () => {
     const { manager } = await fixture();
     const programs = [
-      createCircleProgram("batch-collision", "first"),
-      createCircleProgram("batch_collision", "second"),
+      rustAuthorizableCircleCreationProgram("batch-collision", "first"),
+      rustAuthorizableCircleCreationProgram("batch_collision", "second"),
     ];
+    const renderRequest = batchRequest(programs);
+    await installVerifiedSnapshot(manager, renderRequest);
 
-    const exported = await manager.exportSource(batchRequest(programs));
+    const exported = await manager.exportSource(renderRequest);
     const variables = [
       ...exported.source.matchAll(
         /# poietra:entity \{"id":"tx:batch[_-]collision\/entity:[^"]+","variable":"([^"]+)"\}/g,

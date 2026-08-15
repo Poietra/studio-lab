@@ -52,6 +52,10 @@ class NextScene(Scene):
         title = Text("Next")
         self.add(title)
 `;
+const unsupportedProgramBatchError = {
+  message: "The Rust Scene core does not support this complete Program batch.",
+  status: 400,
+} as const;
 
 function motionProgram(anchor: number, transactionId: string, targetEntityId = entityId): CanonicalEditProgram {
   const operation: CanonicalEditOperation = {
@@ -506,7 +510,7 @@ describe("Manim render request lowering", () => {
     });
   });
 
-  it("keeps one Program with multiple motion operations outside exact snapshot authorization", async () => {
+  it("rejects one Program with multiple motion operations outside exact snapshot authorization", async () => {
     const first = motionProgram(5, "multi-operation-motion");
     const secondOperation = motionProgram(6.5, "second-operation").operations[0];
     if (!secondOperation || secondOperation.kind !== "CreateMotion") {
@@ -524,12 +528,13 @@ describe("Manim render request lowering", () => {
     };
     let authorizerCalls = 0;
 
-    const result = await lower(request(combined), sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower(request(combined), sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source.match(/\.animate\.shift\(/g)).toHaveLength(2);
   });
 
   it("routes exactly one imported CreateMotion Program through snapshot authorization", async () => {
@@ -585,19 +590,19 @@ describe("Manim render request lowering", () => {
     });
   });
 
-  it("keeps a mixed MathTex transform and motion batch outside exact snapshot authorization", async () => {
+  it("rejects a mixed MathTex transform and motion batch outside exact snapshot authorization", async () => {
     const transform = mathTexTransformProgram("mixed-mathtex-transform");
     const finalTargetEntityId = "tx:mixed-mathtex-transform/entity:restored";
     const motion = motionProgram(7, "motion-after-mathtex-transform", finalTargetEntityId);
     let authorizerCalls = 0;
 
-    const result = await lower({ ...request(transform), programs: [transform, motion] }, sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower({ ...request(transform), programs: [transform, motion] }, sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source.match(/TransformMatchingTex\(/g)).toHaveLength(2);
-    expect(result.lowered.source).toContain(".animate.shift(");
   });
 
   it("does not dispatch a Runtime Trace MathTex transform to snapshot authorization", async () => {
@@ -636,19 +641,20 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source).toContain("Circle(radius=1)");
   });
 
-  it("keeps dimensionless Circle creation on the existing batch evaluator path", async () => {
+  it("rejects dimensionless Circle creation without a Rust authorizer", async () => {
     const creation = createCircleProgram("legacy-dimensionless-circle");
     let authorizerCalls = 0;
 
-    const result = await lower(request(creation), sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower(request(creation), sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source).toContain("Circle(radius=1)");
   });
 
-  it("keeps unsupported Text creation on the existing batch evaluator path", async () => {
+  it("rejects Text creation without a Rust authorizer", async () => {
     const circleCreation = createCircleProgram("legacy-text-creation");
     const creation: CanonicalEditProgram = {
       ...circleCreation,
@@ -667,39 +673,42 @@ describe("Manim render request lowering", () => {
     };
     let authorizerCalls = 0;
 
-    const result = await lower(request(creation), sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower(request(creation), sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source).toContain('Text("Hello")');
   });
 
-  it("keeps creation followed by motion on the existing batch evaluator path", async () => {
+  it("rejects creation followed by motion until Rust authorizes the complete batch", async () => {
     const creation = createCircleProgram("created-before-motion");
     const createdEntityId = "tx:created-before-motion/entity:circle";
     const movement = motionProgram(7, "move-created-circle", createdEntityId);
     let authorizerCalls = 0;
 
-    const result = await lower({ ...request(creation), programs: [creation, movement] }, sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower({ ...request(creation), programs: [creation, movement] }, sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source).toContain(".animate.shift(");
   });
 
-  it("does not classify a created entity plus an imported transform as one creation family", async () => {
+  it("rejects a created entity plus an imported transform as an unsupported mixed family", async () => {
     const creation = createCircleProgram("created-with-imported-transform");
     const importedMove = staticRootMoveProgram("move-imported-after-create");
     let authorizerCalls = 0;
 
-    const result = await lower({ ...request(creation), programs: [creation, importedMove] }, sceneSource, async () => {
-      authorizerCalls += 1;
-    });
+    await expect(
+      lower({ ...request(creation), programs: [creation, importedMove] }, sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject(unsupportedProgramBatchError);
 
     expect(authorizerCalls).toBe(0);
-    expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
   });
 
   it("requires snapshot authorization for an imported static-root transform-only batch", async () => {
@@ -869,7 +878,7 @@ describe("Manim render request lowering", () => {
     );
   });
 
-  it("lowers a terminal Scene boundary into the next imported Scene", async () => {
+  it("rejects a terminal Scene boundary until Rust authorizes it", async () => {
     const boundary = sceneBoundaryProgram(7, "next-scene-boundary");
     const renderRequest: ProgramRenderRequest = {
       ...request(boundary),
@@ -877,18 +886,10 @@ describe("Manim render request lowering", () => {
       sourceHash: createHash("sha256").update(sceneSourceWithDestination).digest("hex"),
     };
 
-    const result = await lower(renderRequest, sceneSourceWithDestination);
-
-    expect(result.renderRequest.destination).toEqual({ sceneName: "NextScene", sourcePath });
-    expect(result.lowered.insertedCode).toContain(
-      '# poietra:scene-boundary {"at":7,"destination":"scene.py#NextScene"}',
-    );
-    expect(result.lowered.insertedCode).toContain("# poietra:incoming-start");
-    expect(result.lowered.insertedCode).toContain('title = Text("Next")');
-    expect(result.lowered.insertedCode).toContain("return  # The imported next Scene now owns the composition.");
+    await expect(lower(renderRequest, sceneSourceWithDestination)).rejects.toMatchObject(unsupportedProgramBatchError);
   });
 
-  it("rejects a Scene-boundary Program before the end of a batch", async () => {
+  it("rejects a mixed Scene-boundary batch before source lowering", async () => {
     const later = motionProgram(7, "motion-after-boundary");
     const boundary = sceneBoundaryProgram(5, "non-terminal-boundary");
     const renderRequest: ProgramRenderRequest = {
@@ -898,12 +899,7 @@ describe("Manim render request lowering", () => {
       sourceHash: createHash("sha256").update(sceneSourceWithDestination).digest("hex"),
     };
 
-    await expect(lower(renderRequest, sceneSourceWithDestination)).rejects.toThrow(
-      expect.objectContaining({
-        message: "A Scene-boundary Program must be the final Program in a render batch.",
-        status: 400,
-      }),
-    );
+    await expect(lower(renderRequest, sceneSourceWithDestination)).rejects.toMatchObject(unsupportedProgramBatchError);
   });
 
   it("maps source lowering failures to a client-facing HttpError", async () => {
