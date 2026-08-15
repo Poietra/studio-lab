@@ -89,8 +89,8 @@ cargo check --locked --manifest-path src-tauri/Cargo.toml
 ```
 
 Pull requests always run style and change-scope checks, then select only the
-Engine, WASM, web, unit/integration, storage, Chromium, or Electron lanes affected by the
-patch. `CI gate` is the stable required-check name; it accepts intentionally
+Engine, WASM, web, unit/integration, storage, Chromium smoke, or Electron lanes affected
+by the patch. `CI gate` is the stable required-check name; it accepts intentionally
 skipped lanes and fails when any selected lane fails or is cancelled.
 
 Pushes to `main` and manual runs execute the complete matrix, including the

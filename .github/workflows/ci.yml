@@ -291,7 +291,7 @@ jobs:
       - name: Install Chromium and system dependencies
         run: pnpm exec playwright install --with-deps chromium
       - name: Run Chromium journeys
-        run: pnpm exec playwright test --project=chromium
+        run: pnpm exec playwright test --project=chromium --grep @ci-smoke
       - name: Upload Playwright diagnostics
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v6
