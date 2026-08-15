@@ -102,6 +102,36 @@ function removeCreatedEntityProgram(entityId: string): CanonicalEditProgram {
   };
 }
 
+function importedMathTexContentProgram(): CanonicalEditProgram {
+  const entityId = "source:scene.py#GroupedEquation:equation";
+  const operation = {
+    dependsOn: [],
+    entityId,
+    id: "inspector-mathtex-content/operation:set-content",
+    interval: { end: 0, start: 0 },
+    key: "content" as const,
+    kind: "SetProperty" as const,
+    provenance: { evidence: ["Inspector content field", "MathTex"], origin: "studio-default" as const },
+    value: { displayLines: ["F = ma"], label: "F = ma", texParts: ["F", "=", "m", "a"] },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["captured-playhead:0.000"],
+      resolvedSeconds: 0,
+      source: { kind: "playhead", referenceSeconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["manual Studio authoring"], origin: "studio-default" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId: "inspector-mathtex-content",
+    version: 1,
+  };
+}
+
 function rustAuthorizableCircleCreationProgram(transactionId: string, entityName = "circle"): CanonicalEditProgram {
   const program = createCircleProgram(transactionId, entityName);
   const [create, position, presence] = program.operations;
@@ -594,6 +624,19 @@ class GroupedEquation(Scene):
     expect(exported.source.indexOf(transforms[0]?.[0] ?? "")).toBeLessThan(
       exported.source.indexOf(transforms[1]?.[0] ?? ""),
     );
+  });
+
+  it("exports one Rust-authorized imported MathTex Inspector content replacement", async () => {
+    const { manager } = await fixture();
+    const program = importedMathTexContentProgram();
+    const renderRequest = batchRequest([program]);
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
+
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(exported.source).toContain('# poietra:content {"content":');
+    expect(exported.source).toContain('MathTex("F", "=", "m", "a")');
+    expect(exported.source).toContain(".match_style(equation).match_height(equation).move_to(equation.get_center())");
   });
 
   it("exports and commits shifted temporal metadata while Undo restores the exact source", async () => {
