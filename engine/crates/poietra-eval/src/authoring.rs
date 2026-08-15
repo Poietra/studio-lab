@@ -1729,8 +1729,11 @@ fn studio_motion_program_is_closed(program: &StudioMotionProgram) -> bool {
             id: operation.id(),
         })
         .collect::<Vec<_>>();
-    program.intent_count == 1
-        && program.operations.len() == 1
+    program.intent_count == program.operations.len()
+        && program.operations.iter().all(|operation| {
+            matches!(operation, StudioMotionOperation::CreateMotion { .. })
+                && operation.origin() == program.origin
+        })
         && studio_program_structure_is_closed(
             &operations,
             program.requested_execution,
@@ -1778,28 +1781,93 @@ fn studio_math_tex_transform_program_is_closed(program: &StudioMathTexTransformP
         )
 }
 
-#[allow(
-    clippy::float_cmp,
-    reason = "the Studio anchor and operation start are one normalized authority fact"
-)]
-fn closed_studio_motion_operation(
+fn closed_studio_motion_operations(
     program: &StudioMotionProgram,
     scene_duration: f64,
-) -> Option<&StudioMotionOperation> {
-    let operation = program.operations.first()?;
-    (program.lowering_supported
-        && !program.transaction_id.is_empty()
-        && studio_program_anchor_is_closed(
+) -> Option<Vec<&StudioMotionOperation>> {
+    let mut operations = program
+        .schedule_order
+        .iter()
+        .map(|operation_id| {
+            program
+                .operations
+                .iter()
+                .find(|operation| operation.id() == operation_id)
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !program.lowering_supported
+        || program.transaction_id.is_empty()
+        || !studio_program_anchor_is_closed(
             &program.anchor_source,
             program.anchor_captured_playhead,
             program.anchor_resolved_seconds,
             scene_duration,
         )
-        && studio_motion_program_is_closed(program)
-        && !operation.id().is_empty()
-        && program.anchor_resolved_seconds == operation.interval().start
-        && program.origin == operation.origin())
-    .then_some(operation)
+        || !studio_motion_program_is_closed(program)
+        || operations.iter().any(|operation| {
+            !operation.interval().start.is_finite() || !operation.interval().end.is_finite()
+        })
+    {
+        return None;
+    }
+
+    if program.requested_execution == StudioProgramExecution::Parallel {
+        operations.sort_by(|left, right| left.interval().start.total_cmp(&right.interval().start));
+    }
+    let first = *operations.first()?;
+    if (program.anchor_resolved_seconds - first.interval().start).abs() > TIMELINE_ANCHOR_EPSILON {
+        return None;
+    }
+
+    match program.requested_execution {
+        StudioProgramExecution::Sequence => {
+            if operations.windows(2).any(|pair| {
+                pair[1].interval().start < pair[0].interval().end - TIMELINE_ANCHOR_EPSILON
+            }) {
+                return None;
+            }
+        }
+        StudioProgramExecution::Parallel => {
+            let StudioMotionOperation::CreateMotion {
+                easing, interval, ..
+            } = first
+            else {
+                return None;
+            };
+            if program.schedule_mode != StudioProgramScheduleMode::Parallel {
+                return None;
+            }
+            let mut bucket_start = interval.start;
+            let mut bucket_end = interval.end;
+            let mut bucket_easing = *easing;
+            for operation in operations.iter().skip(1) {
+                let StudioMotionOperation::CreateMotion {
+                    easing: candidate_easing,
+                    interval: candidate_interval,
+                    ..
+                } = operation
+                else {
+                    return None;
+                };
+                if (candidate_interval.start - bucket_start).abs() <= TIMELINE_ANCHOR_EPSILON {
+                    if *candidate_easing != bucket_easing
+                        || (candidate_interval.end - bucket_end).abs() > TIMELINE_ANCHOR_EPSILON
+                    {
+                        return None;
+                    }
+                    bucket_end = bucket_end.max(candidate_interval.end);
+                } else {
+                    if candidate_interval.start < bucket_end - TIMELINE_ANCHOR_EPSILON {
+                        return None;
+                    }
+                    bucket_start = candidate_interval.start;
+                    bucket_end = candidate_interval.end;
+                    bucket_easing = *candidate_easing;
+                }
+            }
+        }
+    }
+    Some(operations)
 }
 
 fn resolve_studio_motion_targets(
@@ -5027,71 +5095,101 @@ impl EngineSessionV1 {
         });
         let mut operation_ids = BTreeSet::new();
         let mut resolved_offset = 0.0;
-        let mut planned_motions = Vec::with_capacity(programs.len());
+        let operation_count = programs
+            .iter()
+            .map(|program| program.operations.len())
+            .sum();
+        let mut planned_motions = Vec::with_capacity(operation_count);
         let mut timeline_insertions = Vec::with_capacity(programs.len());
         let provenance_id = format!("studio-motion:{next_revision}");
         for program_index in ordered_programs {
             let program = &programs[program_index];
-            let operation = closed_studio_motion_operation(program, scene.duration)
+            let operations = closed_studio_motion_operations(program, scene.duration)
                 .ok_or(ApplyStudioMotionEditError::Unsupported)?;
-            if !operation_ids.insert(operation.id()) {
+            let mut maximum_end = program.anchor_resolved_seconds;
+            let mut parallel_bucket_start: Option<f64> = None;
+            let mut parallel_targets = BTreeSet::new();
+            for operation in operations {
+                if !operation_ids.insert(operation.id()) {
+                    return Err(ApplyStudioMotionEditError::Unsupported);
+                }
+                let StudioMotionOperation::CreateMotion {
+                    control_offset,
+                    delta,
+                    easing,
+                    interval,
+                    target_entity_ids,
+                    ..
+                } = operation
+                else {
+                    return Err(ApplyStudioMotionEditError::Unsupported);
+                };
+
+                let runtime_entity_ids = resolve_studio_motion_targets(
+                    target_entity_ids,
+                    &studio_entities,
+                    &source_runtime_bindings,
+                )
+                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+                if program.requested_execution == StudioProgramExecution::Parallel {
+                    if parallel_bucket_start.is_none_or(|bucket_start| {
+                        (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
+                    }) {
+                        parallel_bucket_start = Some(interval.start);
+                        parallel_targets.clear();
+                    }
+                    if runtime_entity_ids
+                        .iter()
+                        .any(|entity_id| !parallel_targets.insert(entity_id.clone()))
+                    {
+                        return Err(ApplyStudioMotionEditError::Unsupported);
+                    }
+                }
+
+                let control_offset = studio_vector_to_scene_vector(control_offset, frame, viewport);
+                let delta = studio_vector_to_scene_vector(delta, frame, viewport);
+                validate_create_scene_motion_command(
+                    scene,
+                    &CreateSceneMotionCommand {
+                        control_offset: control_offset.clone(),
+                        delta: delta.clone(),
+                        easing: *easing,
+                        expected_base_revision: expected_base_revision.clone(),
+                        interval: interval.clone(),
+                        next_revision: next_revision.clone(),
+                        provenance: ProvenanceRecordV1 {
+                            evidence: vec![],
+                            id: provenance_id.clone(),
+                            origin: ProvenanceOriginV1::StudioEditProgram,
+                        },
+                        target_entity_ids: runtime_entity_ids.clone(),
+                    },
+                )?;
+                maximum_end = maximum_end.max(interval.end);
+                planned_motions.push(PlannedSceneMotion {
+                    control_offset,
+                    delta,
+                    easing: *easing,
+                    interval: IntervalV1 {
+                        end: interval.end + resolved_offset,
+                        start: interval.start + resolved_offset,
+                    },
+                    target_entity_ids: runtime_entity_ids,
+                });
+            }
+            let insertion_duration = maximum_end - program.anchor_resolved_seconds;
+            let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
+            if !insertion_duration.is_finite()
+                || insertion_duration <= 0.0
+                || !resolved_anchor.is_finite()
+            {
                 return Err(ApplyStudioMotionEditError::Unsupported);
             }
-            let StudioMotionOperation::CreateMotion {
-                control_offset,
-                delta,
-                easing,
-                interval,
-                target_entity_ids,
-                ..
-            } = operation
-            else {
-                return Err(ApplyStudioMotionEditError::Unsupported);
-            };
-
-            let runtime_entity_ids = resolve_studio_motion_targets(
-                target_entity_ids,
-                &studio_entities,
-                &source_runtime_bindings,
-            )
-            .ok_or(ApplyStudioMotionEditError::Unsupported)?;
-
-            let control_offset = studio_vector_to_scene_vector(control_offset, frame, viewport);
-            let delta = studio_vector_to_scene_vector(delta, frame, viewport);
-            validate_create_scene_motion_command(
-                scene,
-                &CreateSceneMotionCommand {
-                    control_offset: control_offset.clone(),
-                    delta: delta.clone(),
-                    easing: *easing,
-                    expected_base_revision: expected_base_revision.clone(),
-                    interval: interval.clone(),
-                    next_revision: next_revision.clone(),
-                    provenance: ProvenanceRecordV1 {
-                        evidence: vec![],
-                        id: provenance_id.clone(),
-                        origin: ProvenanceOriginV1::StudioEditProgram,
-                    },
-                    target_entity_ids: runtime_entity_ids.clone(),
-                },
-            )?;
-            let duration = interval.end - interval.start;
-            let resolved_interval = IntervalV1 {
-                end: interval.end + resolved_offset,
-                start: interval.start + resolved_offset,
-            };
             timeline_insertions.push(SceneTimelineInsertion {
-                at: program.anchor_resolved_seconds + resolved_offset,
-                duration,
+                at: resolved_anchor,
+                duration: insertion_duration,
             });
-            planned_motions.push(PlannedSceneMotion {
-                control_offset,
-                delta,
-                easing: *easing,
-                interval: resolved_interval,
-                target_entity_ids: runtime_entity_ids,
-            });
-            resolved_offset += duration;
+            resolved_offset += insertion_duration;
         }
 
         self.commit_scene_motions(
@@ -6599,6 +6697,43 @@ mod tests {
                 width: 640.0,
             },
         }
+    }
+
+    fn two_motion_sequence_command(bundle: &SceneIrBundleV1) -> ApplyStudioMotionEditCommand {
+        let mut command = studio_motion_edit_command(bundle);
+        let program = &mut command.programs[0];
+        let StudioMotionOperation::CreateMotion {
+            interval,
+            target_entity_ids,
+            ..
+        } = &mut program.operations[0]
+        else {
+            unreachable!();
+        };
+        interval.end = 1.0;
+        *target_entity_ids = vec!["source:later".to_owned()];
+        program
+            .operations
+            .push(StudioMotionOperation::CreateMotion {
+                control_offset: PointV1 { x: 80.0, y: 0.0 },
+                delta: PointV1 { x: 0.0, y: -120.0 },
+                depends_on: vec!["create-motion".to_owned()],
+                easing: StudioMotionEasing::Linear,
+                id: "create-motion-second".to_owned(),
+                interval: IntervalV1 {
+                    end: 1.75,
+                    start: 1.25,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+                target_entity_ids: vec!["source:later".to_owned()],
+            });
+        program.intent_count = 2;
+        program.schedule_edge_count = 1;
+        program.schedule_order = vec![
+            "create-motion".to_owned(),
+            "create-motion-second".to_owned(),
+        ];
+        command
     }
 
     #[allow(
@@ -10117,6 +10252,232 @@ mod tests {
         assert!((segment.control2.x - 4.0).abs() < 1e-12);
         assert!((segment.control2.y - 4.0).abs() < 1e-12);
         assert_eq!(segment.end, PointV1 { x: 6.0, y: 2.0 });
+    }
+
+    #[test]
+    fn applies_two_sequenced_motions_in_one_program_with_one_timeline_insertion() {
+        let bundle = static_imported_bundle();
+        let command = two_motion_sequence_command(&bundle);
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_motion_edit(command).unwrap();
+        let (keyframes, path) = result
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    keyframes,
+                    path,
+                    ..
+                } if entity_id == "later" => Some((keyframes, path)),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!((result.scene.duration - 3.25).abs() < f64::EPSILON);
+        assert_eq!(path.subpaths[0].segments.len(), 2);
+        assert_eq!(
+            keyframes
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            vec![0.5, 1.0, 1.25, 1.75]
+        );
+        let sampled_transform = |time| {
+            let packet = session
+                .sample_render_packet(crate::SampleEngineSessionOptionsV1 {
+                    evidence: &[],
+                    packet_id: "multi-motion-program-sample",
+                    sample_time: time,
+                    viewport: poietra_scene_ir::ViewportV1 {
+                        height_px: 900,
+                        width_px: 1600,
+                    },
+                })
+                .unwrap();
+            match packet
+                .draws
+                .iter()
+                .find(|draw| draw.entity_id() == "later")
+                .unwrap()
+            {
+                poietra_scene_ir::RenderDrawV1::Path { transform, .. } => transform.clone(),
+                _ => panic!("motion target must remain a path draw"),
+            }
+        };
+        for (time, expected) in [
+            (0.5, PointV1 { x: 0.0, y: 0.0 }),
+            (0.75, PointV1 { x: 3.0, y: 3.0 }),
+            (1.0, PointV1 { x: 6.0, y: 2.0 }),
+            (1.125, PointV1 { x: 6.0, y: 2.0 }),
+            (1.5, PointV1 { x: 7.0, y: 3.5 }),
+            (1.75, PointV1 { x: 6.0, y: 5.0 }),
+        ] {
+            let sampled = sampled_transform(time);
+            assert!((sampled.tx - expected.x).abs() < 1e-10, "time={time}");
+            assert!((sampled.ty - expected.y).abs() < 1e-10, "time={time}");
+        }
+    }
+
+    #[test]
+    fn applies_parallel_motion_buckets_in_time_order_with_one_timeline_insertion() {
+        let bundle = static_imported_bundle();
+        let mut command = two_motion_sequence_command(&bundle);
+        let program = &mut command.programs[0];
+        let StudioMotionOperation::CreateMotion { depends_on, .. } = &mut program.operations[1]
+        else {
+            unreachable!();
+        };
+        depends_on.clear();
+        program
+            .operations
+            .push(StudioMotionOperation::CreateMotion {
+                control_offset: PointV1 { x: 0.0, y: 0.0 },
+                delta: PointV1 { x: 0.0, y: -80.0 },
+                depends_on: vec![],
+                easing: StudioMotionEasing::Smooth,
+                id: "create-motion-parallel".to_owned(),
+                interval: IntervalV1 {
+                    end: 1.0,
+                    start: 0.5,
+                },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+                target_entity_ids: vec!["source:stroke".to_owned()],
+            });
+        program.intent_count = 3;
+        program.requested_execution = StudioProgramExecution::Parallel;
+        program.schedule_edge_count = 0;
+        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+        program.schedule_order = vec![
+            "create-motion-second".to_owned(),
+            "create-motion-parallel".to_owned(),
+            "create-motion".to_owned(),
+        ];
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_motion_edit(command).unwrap();
+        let later = result
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    keyframes,
+                    path,
+                    ..
+                } if entity_id == "later" => Some((keyframes, path)),
+                _ => None,
+            })
+            .unwrap();
+        let stroke_keyframes = result
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::MotionPath {
+                    entity_id,
+                    keyframes,
+                    ..
+                } if entity_id == "stroke" => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+
+        assert!((result.scene.duration - 3.25).abs() < f64::EPSILON);
+        assert_eq!(later.1.subpaths[0].segments.len(), 2);
+        assert_eq!(
+            later
+                .0
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            vec![0.5, 1.0, 1.25, 1.75]
+        );
+        assert_eq!(
+            stroke_keyframes
+                .iter()
+                .map(|keyframe| keyframe.at)
+                .collect::<Vec<_>>(),
+            vec![0.5, 1.0]
+        );
+    }
+
+    #[test]
+    fn rejects_ambiguous_or_invalid_second_motion_in_one_program_atomically() {
+        let bundle = static_imported_bundle();
+        let sequence = two_motion_sequence_command(&bundle);
+
+        let mut overlapping_sequence = sequence.clone();
+        let StudioMotionOperation::CreateMotion { interval, .. } =
+            &mut overlapping_sequence.programs[0].operations[1]
+        else {
+            unreachable!();
+        };
+        interval.start = 0.75;
+
+        let mut overlapping_parallel_buckets = overlapping_sequence.clone();
+        let program = &mut overlapping_parallel_buckets.programs[0];
+        let StudioMotionOperation::CreateMotion { depends_on, .. } = &mut program.operations[1]
+        else {
+            unreachable!();
+        };
+        depends_on.clear();
+        program.requested_execution = StudioProgramExecution::Parallel;
+        program.schedule_edge_count = 0;
+        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+        program.schedule_order.reverse();
+
+        let mut invalid_target = sequence.clone();
+        let StudioMotionOperation::CreateMotion {
+            target_entity_ids, ..
+        } = &mut invalid_target.programs[0].operations[1]
+        else {
+            unreachable!();
+        };
+        *target_entity_ids = vec!["source:missing".to_owned()];
+
+        let mut overlapping_parallel = sequence;
+        let program = &mut overlapping_parallel.programs[0];
+        let StudioMotionOperation::CreateMotion {
+            depends_on,
+            easing,
+            interval,
+            ..
+        } = &mut program.operations[1]
+        else {
+            unreachable!();
+        };
+        depends_on.clear();
+        *easing = StudioMotionEasing::Smooth;
+        *interval = IntervalV1 {
+            end: 1.0,
+            start: 0.5,
+        };
+        program.requested_execution = StudioProgramExecution::Parallel;
+        program.schedule_edge_count = 0;
+        program.schedule_mode = StudioProgramScheduleMode::Parallel;
+
+        for command in [
+            overlapping_sequence,
+            overlapping_parallel_buckets,
+            invalid_target,
+            overlapping_parallel,
+        ] {
+            let expected_scene = bundle.scene.clone();
+            let expected_assets = bundle.assets.clone();
+            let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
+
+            assert!(matches!(
+                session.apply_studio_motion_edit(command),
+                Err(ApplyStudioMotionEditError::Unsupported)
+            ));
+            assert_eq!(session.scene(), &expected_scene);
+            assert_eq!(session.assets(), &expected_assets);
+            assert_eq!(session.retained_index_stats().build_count, 1);
+        }
     }
 
     #[test]

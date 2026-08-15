@@ -292,7 +292,9 @@ function normalizedStudioMotionOperation(
 export function isExactStudioMotionProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
   return (
     programs.length > 0 &&
-    programs.every((program) => program.operations.length === 1 && program.operations[0]?.kind === "CreateMotion")
+    programs.every(
+      (program) => program.operations.length > 0 && program.operations.every(({ kind }) => kind === "CreateMotion"),
+    )
   );
 }
 
