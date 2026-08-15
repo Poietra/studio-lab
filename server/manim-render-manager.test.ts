@@ -627,9 +627,17 @@ class GroupedEquation(Scene):
   });
 
   it("exports one Rust-authorized imported MathTex Inspector content replacement", async () => {
-    const { manager } = await fixture();
+    const staticContentSource = sceneSource.replace(
+      "        self.add(equation)\n",
+      "        self.add(equation)\n        # poietra:anchor 0.000\n",
+    );
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "scene.py"), staticContentSource, "utf8");
     const program = importedMathTexContentProgram();
-    const renderRequest = batchRequest([program]);
+    const renderRequest = {
+      ...batchRequest([program]),
+      sourceHash: createHash("sha256").update(staticContentSource).digest("hex"),
+    };
     await installVerifiedSnapshot(manager, renderRequest, "equation");
 
     const exported = await manager.exportSource(renderRequest);
