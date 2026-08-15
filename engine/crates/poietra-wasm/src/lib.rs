@@ -22,7 +22,8 @@ pub use authoring::{
     apply_static_root_transform_edit_v1, apply_studio_bound_entity_edit_v1,
     apply_studio_creation_edit_v1, apply_studio_math_tex_transform_edit_v1,
     apply_studio_motion_edit_v1, apply_studio_timeline_edit_v1,
-    project_studio_math_tex_transform_v1, project_studio_timeline_v1,
+    project_studio_math_tex_transform_v1, project_studio_motion_edit_v1,
+    project_studio_timeline_v1,
 };
 
 pub use canvas_protocol::MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES_V1;
@@ -38,7 +39,7 @@ pub use protocol::{
 pub use canvas::PoietraCanvasEngineV1;
 
 /// JavaScript/WASM module handshake version, independent of Scene IR revisions.
-pub const POIETRA_ENGINE_ABI_VERSION: u32 = 21;
+pub const POIETRA_ENGINE_ABI_VERSION: u32 = 22;
 /// `OffscreenCanvas` render ABI version, independent of worker packet sampling.
 pub const POIETRA_CANVAS_ABI_VERSION: u32 = 5;
 
@@ -122,7 +123,7 @@ mod tests {
 
     #[test]
     fn exported_abi_versions_are_explicit() {
-        assert_eq!(poietra_engine_abi_version(), 21);
+        assert_eq!(poietra_engine_abi_version(), 22);
         assert_eq!(poietra_canvas_abi_version(), 5);
         assert_eq!(poietra_canvas_telemetry_abi_version(), 4);
     }

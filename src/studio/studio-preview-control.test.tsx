@@ -16,6 +16,7 @@ function renderer(state: StudioPreviewRendererView["state"]): StudioPreviewRende
     interactionAuthority: { kind: "interactive" },
     interactionGeometry: null,
     mathTexTransformProjection: null,
+    motionProjection: null,
     persistentRemoveProjection: null,
     staticRootProjection: null,
     programAuthority: null,

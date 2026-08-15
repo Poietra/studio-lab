@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
   ProjectStudioMathTexTransformCompiler,
+  ProjectStudioMotionCompiler,
   ProjectStudioTimelineCompiler,
   StudioMathTexTransformProjectionV1,
+  StudioMotionProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import {
@@ -156,6 +158,32 @@ function mathTexFinalTargetMotionProgram(): CanonicalEditProgram {
   };
 }
 
+function standaloneMotionProgram(): CanonicalEditProgram {
+  return {
+    anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [
+      {
+        controlOffset: { x: 10, y: 5 },
+        delta: { x: 40, y: -20 },
+        dependsOn: [],
+        easing: "smooth",
+        id: "motion/source",
+        interval: { end: 2, start: 1 },
+        kind: "CreateMotion",
+        provenance: { evidence: [], origin: "remote-model" },
+        targetEntityIds: [MATH_TEX_SOURCE_ID],
+      },
+    ],
+    provenance: { evidence: [], origin: "remote-model" },
+    requestedExecution: "sequence",
+    schedule: { edges: [], mode: "sequence", order: ["motion/source"] },
+    transactionId: "motion-source",
+    version: 1,
+  };
+}
+
 const acceptTimeline: ProjectStudioTimelineCompiler = async (command) => {
   const program = command.programs[0]!;
   const operation = program.operations[0]!;
@@ -174,6 +202,48 @@ const acceptTimeline: ProjectStudioTimelineCompiler = async (command) => {
 };
 
 describe("authoritative Editor Program materialization", () => {
+  it("admits standalone motion only through the snapshot-free Rust projector", async () => {
+    const remote = standaloneMotionProgram();
+    const projection: StudioMotionProjectionV1 = {
+      insertions: [{ at: 1, duration: 1, transactionId: remote.transactionId }],
+      motions: [
+        {
+          control: { x: 350, y: 175 },
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
+          easing: "smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 2, start: 1 },
+          operationId: "motion/source",
+          sourceInterval: { end: 2, start: 1 },
+          targetEntityId: MATH_TEX_SOURCE_ID,
+          to: { x: 360, y: 160 },
+          transactionId: remote.transactionId,
+        },
+      ],
+      projectedDuration: 6,
+    };
+    const compiler = vi.fn<ProjectStudioMotionCompiler>(async () => projection);
+
+    const materialized = await materializeAuthoritativeEditorProgramsV1(
+      scene(),
+      [],
+      [remote],
+      undefined,
+      undefined,
+      compiler,
+    );
+
+    expect(materialized).toEqual([{ program: remote, validation: { issues: [], status: "valid" } }]);
+    expect(compiler).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseDuration: 5,
+        batch: expect.objectContaining({ kind: "standalone" }),
+        schema: "poietra.project-studio-motion-edit",
+      }),
+    );
+  });
+
   it("compares accepted local state to the exact authoritative projection", () => {
     const exact = program();
     const local: EditorProgramRecord = {
@@ -258,10 +328,13 @@ describe("authoritative Editor Program materialization", () => {
       motions: [
         {
           control: { x: 350, y: 175 },
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
           easing: "smooth",
           from: { x: 320, y: 180 },
           interval: { end: 4, start: 3 },
           operationId: motion.operations[0]!.id,
+          sourceInterval: motion.operations[0]!.interval,
           targetEntityId: "equation-a-prime",
           to: { x: 360, y: 160 },
           transactionId: motion.transactionId,

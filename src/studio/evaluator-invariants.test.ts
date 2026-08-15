@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { importManimScene } from "../render-pipeline/source-import";
 import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
+import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { STUDIO_STATE_VERSION, type WorkingState } from "./model";
 import {
   type CanonicalEditOperation,
@@ -208,71 +208,6 @@ describe("Studio evaluator invariants", () => {
     const equation = projectProposedState(proposed, 9).canvas.entities.find((entity) => entity.id === "equation_1");
 
     expect(equation?.position).toEqual({ x: 434, y: 146 });
-  });
-
-  it("rebases a source shift after a motion inserted at its anchor", () => {
-    const source = `from manim import *
-
-class Moving(Scene):
-    def construct(self):
-        dot = Dot()
-        self.add(dot)
-        self.wait(1)
-        # poietra:anchor 1.000
-        self.play(dot.animate.shift(RIGHT), run_time=1)
-`;
-    const imported = importManimScene(source, "moving.py", "Moving");
-    expect(imported).not.toBeNull();
-    if (!imported) return;
-    const entityId = "source:moving.py#Moving:dot";
-    const validation = validateMotionProgramFixture({
-      capturedPlayhead: 1,
-      controlOffset: { x: 0, y: -10 },
-      delta: { x: 40, y: 20 },
-      interval: { end: 2, start: 1 },
-      scene: imported.runtimeSceneState,
-      targetEntityIds: [entityId],
-      transactionId: "insert-before-source-motion",
-    });
-    expect(validation.kind).toBe("valid");
-    const workingState: WorkingState = {
-      appliedPrograms: [],
-      editorContext: {
-        activeSceneId: imported.sceneId,
-        playhead: 1,
-        selection: [entityId],
-        version: STUDIO_STATE_VERSION,
-        viewport: { height: 360, width: 640 },
-      },
-      runtimeSceneState: imported.runtimeSceneState,
-      sourceSnapshot: {
-        configId: "test",
-        hash: imported.sourceHash,
-        sourceId: "moving.py",
-        version: STUDIO_STATE_VERSION,
-      },
-      stagedPrograms: [programRecord(validation.program, validation)],
-      staticSemanticState: imported.staticSemanticState,
-      version: STUDIO_STATE_VERSION,
-    };
-
-    const proposed = evaluateWorkingState(workingState);
-    const samples = proposed.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples ?? [];
-    const inserted = samples.find((sample) => sample.operationId?.includes("motion-0"));
-    const shifted = samples.find((sample) => sample.provenanceId.includes(":motion:"));
-    expect(inserted).toMatchObject({
-      control: { x: 340, y: 180 },
-      from: { x: 320, y: 180 },
-      interval: { end: 2, start: 1 },
-      relative: true,
-      value: { x: 360, y: 200 },
-    });
-    expect(shifted).toMatchObject({
-      from: { x: 360, y: 200 },
-      interval: { end: 3, start: 2 },
-      relative: true,
-      value: { x: expect.closeTo(405, 2), y: 200 },
-    });
   });
 
   it("lets exact samples reset the base for later relative motion", () => {

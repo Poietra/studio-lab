@@ -1,4 +1,4 @@
-const POIETRA_ENGINE_ABI_VERSION = 21;
+const POIETRA_ENGINE_ABI_VERSION = 22;
 
 type PoietraWasmModule = Readonly<Record<string, unknown>>;
 

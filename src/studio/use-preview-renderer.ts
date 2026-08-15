@@ -33,9 +33,12 @@ import {
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
   compileApplyStudioTimelineEdit,
+  type ProjectStudioMotionCompiler,
   type ProjectStudioTimelineCompiler,
+  projectStudioMotion,
   projectStudioTimeline,
   type StudioMathTexTransformProjectionV1,
+  type StudioMotionProjectionV1,
   type StudioPersistentRemoveProjectionV1,
   type StudioStaticRootProjectionV1,
   type StudioTimelineProjectionV1,
@@ -82,16 +85,22 @@ import {
   buildStudioCreationEditCommand,
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
+  buildStudioMotionProjectionCommand,
   isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
   studioMathTexTransformStudioEntities,
+  studioMotionProjectionBatchKind,
   studioMotionStudioEntities,
 } from "./scene-authoring-wire";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
-import { selectMathTexTransformProjection, selectStaticRootProjection } from "./workspace-projection";
+import {
+  selectMathTexTransformProjection,
+  selectMotionProjection,
+  selectStaticRootProjection,
+} from "./workspace-projection";
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
@@ -118,6 +127,8 @@ export type StudioPreviewRendererView = Readonly<{
   state: PreviewRendererHostStateV1;
   /** Rust-authorized lifetime and fade facts for persistent remove operations. */
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null;
+  /** Rust-authorized Bezier and timing facts for CreateMotion operations. */
+  motionProjection: StudioMotionProjectionV1 | null;
   /** Rust-authorized entity, lifetime, and channel facts for an exact MathTex transform batch. */
   mathTexTransformProjection: StudioMathTexTransformProjectionV1 | null;
   /** Rust-authorized Studio channel facts for an exact imported static-root transform batch. */
@@ -197,6 +208,7 @@ type CompiledStudioPreviewSceneV1 = Readonly<{
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
   mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
+  motionProjection?: StudioMotionProjectionV1;
   persistentRemoveProjection?: StudioPersistentRemoveProjectionV1;
   programAuthority?: StudioPreviewProgramAuthority;
   snapshot: StudioVerifiedPreviewSnapshotV1;
@@ -563,6 +575,7 @@ export async function compileStudioPreviewSceneV1(
     applyStudioTimelineEditCompiler?: ApplyStudioTimelineEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
     mathTexOutlineCompiler?: MathTexOutlineCompilerV1;
+    projectStudioMotionCompiler?: ProjectStudioMotionCompiler;
     projectStudioTimelineCompiler?: ProjectStudioTimelineCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     workingState: WorkingState;
@@ -604,6 +617,7 @@ export async function compileStudioPreviewSceneV1(
       },
     };
   }
+  const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
   const importedSource = input.snapshot.snapshot.scene.source;
   if (
     input.snapshot.snapshot.scene.animationChannels.length > 0 &&
@@ -676,6 +690,24 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         command,
       );
+      const hasCreationMotion = sourceProgramBatch.some((program) =>
+        program.operations.some(({ kind }) => kind === "CreateMotion"),
+      );
+      let motionProjection: StudioMotionProjectionV1 | null = null;
+      if (hasCreationMotion) {
+        try {
+          motionProjection = selectMotionProjection(
+            input.snapshot.snapshot.scene.duration,
+            sourceProgramBatch,
+            result.motionProjection ?? null,
+          );
+        } catch {
+          return { error: "Rust core returned an uncorrelated Studio creation motion.", kind: "unsupported" };
+        }
+        if (!motionProjection) {
+          return { error: "Rust core did not return the Studio creation motion projection.", kind: "unsupported" };
+        }
+      }
       const bundle = result.bundle;
       const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
       const createdEntityIds = bundle.scene.entities.flatMap(({ id }) => (baseEntityIds.has(id) ? [] : [id]));
@@ -699,6 +731,7 @@ export async function compileStudioPreviewSceneV1(
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
+          ...(motionProjection ? { motionProjection } : {}),
           persistentRemoveProjection: result.persistentRemoveProjection,
           programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
@@ -713,7 +746,6 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const sourceProgramBatch = sourcePrograms.map(({ program }) => program);
   const exactStaticRootBatch = isExactStaticRootTransformProgramBatch(sourceProgramBatch);
   if (
     importedSource.kind === "imported-manim-server-snapshot" &&
@@ -924,6 +956,15 @@ export async function compileStudioPreviewSceneV1(
           frame: { ...input.frame },
           interactionEntityIds,
           mathTexTransformProjection,
+          ...(mathTexTransformProjection.motions.length > 0
+            ? {
+                motionProjection: {
+                  insertions: mathTexTransformProjection.insertions,
+                  motions: mathTexTransformProjection.motions,
+                  projectedDuration: mathTexTransformProjection.projectedDuration,
+                },
+              }
+            : {}),
           programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
@@ -968,6 +1009,24 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         staticRootTransformEditCommand(input, engineRevisionHash),
       );
+      const hasMotion = sourceProgramBatch.some((program) =>
+        program.operations.some(({ kind }) => kind === "CreateMotion"),
+      );
+      let motionProjection: StudioMotionProjectionV1 | null = null;
+      if (hasMotion) {
+        try {
+          motionProjection = selectMotionProjection(
+            input.snapshot.snapshot.scene.duration,
+            sourceProgramBatch,
+            result.motionProjection ?? null,
+          );
+        } catch {
+          return { error: "Rust core returned an uncorrelated persistent-remove motion.", kind: "unsupported" };
+        }
+        if (!motionProjection) {
+          return { error: "Rust core did not return the persistent-remove motion projection.", kind: "unsupported" };
+        }
+      }
       const bundle = result.bundle;
       return {
         kind: "compiled",
@@ -984,6 +1043,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
+          ...(motionProjection ? { motionProjection } : {}),
           persistentRemoveProjection: result.persistentRemoveProjection,
           ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
             ? { programAuthority: "static-imported-root" as const }
@@ -1069,11 +1129,28 @@ export async function compileStudioPreviewSceneV1(
       workingRevision: input.workingRevision,
       workspaceKey: input.workspaceKey,
     });
+    const projectionCommand = buildStudioMotionProjectionCommand({
+      baseDuration: input.snapshot.snapshot.scene.duration,
+      programs: sourceProgramBatch,
+      runtimeSceneState: input.workingState.runtimeSceneState,
+    });
+    if (!projectionCommand) {
+      return { error: "The standalone motion batch has no Rust projection command.", kind: "unsupported" };
+    }
     try {
       const bundle = await (input.applyStudioMotionEditCompiler ?? compileApplyStudioMotionEdit)(
         input.snapshot.snapshot,
         studioMotionEditCommand(input, engineRevisionHash),
       );
+      const projected = await (input.projectStudioMotionCompiler ?? projectStudioMotion)(projectionCommand);
+      const motionProjection = selectMotionProjection(
+        input.snapshot.snapshot.scene.duration,
+        sourceProgramBatch,
+        projected,
+      );
+      if (!motionProjection) {
+        return { error: "Rust core did not return the standalone motion projection.", kind: "unsupported" };
+      }
       return {
         kind: "compiled",
         scene: {
@@ -1089,6 +1166,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
+          motionProjection,
           programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
@@ -1167,11 +1245,32 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         staticRootTransformEditCommand(input, engineRevisionHash),
       );
-      if (exactStaticRootBatch && !result.staticRootProjection) {
+      if (
+        (exactStaticRootBatch || studioMotionProjectionBatchKind(sourceProgramBatch) === "static-root") &&
+        !result.staticRootProjection
+      ) {
         return {
           error: "Rust core did not return the static-root projection for the exact current Program batch.",
           kind: "unsupported",
         };
+      }
+      const hasMotion = sourceProgramBatch.some((program) =>
+        program.operations.some(({ kind }) => kind === "CreateMotion"),
+      );
+      let motionProjection: StudioMotionProjectionV1 | null = null;
+      if (hasMotion) {
+        try {
+          motionProjection = selectMotionProjection(
+            input.snapshot.snapshot.scene.duration,
+            sourceProgramBatch,
+            result.motionProjection ?? null,
+          );
+        } catch {
+          return { error: "Rust core returned an uncorrelated static-root motion.", kind: "unsupported" };
+        }
+        if (!motionProjection) {
+          return { error: "Rust core did not return the static-root motion projection.", kind: "unsupported" };
+        }
       }
       const bundle = result.bundle;
       return {
@@ -1190,6 +1289,7 @@ export async function compileStudioPreviewSceneV1(
             bundle.scene.entities,
           ),
           persistentRemoveProjection: result.persistentRemoveProjection,
+          ...(motionProjection ? { motionProjection } : {}),
           ...(result.staticRootProjection ? { staticRootProjection: result.staticRootProjection } : {}),
           ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
             ? { programAuthority: "static-imported-root" as const }
@@ -1607,6 +1707,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     runtimeTraceProgramValidation,
     mathTexTransformProjection:
       state.phase === "presented" ? (currentCompiledScene?.mathTexTransformProjection ?? null) : null,
+    motionProjection: state.phase === "presented" ? (currentCompiledScene?.motionProjection ?? null) : null,
     persistentRemoveProjection: currentCompiledScene?.persistentRemoveProjection ?? null,
     programAuthority: state.phase === "presented" ? (currentCompiledScene?.programAuthority ?? null) : null,
     staticRootProjection: state.phase === "presented" ? (currentCompiledScene?.staticRootProjection ?? null) : null,

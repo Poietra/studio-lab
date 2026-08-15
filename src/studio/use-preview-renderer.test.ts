@@ -1046,10 +1046,10 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "create-static-motion",
     });
     if (validation.kind !== "valid") throw new Error("Static motion fixture did not validate.");
-    const proposedState = evaluateWorkingState({
+    const proposedState: WorkingState = {
       ...workingBase,
       appliedPrograms: [programRecord(validation.program, validation)],
-    });
+    };
     const snapshot = {
       ...base.snapshot,
       snapshot: {
@@ -1077,7 +1077,7 @@ describe("compileStudioPreviewSceneV1", () => {
       applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
       snapshot,
-      workingState: proposedState.base,
+      workingState: proposedState,
       workingRevision: "studio-working-v1:create-static-motion",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -1102,10 +1102,6 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "create-static-motion",
     });
     if (validation.kind !== "valid") throw new Error("Static motion fixture did not validate.");
-    const evaluated = evaluateWorkingState({
-      ...workingBase,
-      appliedPrograms: [programRecord(validation.program, validation)],
-    });
     const motion = validation.program.operations[0];
     if (!motion || motion.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
     const rawMotion = { ...motion, dependsOn: ["missing-operation"] } as const;
@@ -1119,7 +1115,7 @@ describe("compileStudioPreviewSceneV1", () => {
       provenance: motion.provenance,
     } as const;
     const workingState: WorkingState = {
-      ...evaluated.base,
+      ...workingBase,
       appliedPrograms: [
         {
           program: {
@@ -1141,6 +1137,38 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
+      projectStudioMotionCompiler: async () => ({
+        insertions: [{ at: 0.5, duration: 1.5, transactionId: "create-static-motion" }],
+        motions: [
+          {
+            control: { x: 384, y: 180 },
+            controlOffset: rawMotion.controlOffset,
+            delta: rawMotion.delta,
+            easing: rawMotion.easing,
+            from: { x: 320, y: 180 },
+            interval: rawMotion.interval,
+            operationId: rawMotion.id,
+            sourceInterval: rawMotion.interval,
+            targetEntityId: "source:circle",
+            to: { x: 384, y: 144 },
+            transactionId: "create-static-motion",
+          },
+          {
+            control: { x: 368, y: 152 },
+            controlOffset: followingMotion.controlOffset,
+            delta: followingMotion.delta,
+            easing: followingMotion.easing,
+            from: { x: 384, y: 144 },
+            interval: followingMotion.interval,
+            operationId: followingMotion.id,
+            sourceInterval: followingMotion.interval,
+            targetEntityId: "source:circle",
+            to: { x: 368, y: 152 },
+            transactionId: "create-static-motion",
+          },
+        ],
+        projectedDuration: base.snapshot.snapshot.scene.duration + 1.5,
+      }),
       snapshot: base.snapshot,
       workingState,
       workingRevision: "studio-working-v1:create-static-motion",
@@ -1215,6 +1243,41 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioMotionEditCompiler: recordingMotionCompiler(commands),
       frame: { height: 9, width: 16 },
+      projectStudioMotionCompiler: async () => ({
+        insertions: [
+          { at: 0.25, duration: 0.5, transactionId: "first-motion" },
+          { at: 1.5, duration: 0.5, transactionId: "second-motion" },
+        ],
+        motions: [
+          {
+            control: { x: 352, y: 180 },
+            controlOffset: { x: 16, y: 9 },
+            delta: { x: 32, y: -18 },
+            easing: "smooth",
+            from: { x: 320, y: 180 },
+            interval: { end: 0.75, start: 0.25 },
+            operationId: first.program.operations[0]!.id,
+            sourceInterval: first.program.operations[0]!.interval,
+            targetEntityId: "source:circle",
+            to: { x: 352, y: 162 },
+            transactionId: "first-motion",
+          },
+          {
+            control: { x: 336, y: 170 },
+            controlOffset: { x: -8, y: 4 },
+            delta: { x: -16, y: 8 },
+            easing: "smooth",
+            from: { x: 352, y: 162 },
+            interval: { end: 2, start: 1.5 },
+            operationId: second.program.operations[0]!.id,
+            sourceInterval: second.program.operations[0]!.interval,
+            targetEntityId: "source:circle",
+            to: { x: 336, y: 170 },
+            transactionId: "second-motion",
+          },
+        ],
+        projectedDuration: base.snapshot.snapshot.scene.duration + 1,
+      }),
       snapshot: base.snapshot,
       workingState: {
         ...workingBase,
@@ -1582,7 +1645,43 @@ describe("compileStudioPreviewSceneV1", () => {
     const motionCommands: ApplyStudioMotionEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
-      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(staticCommands),
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(
+        staticCommands,
+        async (bundle) => ({
+          ...unchangedAuthoringResult(bundle),
+          motionProjection: {
+            insertions: [{ at: 0, duration: 1, transactionId: motion.program.transactionId }],
+            motions: [
+              {
+                control: { x: 448, y: 144 },
+                controlOffset: motionOperation.controlOffset,
+                delta: motionOperation.delta,
+                easing: motionOperation.easing,
+                from: { x: 384, y: 144 },
+                interval: motionOperation.interval,
+                operationId: motionOperation.id,
+                sourceInterval: motionOperation.interval,
+                targetEntityId: "source:circle",
+                to: { x: 448, y: 108 },
+                transactionId: motion.program.transactionId,
+              },
+            ],
+            projectedDuration: bundle.scene.duration + 1,
+          },
+          staticRootProjection: {
+            mutations: [
+              {
+                entityId: "source:circle",
+                interval: { end: 0, start: 0 },
+                kind: "position",
+                operationId: fixture.operationId!,
+                transactionId: fixture.programRecord.program.transactionId,
+                value: { x: 384, y: 144 },
+              },
+            ],
+          },
+        }),
+      ),
       applyStudioMotionEditCompiler: recordingMotionCompiler(motionCommands),
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
@@ -1899,13 +1998,40 @@ describe("compileStudioPreviewSceneV1", () => {
     if (motion.kind !== "valid") throw new Error("Created-entity motion fixture did not validate.");
     const motionOperation = motion.program.operations[0];
     if (motionOperation?.kind !== "CreateMotion") throw new Error("Created-entity motion fixture is malformed.");
-    const moved = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [
-        programRecord(creation.validation.program, creation.validation),
-        programRecord(motion.program, motion),
+    const motionProjection = {
+      insertions: [
+        { at: 0.5, duration: 0.4, transactionId: creation.validation.program.transactionId },
+        { at: 0.9, duration: 1, transactionId: motion.program.transactionId },
       ],
-    });
+      motions: [
+        {
+          control: { x: 384, y: 180 },
+          controlOffset: motionOperation.controlOffset,
+          delta: motionOperation.delta,
+          easing: motionOperation.easing,
+          from: { x: 320, y: 180 },
+          interval: { end: 1.9, start: 0.9 },
+          operationId: motionOperation.id,
+          sourceInterval: motionOperation.interval,
+          targetEntityId: creation.entityIds[0]!,
+          to: { x: 384, y: 144 },
+          transactionId: motion.program.transactionId,
+        },
+      ],
+      projectedDuration: proposedState.base.runtimeSceneState.duration + 1.4,
+    } as const;
+    const moved = evaluateWorkingState(
+      {
+        ...proposedState.base,
+        appliedPrograms: [
+          programRecord(creation.validation.program, creation.validation),
+          programRecord(motion.program, motion),
+        ],
+      },
+      null,
+      "rust-authorized-batch",
+      motionProjection,
+    );
     const scale = createDirectManipulationScaleProgram({
       capturedPlayhead: 0.5,
       interval: { end: 0.5, start: 0.5 },
@@ -1915,14 +2041,19 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "scale-created-circle",
     });
     expect(scale.kind, JSON.stringify(scale.issues)).toBe("valid");
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [
-        programRecord(creation.validation.program, creation.validation),
-        programRecord(motion.program, motion),
-        programRecord(scale.program, scale),
-      ],
-    });
+    const edited = evaluateWorkingState(
+      {
+        ...proposedState.base,
+        appliedPrograms: [
+          programRecord(creation.validation.program, creation.validation),
+          programRecord(motion.program, motion),
+          programRecord(scale.program, scale),
+        ],
+      },
+      null,
+      "rust-authorized-batch",
+      motionProjection,
+    );
     const removal = createRemoveEntitiesProgram({
       capturedPlayhead: 1,
       entityIds: creation.entityIds,
@@ -1932,14 +2063,19 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(removal.kind, JSON.stringify(removal.issues)).toBe("valid");
     const removalOperation = removal.program.operations[0];
     if (removalOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
+    const removalOffset = 1.4;
+    const resolvedRemovalInterval = {
+      end: removalOperation.interval.end + removalOffset,
+      start: removalOperation.interval.start + removalOffset,
+    };
     const persistentRemoveProjection = {
       removals: [
         {
           affectedSceneEntityIds: ["created-circle"],
-          fadeInterval: removalOperation.interval,
+          fadeInterval: resolvedRemovalInterval,
           operationId: removalOperation.id,
-          removedAt: removalOperation.interval.end,
-          resultingLifetimeEnd: removalOperation.interval.end,
+          removedAt: resolvedRemovalInterval.end,
+          resultingLifetimeEnd: resolvedRemovalInterval.end,
           sceneEntityId: "created-circle",
           studioEntityId: removalOperation.entityId,
           transactionId: removal.program.transactionId,
@@ -1953,7 +2089,11 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return { bundle, persistentRemoveProjection };
+        return {
+          bundle,
+          motionProjection,
+          persistentRemoveProjection,
+        };
       },
       applyStudioMotionEditCompiler: async (bundle) => {
         motionCompilerCalls += 1;
@@ -2362,10 +2502,13 @@ describe("compileStudioPreviewSceneV1", () => {
       motions: [
         {
           control: { x: 430, y: 215 },
+          controlOffset: motion.controlOffset,
+          delta: motion.delta,
           easing: "smooth",
           from: { x: 400, y: 220 },
           interval: motion.interval,
           operationId: motion.id,
+          sourceInterval: motion.interval,
           targetEntityId,
           to: { x: 440, y: 200 },
           transactionId: program.transactionId,

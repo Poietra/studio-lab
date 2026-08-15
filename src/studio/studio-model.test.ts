@@ -923,20 +923,12 @@ describe("one ProposedState feeds every Studio projection", () => {
     });
     expect(movement.issues).toEqual([]);
     expect(movement.kind).toBe("valid");
-    const moved = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [creationRecord, programRecord(movement.program, movement)],
+    expect(movement.program.operations).toEqual([
+      expect.objectContaining({
+        kind: "CreateMotion",
+        targetEntityIds: [createdId],
       }),
-    );
-    const movementEvent = moved.evaluatedScene.eventTrack.events.find(
-      (event) => event.transactionId === movement.program.transactionId && event.kind === "operation",
-    );
-    expect(movementEvent?.interval).toEqual({ end: 8, start: 7 });
-    const projected = projectProposedState(moved, movementEvent?.interval?.end ?? 8);
-    expect(projected.canvas.entities.find((entity) => entity.id === createdId)?.position).toEqual({
-      x: 544,
-      y: 180,
-    });
+    ]);
   });
 
   it("keeps a created entity transaction-local until its creation is applied", () => {

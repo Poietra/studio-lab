@@ -1,4 +1,4 @@
-import type { StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
+import type { StudioMotionProjectionV1, StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
 import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import type {
   EntityContent,
@@ -127,6 +127,7 @@ export function evaluateWorkingState(
   workingState: WorkingState,
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
   programAuthority: ProgramBatchAuthority | null = null,
+  rustMotionProjection: StudioMotionProjectionV1 | null = null,
 ): ProposedState {
   const programs = [
     ...workingState.appliedPrograms.map((record) => ({ applied: true, record })),
@@ -144,6 +145,21 @@ export function evaluateWorkingState(
   if (sceneDurationOperation) {
     throw new TypeError(`${sceneDurationOperation.kind} requires the Rust timeline projection.`);
   }
+  const motionOperation = programs
+    .flatMap(({ record }) => record.program.operations)
+    .find(({ kind }) => kind === "CreateMotion");
+  const rustProjectedMotionOperationIds = rustMotionProjection
+    ? new Set(rustMotionProjection.motions.map(({ operationId }) => operationId))
+    : null;
+  if (motionOperation && !rustProjectedMotionOperationIds?.has(motionOperation.id)) {
+    throw new TypeError("CreateMotion requires the Rust motion projection.");
+  }
+  const rustInsertionByTransactionId = new Map(
+    (rustMotionProjection?.insertions ?? []).map((insertion) => [insertion.transactionId, insertion] as const),
+  );
+  if (rustInsertionByTransactionId.size !== (rustMotionProjection?.insertions.length ?? 0)) {
+    throw new TypeError("The Rust motion projection contains duplicate Program insertions.");
+  }
   const persistentRemoveByOperationId = new Map(
     (persistentRemoveProjection?.removals ?? []).map((removal) => [removal.operationId, removal] as const),
   );
@@ -154,6 +170,9 @@ export function evaluateWorkingState(
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
+  const usedRustInsertionTransactionIds = new Set<string>();
+  const usedRustMotionOperationIds = new Set<string>();
+  let rustInsertionOffset = 0;
   for (const { applied, inputIndex, record } of programs) {
     const rustAuthorizedProgram = programAuthority !== null;
     const staticRootProjection = programAuthority === "static-imported-root";
@@ -162,7 +181,15 @@ export function evaluateWorkingState(
       continue;
     }
     const sourceAnchor = record.program.anchor.resolvedSeconds;
-    const priorInsertionOffset = timelineInsertionOffset(insertions, sourceAnchor);
+    const rustInsertion = rustInsertionByTransactionId.get(record.program.transactionId);
+    const priorInsertionOffset = rustMotionProjection
+      ? rustInsertion
+        ? rustInsertion.at - sourceAnchor
+        : rustInsertionOffset
+      : timelineInsertionOffset(insertions, sourceAnchor);
+    if (!Number.isFinite(priorInsertionOffset) || priorInsertionOffset < 0) {
+      throw new TypeError(`The Rust motion insertion for ${record.program.transactionId} has an invalid anchor.`);
+    }
     const rebasedProgram = rebaseProgramTime(record.program, priorInsertionOffset);
     const validation = rustAuthorizedProgram
       ? { issues: [], kind: "valid" as const, program: rebasedProgram }
@@ -170,14 +197,31 @@ export function evaluateWorkingState(
     const evaluatedRecord = programRecord(validation.program, validation);
     evaluatedPrograms[inputIndex] = evaluatedRecord;
     if (validation.kind !== "valid") continue;
-    const timelineDelta = insertedProgramDuration(validation.program);
+    const timelineDelta = rustMotionProjection
+      ? (rustInsertion?.duration ?? 0)
+      : insertedProgramDuration(validation.program);
     if (timelineDelta > 0) {
-      insertSceneTime(draft, validation.program.anchor.resolvedSeconds, timelineDelta);
+      const insertionAt = rustInsertion?.at ?? validation.program.anchor.resolvedSeconds;
+      if (!Number.isFinite(insertionAt) || !Number.isFinite(timelineDelta)) {
+        throw new TypeError(`The Rust motion insertion for ${record.program.transactionId} is invalid.`);
+      }
+      insertSceneTime(draft, insertionAt, timelineDelta);
+      if (rustInsertion) {
+        usedRustInsertionTransactionIds.add(record.program.transactionId);
+        rustInsertionOffset = priorInsertionOffset + timelineDelta;
+      }
     }
     const operationById = new Map(validation.program.operations.map((operation) => [operation.id, operation]));
     for (const operationId of validation.program.schedule.order) {
       const operation = operationById.get(operationId);
       if (operation) {
+        if (operation.kind === "CreateMotion") {
+          if (!rustProjectedMotionOperationIds?.has(operation.id)) {
+            throw new TypeError(`CreateMotion ${operation.id} requires the Rust motion projection.`);
+          }
+          usedRustMotionOperationIds.add(operation.id);
+          continue;
+        }
         const removal = persistentRemoveByOperationId.get(operation.id);
         evaluateOperation(
           draft,
@@ -201,10 +245,18 @@ export function evaluateWorkingState(
         draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
       }
     }
-    insertions.push({ duration: timelineDelta, sourceAnchor });
+    if (!rustMotionProjection) {
+      insertions.push({ duration: timelineDelta, sourceAnchor });
+    }
   }
   if (usedPersistentRemoveOperationIds.size !== persistentRemoveByOperationId.size) {
     throw new TypeError("The Rust persistent remove projection does not match the evaluated Program batch.");
+  }
+  if (
+    usedRustInsertionTransactionIds.size !== rustInsertionByTransactionId.size ||
+    usedRustMotionOperationIds.size !== (rustProjectedMotionOperationIds?.size ?? 0)
+  ) {
+    throw new TypeError("The Rust motion projection does not match the evaluated Program batch.");
   }
   return {
     base: workingState,

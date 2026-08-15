@@ -37,6 +37,26 @@ function record(program: CanonicalEditProgram) {
   return programRecord(program, { issues: [], kind: "valid" });
 }
 
+function animatedScaleProgram(anchor: number, transactionId: string): CanonicalEditProgram {
+  const base = motionProgram(anchor, transactionId);
+  const operation = base.operations[0]!;
+  return {
+    ...base,
+    operations: [
+      {
+        ...operation,
+        easing: "smooth",
+        entityId: "equation_1",
+        from: 1,
+        interval: { end: anchor + 1, start: anchor },
+        key: "scale",
+        kind: "AnimateProperty",
+        to: 1.5,
+      },
+    ],
+  };
+}
+
 function timelineWaitProgram(): CanonicalEditProgram {
   const base = motionProgram(5, "timeline-wait");
   return {
@@ -129,8 +149,8 @@ describe("inserted Program timeline composition", () => {
   });
 
   it("places later applied Programs after earlier Programs at the same source anchor", () => {
-    const first = motionProgram(5, "same-anchor-first");
-    const second = motionProgram(5, "same-anchor-second");
+    const first = animatedScaleProgram(5, "same-anchor-first");
+    const second = animatedScaleProgram(5, "same-anchor-second");
     const proposed = evaluateWorkingState(
       createFixtureWorkingState({
         appliedPrograms: [record(first), record(second)],
@@ -149,9 +169,9 @@ describe("inserted Program timeline composition", () => {
   });
 
   it("uses original anchors for offsets even when Programs were applied out of timeline order", () => {
-    const laterFirst = motionProgram(7, "out-of-order-later-first");
-    const earlierSecond = motionProgram(5, "out-of-order-earlier-second");
-    const laterThird = motionProgram(7, "out-of-order-later-third");
+    const laterFirst = animatedScaleProgram(7, "out-of-order-later-first");
+    const earlierSecond = animatedScaleProgram(5, "out-of-order-earlier-second");
+    const laterThird = animatedScaleProgram(7, "out-of-order-later-third");
     const proposed = evaluateWorkingState(
       createFixtureWorkingState({
         appliedPrograms: [record(laterFirst), record(earlierSecond), record(laterThird)],
