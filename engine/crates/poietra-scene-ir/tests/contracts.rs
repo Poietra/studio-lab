@@ -5,6 +5,10 @@ const REVISION: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 const EMPTY_MANIFEST_DIGEST: &str =
     "8f2a9813bcfc60b693fc34b8046d64352004b50a17e224bb138daae7da9e941d";
 
+fn assert_f64_bits_eq(actual: f64, expected: f64) {
+    assert_eq!(actual.to_bits(), expected.to_bits());
+}
+
 fn black() -> RgbaColorV1 {
     RgbaColorV1 {
         alpha: 1.0,
@@ -380,9 +384,9 @@ fn scene_semantics_do_not_dispatch_on_runtime_trace_version() {
         scene.state_sample_time(6.0 - 1e-9).to_bits(),
         (359.0_f64 / 60.0).to_bits()
     );
-    assert_eq!(scene.state_sample_time(6.0), 6.0);
+    assert_f64_bits_eq(scene.state_sample_time(6.0), 6.0);
     scene.state_sampling.retains_terminal_state = true;
-    assert_eq!(scene.state_sample_time(6.0), 359.0 / 60.0);
+    assert_f64_bits_eq(scene.state_sample_time(6.0), 359.0 / 60.0);
     validate_scene_ir_v1(&scene).unwrap();
 
     let json = serde_json::to_value(&scene).unwrap();
@@ -431,9 +435,9 @@ fn scene_semantics_do_not_dispatch_on_runtime_trace_version() {
     partial_final_frame.duration = 3.01;
     partial_final_frame.state_sampling.retains_terminal_state = false;
     validate_scene_ir_v1(&partial_final_frame).unwrap();
-    assert_eq!(partial_final_frame.state_sample_time(3.01), 3.0);
+    assert_f64_bits_eq(partial_final_frame.state_sample_time(3.01), 3.0);
     partial_final_frame.state_sampling.retains_terminal_state = true;
-    assert_eq!(partial_final_frame.state_sample_time(3.01), 3.0);
+    assert_f64_bits_eq(partial_final_frame.state_sample_time(3.01), 3.0);
 
     let mut invalid_sampling_range = v2;
     invalid_sampling_range.state_sampling.frame_rate = Some(f64::MAX);
