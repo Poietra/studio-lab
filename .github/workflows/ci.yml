@@ -328,6 +328,8 @@ jobs:
           path: public/engine-wasm/
       - name: Install Electron runtime
         run: pnpm electron:install
+      - name: Install Electron system dependencies
+        run: pnpm exec playwright install-deps chromium
       - name: Build Electron application
         run: pnpm build:electron
       - name: Assemble Electron package
@@ -335,7 +337,7 @@ jobs:
           node scripts/package-electron.mjs
           node scripts/smoke-third-party-notices.mjs --electron
       - name: Run packaged Electron smoke
-        run: node scripts/electron-packaged-smoke.mjs
+        run: xvfb-run --auto-servernum node scripts/electron-packaged-smoke.mjs
 
   tauri-check:
     name: Tauri experiment check
