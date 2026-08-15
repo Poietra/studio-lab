@@ -62,18 +62,23 @@ export function buildStaticRootTransformEditCommand(
         (operation): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] => {
           const common = {
             dependsOn: operation.dependsOn,
-            entityId: "entityId" in operation && typeof operation.entityId === "string" ? operation.entityId : "",
             id: operation.id,
             interval: operation.interval,
             origin: operation.provenance.origin,
           };
           if (operation.kind === "SetProperty" && operation.key === "position") {
-            return { ...common, kind: "position", position: isPointValue(operation.value) ? operation.value : null };
+            return {
+              ...common,
+              entityId: operation.entityId,
+              kind: "position",
+              position: isPointValue(operation.value) ? operation.value : null,
+            };
           }
           if (operation.kind === "AnimateProperty" && operation.key === "scale") {
             return {
               ...common,
               controlPresent: operation.control !== undefined,
+              entityId: operation.entityId,
               from: typeof operation.from === "number" ? operation.from : null,
               kind: "uniform-scale",
               relativeFactor: operation.relativeFactor ?? null,
@@ -83,6 +88,7 @@ export function buildStaticRootTransformEditCommand(
           if (operation.kind === "ResizeEntity") {
             return {
               ...common,
+              entityId: operation.entityId,
               fromDimensions: operation.from.dimensions,
               fromPosition: operation.from.position,
               fromScale: operation.scale,
@@ -92,8 +98,18 @@ export function buildStaticRootTransformEditCommand(
               toPosition: operation.to.position,
             };
           }
+          if (operation.kind === "CreateMotion") {
+            return {
+              ...common,
+              controlOffset: operation.controlOffset,
+              delta: operation.delta,
+              easing: operation.easing,
+              kind: "create-motion",
+              targetEntityIds: operation.targetEntityIds,
+            };
+          }
           if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
-            return { ...common, kind: "persistent-remove", persistent: true };
+            return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
           }
           return { ...common, kind: "unsupported" };
         },

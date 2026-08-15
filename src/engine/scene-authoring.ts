@@ -81,21 +81,26 @@ type StaticRootTransformEntityKind = "circle" | "image" | "math-tex" | "other" |
 type StaticRootTransformDimensions = Readonly<{ height?: number; radius?: number; width?: number }>;
 type StaticRootTransformOperation = Readonly<{
   dependsOn: readonly string[];
-  entityId: string;
   id: string;
   interval: Readonly<{ end: number; start: number }>;
   origin: StudioAuthoringOrigin;
 }> &
   (
-    | Readonly<{ kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
+    | Readonly<{
+        entityId: string;
+        kind: "position";
+        position: Readonly<{ x: number; y: number }> | null;
+      }>
     | Readonly<{
         controlPresent: boolean;
+        entityId: string;
         from: number | null;
         kind: "uniform-scale";
         relativeFactor: number | null;
         to: number | null;
       }>
     | Readonly<{
+        entityId: string;
         fromDimensions: StaticRootTransformDimensions;
         fromPosition: Readonly<{ x: number; y: number }>;
         fromScale: number;
@@ -104,7 +109,14 @@ type StaticRootTransformOperation = Readonly<{
         toDimensions: StaticRootTransformDimensions;
         toPosition: Readonly<{ x: number; y: number }>;
       }>
-    | Readonly<{ kind: "persistent-remove"; persistent: boolean }>
+    | Readonly<{
+        controlOffset: Readonly<{ x: number; y: number }>;
+        delta: Readonly<{ x: number; y: number }>;
+        easing: "linear" | "smooth";
+        kind: "create-motion";
+        targetEntityIds: readonly string[];
+      }>
+    | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{ kind: "unsupported" }>
   );
 

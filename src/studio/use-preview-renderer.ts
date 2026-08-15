@@ -75,6 +75,7 @@ import {
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
   isExactStudioMathTexTransformProgramBatch,
+  isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
   studioMathTexTransformStudioEntities,
@@ -914,10 +915,7 @@ export async function compileStudioPreviewSceneV1(
       };
     }
   }
-  const hasStudioMotion = sourcePrograms.some(({ program }) =>
-    program.operations.some(({ kind }) => kind === "CreateMotion"),
-  );
-  if (hasStudioMotion) {
+  if (isExactStudioMotionProgramBatch(sourceProgramBatch)) {
     if (!staticImportedSourceIsExact(input)) {
       return {
         error: "The verified source snapshot is not one exact imported Scene.",

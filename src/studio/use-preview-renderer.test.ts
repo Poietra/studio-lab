@@ -1053,15 +1053,14 @@ describe("compileStudioPreviewSceneV1", () => {
     const motion = validation.program.operations[0];
     if (!motion || motion.kind !== "CreateMotion") throw new Error("Motion fixture is malformed.");
     const rawMotion = { ...motion, dependsOn: ["missing-operation"] } as const;
-    const unsupported = {
-      dependsOn: [],
-      entityId: "source:circle",
-      id: "unsupported-position",
-      interval: { end: 0.5, start: 0.5 },
-      key: "position",
-      kind: "SetProperty",
+    const followingMotion = {
+      ...motion,
+      controlOffset: { x: -8, y: 4 },
+      delta: { x: -16, y: 8 },
+      dependsOn: [motion.id],
+      id: "following-motion",
+      interval: { end: 2, start: 1.5 },
       provenance: motion.provenance,
-      value: { x: 320, y: 180 },
     } as const;
     const workingState: WorkingState = {
       ...evaluated.base,
@@ -1069,8 +1068,13 @@ describe("compileStudioPreviewSceneV1", () => {
         {
           program: {
             ...validation.program,
-            operations: [rawMotion, unsupported],
-            schedule: { ...validation.program.schedule, order: [motion.id, unsupported.id] },
+            intentCount: 2,
+            operations: [rawMotion, followingMotion],
+            schedule: {
+              edges: [{ from: motion.id, reason: "explicit", to: followingMotion.id }],
+              mode: "sequence",
+              order: [motion.id, followingMotion.id],
+            },
           },
           validation: { issues: [], status: "valid" },
         },
@@ -1096,7 +1100,7 @@ describe("compileStudioPreviewSceneV1", () => {
           anchorCapturedPlayhead: 0.5,
           anchorResolvedSeconds: 0.5,
           anchorSource: { kind: "playhead", referenceSeconds: 0.5 },
-          intentCount: 1,
+          intentCount: 2,
           operations: [
             {
               controlOffset: { x: 32, y: 18 },
@@ -1105,12 +1109,18 @@ describe("compileStudioPreviewSceneV1", () => {
               kind: "create-motion",
               targetEntityIds: ["source:circle"],
             },
-            { id: "unsupported-position", kind: "unsupported" },
+            {
+              controlOffset: { x: -8, y: 4 },
+              delta: { x: -16, y: 8 },
+              dependsOn: [motion.id],
+              kind: "create-motion",
+              targetEntityIds: ["source:circle"],
+            },
           ],
           requestedExecution: validation.program.requestedExecution,
-          scheduleEdgeCount: validation.program.schedule.edges.length,
-          scheduleMode: validation.program.schedule.mode,
-          scheduleOrder: [motion.id, "unsupported-position"],
+          scheduleEdgeCount: 1,
+          scheduleMode: "sequence",
+          scheduleOrder: [motion.id, followingMotion.id],
           transactionId: "create-static-motion",
         },
       ],
@@ -1494,6 +1504,100 @@ describe("compileStudioPreviewSceneV1", () => {
       expect(result.scene.interactionEntityIds).toEqual(["earlier"]);
     },
   );
+
+  it("routes an imported static move followed by motion through one static-root Rust command", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    const motion = validateMotionProgramFixture({
+      capturedPlayhead: 0,
+      controlOffset: { x: 32, y: 18 },
+      delta: { x: 64, y: -36 },
+      interval: { end: 1, start: 0 },
+      scene: fixture.proposedState.evaluatedScene,
+      targetEntityIds: ["source:circle"],
+      transactionId: "move-transformed-imported-root",
+    });
+    if (motion.kind !== "valid") throw new Error(JSON.stringify(motion.issues));
+    const motionOperation = motion.program.operations[0];
+    if (motionOperation?.kind !== "CreateMotion") throw new Error("Imported motion fixture is malformed.");
+    const staticCommands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const motionCommands: ApplyStudioMotionEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(staticCommands),
+      applyStudioMotionEditCompiler: recordingMotionCompiler(motionCommands),
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.proposedState.base,
+        appliedPrograms: [fixture.programRecord, programRecord(motion.program, motion)],
+      },
+      workingRevision: "studio-working-v1:static-then-motion",
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(staticCommands).toHaveLength(1);
+    expect(motionCommands).toHaveLength(0);
+    expect(staticCommands[0]?.programs.map(({ transactionId }) => transactionId)).toEqual([
+      fixture.programRecord.program.transactionId,
+      motion.program.transactionId,
+    ]);
+    expect(staticCommands[0]?.programs[1]?.operations).toEqual([
+      {
+        controlOffset: motionOperation.controlOffset,
+        delta: motionOperation.delta,
+        dependsOn: motionOperation.dependsOn,
+        easing: motionOperation.easing,
+        id: motionOperation.id,
+        interval: motionOperation.interval,
+        kind: "create-motion",
+        origin: motionOperation.provenance.origin,
+        targetEntityIds: motionOperation.targetEntityIds,
+      },
+    ]);
+  });
+
+  it("passes motion-before-static order to Rust and surfaces its closed-contract rejection", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    const motion = validateMotionProgramFixture({
+      capturedPlayhead: 0,
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 64, y: 0 },
+      interval: { end: 1, start: 0 },
+      scene: fixture.proposedState.base.runtimeSceneState,
+      targetEntityIds: ["source:circle"],
+      transactionId: "motion-before-static",
+    });
+    if (motion.kind !== "valid") throw new Error(JSON.stringify(motion.issues));
+    const staticCommands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+    const motionCommands: ApplyStudioMotionEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(staticCommands, async () => {
+        throw new Error("motion-before-static is unsupported");
+      }),
+      applyStudioMotionEditCompiler: recordingMotionCompiler(motionCommands),
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.proposedState.base,
+        appliedPrograms: [programRecord(motion.program, motion), fixture.programRecord],
+      },
+      workingRevision: "studio-working-v1:motion-before-static",
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    expect(result).toEqual({
+      error: "Rust core rejected the static imported root edit: motion-before-static is unsupported",
+      kind: "unsupported",
+    });
+    expect(staticCommands).toHaveLength(1);
+    expect(staticCommands[0]?.programs.map(({ transactionId }) => transactionId)).toEqual([
+      motion.program.transactionId,
+      fixture.programRecord.program.transactionId,
+    ]);
+    expect(motionCommands).toHaveLength(0);
+  });
 
   it("routes an imported persistent remove through the static-root Rust use case", async () => {
     const fixture = await compilablePreviewInput();

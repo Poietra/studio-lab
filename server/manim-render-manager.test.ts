@@ -540,6 +540,45 @@ class GroupedEquation(Scene):
     expect(exported.source).toContain("# poietra:anchor 9");
   });
 
+  it("exports an imported static move followed by motion through one Rust batch", async () => {
+    const staticMotionSource = sceneSource.replace(
+      "        self.add(equation)\n",
+      "        self.add(equation)\n        # poietra:anchor 0.000\n",
+    );
+    const { manager, projectRoot } = await fixture();
+    await writeFile(join(projectRoot, "scene.py"), staticMotionSource, "utf8");
+    const imported = importManimScene(staticMotionSource, "scene.py", "GroupedEquation", {
+      height: 8,
+      width: 14.222,
+    });
+    const entityId = "source:scene.py#GroupedEquation:equation";
+    const position = imported?.runtimeSceneState.objectGraph.entities[entityId]?.geometry?.position;
+    if (!imported || position?.kind !== "known") throw new Error("Imported motion fixture has no exact position.");
+    const move = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 64, y: 0 },
+      positions: { [entityId]: position.value },
+      scene: imported.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [entityId],
+      transactionId: "move-before-motion",
+    });
+    if (move.kind !== "valid")
+      throw new Error(`Imported move fixture did not validate: ${JSON.stringify(move.issues)}`);
+    const movement = motionProgram(7, "motion-after-move", entityId);
+    const renderRequest = {
+      ...batchRequest([move.program, movement]),
+      sourceHash: createHash("sha256").update(staticMotionSource).digest("hex"),
+    };
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
+
+    const exported = await manager.exportSource(renderRequest);
+
+    expect(exported.source.indexOf("equation.move_to(")).toBeLessThan(
+      exported.source.indexOf("equation.animate.shift("),
+    );
+  });
+
   it("exports one verified MathTex A-to-B-to-A Program in transform order", async () => {
     const { manager } = await fixture();
     const program = mathTexTransformProgram("server-mathtex-transform");
