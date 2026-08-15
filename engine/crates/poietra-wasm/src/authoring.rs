@@ -535,7 +535,7 @@ mod tests {
                 "sourceAnchor": 0.0,
                 "studioEntityId": "source:root"
             }],
-            "expectedBaseRevision": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827",
+            "expectedBaseRevision": "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96",
             "frame": { "height": 8.0, "width": 14.222_222_222_222_221 },
             "nextRevision": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
             "programs": [{

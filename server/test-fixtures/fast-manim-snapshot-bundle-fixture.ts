@@ -40,6 +40,10 @@ export async function staticSnapshotBundleFixture(
       ...fixture.scene,
       animationChannels: [],
       assetManifest: { manifestDigest, manifestId },
+      compositing:
+        expected.snapshotVersion === 8 || expected.snapshotVersion === 11 || expected.snapshotVersion === 12
+          ? "manim-cairo-srgb"
+          : "linear-light",
       entities: fixture.scene.entities.map((entity, index) => ({
         ...entity,
         id: namespace(`entity:${index}`),
@@ -59,6 +63,7 @@ export async function staticSnapshotBundleFixture(
         })),
       ],
       sceneId: expected.sceneId,
+      stateSampling: { frameRate: null, retainsTerminalState: expected.snapshotVersion === 12 },
       source: {
         kind: "imported-manim-server-snapshot",
         runtimeConfigHash: expected.runtimeConfigHash,

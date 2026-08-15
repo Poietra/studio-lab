@@ -81,6 +81,7 @@
         "frameWidth": 14.222222222222221
       }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -2845,6 +2846,7 @@
     "requiredCapabilities": ["cubic-path-geometry", "opacity-animation"],
     "sceneId": "fixture:studio-mathtex-preview",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",

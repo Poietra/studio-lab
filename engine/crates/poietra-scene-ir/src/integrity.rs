@@ -242,11 +242,11 @@ fn validate_render_packet_for_scene(
             "packet scene revision does not match scene source evidence",
         );
     }
-    if packet.compositing != scene.source.render_compositing() {
+    if packet.compositing != scene.compositing {
         issue(
             &mut issues,
             "$.packet.compositing",
-            "packet compositing does not match scene source profile",
+            "packet compositing does not match scene semantics",
         );
     }
 

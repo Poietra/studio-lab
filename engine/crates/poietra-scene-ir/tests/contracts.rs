@@ -43,6 +43,7 @@ fn empty_scene() -> SceneIrV1 {
                 frame_width: 16.0,
             },
         },
+        compositing: RenderCompositingV1::LinearLight,
         coordinate_space: CoordinateSpaceV1::default(),
         duration: 2.0,
         entities: Vec::new(),
@@ -58,6 +59,10 @@ fn empty_scene() -> SceneIrV1 {
         source: SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
             revision_hash: REVISION.to_owned(),
+        },
+        state_sampling: SceneStateSamplingV1 {
+            frame_rate: None,
+            retains_terminal_state: false,
         },
         version: ContractVersionV1,
     }
@@ -327,79 +332,28 @@ fn serde_rejects_non_v1_versions_and_unknown_tags() {
 
     let tag_error = serde_json::from_value::<EasingV1>(json!({ "kind": "spring" })).unwrap_err();
     assert!(tag_error.to_string().contains("unknown variant"));
+
+    let mut missing_compositing = serde_json::to_value(empty_scene()).unwrap();
+    missing_compositing
+        .as_object_mut()
+        .unwrap()
+        .remove("compositing");
+    assert!(serde_json::from_value::<SceneIrV1>(missing_compositing).is_err());
+
+    let mut missing_state_sampling = serde_json::to_value(empty_scene()).unwrap();
+    missing_state_sampling
+        .as_object_mut()
+        .unwrap()
+        .remove("stateSampling");
+    assert!(serde_json::from_value::<SceneIrV1>(missing_state_sampling).is_err());
 }
 
 #[test]
-fn imported_snapshot_source_accepts_profiles_one_through_twelve_only() {
-    for snapshot_version in [
-        SnapshotProfileVersionV1::V1,
-        SnapshotProfileVersionV1::V2,
-        SnapshotProfileVersionV1::V3,
-        SnapshotProfileVersionV1::V4,
-        SnapshotProfileVersionV1::V5,
-        SnapshotProfileVersionV1::V6,
-        SnapshotProfileVersionV1::V7,
-        SnapshotProfileVersionV1::V8,
-        SnapshotProfileVersionV1::V9,
-        SnapshotProfileVersionV1::V10,
-        SnapshotProfileVersionV1::V11,
-        SnapshotProfileVersionV1::V12,
-    ] {
-        let mut scene = empty_scene();
-        scene.source = SceneSourceV1::ImportedManimServerSnapshot {
-            runtime_config_hash: REVISION.to_owned(),
-            snapshot_hash: REVISION.to_owned(),
-            snapshot_version,
-            source_hash: REVISION.to_owned(),
-        };
-        assert_eq!(
-            scene.source.render_compositing(),
-            if matches!(
-                snapshot_version,
-                SnapshotProfileVersionV1::V8
-                    | SnapshotProfileVersionV1::V11
-                    | SnapshotProfileVersionV1::V12
-            ) {
-                RenderCompositingV1::ManimCairoSrgb
-            } else {
-                RenderCompositingV1::LinearLight
-            }
-        );
-        let endpoint_state_time = scene.state_sample_time(scene.duration);
-        if snapshot_version == SnapshotProfileVersionV1::V12 {
-            assert!(endpoint_state_time < scene.duration);
-            assert_eq!(endpoint_state_time.to_bits(), scene.duration.to_bits() - 1);
-        } else {
-            assert_eq!(endpoint_state_time.to_bits(), scene.duration.to_bits());
-        }
-        validate_scene_ir_v1(&scene).unwrap();
-        assert_eq!(
-            parse_scene_ir_json_v1(&serde_json::to_vec(&scene).unwrap()).unwrap(),
-            scene
-        );
-        if snapshot_version == SnapshotProfileVersionV1::V2 {
-            let json = serde_json::to_string(&scene)
-                .unwrap()
-                .replace(r#""snapshotVersion":2"#, r#""snapshotVersion":2.0"#);
-            assert_eq!(parse_scene_ir_json_v1(json.as_bytes()).unwrap(), scene);
-        }
-    }
-
-    let mut invalid = serde_json::to_value(empty_scene()).unwrap();
-    invalid["source"] = json!({
-        "kind": "imported-manim-server-snapshot",
-        "runtimeConfigHash": REVISION,
-        "snapshotHash": REVISION,
-        "snapshotVersion": 13.0,
-        "sourceHash": REVISION,
-    });
-    assert!(serde_json::from_value::<SceneIrV1>(invalid).is_err());
-}
-
-#[test]
-fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() {
+fn scene_semantics_do_not_dispatch_on_runtime_trace_version() {
     let mut scene = empty_scene();
     scene.duration = 6.0;
+    scene.compositing = RenderCompositingV1::ManimCairoSrgb;
+    scene.state_sampling.frame_rate = Some(60.0);
     scene.source = SceneSourceV1::ImportedManimRuntimeTrace {
         runtime_config_hash: REVISION.to_owned(),
         source_hash: REVISION.to_owned(),
@@ -409,10 +363,6 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
     scene.provenance[0].origin = ProvenanceOriginV1::FastManimRuntimeTrace;
 
     assert_eq!(scene.source.revision_hash(), REVISION);
-    assert_eq!(
-        scene.source.render_compositing(),
-        RenderCompositingV1::ManimCairoSrgb
-    );
     assert_eq!(scene.state_sample_time(0.0).to_bits(), 0.0_f64.to_bits());
     assert_eq!(
         scene.state_sample_time(1.0 / 60.0 - 1e-9).to_bits(),
@@ -430,10 +380,9 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         scene.state_sample_time(6.0 - 1e-9).to_bits(),
         (359.0_f64 / 60.0).to_bits()
     );
-    assert_eq!(
-        scene.state_sample_time(6.0).to_bits(),
-        (359.0_f64 / 60.0).to_bits()
-    );
+    assert_eq!(scene.state_sample_time(6.0), 6.0);
+    scene.state_sampling.retains_terminal_state = true;
+    assert_eq!(scene.state_sample_time(6.0), 359.0 / 60.0);
     validate_scene_ir_v1(&scene).unwrap();
 
     let json = serde_json::to_value(&scene).unwrap();
@@ -444,24 +393,15 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         scene
     );
 
-    let mut invalid_duration = scene.clone();
-    invalid_duration.duration = 5.0;
-    assert!(
-        validate_scene_ir_v1(&invalid_duration)
-            .unwrap_err()
-            .contains_message("six-second")
-    );
-
-    let mut v2 = invalid_duration;
+    let mut v2 = scene.clone();
     let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = &mut v2.source else {
         unreachable!()
     };
     *trace_version = RuntimeTraceVersionV1::V2;
-    v2.duration = 3.0;
     validate_scene_ir_v1(&v2).unwrap();
     assert_eq!(
-        v2.state_sample_time(3.0).to_bits(),
-        (179.0_f64 / 60.0).to_bits()
+        v2.state_sample_time(6.0).to_bits(),
+        scene.state_sample_time(6.0).to_bits()
     );
     assert_eq!(
         v2.state_sample_time(1.0 / 60.0 + 1e-9).to_bits(),
@@ -483,16 +423,24 @@ fn imported_runtime_trace_source_retains_its_distinct_revision_and_frame_grid() 
         v3
     );
     assert_eq!(
-        v3.state_sample_time(3.0).to_bits(),
-        (179.0_f64 / 60.0).to_bits()
+        v3.state_sample_time(6.0).to_bits(),
+        scene.state_sample_time(6.0).to_bits()
     );
 
-    let mut off_grid_v2 = v2;
-    off_grid_v2.duration = 3.01;
+    let mut partial_final_frame = v2.clone();
+    partial_final_frame.duration = 3.01;
+    partial_final_frame.state_sampling.retains_terminal_state = false;
+    validate_scene_ir_v1(&partial_final_frame).unwrap();
+    assert_eq!(partial_final_frame.state_sample_time(3.01), 3.0);
+    partial_final_frame.state_sampling.retains_terminal_state = true;
+    assert_eq!(partial_final_frame.state_sample_time(3.01), 3.0);
+
+    let mut invalid_sampling_range = v2;
+    invalid_sampling_range.state_sampling.frame_rate = Some(f64::MAX);
     assert!(
-        validate_scene_ir_v1(&off_grid_v2)
+        validate_scene_ir_v1(&invalid_sampling_range)
             .unwrap_err()
-            .contains_message("whole number of 60 fps frames")
+            .contains_message("positive JavaScript-safe sampling range")
     );
 
     let mut invalid_digest = scene;
@@ -677,7 +625,7 @@ fn engine_frame_checks_digest_and_cross_document_identity() {
     assert!(
         validate_engine_frame_v1(&stale_compositing)
             .unwrap_err()
-            .contains_message("compositing does not match scene source profile")
+            .contains_message("compositing does not match scene semantics")
     );
 
     let mut v11 = frame.clone();
@@ -687,10 +635,12 @@ fn engine_frame_checks_digest_and_cross_document_identity() {
         snapshot_version: SnapshotProfileVersionV1::V11,
         source_hash: REVISION.to_owned(),
     };
+    validate_engine_frame_v1(&v11).unwrap();
+    v11.scene.compositing = RenderCompositingV1::ManimCairoSrgb;
     assert!(
         validate_engine_frame_v1(&v11)
             .unwrap_err()
-            .contains_message("compositing does not match scene source profile")
+            .contains_message("compositing does not match scene semantics")
     );
     v11.packet.compositing = RenderCompositingV1::ManimCairoSrgb;
     validate_engine_frame_v1(&v11).unwrap();

@@ -19,11 +19,11 @@ function sha256(bytes: Uint8Array) {
 describe("FourierSeriesSquareWave independent Cairo reference v1", () => {
   it("pins the reproducible V3 bundle without retaining the raw trace", async () => {
     const compressed = new Uint8Array(await readFile("fixtures/fourier-v3-runtime-trace-bundle-v1.json.gz"));
-    expect(compressed).toHaveLength(578_619);
-    expect(sha256(compressed)).toBe("7f0ec3ae93254aa729b9132ea9254a23463b8174ba5422ab9f6aeb4eb97af01a");
+    expect(compressed).toHaveLength(590_934);
+    expect(sha256(compressed)).toBe("1da5605b338154fb86ad0b124a456afa5fe6a75e9c3844038f7f5cb041d52596");
     const bundleBytes = gunzipSync(compressed);
-    expect(bundleBytes).toHaveLength(4_946_702);
-    expect(sha256(bundleBytes)).toBe("23e4c7bc36d093d240a3050ba8f49eb5e2f80bed1bafa43f5563bc4f99908d5d");
+    expect(bundleBytes).toHaveLength(4_946_796);
+    expect(sha256(bundleBytes)).toBe("8af339a532cb077ab773a563fe6f15f904d747ee365810e2024339923bb832e8");
     const bundle = sceneIrBundleV1Schema.parse(JSON.parse(bundleBytes.toString("utf8")));
     expect(bundle.scene).toMatchObject({
       duration: 14.5,

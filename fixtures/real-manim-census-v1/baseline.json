@@ -84,7 +84,7 @@
     "fast-manim-basic/LineJoints/v10": {
       "outcome": "accepted",
       "reasons": [],
-      "snapshotHash": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827"
+      "snapshotHash": "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96"
     },
     "fast-manim-basic/LineJoints/v2": {
       "outcome": "fallback",
@@ -150,7 +150,7 @@
     "fast-manim-basic/SpiralInExample/v11": {
       "outcome": "accepted",
       "reasons": [],
-      "snapshotHash": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+      "snapshotHash": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
     },
     "fast-manim-basic/SpiralInExample/v2": {
       "outcome": "fallback",
@@ -273,7 +273,7 @@
     "fast-manim-basic/WarpSquare/v9": {
       "outcome": "accepted",
       "reasons": [],
-      "snapshotHash": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+      "snapshotHash": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
     },
     "fast-manim-basic/WriteStuff/v1": {
       "outcome": "fallback",
@@ -282,7 +282,7 @@
     "fast-manim-basic/WriteStuff/v12": {
       "outcome": "accepted",
       "reasons": [],
-      "snapshotHash": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+      "snapshotHash": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
     },
     "fast-manim-basic/WriteStuff/v2": {
       "outcome": "fallback",

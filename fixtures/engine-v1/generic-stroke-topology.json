@@ -104,6 +104,7 @@
         "frameWidth": 16
       }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -356,6 +357,7 @@
     ],
     "sceneId": "shared:generic-stroke-topology",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",

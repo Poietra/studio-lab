@@ -21,6 +21,7 @@
         "frameWidth": 14.222222222222221
       }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -42,6 +43,7 @@
     "requiredCapabilities": [],
     "sceneId": "fixture:studio-mathtex-preview",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "kind": "imported-manim-server-snapshot",
       "runtimeConfigHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

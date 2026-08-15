@@ -18,7 +18,7 @@ use sha2::{Digest, Sha256};
 const ENGINE_COMMIT: &str = "0b331ce781411f38185dcabccdffdccee02d4376";
 const FAST_MANIM_COMMIT: &str = "2c1e56287193e3acddbe6779f6ecd4bd91094588";
 const FIXTURE_ID: &str = "eng-v1-real-warp-square-v9";
-const SNAPSHOT_HASH: &str = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+const SNAPSHOT_HASH: &str = "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f";
 const SOURCE_PATH: &str = "example_scenes/basic.py";
 const SOURCE_SHA256: &str = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;

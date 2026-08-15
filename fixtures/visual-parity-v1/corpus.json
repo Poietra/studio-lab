@@ -110,7 +110,7 @@
         "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+          "sha256": "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e"
         }
       },
       "sample": {
@@ -128,7 +128,7 @@
         "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+          "sha256": "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e"
         }
       },
       "sample": {
@@ -146,7 +146,7 @@
         "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+          "sha256": "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e"
         }
       },
       "sample": {
@@ -164,7 +164,7 @@
         "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+          "sha256": "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e"
         }
       },
       "sample": {
@@ -182,7 +182,7 @@
         "path": "fixtures/engine-v1/real-mathtex-morph-v5.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf"
+          "sha256": "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e"
         }
       },
       "sample": {
@@ -200,7 +200,7 @@
         "path": "fixtures/engine-v1/real-generic-vmobject-v6.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "cb8bd9ddaf45ac208f294d9e0b4871d3f758957e8dc523c7ab253e2d8ea1488b"
+          "sha256": "c7205d47f7acbf5aaa4b0a1320fb597bc1689a09eb7b527ab95debc5ded08558"
         }
       },
       "sample": {
@@ -218,7 +218,7 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1"
+          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
         }
       },
       "sample": {
@@ -236,7 +236,7 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1"
+          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
         }
       },
       "sample": {
@@ -254,7 +254,7 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1"
+          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
         }
       },
       "sample": {
@@ -272,7 +272,7 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1"
+          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
         }
       },
       "sample": {
@@ -290,7 +290,7 @@
         "path": "fixtures/engine-v1/real-square-to-circle-v8.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1"
+          "sha256": "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2"
         }
       },
       "sample": {
@@ -308,7 +308,7 @@
         "path": "fixtures/engine-v1/real-warp-square-v9.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+          "sha256": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
         }
       },
       "sample": {
@@ -326,7 +326,7 @@
         "path": "fixtures/engine-v1/real-warp-square-v9.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+          "sha256": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
         }
       },
       "sample": {
@@ -344,7 +344,7 @@
         "path": "fixtures/engine-v1/real-warp-square-v9.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+          "sha256": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
         }
       },
       "sample": {
@@ -362,7 +362,7 @@
         "path": "fixtures/engine-v1/real-warp-square-v9.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+          "sha256": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
         }
       },
       "sample": {
@@ -380,7 +380,7 @@
         "path": "fixtures/engine-v1/real-warp-square-v9.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed"
+          "sha256": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f"
         }
       },
       "sample": {
@@ -398,7 +398,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -416,7 +416,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -434,7 +434,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -452,7 +452,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -470,7 +470,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -488,7 +488,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -506,7 +506,7 @@
         "path": "fixtures/engine-v1/real-spiral-in-v11.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0"
+          "sha256": "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde"
         }
       },
       "sample": {
@@ -524,7 +524,7 @@
         "path": "fixtures/engine-v1/real-line-joints-v10.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827"
+          "sha256": "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96"
         }
       },
       "sample": {
@@ -542,7 +542,7 @@
         "path": "fixtures/engine-v1/real-line-joints-v10-edited.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "3de97161c0f5ff210f2a0b7e461bc7067dcc8a0eb92c66f02d3a870dfbd27a7f"
+          "sha256": "909a4cf37a4b883821b2f91da4df8b5ae0cfc79c1ee041745e69fc48e5c74cd9"
         }
       },
       "sample": {
@@ -560,7 +560,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -578,7 +578,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -596,7 +596,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -614,7 +614,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -632,7 +632,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -650,7 +650,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -668,7 +668,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -686,7 +686,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594"
+          "sha256": "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f"
         }
       },
       "sample": {
@@ -704,7 +704,7 @@
         "path": "fixtures/engine-v1/real-write-stuff-v12-edited.json",
         "revision": {
           "kind": "imported-manim-server-snapshot",
-          "sha256": "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48"
+          "sha256": "7a6968f889e9993abb8c65a50c32549064f4fa51baf46491616b93de99483e00"
         }
       },
       "sample": {

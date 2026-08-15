@@ -3,7 +3,7 @@
   "fastManimCommit": "2c1e56287193e3acddbe6779f6ecd4bd91094588",
   "fastManimFeatureCommit": "8c95a10f",
   "runtimeConfigHash": "a2a789613c64b68c4b9b0c3542975b334b3b03388b7c8b0b903f690cca69c38a",
-  "sealedSnapshotHash": "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed",
+  "sealedSnapshotHash": "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f",
   "semanticSha256": "8f683bf4dad38a06ef75e8bfd6066d7426f8941e011191c1a53243a7069b9825",
   "snapshotDigest": "a2df54e05b8b39776432fd35d8b46f2476f5ef6121982c311c5e024b31c6a999",
   "sourcePath": "example_scenes/basic.py",

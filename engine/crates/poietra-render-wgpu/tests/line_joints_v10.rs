@@ -14,7 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 const FIXTURE_ID: &str = "eng-v1-real-line-joints-v10";
-const SNAPSHOT_HASH: &str = "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
+const SNAPSHOT_HASH: &str = "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96";
 const SOURCE_SHA256: &str = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const FAST_MANIM_COMMIT: &str = "29d21a2bd213df8ffeed0454278aa86289d190b8";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;

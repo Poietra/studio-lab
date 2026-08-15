@@ -677,45 +677,6 @@ impl SceneSourceV1 {
             Self::ImportedManimRuntimeTrace { trace_digest, .. } => trace_digest,
         }
     }
-
-    /// Returns the renderer compositing semantics required by this source profile.
-    ///
-    /// The audited V8, V11, and V12 importers seal colors and opacity against
-    /// Manim's Cairo output. Other imported profiles and Studio-authored scenes
-    /// retain the engine's original linear-light contract.
-    #[must_use]
-    pub const fn render_compositing(&self) -> RenderCompositingV1 {
-        match self {
-            Self::ImportedManimServerSnapshot {
-                snapshot_version:
-                    SnapshotProfileVersionV1::V8
-                    | SnapshotProfileVersionV1::V11
-                    | SnapshotProfileVersionV1::V12,
-                ..
-            }
-            | Self::ImportedManimRuntimeTrace { .. } => RenderCompositingV1::ManimCairoSrgb,
-            Self::StudioEditProgram { .. } | Self::ImportedManimServerSnapshot { .. } => {
-                RenderCompositingV1::LinearLight
-            }
-        }
-    }
-
-    /// Whether a sample exactly at Scene duration observes the final retained
-    /// visual state instead of the ordinary half-open lifetime endpoint.
-    ///
-    /// `WriteStuff` V12 ends with a real Manim `wait`, so its duration frame is
-    /// the completed Tex/MathTex composition. Earlier imported profiles keep
-    /// the original half-open endpoint contract, including completed `FadeOuts`.
-    #[must_use]
-    pub const fn retains_terminal_state(&self) -> bool {
-        matches!(
-            self,
-            Self::ImportedManimServerSnapshot {
-                snapshot_version: SnapshotProfileVersionV1::V12,
-                ..
-            }
-        )
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -840,12 +801,22 @@ pub enum SceneIrSchemaV1 {
     SceneIr,
 }
 
+/// Source-neutral rules for sampling the retained Scene state.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SceneStateSamplingV1 {
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub frame_rate: Option<f64>,
+    pub retains_terminal_state: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SceneIrV1 {
     pub animation_channels: Vec<AnimationChannelV1>,
     pub asset_manifest: AssetManifestReferenceV1,
     pub camera: SceneCameraV1,
+    pub compositing: RenderCompositingV1,
     pub coordinate_space: CoordinateSpaceV1,
     pub duration: f64,
     pub entities: Vec<SceneEntityV1>,
@@ -855,6 +826,7 @@ pub struct SceneIrV1 {
     pub scene_id: String,
     pub schema: SceneIrSchemaV1,
     pub source: SceneSourceV1,
+    pub state_sampling: SceneStateSamplingV1,
     pub version: ContractVersionV1,
 }
 
@@ -862,33 +834,34 @@ impl SceneIrV1 {
     /// Resolves the internal state-sampling time for one already range-checked
     /// request while leaving the request/packet correlation time unchanged.
     ///
-    /// Lifetimes remain half-open. The negotiated V12 terminal-state profile
-    /// samples the immediately preceding representable time only at duration,
-    /// which preserves its final hold without changing any older Scene.
+    /// `frame_rate` quantizes requests independently of terminal retention. At
+    /// a grid-aligned duration, non-retained Scenes expose the half-open endpoint
+    /// while retained Scenes clamp to the preceding frame. An off-grid duration
+    /// has no exact frame and therefore floors under either retention policy.
     #[must_use]
     pub fn state_sample_time(&self, requested_time: f64) -> f64 {
-        if let SceneSourceV1::ImportedManimRuntimeTrace { trace_version, .. } = self.source {
-            const FRAME_RATE: f64 = 60.0;
-            let final_frame = match trace_version {
-                RuntimeTraceVersionV1::V1 => 359.0,
-                RuntimeTraceVersionV1::V2 | RuntimeTraceVersionV1::V3 => {
-                    (self.duration * FRAME_RATE).round() - 1.0
-                }
-            };
-            let scaled = requested_time * FRAME_RATE;
+        if let Some(frame_rate) = self.state_sampling.frame_rate {
+            let final_frame = (self.duration * frame_rate).ceil() - 1.0;
+            let scaled = requested_time * frame_rate;
             let nearest_frame = scaled.round();
             let grid_tolerance = 4.0 * f64::EPSILON * scaled.abs().max(1.0);
+            if requested_time.to_bits() == self.duration.to_bits()
+                && (scaled - nearest_frame).abs() <= grid_tolerance
+                && !self.state_sampling.retains_terminal_state
+            {
+                return requested_time;
+            }
             let frame = if (scaled - nearest_frame).abs() <= grid_tolerance {
                 nearest_frame
             } else {
                 scaled.floor()
             };
-            return frame.min(final_frame) / FRAME_RATE;
+            return frame.min(final_frame) / frame_rate;
         }
         if requested_time.to_bits() == self.duration.to_bits()
             && self.duration.is_finite()
             && self.duration > 0.0
-            && self.source.retains_terminal_state()
+            && self.state_sampling.retains_terminal_state
         {
             f64::from_bits(self.duration.to_bits() - 1)
         } else {
@@ -1143,11 +1116,10 @@ pub enum RenderPacketSchemaV1 {
     RenderPacket,
 }
 
-/// Color compositing semantics required by one render packet.
+/// Color compositing semantics required by one Scene or render packet.
 ///
-/// `LinearLight` remains the implicit v1 wire default so existing packet bytes stay
-/// stable. `ManimCairoSrgb` is emitted explicitly only for source profiles whose
-/// fidelity contract is sealed against Manim's Cairo renderer.
+/// `LinearLight` remains the implicit render-packet wire default. Scene IR carries
+/// this value explicitly so rendering does not infer behavior from source evidence.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub enum RenderCompositingV1 {
     #[default]

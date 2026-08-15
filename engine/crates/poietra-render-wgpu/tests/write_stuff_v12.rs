@@ -24,7 +24,7 @@ const ENGINE_COMMIT: &str = "8b19ef72e425d41f271c785c74a0fd295a14b5b5";
 const FIXTURE_ID: &str = "eng-v1-real-write-stuff-v12";
 const PRODUCER_SNAPSHOT_DIGEST: &str =
     "dd6ca2c3e1015718f9fa9b8ad0e926de8260013eb85d17574c3c7fdeaba89817";
-const SNAPSHOT_HASH: &str = "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594";
+const SNAPSHOT_HASH: &str = "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f";
 const SOURCE_SHA256: &str = "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const SEMANTIC_NUMBER_SCALE: f64 = 1_000_000_000.0;
 
@@ -246,7 +246,7 @@ fn sealed_v12_evaluates_and_prepares_all_61_entities_and_58_write_channels() {
     assert_eq!(snapshot_hash, SNAPSHOT_HASH);
     assert_eq!(source_hash, SOURCE_SHA256);
     assert_eq!(
-        bundle.scene.source.render_compositing(),
+        bundle.scene.compositing,
         RenderCompositingV1::ManimCairoSrgb
     );
     assert_eq!(bundle.scene.duration, 4.0);

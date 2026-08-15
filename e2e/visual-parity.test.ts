@@ -230,7 +230,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the server-sealed real MathTex morph V5 timeline to the default full-RGBA gate", async () => {
-    const fixtureRevision = "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf";
+    const fixtureRevision = "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e";
     const corpus = await corpusFixture();
     const expectedSamples = [
       [
@@ -385,7 +385,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the server-sealed real SquareToCircle V8 timeline to the default full-RGBA gate", async () => {
-    const fixtureRevision = "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
+    const fixtureRevision = "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2";
     const corpus = await corpusFixture();
     const expectedSamples = [
       [
@@ -497,7 +497,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the server-sealed real WarpSquare V9 timeline to the default full-RGBA gate", async () => {
-    const fixtureRevision = "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+    const fixtureRevision = "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f";
     const corpus = await corpusFixture();
     const expectedSamples = [
       ["real-warp-square-v9--source", "source", 0, "d24ea70236f94d36ed65366c08d6bbadd8fe30b1b72e056bc82de9c4e947f153"],
@@ -583,7 +583,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the official SpiralIn V11 timeline to native/browser and independent Cairo gates", async () => {
-    const fixtureRevision = "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
+    const fixtureRevision = "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde";
     const corpus = await corpusFixture();
     const expectedSamples = [
       ["real-spiral-in-v11--start", "start", 0, "4a58d3347663fa01846422ac73cf1e530659f8e487e90545a7a3cc8a6db09a47"],
@@ -690,7 +690,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the official WriteStuff V12 timeline to native/browser and independent Cairo gates", async () => {
-    const fixtureRevision = "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594";
+    const fixtureRevision = "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f";
     const corpus = await corpusFixture();
     const expectedSamples = [
       ["real-write-stuff-v12--start", "start", 0, "2451c0c9c441b2c3672ea4cd4dc7c0a29eebb3eb896d45b57c7e35df5fbd5b70"],
@@ -798,7 +798,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the actual producer snapshot after the Studio WriteStuff equation edit", async () => {
-    const fixtureRevision = "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48";
+    const fixtureRevision = "7a6968f889e9993abb8c65a50c32549064f4fa51baf46491616b93de99483e00";
     const sourceHash = "37179e2a50fc22e784962d26a7778f5c273c296d5fcbccf04d89fb7e55885d98";
     const corpus = await corpusFixture();
     const entry = corpus.entries.find(({ id }) => id === "real-write-stuff-v12-edited--hold");
@@ -894,7 +894,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the server-sealed real LineJoints V10 scene to native/browser and independent Cairo gates", async () => {
-    const fixtureRevision = "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
+    const fixtureRevision = "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96";
     const corpus = await corpusFixture();
     const entry = corpus.entries.find(({ id }) => id === "real-line-joints-v10--static");
     expect(entry).toMatchObject({
@@ -941,7 +941,7 @@ describe("visual parity v1 contracts", () => {
   });
 
   it("pins the actual producer snapshot after the Studio LineJoints move-and-scale edit", async () => {
-    const fixtureRevision = "3de97161c0f5ff210f2a0b7e461bc7067dcc8a0eb92c66f02d3a870dfbd27a7f";
+    const fixtureRevision = "909a4cf37a4b883821b2f91da4df8b5ae0cfc79c1ee041745e69fc48e5c74cd9";
     const sourceHash = "d95608a27f48b4cc2b9d7a5201cf455d38c400a91bd975b4a0d62575cf6ab027";
     const corpus = await corpusFixture();
     const entry = corpus.entries.find(({ id }) => id === "real-line-joints-v10-edited--static");

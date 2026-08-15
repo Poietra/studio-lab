@@ -75,6 +75,7 @@ async function verifiedRun(options: Readonly<{ identityMap?: boolean; pngAsset?:
     assets: options.pngAsset ? pngManifest : bundleFixture.assets,
     scene: {
       ...bundleFixture.scene,
+      compositing: "linear-light",
       ...(options.pngAsset
         ? {
             assetManifest: { manifestDigest: pngManifestDigest, manifestId },
@@ -95,6 +96,7 @@ async function verifiedRun(options: Readonly<{ identityMap?: boolean; pngAsset?:
           }
         : {}),
       sceneId: id,
+      stateSampling: { frameRate: null, retainsTerminalState: false },
       source: {
         kind: "imported-manim-server-snapshot",
         runtimeConfigHash: RUNTIME_HASH,

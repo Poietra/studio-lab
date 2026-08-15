@@ -5408,7 +5408,10 @@ mod tests {
     fn static_imported_bundle() -> SceneIrBundleV1 {
         let mut bundle = fixture_bundle("shared-circle-opacity.json");
         bundle.scene.animation_channels.clear();
+        bundle.scene.compositing = poietra_scene_ir::RenderCompositingV1::ManimCairoSrgb;
         bundle.scene.required_capabilities = vec![SceneCapabilityV1::ShapePrimitives];
+        bundle.scene.state_sampling.frame_rate = None;
+        bundle.scene.state_sampling.retains_terminal_state = true;
         bundle.scene.source = SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                 .to_owned(),
@@ -6597,6 +6600,12 @@ mod tests {
             format!("studio-static-transform:{NEXT_REVISION}")
         );
         assert_eq!(result.scene.source.revision_hash(), NEXT_REVISION);
+        assert_eq!(
+            result.scene.compositing,
+            poietra_scene_ir::RenderCompositingV1::ManimCairoSrgb
+        );
+        assert_eq!(result.scene.state_sampling.frame_rate, None);
+        assert!(result.scene.state_sampling.retains_terminal_state);
     }
 
     #[test]

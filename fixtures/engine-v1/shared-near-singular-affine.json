@@ -40,6 +40,7 @@
         "frameWidth": 16
       }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -111,6 +112,7 @@
     "requiredCapabilities": ["affine-transform-animation", "shape-primitives"],
     "sceneId": "shared:near-singular-affine",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",
