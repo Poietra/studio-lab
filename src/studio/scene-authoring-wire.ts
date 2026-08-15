@@ -4,6 +4,7 @@ import type {
   ApplyStudioMathTexTransformEditWireCommandV1,
   ApplyStudioMotionEditWireCommandV1,
   ProjectStudioMathTexTransformWireCommandV1,
+  ProjectStudioMotionEditWireCommandV1,
   StudioMathTexContentV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
@@ -38,6 +39,12 @@ type StudioMathTexTransformProjectionCommandInput = Omit<
 > &
   Readonly<{ programs: readonly CanonicalEditProgram[] }>;
 
+type StudioMotionProjectionCommandInput = Readonly<{
+  baseDuration: number;
+  programs: readonly CanonicalEditProgram[];
+  runtimeSceneState: RuntimeSceneState;
+}>;
+
 function studioProgramEnvelope(program: CanonicalEditProgram) {
   const source = program.anchor.source;
   const anchorSource =
@@ -61,6 +68,81 @@ function studioProgramEnvelope(program: CanonicalEditProgram) {
   };
 }
 
+function normalizedStaticRootOperation(
+  operation: CanonicalEditOperation,
+): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
+  if (operation.kind === "SetProperty" && operation.key === "position") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      kind: "position",
+      position: isPointValue(operation.value) ? operation.value : null,
+    };
+  }
+  if (operation.kind === "SetProperty" && operation.key === "content") {
+    const content = canonicalEditableContent(operation.value, "MathTex");
+    if (content?.texParts) {
+      return {
+        ...common,
+        content: content as StudioMathTexContentV1,
+        entityId: operation.entityId,
+        kind: "math-tex-content",
+      };
+    }
+  }
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+    return {
+      ...common,
+      controlPresent: operation.control !== undefined,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "uniform-scale",
+      relativeFactor: operation.relativeFactor ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
+  if (operation.kind === "ResizeEntity") {
+    return {
+      ...common,
+      entityId: operation.entityId,
+      fromDimensions: operation.from.dimensions,
+      fromPosition: operation.from.position,
+      fromScale: operation.scale,
+      kind: "resize",
+      shape: operation.shape,
+      toDimensions: operation.to.dimensions,
+      toPosition: operation.to.position,
+    };
+  }
+  if (operation.kind === "CreateMotion") {
+    return {
+      ...common,
+      controlOffset: operation.controlOffset,
+      delta: operation.delta,
+      easing: operation.easing,
+      kind: "create-motion",
+      targetEntityIds: operation.targetEntityIds,
+    };
+  }
+  if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
+    return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
+  }
+  return { ...common, kind: "unsupported" };
+}
+
+function normalizedStaticRootPrograms(programs: readonly CanonicalEditProgram[]) {
+  return programs.map((program) => ({
+    ...studioProgramEnvelope(program),
+    operations: program.operations.map(normalizedStaticRootOperation),
+  }));
+}
+
 /** Normalizes one complete Canonical Program batch for the static-root Rust authority. */
 export function buildStaticRootTransformEditCommand(
   input: StaticRootTransformCommandInput,
@@ -68,76 +150,7 @@ export function buildStaticRootTransformEditCommand(
   return {
     ...input,
     mathTexOutlines: input.mathTexOutlines ?? [],
-    programs: input.programs.map((program) => ({
-      ...studioProgramEnvelope(program),
-      operations: program.operations.map(
-        (operation): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] => {
-          const common = {
-            dependsOn: operation.dependsOn,
-            id: operation.id,
-            interval: operation.interval,
-            origin: operation.provenance.origin,
-          };
-          if (operation.kind === "SetProperty" && operation.key === "position") {
-            return {
-              ...common,
-              entityId: operation.entityId,
-              kind: "position",
-              position: isPointValue(operation.value) ? operation.value : null,
-            };
-          }
-          if (operation.kind === "SetProperty" && operation.key === "content") {
-            const content = canonicalEditableContent(operation.value, "MathTex");
-            if (content?.texParts) {
-              return {
-                ...common,
-                content: content as StudioMathTexContentV1,
-                entityId: operation.entityId,
-                kind: "math-tex-content",
-              };
-            }
-          }
-          if (operation.kind === "AnimateProperty" && operation.key === "scale") {
-            return {
-              ...common,
-              controlPresent: operation.control !== undefined,
-              entityId: operation.entityId,
-              from: typeof operation.from === "number" ? operation.from : null,
-              kind: "uniform-scale",
-              relativeFactor: operation.relativeFactor ?? null,
-              to: typeof operation.to === "number" ? operation.to : null,
-            };
-          }
-          if (operation.kind === "ResizeEntity") {
-            return {
-              ...common,
-              entityId: operation.entityId,
-              fromDimensions: operation.from.dimensions,
-              fromPosition: operation.from.position,
-              fromScale: operation.scale,
-              kind: "resize",
-              shape: operation.shape,
-              toDimensions: operation.to.dimensions,
-              toPosition: operation.to.position,
-            };
-          }
-          if (operation.kind === "CreateMotion") {
-            return {
-              ...common,
-              controlOffset: operation.controlOffset,
-              delta: operation.delta,
-              easing: operation.easing,
-              kind: "create-motion",
-              targetEntityIds: operation.targetEntityIds,
-            };
-          }
-          if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
-            return { ...common, entityId: operation.entityId, kind: "persistent-remove", persistent: true };
-          }
-          return { ...common, kind: "unsupported" };
-        },
-      ),
-    })),
+    programs: normalizedStaticRootPrograms(input.programs),
     schema: "poietra.apply-static-root-transform-edit",
     version: 1,
   };
@@ -402,12 +415,98 @@ export function buildStudioMotionEditCommand(input: StudioMotionCommandInput): A
   };
 }
 
+export type StudioMotionProjectionBatchKind = "creation" | "standalone" | "static-root";
+
+/** Coarsely selects a Rust motion planner; exact family admission remains in Rust. */
+export function studioMotionProjectionBatchKind(
+  programs: readonly CanonicalEditProgram[],
+): StudioMotionProjectionBatchKind | null {
+  if (programs.length === 0 || programs.some((program) => program.operations.length === 0)) return null;
+  const operations = programs.flatMap(({ operations }) => operations);
+  if (!operations.some(({ kind }) => kind === "CreateMotion")) return null;
+  if (operations.some(({ kind }) => kind === "TransformContent")) return null;
+  if (operations.some(({ kind }) => kind === "CreateEntity")) return "creation";
+  if (operations.every(({ kind }) => kind === "CreateMotion")) return "standalone";
+  if (
+    operations.every(
+      (operation) =>
+        operation.kind === "CreateMotion" ||
+        operation.kind === "ResizeEntity" ||
+        (operation.kind === "SetProperty" && (operation.key === "position" || operation.key === "content")) ||
+        (operation.kind === "AnimateProperty" && operation.key === "scale") ||
+        (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent),
+    )
+  ) {
+    return "static-root";
+  }
+  return null;
+}
+
+/** Normalizes a motion-bearing batch for snapshot-free Rust admission. */
+export function buildStudioMotionProjectionCommand(
+  input: StudioMotionProjectionCommandInput,
+): ProjectStudioMotionEditWireCommandV1 | null {
+  const kind = studioMotionProjectionBatchKind(input.programs);
+  if (!kind) return null;
+  const base = {
+    baseDuration: input.baseDuration,
+    schema: "poietra.project-studio-motion-edit" as const,
+    version: 1 as const,
+  };
+  if (kind === "creation") {
+    return {
+      ...base,
+      batch: {
+        kind,
+        programs: input.programs.map((program) => ({
+          ...studioProgramEnvelope(program),
+          operations: program.operations.map(normalizedStudioCreationOperation),
+        })),
+      },
+    };
+  }
+  if (kind === "standalone") {
+    return {
+      ...base,
+      batch: {
+        kind,
+        programs: input.programs.map((program) => ({
+          ...studioProgramEnvelope(program),
+          operations: program.operations.map(normalizedStudioMotionOperation),
+        })),
+        studioEntities: studioMotionProjectionStudioEntities(input.runtimeSceneState),
+      },
+    };
+  }
+  return {
+    ...base,
+    batch: {
+      kind,
+      programs: normalizedStaticRootPrograms(input.programs),
+      studioEntities: staticRootMotionProjectionStudioEntities(input.runtimeSceneState),
+    },
+  };
+}
+
 /** Projects imported Studio identity facts for Rust motion admission. */
 export function studioMotionStudioEntities(
   runtimeSceneState: RuntimeSceneState,
 ): ApplyStudioMotionEditWireCommandV1["studioEntities"] {
   return Object.entries(runtimeSceneState.objectGraph.entities).map(([objectGraphKey, entity]) => ({
     objectGraphKey,
+    provisional: entity.provisional,
+    sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
+  }));
+}
+
+/** Projects the logical position and lifetime facts needed by standalone motion admission. */
+export function studioMotionProjectionStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): Extract<ProjectStudioMotionEditWireCommandV1["batch"], { kind: "standalone" }>["studioEntities"] {
+  return Object.entries(runtimeSceneState.objectGraph.entities).map(([objectGraphKey, entity]) => ({
+    lifetime: entity.lifetime,
+    objectGraphKey,
+    position: entity.geometry?.position.kind === "known" ? entity.geometry.position.value : null,
     provisional: entity.provisional,
     sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
   }));
@@ -436,5 +535,15 @@ export function staticRootTransformStudioEntities(
     scale: entity.geometry?.scale.kind === "known" ? entity.geometry.scale.value : null,
     sourceIdentity: entity.sourceIdentity.kind === "known" ? entity.sourceIdentity.value : null,
     ...(entity.transactionId === undefined ? {} : { transactionId: entity.transactionId }),
+  }));
+}
+
+/** Adds logical lifetime facts to the static-root identity projection used by motion admission. */
+export function staticRootMotionProjectionStudioEntities(
+  runtimeSceneState: RuntimeSceneState,
+): Extract<ProjectStudioMotionEditWireCommandV1["batch"], { kind: "static-root" }>["studioEntities"] {
+  return staticRootTransformStudioEntities(runtimeSceneState).map((identity) => ({
+    ...identity,
+    lifetime: runtimeSceneState.objectGraph.entities[identity.objectGraphKey]?.lifetime ?? [],
   }));
 }

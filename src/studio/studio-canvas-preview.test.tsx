@@ -162,6 +162,7 @@ function previewView(
     interactionGeometry,
     interactionAuthority,
     mathTexTransformProjection: null,
+    motionProjection: null,
     persistentRemoveProjection: null,
     staticRootProjection: null,
     programAuthority: null,

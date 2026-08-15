@@ -16,8 +16,10 @@ import {
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
   createProjectStudioMathTexTransformCompiler,
+  createProjectStudioMotionCompiler,
   createProjectStudioTimelineCompiler,
   type ProjectStudioMathTexTransformWireCommandV1,
+  type ProjectStudioMotionEditWireCommandV1,
   type ProjectStudioTimelineWireCommandV1,
 } from "./scene-authoring";
 
@@ -235,6 +237,25 @@ const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
   studioEntities: [{ objectGraphKey: "source:circle", provisional: false, sourceIdentity: "circle" }],
   version: 1,
   viewport: { height: 360, width: 640 },
+};
+
+const studioMotionProjectionCommand: ProjectStudioMotionEditWireCommandV1 = {
+  baseDuration: 2,
+  batch: {
+    kind: "standalone",
+    programs: studioMotionEditCommand.programs,
+    studioEntities: [
+      {
+        lifetime: [{ end: 2, start: 0 }],
+        objectGraphKey: "source:circle",
+        position: { x: 320, y: 180 },
+        provisional: false,
+        sourceIdentity: "circle",
+      },
+    ],
+  },
+  schema: "poietra.project-studio-motion-edit",
+  version: 1,
 };
 
 const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
@@ -551,10 +572,13 @@ describe("Scene authoring WASM adapter", () => {
       motions: [
         {
           control: { x: 340, y: 180 },
+          controlOffset: { x: 0, y: 0 },
+          delta: { x: 40, y: 0 },
           easing: "smooth",
           from: { x: 320, y: 180 },
           interval: { end: 1, start: 0 },
           operationId: "motion",
+          sourceInterval: { end: 1, start: 0 },
           targetEntityId: "replacement",
           to: { x: 360, y: 180 },
           transactionId: "transform-motion",
@@ -572,6 +596,38 @@ describe("Scene authoring WASM adapter", () => {
 
     await expect(project(studioMathTexTransformProjectionCommand)).resolves.toEqual(projection);
     expect(calls).toEqual([studioMathTexTransformProjectionCommand]);
+  });
+
+  it("projects normalized motion Programs without a Scene snapshot", async () => {
+    const calls: unknown[] = [];
+    const projection = {
+      insertions: [{ at: 0.5, duration: 1.5, transactionId: "motion" }],
+      motions: [
+        {
+          control: { x: 400, y: 180 },
+          controlOffset: { x: 20, y: -40 },
+          delta: { x: 120, y: 80 },
+          easing: "smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 2, start: 0.5 },
+          operationId: "motion-1",
+          sourceInterval: { end: 2, start: 0.5 },
+          targetEntityId: "source:circle",
+          to: { x: 440, y: 260 },
+          transactionId: "motion",
+        },
+      ],
+      projectedDuration: 3.5,
+    } as const;
+    const project = createProjectStudioMotionCompiler(async () => ({
+      projectStudioMotionEditV1: (commandJson) => {
+        calls.push(JSON.parse(new TextDecoder().decode(commandJson)));
+        return new TextEncoder().encode(JSON.stringify(projection));
+      },
+    }));
+
+    await expect(project(studioMotionProjectionCommand)).resolves.toEqual(projection);
+    expect(calls).toEqual([studioMotionProjectionCommand]);
   });
 
   it("rejects malformed or incomplete Rust responses", async () => {

@@ -162,7 +162,7 @@ pub struct StudioStaticRootProjection {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioMathTexTransformProjectionInsertion {
+pub struct StudioMotionProjectionInsertion {
     pub at: f64,
     pub duration: f64,
     pub transaction_id: String,
@@ -183,12 +183,15 @@ pub struct StudioMathTexTransformProjectedReplacement {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct StudioMathTexTransformProjectedMotion {
+pub struct StudioProjectedMotion {
     pub control: PointV1,
+    pub control_offset: PointV1,
+    pub delta: PointV1,
     pub easing: StudioMotionEasing,
     pub from: PointV1,
     pub interval: IntervalV1,
     pub operation_id: String,
+    pub source_interval: IntervalV1,
     pub target_entity_id: String,
     pub to: PointV1,
     pub transaction_id: String,
@@ -197,8 +200,8 @@ pub struct StudioMathTexTransformProjectedMotion {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioMathTexTransformProjection {
-    pub insertions: Vec<StudioMathTexTransformProjectionInsertion>,
-    pub motions: Vec<StudioMathTexTransformProjectedMotion>,
+    pub insertions: Vec<StudioMotionProjectionInsertion>,
+    pub motions: Vec<StudioProjectedMotion>,
     pub projected_duration: f64,
     pub replacements: Vec<StudioMathTexTransformProjectedReplacement>,
 }
@@ -211,6 +214,8 @@ pub struct StudioAuthoringEditResult {
     pub math_tex_transform_projection: Option<StudioMathTexTransformProjection>,
     pub persistent_remove_projection: StudioPersistentRemoveProjection,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub motion_projection: Option<StudioMotionProjection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub static_root_projection: Option<StudioStaticRootProjection>,
 }
 
@@ -219,6 +224,15 @@ pub struct StudioAuthoringEditResult {
 pub enum StudioMotionEasing {
     Linear,
     Smooth,
+}
+
+/// One normalized motion segment projected in Studio coordinates.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioMotionProjection {
+    pub insertions: Vec<StudioMotionProjectionInsertion>,
+    pub motions: Vec<StudioProjectedMotion>,
+    pub projected_duration: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -240,6 +254,27 @@ struct PlannedSceneMotion {
     easing: StudioMotionEasing,
     interval: IntervalV1,
     target_entity_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PlannedStudioMotion {
+    base_interval: IntervalV1,
+    control_offset: PointV1,
+    delta: PointV1,
+    easing: StudioMotionEasing,
+    interval: IntervalV1,
+    operation_id: String,
+    parallel: bool,
+    target_entity_ids: Vec<String>,
+    transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StudioMotionPlan {
+    insertions: Vec<StudioMotionProjectionInsertion>,
+    motions: Vec<PlannedStudioMotion>,
+    projected_duration: f64,
+    timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -273,6 +308,7 @@ struct PlannedMathTexTransformMotion {
     easing: StudioMotionEasing,
     interval: IntervalV1,
     operation_id: String,
+    source_interval: IntervalV1,
     target_entity_id: String,
     transaction_id: String,
 }
@@ -284,7 +320,7 @@ struct StudioMathTexTransformPlan {
     maximum_base_end: f64,
     motion: Option<PlannedMathTexTransformMotion>,
     planned: Vec<PlannedMathTexTransform>,
-    projection_insertions: Vec<StudioMathTexTransformProjectionInsertion>,
+    projection_insertions: Vec<StudioMotionProjectionInsertion>,
     projected_duration: f64,
     timeline_insertions: Vec<SceneTimelineInsertion>,
 }
@@ -481,6 +517,15 @@ pub struct StudioMotionEntityIdentity {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMotionProjectionEntityIdentity {
+    #[serde(flatten)]
+    pub identity: StudioMotionEntityIdentity,
+    pub lifetime: Vec<IntervalV1>,
+    pub position: PointV1,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioMotionSourceBinding {
     pub runtime_entity_id: String,
     pub source_identity_key: String,
@@ -497,6 +542,35 @@ pub struct ApplyStudioMotionEditCommand {
     pub source_runtime_bindings: Vec<StudioMotionSourceBinding>,
     pub studio_entities: Vec<StudioMotionEntityIdentity>,
     pub viewport: StudioAuthoringSize,
+}
+
+/// One closed motion-bearing Studio batch accepted by the snapshot-free projector.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum StudioMotionProjectionBatch {
+    Standalone {
+        programs: Vec<StudioMotionProgram>,
+        studio_entities: Vec<StudioMotionProjectionEntityIdentity>,
+    },
+    StaticRoot {
+        programs: Vec<StaticRootTransformProgram>,
+        studio_entities: Vec<StaticRootMotionProjectionEntityIdentity>,
+    },
+    Creation {
+        programs: Vec<StudioCreationProgram>,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProjectStudioMotionEditCommand {
+    pub base_duration: f64,
+    pub batch: StudioMotionProjectionBatch,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
@@ -944,6 +1018,14 @@ pub struct StaticRootTransformStudioEntity {
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StaticRootMotionProjectionEntityIdentity {
+    #[serde(flatten)]
+    pub identity: StaticRootTransformStudioEntity,
+    pub lifetime: Vec<IntervalV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StaticRootTransformSourceBinding {
     pub source_identity_key: String,
     pub runtime_entity_id: String,
@@ -1296,6 +1378,12 @@ pub enum ApplyStudioMotionEditError {
     ProvenanceConflict(String),
     #[error("the authored motion Scene failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectStudioMotionEditError {
+    #[error("the normalized Studio Programs do not authorize one motion-bearing batch")]
+    Unsupported,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2221,6 +2309,7 @@ fn plan_studio_math_tex_transform_programs(
                         easing: *easing,
                         interval: resolved_interval.clone(),
                         operation_id: id.to_owned(),
+                        source_interval: interval.clone(),
                         target_entity_id: final_target_id.clone(),
                         transaction_id: program.transaction_id.clone(),
                     });
@@ -2232,7 +2321,7 @@ fn plan_studio_math_tex_transform_programs(
             previous_interval_end = Some(resolved_interval.end);
         }
 
-        projection_insertions.push(StudioMathTexTransformProjectionInsertion {
+        projection_insertions.push(StudioMotionProjectionInsertion {
             at: resolved_anchor,
             duration: insertion_duration,
             transaction_id: program.transaction_id.clone(),
@@ -2309,12 +2398,15 @@ fn studio_math_tex_transform_projection_from_plan(
             {
                 return Err(ApplyStudioMathTexTransformEditError::Unsupported);
             }
-            Ok(StudioMathTexTransformProjectedMotion {
+            Ok(StudioProjectedMotion {
                 control,
+                control_offset: motion.control_offset.clone(),
+                delta: motion.delta.clone(),
                 easing: motion.easing,
                 from: from.clone(),
                 interval: motion.interval.clone(),
                 operation_id: motion.operation_id.clone(),
+                source_interval: motion.source_interval.clone(),
                 target_entity_id: motion.target_entity_id.clone(),
                 to,
                 transaction_id: motion.transaction_id.clone(),
@@ -2473,6 +2565,191 @@ fn closed_studio_motion_operations(
         }
     }
     Some(operations)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one bounded motion scheduler keeps full apply and snapshot-free projection on the same admission path"
+)]
+fn plan_studio_motion_programs(
+    base_duration: f64,
+    programs: &[StudioMotionProgram],
+) -> Result<StudioMotionPlan, ProjectStudioMotionEditError> {
+    if !base_duration.is_finite() || base_duration <= 0.0 || programs.is_empty() {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+    let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
+    ordered_programs.sort_by(|left, right| {
+        programs[*left]
+            .anchor_resolved_seconds
+            .total_cmp(&programs[*right].anchor_resolved_seconds)
+            .then(left.cmp(right))
+    });
+    let mut operation_ids = BTreeSet::new();
+    let mut resolved_offset = 0.0;
+    let mut projected_duration = base_duration;
+    let mut motions = Vec::new();
+    let mut insertions = Vec::with_capacity(programs.len());
+    let mut timeline_insertions = Vec::with_capacity(programs.len());
+
+    for program_index in ordered_programs {
+        let program = &programs[program_index];
+        let operations = closed_studio_motion_operations(program, base_duration)
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        let mut maximum_end = program.anchor_resolved_seconds;
+        let mut parallel_bucket_start: Option<f64> = None;
+        let mut parallel_targets = BTreeSet::new();
+        for operation in operations {
+            if !operation_ids.insert(operation.id()) {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            let StudioMotionOperation::CreateMotion {
+                control_offset,
+                delta,
+                easing,
+                interval,
+                target_entity_ids,
+                ..
+            } = operation
+            else {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            };
+            let mut operation_targets = BTreeSet::new();
+            if target_entity_ids.is_empty()
+                || target_entity_ids
+                    .iter()
+                    .any(|target| target.is_empty() || !operation_targets.insert(target.as_str()))
+                || !studio_authoring_point_is_finite(control_offset)
+                || !studio_authoring_point_is_finite(delta)
+                || (control_offset.x == 0.0
+                    && control_offset.y == 0.0
+                    && delta.x == 0.0
+                    && delta.y == 0.0)
+                || interval.start < 0.0
+                || interval.start >= interval.end
+                || interval.end > base_duration + TIMELINE_ANCHOR_EPSILON
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            if program.requested_execution == StudioProgramExecution::Parallel {
+                if parallel_bucket_start.is_none_or(|bucket_start| {
+                    (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
+                }) {
+                    parallel_bucket_start = Some(interval.start);
+                    parallel_targets.clear();
+                }
+                if target_entity_ids
+                    .iter()
+                    .any(|target| !parallel_targets.insert(target.as_str()))
+                {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            }
+            maximum_end = maximum_end.max(interval.end);
+            motions.push(PlannedStudioMotion {
+                base_interval: interval.clone(),
+                control_offset: control_offset.clone(),
+                delta: delta.clone(),
+                easing: *easing,
+                interval: IntervalV1 {
+                    end: interval.end + resolved_offset,
+                    start: interval.start + resolved_offset,
+                },
+                operation_id: operation.id().to_owned(),
+                parallel: program.requested_execution == StudioProgramExecution::Parallel,
+                target_entity_ids: target_entity_ids.clone(),
+                transaction_id: program.transaction_id.clone(),
+            });
+        }
+        let duration = maximum_end - program.anchor_resolved_seconds;
+        let at = program.anchor_resolved_seconds + resolved_offset;
+        if !duration.is_finite()
+            || duration <= 0.0
+            || !at.is_finite()
+            || at > projected_duration + TIMELINE_ANCHOR_EPSILON
+        {
+            return Err(ProjectStudioMotionEditError::Unsupported);
+        }
+        insertions.push(StudioMotionProjectionInsertion {
+            at,
+            duration,
+            transaction_id: program.transaction_id.clone(),
+        });
+        timeline_insertions.push(SceneTimelineInsertion { at, duration });
+        resolved_offset += duration;
+        projected_duration += duration;
+    }
+
+    Ok(StudioMotionPlan {
+        insertions,
+        motions,
+        projected_duration,
+        timeline_insertions,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct StudioMotionProjectionTarget {
+    lifetime: IntervalV1,
+    position: PointV1,
+}
+
+fn project_studio_motion_plan(
+    plan: &StudioMotionPlan,
+    mut targets: BTreeMap<String, StudioMotionProjectionTarget>,
+) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
+    for target in targets.values_mut() {
+        for insertion in &plan.timeline_insertions {
+            shift_interval_for_insertion(&mut target.lifetime, insertion);
+        }
+    }
+    let mut motions = Vec::new();
+    for motion in &plan.motions {
+        for target_entity_id in &motion.target_entity_ids {
+            let target = targets
+                .get_mut(target_entity_id)
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            if motion.interval.start < target.lifetime.start - TIMELINE_ANCHOR_EPSILON
+                || motion.interval.end > target.lifetime.end + TIMELINE_ANCHOR_EPSILON
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            let from = target.position.clone();
+            let to = PointV1 {
+                x: from.x + motion.delta.x,
+                y: from.y + motion.delta.y,
+            };
+            let control = PointV1 {
+                x: from.x + motion.delta.x / 2.0 + motion.control_offset.x,
+                y: from.y + motion.delta.y / 2.0 + motion.control_offset.y,
+            };
+            if !studio_authoring_point_is_finite(&from)
+                || !studio_authoring_point_is_finite(&to)
+                || !studio_authoring_point_is_finite(&control)
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            target.position.clone_from(&to);
+            motions.push(StudioProjectedMotion {
+                control,
+                control_offset: motion.control_offset.clone(),
+                delta: motion.delta.clone(),
+                easing: motion.easing,
+                from,
+                interval: motion.interval.clone(),
+                operation_id: motion.operation_id.clone(),
+                source_interval: motion.base_interval.clone(),
+                target_entity_id: target_entity_id.clone(),
+                to,
+                transaction_id: motion.transaction_id.clone(),
+            });
+        }
+    }
+    Ok(StudioMotionProjection {
+        insertions: plan.insertions.clone(),
+        motions,
+        projected_duration: plan.projected_duration,
+    })
 }
 
 fn resolve_studio_motion_targets(
@@ -2910,6 +3187,881 @@ fn static_root_motion_program(program: &StaticRootTransformProgram) -> Option<St
         schedule_order: program.schedule_order.clone(),
         transaction_id: program.transaction_id.clone(),
     })
+}
+
+fn one_projection_lifetime(lifetimes: &[IntervalV1]) -> Option<IntervalV1> {
+    lifetimes
+        .first()
+        .filter(|lifetime| {
+            lifetimes.len() == 1
+                && lifetime.start.is_finite()
+                && lifetime.end.is_finite()
+                && lifetime.start < lifetime.end
+        })
+        .cloned()
+}
+
+fn project_standalone_motion_programs(
+    base_duration: f64,
+    programs: &[StudioMotionProgram],
+    studio_entities: &[StudioMotionProjectionEntityIdentity],
+) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
+    let plan = plan_studio_motion_programs(base_duration, programs)?;
+    let target_ids = plan
+        .motions
+        .iter()
+        .flat_map(|motion| motion.target_entity_ids.iter())
+        .collect::<BTreeSet<_>>();
+    let mut targets = BTreeMap::new();
+    for target_id in target_ids {
+        let mut matching = studio_entities
+            .iter()
+            .filter(|entity| entity.identity.object_graph_key == *target_id);
+        let entity = matching
+            .next()
+            .filter(|entity| {
+                !entity.identity.provisional
+                    && entity
+                        .identity
+                        .source_identity
+                        .as_deref()
+                        .is_some_and(|identity| !identity.is_empty())
+            })
+            .filter(|_| matching.next().is_none())
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        let position = entity.position.clone();
+        if !studio_authoring_point_is_finite(&position) {
+            return Err(ProjectStudioMotionEditError::Unsupported);
+        }
+        let lifetime = one_projection_lifetime(&entity.lifetime)
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        targets.insert(
+            target_id.clone(),
+            StudioMotionProjectionTarget { lifetime, position },
+        );
+    }
+    project_studio_motion_plan(&plan, targets)
+}
+
+#[allow(
+    clippy::float_cmp,
+    clippy::too_many_lines,
+    reason = "exact zero and normalized scale are closed Studio authority facts; the bounded family admission stays atomic"
+)]
+fn project_static_root_motion_programs(
+    base_duration: f64,
+    programs: &[StaticRootTransformProgram],
+    studio_entities: &[StaticRootMotionProjectionEntityIdentity],
+) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
+    let operation_count = programs
+        .iter()
+        .map(|program| program.operations.len())
+        .sum::<usize>();
+    if !base_duration.is_finite()
+        || base_duration <= 0.0
+        || programs.is_empty()
+        || operation_count == 0
+        || operation_count > 16
+        || programs.iter().any(|program| {
+            !program.lowering_supported
+                || program.transaction_id.is_empty()
+                || !studio_program_anchor_is_closed(
+                    &program.anchor_source,
+                    program.anchor_captured_playhead,
+                    program.anchor_resolved_seconds,
+                    base_duration,
+                )
+                || !static_root_transform_program_is_closed(program)
+                || program
+                    .operations
+                    .iter()
+                    .any(|operation| operation.origin != program.origin)
+        })
+    {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+
+    let mut ordered = (0..programs.len()).collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        programs[*left]
+            .anchor_resolved_seconds
+            .total_cmp(&programs[*right].anchor_resolved_seconds)
+            .then(left.cmp(right))
+    });
+    let mut static_indexes = Vec::new();
+    let mut motion_programs = Vec::new();
+    let mut reached_motion = false;
+    for index in ordered {
+        let program = &programs[index];
+        let motion_count = program
+            .operations
+            .iter()
+            .filter(|operation| {
+                matches!(
+                    operation.kind,
+                    StaticRootTransformOperationKind::CreateMotion { .. }
+                )
+            })
+            .count();
+        if motion_count > 0 {
+            if motion_count != program.operations.len() {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            reached_motion = true;
+            motion_programs.push(
+                static_root_motion_program(program)
+                    .ok_or(ProjectStudioMotionEditError::Unsupported)?,
+            );
+        } else {
+            if reached_motion {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            static_indexes.push(index);
+        }
+    }
+    if motion_programs.is_empty() || static_indexes.is_empty() {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+
+    let mut operation_ids = BTreeSet::new();
+    let mut transformed_entity_id: Option<String> = None;
+    let mut transform_count = 0_usize;
+    let mut position: Option<PointV1> = None;
+    let mut uniform_scale_from: Option<f64> = None;
+    let mut resize: Option<(
+        StudioAuthoringEntityKind,
+        StudioAuthoringDimensions,
+        PointV1,
+        f64,
+        StudioAuthoringDimensions,
+        PointV1,
+    )> = None;
+    for index in static_indexes {
+        let program = &programs[index];
+        for scheduled_id in &program.schedule_order {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *scheduled_id)
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            let entity_id = operation
+                .entity_id
+                .as_deref()
+                .filter(|entity_id| !entity_id.is_empty())
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            if operation.id.is_empty()
+                || !operation_ids.insert(operation.id.as_str())
+                || !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
+                || !studio_timeline_semantic_values_match(operation.interval.start, 0.0)
+                || !studio_timeline_semantic_values_match(operation.interval.end, 0.0)
+                || transformed_entity_id
+                    .as_deref()
+                    .is_some_and(|expected| expected != entity_id)
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            transformed_entity_id.get_or_insert_with(|| entity_id.to_owned());
+            transform_count += 1;
+            match &operation.kind {
+                StaticRootTransformOperationKind::Position {
+                    position: Some(target),
+                } if matches!(
+                    operation.origin,
+                    StudioAuthoringOrigin::DirectManipulation
+                        | StudioAuthoringOrigin::StudioDefault
+                ) && studio_authoring_point_is_finite(target)
+                    && position.replace(target.clone()).is_none() => {}
+                StaticRootTransformOperationKind::UniformScale {
+                    control_present,
+                    from: Some(from),
+                    relative_factor: Some(factor),
+                    to: Some(to),
+                } if operation.origin == StudioAuthoringOrigin::DirectManipulation
+                    && !*control_present
+                    && factor.is_finite()
+                    && *factor > 0.0
+                    && *factor != 1.0
+                    && from.is_finite()
+                    && *from > 0.0
+                    && to.is_finite()
+                    && *to > 0.0
+                    && close_transform_baseline_value(*to / *from, *factor)
+                    && uniform_scale_from.replace(*from).is_none() => {}
+                StaticRootTransformOperationKind::Resize {
+                    from_dimensions,
+                    from_position,
+                    from_scale,
+                    shape,
+                    to_dimensions,
+                    to_position,
+                } if matches!(
+                    *shape,
+                    StudioAuthoringEntityKind::Circle | StudioAuthoringEntityKind::Rectangle
+                ) && matches!(
+                    operation.origin,
+                    StudioAuthoringOrigin::DirectManipulation
+                        | StudioAuthoringOrigin::StudioDefault
+                ) && studio_authoring_point_is_finite(from_position)
+                    && studio_authoring_point_is_finite(to_position)
+                    && from_scale.is_finite()
+                    && *from_scale > 0.0
+                    && resize
+                        .replace((
+                            *shape,
+                            *from_dimensions,
+                            from_position.clone(),
+                            *from_scale,
+                            *to_dimensions,
+                            to_position.clone(),
+                        ))
+                        .is_none() => {}
+                StaticRootTransformOperationKind::Position { .. }
+                | StaticRootTransformOperationKind::UniformScale { .. }
+                | StaticRootTransformOperationKind::Resize { .. }
+                | StaticRootTransformOperationKind::PersistentRemove { .. }
+                | StaticRootTransformOperationKind::CreateMotion { .. }
+                | StaticRootTransformOperationKind::MathTexContent { .. }
+                | StaticRootTransformOperationKind::Unsupported => {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            }
+        }
+    }
+    if transform_count == 0
+        || transform_count > 2
+        || resize.is_some() && transform_count != 1
+        || resize.is_none() && position.is_none() && uniform_scale_from.is_none()
+    {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+
+    let plan = plan_studio_motion_programs(base_duration, &motion_programs)?;
+    if plan
+        .motions
+        .iter()
+        .any(|motion| !operation_ids.insert(motion.operation_id.as_str()))
+    {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+    let target_ids = plan
+        .motions
+        .iter()
+        .flat_map(|motion| motion.target_entity_ids.iter())
+        .chain(transformed_entity_id.iter())
+        .collect::<BTreeSet<_>>();
+    let mut targets = BTreeMap::new();
+    for target_id in target_ids {
+        let mut matching = studio_entities.iter().filter(|entity| {
+            entity.identity.object_graph_key == *target_id && entity.identity.id == *target_id
+        });
+        let entity = matching
+            .next()
+            .filter(|entity| {
+                !entity.identity.provisional
+                    && entity.identity.transaction_id.is_none()
+                    && entity
+                        .identity
+                        .source_identity
+                        .as_deref()
+                        .is_some_and(|identity| !identity.is_empty())
+            })
+            .filter(|_| matching.next().is_none())
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        let lifetime = one_projection_lifetime(&entity.lifetime)
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        let mut target_position = entity
+            .identity
+            .position
+            .as_ref()
+            .filter(|position| studio_authoring_point_is_finite(position))
+            .cloned()
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        if transformed_entity_id.as_deref() == Some(target_id.as_str()) {
+            if let Some((
+                shape,
+                from_dimensions,
+                from_position,
+                from_scale,
+                to_dimensions,
+                to_position,
+            )) = &resize
+            {
+                if entity.identity.kind != *shape
+                    || entity.identity.dimensions != *from_dimensions
+                    || entity
+                        .identity
+                        .scale
+                        .is_none_or(|scale| !close_transform_baseline_value(scale, *from_scale))
+                    || !close_transform_baseline_value(target_position.x, from_position.x)
+                    || !close_transform_baseline_value(target_position.y, from_position.y)
+                    || studio_authoring_shape_size(*shape, *to_dimensions).is_none()
+                {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+                target_position.clone_from(to_position);
+            } else {
+                if uniform_scale_from.is_some_and(|from| {
+                    entity
+                        .identity
+                        .scale
+                        .is_none_or(|scale| !close_transform_baseline_value(scale, from))
+                }) {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+                if let Some(target) = &position {
+                    target_position.clone_from(target);
+                }
+            }
+        }
+        targets.insert(
+            target_id.clone(),
+            StudioMotionProjectionTarget {
+                lifetime,
+                position: target_position,
+            },
+        );
+    }
+    project_studio_motion_plan(&plan, targets)
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "the creation family must admit its complete normalized batch before exposing any motion fact"
+)]
+fn project_creation_motion_programs(
+    base_duration: f64,
+    programs: &[StudioCreationProgram],
+) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
+    if !base_duration.is_finite()
+        || base_duration <= 0.0
+        || programs.is_empty()
+        || programs.iter().any(|program| {
+            !program.lowering_supported
+                || program.transaction_id.is_empty()
+                || !studio_program_anchor_is_closed(
+                    &program.anchor_source,
+                    program.anchor_captured_playhead,
+                    program.anchor_resolved_seconds,
+                    base_duration,
+                )
+                || !studio_creation_program_is_closed(program)
+        })
+    {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+    let mut operation_ids = BTreeSet::new();
+    if programs
+        .iter()
+        .flat_map(|program| &program.operations)
+        .any(|operation| {
+            operation.id.is_empty()
+                || !operation.interval.start.is_finite()
+                || !operation.interval.end.is_finite()
+                || operation.interval.end < operation.interval.start
+                || !operation_ids.insert(operation.id.as_str())
+        })
+    {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+
+    let mut ordered = (0..programs.len()).collect::<Vec<_>>();
+    ordered.sort_by(|left, right| {
+        programs[*left]
+            .anchor_resolved_seconds
+            .total_cmp(&programs[*right].anchor_resolved_seconds)
+            .then(left.cmp(right))
+    });
+    let mut create_indexes = Vec::new();
+    let mut motion_indexes = Vec::new();
+    let mut other_followup_indexes = Vec::new();
+    let mut reached_followup = false;
+    for index in &ordered {
+        let program = &programs[*index];
+        let contains_create = program
+            .operations
+            .iter()
+            .any(|operation| matches!(operation.kind, StudioCreationOperationKind::Create { .. }));
+        let contains_motion = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::CreateMotion { .. }
+            )
+        });
+        if contains_create {
+            if reached_followup
+                || contains_motion
+                || program.operations.iter().any(|operation| {
+                    !matches!(
+                        operation.kind,
+                        StudioCreationOperationKind::Create { .. }
+                            | StudioCreationOperationKind::Position { .. }
+                            | StudioCreationOperationKind::FadeIn { .. }
+                    )
+                })
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            create_indexes.push(*index);
+        } else if contains_motion {
+            if program.operations.iter().any(|operation| {
+                !matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            }) {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            reached_followup = true;
+            motion_indexes.push(*index);
+        } else {
+            reached_followup = true;
+            other_followup_indexes.push(*index);
+        }
+    }
+    if create_indexes.is_empty() || motion_indexes.is_empty() {
+        return Err(ProjectStudioMotionEditError::Unsupported);
+    }
+
+    let mut offsets = vec![0.0; programs.len()];
+    let mut ranks = vec![0_usize; programs.len()];
+    let mut ranked_insertions = Vec::new();
+    let mut insertions = Vec::new();
+    let mut projected_duration = base_duration;
+    let mut resolved_offset = 0.0;
+    for (rank, index) in ordered.iter().copied().enumerate() {
+        let program = &programs[index];
+        let duration = if create_indexes.contains(&index) {
+            program
+                .operations
+                .iter()
+                .filter(|operation| {
+                    matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                })
+                .map(|operation| operation.interval.end)
+                .fold(program.anchor_resolved_seconds, f64::max)
+                - program.anchor_resolved_seconds
+        } else if motion_indexes.contains(&index) {
+            program
+                .operations
+                .iter()
+                .map(|operation| operation.interval.end)
+                .fold(program.anchor_resolved_seconds, f64::max)
+                - program.anchor_resolved_seconds
+        } else {
+            0.0
+        };
+        let at = program.anchor_resolved_seconds + resolved_offset;
+        if !duration.is_finite()
+            || duration < 0.0
+            || !at.is_finite()
+            || at > projected_duration + TIMELINE_ANCHOR_EPSILON
+        {
+            return Err(ProjectStudioMotionEditError::Unsupported);
+        }
+        offsets[index] = resolved_offset;
+        ranks[index] = rank;
+        if duration > 0.0 {
+            let insertion = SceneTimelineInsertion { at, duration };
+            ranked_insertions.push((rank, insertion.clone()));
+            insertions.push(StudioMotionProjectionInsertion {
+                at,
+                duration,
+                transaction_id: program.transaction_id.clone(),
+            });
+            resolved_offset += duration;
+            projected_duration += duration;
+        }
+    }
+
+    let mut targets = BTreeMap::new();
+    for index in create_indexes {
+        let program = &programs[index];
+        let created_ids = program
+            .operations
+            .iter()
+            .filter_map(|operation| match &operation.kind {
+                StudioCreationOperationKind::Create { entity } => Some(entity.id.as_str()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let mut scheduled_created_ids = BTreeSet::new();
+        for operation_id in &program.schedule_order {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            match &operation.kind {
+                StudioCreationOperationKind::Create { entity } => {
+                    if operation.entity_id.is_some()
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                    {
+                        return Err(ProjectStudioMotionEditError::Unsupported);
+                    }
+                    scheduled_created_ids.insert(entity.id.as_str());
+                }
+                StudioCreationOperationKind::Position { position } => {
+                    if operation
+                        .entity_id
+                        .as_deref()
+                        .is_none_or(|entity_id| !scheduled_created_ids.contains(entity_id))
+                        || position
+                            .as_ref()
+                            .is_none_or(|position| !studio_authoring_point_is_finite(position))
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
+                    {
+                        return Err(ProjectStudioMotionEditError::Unsupported);
+                    }
+                }
+                StudioCreationOperationKind::FadeIn { persistent } => {
+                    if !persistent
+                        || operation
+                            .entity_id
+                            .as_deref()
+                            .is_none_or(|entity_id| !scheduled_created_ids.contains(entity_id))
+                        || !studio_timeline_semantic_values_match(
+                            operation.interval.start,
+                            program.anchor_resolved_seconds,
+                        )
+                        || operation.interval.end <= operation.interval.start
+                    {
+                        return Err(ProjectStudioMotionEditError::Unsupported);
+                    }
+                }
+                StudioCreationOperationKind::UniformScale { .. }
+                | StudioCreationOperationKind::Resize { .. }
+                | StudioCreationOperationKind::PersistentRemove { .. }
+                | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Unsupported => {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            }
+        }
+        for entity_id in created_ids {
+            let create = program
+                .operations
+                .iter()
+                .find_map(|operation| match &operation.kind {
+                    StudioCreationOperationKind::Create { entity } if entity.id == entity_id => {
+                        Some(entity)
+                    }
+                    _ => None,
+                })
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            if targets.contains_key(entity_id)
+                || !create
+                    .id
+                    .starts_with(&format!("tx:{}/entity:", program.transaction_id))
+                || !studio_timeline_semantic_values_match(
+                    create.lifetime_start,
+                    program.anchor_resolved_seconds,
+                )
+                || create
+                    .lifetime_end
+                    .is_some_and(|end| !end.is_finite() || end <= create.lifetime_start)
+                || !matches!(
+                    create.kind,
+                    StudioAuthoringEntityKind::Circle
+                        | StudioAuthoringEntityKind::MathTex
+                        | StudioAuthoringEntityKind::Rectangle
+                )
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            if create.kind == StudioAuthoringEntityKind::MathTex {
+                if create.tex_parts.as_ref().is_none_or(|parts| {
+                    parts.is_empty() || parts.iter().any(|part| part.trim().is_empty())
+                }) {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            } else if create.tex_parts.is_some()
+                || studio_authoring_shape_size(create.kind, create.dimensions).is_none()
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            let positions = program
+                .operations
+                .iter()
+                .filter(|operation| operation.entity_id.as_deref() == Some(entity_id))
+                .filter_map(|operation| match &operation.kind {
+                    StudioCreationOperationKind::Position {
+                        position: Some(position),
+                    } => Some(position),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let fades = program
+                .operations
+                .iter()
+                .filter(|operation| operation.entity_id.as_deref() == Some(entity_id))
+                .filter(|operation| {
+                    matches!(operation.kind, StudioCreationOperationKind::FadeIn { .. })
+                })
+                .collect::<Vec<_>>();
+            if positions.len() != 1 || fades.len() > 1 {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            let insertion_duration = ranked_insertions
+                .iter()
+                .find(|(rank, _)| *rank == ranks[index])
+                .map_or(0.0, |(_, insertion)| insertion.duration);
+            let duration_after_program = base_duration
+                + ranked_insertions
+                    .iter()
+                    .filter(|(rank, _)| *rank <= ranks[index])
+                    .map(|(_, insertion)| insertion.duration)
+                    .sum::<f64>();
+            let mut lifetime = IntervalV1 {
+                end: create.lifetime_end.map_or(duration_after_program, |end| {
+                    (end + offsets[index] + insertion_duration).min(duration_after_program)
+                }),
+                start: create.lifetime_start + offsets[index],
+            };
+            for (rank, insertion) in &ranked_insertions {
+                if *rank > ranks[index] {
+                    shift_interval_for_insertion(&mut lifetime, insertion);
+                }
+            }
+            let mut usable_start = lifetime.start;
+            if let Some(fade) = fades.first() {
+                let mut fade_interval = IntervalV1 {
+                    end: fade.interval.end + offsets[index],
+                    start: fade.interval.start + offsets[index],
+                };
+                for (rank, insertion) in &ranked_insertions {
+                    if *rank > ranks[index] {
+                        shift_interval_for_insertion(&mut fade_interval, insertion);
+                    }
+                }
+                if !studio_timeline_semantic_values_match(fade_interval.start, lifetime.start)
+                    || fade_interval.end > lifetime.end
+                {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+                usable_start = fade_interval.end;
+            }
+            lifetime.start = usable_start;
+            targets.insert(
+                entity_id.to_owned(),
+                StudioMotionProjectionTarget {
+                    lifetime,
+                    position: positions[0].clone(),
+                },
+            );
+        }
+    }
+
+    let mut scales = targets
+        .keys()
+        .map(|entity_id| (entity_id.clone(), 1.0_f64))
+        .collect::<BTreeMap<_, _>>();
+    let mut motion_deadlines: BTreeMap<String, f64> = BTreeMap::new();
+    for index in other_followup_indexes {
+        let program = &programs[index];
+        let contains_removal = program.operations.iter().any(|operation| {
+            matches!(
+                operation.kind,
+                StudioCreationOperationKind::PersistentRemove { .. }
+            )
+        });
+        if contains_removal
+            && program.operations.iter().any(|operation| {
+                !matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::PersistentRemove { .. }
+                )
+            })
+        {
+            return Err(ProjectStudioMotionEditError::Unsupported);
+        }
+        for operation_id in &program.schedule_order {
+            let operation = program
+                .operations
+                .iter()
+                .find(|operation| operation.id == *operation_id)
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            let entity_id = operation
+                .entity_id
+                .as_deref()
+                .filter(|entity_id| targets.contains_key(*entity_id))
+                .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+            if !studio_timeline_semantic_values_match(
+                operation.interval.start,
+                program.anchor_resolved_seconds,
+            ) {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            let mut deadline = operation.interval.start + offsets[index];
+            for (rank, insertion) in &ranked_insertions {
+                if *rank > ranks[index] && deadline >= insertion.at - TIMELINE_ANCHOR_EPSILON {
+                    deadline += insertion.duration;
+                }
+            }
+            match &operation.kind {
+                StudioCreationOperationKind::UniformScale {
+                    control_present,
+                    from: Some(from),
+                    relative_factor: Some(relative_factor),
+                    to: Some(to),
+                } if !*control_present
+                    && studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    )
+                    && from.is_finite()
+                    && *from > 0.0
+                    && relative_factor.is_finite()
+                    && *relative_factor > 0.0
+                    && to.is_finite()
+                    && *to > 0.0
+                    && close_transform_baseline_value(*to / *from, *relative_factor)
+                    && scales
+                        .get(entity_id)
+                        .is_some_and(|scale| close_transform_baseline_value(*scale, *from)) =>
+                {
+                    scales.insert(entity_id.to_owned(), *to);
+                }
+                StudioCreationOperationKind::PersistentRemove { persistent }
+                    if *persistent
+                        && matches!(
+                            operation.origin,
+                            StudioAuthoringOrigin::DirectManipulation
+                                | StudioAuthoringOrigin::StudioDefault
+                        )
+                        && operation.interval.end.is_finite()
+                        && operation.interval.end >= operation.interval.start => {}
+                StudioCreationOperationKind::Create { .. }
+                | StudioCreationOperationKind::Position { .. }
+                | StudioCreationOperationKind::FadeIn { .. }
+                | StudioCreationOperationKind::UniformScale { .. }
+                | StudioCreationOperationKind::Resize { .. }
+                | StudioCreationOperationKind::PersistentRemove { .. }
+                | StudioCreationOperationKind::CreateMotion { .. }
+                | StudioCreationOperationKind::Unsupported => {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            }
+            motion_deadlines
+                .entry(entity_id.to_owned())
+                .and_modify(|current| *current = current.min(deadline))
+                .or_insert(deadline);
+        }
+    }
+    for (entity_id, deadline) in motion_deadlines {
+        let target = targets
+            .get_mut(&entity_id)
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        target.lifetime.end = target.lifetime.end.min(deadline);
+    }
+
+    let mut motions = Vec::new();
+    for index in motion_indexes {
+        let program = &programs[index];
+        let operations = closed_studio_creation_motion_operations(program, base_duration)
+            .ok_or(ProjectStudioMotionEditError::Unsupported)?;
+        let mut parallel_bucket_start: Option<f64> = None;
+        let mut parallel_targets = BTreeSet::new();
+        for operation in operations {
+            let StudioCreationOperationKind::CreateMotion {
+                control_offset,
+                delta,
+                easing,
+                target_entity_ids,
+            } = &operation.kind
+            else {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            };
+            let mut operation_targets = BTreeSet::new();
+            if target_entity_ids.is_empty()
+                || target_entity_ids.iter().any(|target| {
+                    !targets.contains_key(target) || !operation_targets.insert(target.as_str())
+                })
+                || !studio_authoring_point_is_finite(control_offset)
+                || !studio_authoring_point_is_finite(delta)
+                || (control_offset.x == 0.0
+                    && control_offset.y == 0.0
+                    && delta.x == 0.0
+                    && delta.y == 0.0)
+            {
+                return Err(ProjectStudioMotionEditError::Unsupported);
+            }
+            if program.requested_execution == StudioProgramExecution::Parallel {
+                if parallel_bucket_start.is_none_or(|bucket_start| {
+                    (operation.interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
+                }) {
+                    parallel_bucket_start = Some(operation.interval.start);
+                    parallel_targets.clear();
+                }
+                if target_entity_ids
+                    .iter()
+                    .any(|target| !parallel_targets.insert(target.as_str()))
+                {
+                    return Err(ProjectStudioMotionEditError::Unsupported);
+                }
+            }
+            motions.push(PlannedStudioMotion {
+                base_interval: operation.interval.clone(),
+                control_offset: control_offset.clone(),
+                delta: delta.clone(),
+                easing: *easing,
+                interval: IntervalV1 {
+                    end: operation.interval.end + offsets[index],
+                    start: operation.interval.start + offsets[index],
+                },
+                operation_id: operation.id.clone(),
+                parallel: program.requested_execution == StudioProgramExecution::Parallel,
+                target_entity_ids: target_entity_ids.clone(),
+                transaction_id: program.transaction_id.clone(),
+            });
+        }
+    }
+    project_studio_motion_plan(
+        &StudioMotionPlan {
+            insertions,
+            motions,
+            projected_duration,
+            timeline_insertions: Vec::new(),
+        },
+        targets,
+    )
+}
+
+/// Projects one exact supported motion-bearing Studio batch without a Scene snapshot.
+///
+/// # Errors
+///
+/// Returns `Unsupported` when the complete normalized batch or logical entity facts are outside
+/// the closed motion subset.
+pub fn project_studio_motion_edit(
+    command: &ProjectStudioMotionEditCommand,
+) -> Result<StudioMotionProjection, ProjectStudioMotionEditError> {
+    match &command.batch {
+        StudioMotionProjectionBatch::Standalone {
+            programs,
+            studio_entities,
+        } => project_standalone_motion_programs(command.base_duration, programs, studio_entities),
+        StudioMotionProjectionBatch::StaticRoot {
+            programs,
+            studio_entities,
+        } => project_static_root_motion_programs(command.base_duration, programs, studio_entities),
+        StudioMotionProjectionBatch::Creation { programs } => {
+            project_creation_motion_programs(command.base_duration, programs)
+        }
+    }
 }
 
 struct PendingStudioCreation {
@@ -4683,6 +5835,7 @@ impl EngineSessionV1 {
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             math_tex_transform_projection: None,
+            motion_projection: None,
             persistent_remove_projection,
             static_root_projection: None,
         };
@@ -4739,6 +5892,21 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStudioCreationEditError::Unsupported);
         }
+        let motion_projection = if programs.iter().any(|program| {
+            program.operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::CreateMotion { .. }
+                )
+            })
+        }) {
+            Some(
+                project_creation_motion_programs(base_duration, &programs)
+                    .map_err(|_| ApplyStudioCreationEditError::Unsupported)?,
+            )
+        } else {
+            None
+        };
 
         let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
         ordered_programs.sort_by(|left, right| {
@@ -5479,11 +6647,28 @@ impl EngineSessionV1 {
             });
         }
 
+        if let Some(projection) = &motion_projection {
+            planned_motions = projection
+                .motions
+                .iter()
+                .map(|motion| PlannedSceneMotion {
+                    control_offset: studio_vector_to_scene_vector(
+                        &motion.control_offset,
+                        frame,
+                        viewport,
+                    ),
+                    delta: studio_vector_to_scene_vector(&motion.delta, frame, viewport),
+                    easing: motion.easing,
+                    interval: motion.interval.clone(),
+                    target_entity_ids: vec![motion.target_entity_id.clone()],
+                })
+                .collect();
+        }
         let operation_count = programs
             .iter()
             .map(|program| program.operations.len())
             .sum::<usize>();
-        self.create_scene_entities(CreateSceneEntitiesCommand {
+        let mut result = self.create_scene_entities(CreateSceneEntitiesCommand {
             entities,
             expected_base_revision,
             motions: planned_motions,
@@ -5498,8 +6683,9 @@ impl EngineSessionV1 {
                 origin: ProvenanceOriginV1::StudioEditProgram,
             },
             timeline_insertions,
-        })
-        .map_err(Into::into)
+        })?;
+        result.motion_projection = motion_projection;
+        Ok(result)
     }
 
     /// Authorizes one complete normalized Studio edit of one verified bound Scene root.
@@ -5914,6 +7100,7 @@ impl EngineSessionV1 {
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             math_tex_transform_projection: Some(projection),
+            motion_projection: None,
             persistent_remove_projection: StudioPersistentRemoveProjection::default(),
             static_root_projection: None,
         };
@@ -6074,6 +7261,7 @@ impl EngineSessionV1 {
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             math_tex_transform_projection: None,
+            motion_projection: None,
             persistent_remove_projection: StudioPersistentRemoveProjection::default(),
             static_root_projection: Some(StudioStaticRootProjection {
                 mutations: vec![StudioStaticRootProjectedMutation {
@@ -6132,119 +7320,75 @@ impl EngineSessionV1 {
             return Err(ApplyStudioMotionEditError::Unsupported);
         }
 
-        let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
-        ordered_programs.sort_by(|left, right| {
-            programs[*left]
-                .anchor_resolved_seconds
-                .total_cmp(&programs[*right].anchor_resolved_seconds)
-                .then(left.cmp(right))
-        });
-        let mut operation_ids = BTreeSet::new();
-        let mut resolved_offset = 0.0;
-        let operation_count = programs
-            .iter()
-            .map(|program| program.operations.len())
-            .sum();
-        let mut planned_motions = Vec::with_capacity(operation_count);
-        let mut timeline_insertions = Vec::with_capacity(programs.len());
+        let plan = plan_studio_motion_programs(scene.duration, &programs)
+            .map_err(|_| ApplyStudioMotionEditError::Unsupported)?;
+        let mut planned_motions = Vec::with_capacity(plan.motions.len());
+        let mut parallel_runtime_targets: Vec<(String, f64, String)> = Vec::new();
         let provenance_id = format!("studio-motion:{next_revision}");
-        for program_index in ordered_programs {
-            let program = &programs[program_index];
-            let operations = closed_studio_motion_operations(program, scene.duration)
-                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
-            let mut maximum_end = program.anchor_resolved_seconds;
-            let mut parallel_bucket_start: Option<f64> = None;
-            let mut parallel_targets = BTreeSet::new();
-            for operation in operations {
-                if !operation_ids.insert(operation.id()) {
-                    return Err(ApplyStudioMotionEditError::Unsupported);
-                }
-                let StudioMotionOperation::CreateMotion {
-                    control_offset,
-                    delta,
-                    easing,
-                    interval,
-                    target_entity_ids,
-                    ..
-                } = operation
-                else {
-                    return Err(ApplyStudioMotionEditError::Unsupported);
-                };
-
-                let runtime_entity_ids = resolve_studio_motion_targets(
-                    target_entity_ids,
-                    &studio_entities,
-                    &source_runtime_bindings,
-                )
-                .ok_or(ApplyStudioMotionEditError::Unsupported)?;
-                if program.requested_execution == StudioProgramExecution::Parallel {
-                    if parallel_bucket_start.is_none_or(|bucket_start| {
-                        (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
-                    }) {
-                        parallel_bucket_start = Some(interval.start);
-                        parallel_targets.clear();
-                    }
-                    if runtime_entity_ids
+        for motion in &plan.motions {
+            let runtime_entity_ids = resolve_studio_motion_targets(
+                &motion.target_entity_ids,
+                &studio_entities,
+                &source_runtime_bindings,
+            )
+            .ok_or(ApplyStudioMotionEditError::Unsupported)?;
+            if motion.parallel {
+                for runtime_entity_id in &runtime_entity_ids {
+                    if parallel_runtime_targets
                         .iter()
-                        .any(|entity_id| !parallel_targets.insert(entity_id.clone()))
+                        .any(|(transaction_id, start, target)| {
+                            transaction_id == &motion.transaction_id
+                                && (*start - motion.base_interval.start).abs()
+                                    <= TIMELINE_ANCHOR_EPSILON
+                                && target == runtime_entity_id
+                        })
                     {
                         return Err(ApplyStudioMotionEditError::Unsupported);
                     }
+                    parallel_runtime_targets.push((
+                        motion.transaction_id.clone(),
+                        motion.base_interval.start,
+                        runtime_entity_id.clone(),
+                    ));
                 }
-
-                let control_offset = studio_vector_to_scene_vector(control_offset, frame, viewport);
-                let delta = studio_vector_to_scene_vector(delta, frame, viewport);
-                validate_create_scene_motion_command(
-                    scene,
-                    &CreateSceneMotionCommand {
-                        control_offset: control_offset.clone(),
-                        delta: delta.clone(),
-                        easing: *easing,
-                        expected_base_revision: expected_base_revision.clone(),
-                        interval: interval.clone(),
-                        next_revision: next_revision.clone(),
-                        provenance: ProvenanceRecordV1 {
-                            evidence: vec![],
-                            id: provenance_id.clone(),
-                            origin: ProvenanceOriginV1::StudioEditProgram,
-                        },
-                        target_entity_ids: runtime_entity_ids.clone(),
-                    },
-                )?;
-                maximum_end = maximum_end.max(interval.end);
-                planned_motions.push(PlannedSceneMotion {
-                    control_offset,
-                    delta,
-                    easing: *easing,
-                    interval: IntervalV1 {
-                        end: interval.end + resolved_offset,
-                        start: interval.start + resolved_offset,
-                    },
-                    target_entity_ids: runtime_entity_ids,
-                });
             }
-            let insertion_duration = maximum_end - program.anchor_resolved_seconds;
-            let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
-            if !insertion_duration.is_finite()
-                || insertion_duration <= 0.0
-                || !resolved_anchor.is_finite()
-            {
-                return Err(ApplyStudioMotionEditError::Unsupported);
-            }
-            timeline_insertions.push(SceneTimelineInsertion {
-                at: resolved_anchor,
-                duration: insertion_duration,
+            let control_offset =
+                studio_vector_to_scene_vector(&motion.control_offset, frame, viewport);
+            let delta = studio_vector_to_scene_vector(&motion.delta, frame, viewport);
+            validate_create_scene_motion_command(
+                scene,
+                &CreateSceneMotionCommand {
+                    control_offset: control_offset.clone(),
+                    delta: delta.clone(),
+                    easing: motion.easing,
+                    expected_base_revision: expected_base_revision.clone(),
+                    interval: motion.base_interval.clone(),
+                    next_revision: next_revision.clone(),
+                    provenance: ProvenanceRecordV1 {
+                        evidence: vec![],
+                        id: provenance_id.clone(),
+                        origin: ProvenanceOriginV1::StudioEditProgram,
+                    },
+                    target_entity_ids: runtime_entity_ids.clone(),
+                },
+            )?;
+            planned_motions.push(PlannedSceneMotion {
+                control_offset,
+                delta,
+                easing: motion.easing,
+                interval: motion.interval.clone(),
+                target_entity_ids: runtime_entity_ids,
             });
-            resolved_offset += insertion_duration;
         }
 
         self.commit_scene_motions(
             &planned_motions,
-            &timeline_insertions,
+            &plan.timeline_insertions,
             &ProvenanceRecordV1 {
-                evidence: operation_ids
+                evidence: plan
+                    .motions
                     .iter()
-                    .map(|id| format!("authorized operation {id}"))
+                    .map(|motion| format!("authorized operation {}", motion.operation_id))
                     .collect(),
                 id: provenance_id,
                 origin: ProvenanceOriginV1::StudioEditProgram,
@@ -6734,6 +7878,11 @@ impl EngineSessionV1 {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
         }
 
+        let transformed_studio_position = resize
+            .as_ref()
+            .map(|(_, _, _, _, _, to_position)| to_position.clone())
+            .or_else(|| position.clone());
+        let transformed_studio_entity_id = entity_id.clone();
         let transform = if let Some(entity_id) = entity_id {
             let (studio_entity, runtime_entity) = resolve_static_root_binding(
                 scene,
@@ -6919,67 +8068,84 @@ impl EngineSessionV1 {
         } else {
             format!("studio-persistent-remove:{next_revision}")
         };
+        let motion_plan = if motion_programs.is_empty() {
+            None
+        } else {
+            Some(
+                plan_studio_motion_programs(scene.duration, &motion_programs)
+                    .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?,
+            )
+        };
         let mut planned_motions = Vec::new();
-        let mut motion_timeline_insertions = Vec::new();
-        let mut resolved_motion_offset = 0.0;
-        for program in motion_programs {
-            let operations = closed_studio_motion_operations(&program, scene.duration)
-                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let mut maximum_end = program.anchor_resolved_seconds;
-            let mut parallel_bucket_start: Option<f64> = None;
-            let mut parallel_targets = BTreeSet::new();
-            for operation in operations {
-                if !operation_ids.insert(operation.id().to_owned()) {
+        let mut projection_targets = BTreeMap::new();
+        let mut parallel_runtime_targets: Vec<(String, f64, String)> = Vec::new();
+        if let Some(plan) = &motion_plan {
+            for motion in &plan.motions {
+                if !operation_ids.insert(motion.operation_id.clone()) {
                     return Err(ApplyStaticRootTransformEditError::Unsupported);
                 }
-                ordered_operation_ids.push(operation.id().to_owned());
-                let StudioMotionOperation::CreateMotion {
-                    control_offset,
-                    delta,
-                    easing,
-                    interval,
-                    target_entity_ids,
-                    ..
-                } = operation
-                else {
-                    return Err(ApplyStaticRootTransformEditError::Unsupported);
-                };
-                let mut runtime_entity_ids = Vec::with_capacity(target_entity_ids.len());
-                for studio_entity_id in target_entity_ids {
-                    let (_, runtime_entity) = resolve_static_root_binding(
+                ordered_operation_ids.push(motion.operation_id.clone());
+                let mut runtime_entity_ids = Vec::with_capacity(motion.target_entity_ids.len());
+                for studio_entity_id in &motion.target_entity_ids {
+                    let (studio_entity, runtime_entity) = resolve_static_root_binding(
                         scene,
                         &studio_entities,
                         &source_runtime_bindings,
                         studio_entity_id,
                     )
                     .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    let mut projected_position = studio_entity
+                        .position
+                        .as_ref()
+                        .filter(|position| studio_authoring_point_is_finite(position))
+                        .cloned()
+                        .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    if transformed_studio_entity_id.as_deref() == Some(studio_entity_id.as_str())
+                        && let Some(position) = &transformed_studio_position
+                    {
+                        projected_position.clone_from(position);
+                    }
+                    let lifetime = one_projection_lifetime(&runtime_entity.lifetimes)
+                        .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                    projection_targets
+                        .entry(studio_entity_id.clone())
+                        .or_insert(StudioMotionProjectionTarget {
+                            lifetime,
+                            position: projected_position,
+                        });
                     runtime_entity_ids.push(runtime_entity.id.clone());
                 }
-                if program.requested_execution == StudioProgramExecution::Parallel {
-                    if parallel_bucket_start.is_none_or(|bucket_start| {
-                        (interval.start - bucket_start).abs() > TIMELINE_ANCHOR_EPSILON
-                    }) {
-                        parallel_bucket_start = Some(interval.start);
-                        parallel_targets.clear();
-                    }
-                    if runtime_entity_ids
-                        .iter()
-                        .any(|entity_id| !parallel_targets.insert(entity_id.clone()))
-                    {
-                        return Err(ApplyStaticRootTransformEditError::Unsupported);
+                if motion.parallel {
+                    for runtime_entity_id in &runtime_entity_ids {
+                        if parallel_runtime_targets
+                            .iter()
+                            .any(|(transaction_id, start, target)| {
+                                transaction_id == &motion.transaction_id
+                                    && (*start - motion.base_interval.start).abs()
+                                        <= TIMELINE_ANCHOR_EPSILON
+                                    && target == runtime_entity_id
+                            })
+                        {
+                            return Err(ApplyStaticRootTransformEditError::Unsupported);
+                        }
+                        parallel_runtime_targets.push((
+                            motion.transaction_id.clone(),
+                            motion.base_interval.start,
+                            runtime_entity_id.clone(),
+                        ));
                     }
                 }
-
-                let control_offset = studio_vector_to_scene_vector(control_offset, frame, viewport);
-                let delta = studio_vector_to_scene_vector(delta, frame, viewport);
+                let control_offset =
+                    studio_vector_to_scene_vector(&motion.control_offset, frame, viewport);
+                let delta = studio_vector_to_scene_vector(&motion.delta, frame, viewport);
                 validate_create_scene_motion_command(
                     scene,
                     &CreateSceneMotionCommand {
                         control_offset: control_offset.clone(),
                         delta: delta.clone(),
-                        easing: *easing,
+                        easing: motion.easing,
                         expected_base_revision: expected_base_revision.clone(),
-                        interval: interval.clone(),
+                        interval: motion.base_interval.clone(),
                         next_revision: next_revision.clone(),
                         provenance: ProvenanceRecordV1 {
                             evidence: vec![],
@@ -6990,32 +8156,20 @@ impl EngineSessionV1 {
                     },
                 )
                 .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?;
-                maximum_end = maximum_end.max(interval.end);
                 planned_motions.push(PlannedSceneMotion {
                     control_offset,
                     delta,
-                    easing: *easing,
-                    interval: IntervalV1 {
-                        end: interval.end + resolved_motion_offset,
-                        start: interval.start + resolved_motion_offset,
-                    },
+                    easing: motion.easing,
+                    interval: motion.interval.clone(),
                     target_entity_ids: runtime_entity_ids,
                 });
             }
-            let insertion_duration = maximum_end - program.anchor_resolved_seconds;
-            let resolved_anchor = program.anchor_resolved_seconds + resolved_motion_offset;
-            if !insertion_duration.is_finite()
-                || insertion_duration <= 0.0
-                || !resolved_anchor.is_finite()
-            {
-                return Err(ApplyStaticRootTransformEditError::Unsupported);
-            }
-            motion_timeline_insertions.push(SceneTimelineInsertion {
-                at: resolved_anchor,
-                duration: insertion_duration,
-            });
-            resolved_motion_offset += insertion_duration;
         }
+        let motion_projection = motion_plan
+            .as_ref()
+            .map(|plan| project_studio_motion_plan(plan, projection_targets))
+            .transpose()
+            .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?;
         let mut evidence = vec!["Studio static imported-root edit".to_owned()];
         evidence.extend(
             ordered_operation_ids
@@ -7058,8 +8212,10 @@ impl EngineSessionV1 {
             };
             candidate
         };
-        for insertion in &motion_timeline_insertions {
-            insert_scene_time(&mut candidate.scene, insertion);
+        if let Some(plan) = &motion_plan {
+            for insertion in &plan.timeline_insertions {
+                insert_scene_time(&mut candidate.scene, insertion);
+            }
         }
         append_planned_scene_motions(&mut candidate.scene, &planned_motions, &provenance.id)
             .map_err(|_| ApplyStaticRootTransformEditError::Unsupported)?;
@@ -7072,19 +8228,18 @@ impl EngineSessionV1 {
                 &provenance.id,
             )?
         };
-        let static_root_projection = if transform_operation_count > 0
-            && !has_motion_suffix
-            && resolved_removals.is_empty()
-        {
-            Some(StudioStaticRootProjection {
-                mutations: static_root_mutations,
-            })
-        } else {
-            None
-        };
+        let static_root_projection =
+            if transform_operation_count > 0 && resolved_removals.is_empty() {
+                Some(StudioStaticRootProjection {
+                    mutations: static_root_mutations,
+                })
+            } else {
+                None
+            };
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             math_tex_transform_projection: None,
+            motion_projection,
             persistent_remove_projection,
             static_root_projection,
         };
@@ -9209,7 +10364,8 @@ mod tests {
             let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
 
             let result = session.apply_static_root_transform_edit(command).unwrap();
-            assert!(result.static_root_projection.is_none());
+            assert!(result.static_root_projection.is_some());
+            assert!(result.motion_projection.is_some());
             assert!((result.bundle.scene.duration - 3.0).abs() < f64::EPSILON);
             let path = result
                 .bundle
@@ -10062,6 +11218,7 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
+        assert!(result.motion_projection.is_some());
         assert_eq!(result.bundle.scene.duration, 3.4);
         assert_eq!(result.persistent_remove_projection.removals.len(), 1);
         assert!(
@@ -13173,8 +14330,10 @@ mod tests {
         assert_eq!(projection.motions.len(), 1);
         assert_eq!(
             projection.motions[0],
-            StudioMathTexTransformProjectedMotion {
+            StudioProjectedMotion {
                 control: PointV1 { x: 880.0, y: 290.0 },
+                control_offset: PointV1 { x: 0.0, y: -160.0 },
+                delta: PointV1 { x: 160.0, y: 0.0 },
                 easing: StudioMotionEasing::Smooth,
                 from: PointV1 { x: 800.0, y: 450.0 },
                 interval: IntervalV1 {
@@ -13182,6 +14341,10 @@ mod tests {
                     start: 1.5,
                 },
                 operation_id: "move-restored".to_owned(),
+                source_interval: IntervalV1 {
+                    end: 1.75,
+                    start: 1.5,
+                },
                 target_entity_id: "tx:math-tex-transform/entity:a-prime".to_owned(),
                 to: PointV1 { x: 960.0, y: 450.0 },
                 transaction_id: "math-tex-transform".to_owned(),
@@ -13413,7 +14576,7 @@ mod tests {
         assert_eq!(projection.projected_duration, 2.5);
         assert_eq!(
             projection.insertions,
-            vec![StudioMathTexTransformProjectionInsertion {
+            vec![StudioMotionProjectionInsertion {
                 at: 0.25,
                 duration: 0.5,
                 transaction_id: "math-tex-transform".to_owned(),
@@ -13792,5 +14955,106 @@ mod tests {
             assert_eq!(session.scene(), &before);
             assert_eq!(session.retained_index_stats().build_count, 1);
         }
+    }
+
+    #[test]
+    fn motion_projector_expands_multi_target_and_accumulates_sequential_segments() {
+        let bundle = static_imported_bundle();
+        let command = two_motion_sequence_command(&bundle);
+        let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
+            base_duration: bundle.scene.duration,
+            batch: StudioMotionProjectionBatch::Standalone {
+                programs: command.programs,
+                studio_entities: vec![
+                    StudioMotionProjectionEntityIdentity {
+                        identity: command.studio_entities[0].clone(),
+                        lifetime: vec![IntervalV1 {
+                            end: bundle.scene.duration,
+                            start: 0.0,
+                        }],
+                        position: PointV1 { x: 320.0, y: 180.0 },
+                    },
+                    StudioMotionProjectionEntityIdentity {
+                        identity: command.studio_entities[1].clone(),
+                        lifetime: vec![IntervalV1 {
+                            end: bundle.scene.duration,
+                            start: 0.0,
+                        }],
+                        position: PointV1 { x: 100.0, y: 80.0 },
+                    },
+                ],
+            },
+        })
+        .unwrap();
+
+        assert_eq!(projection.insertions.len(), 1);
+        assert_eq!(projection.motions.len(), 2);
+        assert_eq!(projection.motions[0].from, PointV1 { x: 320.0, y: 180.0 });
+        assert_eq!(projection.motions[0].to, PointV1 { x: 560.0, y: 100.0 });
+        assert_eq!(projection.motions[1].from, projection.motions[0].to);
+        assert_eq!(projection.motions[1].to, PointV1 { x: 560.0, y: -20.0 });
+    }
+
+    #[test]
+    fn static_root_motion_projector_uses_the_preceding_position_and_only_real_insertions() {
+        let bundle = static_imported_bundle();
+        let mut command = static_root_position_command();
+        command
+            .programs
+            .push(static_root_motion_program(vec!["source:circle".to_owned()]));
+        let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
+            base_duration: bundle.scene.duration,
+            batch: StudioMotionProjectionBatch::StaticRoot {
+                programs: command.programs,
+                studio_entities: vec![StaticRootMotionProjectionEntityIdentity {
+                    identity: command.studio_entities[0].clone(),
+                    lifetime: vec![IntervalV1 {
+                        end: bundle.scene.duration,
+                        start: 0.0,
+                    }],
+                }],
+            },
+        })
+        .unwrap();
+
+        assert_eq!(projection.insertions.len(), 1);
+        assert_eq!(
+            projection.insertions[0].transaction_id,
+            "move-imported-root"
+        );
+        assert_eq!(projection.motions[0].from, PointV1 { x: 400.0, y: 180.0 });
+        assert_eq!(projection.motions[0].to, PointV1 { x: 640.0, y: 100.0 });
+    }
+
+    #[test]
+    fn creation_motion_projector_rebases_fade_and_motion_from_the_created_position() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command.programs.truncate(1);
+        command
+            .programs
+            .push(studio_created_motion_program(vec![entity_id.to_owned()]));
+        let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
+            base_duration: bundle.scene.duration,
+            batch: StudioMotionProjectionBatch::Creation {
+                programs: command.programs,
+            },
+        })
+        .unwrap();
+
+        assert_eq!(projection.insertions.len(), 2);
+        assert_eq!(projection.motions.len(), 1);
+        assert_eq!(projection.motions[0].from, PointV1 { x: 320.0, y: 180.0 });
+        assert_eq!(
+            projection.motions[0].interval,
+            IntervalV1 {
+                start: 1.4,
+                end: 2.4
+            }
+        );
+        assert!(
+            (projection.projected_duration - (bundle.scene.duration + 1.4)).abs() < f64::EPSILON
+        );
     }
 }

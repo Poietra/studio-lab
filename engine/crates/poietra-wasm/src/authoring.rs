@@ -4,16 +4,17 @@ use poietra_eval::{
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError,
     ApplyStudioMathTexTransformEditCommand, ApplyStudioMathTexTransformEditError,
     ApplyStudioMotionEditCommand, ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand,
-    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, StaticRootTransformProgram,
-    StaticRootTransformSize, StaticRootTransformSourceBinding, StaticRootTransformStudioEntity,
-    StudioAuthoringEditResult, StudioAuthoringSize, StudioBoundEntityEditCandidate,
-    StudioBoundEntityProgram, StudioCreationMathTexOutline, StudioCreationProgram,
-    StudioMathTexTransformEntityIdentity, StudioMathTexTransformOutline,
-    StudioMathTexTransformProgram, StudioMathTexTransformProjection,
+    ApplyStudioTimelineEditError, EngineSessionV1, EvaluationError, ProjectStudioMotionEditCommand,
+    ProjectStudioMotionEditError, StaticRootTransformProgram, StaticRootTransformSize,
+    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringEditResult,
+    StudioAuthoringSize, StudioBoundEntityEditCandidate, StudioBoundEntityProgram,
+    StudioCreationMathTexOutline, StudioCreationProgram, StudioMathTexTransformEntityIdentity,
+    StudioMathTexTransformOutline, StudioMathTexTransformProgram, StudioMathTexTransformProjection,
     StudioMathTexTransformProjectionEntityIdentity, StudioMathTexTransformSourceBinding,
-    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionSourceBinding,
-    StudioTimelineProgram, StudioTimelineProjection, project_studio_math_tex_transform_programs,
-    project_studio_timeline_programs,
+    StudioMotionEntityIdentity, StudioMotionProgram, StudioMotionProjection,
+    StudioMotionProjectionBatch, StudioMotionSourceBinding, StudioTimelineProgram,
+    StudioTimelineProjection, project_studio_math_tex_transform_programs,
+    project_studio_motion_edit, project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -49,6 +50,12 @@ enum ProjectStudioTimelineSchemaV1 {
 enum ApplyStudioMotionEditSchemaV1 {
     #[serde(rename = "poietra.apply-studio-motion-edit")]
     ApplyStudioMotionEdit,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+enum ProjectStudioMotionEditSchemaV1 {
+    #[serde(rename = "poietra.project-studio-motion-edit")]
+    ProjectStudioMotionEdit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize)]
@@ -181,6 +188,17 @@ struct ApplyStudioMotionEditCommandJsonV1 {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ProjectStudioMotionEditCommandJsonV1 {
+    base_duration: f64,
+    batch: StudioMotionProjectionBatch,
+    #[serde(rename = "schema")]
+    _schema: ProjectStudioMotionEditSchemaV1,
+    #[serde(rename = "version")]
+    _version: ContractVersionV1,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ApplyStudioMathTexTransformEditCommandJsonV1 {
     expected_base_revision: String,
     frame: StudioAuthoringSize,
@@ -285,6 +303,8 @@ enum SceneAuthoringAdapterError {
     #[error(transparent)]
     StudioMotionEdit(#[from] ApplyStudioMotionEditError),
     #[error(transparent)]
+    StudioMotionProjection(#[from] ProjectStudioMotionEditError),
+    #[error(transparent)]
     StudioMathTexTransformEdit(#[from] ApplyStudioMathTexTransformEditError),
     #[error(transparent)]
     StaticRootTransformEdit(#[from] ApplyStaticRootTransformEditError),
@@ -353,6 +373,19 @@ fn studio_timeline_projection_response(
 
 fn studio_math_tex_transform_projection_response(
     projection: &StudioMathTexTransformProjection,
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let response =
+        serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
+    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
+        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
+            actual_bytes: response.len(),
+        });
+    }
+    Ok(response)
+}
+
+fn studio_motion_projection_response(
+    projection: &StudioMotionProjection,
 ) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
     let response =
         serde_json::to_vec(projection).map_err(SceneAuthoringAdapterError::ResponseJson)?;
@@ -443,6 +476,21 @@ fn apply_studio_motion_edit_json(
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_studio_motion_edit(command.into())?;
     scene_authoring_response(&result)
+}
+
+fn project_studio_motion_edit_json(
+    command_json: &[u8],
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let command: ProjectStudioMotionEditCommandJsonV1 = parse_scene_authoring_command_with_limit(
+        "Studio motion projection",
+        command_json,
+        poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1,
+    )?;
+    let projection = project_studio_motion_edit(&ProjectStudioMotionEditCommand {
+        base_duration: command.base_duration,
+        batch: command.batch,
+    })?;
+    studio_motion_projection_response(&projection)
 }
 
 fn apply_studio_math_tex_transform_edit_json(
@@ -542,6 +590,17 @@ pub fn apply_studio_motion_edit_v1(
     command_json: &[u8],
 ) -> Result<Vec<u8>, JsValue> {
     apply_studio_motion_edit_json(snapshot_json, command_json)
+        .map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+/// Projects one exact supported motion-bearing Studio batch without a Scene snapshot.
+///
+/// # Errors
+///
+/// Returns a JavaScript error for a malformed or unsupported closed-contract command.
+#[wasm_bindgen(js_name = projectStudioMotionEditV1)]
+pub fn project_studio_motion_edit_v1(command_json: &[u8]) -> Result<Vec<u8>, JsValue> {
+    project_studio_motion_edit_json(command_json)
         .map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
@@ -1252,6 +1311,37 @@ mod tests {
         .unwrap()
     }
 
+    fn studio_motion_projection_command_json() -> Vec<u8> {
+        let apply: serde_json::Value =
+            serde_json::from_slice(&studio_motion_edit_command_json()).unwrap();
+        serde_json::to_vec(&json!({
+            "baseDuration": 2.0,
+            "batch": {
+                "kind": "standalone",
+                "programs": apply["programs"],
+                "studioEntities": [
+                    {
+                        "lifetime": [{ "end": 2.0, "start": 0.0 }],
+                        "objectGraphKey": "source:later",
+                        "position": { "x": 320.0, "y": 180.0 },
+                        "provisional": false,
+                        "sourceIdentity": "later-source"
+                    },
+                    {
+                        "lifetime": [{ "end": 2.0, "start": 0.0 }],
+                        "objectGraphKey": "source:stroke",
+                        "position": { "x": 100.0, "y": 80.0 },
+                        "provisional": false,
+                        "sourceIdentity": "stroke-source"
+                    }
+                ]
+            },
+            "schema": "poietra.project-studio-motion-edit",
+            "version": 1
+        }))
+        .unwrap()
+    }
+
     fn assert_bound_entity_effect(case: &str, bundle: &SceneIrBundleV1) {
         let root = bundle
             .scene
@@ -1727,6 +1817,29 @@ mod tests {
     }
 
     #[test]
+    fn motion_projection_adapter_returns_expanded_studio_coordinate_facts() {
+        let response =
+            project_studio_motion_edit_json(&studio_motion_projection_command_json()).unwrap();
+        let projection: serde_json::Value = serde_json::from_slice(&response).unwrap();
+
+        assert_eq!(projection["insertions"].as_array().unwrap().len(), 1);
+        assert_eq!(projection["motions"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            projection["motions"][0]["from"],
+            json!({ "x": 320.0, "y": 180.0 })
+        );
+        assert_eq!(
+            projection["motions"][0]["to"],
+            json!({ "x": 560.0, "y": 100.0 })
+        );
+        assert_eq!(
+            projection["motions"][1]["targetEntityId"],
+            json!("source:stroke")
+        );
+        assert_eq!(projection["projectedDuration"], json!(3.0));
+    }
+
+    #[test]
     fn math_tex_transform_adapter_forwards_the_complete_chain_to_the_core() {
         let response = apply_studio_math_tex_transform_edit_json(
             &static_math_tex_fixture_json(),
@@ -1822,10 +1935,13 @@ mod tests {
             projection["motions"],
             json!([{
                 "control": { "x": 880.0, "y": 290.0 },
+                "controlOffset": { "x": 0.0, "y": -160.0 },
+                "delta": { "x": 160.0, "y": 0.0 },
                 "easing": "smooth",
                 "from": { "x": 800.0, "y": 450.0 },
                 "interval": { "end": 1.75, "start": 1.5 },
                 "operationId": "move-restored",
+                "sourceInterval": { "end": 1.75, "start": 1.5 },
                 "targetEntityId": "tx:math-tex-transform/entity:a-prime",
                 "to": { "x": 960.0, "y": 450.0 },
                 "transactionId": "math-tex-transform"

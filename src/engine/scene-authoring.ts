@@ -195,16 +195,7 @@ export type StudioMathTexTransformProjectionV1 = Readonly<{
     transactionId: string;
   }>[];
   projectedDuration: number;
-  motions: readonly Readonly<{
-    control: Readonly<{ x: number; y: number }>;
-    easing: "linear" | "smooth";
-    from: Readonly<{ x: number; y: number }>;
-    interval: Readonly<{ end: number; start: number }>;
-    operationId: string;
-    targetEntityId: string;
-    to: Readonly<{ x: number; y: number }>;
-    transactionId: string;
-  }>[];
+  motions: readonly StudioProjectedMotionV1[];
   replacements: readonly Readonly<{
     content: StudioMathTexContentV1;
     interval: Readonly<{ end: number; start: number }>;
@@ -217,9 +208,34 @@ export type StudioMathTexTransformProjectionV1 = Readonly<{
   }>[];
 }>;
 
+export type StudioProjectedMotionV1 = Readonly<{
+  control: Readonly<{ x: number; y: number }>;
+  controlOffset: Readonly<{ x: number; y: number }>;
+  delta: Readonly<{ x: number; y: number }>;
+  easing: "linear" | "smooth";
+  from: Readonly<{ x: number; y: number }>;
+  interval: Readonly<{ end: number; start: number }>;
+  operationId: string;
+  sourceInterval: Readonly<{ end: number; start: number }>;
+  targetEntityId: string;
+  to: Readonly<{ x: number; y: number }>;
+  transactionId: string;
+}>;
+
+export type StudioMotionProjectionV1 = Readonly<{
+  insertions: readonly Readonly<{
+    at: number;
+    duration: number;
+    transactionId: string;
+  }>[];
+  motions: readonly StudioProjectedMotionV1[];
+  projectedDuration: number;
+}>;
+
 export type StudioAuthoringEditResultV1 = Readonly<{
   bundle: SceneIrBundleV1;
   mathTexTransformProjection?: StudioMathTexTransformProjectionV1;
+  motionProjection?: StudioMotionProjectionV1;
   persistentRemoveProjection: StudioPersistentRemoveProjectionV1;
   staticRootProjection?: StudioStaticRootProjectionV1;
 }>;
@@ -373,6 +389,36 @@ const studioMathTexContentV1Schema = z
     texParts: z.array(z.string().min(1)).min(1),
   })
   .strict();
+const studioProjectedMotionV1Schema = z
+  .object({
+    control: studioStaticRootPointV1Schema,
+    controlOffset: studioStaticRootPointV1Schema,
+    delta: studioStaticRootPointV1Schema,
+    easing: z.enum(["linear", "smooth"]),
+    from: studioStaticRootPointV1Schema,
+    interval: studioTimelineProjectionIntervalV1Schema,
+    operationId: z.string().min(1),
+    sourceInterval: studioTimelineProjectionIntervalV1Schema,
+    targetEntityId: z.string().min(1),
+    to: studioStaticRootPointV1Schema,
+    transactionId: z.string().min(1),
+  })
+  .strict();
+const studioMotionProjectionV1Schema = z
+  .object({
+    insertions: z.array(
+      z
+        .object({
+          at: finiteNumberSchema,
+          duration: finiteNumberSchema,
+          transactionId: z.string().min(1),
+        })
+        .strict(),
+    ),
+    motions: z.array(studioProjectedMotionV1Schema),
+    projectedDuration: finiteNumberSchema,
+  })
+  .strict();
 const studioStaticRootProjectionV1Schema = z
   .object({
     mutations: z.array(
@@ -437,20 +483,7 @@ const studioMathTexTransformProjectionV1Schema = z
         .strict(),
     ),
     projectedDuration: finiteNumberSchema,
-    motions: z.array(
-      z
-        .object({
-          control: studioStaticRootPointV1Schema,
-          easing: z.enum(["linear", "smooth"]),
-          from: studioStaticRootPointV1Schema,
-          interval: studioTimelineProjectionIntervalV1Schema,
-          operationId: z.string().min(1),
-          targetEntityId: z.string().min(1),
-          to: studioStaticRootPointV1Schema,
-          transactionId: z.string().min(1),
-        })
-        .strict(),
-    ),
+    motions: z.array(studioProjectedMotionV1Schema),
     replacements: z.array(
       z
         .object({
@@ -471,6 +504,7 @@ const studioAuthoringEditResultV1Schema = z
   .object({
     bundle: sceneIrBundleV1Schema,
     mathTexTransformProjection: studioMathTexTransformProjectionV1Schema.optional(),
+    motionProjection: studioMotionProjectionV1Schema.optional(),
     persistentRemoveProjection: studioPersistentRemoveProjectionV1Schema,
     staticRootProjection: studioStaticRootProjectionV1Schema.optional(),
   })
@@ -631,6 +665,50 @@ export type ApplyStudioMotionEditCompiler = (
   command: ApplyStudioMotionEditWireCommandV1,
 ) => Promise<SceneIrBundleV1>;
 
+type ProjectStudioMotionBatchV1 =
+  | Readonly<{
+      kind: "creation";
+      programs: readonly StudioAuthoringProgramV1<StudioCreationOperationV1>[];
+    }>
+  | Readonly<{
+      kind: "standalone";
+      programs: readonly StudioAuthoringProgramV1<StudioMotionOperationV1>[];
+      studioEntities: readonly Readonly<{
+        lifetime: readonly Readonly<{ end: number; start: number }>[];
+        objectGraphKey: string;
+        position: Readonly<{ x: number; y: number }> | null;
+        provisional: boolean;
+        sourceIdentity: string | null;
+      }>[];
+    }>
+  | Readonly<{
+      kind: "static-root";
+      programs: readonly StudioAuthoringProgramV1<StaticRootTransformOperation>[];
+      studioEntities: readonly Readonly<{
+        dimensions: StaticRootTransformDimensions;
+        id: string;
+        kind: StaticRootTransformEntityKind;
+        lifetime: readonly Readonly<{ end: number; start: number }>[];
+        objectGraphKey: string;
+        position: Readonly<{ x: number; y: number }> | null;
+        provisional: boolean;
+        scale: number | null;
+        sourceIdentity: string | null;
+        transactionId?: string;
+      }>[];
+    }>;
+
+export type ProjectStudioMotionEditWireCommandV1 = Readonly<{
+  baseDuration: number;
+  batch: ProjectStudioMotionBatchV1;
+  schema: "poietra.project-studio-motion-edit";
+  version: 1;
+}>;
+
+export type ProjectStudioMotionCompiler = (
+  command: ProjectStudioMotionEditWireCommandV1,
+) => Promise<StudioMotionProjectionV1>;
+
 type StudioMathTexTransformOperationV1 = Readonly<{
   dependsOn: readonly string[];
   id: string;
@@ -729,6 +807,10 @@ type ProjectStudioMathTexTransformBindingsV1 = Readonly<{
   projectStudioMathTexTransformV1: (commandJson: Uint8Array) => Uint8Array;
 }>;
 
+type ProjectStudioMotionBindingsV1 = Readonly<{
+  projectStudioMotionEditV1: (commandJson: Uint8Array) => Uint8Array;
+}>;
+
 type ApplyStudioCreationEditBindingsV1 = Readonly<{
   applyStudioCreationEditV1: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array;
 }>;
@@ -748,6 +830,7 @@ type SceneAuthoringBindingsV1 = ApplyStaticRootTransformEditBindingsV1 &
   ApplyStudioMotionEditBindingsV1 &
   ApplyStudioTimelineEditBindingsV1 &
   ProjectStudioMathTexTransformBindingsV1 &
+  ProjectStudioMotionBindingsV1 &
   ProjectStudioTimelineBindingsV1;
 
 let bindingsPromise: Promise<SceneAuthoringBindingsV1> | null = null;
@@ -764,6 +847,7 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
       typeof candidate.applyStudioMotionEditV1 !== "function" ||
       typeof candidate.applyStudioTimelineEditV1 !== "function" ||
       typeof candidate.projectStudioMathTexTransformV1 !== "function" ||
+      typeof candidate.projectStudioMotionEditV1 !== "function" ||
       typeof candidate.projectStudioTimelineV1 !== "function"
     ) {
       throw new Error("The Poietra WASM module does not export Scene authoring.");
@@ -782,6 +866,8 @@ async function loadBindings(): Promise<SceneAuthoringBindingsV1> {
         candidate.applyStudioTimelineEditV1 as SceneAuthoringBindingsV1["applyStudioTimelineEditV1"],
       projectStudioMathTexTransformV1:
         candidate.projectStudioMathTexTransformV1 as SceneAuthoringBindingsV1["projectStudioMathTexTransformV1"],
+      projectStudioMotionEditV1:
+        candidate.projectStudioMotionEditV1 as SceneAuthoringBindingsV1["projectStudioMotionEditV1"],
       projectStudioTimelineV1: candidate.projectStudioTimelineV1 as SceneAuthoringBindingsV1["projectStudioTimelineV1"],
     };
   })();
@@ -889,6 +975,17 @@ export function createProjectStudioMathTexTransformCompiler(
   };
 }
 
+/** Projects one normalized motion-bearing Program batch without requiring a render snapshot. */
+export function createProjectStudioMotionCompiler(
+  getBindings: () => Promise<ProjectStudioMotionBindingsV1>,
+): ProjectStudioMotionCompiler {
+  return async (command) => {
+    const bindings = await getBindings();
+    const response = bindings.projectStudioMotionEditV1(encoder.encode(JSON.stringify(command)));
+    return studioMotionProjectionV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
+  };
+}
+
 export const compileApplyStaticRootTransformEdit = createApplyStaticRootTransformEditCompiler(loadBindings);
 export const compileApplyStudioBoundEntityEdit = createApplyStudioBoundEntityEditCompiler(loadBindings);
 export const compileApplyStudioCreationEdit = createApplyStudioCreationEditCompiler(loadBindings);
@@ -896,4 +993,5 @@ export const compileApplyStudioMathTexTransformEdit = createApplyStudioMathTexTr
 export const compileApplyStudioMotionEdit = createApplyStudioMotionEditCompiler(loadBindings);
 export const compileApplyStudioTimelineEdit = createApplyStudioTimelineEditCompiler(loadBindings);
 export const projectStudioMathTexTransform = createProjectStudioMathTexTransformCompiler(loadBindings);
+export const projectStudioMotion = createProjectStudioMotionCompiler(loadBindings);
 export const projectStudioTimeline = createProjectStudioTimelineCompiler(loadBindings);

@@ -923,28 +923,6 @@ export const OPERATION_REGISTRY = {
       reads: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
       writes: operation.targetEntityIds.map((entityId) => ({ channel: "position" as const, entityId })),
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      for (const entityId of operation.targetEntityIds) {
-        const current = sampleChannel(draft, entityId, "position", operation.interval.start);
-        const from = isPointValue(current) ? current : { x: 0, y: 0 };
-        const to = { x: from.x + operation.delta.x, y: from.y + operation.delta.y };
-        appendSample(draft, entityId, "position", {
-          control: {
-            x: (from.x + to.x) / 2 + operation.controlOffset.x,
-            y: (from.y + to.y) / 2 + operation.controlOffset.y,
-          },
-          easing: operation.easing,
-          from,
-          interval: operation.interval,
-          kind: "animated",
-          operationId: operation.id,
-          provenanceId: `${operation.id}/provenance`,
-          relative: true,
-          value: to,
-        });
-      }
-    },
     execution: createMotionExecution,
     validate: (operation, scene) => entityIssues(operation.targetEntityIds, operation, scene),
   } satisfies Capability<"CreateMotion">,

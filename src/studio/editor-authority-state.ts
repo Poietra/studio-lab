@@ -2,8 +2,10 @@ import { parseAuthoritativeEditorProgramsV1 } from "../collaboration/editor-edit
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import {
   type ProjectStudioMathTexTransformCompiler,
+  type ProjectStudioMotionCompiler,
   type ProjectStudioTimelineCompiler,
   projectStudioMathTexTransform,
+  projectStudioMotion,
 } from "../engine/scene-authoring";
 import type { EditorProgramRecord } from "./editor-session-store";
 import { evaluateWorkingState } from "./evaluator";
@@ -12,11 +14,13 @@ import { programExecutionCapabilities } from "./operation-registry";
 import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
 import {
   buildStudioMathTexTransformProjectionCommand,
+  buildStudioMotionProjectionCommand,
   isExactStudioMathTexTransformProgramBatch,
   studioMathTexTransformProjectionStudioEntities,
+  studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "./timeline-projection";
-import { selectMathTexTransformProjection } from "./workspace-projection";
+import { selectMathTexTransformProjection, selectMotionProjection } from "./workspace-projection";
 
 export class EditorMathTexTransformAdmissionError extends Error {
   constructor(message: string) {
@@ -29,6 +33,13 @@ export class EditorTimelineAdmissionError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "EditorTimelineAdmissionError";
+  }
+}
+
+export class EditorMotionAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EditorMotionAdmissionError";
   }
 }
 
@@ -50,6 +61,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   programValues: unknown,
   timelineCompiler?: ProjectStudioTimelineCompiler,
   mathTexTransformCompiler: ProjectStudioMathTexTransformCompiler = projectStudioMathTexTransform,
+  motionCompiler: ProjectStudioMotionCompiler = projectStudioMotion,
 ): Promise<readonly EditorProgramRecord[]> {
   const programs = parseAuthoritativeEditorProgramsV1(programValues);
   const seeds = programs.map((program) => ({
@@ -58,10 +70,17 @@ export async function materializeAuthoritativeEditorProgramsV1(
   }));
   const operations = programs.flatMap((program) => program.operations);
   const hasMathTexTransform = operations.some(({ kind }) => kind === "TransformContent");
+  const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
   if (hasMathTexTransform && !isExactMathTexTransform) {
     throw new TypeError(
       "The authoritative Editor projection may contain TransformContent only as an exact Rust MathTex transform batch.",
+    );
+  }
+  const motionBatchKind = !isExactMathTexTransform && hasMotion ? studioMotionProjectionBatchKind(programs) : null;
+  if (hasMotion && !isExactMathTexTransform && !motionBatchKind) {
+    throw new EditorMotionAdmissionError(
+      "The authoritative Editor projection contains CreateMotion outside a supported Rust motion batch.",
     );
   }
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
@@ -102,12 +121,35 @@ export async function materializeAuthoritativeEditorProgramsV1(
           );
         })
     : null;
+  const motionProjection = motionBatchKind
+    ? await (async () => {
+        const command = buildStudioMotionProjectionCommand({
+          baseDuration: scene.runtimeSceneState.duration,
+          programs,
+          runtimeSceneState: scene.runtimeSceneState,
+        });
+        if (!command) throw new EditorMotionAdmissionError("The Rust motion projection command is missing.");
+        return motionCompiler(command)
+          .then((projection) => {
+            const correlated = selectMotionProjection(scene.runtimeSceneState.duration, programs, projection);
+            if (!correlated) throw new TypeError("The Rust motion projection is missing.");
+            return correlated;
+          })
+          .catch((error) => {
+            throw new EditorMotionAdmissionError(
+              `The Rust motion admission rejected the authoritative Editor projection: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          });
+      })()
+    : null;
   const evaluatedPrograms =
     timelineProjection?.programs.map((program) => ({
       program,
       validation: { issues: [], status: "valid" as const },
     })) ??
-    (mathTexTransformProjection
+    (mathTexTransformProjection || motionProjection
       ? seeds
       : evaluateWorkingState(
           importedWorkingState(scene, {

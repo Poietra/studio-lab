@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
-import type { StudioMathTexTransformProjectionV1, StudioStaticRootProjectionV1 } from "../engine/scene-authoring";
+import type {
+  StudioMathTexTransformProjectionV1,
+  StudioMotionProjectionV1,
+  StudioPersistentRemoveProjectionV1,
+  StudioStaticRootProjectionV1,
+} from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
 import { createInspectorEntityEditProgram, createSceneDurationProgram } from "./authoring-commands";
 import { validateSuggestionDraft } from "./draft-validation";
@@ -143,27 +148,27 @@ function mathTexTransformProjection(
     throw new Error("Expected a two-step MathTex transform fixture.");
   }
   return {
-    insertions: [{ at: 0.3, duration: 0.5, transactionId: program.transactionId }],
+    insertions: [{ at: 0.25, duration: 0.5, transactionId: program.transactionId }],
     motions: [],
     projectedDuration: baseDuration + 0.5,
     replacements: [
       {
         content: first.replacement as StudioMathTexTransformProjectionV1["replacements"][number]["content"],
-        interval: { end: 0.55, start: 0.3 },
+        interval: { end: 0.5, start: 0.25 },
         operationId: first.id,
         sourceEntityId: first.sourceEntityId,
         targetEntityId: first.targetEntityId,
-        targetLifetime: { end: 0.8, start: 0.3 },
+        targetLifetime: { end: 0.75, start: 0.25 },
         targetType: "math-tex",
         transactionId: program.transactionId,
       },
       {
         content: second.replacement as StudioMathTexTransformProjectionV1["replacements"][number]["content"],
-        interval: { end: 0.8, start: 0.55 },
+        interval: { end: 0.75, start: 0.5 },
         operationId: second.id,
         sourceEntityId: second.sourceEntityId,
         targetEntityId: second.targetEntityId,
-        targetLifetime: { end: baseDuration + 0.5, start: 0.55 },
+        targetLifetime: { end: baseDuration + 0.5, start: 0.5 },
         targetType: "math-tex",
         transactionId: program.transactionId,
       },
@@ -221,20 +226,23 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
         },
       ];
   const transformProjection = mathTexTransformProjection(transformProgram, baseDuration);
-  const resolvedMotionInterval = splitMotionProgram ? { end: 1.5, start: 1.25 } : { end: 1.05, start: 0.8 };
+  const resolvedMotionInterval = splitMotionProgram ? { end: 1.5, start: 1.25 } : { end: 1, start: 0.75 };
   const projectedDuration = baseDuration + 0.75;
   const projection: StudioMathTexTransformProjectionV1 = {
     ...transformProjection,
     insertions: splitMotionProgram
       ? [...transformProjection.insertions, { at: 1.25, duration: 0.25, transactionId: motionProgram.transactionId }]
-      : [{ at: 0.3, duration: 0.75, transactionId: transformProgram.transactionId }],
+      : [{ at: 0.25, duration: 0.75, transactionId: transformProgram.transactionId }],
     motions: [
       {
         control: { x: 350, y: 175 },
+        controlOffset: motion.controlOffset,
+        delta: motion.delta,
         easing: motion.easing,
         from: { x: 320, y: 180 },
         interval: resolvedMotionInterval,
         operationId: motion.id,
+        sourceInterval: motion.interval,
         targetEntityId: finalTarget.targetEntityId,
         to: { x: 360, y: 160 },
         transactionId: splitMotionProgram ? motionProgram.transactionId : transformProgram.transactionId,
@@ -251,6 +259,211 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
 }
 
 describe("Studio workspace projection", () => {
+  it("installs one standalone motion only from correlated Rust facts", () => {
+    const imported = workspaceScene("First", null);
+    const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!entityId) throw new Error("Static fixture has no entity.");
+    const program: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
+          dependsOn: [],
+          easing: "smooth",
+          id: "motion/standalone",
+          interval: { end: 2, start: 1 },
+          kind: "CreateMotion",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          targetEntityIds: [entityId],
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["motion/standalone"] },
+      transactionId: "motion",
+      version: 1,
+    };
+    const projection: StudioMotionProjectionV1 = {
+      insertions: [{ at: 1, duration: 1, transactionId: program.transactionId }],
+      motions: [
+        {
+          control: { x: 350, y: 175 },
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
+          easing: "smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 2, start: 1 },
+          operationId: "motion/standalone",
+          sourceInterval: { end: 2, start: 1 },
+          targetEntityId: entityId,
+          to: { x: 360, y: 160 },
+          transactionId: program.transactionId,
+        },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration + 1,
+    };
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+      currentTime: 2,
+      draftProgram: null,
+      motionProjection: projection,
+      nextScene: null,
+      programAuthority: "rust-authorized-batch",
+      selectedObjectIds: [],
+    });
+
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.at(-1),
+    ).toMatchObject({
+      control: projection.motions[0]?.control,
+      from: projection.motions[0]?.from,
+      value: projection.motions[0]?.to,
+    });
+  });
+
+  it("installs a Studio-created entity follow-up motion from the same Rust projection", () => {
+    const imported = workspaceScene("Static", null);
+    const entityId = "tx:create/entity:circle";
+    const program: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 3,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entity: { dimensions: { radius: 40 }, id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
+          id: "create/circle",
+          interval: { end: 0, start: 0 },
+          kind: "CreateEntity",
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+        {
+          dependsOn: ["create/circle"],
+          entityId,
+          id: "create/position",
+          interval: { end: 0, start: 0 },
+          key: "position",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "studio-default" },
+          value: { x: 100, y: 120 },
+        },
+        {
+          controlOffset: { x: 0, y: 10 },
+          delta: { x: 50, y: 20 },
+          dependsOn: ["create/position"],
+          easing: "smooth",
+          id: "create/motion",
+          interval: { end: 1, start: 0 },
+          kind: "CreateMotion",
+          provenance: { evidence: [], origin: "studio-default" },
+          targetEntityIds: [entityId],
+        },
+      ],
+      provenance: { evidence: [], origin: "studio-default" },
+      requestedExecution: "sequence",
+      schedule: {
+        edges: [
+          { from: "create/circle", reason: "explicit", to: "create/position" },
+          { from: "create/position", reason: "explicit", to: "create/motion" },
+        ],
+        mode: "sequence",
+        order: ["create/circle", "create/position", "create/motion"],
+      },
+      transactionId: "create",
+      version: 1,
+    };
+    const projection: StudioMotionProjectionV1 = {
+      insertions: [{ at: 0, duration: 1, transactionId: program.transactionId }],
+      motions: [
+        {
+          control: { x: 125, y: 140 },
+          controlOffset: { x: 0, y: 10 },
+          delta: { x: 50, y: 20 },
+          easing: "smooth",
+          from: { x: 100, y: 120 },
+          interval: { end: 1, start: 0 },
+          operationId: "create/motion",
+          sourceInterval: { end: 1, start: 0 },
+          targetEntityId: entityId,
+          to: { x: 150, y: 140 },
+          transactionId: program.transactionId,
+        },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration + 1,
+    };
+    const removeProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 1.1,
+        evidence: [],
+        resolvedSeconds: 1.1,
+        source: { kind: "absolute", seconds: 1.1 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          effect: "remove",
+          entityId,
+          id: "create/remove",
+          interval: { end: 1.3, start: 1.1 },
+          kind: "ChangePresence",
+          persistent: true,
+          provenance: { evidence: [], origin: "direct-manipulation" },
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["create/remove"] },
+      transactionId: "remove-created",
+      version: 1,
+    };
+    const persistentRemoveProjection: StudioPersistentRemoveProjectionV1 = {
+      removals: [
+        {
+          affectedSceneEntityIds: [entityId],
+          fadeInterval: { end: 2.3, start: 2.1 },
+          operationId: "create/remove",
+          removedAt: 2.3,
+          resultingLifetimeEnd: 2.3,
+          sceneEntityId: entityId,
+          studioEntityId: entityId,
+          transactionId: removeProgram.transactionId,
+        },
+      ],
+    };
+
+    const projected = projectStudioWorkspace({
+      activeScene: imported,
+      appliedPrograms: [
+        programRecord(program, { issues: [], kind: "valid" }),
+        programRecord(removeProgram, { issues: [], kind: "valid" }),
+      ],
+      currentTime: 1,
+      draftProgram: null,
+      motionProjection: projection,
+      nextScene: null,
+      persistentRemoveProjection,
+      programAuthority: "rust-authorized-batch",
+      selectedObjectIds: [],
+    });
+
+    expect(projected.proposedState.evaluatedScene.duration).toBe(projection.projectedDuration);
+    expect(projected.proposedState.evaluatedScene.objectGraph.entities[entityId]).toBeDefined();
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.at(-1),
+    ).toMatchObject({
+      control: projection.motions[0]?.control,
+      from: projection.motions[0]?.from,
+      value: projection.motions[0]?.to,
+    });
+  });
+
   it("waits for exact Rust authority for non-timeline Program batches", () => {
     const imported = workspaceScene("Static", null);
     const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
@@ -647,9 +860,9 @@ describe("Studio workspace projection", () => {
         motions: [motion],
       });
 
-    expect(() => select({ ...projection.motions[0]!, to: { x: 361, y: 160 } })).toThrow("is not correlated");
-    expect(() => select({ ...projection.motions[0]!, control: { x: 351, y: 175 } })).toThrow("is not correlated");
-    expect(() => select({ ...projection.motions[0]!, interval: { end: 1.04, start: 0.79 } })).toThrow(
+    expect(() => select({ ...projection.motions[0]!, delta: { x: 41, y: -20 } })).toThrow("is not correlated");
+    expect(() => select({ ...projection.motions[0]!, controlOffset: { x: 11, y: 5 } })).toThrow("is not correlated");
+    expect(() => select({ ...projection.motions[0]!, sourceInterval: { end: 1.04, start: 0.79 } })).toThrow(
       "is not correlated",
     );
   });
