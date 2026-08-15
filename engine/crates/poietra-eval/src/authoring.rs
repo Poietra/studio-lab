@@ -5577,8 +5577,7 @@ impl EngineSessionV1 {
         if !matches!(
             scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
-        ) || !scene.animation_channels.is_empty()
-            || !studio_authoring_size_is_positive(frame)
+        ) || !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != scene.camera.view.frame_width
             || frame.height != scene.camera.view.frame_height
@@ -5655,14 +5654,11 @@ impl EngineSessionV1 {
         if studio_entity.kind != StaticRootTransformEntityKind::MathTex
             || source.parent_id.is_some()
             || !matches!(source.geometry, SceneGeometryV1::CubicPath { .. })
-            || !matches!(
-                &source.appearance,
-                SceneAppearanceV1::Vector {
-                    fill: Some(_),
-                    opacity,
-                    stroke: None,
-                } if *opacity == 1.0
-            )
+            || !matches!(&source.appearance, SceneAppearanceV1::Vector { .. })
+            || scene
+                .animation_channels
+                .iter()
+                .any(|channel| channel.entity_id() == Some(source.id.as_str()))
             || source_lifetime.start > 0.0
             || source_lifetime.end <= 0.0
         {
@@ -12539,6 +12535,47 @@ mod tests {
     }
 
     #[test]
+    fn math_tex_content_accepts_unrelated_animation_and_preserves_vector_appearance() {
+        let mut bundle = static_imported_math_tex_bundle();
+        let styled_appearance = studio_shape_appearance();
+        bundle
+            .scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap()
+            .appearance = styled_appearance.clone();
+        bundle.scene.animation_channels = fixture_bundle("shared-circle-opacity.json")
+            .scene
+            .animation_channels;
+        bundle
+            .scene
+            .required_capabilities
+            .push(SceneCapabilityV1::OpacityAnimation);
+        bundle.scene.required_capabilities.sort();
+        bundle.scene.required_capabilities.dedup();
+        let expected_channels = bundle.scene.animation_channels.clone();
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session
+            .apply_static_root_transform_edit(static_root_math_tex_content_command())
+            .unwrap();
+
+        assert_eq!(result.bundle.scene.animation_channels, expected_channels);
+        assert_eq!(
+            result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == "later")
+                .unwrap()
+                .appearance,
+            styled_appearance
+        );
+    }
+
+    #[test]
     fn rejected_math_tex_content_edits_preserve_the_retained_scene() {
         let mut missing_outline = static_root_math_tex_content_command();
         missing_outline.math_tex_outlines.clear();
@@ -12581,16 +12618,22 @@ mod tests {
             .unwrap()
             .parent_id = Some("earlier".to_owned());
 
-        let mut animated_bundle = static_imported_math_tex_bundle();
-        animated_bundle.scene.animation_channels = fixture_bundle("shared-circle-opacity.json")
+        let mut target_animated_bundle = static_imported_math_tex_bundle();
+        let mut target_channel = fixture_bundle("shared-circle-opacity.json")
             .scene
-            .animation_channels;
-        animated_bundle
+            .animation_channels
+            .remove(0);
+        let AnimationChannelV1::Opacity { entity_id, .. } = &mut target_channel else {
+            panic!("fixture must contain an opacity channel");
+        };
+        *entity_id = "later".to_owned();
+        target_animated_bundle.scene.animation_channels = vec![target_channel];
+        target_animated_bundle
             .scene
             .required_capabilities
             .push(SceneCapabilityV1::OpacityAnimation);
-        animated_bundle.scene.required_capabilities.sort();
-        animated_bundle.scene.required_capabilities.dedup();
+        target_animated_bundle.scene.required_capabilities.sort();
+        target_animated_bundle.scene.required_capabilities.dedup();
 
         let cases = vec![
             (static_imported_math_tex_bundle(), missing_outline),
@@ -12600,7 +12643,10 @@ mod tests {
             (static_imported_math_tex_bundle(), nonzero_interval),
             (static_imported_math_tex_bundle(), mixed_family),
             (nested_bundle, static_root_math_tex_content_command()),
-            (animated_bundle, static_root_math_tex_content_command()),
+            (
+                target_animated_bundle,
+                static_root_math_tex_content_command(),
+            ),
         ];
         for (bundle, command) in cases {
             let mut session = EngineSessionV1::new(bundle).unwrap();
