@@ -1,12 +1,7 @@
 import {
-  compileRotateSceneEntity,
-  compileSetSubtreeVectorPaintAlpha,
-  compileTransformSceneEntity,
-  compileTransformSceneEntityAtTime,
-  type RotateSceneEntityCompiler,
-  type SetSubtreeVectorPaintAlphaCompiler,
-  type TransformSceneEntityAtTimeCompiler,
-  type TransformSceneEntityCompiler,
+  compileApplyStudioBoundEntityEdit,
+  type ApplyStudioBoundEntityEditCompiler,
+  type ApplyStudioBoundEntityEditWireCommandV1,
 } from "../engine/scene-authoring";
 import { type SceneEntityV1, type SceneIrV1, sceneIrSourceRevisionHash } from "../engine/scene-ir";
 import type { Point, ProgramRecord, ProjectedEntity, ProposedState, RuntimeSceneState } from "./model";
@@ -82,21 +77,6 @@ export function studioPreviewRuntimeTraceEditBaseCenter(
   return "baseCenter" in projection ? projection.baseCenter : null;
 }
 
-export type StudioPreviewRuntimeTraceEdit =
-  | Readonly<{ kind: "move"; position: Point }>
-  | Readonly<{ kind: "opacity"; opacity: number }>
-  | Readonly<{ kind: "resize"; scaleFactor: number }>
-  | Readonly<{ angleRadians: number; kind: "rotation" }>;
-
-export type StudioPreviewRuntimeTraceEditProgramSet =
-  | Readonly<{ kind: "none" }>
-  | Readonly<{
-      candidate: StudioPreviewRuntimeTraceEditCandidate;
-      edit: StudioPreviewRuntimeTraceEdit;
-      kind: "authorized";
-    }>
-  | Readonly<{ kind: "unauthorized" }>;
-
 export type StudioPreviewRuntimeTraceProgramValidation = "authorized" | "not-applicable" | "rejected";
 
 function unsupported(code: StudioPreviewTemporalRebaseIssueCode, message: string) {
@@ -105,19 +85,6 @@ function unsupported(code: StudioPreviewTemporalRebaseIssueCode, message: string
 
 function closeEnough(left: number, right: number) {
   return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
-}
-
-function isFinitePoint(value: unknown): value is Point {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "x" in value &&
-    "y" in value &&
-    typeof value.x === "number" &&
-    typeof value.y === "number" &&
-    Number.isFinite(value.x) &&
-    Number.isFinite(value.y)
-  );
 }
 
 function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifiedPreviewSnapshotV1) {
@@ -330,138 +297,6 @@ export function studioPreviewRuntimeTraceEditCandidates(
   return candidates;
 }
 
-function runtimeTraceEditProgram(
-  record: ProgramRecord,
-  candidate: StudioPreviewRuntimeTraceEditCandidate,
-): StudioPreviewRuntimeTraceEdit | null {
-  const program = record.program;
-  const operation = program.operations[0];
-  if (
-    record.validation.status !== "valid" ||
-    program.operations.length !== 1 ||
-    !operation ||
-    program.intentCount !== 1 ||
-    program.loweringStatus !== "supported" ||
-    program.provenance.origin !== "direct-manipulation" ||
-    program.requestedExecution !== "parallel" ||
-    program.schedule.mode !== "parallel" ||
-    program.schedule.edges.length !== 0 ||
-    program.schedule.order.length !== 1 ||
-    program.schedule.order[0] !== operation.id ||
-    !closeEnough(program.anchor.capturedPlayhead, candidate.sourceAnchor) ||
-    !closeEnough(program.anchor.resolvedSeconds, candidate.sourceAnchor) ||
-    !(
-      (program.anchor.source.kind === "absolute" &&
-        closeEnough(program.anchor.source.seconds, candidate.sourceAnchor)) ||
-      (program.anchor.source.kind === "playhead" &&
-        closeEnough(program.anchor.source.referenceSeconds, candidate.sourceAnchor))
-    ) ||
-    !("entityId" in operation) ||
-    operation.entityId !== candidate.studioEntityId ||
-    operation.dependsOn.length !== 0 ||
-    !closeEnough(operation.interval.start, candidate.sourceAnchor) ||
-    !closeEnough(operation.interval.end, candidate.sourceAnchor) ||
-    operation.provenance.origin !== "direct-manipulation"
-  ) {
-    return null;
-  }
-  if (operation.kind === "SetProperty" && operation.key === "position" && isFinitePoint(operation.value)) {
-    return { kind: "move", position: { x: operation.value.x, y: operation.value.y } };
-  }
-  if (
-    operation.kind === "SetProperty" &&
-    operation.key === "appearance" &&
-    candidate.capabilities.paintOpacity &&
-    typeof operation.value === "number" &&
-    Number.isFinite(operation.value) &&
-    operation.value >= 0 &&
-    operation.value <= 1 &&
-    (candidate.baseOpacity === null || !closeEnough(operation.value, candidate.baseOpacity))
-  ) {
-    return { kind: "opacity", opacity: operation.value };
-  }
-  if (
-    operation.kind === "AnimateProperty" &&
-    operation.key === "rotation" &&
-    candidate.capabilities.rotation &&
-    operation.control === undefined &&
-    typeof operation.from === "number" &&
-    typeof operation.to === "number" &&
-    typeof operation.relativeDelta === "number" &&
-    Number.isFinite(operation.from) &&
-    Number.isFinite(operation.to) &&
-    Number.isFinite(operation.relativeDelta) &&
-    Math.abs(operation.to - operation.from - operation.relativeDelta) < 0.000001 &&
-    Math.abs(Math.atan2(Math.sin(operation.relativeDelta), Math.cos(operation.relativeDelta))) > 1e-12
-  ) {
-    return { angleRadians: operation.relativeDelta, kind: "rotation" };
-  }
-  if (
-    operation.kind === "AnimateProperty" &&
-    operation.key === "scale" &&
-    operation.control === undefined &&
-    typeof operation.from === "number" &&
-    typeof operation.to === "number" &&
-    typeof operation.relativeFactor === "number" &&
-    Number.isFinite(operation.from) &&
-    Number.isFinite(operation.to) &&
-    Number.isFinite(operation.relativeFactor) &&
-    operation.from > 0 &&
-    operation.to > 0 &&
-    operation.relativeFactor > 0 &&
-    // The server lowerer canonicalizes to twelve significant digits and
-    // rejects the identity factor; mirror it so an authorized set never
-    // carries a request the mutation authority is guaranteed to refuse.
-    Number(operation.relativeFactor.toPrecision(12)) !== 1 &&
-    closeEnough(operation.to / operation.from, operation.relativeFactor)
-  ) {
-    return { kind: "resize", scaleFactor: operation.relativeFactor };
-  }
-  return null;
-}
-
-/**
- * Browser-side capability gate for the one request #523/#510 may send to the
- * server. The one staged Program must target exactly one minted candidate;
- * it does not verify Python source authority; the fresh-source V3 lowerer
- * owns that decision and must reject independently.
- */
-export function studioPreviewRuntimeTraceEditProgramSet(
-  records: readonly ProgramRecord[],
-  candidates: readonly StudioPreviewRuntimeTraceEditCandidate[],
-): StudioPreviewRuntimeTraceEditProgramSet {
-  if (records.length === 0) return { kind: "none" };
-  if (records.length !== 1 || candidates.length === 0) return { kind: "unauthorized" };
-  const record = records[0]!;
-  const operation = record.program.operations[0];
-  const targetEntityId = operation && "entityId" in operation ? operation.entityId : null;
-  const matching = candidates.filter(({ studioEntityId }) => studioEntityId === targetEntityId);
-  const candidate = matching[0];
-  if (matching.length !== 1 || !candidate) return { kind: "unauthorized" };
-  const edit = runtimeTraceEditProgram(record, candidate);
-  return edit ? { candidate, edit, kind: "authorized" } : { kind: "unauthorized" };
-}
-
-/**
- * Binds Runtime Trace validation to the staged Program and verified snapshot,
- * rather than to the current playhead. Scrubbing away from an edit endpoint
- * must never downgrade the same Program to ordinary source lowering.
- */
-export function studioPreviewRuntimeTraceProgramValidation(
-  snapshot: StudioVerifiedPreviewSnapshotV1,
-  records: readonly ProgramRecord[],
-  sourceEvents: RuntimeSceneState["eventTrack"]["events"],
-): StudioPreviewRuntimeTraceProgramValidation {
-  const source = snapshot.snapshot.scene.source;
-  if (source.kind !== "imported-manim-runtime-trace" || source.traceVersion !== 3 || records.length === 0) {
-    return "not-applicable";
-  }
-  const sourceAnchor = records[0]?.program.anchor.resolvedSeconds;
-  if (sourceAnchor === undefined) return "rejected";
-  const candidates = studioPreviewRuntimeTraceEditCandidates(snapshot, sourceAnchor, sourceEvents);
-  return studioPreviewRuntimeTraceEditProgramSet(records, candidates).kind === "authorized" ? "authorized" : "rejected";
-}
-
 function studioRuntimeTraceEditTargetMatches(
   entity: RuntimeSceneState["objectGraph"]["entities"][string] | ProjectedEntity | undefined,
   authority: StudioPreviewRuntimeTraceEditCandidate,
@@ -590,17 +425,6 @@ export function studioPreviewRuntimeTraceEditAnchor(
   return candidateSourceAnchors.size === 1 ? candidates[0]!.sourceAnchor : null;
 }
 
-function studioPointToScenePoint(
-  point: Point,
-  frame: Readonly<{ height: number; width: number }>,
-  cameraCenter: Point,
-) {
-  return {
-    x: cameraCenter.x + (point.x / STUDIO_VIEWPORT.width - 0.5) * frame.width,
-    y: cameraCenter.y + (0.5 - point.y / STUDIO_VIEWPORT.height) * frame.height,
-  };
-}
-
 function scenePointToStudioPoint(
   point: Point,
   frame: Readonly<{ height: number; width: number }>,
@@ -612,21 +436,72 @@ function scenePointToStudioPoint(
   };
 }
 
+function boundEntityOperation(
+  operation: ProgramRecord["program"]["operations"][number],
+): ApplyStudioBoundEntityEditWireCommandV1["programs"][number]["operations"][number] {
+  const common = {
+    dependsOn: operation.dependsOn,
+    id: operation.id,
+    interval: operation.interval,
+    origin: operation.provenance.origin,
+  };
+  if (operation.kind === "SetProperty" && operation.key === "position") {
+    return { ...common, entityId: operation.entityId, kind: "move", position: operation.value as Point };
+  }
+  if (operation.kind === "SetProperty" && operation.key === "appearance") {
+    return {
+      ...common,
+      alpha: typeof operation.value === "number" ? operation.value : null,
+      entityId: operation.entityId,
+      kind: "opacity",
+    };
+  }
+  if (operation.kind === "AnimateProperty" && operation.key === "rotation") {
+    return {
+      ...common,
+      controlPresent: operation.control !== undefined,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "rotation",
+      relativeDelta: operation.relativeDelta ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") {
+    return {
+      ...common,
+      controlPresent: operation.control !== undefined,
+      entityId: operation.entityId,
+      from: typeof operation.from === "number" ? operation.from : null,
+      kind: "uniform-scale",
+      relativeFactor: operation.relativeFactor ?? null,
+      to: typeof operation.to === "number" ? operation.to : null,
+    };
+  }
+  return { ...common, entityId: "entityId" in operation ? operation.entityId : null, kind: "unsupported" };
+}
+
+function boundEntityAnchorSource(
+  record: ProgramRecord,
+): ApplyStudioBoundEntityEditWireCommandV1["programs"][number]["anchorSource"] {
+  const source = record.program.anchor.source;
+  if (source.kind === "absolute") return { kind: "absolute", seconds: source.seconds };
+  if (source.kind === "playhead") return { kind: "playhead", referenceSeconds: source.referenceSeconds };
+  return { kind: "unsupported" };
+}
+
 /**
- * Reprojects one endpoint-authorized edit onto the verified Runtime Trace
- * hierarchy. Construction edits mutate the root transform; settled edits add
- * one exact-time root transform in Rust so every earlier frame stays intact.
+ * Passes complete normalized Programs and integration-verified endpoint facts
+ * to the canonical core. This adapter owns source correlation only; Rust owns
+ * admission, binding, coordinate conversion, provenance, and mutation.
  */
 export async function compileStudioPreviewRuntimeTraceEdit(
   input: Readonly<{
+    boundEntityEditCompiler?: ApplyStudioBoundEntityEditCompiler;
     frame: Readonly<{ height: number; width: number }>;
     proposedState: ProposedState;
-    rotationCompiler?: RotateSceneEntityCompiler;
-    subtreePaintAlphaCompiler?: SetSubtreeVectorPaintAlphaCompiler;
     snapshot: StudioVerifiedPreviewSnapshotV1;
     sourceRevisionHash: string;
-    transformCompiler?: TransformSceneEntityCompiler;
-    transformAtTimeCompiler?: TransformSceneEntityAtTimeCompiler;
   }>,
 ): Promise<StudioPreviewTemporalRebaseResult> {
   const sourceAnchor = input.proposedState.programs[0]?.program.anchor.resolvedSeconds;
@@ -661,150 +536,50 @@ export async function compileStudioPreviewRuntimeTraceEdit(
       "Studio state is not correlated with the Runtime Trace edit evidence.",
     );
   }
-  const programSet = studioPreviewRuntimeTraceEditProgramSet(input.proposedState.programs, candidates);
-  if (programSet.kind !== "authorized") {
-    return unsupported(
-      "target-edit-unsupported",
-      "Runtime Trace permits one position move or uniform resize at this verified endpoint; construction-time evidence may also permit rotation or opacity.",
-    );
-  }
-  const candidate = programSet.candidate;
-  const targetIndex = scene.entities.findIndex(({ id }) => id === candidate.runtimeEntityId);
-  const target = scene.entities[targetIndex];
-  if (!target || target.parentId !== null || target.geometry.kind !== "group") {
-    return unsupported("identity-unverified", "The Runtime Trace edit target is not its verified root group.");
-  }
-  const edit = programSet.edit;
-  const provenanceId = `studio-runtime-trace-${candidate.phase}-${edit.kind}:${input.sourceRevisionHash}`;
-  if (scene.provenance.some(({ id }) => id === provenanceId)) {
-    return unsupported("conflicting-edit-unsupported", "The Runtime Trace edit provenance identity already exists.");
-  }
-  const provenance = {
-    evidence: [
-      edit.kind === "move"
-        ? `Studio ${candidate.phase} position request projected onto one verified Runtime Trace root`
-        : edit.kind === "opacity"
-          ? "Studio construction-time absolute opacity request projected onto static vector paints in one verified Runtime Trace root"
-          : edit.kind === "resize"
-            ? `Studio ${candidate.phase} uniform resize request projected onto one verified Runtime Trace root`
-            : "Studio construction-time planar rotation request projected onto one verified Runtime Trace root",
-      `source binding ${candidate.bindingId}`,
-      `authorized operation ${input.proposedState.programs[0]!.program.operations[0]!.id}`,
-    ],
-    id: provenanceId,
-    origin: "studio-edit-program" as const,
-  };
-  if (edit.kind === "opacity") {
-    try {
-      const rebased = await (input.subtreePaintAlphaCompiler ?? compileSetSubtreeVectorPaintAlpha)(
-        input.snapshot.snapshot,
-        {
-          alpha: edit.opacity,
-          expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-          nextRevision: input.sourceRevisionHash,
-          provenance,
-          rootEntityId: target.id,
-          schema: "poietra.set-subtree-vector-paint-alpha",
-          version: 1,
-        },
-      );
-      return { kind: "rebased", scene: rebased.scene };
-    } catch (error) {
-      return unsupported(
-        "target-edit-unsupported",
-        `Rust core rejected the Runtime Trace paint opacity: ${
-          error instanceof Error ? error.message : "unknown error"
-        }`,
-      );
-    }
-  }
-  const baseCenter = studioPointToScenePoint(candidate.baseCenter, input.frame, scene.camera.view.center);
-  if (edit.kind === "move") {
-    const targetCenter = studioPointToScenePoint(edit.position, input.frame, scene.camera.view.center);
-    const delta = { x: targetCenter.x - baseCenter.x, y: targetCenter.y - baseCenter.y };
-    try {
-      const rebased =
-        candidate.phase === "construction"
-          ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-              entityId: target.id,
-              expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-              intent: { delta, kind: "relative" },
-              nextRevision: input.sourceRevisionHash,
-              provenance,
-              schema: "poietra.transform-scene-entity",
-              version: 1,
-            })
-          : await (input.transformAtTimeCompiler ?? compileTransformSceneEntityAtTime)(input.snapshot.snapshot, {
-              at: candidate.sourceAnchor,
-              delta,
-              entityId: target.id,
-              expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-              nextRevision: input.sourceRevisionHash,
-              provenance,
-              schema: "poietra.transform-scene-entity-at-time",
-              version: 1,
-            });
-      return { kind: "rebased", scene: rebased.scene };
-    } catch (error) {
-      return unsupported(
-        "geometry-edit-unsupported",
-        `Rust core rejected the Runtime Trace move: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
-    }
-  }
-  if (edit.kind === "rotation") {
-    try {
-      const rebased = await (input.rotationCompiler ?? compileRotateSceneEntity)(input.snapshot.snapshot, {
-        angleRadians: edit.angleRadians,
-        entityId: target.id,
-        expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-        nextRevision: input.sourceRevisionHash,
-        pivot: baseCenter,
-        provenance,
-        schema: "poietra.rotate-scene-entity",
-        version: 1,
-      });
-      return { kind: "rebased", scene: rebased.scene };
-    } catch (error) {
-      return unsupported(
-        "geometry-edit-unsupported",
-        `Rust core rejected the Runtime Trace rotation: ${error instanceof Error ? error.message : "unknown error"}`,
-      );
-    }
-  }
   try {
-    const common = {
-      entityId: target.id,
-      expectedBaseRevision: sceneIrSourceRevisionHash(scene),
-      nextRevision: input.sourceRevisionHash,
-      provenance,
-      version: 1 as const,
-    };
-    const rebased =
-      candidate.phase === "construction"
-        ? await (input.transformCompiler ?? compileTransformSceneEntity)(input.snapshot.snapshot, {
-            ...common,
-            intent: {
-              delta: { x: 0, y: 0 },
-              kind: "relative",
-              scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
-            },
-            schema: "poietra.transform-scene-entity",
-          })
-        : await (input.transformAtTimeCompiler ?? compileTransformSceneEntityAtTime)(input.snapshot.snapshot, {
-            ...common,
-            at: candidate.sourceAnchor,
-            delta: { x: 0, y: 0 },
-            scale: { pivot: baseCenter, xFactor: edit.scaleFactor, yFactor: edit.scaleFactor },
-            schema: "poietra.transform-scene-entity-at-time",
-          });
+    const rebased = await (input.boundEntityEditCompiler ?? compileApplyStudioBoundEntityEdit)(
+      input.snapshot.snapshot,
+      {
+        baseStudioSceneId: base.runtimeSceneState.sceneId,
+        candidates: candidates.map((candidate) => ({
+          baseCenter: candidate.baseCenter,
+          baseOpacity: candidate.baseOpacity,
+          capabilities: candidate.capabilities,
+          evidenceId: candidate.bindingId,
+          phase: candidate.phase,
+          sceneEntityId: candidate.runtimeEntityId,
+          sourceAnchor: candidate.sourceAnchor,
+          studioEntityId: candidate.studioEntityId,
+        })),
+        evaluatedDuration: input.proposedState.evaluatedScene.duration,
+        evaluatedSceneId: input.proposedState.evaluatedScene.sceneId,
+        expectedBaseRevision: sceneIrSourceRevisionHash(scene),
+        frame: input.frame,
+        nextRevision: input.sourceRevisionHash,
+        programs: input.proposedState.programs.map((record) => ({
+          anchorCapturedPlayhead: record.program.anchor.capturedPlayhead,
+          anchorResolvedSeconds: record.program.anchor.resolvedSeconds,
+          anchorSource: boundEntityAnchorSource(record),
+          intentCount: record.program.intentCount,
+          loweringSupported: record.program.loweringStatus === "supported",
+          operations: record.program.operations.map(boundEntityOperation),
+          origin: record.program.provenance.origin,
+          requestedExecution: record.program.requestedExecution,
+          scheduleEdgeCount: record.program.schedule.edges.length,
+          scheduleMode: record.program.schedule.mode,
+          scheduleOrder: record.program.schedule.order,
+          validationValid: record.validation.status === "valid",
+        })),
+        schema: "poietra.apply-studio-bound-entity-edit",
+        version: 1,
+        viewport: STUDIO_VIEWPORT,
+      },
+    );
     return { kind: "rebased", scene: rebased.scene };
   } catch (error) {
     return unsupported(
-      "geometry-edit-unsupported",
-      `Rust core rejected the Runtime Trace uniform resize: ${
-        error instanceof Error ? error.message : "unknown error"
-      }`,
+      "target-edit-unsupported",
+      `Rust core rejected the source-bound endpoint edit: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }

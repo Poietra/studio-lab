@@ -4,21 +4,15 @@ import { describe, expect, it } from "vitest";
 import { parseVerifiedSceneIrBundleV1 } from "./contracts";
 import {
   type ApplyStaticRootTransformEditWireCommandV1,
+  type ApplyStudioBoundEntityEditWireCommandV1,
   type ApplyStudioCreationEditWireCommandV1,
   type ApplyStudioMotionEditWireCommandV1,
   type ApplyStudioTimelineEditWireCommandV1,
   createApplyStaticRootTransformEditCompiler,
+  createApplyStudioBoundEntityEditCompiler,
   createApplyStudioCreationEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
-  createRotateSceneEntityCompiler,
-  createSetSubtreeVectorPaintAlphaCompiler,
-  createTransformSceneEntityAtTimeCompiler,
-  createTransformSceneEntityCompiler,
-  type RotateSceneEntityWireCommandV1,
-  type SetSubtreeVectorPaintAlphaWireCommandV1,
-  type TransformSceneEntityAtTimeWireCommandV1,
-  type TransformSceneEntityWireCommandV1,
 } from "./scene-authoring";
 
 const staticRootTransformEditCommand: ApplyStaticRootTransformEditWireCommandV1 = {
@@ -157,68 +151,54 @@ const studioMotionEditCommand: ApplyStudioMotionEditWireCommandV1 = {
   viewport: { height: 360, width: 640 },
 };
 
-const command: RotateSceneEntityWireCommandV1 = {
-  angleRadians: Math.PI / 6,
-  entityId: "later",
+const boundEntityEditCommand: ApplyStudioBoundEntityEditWireCommandV1 = {
+  baseStudioSceneId: "scene.py#CircleScene",
+  candidates: [
+    {
+      baseCenter: { x: 320, y: 180 },
+      baseOpacity: 1,
+      capabilities: { paintOpacity: true, rotation: true, uniformScale: true },
+      evidenceId: "binding:circle",
+      phase: "construction",
+      sceneEntityId: "later",
+      sourceAnchor: 0,
+      studioEntityId: "source:circle",
+    },
+  ],
+  evaluatedDuration: 3,
+  evaluatedSceneId: "scene.py#CircleScene",
   expectedBaseRevision: "a".repeat(64),
+  frame: { height: 9, width: 16 },
   nextRevision: "b".repeat(64),
-  pivot: { x: 1.25, y: -0.5 },
-  provenance: {
-    evidence: ["Studio inspector rotation"],
-    id: "studio-edit:rotation-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.rotate-scene-entity",
+  programs: [
+    {
+      anchorCapturedPlayhead: 0,
+      anchorResolvedSeconds: 0,
+      anchorSource: { kind: "absolute", seconds: 0 },
+      intentCount: 1,
+      loweringSupported: true,
+      operations: [
+        {
+          dependsOn: [],
+          entityId: "source:circle",
+          id: "move-circle",
+          interval: { end: 0, start: 0 },
+          kind: "move",
+          origin: "direct-manipulation",
+          position: { x: 400, y: 180 },
+        },
+      ],
+      origin: "direct-manipulation",
+      requestedExecution: "parallel",
+      scheduleEdgeCount: 0,
+      scheduleMode: "parallel",
+      scheduleOrder: ["move-circle"],
+      validationValid: true,
+    },
+  ],
+  schema: "poietra.apply-studio-bound-entity-edit",
   version: 1,
-};
-
-const transformCommand: TransformSceneEntityWireCommandV1 = {
-  entityId: "later",
-  expectedBaseRevision: "a".repeat(64),
-  intent: {
-    delta: { x: 2.5, y: -1.5 },
-    kind: "relative",
-    scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
-  },
-  nextRevision: "f".repeat(64),
-  provenance: {
-    evidence: ["Studio atomic transform"],
-    id: "studio-edit:transform-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.transform-scene-entity",
-  version: 1,
-};
-
-const verifiedTransformCommand: TransformSceneEntityWireCommandV1 = {
-  entityId: "later",
-  expectedBaseRevision: "a".repeat(64),
-  intent: {
-    baseline: { height: 1, kind: "world-size", width: 1, worldCenter: { x: 1, y: 0 } },
-    kind: "from-baseline",
-    scale: { xFactor: 1.5, yFactor: 0.75 },
-    targetCenter: { x: 2.25, y: -0.5 },
-  },
-  nextRevision: "8".repeat(64),
-  provenance: {
-    evidence: ["Studio geometry-verified transform"],
-    id: "studio-edit:verified-transform-1",
-    origin: "studio-edit-program",
-  },
-  schema: "poietra.transform-scene-entity",
-  version: 1,
-};
-
-const timedTransformCommand: TransformSceneEntityAtTimeWireCommandV1 = {
-  at: 1.5,
-  delta: { x: 2.5, y: -1.5 },
-  entityId: transformCommand.entityId,
-  expectedBaseRevision: transformCommand.expectedBaseRevision,
-  nextRevision: transformCommand.nextRevision,
-  provenance: transformCommand.provenance,
-  scale: { pivot: { x: 1.25, y: -0.5 }, xFactor: 1.5, yFactor: 1.5 },
-  schema: "poietra.transform-scene-entity-at-time",
-  version: 1,
+  viewport: { height: 360, width: 640 },
 };
 
 const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
@@ -248,20 +228,6 @@ const studioTimelineEditCommand: ApplyStudioTimelineEditWireCommandV1 = {
     },
   ],
   schema: "poietra.apply-studio-timeline-edit",
-  version: 1,
-};
-
-const setSubtreeVectorPaintAlphaCommand: SetSubtreeVectorPaintAlphaWireCommandV1 = {
-  alpha: 0.25,
-  expectedBaseRevision: "a".repeat(64),
-  nextRevision: "e".repeat(64),
-  provenance: {
-    evidence: ["Studio subtree vector paint alpha"],
-    id: "studio-edit:subtree-vector-paint-alpha-1",
-    origin: "studio-edit-program",
-  },
-  rootEntityId: "root",
-  schema: "poietra.set-subtree-vector-paint-alpha",
   version: 1,
 };
 
@@ -309,11 +275,11 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(creationEditCommand);
   });
 
-  it("forwards one profile-free command and accepts only a verified complete bundle", async () => {
+  it("forwards one complete source-bound endpoint edit without reconstructing it", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
-    const compile = createRotateSceneEntityCompiler(async () => ({
-      rotateSceneEntityV1: (snapshotJson, commandJson) => {
+    const compile = createApplyStudioBoundEntityEditCompiler(async () => ({
+      applyStudioBoundEntityEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
@@ -322,45 +288,9 @@ describe("Scene authoring WASM adapter", () => {
       },
     }));
 
-    const result = await compile(bundle, command);
+    const result = await compile(bundle, boundEntityEditCommand);
     expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(command);
-  });
-
-  it("forwards one exact atomic root transform and complete base snapshot", async () => {
-    const bundle = await fixtureBundle();
-    const calls: unknown[] = [];
-    const compile = createTransformSceneEntityCompiler(async () => ({
-      transformSceneEntityV1: (snapshotJson, commandJson) => {
-        calls.push(
-          JSON.parse(new TextDecoder().decode(snapshotJson)),
-          JSON.parse(new TextDecoder().decode(commandJson)),
-        );
-        return new TextEncoder().encode(JSON.stringify(bundle));
-      },
-    }));
-
-    const result = await compile(bundle, transformCommand);
-    expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(transformCommand);
-  });
-
-  it("forwards one geometry-verified root transform and complete base snapshot", async () => {
-    const bundle = await fixtureBundle();
-    const calls: unknown[] = [];
-    const compile = createTransformSceneEntityCompiler(async () => ({
-      transformSceneEntityV1: (snapshotJson, commandJson) => {
-        calls.push(
-          JSON.parse(new TextDecoder().decode(snapshotJson)),
-          JSON.parse(new TextDecoder().decode(commandJson)),
-        );
-        return new TextEncoder().encode(JSON.stringify(bundle));
-      },
-    }));
-
-    const result = await compile(bundle, verifiedTransformCommand);
-    expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(verifiedTransformCommand);
+    expect(calls[1]).toEqual(boundEntityEditCommand);
   });
 
   it("forwards one complete Studio motion edit and base snapshot", async () => {
@@ -381,24 +311,6 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(studioMotionEditCommand);
   });
 
-  it("forwards one exact timed root transform and complete base snapshot", async () => {
-    const bundle = await fixtureBundle();
-    const calls: unknown[] = [];
-    const compile = createTransformSceneEntityAtTimeCompiler(async () => ({
-      transformSceneEntityAtTimeV1: (snapshotJson, commandJson) => {
-        calls.push(
-          JSON.parse(new TextDecoder().decode(snapshotJson)),
-          JSON.parse(new TextDecoder().decode(commandJson)),
-        );
-        return new TextEncoder().encode(JSON.stringify(bundle));
-      },
-    }));
-
-    const result = await compile(bundle, timedTransformCommand);
-    expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(timedTransformCommand);
-  });
-
   it("forwards one complete normalized Studio timeline edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
@@ -417,41 +329,15 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls[1]).toEqual(studioTimelineEditCommand);
   });
 
-  it("forwards the exact subtree vector-paint command and complete base snapshot", async () => {
-    const bundle = await fixtureBundle();
-    const calls: unknown[] = [];
-    const compile = createSetSubtreeVectorPaintAlphaCompiler(async () => ({
-      setSubtreeVectorPaintAlphaV1: (snapshotJson, commandJson) => {
-        calls.push(
-          JSON.parse(new TextDecoder().decode(snapshotJson)),
-          JSON.parse(new TextDecoder().decode(commandJson)),
-        );
-        return new TextEncoder().encode(JSON.stringify(bundle));
-      },
-    }));
-
-    const result = await compile(bundle, setSubtreeVectorPaintAlphaCommand);
-    expect(result).toEqual(calls[0]);
-    expect(calls[1]).toEqual(setSubtreeVectorPaintAlphaCommand);
-  });
-
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
     const compileCreation = createApplyStudioCreationEditCompiler(async () => ({
       applyStudioCreationEditV1: () => new TextEncoder().encode("null"),
     }));
-    const compileRotation = createRotateSceneEntityCompiler(async () => ({
-      rotateSceneEntityV1: () => new TextEncoder().encode('{"scene":{}}'),
-    }));
-    const compileSetPaintAlpha = createSetSubtreeVectorPaintAlphaCompiler(async () => ({
-      setSubtreeVectorPaintAlphaV1: () => new TextEncoder().encode("[]"),
-    }));
-    const compileTransform = createTransformSceneEntityCompiler(async () => ({
-      transformSceneEntityV1: () => new TextEncoder().encode("{}"),
+    const compileBoundEntity = createApplyStudioBoundEntityEditCompiler(async () => ({
+      applyStudioBoundEntityEditV1: () => new TextEncoder().encode('{"scene":{}}'),
     }));
     await expect(compileCreation(bundle, creationEditCommand)).rejects.toThrow();
-    await expect(compileRotation(bundle, command)).rejects.toThrow();
-    await expect(compileSetPaintAlpha(bundle, setSubtreeVectorPaintAlphaCommand)).rejects.toThrow();
-    await expect(compileTransform(bundle, transformCommand)).rejects.toThrow();
+    await expect(compileBoundEntity(bundle, boundEntityEditCommand)).rejects.toThrow();
   });
 });

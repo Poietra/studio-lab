@@ -88,7 +88,6 @@ import {
   projectStudioPreviewRuntimeTraceEntityPresence,
   projectStudioPreviewRuntimeTraceValidationScene,
   studioPreviewRuntimeTraceEditBaseCenter,
-  studioPreviewRuntimeTraceEditProgramSet,
   studioPreviewRuntimeTraceEditTargetIsPresent,
 } from "./studio/preview-temporal-rebase";
 import { latestSafeSourceAnchor, sourceTimeToWorkingTime, workingTimeToSourceTime } from "./studio/program-composition";
@@ -130,7 +129,6 @@ import {
   installCloudEditorSessionSnapshotV1,
   redoEditorProgram as redoEditorProgramTransition,
   snapshotCloudEditorSessionV1,
-  stageEditorDraft as stageEditorDraftTransition,
   undoEditorProgram as undoEditorProgramTransition,
   useEditorController,
 } from "./studio/use-editor-controller";
@@ -739,8 +737,6 @@ export function App({
       : null;
   const previewAppliedPrograms =
     previewReplacement?.kind === "replaced" ? previewReplacement.programs : appliedPrograms;
-  const previewProgramRecords =
-    editingAppliedProgram || draftProgram === null ? previewAppliedPrograms : [...previewAppliedPrograms, draftProgram];
   const draftPrecedingPrograms = editingAppliedProgram
     ? appliedPrograms.slice(0, editingAppliedProgram.index)
     : appliedPrograms;
@@ -847,17 +843,6 @@ export function App({
     return true;
   }
 
-  function restrictedPreviewProgramSetError(records: readonly ProgramRecord[]) {
-    if (previewRenderer?.runtimeTraceProgramValidation === "rejected") {
-      return "This Runtime Trace Program is not bound to a verified source edit endpoint.";
-    }
-    const candidates = previewRenderer?.runtimeTraceEditCandidates ?? [];
-    if (candidates.length > 0 && studioPreviewRuntimeTraceEditProgramSet(records, candidates).kind !== "authorized") {
-      return "This Runtime Trace permits one endpoint position, uniform resize, rotation, or opacity edit on one verified binding.";
-    }
-    return null;
-  }
-
   function stageDraft(input: Parameters<typeof stageEditorDraft>[0]) {
     // This is the common authoring boundary for pointer, Inspector, timeline,
     // keyboard, Magic Edit, and insertion drafts. Selection-only mappings are
@@ -868,21 +853,6 @@ export function App({
       return false;
     }
     if (rejectSelectionOnlyPreviewMutation()) return false;
-    const plannedRestrictedPrograms =
-      (previewRenderer?.runtimeTraceEditCandidates.length ?? 0) > 0
-        ? (() => {
-            const planned = stageEditorDraftTransition(editorState, input);
-            return [...planned.appliedPrograms, ...(planned.draftProgram ? [planned.draftProgram] : [])];
-          })()
-        : null;
-    const restrictionError = plannedRestrictedPrograms
-      ? restrictedPreviewProgramSetError(plannedRestrictedPrograms)
-      : null;
-    if (restrictionError) {
-      setDraftError(restrictionError);
-      setIsPlaying(false);
-      return false;
-    }
     if (editorDocumentAuthority.enabled && !editorDocumentAuthority.canAuthor()) {
       setDraftError(editorDocumentAuthority.message ?? EDITOR_SESSION_LOADING_BLOCKER);
       setIsPlaying(false);
@@ -922,15 +892,6 @@ export function App({
     const lifecycleBlocker = readDurationBlocker();
     if (lifecycleBlocker) return redoEditorProgram(lifecycleBlocker);
     const planned = redoEditorProgramTransition(editorState);
-    const restrictionError = restrictedPreviewProgramSetError([
-      ...planned.appliedPrograms,
-      ...(planned.draftProgram ? [planned.draftProgram] : []),
-    ]);
-    if (restrictionError) {
-      setDraftError(restrictionError);
-      setIsPlaying(false);
-      return false;
-    }
     if (!editorDocumentAuthority.enabled || entry.kind !== "mutation") {
       return redoEditorProgram();
     }
@@ -1583,15 +1544,9 @@ export function App({
       setDraftError("Wait for the canonical WebGPU preview or discard this draft.");
       return;
     }
-    // A draft may predate preview activation; keep the final source-export
-    // boundary fail-closed as well as blocking new drafts in `stageDraft`.
+    // A draft may predate preview activation; the correlated Rust compilation
+    // below remains the final source-export boundary.
     if (previewSelectionOnly && rejectSelectionOnlyPreviewMutation()) return;
-    const restrictionError = restrictedPreviewProgramSetError(previewProgramRecords);
-    if (restrictionError) {
-      setDraftError(restrictionError);
-      setIsPlaying(false);
-      return;
-    }
     if (!renderCandidate) return;
     const initialLifecycleBlocker = readDurationBlocker();
     if (initialLifecycleBlocker) {
@@ -2021,10 +1976,10 @@ export function App({
   function directGestureContext() {
     const previousDraft =
       !editingAppliedProgram && draftProgram?.program.provenance.origin === "direct-manipulation" ? draftProgram : null;
-    const replacesRuntimeTraceEdit =
-      previousDraft !== null &&
-      runtimeTraceEditCandidates.length > 0 &&
-      studioPreviewRuntimeTraceEditProgramSet([previousDraft], runtimeTraceEditCandidates).kind === "authorized";
+    // A source-bound endpoint admits one direct-manipulation draft. Replacing
+    // that transient draft is UI bookkeeping; Rust owns whether the new
+    // complete Program is semantically admissible.
+    const replacesRuntimeTraceEdit = previousDraft !== null && runtimeTraceEditCandidates.length > 0;
     const sourcePrograms =
       previousDraft && !replacesRuntimeTraceEdit
         ? [...appliedCanonicalPrograms, previousDraft.program]
@@ -3029,18 +2984,10 @@ export function App({
     ? previewAppliedPrograms.map((record) => record.program)
     : [...appliedPrograms.map((record) => record.program), ...(draftProgram ? [draftProgram.program] : [])];
   const renderProgram = renderPrograms[0] ?? null;
-  const runtimeTraceEditProgramSet =
-    runtimeTraceEditCandidates.length > 0
-      ? studioPreviewRuntimeTraceEditProgramSet(previewProgramRecords, runtimeTraceEditCandidates)
-      : null;
   const renderCandidateUnavailableReason =
     "Export .py downloads the selected source unchanged. Create or apply a Canonical draft to render or export Studio edits.";
   const renderCandidate: RenderProgramCandidate | null =
-    activeScene &&
-    activeProjectId &&
-    renderProgram &&
-    previewRenderer?.runtimeTraceProgramValidation !== "rejected" &&
-    (runtimeTraceEditCandidates.length === 0 || runtimeTraceEditProgramSet?.kind === "authorized")
+    activeScene && activeProjectId && renderProgram && previewRenderer?.runtimeTraceProgramValidation !== "rejected"
       ? {
           anchors: activeScene.anchors,
           ...(previewRenderer?.cameraCenter &&
