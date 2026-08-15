@@ -5,18 +5,22 @@ import { compileMathTexOutlineV1 } from "../src/engine/mathtex-outline";
 import {
   compileApplyStaticRootTransformEdit,
   compileApplyStudioCreationEdit,
+  compileApplyStudioMathTexContentEdit,
   compileApplyStudioMathTexTransformEdit,
   compileApplyStudioMotionEdit,
 } from "../src/engine/scene-authoring";
+import { isExactStudioMathTexContentProgramBatch } from "../src/studio/operations";
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioMathTexContentEditCommand,
   buildStudioMathTexTransformEditCommand,
   buildStudioMotionEditCommand,
   isExactStudioMathTexTransformProgramBatch,
   isExactStudioMotionProgramBatch,
   staticRootTransformStudioEntities,
   studioCreationMathTexParts,
+  studioMathTexContentStudioEntities,
   studioMathTexTransformStudioEntities,
   studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
@@ -121,6 +125,43 @@ export async function authorizeSnapshotProgramWithSnapshot(
     sourceIdentityKey: mapping.binding.name,
     sourceName: mapping.binding.name,
   }));
+  if (isExactStudioMathTexContentProgramBatch(input.programs)) {
+    const operation = input.programs[0]?.operations[0];
+    if (operation?.kind !== "SetProperty" || operation.key !== "content") {
+      throw new HttpError("The MathTex content Program is malformed.", 400);
+    }
+    const texParts = studioCreationMathTexParts(operation.value);
+    if (!texParts) {
+      throw new HttpError("Imported MathTex content replacement requires canonical non-empty TeX parts.", 400);
+    }
+    let response;
+    try {
+      response = await compileMathTexOutlineV1(texParts);
+    } catch {
+      throw new HttpError("The server MathTex outline compiler is unavailable.", 503);
+    }
+    if (response.result.kind === "unsupported") {
+      if (response.result.code === "internal-failure") {
+        throw new HttpError("The server MathTex outline compiler failed.", 500);
+      }
+      throw new HttpError(
+        `MathTex content replacement for ${operation.entityId} is unsupported (${response.result.code}): ${response.result.message}`,
+        400,
+      );
+    }
+    await compileApplyStudioMathTexContentEdit(
+      bundle,
+      buildStudioMathTexContentEditCommand({
+        expectedBaseRevision: snapshot.snapshotHash,
+        mathTexOutlines: [{ entityId: operation.entityId, path: response.result.path, texParts }],
+        nextRevision,
+        programs: input.programs,
+        sourceRuntimeBindings,
+        studioEntities: studioMathTexContentStudioEntities(input.runtimeSceneState),
+      }),
+    );
+    return;
+  }
   if (isExactStudioMathTexTransformProgramBatch(input.programs)) {
     const mathTexOutlines = [];
     for (const program of input.programs) {

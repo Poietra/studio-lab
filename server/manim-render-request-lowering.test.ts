@@ -45,6 +45,10 @@ class GroupedEquation(Scene):
         # poietra:anchor 7.000
         self.wait(1)
 `;
+const sceneSourceWithZeroAnchor = sceneSource.replace(
+  "        self.add(equation)\n",
+  "        self.add(equation)\n        # poietra:anchor 0.000\n",
+);
 
 const sceneSourceWithDestination = `${sceneSource}
 class NextScene(Scene):
@@ -109,6 +113,39 @@ function staticRootMoveProgram(transactionId: string, anchor = 7): CanonicalEdit
     loweringStatus: "supported",
     operations: [operation],
     provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
+    requestedExecution: "parallel",
+    schedule: { edges: [], mode: "parallel", order: [operation.id] },
+    transactionId,
+    version: 1,
+  };
+}
+
+function mathTexContentProgram(transactionId: string): CanonicalEditProgram {
+  const operation: CanonicalEditOperation = {
+    dependsOn: [],
+    entityId,
+    id: `tx:${transactionId}/operation:content`,
+    interval: { end: 0, start: 0 },
+    key: "content",
+    kind: "SetProperty",
+    provenance: { evidence: ["Inspector MathTex content"], origin: "studio-default" },
+    value: {
+      displayLines: ["F = ma"],
+      label: "F = ma",
+      texParts: ["F", "=", "m", "a"],
+    },
+  };
+  return {
+    anchor: {
+      capturedPlayhead: 0,
+      evidence: ["source-time zero"],
+      resolvedSeconds: 0,
+      source: { kind: "playhead", referenceSeconds: 0 },
+    },
+    intentCount: 1,
+    loweringStatus: "supported",
+    operations: [operation],
+    provenance: { evidence: ["Inspector MathTex content"], origin: "studio-default" },
     requestedExecution: "parallel",
     schedule: { edges: [], mode: "parallel", order: [operation.id] },
     transactionId,
@@ -585,6 +622,32 @@ describe("Manim render request lowering", () => {
 
   it("fails a complete MathTex transform Program closed without snapshot authorization", async () => {
     await expect(lower(request(mathTexTransformProgram("mathtex-transform-without-authority")))).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("routes one imported MathTex Inspector content replacement through snapshot authorization", async () => {
+    const program = mathTexContentProgram("authorized-mathtex-content");
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+    const renderRequest = {
+      ...request(program),
+      sourceHash: createHash("sha256").update(sceneSourceWithZeroAnchor).digest("hex"),
+    };
+
+    const result = await lower(renderRequest, sceneSourceWithZeroAnchor, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]?.programs).toEqual([program]);
+    expect(result.lowered.source).toContain(
+      'equation.become(MathTex("F", "=", "m", "a").match_style(equation).match_height(equation).move_to(equation.get_center()))',
+    );
+  });
+
+  it("fails an imported MathTex Inspector content replacement closed without snapshot authorization", async () => {
+    await expect(lower(request(mathTexContentProgram("mathtex-content-without-authority")))).rejects.toMatchObject({
       message: "This Program batch requires verified Rust Scene authorization.",
       status: 400,
     });
