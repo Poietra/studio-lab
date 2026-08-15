@@ -656,9 +656,24 @@ mod tests {
     }
 
     #[test]
-    fn spiral_in_v11_presents_only_five_leaf_bounds_until_the_lifetime_endpoint() {
+    fn spiral_in_v11_presents_group_and_visible_leaf_bounds_until_the_lifetime_endpoint() {
         let (session, entity_ids) = spiral_in_v11_session();
-        for sample_time in [0.0, 0.1, 0.5, 1.0, 1.5, 2.5, 3.0] {
+        let all_empty = ["empty", "empty", "empty", "empty", "empty", "empty"];
+        let visible = [
+            "present", "present", "present", "present", "present", "empty",
+        ];
+        let all_inactive = [
+            "inactive", "inactive", "inactive", "inactive", "inactive", "inactive",
+        ];
+        for (sample_time, expected_packet_draws, expected_prepared_draws, expected_statuses) in [
+            (0.0, 5, 0, all_empty),
+            (0.1, 5, 4, visible),
+            (0.5, 5, 4, visible),
+            (1.0, 5, 4, visible),
+            (1.5, 5, 4, visible),
+            (2.5, 5, 4, visible),
+            (3.0, 0, 0, all_inactive),
+        ] {
             let request = serde_json::to_vec(&json!({
                 "evidence": ["real SpiralIn V11 WASM canvas interaction"],
                 "interactionEntityIds": entity_ids,
@@ -670,9 +685,14 @@ mod tests {
             }))
             .unwrap();
             let sampled = session.sample_packet_json(&request).unwrap();
+            assert_eq!(sampled.packet.draws.len(), expected_packet_draws);
             let prepared = poietra_render_wgpu::prepare_frame_v1(&sampled.packet).unwrap();
+            assert_eq!(prepared.draws().len(), expected_prepared_draws);
+            let bounds = prepared
+                .interaction_clip_bounds_by_entity(session.scene())
+                .unwrap();
             let interaction = interaction_metadata(&sampled.interaction, |entity_id| {
-                prepared.clip_bounds_for_entity(entity_id)
+                bounds.get(entity_id).copied()
             });
             let response =
                 presented_response_with_interaction(&sampled.correlation, false, interaction);
@@ -680,24 +700,10 @@ mod tests {
             let entries = value["result"]["interaction"]["entries"]
                 .as_array()
                 .unwrap();
-            assert_eq!(entries.len(), 6);
-
-            if sample_time < 3.0 {
-                assert_eq!(sampled.packet.draws.len(), 5);
-                assert_eq!(prepared.draws().len(), 5);
-                assert_eq!(entries[0]["status"], "empty");
-                assert!(entries[0].get("bounds").is_none());
-                for entry in &entries[1..] {
-                    assert_eq!(entry["status"], "present");
-                    assert_eq!(entry["bounds"].as_array().unwrap().len(), 4);
-                }
-            } else {
-                assert!(sampled.packet.draws.is_empty());
-                assert!(prepared.draws().is_empty());
-                for entry in entries {
-                    assert_eq!(entry["status"], "inactive");
-                    assert!(entry.get("bounds").is_none());
-                }
+            assert_eq!(entries.len(), expected_statuses.len());
+            for (entry, expected_status) in entries.iter().zip(expected_statuses) {
+                assert_eq!(entry["status"], expected_status);
+                assert_eq!(entry.get("bounds").is_some(), expected_status == "present");
             }
         }
     }

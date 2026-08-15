@@ -136,7 +136,7 @@ describe("SquareToCircle Cairo reference v1", () => {
       SQUARE_TO_CIRCLE_CAIRO_REFERENCE_SAMPLES_V1,
     );
     expect(frames.size).toBe(4);
-    expect(frames.get("analytic-winding-root")?.rgba).toEqual(rgba);
+    expect(sha256(frames.get("analytic-winding-root")?.rgba ?? new Uint8Array())).toBe(sha256(rgba));
     await expect(readSquareToCircleCairoReferenceV1(root, digest)).rejects.toThrow(/Cairo source hashes/u);
   });
 
