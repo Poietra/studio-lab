@@ -37,6 +37,7 @@ import {
   type ProjectStudioTimelineCompiler,
   projectStudioMotion,
   projectStudioTimeline,
+  type StudioCreationProjectionV1,
   type StudioMathTexTransformProjectionV1,
   type StudioMotionProjectionV1,
   type StudioPersistentRemoveProjectionV1,
@@ -97,6 +98,7 @@ import {
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 import { normalizeTimelineProjectionCommand } from "./timeline-projection";
 import {
+  selectCreationProjection,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectStaticRootProjection,
@@ -113,6 +115,8 @@ export type StudioPreviewRendererView = Readonly<{
    */
   interactionGeometry: StudioPreviewInteractionGeometry | null;
   interactionAuthority: StudioPreviewInteractionAuthority;
+  /** Rust-authorized complete view facts for a Studio-created entity history. */
+  creationProjection: StudioCreationProjectionV1 | null;
   /** Verified Runtime Trace candidates editable at this exact endpoint. */
   runtimeTraceEditCandidates: readonly StudioPreviewRuntimeTraceEditCandidate[];
   /** Runtime roots with no static Studio entity; selectors only, never authoring evidence. */
@@ -204,6 +208,7 @@ type BoundHostStateV1 = Readonly<{
 
 type CompiledStudioPreviewSceneV1 = Readonly<{
   bundle: StudioVerifiedPreviewSnapshotV1["snapshot"];
+  creationProjection?: StudioCreationProjectionV1;
   engineRevisionHash: string;
   frame: Readonly<{ height: number; width: number }>;
   interactionEntityIds: readonly string[];
@@ -690,23 +695,18 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         command,
       );
-      const hasCreationMotion = sourceProgramBatch.some((program) =>
-        program.operations.some(({ kind }) => kind === "CreateMotion"),
-      );
-      let motionProjection: StudioMotionProjectionV1 | null = null;
-      if (hasCreationMotion) {
-        try {
-          motionProjection = selectMotionProjection(
-            input.snapshot.snapshot.scene.duration,
-            sourceProgramBatch,
-            result.motionProjection ?? null,
-          );
-        } catch {
-          return { error: "Rust core returned an uncorrelated Studio creation motion.", kind: "unsupported" };
-        }
-        if (!motionProjection) {
-          return { error: "Rust core did not return the Studio creation motion projection.", kind: "unsupported" };
-        }
+      let creationProjection: StudioCreationProjectionV1 | null;
+      try {
+        creationProjection = selectCreationProjection(
+          input.snapshot.snapshot.scene.duration,
+          sourceProgramBatch,
+          result.creationProjection ?? null,
+        );
+      } catch {
+        return { error: "Rust core returned an uncorrelated Studio creation projection.", kind: "unsupported" };
+      }
+      if (!creationProjection) {
+        return { error: "Rust core did not return the Studio creation projection.", kind: "unsupported" };
       }
       const bundle = result.bundle;
       const baseEntityIds = new Set(input.snapshot.snapshot.scene.entities.map(({ id }) => id));
@@ -728,11 +728,10 @@ export async function compileStudioPreviewSceneV1(
         kind: "compiled",
         scene: {
           bundle,
+          creationProjection,
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
-          ...(motionProjection ? { motionProjection } : {}),
-          persistentRemoveProjection: result.persistentRemoveProjection,
           programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
@@ -1688,6 +1687,7 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
   return {
     attachCanvas,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
+    creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
     epoch,
     interactionGeometry,
     interactionAuthority,

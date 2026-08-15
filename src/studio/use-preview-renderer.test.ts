@@ -14,6 +14,7 @@ import type {
   ApplyStudioMotionEditWireCommandV1,
   ApplyStudioTimelineEditCompiler,
   ApplyStudioTimelineEditWireCommandV1,
+  StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
   StudioStaticRootMutationV1,
   StudioStaticRootProjectionV1,
@@ -39,6 +40,7 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import { validateAndScheduleProgram } from "./program-validation";
+import { isPointValue } from "./property-sampling";
 import {
   createDirectManipulationPositionProgram,
   createDirectManipulationResizeProgram,
@@ -1972,214 +1974,6 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.bundle.scene.animationChannels).toBe(snapshot.snapshot.scene.animationChannels);
   });
 
-  it("passes raw Studio creation Programs without a TypeScript evaluated-state mirror", async () => {
-    const { proposedState, snapshot } = await compilablePreviewInput();
-    const creation = createStudioEntitiesProgram({
-      capturedPlayhead: 0.5,
-      entities: [{ dimensions: { radius: 1 }, position: { x: 320, y: 180 }, type: "Circle" }],
-      scene: proposedState.base.runtimeSceneState,
-      transactionId: "normalized-create",
-    });
-    expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
-    const created = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
-    const motion = validateMotionProgramFixture({
-      capturedPlayhead: 0.5,
-      controlOffset: { x: 32, y: 18 },
-      delta: { x: 64, y: -36 },
-      interval: { end: 1.5, start: 0.5 },
-      scene: created.evaluatedScene,
-      targetEntityIds: creation.entityIds,
-      transactionId: "move-created-circle",
-    });
-    expect(motion.kind, JSON.stringify(motion.issues)).toBe("valid");
-    if (motion.kind !== "valid") throw new Error("Created-entity motion fixture did not validate.");
-    const motionOperation = motion.program.operations[0];
-    if (motionOperation?.kind !== "CreateMotion") throw new Error("Created-entity motion fixture is malformed.");
-    const motionProjection = {
-      insertions: [
-        { at: 0.5, duration: 0.4, transactionId: creation.validation.program.transactionId },
-        { at: 0.9, duration: 1, transactionId: motion.program.transactionId },
-      ],
-      motions: [
-        {
-          control: { x: 384, y: 180 },
-          controlOffset: motionOperation.controlOffset,
-          delta: motionOperation.delta,
-          easing: motionOperation.easing,
-          from: { x: 320, y: 180 },
-          interval: { end: 1.9, start: 0.9 },
-          operationId: motionOperation.id,
-          sourceInterval: motionOperation.interval,
-          targetEntityId: creation.entityIds[0]!,
-          to: { x: 384, y: 144 },
-          transactionId: motion.program.transactionId,
-        },
-      ],
-      projectedDuration: proposedState.base.runtimeSceneState.duration + 1.4,
-    } as const;
-    const moved = evaluateWorkingState(
-      {
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(motion.program, motion),
-        ],
-      },
-      null,
-      "rust-authorized-batch",
-      motionProjection,
-    );
-    const scale = createDirectManipulationScaleProgram({
-      capturedPlayhead: 0.5,
-      interval: { end: 0.5, start: 0.5 },
-      scales: { [creation.entityIds[0]!]: { from: 1, to: 1.5 } },
-      scene: moved.evaluatedScene,
-      targetEntityIds: creation.entityIds,
-      transactionId: "scale-created-circle",
-    });
-    expect(scale.kind, JSON.stringify(scale.issues)).toBe("valid");
-    const edited = evaluateWorkingState(
-      {
-        ...proposedState.base,
-        appliedPrograms: [
-          programRecord(creation.validation.program, creation.validation),
-          programRecord(motion.program, motion),
-          programRecord(scale.program, scale),
-        ],
-      },
-      null,
-      "rust-authorized-batch",
-      motionProjection,
-    );
-    const removal = createRemoveEntitiesProgram({
-      capturedPlayhead: 1,
-      entityIds: creation.entityIds,
-      scene: edited.evaluatedScene,
-      transactionId: "remove-created-circle",
-    });
-    expect(removal.kind, JSON.stringify(removal.issues)).toBe("valid");
-    const removalOperation = removal.program.operations[0];
-    if (removalOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
-    const removalOffset = 1.4;
-    const resolvedRemovalInterval = {
-      end: removalOperation.interval.end + removalOffset,
-      start: removalOperation.interval.start + removalOffset,
-    };
-    const persistentRemoveProjection = {
-      removals: [
-        {
-          affectedSceneEntityIds: ["created-circle"],
-          fadeInterval: resolvedRemovalInterval,
-          operationId: removalOperation.id,
-          removedAt: resolvedRemovalInterval.end,
-          resultingLifetimeEnd: resolvedRemovalInterval.end,
-          sceneEntityId: "created-circle",
-          studioEntityId: removalOperation.entityId,
-          transactionId: removal.program.transactionId,
-        },
-      ],
-    } as const;
-    const commands: ApplyStudioCreationEditWireCommandV1[] = [];
-    let motionCompilerCalls = 0;
-    let staticCompilerCalls = 0;
-
-    const result = await compileStudioPreviewSceneV1({
-      applyStudioCreationEditCompiler: async (bundle, command) => {
-        commands.push(command);
-        return {
-          bundle,
-          motionProjection,
-          persistentRemoveProjection,
-        };
-      },
-      applyStudioMotionEditCompiler: async (bundle) => {
-        motionCompilerCalls += 1;
-        return bundle;
-      },
-      applyStaticRootTransformEditCompiler: async (bundle) => {
-        staticCompilerCalls += 1;
-        return unchangedAuthoringResult(bundle);
-      },
-      frame: { height: 9, width: 16 },
-      snapshot,
-      workingState: {
-        ...edited.base,
-        appliedPrograms: [...edited.base.appliedPrograms, programRecord(removal.program, removal)],
-      },
-      workingRevision: "studio-working-v1:normalized-create",
-      workspaceKey: "project-a/scene.py/CircleScene",
-    });
-
-    expect(result.kind).toBe("compiled");
-    expect(commands).toHaveLength(1);
-    expect(motionCompilerCalls).toBe(0);
-    expect(staticCompilerCalls).toBe(0);
-    const command = commands[0];
-    expect(command).toMatchObject({
-      expectedBaseRevision: HASH_C,
-      frame: { height: 9, width: 16 },
-      mathTexOutlines: [],
-      schema: "poietra.apply-studio-creation-edit",
-      version: 1,
-      viewport: { height: 360, width: 640 },
-    });
-    expect(command?.nextRevision).toMatch(/^[0-9a-f]{64}$/);
-    expect(command?.programs).toHaveLength(4);
-    expect(command?.programs[0]).toMatchObject({
-      anchorResolvedSeconds: 0.5,
-      loweringSupported: true,
-      scheduleOrder: creation.validation.program.schedule.order,
-      transactionId: "normalized-create",
-    });
-    expect(command?.programs[0]?.operations.map(({ kind }) => kind)).toEqual(["create", "position", "fade-in"]);
-    expect(command?.programs[0]?.operations[0]).toMatchObject({
-      entity: {
-        dimensions: { radius: 1 },
-        id: creation.entityIds[0],
-        kind: "circle",
-        lifetimeEnd: null,
-        lifetimeStart: 0.5,
-        texParts: null,
-      },
-      interval: { end: 0.5, start: 0.5 },
-      kind: "create",
-    });
-    expect(command?.programs[1]?.operations).toEqual([
-      {
-        controlOffset: motionOperation.controlOffset,
-        delta: motionOperation.delta,
-        dependsOn: motionOperation.dependsOn,
-        easing: motionOperation.easing,
-        id: motionOperation.id,
-        interval: motionOperation.interval,
-        kind: "create-motion",
-        origin: motionOperation.provenance.origin,
-        targetEntityIds: motionOperation.targetEntityIds,
-      },
-    ]);
-    expect(command?.programs[2]?.operations[0]).toMatchObject({
-      controlPresent: false,
-      entityId: creation.entityIds[0],
-      from: 1,
-      kind: "uniform-scale",
-      relativeFactor: 1.5,
-      to: 1.5,
-    });
-    expect(command?.programs[3]?.operations).toEqual([
-      expect.objectContaining({
-        entityId: creation.entityIds[0],
-        kind: "persistent-remove",
-        persistent: true,
-      }),
-    ]);
-    if (result.kind !== "compiled") throw new Error(result.error);
-    expect(result.scene.persistentRemoveProjection).toEqual(persistentRemoveProjection);
-    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
-  });
-
   it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const texParts = ["\\frac{a}{b}"];
@@ -2196,10 +1990,61 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "normalized-mathtex",
     });
     expect(creation.validation.kind, JSON.stringify(creation.validation.issues)).toBe("valid");
-    const edited = evaluateWorkingState({
-      ...proposedState.base,
-      appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
-    });
+    const createOperation = creation.validation.program.operations.find(({ kind }) => kind === "CreateEntity");
+    const positionOperation = creation.validation.program.operations.find(
+      (operation) => operation.kind === "SetProperty" && operation.key === "position",
+    );
+    const fadeOperation = creation.validation.program.operations.find(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "fade-in",
+    );
+    if (
+      createOperation?.kind !== "CreateEntity" ||
+      positionOperation?.kind !== "SetProperty" ||
+      !isPointValue(positionOperation.value) ||
+      fadeOperation?.kind !== "ChangePresence"
+    ) {
+      throw new Error("MathTex creation fixture is malformed.");
+    }
+    const creationProjection: StudioCreationProjectionV1 = {
+      entities: [
+        {
+          createdLifetime: {
+            end: proposedState.base.runtimeSceneState.duration + 0.4,
+            start: createOperation.entity.lifetime.start,
+          },
+          entityId: creation.entityIds[0]!,
+          initialDimensions: {},
+          initialScale: 1,
+          kind: "math-tex",
+          operationId: createOperation.id,
+          texParts,
+          transactionId: creation.validation.program.transactionId,
+        },
+      ],
+      insertions: [{ at: 0.5, duration: 0.4, transactionId: creation.validation.program.transactionId }],
+      motions: [],
+      mutations: [
+        {
+          entityId: creation.entityIds[0]!,
+          interval: positionOperation.interval,
+          kind: "position",
+          operationId: positionOperation.id,
+          transactionId: creation.validation.program.transactionId,
+          value: positionOperation.value,
+        },
+        {
+          entityId: creation.entityIds[0]!,
+          from: 0,
+          interval: fadeOperation.interval,
+          kind: "fade-in",
+          operationId: fadeOperation.id,
+          to: 1,
+          transactionId: creation.validation.program.transactionId,
+        },
+      ],
+      projectedDuration: proposedState.base.runtimeSceneState.duration + 0.4,
+      removals: [],
+    };
     const compilerInputs: string[][] = [];
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
     const outline = compiledMathTexResponse();
@@ -2207,7 +2052,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return unchangedAuthoringResult(bundle);
+        return { ...unchangedAuthoringResult(bundle), creationProjection };
       },
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async (input) => {
@@ -2215,7 +2060,10 @@ describe("compileStudioPreviewSceneV1", () => {
         return outline;
       },
       snapshot,
-      workingState: edited.base,
+      workingState: {
+        ...proposedState.base,
+        appliedPrograms: [programRecord(creation.validation.program, creation.validation)],
+      },
       workingRevision: "studio-working-v1:normalized-mathtex",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
@@ -2229,9 +2077,11 @@ describe("compileStudioPreviewSceneV1", () => {
       entity: { id: creation.entityIds[0], kind: "math-tex", lifetimeEnd: null, texParts },
       kind: "create",
     });
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.creationProjection).toEqual(creationProjection);
   });
 
-  it("surfaces a Rust rejection without recreating creation semantics in TypeScript", async () => {
+  it("fails closed when Rust omits the complete Studio creation projection", async () => {
     const { proposedState, snapshot } = await compilablePreviewInput();
     const creation = createStudioEntitiesProgram({
       capturedPlayhead: 0.5,
@@ -2249,9 +2099,9 @@ describe("compileStudioPreviewSceneV1", () => {
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
 
     const result = await compileStudioPreviewSceneV1({
-      applyStudioCreationEditCompiler: async (_bundle, command) => {
+      applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        throw new Error("normalized Studio creation is unsupported");
+        return unchangedAuthoringResult(bundle);
       },
       frame: { height: 9, width: 16 },
       snapshot,
@@ -2268,8 +2118,8 @@ describe("compileStudioPreviewSceneV1", () => {
       entity: { id: creation.entityIds[0], kind: "other" },
       kind: "create",
     });
-    expect(result).toMatchObject({
-      error: expect.stringContaining("normalized Studio creation is unsupported"),
+    expect(result).toEqual({
+      error: "Rust core returned an uncorrelated Studio creation projection.",
       kind: "unsupported",
     });
   });

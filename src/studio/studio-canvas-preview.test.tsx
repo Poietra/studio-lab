@@ -158,6 +158,7 @@ function previewView(
   return {
     attachCanvas: vi.fn(),
     cameraCenter: null,
+    creationProjection: null,
     epoch: 0,
     interactionGeometry,
     interactionAuthority,

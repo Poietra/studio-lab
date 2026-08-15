@@ -163,6 +163,7 @@ import { WorkspaceLauncher } from "./studio/workspace-launcher";
 import {
   isTransitionOverlay,
   projectStudioWorkspace,
+  selectCreationProjection,
   selectMathTexTransformProjection,
   selectMotionProjection,
   selectPersistentRemoveProjection,
@@ -833,6 +834,7 @@ export function App({
     return timelineProjectionForPrograms(records.map((record) => record.program));
   }
   function persistentRemoveProjectionForPrograms(programs: readonly CanonicalEditProgram[]) {
+    if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
     const containsPersistentRemove = programs.some((program) =>
       program.operations.some(
         (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
@@ -866,8 +868,26 @@ export function App({
       return undefined;
     }
   }
+  function creationProjectionForRecords(records: readonly ProgramRecord[]) {
+    const programs = records.map((record) => record.program);
+    if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
+    const authority = workspaceProgramAuthorityForRecords(records);
+    if (authority === undefined) return undefined;
+    if (authority !== "rust-authorized-batch") return null;
+    if (!projectedActiveScene || !previewRenderer?.creationProjection) return undefined;
+    try {
+      return selectCreationProjection(
+        projectedActiveScene.runtimeSceneState.duration,
+        programs,
+        previewRenderer.creationProjection,
+      );
+    } catch {
+      return undefined;
+    }
+  }
   function motionProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
+    if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
     if (!programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"))) return null;
     const authority = workspaceProgramAuthorityForRecords(records);
     if (authority === undefined) return undefined;
@@ -937,6 +957,7 @@ export function App({
     }
   }
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
+  const workspaceCreationProjection = creationProjectionForRecords(previewProgramRecords);
   const workspaceMathTexTransformProjection = mathTexTransformProjectionForRecords(previewProgramRecords);
   const workspaceMotionProjection = motionProjectionForRecords(previewProgramRecords);
   const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);
@@ -945,6 +966,7 @@ export function App({
   const workspaceProjection =
     editorDocumentPresentationReady &&
     projectedActiveScene &&
+    workspaceCreationProjection !== undefined &&
     workspaceTimelineProjection !== undefined &&
     workspaceMathTexTransformProjection !== undefined &&
     workspaceMotionProjection !== undefined &&
@@ -954,6 +976,7 @@ export function App({
       ? projectStudioWorkspace({
           activeScene: projectedActiveScene,
           appliedPrograms: previewAppliedPrograms,
+          creationProjection: workspaceCreationProjection,
           currentTime,
           draftProgram: editingAppliedProgram ? null : draftProgram,
           mathTexTransformProjection: workspaceMathTexTransformProjection,
@@ -1203,6 +1226,7 @@ export function App({
   }
 
   const draftBaseTimelineProjection = timelineProjectionForRecords(draftPrecedingPrograms);
+  const draftBaseCreationProjection = creationProjectionForRecords(draftPrecedingPrograms);
   const draftBaseMathTexTransformProjection = mathTexTransformProjectionForRecords(draftPrecedingPrograms);
   const draftBaseMotionProjection = motionProjectionForRecords(draftPrecedingPrograms);
   const draftBasePersistentRemoveProjection = persistentRemoveProjectionForRecords(draftPrecedingPrograms);
@@ -1211,6 +1235,7 @@ export function App({
   const draftBaseProjection =
     editorDocumentPresentationReady && projectedActiveScene && draftProgram
       ? draftBaseTimelineProjection === undefined ||
+        draftBaseCreationProjection === undefined ||
         draftBaseMathTexTransformProjection === undefined ||
         draftBaseMotionProjection === undefined ||
         draftBasePersistentRemoveProjection === undefined ||
@@ -1220,6 +1245,7 @@ export function App({
         : projectStudioWorkspace({
             activeScene: projectedActiveScene,
             appliedPrograms: draftPrecedingPrograms,
+            creationProjection: draftBaseCreationProjection,
             currentTime,
             draftProgram: null,
             mathTexTransformProjection: draftBaseMathTexTransformProjection,
@@ -1691,6 +1717,7 @@ export function App({
     const precedingRecords = appliedPrograms.slice(0, index);
     const precedingPrograms = precedingRecords.map((candidate) => candidate.program);
     const precedingTimelineProjection = timelineProjectionForRecords(precedingRecords);
+    const precedingCreationProjection = creationProjectionForRecords(precedingRecords);
     const precedingMathTexTransformProjection = mathTexTransformProjectionForRecords(precedingRecords);
     const precedingMotionProjection = motionProjectionForRecords(precedingRecords);
     const precedingPersistentRemoveProjection = persistentRemoveProjectionForRecords(precedingRecords);
@@ -1698,6 +1725,7 @@ export function App({
     const precedingStaticRootProjection = staticRootProjectionForRecords(precedingRecords);
     if (
       precedingTimelineProjection === undefined ||
+      precedingCreationProjection === undefined ||
       precedingMathTexTransformProjection === undefined ||
       precedingMotionProjection === undefined ||
       precedingPersistentRemoveProjection === undefined ||
@@ -1711,6 +1739,7 @@ export function App({
     const baseProjection = projectStudioWorkspace({
       activeScene: projectedActiveScene,
       appliedPrograms: precedingRecords,
+      creationProjection: precedingCreationProjection,
       currentTime: workingFocus,
       draftProgram: null,
       mathTexTransformProjection: precedingMathTexTransformProjection,
@@ -2020,6 +2049,7 @@ export function App({
     const sourceSceneBefore = (index: number) => {
       const preceding = appliedPrograms.slice(0, index);
       const timelineProjection = timelineProjectionForRecords(preceding);
+      const creationProjection = creationProjectionForRecords(preceding);
       const mathTexTransformProjection = mathTexTransformProjectionForRecords(preceding);
       const motionProjection = motionProjectionForRecords(preceding);
       const persistentRemoveProjection = persistentRemoveProjectionForRecords(preceding);
@@ -2027,6 +2057,7 @@ export function App({
       const staticRootProjection = staticRootProjectionForRecords(preceding);
       if (
         timelineProjection === undefined ||
+        creationProjection === undefined ||
         mathTexTransformProjection === undefined ||
         motionProjection === undefined ||
         persistentRemoveProjection === undefined ||
@@ -2038,6 +2069,7 @@ export function App({
       const state = projectStudioWorkspace({
         activeScene: projectedActiveScene,
         appliedPrograms: preceding,
+        creationProjection,
         currentTime,
         draftProgram: null,
         mathTexTransformProjection,

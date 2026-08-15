@@ -1,9 +1,11 @@
 import { parseAuthoritativeEditorProgramsV1 } from "../collaboration/editor-edit-mutation";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
 import {
+  type ProjectStudioCreationCompiler,
   type ProjectStudioMathTexTransformCompiler,
   type ProjectStudioMotionCompiler,
   type ProjectStudioTimelineCompiler,
+  projectStudioCreation,
   projectStudioMathTexTransform,
   projectStudioMotion,
 } from "../engine/scene-authoring";
@@ -13,6 +15,7 @@ import { importedWorkingState, type ManimWorkspaceScene } from "./imported-works
 import { programExecutionCapabilities } from "./operation-registry";
 import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
 import {
+  buildStudioCreationProjectionCommand,
   buildStudioMathTexTransformProjectionCommand,
   buildStudioMotionProjectionCommand,
   isExactStudioMathTexTransformProgramBatch,
@@ -20,7 +23,18 @@ import {
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "./timeline-projection";
-import { selectMathTexTransformProjection, selectMotionProjection } from "./workspace-projection";
+import {
+  selectCreationProjection,
+  selectMathTexTransformProjection,
+  selectMotionProjection,
+} from "./workspace-projection";
+
+export class EditorCreationAdmissionError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EditorCreationAdmissionError";
+  }
+}
 
 export class EditorMathTexTransformAdmissionError extends Error {
   constructor(message: string) {
@@ -62,6 +76,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   timelineCompiler?: ProjectStudioTimelineCompiler,
   mathTexTransformCompiler: ProjectStudioMathTexTransformCompiler = projectStudioMathTexTransform,
   motionCompiler: ProjectStudioMotionCompiler = projectStudioMotion,
+  creationCompiler: ProjectStudioCreationCompiler = projectStudioCreation,
 ): Promise<readonly EditorProgramRecord[]> {
   const programs = parseAuthoritativeEditorProgramsV1(programValues);
   const seeds = programs.map((program) => ({
@@ -71,14 +86,16 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const operations = programs.flatMap((program) => program.operations);
   const hasMathTexTransform = operations.some(({ kind }) => kind === "TransformContent");
   const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
+  const hasCreation = operations.some(({ kind }) => kind === "CreateEntity");
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
   if (hasMathTexTransform && !isExactMathTexTransform) {
     throw new TypeError(
       "The authoritative Editor projection may contain TransformContent only as an exact Rust MathTex transform batch.",
     );
   }
-  const motionBatchKind = !isExactMathTexTransform && hasMotion ? studioMotionProjectionBatchKind(programs) : null;
-  if (hasMotion && !isExactMathTexTransform && !motionBatchKind) {
+  const motionBatchKind =
+    !hasCreation && !isExactMathTexTransform && hasMotion ? studioMotionProjectionBatchKind(programs) : null;
+  if (hasMotion && !hasCreation && !isExactMathTexTransform && !motionBatchKind) {
     throw new EditorMotionAdmissionError(
       "The authoritative Editor projection contains CreateMotion outside a supported Rust motion batch.",
     );
@@ -101,6 +118,21 @@ export async function materializeAuthoritativeEditorProgramsV1(
           `The Rust timeline admission rejected the authoritative Editor projection: ${error instanceof Error ? error.message : String(error)}`,
         );
       })
+    : null;
+  const creationProjection = hasCreation
+    ? await creationCompiler(
+        buildStudioCreationProjectionCommand({ baseDuration: scene.runtimeSceneState.duration, programs }),
+      )
+        .then((projection) => {
+          const correlated = selectCreationProjection(scene.runtimeSceneState.duration, programs, projection);
+          if (!correlated) throw new TypeError("The Rust creation projection is missing.");
+          return correlated;
+        })
+        .catch((error) => {
+          throw new EditorCreationAdmissionError(
+            `The Rust creation admission rejected the authoritative Editor projection: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        })
     : null;
   const mathTexTransformProjection = isExactMathTexTransform
     ? await mathTexTransformCompiler(
@@ -149,7 +181,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
       program,
       validation: { issues: [], status: "valid" as const },
     })) ??
-    (mathTexTransformProjection || motionProjection
+    (creationProjection || mathTexTransformProjection || motionProjection
       ? seeds
       : evaluateWorkingState(
           importedWorkingState(scene, {

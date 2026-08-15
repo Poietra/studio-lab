@@ -1,4 +1,6 @@
 import type {
+  StudioCreationProjectionMutationV1,
+  StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
   StudioMotionProjectionV1,
   StudioPersistentRemoveProjectionV1,
@@ -28,7 +30,7 @@ import {
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
 } from "./operations";
-import { isPointValue, normalizeContentSamples, samplePropertyValue } from "./property-sampling";
+import { normalizeContentSamples } from "./property-sampling";
 import { isExactStudioMathTexTransformProgramBatch, studioMotionProjectionBatchKind } from "./scene-authoring-wire";
 import {
   correlateTimelineProgramBatch,
@@ -204,6 +206,151 @@ export function selectMotionProjection(
   if (!correlated) return null;
   if (!projection) throw new TypeError("The correlated Rust motion projection is missing.");
   return { ...projection, motions: correlated.map(({ motion }) => motion) };
+}
+
+function creationEntityKind(type: string): StudioCreationProjectionV1["entities"][number]["kind"] | null {
+  if (type === "Circle") return "circle";
+  if (type === "MathTex") return "math-tex";
+  if (type === "Rectangle") return "rectangle";
+  return null;
+}
+
+function creationMutationKind(operation: CanonicalEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
+  if (operation.kind === "SetProperty" && operation.key === "position") return "position";
+  if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
+  if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
+  if (operation.kind === "ResizeEntity") return "resize";
+  return null;
+}
+
+function correlateCreationProjection(
+  baseDuration: number,
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioCreationProjectionV1 | null,
+) {
+  const operations = programs.flatMap((program) =>
+    program.operations.map((operation) => ({ operation, program }) as const),
+  );
+  const createCount = operations.filter(({ operation }) => operation.kind === "CreateEntity").length;
+  if (createCount === 0) return null;
+  if (!projection) throw new TypeError("A Rust creation projection is required to project CreateEntity Programs.");
+  const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
+  const transactionIds = new Set(programs.map(({ transactionId }) => transactionId));
+  if (operationById.size !== operations.length || transactionIds.size !== programs.length) {
+    throw new TypeError("A Studio creation batch must contain unique operation and transaction IDs.");
+  }
+  const expectedMutationOperations = operations.filter(({ operation }) => creationMutationKind(operation) !== null);
+  const expectedMotionCount = operations.reduce(
+    (count, { operation }) => count + (operation.kind === "CreateMotion" ? operation.targetEntityIds.length : 0),
+    0,
+  );
+  const expectedRemovalCount = operations.filter(
+    ({ operation }) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
+  ).length;
+  if (
+    operations.some(
+      ({ operation }) =>
+        operation.kind !== "CreateEntity" &&
+        operation.kind !== "CreateMotion" &&
+        creationMutationKind(operation) === null &&
+        !(operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent),
+    ) ||
+    projection.entities.length !== createCount ||
+    projection.mutations.length !== expectedMutationOperations.length ||
+    projection.motions.length !== expectedMotionCount ||
+    projection.removals.length !== expectedRemovalCount ||
+    !Number.isFinite(projection.projectedDuration) ||
+    !sameProjectionNumber(
+      projection.projectedDuration,
+      baseDuration + projection.insertions.reduce((total, insertion) => total + insertion.duration, 0),
+    )
+  ) {
+    throw new TypeError("The Rust creation projection does not cover the complete Program batch.");
+  }
+  const insertionsByTransaction = new Map(
+    projection.insertions.map((insertion) => [insertion.transactionId, insertion] as const),
+  );
+  if (
+    insertionsByTransaction.size !== projection.insertions.length ||
+    projection.insertions.some(
+      ({ at, duration, transactionId }) =>
+        !transactionIds.has(transactionId) ||
+        !Number.isFinite(at) ||
+        at < 0 ||
+        !Number.isFinite(duration) ||
+        duration <= 0,
+    )
+  ) {
+    throw new TypeError("The Rust creation projection contains an invalid Program insertion.");
+  }
+
+  const seenEntityIds = new Set<string>();
+  const seenEntityOperationIds = new Set<string>();
+  const entities = projection.entities.map((entity) => {
+    const expected = operationById.get(entity.operationId);
+    const operation = expected?.operation;
+    const expectedKind = operation?.kind === "CreateEntity" ? creationEntityKind(operation.entity.type) : null;
+    const expectedTexParts =
+      operation?.kind === "CreateEntity" && operation.entity.type === "MathTex"
+        ? canonicalEditableContent(operation.entity.content, "MathTex")?.texParts
+        : undefined;
+    if (
+      !expected ||
+      operation?.kind !== "CreateEntity" ||
+      !expectedKind ||
+      entity.transactionId !== expected.program.transactionId ||
+      entity.entityId !== operation.entity.id ||
+      entity.kind !== expectedKind ||
+      seenEntityIds.has(entity.entityId) ||
+      seenEntityOperationIds.has(entity.operationId) ||
+      (expectedTexParts
+        ? !entity.texParts || !sameStrings(entity.texParts, expectedTexParts)
+        : entity.texParts !== undefined)
+    ) {
+      throw new TypeError(`Created entity ${entity.operationId} is not correlated with the Rust projection.`);
+    }
+    seenEntityIds.add(entity.entityId);
+    seenEntityOperationIds.add(entity.operationId);
+    return { entity, operation, program: expected.program };
+  });
+
+  const seenMutationIds = new Set<string>();
+  const mutations = projection.mutations.map((mutation) => {
+    const expected = operationById.get(mutation.operationId);
+    if (
+      !expected ||
+      seenMutationIds.has(mutation.operationId) ||
+      mutation.transactionId !== expected.program.transactionId ||
+      creationMutationKind(expected.operation) !== mutation.kind ||
+      mutation.entityId !== ("entityId" in expected.operation ? expected.operation.entityId : undefined)
+    ) {
+      throw new TypeError(`Creation mutation ${mutation.operationId} is not correlated with the Rust projection.`);
+    }
+    seenMutationIds.add(mutation.operationId);
+    return { mutation, ...expected };
+  });
+  const motionProjection: StudioMotionProjectionV1 = {
+    insertions: projection.insertions,
+    motions: projection.motions,
+    projectedDuration: projection.projectedDuration,
+  };
+  const motions = expectedMotionCount > 0 ? correlateMotionProjection(baseDuration, programs, motionProjection) : [];
+  if (expectedMotionCount > 0 && !motions) {
+    throw new TypeError("The Rust creation projection contains no correlated motion.");
+  }
+  const removals = selectPersistentRemoveProjection(programs, { removals: projection.removals });
+  if (expectedRemovalCount > 0 && !removals) {
+    throw new TypeError("The Rust creation projection contains no correlated persistent remove.");
+  }
+  return { entities, motions: motions ?? [], mutations, removals: removals ?? { removals: [] } };
+}
+
+export function selectCreationProjection(
+  baseDuration: number,
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioCreationProjectionV1 | null,
+): StudioCreationProjectionV1 | null {
+  return correlateCreationProjection(baseDuration, programs, projection) ? projection : null;
 }
 
 function mathTexContentMatches(
@@ -465,6 +612,73 @@ function appendProjectedSample(
   };
 }
 
+function appendProjectedMutation(
+  draft: MotionProjectionDraft,
+  mutation: StudioCreationProjectionMutationV1 | StudioStaticRootMutationV1,
+  projectedDuration?: number,
+) {
+  const metadata = {
+    operationId: mutation.operationId,
+    provenanceId: `${mutation.operationId}/provenance`,
+  };
+  if (mutation.kind === "position") {
+    appendProjectedSample(draft.propertyChannels, mutation.entityId, "position", {
+      ...metadata,
+      interval:
+        projectedDuration === undefined
+          ? mutation.interval
+          : { end: projectedDuration, start: mutation.interval.start },
+      kind: "exact",
+      value: mutation.value,
+    });
+  } else if (mutation.kind === "fade-in") {
+    appendProjectedSample(draft.propertyChannels, mutation.entityId, "appearance", {
+      ...metadata,
+      easing: "smooth",
+      from: mutation.from,
+      interval: mutation.interval,
+      kind: "animated",
+      value: mutation.to,
+    });
+    appendProjectedSample(draft.propertyChannels, mutation.entityId, "appearance", {
+      ...metadata,
+      interval: { end: projectedDuration ?? mutation.interval.end, start: mutation.interval.end },
+      kind: "exact",
+      value: mutation.to,
+    });
+  } else if (mutation.kind === "uniform-scale") {
+    appendProjectedSample(draft.propertyChannels, mutation.entityId, "scale", {
+      ...metadata,
+      easing: "smooth",
+      from: mutation.from,
+      interval: mutation.interval,
+      kind: "animated",
+      value: mutation.to,
+    });
+  } else if (mutation.kind === "resize") {
+    const kind = mutation.interval.end > mutation.interval.start ? "animated" : "exact";
+    for (const [key, from, value] of [
+      ["dimensions", mutation.fromDimensions, mutation.toDimensions],
+      ["position", mutation.fromPosition, mutation.toPosition],
+    ] as const) {
+      appendProjectedSample(draft.propertyChannels, mutation.entityId, key, {
+        ...metadata,
+        from,
+        interval: mutation.interval,
+        kind,
+        value,
+      });
+    }
+  } else {
+    appendProjectedSample(draft.propertyChannels, mutation.entityId, "content", {
+      ...metadata,
+      interval: mutation.interval,
+      kind: "exact",
+      value: mutation.content,
+    });
+  }
+}
+
 type MotionProjectionDraft = {
   entities: Record<string, RuntimeEntity>;
   events: WorkingState["runtimeSceneState"]["eventTrack"]["events"][number][];
@@ -472,172 +686,39 @@ type MotionProjectionDraft = {
   provenance: WorkingState["runtimeSceneState"]["provenanceGraph"]["records"][number][];
 };
 
-function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: readonly CorrelatedProjectedMotion[]) {
-  for (const { motion, operation, program } of correlated) {
-    const target = draft.entities[motion.targetEntityId];
-    if (
-      !target ||
-      !target.lifetime.some(
-        (lifetime) =>
-          lifetime.start <= motion.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON &&
-          lifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON >= motion.interval.end,
-      )
-    ) {
-      throw new TypeError(`Motion ${motion.operationId} targets an unavailable projected entity.`);
-    }
-    const positionChannel = draft.propertyChannels[`${motion.targetEntityId}/position`];
-    const sampledFrom = positionChannel
-      ? samplePropertyValue(positionChannel.samples, motion.interval.start)
-      : target.geometry?.position.kind === "known"
-        ? target.geometry.position.value
-        : undefined;
-    if (
-      !isPointValue(sampledFrom) ||
-      !sameProjectionNumber(sampledFrom.x, motion.from.x) ||
-      !sameProjectionNumber(sampledFrom.y, motion.from.y)
-    ) {
-      throw new TypeError(`Motion ${motion.operationId} has a stale projected start position.`);
-    }
-    const provenanceId = `${motion.operationId}/provenance`;
-    draft.provenance.push({
-      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
-      id: provenanceId,
-      operationId: motion.operationId,
-      origin: operation.provenance.origin,
-      transactionId: program.transactionId,
-    });
-    draft.events.push({
-      id: `${motion.operationId}/event`,
-      interval: motion.interval,
-      kind: "operation",
-      label: operation.kind,
-      operationId: motion.operationId,
-      transactionId: program.transactionId,
-    });
-    appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
-      control: motion.control,
-      easing: motion.easing,
-      from: motion.from,
-      interval: motion.interval,
-      kind: "animated",
-      operationId: motion.operationId,
-      provenanceId,
-      value: motion.to,
-    });
-  }
-}
+type WorkspaceProjectionDraft = MotionProjectionDraft & {
+  constraints: WorkingState["runtimeSceneState"]["constraintGraph"]["constraints"][number][];
+  duration: number;
+  lineage: WorkingState["runtimeSceneState"]["objectGraph"]["lineage"][number][];
+};
 
-function projectStaticRootWorkingState(
-  workingState: WorkingState,
-  projection: StudioStaticRootProjectionV1,
-  motionProjection: StudioMotionProjectionV1 | null = null,
-): ProposedState {
-  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
-  const programs = records.map(({ program }) => program);
-  const correlated = correlateStaticRootProjection(programs, projection);
-  if (!correlated) throw new TypeError("Only an exact static-root Program batch can use this projection.");
-  const draft = {
-    constraints: [...workingState.runtimeSceneState.constraintGraph.constraints],
-    duration: workingState.runtimeSceneState.duration,
+function cloneProjectionDraft(scene: WorkingState["runtimeSceneState"]): WorkspaceProjectionDraft {
+  return {
+    constraints: [...scene.constraintGraph.constraints],
+    duration: scene.duration,
     entities: Object.fromEntries(
-      Object.entries(workingState.runtimeSceneState.objectGraph.entities).map(([id, entity]) => [
+      Object.entries(scene.objectGraph.entities).map(([id, entity]) => [
         id,
         { ...entity, lifetime: entity.lifetime.map((interval) => ({ ...interval })) },
       ]),
     ),
-    events: [...workingState.runtimeSceneState.eventTrack.events],
-    lineage: [...workingState.runtimeSceneState.objectGraph.lineage],
+    events: [...scene.eventTrack.events],
+    lineage: [...scene.objectGraph.lineage],
     propertyChannels: Object.fromEntries(
-      Object.entries(workingState.runtimeSceneState.propertyChannels).map(([id, channel]) => [
+      Object.entries(scene.propertyChannels).map(([id, channel]) => [
         id,
         { ...channel, samples: [...channel.samples] },
       ]),
-    ) as Record<string, PropertyChannel>,
-    provenance: [...workingState.runtimeSceneState.provenanceGraph.records],
+    ),
+    provenance: [...scene.provenanceGraph.records],
   };
-  for (const insertion of motionProjection?.insertions ?? []) {
-    insertSceneTime(draft, insertion.at, insertion.duration);
-  }
-  if (motionProjection && !sameProjectionNumber(draft.duration, motionProjection.projectedDuration)) {
-    throw new TypeError("The Rust static-root motion projection returned a stale projected duration.");
-  }
-  correlated.forEach(({ mutation, operation, program }) => {
-    if (!draft.entities[mutation.entityId]) {
-      throw new TypeError(`Rust static-root projection target ${mutation.entityId} is not in the imported Scene.`);
-    }
-    const provenanceId = `${operation.id}/provenance`;
-    draft.provenance.push({
-      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
-      id: provenanceId,
-      operationId: operation.id,
-      origin: operation.provenance.origin,
-      transactionId: program.transactionId,
-    });
-    draft.events.push({
-      id: `${operation.id}/event`,
-      interval: mutation.interval,
-      kind: "operation",
-      label: operation.kind,
-      operationId: operation.id,
-      transactionId: program.transactionId,
-    });
-    if (mutation.kind === "position") {
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, "position", {
-        interval: mutation.interval,
-        kind: "exact",
-        operationId: mutation.operationId,
-        provenanceId,
-        value: mutation.value,
-      });
-    } else if (mutation.kind === "uniform-scale") {
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, "scale", {
-        easing: "smooth",
-        from: mutation.from,
-        interval: mutation.interval,
-        kind: "animated",
-        operationId: mutation.operationId,
-        provenanceId,
-        value: mutation.to,
-      });
-    } else if (mutation.kind === "resize") {
-      const kind = mutation.interval.end > mutation.interval.start ? "animated" : "exact";
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, "dimensions", {
-        from: mutation.fromDimensions,
-        interval: mutation.interval,
-        kind,
-        operationId: mutation.operationId,
-        provenanceId,
-        value: mutation.toDimensions,
-      });
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, "position", {
-        from: mutation.fromPosition,
-        interval: mutation.interval,
-        kind,
-        operationId: mutation.operationId,
-        provenanceId,
-        value: mutation.toPosition,
-      });
-    } else {
-      appendProjectedSample(draft.propertyChannels, mutation.entityId, "content", {
-        interval: mutation.interval,
-        kind: "exact",
-        operationId: mutation.operationId,
-        provenanceId,
-        value: mutation.content,
-      });
-    }
-  });
-  if (motionProjection) {
-    const correlatedMotions = correlateMotionProjection(
-      workingState.runtimeSceneState.duration,
-      programs,
-      motionProjection,
-    );
-    if (!correlatedMotions) {
-      throw new TypeError("The Rust static-root motion projection contains no motion.");
-    }
-    appendCorrelatedMotions(draft, correlatedMotions);
-  }
+}
+
+function projectedWorkingState(
+  workingState: WorkingState,
+  records: readonly ProgramRecord[],
+  draft: WorkspaceProjectionDraft,
+): ProposedState {
   return {
     base: workingState,
     evaluatedScene: {
@@ -659,6 +740,226 @@ function projectStaticRootWorkingState(
   };
 }
 
+function appendProjectedOperationRecord(
+  draft: MotionProjectionDraft,
+  operation: CanonicalEditOperation,
+  program: CanonicalEditProgram,
+  interval: Readonly<{ end: number; start: number }>,
+) {
+  const provenanceId = `${operation.id}/provenance`;
+  draft.provenance.push({
+    evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
+    id: provenanceId,
+    operationId: operation.id,
+    origin: operation.provenance.origin,
+    transactionId: program.transactionId,
+  });
+  draft.events.push({
+    id: `${operation.id}/event`,
+    interval,
+    kind: "operation",
+    label: operation.kind,
+    operationId: operation.id,
+    transactionId: program.transactionId,
+  });
+}
+
+function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: readonly CorrelatedProjectedMotion[]) {
+  for (const { motion, operation, program } of correlated) {
+    const target = draft.entities[motion.targetEntityId];
+    if (
+      !target ||
+      !target.lifetime.some(
+        (lifetime) =>
+          lifetime.start <= motion.interval.start + MATH_TEX_TRANSFORM_PROJECTION_EPSILON &&
+          lifetime.end + MATH_TEX_TRANSFORM_PROJECTION_EPSILON >= motion.interval.end,
+      )
+    ) {
+      throw new TypeError(`Motion ${motion.operationId} targets an unavailable projected entity.`);
+    }
+    const provenanceId = `${motion.operationId}/provenance`;
+    appendProjectedOperationRecord(draft, operation, program, motion.interval);
+    appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
+      control: motion.control,
+      easing: motion.easing,
+      from: motion.from,
+      interval: motion.interval,
+      kind: "animated",
+      operationId: motion.operationId,
+      provenanceId,
+      value: motion.to,
+    });
+  }
+}
+
+function projectCreationWorkingState(
+  workingState: WorkingState,
+  projection: StudioCreationProjectionV1,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  const correlated = correlateCreationProjection(workingState.runtimeSceneState.duration, programs, projection);
+  if (!correlated) throw new TypeError("Only a Studio creation Program batch can use this projection.");
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  for (const insertion of projection.insertions) insertSceneTime(draft, insertion.at, insertion.duration);
+  if (!sameProjectionNumber(draft.duration, projection.projectedDuration)) {
+    throw new TypeError("The Rust creation projection returned a stale projected Scene duration.");
+  }
+
+  const appliedTransactionIds = new Set(workingState.appliedPrograms.map(({ program }) => program.transactionId));
+  for (const { entity, operation, program } of correlated.entities) {
+    if (draft.entities[entity.entityId]) {
+      throw new TypeError(`Created entity ${entity.entityId} already exists in the Studio workspace.`);
+    }
+    const hasShapeGeometry = entity.kind === "circle" || entity.kind === "rectangle";
+    draft.entities[entity.entityId] = {
+      ...(operation.entity.content ? { content: operation.entity.content } : {}),
+      ...(hasShapeGeometry
+        ? {
+            geometry: {
+              dimensions: { kind: "known" as const, value: entity.initialDimensions },
+              position: { kind: "unknown" as const, reason: "Position is projected by its creation mutation." },
+              scale: { kind: "known" as const, value: entity.initialScale },
+              style: { kind: "known" as const, value: {} },
+            },
+          }
+        : {}),
+      id: entity.entityId,
+      lifetime: [{ ...entity.createdLifetime }],
+      provisional: !appliedTransactionIds.has(program.transactionId),
+      sourceIdentity: {
+        evidence: [operation.id],
+        kind: "unknown",
+        reason: "Entity has not been lowered to source yet.",
+      },
+      transactionId: program.transactionId,
+      type: operation.entity.type,
+    };
+    appendProjectedOperationRecord(draft, operation, program, {
+      end: entity.createdLifetime.start,
+      start: entity.createdLifetime.start,
+    });
+    draft.lineage.push({
+      at: entity.createdLifetime.start,
+      from: entity.entityId,
+      operationId: operation.id,
+      relation: "created",
+      to: entity.entityId,
+    });
+    appendProjectedSample(draft.propertyChannels, entity.entityId, "presence", {
+      interval: entity.createdLifetime,
+      kind: "exact",
+      operationId: operation.id,
+      provenanceId: `${operation.id}/provenance`,
+      value: true,
+    });
+  }
+
+  for (const { mutation, operation, program } of correlated.mutations) {
+    if (!draft.entities[mutation.entityId]) {
+      throw new TypeError(`Creation mutation ${mutation.operationId} targets a missing projected entity.`);
+    }
+    appendProjectedOperationRecord(draft, operation, program, mutation.interval);
+    appendProjectedMutation(draft, mutation, projection.projectedDuration);
+  }
+  appendCorrelatedMotions(draft, correlated.motions);
+
+  const operationById = new Map(
+    programs.flatMap((program) =>
+      program.operations.map((operation) => [operation.id, { operation, program }] as const),
+    ),
+  );
+  for (const removal of correlated.removals.removals) {
+    const expected = operationById.get(removal.operationId);
+    const operation = expected?.operation;
+    const entity = draft.entities[removal.studioEntityId];
+    if (
+      !expected ||
+      operation?.kind !== "ChangePresence" ||
+      operation.effect !== "remove" ||
+      !operation.persistent ||
+      !entity
+    ) {
+      throw new TypeError(`Persistent remove ${removal.operationId} is not available in the creation projection.`);
+    }
+    const eventInterval = removal.fadeInterval ?? { end: removal.removedAt, start: removal.removedAt };
+    appendProjectedOperationRecord(draft, operation, expected.program, eventInterval);
+    draft.entities[removal.studioEntityId] = {
+      ...entity,
+      lifetime: entity.lifetime.flatMap((interval) => {
+        if (interval.start >= removal.removedAt) return [];
+        return interval.end > removal.removedAt ? [{ ...interval, end: removal.resultingLifetimeEnd }] : [interval];
+      }),
+    };
+    if (removal.fadeInterval) {
+      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, "appearance", {
+        easing: "smooth",
+        from: 1,
+        interval: removal.fadeInterval,
+        kind: "animated",
+        operationId: removal.operationId,
+        provenanceId: `${removal.operationId}/provenance`,
+        value: 0,
+      });
+    }
+    for (const key of ["appearance", "presence"] as const) {
+      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, key, {
+        interval: { end: projection.projectedDuration, start: removal.removedAt },
+        kind: "exact",
+        operationId: removal.operationId,
+        provenanceId: `${removal.operationId}/provenance`,
+        value: key === "appearance" ? 0 : false,
+      });
+    }
+    draft.lineage.push({
+      at: removal.removedAt,
+      from: removal.studioEntityId,
+      operationId: removal.operationId,
+      relation: "removed",
+      to: removal.studioEntityId,
+    });
+  }
+
+  return projectedWorkingState(workingState, records, draft);
+}
+
+function projectStaticRootWorkingState(
+  workingState: WorkingState,
+  projection: StudioStaticRootProjectionV1,
+  motionProjection: StudioMotionProjectionV1 | null = null,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  const correlated = correlateStaticRootProjection(programs, projection);
+  if (!correlated) throw new TypeError("Only an exact static-root Program batch can use this projection.");
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  for (const insertion of motionProjection?.insertions ?? []) {
+    insertSceneTime(draft, insertion.at, insertion.duration);
+  }
+  if (motionProjection && !sameProjectionNumber(draft.duration, motionProjection.projectedDuration)) {
+    throw new TypeError("The Rust static-root motion projection returned a stale projected duration.");
+  }
+  correlated.forEach(({ mutation, operation, program }) => {
+    if (!draft.entities[mutation.entityId]) {
+      throw new TypeError(`Rust static-root projection target ${mutation.entityId} is not in the imported Scene.`);
+    }
+    appendProjectedOperationRecord(draft, operation, program, mutation.interval);
+    appendProjectedMutation(draft, mutation);
+  });
+  if (motionProjection) {
+    const correlatedMotions = correlateMotionProjection(
+      workingState.runtimeSceneState.duration,
+      programs,
+      motionProjection,
+    );
+    if (!correlatedMotions) {
+      throw new TypeError("The Rust static-root motion projection contains no motion.");
+    }
+    appendCorrelatedMotions(draft, correlatedMotions);
+  }
+  return projectedWorkingState(workingState, records, draft);
+}
+
 function projectMathTexTransformWorkingState(
   workingState: WorkingState,
   projection: StudioMathTexTransformProjectionV1,
@@ -667,25 +968,7 @@ function projectMathTexTransformWorkingState(
   const programs = records.map(({ program }) => program);
   const correlated = correlateMathTexTransformProjection(workingState.runtimeSceneState.duration, programs, projection);
   if (!correlated) throw new TypeError("Only an exact TransformContent Program batch can use this projection.");
-  const draft = {
-    constraints: [...workingState.runtimeSceneState.constraintGraph.constraints],
-    duration: workingState.runtimeSceneState.duration,
-    entities: Object.fromEntries(
-      Object.entries(workingState.runtimeSceneState.objectGraph.entities).map(([id, entity]) => [
-        id,
-        { ...entity, lifetime: entity.lifetime.map((interval) => ({ ...interval })) },
-      ]),
-    ),
-    events: [...workingState.runtimeSceneState.eventTrack.events],
-    lineage: [...workingState.runtimeSceneState.objectGraph.lineage],
-    propertyChannels: Object.fromEntries(
-      Object.entries(workingState.runtimeSceneState.propertyChannels).map(([id, channel]) => [
-        id,
-        { ...channel, samples: [...channel.samples] },
-      ]),
-    ) as Record<string, PropertyChannel>,
-    provenance: [...workingState.runtimeSceneState.provenanceGraph.records],
-  };
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
   for (const insertion of projection.insertions) insertSceneTime(draft, insertion.at, insertion.duration);
   if (!sameProjectionNumber(draft.duration, projection.projectedDuration)) {
     throw new TypeError("The Rust MathTex transform projection did not produce the projected Scene duration.");
@@ -754,21 +1037,7 @@ function projectMathTexTransformWorkingState(
     }
 
     const provenanceId = `${replacement.operationId}/provenance`;
-    draft.provenance.push({
-      evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
-      id: provenanceId,
-      operationId: replacement.operationId,
-      origin: operation.provenance.origin,
-      transactionId: program.transactionId,
-    });
-    draft.events.push({
-      id: `${replacement.operationId}/event`,
-      interval: replacement.interval,
-      kind: "operation",
-      label: operation.kind,
-      operationId: replacement.operationId,
-      transactionId: program.transactionId,
-    });
+    appendProjectedOperationRecord(draft, operation, program, replacement.interval);
     appendProjectedSample(draft.propertyChannels, replacement.targetEntityId, "content", {
       interval: { end: replacement.targetLifetime.end, start: replacement.interval.end },
       kind: "exact",
@@ -797,25 +1066,7 @@ function projectMathTexTransformWorkingState(
   }
   appendCorrelatedMotions(draft, correlated.motions);
 
-  return {
-    base: workingState,
-    evaluatedScene: {
-      ...workingState.runtimeSceneState,
-      constraintGraph: { constraints: draft.constraints },
-      duration: projection.projectedDuration,
-      eventTrack: {
-        events: draft.events.sort(
-          (left, right) => (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0),
-        ),
-      },
-      objectGraph: { entities: draft.entities, lineage: draft.lineage },
-      propertyChannels: draft.propertyChannels,
-      provenanceGraph: { records: draft.provenance },
-    },
-    issues: [],
-    programs: records.map((record) => ({ ...record, validation: { issues: [], status: "valid" } })),
-    version: STUDIO_STATE_VERSION,
-  };
+  return projectedWorkingState(workingState, records, draft);
 }
 
 function projectMotionWorkingState(
@@ -833,22 +1084,7 @@ function projectMotionWorkingState(
   if (!sameProjectionNumber(base.evaluatedScene.duration, projection.projectedDuration)) {
     throw new TypeError("The Rust motion projection does not match the projected Studio duration.");
   }
-  const draft: MotionProjectionDraft = {
-    entities: Object.fromEntries(
-      Object.entries(base.evaluatedScene.objectGraph.entities).map(([id, entity]) => [
-        id,
-        { ...entity, lifetime: entity.lifetime.map((interval) => ({ ...interval })) },
-      ]),
-    ),
-    events: [...base.evaluatedScene.eventTrack.events],
-    propertyChannels: Object.fromEntries(
-      Object.entries(base.evaluatedScene.propertyChannels).map(([id, channel]) => [
-        id,
-        { ...channel, samples: [...channel.samples] },
-      ]),
-    ),
-    provenance: [...base.evaluatedScene.provenanceGraph.records],
-  };
+  const draft = cloneProjectionDraft(base.evaluatedScene);
   appendCorrelatedMotions(draft, correlated);
   return {
     ...base,
@@ -870,6 +1106,7 @@ export function projectStudioWorkspace(
   input: Readonly<{
     activeScene: ManimWorkspaceScene;
     appliedPrograms: readonly ProgramRecord[];
+    creationProjection?: StudioCreationProjectionV1 | null;
     currentTime: number;
     draftProgram: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
@@ -889,19 +1126,19 @@ export function projectStudioWorkspace(
     stagedPrograms: input.draftProgram ? [input.draftProgram] : [],
   });
   const programs = [...workingState.appliedPrograms, ...workingState.stagedPrograms].map((record) => record.program);
+  const hasCreation = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"));
   const hasMotion = programs.some((program) => program.operations.some(({ kind }) => kind === "CreateMotion"));
   const hasMathTexTransform = programs.some((program) =>
     program.operations.some(({ kind }) => kind === "TransformContent"),
   );
   const correlatedMotions =
-    hasMotion && !hasMathTexTransform
+    hasMotion && !hasCreation && !hasMathTexTransform
       ? correlateMotionProjection(workingState.runtimeSceneState.duration, programs, input.motionProjection ?? null)
       : null;
   const containsSceneDurationOperation = programs.some((program) => program.operations.some(isSceneDurationOperation));
-  const persistentRemoveProjection = selectPersistentRemoveProjection(
-    programs,
-    input.persistentRemoveProjection ?? null,
-  );
+  const persistentRemoveProjection = hasCreation
+    ? null
+    : selectPersistentRemoveProjection(programs, input.persistentRemoveProjection ?? null);
   let proposedState: ProposedState;
   if (containsSceneDurationOperation) {
     if (persistentRemoveProjection) {
@@ -919,6 +1156,14 @@ export function projectStudioWorkspace(
       workingState,
       correlateTimelineProgramBatch(programs, input.timelineProjection),
     );
+  } else if (hasCreation) {
+    if (input.programAuthority !== "rust-authorized-batch") {
+      throw new TypeError("CreateEntity requires one Rust-authorized creation batch.");
+    }
+    if (!input.creationProjection) {
+      throw new TypeError("A Rust creation projection is required to project CreateEntity Programs.");
+    }
+    proposedState = projectCreationWorkingState(workingState, input.creationProjection);
   } else if (
     input.programAuthority === "rust-authorized-batch" &&
     programs.some((program) => program.operations.some(({ kind }) => kind === "TransformContent"))
@@ -953,7 +1198,12 @@ export function projectStudioWorkspace(
       correlatedMotions ? (input.motionProjection ?? null) : null,
     );
   }
-  if (hasMotion && !hasMathTexTransform && studioMotionProjectionBatchKind(programs) !== "static-root") {
+  if (
+    hasMotion &&
+    !hasCreation &&
+    !hasMathTexTransform &&
+    studioMotionProjectionBatchKind(programs) !== "static-root"
+  ) {
     if (!input.motionProjection) {
       throw new TypeError("A Rust motion projection is required to project CreateMotion Programs.");
     }
