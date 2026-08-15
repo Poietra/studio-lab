@@ -113,10 +113,55 @@ pub struct StudioPersistentRemoveProjection {
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+pub enum StudioStaticRootMutation {
+    Position {
+        entity_id: String,
+        interval: IntervalV1,
+        value: PointV1,
+    },
+    UniformScale {
+        entity_id: String,
+        from: f64,
+        interval: IntervalV1,
+        to: f64,
+    },
+    Resize {
+        entity_id: String,
+        from_dimensions: StudioAuthoringDimensions,
+        from_position: PointV1,
+        interval: IntervalV1,
+        to_dimensions: StudioAuthoringDimensions,
+        to_position: PointV1,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioStaticRootProjectedMutation {
+    #[serde(flatten)]
+    pub mutation: StudioStaticRootMutation,
+    pub operation_id: String,
+    pub transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioStaticRootProjection {
+    pub mutations: Vec<StudioStaticRootProjectedMutation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StudioAuthoringEditResult {
     pub bundle: SceneIrBundleV1,
     pub persistent_remove_projection: StudioPersistentRemoveProjection,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub static_root_projection: Option<StudioStaticRootProjection>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -686,11 +731,14 @@ pub struct StudioAuthoringSize {
 
 pub type StaticRootTransformSize = StudioAuthoringSize;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioAuthoringDimensions {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub height: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<f64>,
 }
 
@@ -4091,6 +4139,7 @@ impl EngineSessionV1 {
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             persistent_remove_projection,
+            static_root_projection: None,
         };
         self.replace_snapshot(candidate)?;
         Ok(result)
@@ -5808,6 +5857,7 @@ impl EngineSessionV1 {
             StaticRootTransformDimensions,
             PointV1,
         )> = None;
+        let mut static_root_mutations = Vec::with_capacity(operation_count);
         let mut ordered_program_indexes = (0..programs.len()).collect::<Vec<_>>();
         ordered_program_indexes.sort_by(|left, right| {
             programs[*left]
@@ -5941,7 +5991,18 @@ impl EngineSessionV1 {
                         StaticRootTransformOrigin::DirectManipulation
                             | StaticRootTransformOrigin::StudioDefault
                     ) && studio_authoring_point_is_finite(target)
-                        && position.replace(target.clone()).is_none() => {}
+                        && position.replace(target.clone()).is_none() =>
+                    {
+                        static_root_mutations.push(StudioStaticRootProjectedMutation {
+                            mutation: StudioStaticRootMutation::Position {
+                                entity_id: operation_entity_id.to_owned(),
+                                interval: operation.interval.clone(),
+                                value: target.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        });
+                    }
                     StaticRootTransformOperationKind::UniformScale {
                         control_present,
                         from: Some(from),
@@ -5957,7 +6018,19 @@ impl EngineSessionV1 {
                         && to.is_finite()
                         && *to > 0.0
                         && close_transform_baseline_value(*to / *from, *factor)
-                        && uniform_scale.replace(*factor).is_none() => {}
+                        && uniform_scale.replace(*factor).is_none() =>
+                    {
+                        static_root_mutations.push(StudioStaticRootProjectedMutation {
+                            mutation: StudioStaticRootMutation::UniformScale {
+                                entity_id: operation_entity_id.to_owned(),
+                                from: *from,
+                                interval: operation.interval.clone(),
+                                to: *to,
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        });
+                    }
                     StaticRootTransformOperationKind::Resize {
                         from_dimensions,
                         from_position,
@@ -5986,7 +6059,21 @@ impl EngineSessionV1 {
                                 *to_dimensions,
                                 to_position.clone(),
                             ))
-                            .is_none() => {}
+                            .is_none() =>
+                    {
+                        static_root_mutations.push(StudioStaticRootProjectedMutation {
+                            mutation: StudioStaticRootMutation::Resize {
+                                entity_id: operation_entity_id.to_owned(),
+                                from_dimensions: *from_dimensions,
+                                from_position: from_position.clone(),
+                                interval: operation.interval.clone(),
+                                to_dimensions: *to_dimensions,
+                                to_position: to_position.clone(),
+                            },
+                            operation_id: operation.id.clone(),
+                            transaction_id: program.transaction_id.clone(),
+                        });
+                    }
                     StaticRootTransformOperationKind::Position { .. }
                     | StaticRootTransformOperationKind::UniformScale { .. }
                     | StaticRootTransformOperationKind::Resize { .. }
@@ -6349,9 +6436,20 @@ impl EngineSessionV1 {
                 &provenance.id,
             )?
         };
+        let static_root_projection = if transform_operation_count > 0
+            && !has_motion_suffix
+            && resolved_removals.is_empty()
+        {
+            Some(StudioStaticRootProjection {
+                mutations: static_root_mutations,
+            })
+        } else {
+            None
+        };
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             persistent_remove_projection,
+            static_root_projection,
         };
         self.replace_snapshot(candidate)?;
         Ok(result)
@@ -8274,6 +8372,38 @@ mod tests {
         let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
 
         let result = session.apply_static_root_transform_edit(command).unwrap();
+        assert_eq!(
+            result.static_root_projection,
+            Some(StudioStaticRootProjection {
+                mutations: vec![StudioStaticRootProjectedMutation {
+                    mutation: StudioStaticRootMutation::Resize {
+                        entity_id: "source:circle".to_owned(),
+                        from_dimensions: StaticRootTransformDimensions {
+                            height: None,
+                            radius: Some(0.5),
+                            width: None,
+                        },
+                        from_position: PointV1 { x: 360.0, y: 180.0 },
+                        interval: IntervalV1 {
+                            end: 0.0,
+                            start: 0.0,
+                        },
+                        to_dimensions: StaticRootTransformDimensions {
+                            height: None,
+                            radius: Some(1.0),
+                            width: None,
+                        },
+                        to_position: PointV1 { x: 400.0, y: 180.0 },
+                    },
+                    operation_id: "move-circle".to_owned(),
+                    transaction_id: "move-circle".to_owned(),
+                }],
+            })
+        );
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["staticRootProjection"]["mutations"][0]["fromDimensions"],
+            serde_json::json!({ "radius": 0.5 })
+        );
         let result = result.bundle;
         let resized = result
             .scene
@@ -8317,6 +8447,7 @@ mod tests {
             let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
 
             let result = session.apply_static_root_transform_edit(command).unwrap();
+            assert!(result.static_root_projection.is_none());
             assert!((result.bundle.scene.duration - 3.0).abs() < f64::EPSILON);
             let path = result
                 .bundle
@@ -8553,6 +8684,30 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_static_root_transform_edit(command).unwrap();
+        assert_eq!(
+            serde_json::to_value(&result).unwrap()["staticRootProjection"],
+            serde_json::json!({
+                "mutations": [
+                    {
+                        "entityId": "source:formula",
+                        "interval": { "end": 0.0, "start": 0.0 },
+                        "kind": "position",
+                        "operationId": "move-circle",
+                        "transactionId": "move-circle",
+                        "value": { "x": 400.0, "y": 180.0 },
+                    },
+                    {
+                        "entityId": "source:formula",
+                        "from": 1.0,
+                        "interval": { "end": 0.0, "start": 0.0 },
+                        "kind": "uniform-scale",
+                        "operationId": "scale-formula",
+                        "to": 1.5,
+                        "transactionId": "move-circle",
+                    },
+                ],
+            })
+        );
         let result = result.bundle;
         let transformed = result
             .scene
@@ -8604,6 +8759,7 @@ mod tests {
 
         let result = session.apply_static_root_transform_edit(command).unwrap();
 
+        assert!(result.static_root_projection.is_none());
         assert_eq!(result.persistent_remove_projection.removals.len(), 2);
         for entity_id in ["later", "earlier"] {
             let entity = result
@@ -9004,6 +9160,13 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
+        assert!(result.static_root_projection.is_none());
+        assert!(
+            serde_json::to_value(&result)
+                .unwrap()
+                .get("staticRootProjection")
+                .is_none()
+        );
         let motion = result
             .bundle
             .scene
