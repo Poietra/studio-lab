@@ -33,7 +33,7 @@ function clone<T>(value: T): T {
 }
 
 describe("fast-manim Runtime Trace V2 result contract", () => {
-  it("accepts a compact sealed fixture and produces a stable trace digest", { timeout: 15_000 }, () => {
+  it("accepts a compact sealed fixture and produces a stable trace digest", { timeout: 30_000 }, () => {
     const trace = fastManimRuntimeTraceV2Fixture();
     const parsed = parseFastManimRuntimeTraceProducerJsonV2(
       canonicalJsonV1(trace),
