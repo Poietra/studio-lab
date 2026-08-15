@@ -5,7 +5,12 @@ import { programRecord } from "./evaluator";
 import { STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { ProjectedEntity } from "./model";
 import type { StudioPreviewRuntimeTraceEditCandidate } from "./preview-temporal-rebase";
-import { compensatePreparedGeometryForOverlayScales, StudioCanvas, type StudioCanvasProps } from "./studio-canvas";
+import {
+  compensatePreparedGeometryForOverlayScales,
+  StudioCanvas,
+  type StudioCanvasProps,
+  verifiedPreviewGeometryForStudioEntity,
+} from "./studio-canvas";
 import { StudioInspector } from "./studio-sidebars";
 import { createDirectManipulationPositionProgram } from "./suggestion-program";
 import type { StudioPreviewRendererView } from "./use-preview-renderer";
@@ -183,6 +188,39 @@ describe("StudioCanvas retained preview layer", () => {
         0.5,
       ),
     ).toEqual({ dimensions: { height: 2, width: 4 }, position: { x: 400, y: 135 } });
+  });
+
+  it("uses the canonical Rust target ID for transformed entities before inherited source identity", () => {
+    const transactionId = "math-transform";
+    const entity: ProjectedEntity = {
+      ...CIRCLE_ENTITY,
+      id: `tx:${transactionId}/entity:formula-b`,
+      sourceIdentity: { kind: "known", value: "formula" },
+      transactionId,
+      type: "MathTex",
+    };
+    const geometry = { dimensions: { height: 1, width: 2 }, position: { x: 320, y: 180 } };
+    const preview = previewView(
+      {
+        frame: {
+          packetId: "formula-b",
+          revision: "a".repeat(64),
+          sampleTime: 1,
+          viewport: { heightPx: 360, widthPx: 640 },
+        },
+        phase: "presented",
+      },
+      new Map([[entity.id, geometry]]),
+      new Map([
+        ["formula", { bindingId: "source-binding:formula", entityId: "source:formula", sourceName: "formula" }],
+      ]),
+    );
+
+    expect(verifiedPreviewGeometryForStudioEntity(preview, new Map([["formula", null]]), entity)).toEqual({
+      bindingId: null,
+      geometry,
+      runtimeEntityId: entity.id,
+    });
   });
 
   it("renders no paint or interaction layer before the canonical provider is active", () => {
