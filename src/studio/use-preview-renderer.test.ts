@@ -18,6 +18,7 @@ import { canonicalFastManimRuntimeTraceSampleTimeV3 } from "../render-pipeline/r
 import { importManimScene } from "../render-pipeline/source-import";
 import {
   createInspectorEntityEditProgram,
+  createRemoveEntitiesProgram,
   createSceneDurationProgram,
   createStudioEntitiesProgram,
 } from "./authoring-commands";
@@ -476,12 +477,16 @@ async function verifiedStaticPrimitivePreviewInput(type: "Circle" | "Rectangle")
 
 function recordingStaticRootTransformEditCompiler(
   calls: ApplyStaticRootTransformEditWireCommandV1[],
-  compile: ApplyStaticRootTransformEditCompiler = async (bundle) => bundle,
+  compile: ApplyStaticRootTransformEditCompiler = async (bundle) => unchangedAuthoringResult(bundle),
 ): ApplyStaticRootTransformEditCompiler {
   return async (bundle, command) => {
     calls.push(command);
     return compile(bundle, command);
   };
+}
+
+function unchangedAuthoringResult(bundle: SceneIrBundleV1) {
+  return { bundle, persistentRemoveProjection: { removals: [] } } as const;
 }
 
 async function importedMathTexPreviewInput() {
@@ -1714,6 +1719,104 @@ describe("compileStudioPreviewSceneV1", () => {
     },
   );
 
+  it("routes an imported persistent remove through the static-root Rust use case", async () => {
+    const fixture = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(fixture);
+    const removal = createRemoveEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entityIds: ["source:circle"],
+      scene: workingBase.runtimeSceneState,
+      transactionId: "remove-imported-circle",
+    });
+    expect(removal.kind, JSON.stringify(removal.issues)).toBe("valid");
+    const operation = removal.program.operations[0];
+    if (operation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
+    const projection = {
+      removals: [
+        {
+          affectedSceneEntityIds: [fixture.snapshot.snapshot.scene.entities[0]!.id],
+          fadeInterval: operation.interval,
+          operationId: operation.id,
+          removedAt: operation.interval.end,
+          resultingLifetimeEnd: operation.interval.end,
+          sceneEntityId: fixture.snapshot.snapshot.scene.entities[0]!.id,
+          studioEntityId: operation.entityId,
+          transactionId: removal.program.transactionId,
+        },
+      ],
+    } as const;
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: async (bundle, command) => {
+        commands.push(command);
+        return { bundle, persistentRemoveProjection: projection };
+      },
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...workingBase,
+        appliedPrograms: [programRecord(removal.program, removal)],
+      },
+      workingRevision: "studio-working-v1:remove-imported-circle",
+      workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
+    });
+
+    expect(commands[0]?.programs[0]?.operations).toEqual([
+      expect.objectContaining({ entityId: "source:circle", kind: "persistent-remove", persistent: true }),
+    ]);
+    expect(result).toMatchObject({ kind: "compiled", scene: { persistentRemoveProjection: projection } });
+  });
+
+  it("rejects Runtime Trace persistent remove before invoking the static-root Rust use case", async () => {
+    const fixture = await compilablePreviewInput();
+    const workingBase = exactImportedTimelineWorkingBase(fixture);
+    const removal = createRemoveEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entityIds: ["source:circle"],
+      scene: workingBase.runtimeSceneState,
+      transactionId: "remove-runtime-trace-circle",
+    });
+    expect(removal.kind, JSON.stringify(removal.issues)).toBe("valid");
+    let compilerCalls = 0;
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: async (bundle) => {
+        compilerCalls += 1;
+        return unchangedAuthoringResult(bundle);
+      },
+      frame: { height: 9, width: 16 },
+      snapshot: {
+        ...fixture.snapshot,
+        snapshot: {
+          ...fixture.snapshot.snapshot,
+          scene: {
+            ...fixture.snapshot.snapshot.scene,
+            source: {
+              kind: "imported-manim-runtime-trace",
+              runtimeConfigHash: HASH_B,
+              sourceHash: fixture.context.sourceHash,
+              traceDigest: HASH_C,
+              traceVersion: 3,
+            },
+          },
+        },
+      },
+      workingState: {
+        ...workingBase,
+        appliedPrograms: [programRecord(removal.program, removal)],
+      },
+      workingRevision: "studio-working-v1:remove-runtime-trace-circle",
+      workspaceKey: studioPreviewWorkspaceKeyV1(fixture.context),
+    });
+
+    expect(result).toMatchObject({
+      error: "Persistent remove requires one exactly correlated static Scene snapshot.",
+      kind: "unsupported",
+    });
+    expect(compilerCalls).toBe(0);
+  });
+
   it("passes ResizeEntity to Rust without reconstructing a transform intent in TypeScript", async () => {
     const fixture = await verifiedStaticPrimitivePreviewInput("Rectangle");
     const validation = createDirectManipulationResizeProgram({
@@ -1777,7 +1880,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: async (bundle) => {
         compilerCalls += 1;
-        return bundle;
+        return unchangedAuthoringResult(bundle);
       },
       frame: { height: 9, width: 16 },
       snapshot: fixture.snapshot,
@@ -1841,22 +1944,54 @@ describe("compileStudioPreviewSceneV1", () => {
         programRecord(scale.program, scale),
       ],
     });
+    const removal = createRemoveEntitiesProgram({
+      capturedPlayhead: 1,
+      entityIds: creation.entityIds,
+      scene: edited.evaluatedScene,
+      transactionId: "remove-created-circle",
+    });
+    expect(removal.kind, JSON.stringify(removal.issues)).toBe("valid");
+    const removalOperation = removal.program.operations[0];
+    if (removalOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
+    const persistentRemoveProjection = {
+      removals: [
+        {
+          affectedSceneEntityIds: ["created-circle"],
+          fadeInterval: removalOperation.interval,
+          operationId: removalOperation.id,
+          removedAt: removalOperation.interval.end,
+          resultingLifetimeEnd: removalOperation.interval.end,
+          sceneEntityId: "created-circle",
+          studioEntityId: removalOperation.entityId,
+          transactionId: removal.program.transactionId,
+        },
+      ],
+    } as const;
     const commands: ApplyStudioCreationEditWireCommandV1[] = [];
+    let staticCompilerCalls = 0;
 
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return bundle;
+        return { bundle, persistentRemoveProjection };
+      },
+      applyStaticRootTransformEditCompiler: async (bundle) => {
+        staticCompilerCalls += 1;
+        return unchangedAuthoringResult(bundle);
       },
       frame: { height: 9, width: 16 },
       snapshot,
-      workingState: edited.base,
+      workingState: {
+        ...edited.base,
+        appliedPrograms: [...edited.base.appliedPrograms, programRecord(removal.program, removal)],
+      },
       workingRevision: "studio-working-v1:normalized-create",
       workspaceKey: "project-a/scene.py/CircleScene",
     });
 
     expect(result.kind).toBe("compiled");
     expect(commands).toHaveLength(1);
+    expect(staticCompilerCalls).toBe(0);
     const command = commands[0];
     expect(command).toMatchObject({
       expectedBaseRevision: HASH_C,
@@ -1867,7 +2002,7 @@ describe("compileStudioPreviewSceneV1", () => {
       viewport: { height: 360, width: 640 },
     });
     expect(command?.nextRevision).toMatch(/^[0-9a-f]{64}$/);
-    expect(command?.programs).toHaveLength(2);
+    expect(command?.programs).toHaveLength(3);
     expect(command?.programs[0]).toMatchObject({
       anchorResolvedSeconds: 0.5,
       loweringSupported: true,
@@ -1895,6 +2030,15 @@ describe("compileStudioPreviewSceneV1", () => {
       relativeFactor: 1.5,
       to: 1.5,
     });
+    expect(command?.programs[2]?.operations).toEqual([
+      expect.objectContaining({
+        entityId: creation.entityIds[0],
+        kind: "persistent-remove",
+        persistent: true,
+      }),
+    ]);
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(result.scene.persistentRemoveProjection).toEqual(persistentRemoveProjection);
   });
 
   it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
@@ -1924,7 +2068,7 @@ describe("compileStudioPreviewSceneV1", () => {
     const result = await compileStudioPreviewSceneV1({
       applyStudioCreationEditCompiler: async (bundle, command) => {
         commands.push(command);
-        return bundle;
+        return unchangedAuthoringResult(bundle);
       },
       frame: { height: 9, width: 16 },
       mathTexOutlineCompiler: async (input) => {

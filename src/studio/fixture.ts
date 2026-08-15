@@ -1,7 +1,39 @@
+import type { StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type StaticSemanticState, type WorkingState } from "./model";
+import type { CanonicalEditProgram } from "./operations";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
 const duration = 12;
+
+export function persistentRemoveProjectionFixture(
+  program: CanonicalEditProgram,
+  timeOffset = 0,
+): StudioPersistentRemoveProjectionV1 {
+  return {
+    removals: program.operations.flatMap((operation) =>
+      operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent
+        ? [
+            {
+              affectedSceneEntityIds: [operation.entityId],
+              fadeInterval:
+                operation.interval.start < operation.interval.end
+                  ? {
+                      end: operation.interval.end + timeOffset,
+                      start: operation.interval.start + timeOffset,
+                    }
+                  : null,
+              operationId: operation.id,
+              removedAt: operation.interval.end + timeOffset,
+              resultingLifetimeEnd: operation.interval.end + timeOffset,
+              sceneEntityId: operation.entityId,
+              studioEntityId: operation.entityId,
+              transactionId: program.transactionId,
+            },
+          ]
+        : [],
+    ),
+  };
+}
 
 export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {
   constraintGraph: {

@@ -77,8 +77,44 @@ struct CreateSceneEntitiesCommand {
     entities: Vec<CreateSceneEntity>,
     expected_base_revision: String,
     next_revision: String,
+    persistent_removals: Vec<PersistentSceneRemoval>,
     provenance: ProvenanceRecordV1,
     timeline_insertions: Vec<SceneTimelineInsertion>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PersistentSceneRemoval {
+    entity_id: String,
+    interval: IntervalV1,
+    operation_id: String,
+    studio_entity_id: String,
+    transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioPersistentRemoveProjectionEntry {
+    pub affected_scene_entity_ids: Vec<String>,
+    pub fade_interval: Option<IntervalV1>,
+    pub operation_id: String,
+    pub removed_at: f64,
+    pub resulting_lifetime_end: f64,
+    pub scene_entity_id: String,
+    pub studio_entity_id: String,
+    pub transaction_id: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioPersistentRemoveProjection {
+    pub removals: Vec<StudioPersistentRemoveProjectionEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StudioAuthoringEditResult {
+    pub bundle: SceneIrBundleV1,
+    pub persistent_remove_projection: StudioPersistentRemoveProjection,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq)]
@@ -545,6 +581,9 @@ pub enum StaticRootTransformOperationKind {
         to_dimensions: StaticRootTransformDimensions,
         to_position: PointV1,
     },
+    PersistentRemove {
+        persistent: bool,
+    },
     Unsupported,
 }
 
@@ -802,6 +841,9 @@ pub enum StudioCreationOperationKind {
         to_dimensions: StudioAuthoringDimensions,
         to_position: PointV1,
     },
+    PersistentRemove {
+        persistent: bool,
+    },
     Unsupported,
 }
 
@@ -879,8 +921,30 @@ pub enum CreateSceneEntitiesError {
     InvalidFade,
     #[error("a created entity instant transform must be finite, positive, and inside its lifetime")]
     InvalidInstantTransform,
+    #[error(transparent)]
+    PersistentRemove(#[from] ApplyStudioPersistentRemoveError),
     #[error("the Scene containing the created entities failed whole-bundle verification: {0}")]
     ResultInvalid(#[from] EvaluationError),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ApplyStudioPersistentRemoveError {
+    #[error("a persistent remove command must contain at least one target")]
+    EmptyBatch,
+    #[error("a persistent remove interval must be finite and inside the Scene")]
+    InvalidInterval,
+    #[error("a persistent remove command contains a duplicate target: {0}")]
+    DuplicateTarget(String),
+    #[error("persistent remove targets overlap in one Scene subtree: {0} and {1}")]
+    OverlappingTargets(String, String),
+    #[error("the persistent remove target does not exist: {0}")]
+    TargetMissing(String),
+    #[error("persistent remove currently requires a root entity: {0}")]
+    TargetIsNotRoot(String),
+    #[error("the persistent remove target is not active for the complete interval: {0}")]
+    TargetInactive(String),
+    #[error("the persistent remove target already has overlapping opacity animation: {0}")]
+    OpacityAnimationConflict(String),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1021,10 +1085,16 @@ pub enum TransformSceneEntityError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ApplyStaticRootTransformEditError {
-    #[error("the normalized Studio edit does not authorize one static imported root transform")]
+    #[error(
+        "the normalized Studio edit does not authorize one imported-root transform or persistent-remove batch"
+    )]
     Unsupported,
     #[error(transparent)]
     Transform(#[from] TransformSceneEntityError),
+    #[error(transparent)]
+    PersistentRemove(#[from] ApplyStudioPersistentRemoveError),
+    #[error("the edited Scene failed whole-bundle verification: {0}")]
+    ResultInvalid(#[from] EvaluationError),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1702,6 +1772,7 @@ fn studio_creation_program_is_closed(program: &StudioCreationProgram) -> bool {
             | StudioCreationOperationKind::FadeIn { .. }
             | StudioCreationOperationKind::UniformScale { .. }
             | StudioCreationOperationKind::Resize { .. }
+            | StudioCreationOperationKind::PersistentRemove { .. }
             | StudioCreationOperationKind::Unsupported => None,
         })
         .collect::<Vec<_>>();
@@ -1759,9 +1830,40 @@ struct PendingStudioCreation {
     instant_at: Option<f64>,
     kind: StudioAuthoringEntityKind,
     lifetime: IntervalV1,
+    persistent_removal: Option<PersistentSceneRemoval>,
     position: PointV1,
     scale: f64,
     spec: StudioCreationEntitySpec,
+}
+
+fn record_studio_creation_instant(
+    state: &mut PendingStudioCreation,
+    program: &StudioCreationProgram,
+    program_index: usize,
+    program_offsets: &[f64],
+    program_ranks: &[usize],
+    ranked_insertions: &[(usize, SceneTimelineInsertion)],
+) -> Result<(), ApplyStudioCreationEditError> {
+    let mut instant_at = program.anchor_resolved_seconds + program_offsets[program_index];
+    for (rank, insertion) in ranked_insertions {
+        if *rank > program_ranks[program_index]
+            && instant_at >= insertion.at - TIMELINE_ANCHOR_EPSILON
+        {
+            instant_at += insertion.duration;
+        }
+    }
+    if state
+        .instant_at
+        .is_some_and(|prior| (prior - instant_at).abs() > 1e-9)
+        || state
+            .persistent_removal
+            .as_ref()
+            .is_some_and(|removal| instant_at >= removal.interval.start - TIMELINE_ANCHOR_EPSILON)
+    {
+        return Err(ApplyStudioCreationEditError::Unsupported);
+    }
+    state.instant_at = Some(instant_at);
+    Ok(())
 }
 
 fn static_transform_geometry_matches(
@@ -1791,6 +1893,44 @@ fn static_transform_geometry_matches(
         }
         StaticRootTransformEntityKind::Other => true,
     }
+}
+
+fn resolve_static_root_binding<'a>(
+    scene: &'a poietra_scene_ir::SceneIrV1,
+    studio_entities: &'a [StaticRootTransformStudioEntity],
+    source_runtime_bindings: &'a [StaticRootTransformSourceBinding],
+    studio_entity_id: &str,
+) -> Option<(&'a StaticRootTransformStudioEntity, &'a SceneEntityV1)> {
+    let mut matching_studio_entities = studio_entities.iter().filter(|entity| {
+        entity.object_graph_key == studio_entity_id && entity.id == studio_entity_id
+    });
+    let studio_entity = matching_studio_entities.next().filter(|entity| {
+        !entity.provisional && entity.transaction_id.is_none() && entity.source_identity.is_some()
+    })?;
+    if matching_studio_entities.next().is_some() {
+        return None;
+    }
+    let source_identity = studio_entity.source_identity.as_deref()?;
+    let mut matching_bindings = source_runtime_bindings
+        .iter()
+        .filter(|binding| binding.source_identity_key == source_identity);
+    let binding = matching_bindings
+        .next()
+        .filter(|binding| binding.source_name == source_identity)?;
+    if matching_bindings.next().is_some()
+        || source_runtime_bindings
+            .iter()
+            .filter(|candidate| candidate.runtime_entity_id == binding.runtime_entity_id)
+            .count()
+            != 1
+    {
+        return None;
+    }
+    let runtime_entity = scene
+        .entities
+        .iter()
+        .find(|entity| entity.id == binding.runtime_entity_id)?;
+    Some((studio_entity, runtime_entity))
 }
 
 #[allow(
@@ -2512,6 +2652,307 @@ fn unused_channel_id(scene: &poietra_scene_ir::SceneIrV1, prefix: &str) -> Strin
     candidate
 }
 
+#[derive(Clone, Debug)]
+struct PlannedPersistentSceneRemoval {
+    affected_entities: Vec<(usize, Vec<IntervalV1>)>,
+    affected_entity_ids: Vec<String>,
+    opacity_channel_index: Option<usize>,
+    removal: PersistentSceneRemoval,
+    root_entity_index: usize,
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one plan pass must validate every subtree before the separate mutation pass begins"
+)]
+fn plan_persistent_scene_removals(
+    scene: &poietra_scene_ir::SceneIrV1,
+    removals: &[PersistentSceneRemoval],
+) -> Result<Vec<PlannedPersistentSceneRemoval>, ApplyStudioPersistentRemoveError> {
+    if removals.is_empty() {
+        return Err(ApplyStudioPersistentRemoveError::EmptyBatch);
+    }
+    let entity_indexes = scene
+        .entities
+        .iter()
+        .enumerate()
+        .map(|(index, entity)| (entity.id.as_str(), index))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut children = vec![Vec::new(); scene.entities.len()];
+    for (entity_index, entity) in scene.entities.iter().enumerate() {
+        if let Some(parent_id) = entity.parent_id.as_deref() {
+            let Some(&parent_index) = entity_indexes.get(parent_id) else {
+                return Err(ApplyStudioPersistentRemoveError::TargetMissing(
+                    parent_id.to_owned(),
+                ));
+            };
+            children[parent_index].push(entity_index);
+        }
+    }
+    let mut selected_targets = std::collections::BTreeMap::<usize, &str>::new();
+    for removal in removals {
+        let entity_index = entity_indexes
+            .get(removal.entity_id.as_str())
+            .copied()
+            .ok_or_else(|| {
+                ApplyStudioPersistentRemoveError::TargetMissing(removal.entity_id.clone())
+            })?;
+        if selected_targets
+            .insert(entity_index, removal.entity_id.as_str())
+            .is_some()
+        {
+            return Err(ApplyStudioPersistentRemoveError::DuplicateTarget(
+                removal.entity_id.clone(),
+            ));
+        }
+    }
+    for (&entity_index, &target_id) in &selected_targets {
+        let mut parent_id = scene.entities[entity_index].parent_id.as_deref();
+        while let Some(id) = parent_id {
+            let parent_index = entity_indexes
+                .get(id)
+                .copied()
+                .ok_or_else(|| ApplyStudioPersistentRemoveError::TargetMissing(id.to_owned()))?;
+            if let Some(ancestor_target) = selected_targets.get(&parent_index) {
+                return Err(ApplyStudioPersistentRemoveError::OverlappingTargets(
+                    (*ancestor_target).to_owned(),
+                    target_id.to_owned(),
+                ));
+            }
+            parent_id = scene.entities[parent_index].parent_id.as_deref();
+        }
+    }
+    let mut planned = Vec::with_capacity(removals.len());
+    for removal in removals {
+        if !removal.interval.start.is_finite()
+            || !removal.interval.end.is_finite()
+            || removal.interval.start < 0.0
+            || removal.interval.start > removal.interval.end
+            || removal.interval.end > scene.duration
+        {
+            return Err(ApplyStudioPersistentRemoveError::InvalidInterval);
+        }
+        let entity_index = entity_indexes
+            .get(removal.entity_id.as_str())
+            .copied()
+            .ok_or_else(|| {
+                ApplyStudioPersistentRemoveError::TargetMissing(removal.entity_id.clone())
+            })?;
+        let mut affected_entity_indexes = Vec::new();
+        let mut pending = vec![entity_index];
+        while let Some(affected_index) = pending.pop() {
+            affected_entity_indexes.push(affected_index);
+            pending.extend(children[affected_index].iter().copied());
+        }
+        affected_entity_indexes.sort_unstable();
+        if scene.entities[entity_index].parent_id.is_some() {
+            return Err(ApplyStudioPersistentRemoveError::TargetIsNotRoot(
+                removal.entity_id.clone(),
+            ));
+        }
+        let root = &scene.entities[entity_index];
+        if !root.lifetimes.iter().any(|lifetime| {
+            removal.interval.start >= lifetime.start
+                && removal.interval.start < lifetime.end
+                && removal.interval.end > lifetime.start
+                && removal.interval.end <= lifetime.end
+        }) {
+            return Err(ApplyStudioPersistentRemoveError::TargetInactive(
+                root.id.clone(),
+            ));
+        }
+        let affected_entity_ids = affected_entity_indexes
+            .iter()
+            .map(|&affected_index| scene.entities[affected_index].id.clone())
+            .collect();
+        let affected_entities = affected_entity_indexes
+            .into_iter()
+            .map(|affected_index| {
+                let retained_lifetimes = scene.entities[affected_index]
+                    .lifetimes
+                    .iter()
+                    .filter_map(|lifetime| {
+                        if lifetime.start >= removal.interval.end {
+                            return None;
+                        }
+                        Some(IntervalV1 {
+                            end: lifetime.end.min(removal.interval.end),
+                            start: lifetime.start,
+                        })
+                    })
+                    .filter(|lifetime| lifetime.start < lifetime.end)
+                    .collect();
+                (affected_index, retained_lifetimes)
+            })
+            .collect();
+        let opacity_channels = scene
+            .animation_channels
+            .iter()
+            .enumerate()
+            .filter_map(|(index, channel)| match channel {
+                AnimationChannelV1::Opacity { entity_id, .. }
+                    if entity_id == &removal.entity_id =>
+                {
+                    Some(index)
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if opacity_channels.len() > 1 {
+            return Err(ApplyStudioPersistentRemoveError::OpacityAnimationConflict(
+                removal.entity_id.clone(),
+            ));
+        }
+        let opacity_channel_index = opacity_channels.first().copied();
+        if removal.interval.end > removal.interval.start
+            && let Some(channel_index) = opacity_channel_index
+        {
+            let AnimationChannelV1::Opacity { keyframes, .. } =
+                &scene.animation_channels[channel_index]
+            else {
+                unreachable!();
+            };
+            let compatible = keyframes.last().is_some_and(|last| {
+                last.easing_to_next.is_none()
+                    && last.at <= removal.interval.start + TIMELINE_ANCHOR_EPSILON
+                    && close_transform_baseline_value(last.value, 1.0)
+            });
+            if !compatible {
+                return Err(ApplyStudioPersistentRemoveError::OpacityAnimationConflict(
+                    removal.entity_id.clone(),
+                ));
+            }
+        }
+        planned.push(PlannedPersistentSceneRemoval {
+            affected_entities,
+            affected_entity_ids,
+            opacity_channel_index,
+            removal: removal.clone(),
+            root_entity_index: entity_index,
+        });
+    }
+    Ok(planned)
+}
+
+fn remove_scene_entities(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    removed_entity_ids: &BTreeSet<String>,
+) {
+    scene.animation_channels.retain(|channel| {
+        channel
+            .entity_id()
+            .is_none_or(|entity_id| !removed_entity_ids.contains(entity_id))
+    });
+    scene
+        .entities
+        .retain(|entity| !removed_entity_ids.contains(&entity.id));
+}
+
+fn apply_persistent_scene_removals(
+    scene: &mut poietra_scene_ir::SceneIrV1,
+    removals: &[PersistentSceneRemoval],
+    provenance_id: &str,
+) -> Result<StudioPersistentRemoveProjection, ApplyStudioPersistentRemoveError> {
+    let planned = plan_persistent_scene_removals(scene, removals)?;
+    let mut removed_entity_ids = BTreeSet::new();
+    for removal in &planned {
+        for (entity_index, retained_lifetimes) in &removal.affected_entities {
+            if retained_lifetimes.is_empty() {
+                removed_entity_ids.insert(scene.entities[*entity_index].id.clone());
+                continue;
+            }
+            let affected = &mut scene.entities[*entity_index];
+            affected.lifetimes.clone_from(retained_lifetimes);
+            provenance_id.clone_into(&mut affected.provenance_id);
+        }
+    }
+    for removal in &planned {
+        if removal.removal.interval.start >= removal.removal.interval.end {
+            continue;
+        }
+        if let Some(channel_index) = removal.opacity_channel_index {
+            let AnimationChannelV1::Opacity { keyframes, .. } =
+                &mut scene.animation_channels[channel_index]
+            else {
+                unreachable!();
+            };
+            let last = keyframes
+                .last_mut()
+                .expect("persistent remove plan has a keyframe");
+            if studio_timeline_semantic_values_match(last.at, removal.removal.interval.start) {
+                last.at = removal.removal.interval.start;
+                last.easing_to_next = Some(EasingV1::Smooth {});
+            } else {
+                last.easing_to_next = Some(EasingV1::Linear {});
+                keyframes.push(KeyframeV1 {
+                    at: removal.removal.interval.start,
+                    easing_to_next: Some(EasingV1::Smooth {}),
+                    value: 1.0,
+                });
+            }
+            keyframes.push(KeyframeV1 {
+                at: removal.removal.interval.end,
+                easing_to_next: None,
+                value: 0.0,
+            });
+        } else {
+            let channel_id = unused_channel_id(
+                scene,
+                &format!("studio-persistent-remove-{}", removal.root_entity_index),
+            );
+            let entity_id = scene.entities[removal.root_entity_index].id.clone();
+            scene.animation_channels.push(AnimationChannelV1::Opacity {
+                entity_id,
+                id: channel_id,
+                keyframes: vec![
+                    KeyframeV1 {
+                        at: removal.removal.interval.start,
+                        easing_to_next: Some(EasingV1::Smooth {}),
+                        value: 1.0,
+                    },
+                    KeyframeV1 {
+                        at: removal.removal.interval.end,
+                        easing_to_next: None,
+                        value: 0.0,
+                    },
+                ],
+                provenance_id: provenance_id.to_owned(),
+            });
+        }
+    }
+    if !removed_entity_ids.is_empty() {
+        remove_scene_entities(scene, &removed_entity_ids);
+    }
+    if planned
+        .iter()
+        .any(|removal| removal.removal.interval.start < removal.removal.interval.end)
+    {
+        let mut capabilities = scene
+            .required_capabilities
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        capabilities.insert(SceneCapabilityV1::OpacityAnimation);
+        scene.required_capabilities = capabilities.into_iter().collect();
+    }
+    Ok(StudioPersistentRemoveProjection {
+        removals: planned
+            .into_iter()
+            .map(|planned| StudioPersistentRemoveProjectionEntry {
+                affected_scene_entity_ids: planned.affected_entity_ids,
+                fade_interval: (planned.removal.interval.start < planned.removal.interval.end)
+                    .then_some(planned.removal.interval.clone()),
+                operation_id: planned.removal.operation_id,
+                removed_at: planned.removal.interval.end,
+                resulting_lifetime_end: planned.removal.interval.end,
+                scene_entity_id: planned.removal.entity_id,
+                studio_entity_id: planned.removal.studio_entity_id,
+                transaction_id: planned.removal.transaction_id,
+            })
+            .collect(),
+    })
+}
+
 fn quadratic_motion_path(start: PointV1, delta: &PointV1, control_offset: &PointV1) -> CubicPathV1 {
     let control_offset_x = 2.0 * control_offset.x / 3.0;
     let control_offset_y = 2.0 * control_offset.y / 3.0;
@@ -2851,7 +3292,7 @@ impl EngineSessionV1 {
     fn create_scene_entities(
         &mut self,
         command: CreateSceneEntitiesCommand,
-    ) -> Result<SceneIrBundleV1, CreateSceneEntitiesError> {
+    ) -> Result<StudioAuthoringEditResult, CreateSceneEntitiesError> {
         validate_create_scene_entities_command(self, &command)?;
 
         let mut candidate = SceneIrBundleV1 {
@@ -2908,12 +3349,24 @@ impl EngineSessionV1 {
             source_z_index += 1.0;
         }
         candidate.scene.required_capabilities = capabilities.into_iter().collect();
+        let persistent_remove_projection = if command.persistent_removals.is_empty() {
+            StudioPersistentRemoveProjection::default()
+        } else {
+            apply_persistent_scene_removals(
+                &mut candidate.scene,
+                &command.persistent_removals,
+                &command.provenance.id,
+            )?
+        };
         candidate.scene.source = SceneSourceV1::StudioEditProgram {
             edit_program_version: ContractVersionV1,
             revision_hash: command.next_revision,
         };
 
-        let result = candidate.clone();
+        let result = StudioAuthoringEditResult {
+            bundle: candidate.clone(),
+            persistent_remove_projection,
+        };
         self.replace_snapshot(candidate)?;
         Ok(result)
     }
@@ -2923,8 +3376,8 @@ impl EngineSessionV1 {
     /// # Errors
     ///
     /// Returns `Unsupported` when the normalized Programs do not describe the supported
-    /// create/position/fade plus instant transform subset. Every failure preserves the installed
-    /// session.
+    /// create/position/fade, instant transform, and persistent-remove subset. Every failure
+    /// preserves the installed session.
     #[allow(
         clippy::float_cmp,
         clippy::too_many_lines,
@@ -2933,7 +3386,7 @@ impl EngineSessionV1 {
     pub fn apply_studio_creation_edit(
         &mut self,
         command: ApplyStudioCreationEditCommand,
-    ) -> Result<SceneIrBundleV1, ApplyStudioCreationEditError> {
+    ) -> Result<StudioAuthoringEditResult, ApplyStudioCreationEditError> {
         let ApplyStudioCreationEditCommand {
             expected_base_revision,
             frame,
@@ -3110,6 +3563,7 @@ impl EngineSessionV1 {
                     }
                     StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
+                    | StudioCreationOperationKind::PersistentRemove { .. }
                     | StudioCreationOperationKind::Unsupported => true,
                 })
             {
@@ -3137,6 +3591,7 @@ impl EngineSessionV1 {
                     | StudioCreationOperationKind::FadeIn { .. }
                     | StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
+                    | StudioCreationOperationKind::PersistentRemove { .. }
                     | StudioCreationOperationKind::Unsupported => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -3305,6 +3760,7 @@ impl EngineSessionV1 {
                     instant_at: None,
                     kind: spec.kind,
                     lifetime,
+                    persistent_removal: None,
                     position: (*positions[0]).clone(),
                     scale: 1.0,
                     spec: spec.clone(),
@@ -3315,6 +3771,22 @@ impl EngineSessionV1 {
 
         for program_index in followup_programs {
             let program = &programs[program_index];
+            let contains_persistent_remove = program.operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StudioCreationOperationKind::PersistentRemove { .. }
+                )
+            });
+            if contains_persistent_remove
+                && program.operations.iter().any(|operation| {
+                    !matches!(
+                        operation.kind,
+                        StudioCreationOperationKind::PersistentRemove { .. }
+                    )
+                })
+            {
+                return Err(ApplyStudioCreationEditError::Unsupported);
+            }
             for operation_id in &program.schedule_order {
                 let operation = program
                     .operations
@@ -3323,9 +3795,6 @@ impl EngineSessionV1 {
                     .ok_or(ApplyStudioCreationEditError::Unsupported)?;
                 if !studio_timeline_semantic_values_match(
                     operation.interval.start,
-                    program.anchor_resolved_seconds,
-                ) || !studio_timeline_semantic_values_match(
-                    operation.interval.end,
                     program.anchor_resolved_seconds,
                 ) {
                     return Err(ApplyStudioCreationEditError::Unsupported);
@@ -3339,26 +3808,22 @@ impl EngineSessionV1 {
                     .find(|(_, state)| state.spec.id == entity_id)
                     .map(|(_, state)| state)
                     .ok_or(ApplyStudioCreationEditError::Unsupported)?;
-                let mut instant_at =
-                    program.anchor_resolved_seconds + program_offsets[program_index];
-                for (rank, insertion) in &ranked_insertions {
-                    if *rank > program_ranks[program_index]
-                        && instant_at >= insertion.at - TIMELINE_ANCHOR_EPSILON
-                    {
-                        instant_at += insertion.duration;
-                    }
-                }
-                if state
-                    .instant_at
-                    .is_some_and(|prior| (prior - instant_at).abs() > 1e-9)
-                {
-                    return Err(ApplyStudioCreationEditError::Unsupported);
-                }
-                state.instant_at = Some(instant_at);
                 match &operation.kind {
                     StudioCreationOperationKind::Position {
                         position: Some(position),
-                    } if studio_authoring_point_is_finite(position) => {
+                    } if studio_timeline_semantic_values_match(
+                        operation.interval.end,
+                        program.anchor_resolved_seconds,
+                    ) && studio_authoring_point_is_finite(position) =>
+                    {
+                        record_studio_creation_instant(
+                            state,
+                            program,
+                            program_index,
+                            &program_offsets,
+                            &program_ranks,
+                            &ranked_insertions,
+                        )?;
                         state.position = position.clone();
                     }
                     StudioCreationOperationKind::UniformScale {
@@ -3373,8 +3838,20 @@ impl EngineSessionV1 {
                         && *to > 0.0
                         && relative_factor.is_finite()
                         && *relative_factor > 0.0
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        )
                         && close_transform_baseline_value(*to / *from, *relative_factor) =>
                     {
+                        record_studio_creation_instant(
+                            state,
+                            program,
+                            program_index,
+                            &program_offsets,
+                            &program_ranks,
+                            &ranked_insertions,
+                        )?;
                         state.scale *= relative_factor;
                     }
                     StudioCreationOperationKind::Resize {
@@ -3399,16 +3876,57 @@ impl EngineSessionV1 {
                         && *from_scale > 0.0
                         && close_transform_baseline_value(*from_scale, state.scale)
                         && studio_authoring_shape_size(*shape, *to_dimensions).is_some()
-                        && studio_authoring_point_is_finite(to_position) =>
+                        && studio_authoring_point_is_finite(to_position)
+                        && studio_timeline_semantic_values_match(
+                            operation.interval.end,
+                            program.anchor_resolved_seconds,
+                        ) =>
                     {
+                        record_studio_creation_instant(
+                            state,
+                            program,
+                            program_index,
+                            &program_offsets,
+                            &program_ranks,
+                            &ranked_insertions,
+                        )?;
                         state.current_dimensions = *to_dimensions;
                         state.position = to_position.clone();
+                    }
+                    StudioCreationOperationKind::PersistentRemove { persistent }
+                        if *persistent
+                            && matches!(
+                                operation.origin,
+                                StudioAuthoringOrigin::DirectManipulation
+                                    | StudioAuthoringOrigin::StudioDefault
+                            )
+                            && operation.interval.end.is_finite()
+                            && operation.interval.end >= operation.interval.start
+                            && state.persistent_removal.is_none() =>
+                    {
+                        let mut interval = IntervalV1 {
+                            end: operation.interval.end + program_offsets[program_index],
+                            start: operation.interval.start + program_offsets[program_index],
+                        };
+                        for (rank, insertion) in &ranked_insertions {
+                            if *rank > program_ranks[program_index] {
+                                shift_interval_for_insertion(&mut interval, insertion);
+                            }
+                        }
+                        state.persistent_removal = Some(PersistentSceneRemoval {
+                            entity_id: entity_id.to_owned(),
+                            interval,
+                            operation_id: operation.id.clone(),
+                            studio_entity_id: entity_id.to_owned(),
+                            transaction_id: program.transaction_id.clone(),
+                        });
                     }
                     StudioCreationOperationKind::Create { .. }
                     | StudioCreationOperationKind::Position { .. }
                     | StudioCreationOperationKind::FadeIn { .. }
                     | StudioCreationOperationKind::UniformScale { .. }
                     | StudioCreationOperationKind::Resize { .. }
+                    | StudioCreationOperationKind::PersistentRemove { .. }
                     | StudioCreationOperationKind::Unsupported => {
                         return Err(ApplyStudioCreationEditError::Unsupported);
                     }
@@ -3425,6 +3943,7 @@ impl EngineSessionV1 {
         }
 
         let mut entities = Vec::with_capacity(pending.len());
+        let mut persistent_removals = Vec::new();
         for (_, state) in pending {
             let geometry = match state.kind {
                 StudioAuthoringEntityKind::Circle => {
@@ -3500,6 +4019,9 @@ impl EngineSessionV1 {
             } else {
                 None
             };
+            if let Some(removal) = state.persistent_removal.clone() {
+                persistent_removals.push(removal);
+            }
             entities.push(CreateSceneEntity {
                 fade_in: state
                     .fade_interval
@@ -3526,9 +4048,10 @@ impl EngineSessionV1 {
             entities,
             expected_base_revision,
             next_revision: next_revision.clone(),
+            persistent_removals,
             provenance: ProvenanceRecordV1 {
                 evidence: vec![format!(
-                    "{} validated Studio Program(s) with {operation_count} operation(s) lowered as one atomic creation/transform core command",
+                    "{} validated Studio Program(s) with {operation_count} operation(s) lowered as one atomic creation/transform/persistent-remove core command",
                     programs.len()
                 )],
                 id: format!("studio-create:{next_revision}"),
@@ -4000,7 +4523,7 @@ impl EngineSessionV1 {
         Ok(result)
     }
 
-    /// Applies the closed static imported-root subset of one or two Studio edit operations.
+    /// Applies the closed imported-root transform or persistent-remove subset.
     ///
     /// The caller serializes every Program operation, including unsupported ones. This method is
     /// therefore the sole authority for operation admission, identity resolution, geometry
@@ -4009,7 +4532,7 @@ impl EngineSessionV1 {
     /// # Errors
     ///
     /// Returns `Unsupported` when the complete normalized edit is outside the closed subset, or
-    /// the existing transform error when the installed Scene rejects the resolved intent.
+    /// the concrete transform or persistent-remove error when the installed Scene rejects it.
     #[allow(
         clippy::float_cmp,
         clippy::too_many_lines,
@@ -4018,7 +4541,7 @@ impl EngineSessionV1 {
     pub fn apply_static_root_transform_edit(
         &mut self,
         command: ApplyStaticRootTransformEditCommand,
-    ) -> Result<SceneIrBundleV1, ApplyStaticRootTransformEditError> {
+    ) -> Result<StudioAuthoringEditResult, ApplyStaticRootTransformEditError> {
         let ApplyStaticRootTransformEditCommand {
             expected_base_revision,
             frame,
@@ -4034,16 +4557,15 @@ impl EngineSessionV1 {
             .map(|program| program.operations.len())
             .sum::<usize>();
         if !matches!(
-            scene.source,
+            &scene.source,
             SceneSourceV1::ImportedManimServerSnapshot { .. }
-        ) || !scene.animation_channels.is_empty()
-            || !studio_authoring_size_is_positive(frame)
+        ) || !studio_authoring_size_is_positive(frame)
             || !studio_authoring_size_is_positive(viewport)
             || frame.width != scene.camera.view.frame_width
             || frame.height != scene.camera.view.frame_height
             || programs.is_empty()
             || operation_count == 0
-            || operation_count > 2
+            || operation_count > 16
             || programs.iter().any(|program| {
                 !program.lowering_supported
                     || program.transaction_id.is_empty()
@@ -4053,7 +4575,6 @@ impl EngineSessionV1 {
                         program.anchor_resolved_seconds,
                         scene.duration,
                     )
-                    || program.anchor_resolved_seconds != 0.0
                     || !static_root_transform_program_is_closed(program)
                     || program
                         .operations
@@ -4063,10 +4584,19 @@ impl EngineSessionV1 {
         {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
         }
+        if scene.source.revision_hash() != expected_base_revision {
+            return Err(TransformSceneEntityError::StaleBaseRevision.into());
+        }
+        if next_revision == expected_base_revision {
+            return Err(TransformSceneEntityError::RevisionDidNotAdvance.into());
+        }
 
         let mut entity_id: Option<String> = None;
-        let mut operation_ids = Vec::new();
+        let mut operation_ids = BTreeSet::new();
+        let mut ordered_operation_ids = Vec::with_capacity(operation_count);
         let mut position: Option<PointV1> = None;
+        let mut removals = Vec::new();
+        let mut transform_operation_count = 0_usize;
         let mut uniform_scale: Option<f64> = None;
         let mut resize: Option<(
             StaticRootTransformEntityKind,
@@ -4076,289 +4606,400 @@ impl EngineSessionV1 {
             StaticRootTransformDimensions,
             PointV1,
         )> = None;
-        for operation in programs.into_iter().flat_map(|program| program.operations) {
-            if operation.interval.start != 0.0
-                || operation.interval.end != 0.0
-                || operation.id.is_empty()
-                || operation_ids.contains(&operation.id)
-                || entity_id
-                    .as_ref()
-                    .is_some_and(|expected| expected != &operation.entity_id)
+        let mut program_indexes = (0..programs.len()).collect::<Vec<_>>();
+        program_indexes.sort_by(|left, right| {
+            programs[*left]
+                .anchor_resolved_seconds
+                .total_cmp(&programs[*right].anchor_resolved_seconds)
+                .then_with(|| left.cmp(right))
+        });
+        for program_index in program_indexes {
+            let program = &programs[program_index];
+            let contains_removal = program.operations.iter().any(|operation| {
+                matches!(
+                    operation.kind,
+                    StaticRootTransformOperationKind::PersistentRemove { .. }
+                )
+            });
+            if contains_removal
+                && !program.operations.iter().all(|operation| {
+                    matches!(
+                        operation.kind,
+                        StaticRootTransformOperationKind::PersistentRemove { .. }
+                    )
+                })
             {
                 return Err(ApplyStaticRootTransformEditError::Unsupported);
             }
-            operation_ids.push(operation.id.clone());
-            entity_id.get_or_insert_with(|| operation.entity_id.clone());
-            match operation.kind {
-                StaticRootTransformOperationKind::Position {
-                    position: Some(target),
-                } if matches!(
-                    operation.origin,
-                    StaticRootTransformOrigin::DirectManipulation
-                        | StaticRootTransformOrigin::StudioDefault
-                ) && studio_authoring_point_is_finite(&target)
-                    && position.replace(target.clone()).is_none() => {}
-                StaticRootTransformOperationKind::UniformScale {
-                    control_present,
-                    from: Some(from),
-                    relative_factor: Some(factor),
-                    to: Some(to),
-                } if operation.origin == StaticRootTransformOrigin::DirectManipulation
-                    && !control_present
-                    && factor.is_finite()
-                    && factor > 0.0
-                    && factor != 1.0
-                    && from.is_finite()
-                    && from > 0.0
-                    && to.is_finite()
-                    && to > 0.0
-                    && close_transform_baseline_value(to / from, factor)
-                    && uniform_scale.replace(factor).is_none() => {}
-                StaticRootTransformOperationKind::Resize {
-                    from_dimensions,
-                    from_position,
-                    from_scale,
-                    shape,
-                    to_dimensions,
-                    to_position,
-                } if matches!(
-                    operation.origin,
-                    StaticRootTransformOrigin::DirectManipulation
-                        | StaticRootTransformOrigin::StudioDefault
-                ) && matches!(
-                    shape,
-                    StaticRootTransformEntityKind::Circle
-                        | StaticRootTransformEntityKind::Rectangle
-                ) && from_scale.is_finite()
-                    && from_scale > 0.0
-                    && studio_authoring_point_is_finite(&from_position)
-                    && studio_authoring_point_is_finite(&to_position)
-                    && resize
-                        .replace((
-                            shape,
-                            from_dimensions,
-                            from_position.clone(),
-                            from_scale,
-                            to_dimensions,
-                            to_position.clone(),
-                        ))
-                        .is_none() => {}
-                StaticRootTransformOperationKind::Position { .. }
-                | StaticRootTransformOperationKind::UniformScale { .. }
-                | StaticRootTransformOperationKind::Resize { .. }
-                | StaticRootTransformOperationKind::Unsupported => {
+            for scheduled_id in &program.schedule_order {
+                let operation = program
+                    .operations
+                    .iter()
+                    .find(|operation| operation.id == *scheduled_id)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                if operation.id.is_empty() || !operation_ids.insert(operation.id.as_str()) {
                     return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                ordered_operation_ids.push(operation.id.clone());
+                if contains_removal {
+                    match operation.kind {
+                        StaticRootTransformOperationKind::PersistentRemove { persistent: true }
+                            if matches!(
+                                operation.origin,
+                                StaticRootTransformOrigin::DirectManipulation
+                                    | StaticRootTransformOrigin::StudioDefault
+                            ) && !operation.entity_id.is_empty()
+                                && studio_timeline_semantic_values_match(
+                                    operation.interval.start,
+                                    program.anchor_resolved_seconds,
+                                )
+                                && operation.interval.end >= operation.interval.start =>
+                        {
+                            removals.push(PersistentSceneRemoval {
+                                entity_id: operation.entity_id.clone(),
+                                interval: operation.interval.clone(),
+                                operation_id: operation.id.clone(),
+                                studio_entity_id: operation.entity_id.clone(),
+                                transaction_id: program.transaction_id.clone(),
+                            });
+                        }
+                        StaticRootTransformOperationKind::PersistentRemove { .. }
+                        | StaticRootTransformOperationKind::Position { .. }
+                        | StaticRootTransformOperationKind::UniformScale { .. }
+                        | StaticRootTransformOperationKind::Resize { .. }
+                        | StaticRootTransformOperationKind::Unsupported => {
+                            return Err(ApplyStaticRootTransformEditError::Unsupported);
+                        }
+                    }
+                    continue;
+                }
+                if !studio_timeline_semantic_values_match(program.anchor_resolved_seconds, 0.0)
+                    || !studio_timeline_semantic_values_match(operation.interval.start, 0.0)
+                    || !studio_timeline_semantic_values_match(operation.interval.end, 0.0)
+                    || entity_id
+                        .as_ref()
+                        .is_some_and(|expected| expected != &operation.entity_id)
+                {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                transform_operation_count += 1;
+                entity_id.get_or_insert_with(|| operation.entity_id.clone());
+                match &operation.kind {
+                    StaticRootTransformOperationKind::Position {
+                        position: Some(target),
+                    } if matches!(
+                        operation.origin,
+                        StaticRootTransformOrigin::DirectManipulation
+                            | StaticRootTransformOrigin::StudioDefault
+                    ) && studio_authoring_point_is_finite(target)
+                        && position.replace(target.clone()).is_none() => {}
+                    StaticRootTransformOperationKind::UniformScale {
+                        control_present,
+                        from: Some(from),
+                        relative_factor: Some(factor),
+                        to: Some(to),
+                    } if operation.origin == StaticRootTransformOrigin::DirectManipulation
+                        && !*control_present
+                        && factor.is_finite()
+                        && *factor > 0.0
+                        && *factor != 1.0
+                        && from.is_finite()
+                        && *from > 0.0
+                        && to.is_finite()
+                        && *to > 0.0
+                        && close_transform_baseline_value(*to / *from, *factor)
+                        && uniform_scale.replace(*factor).is_none() => {}
+                    StaticRootTransformOperationKind::Resize {
+                        from_dimensions,
+                        from_position,
+                        from_scale,
+                        shape,
+                        to_dimensions,
+                        to_position,
+                    } if matches!(
+                        operation.origin,
+                        StaticRootTransformOrigin::DirectManipulation
+                            | StaticRootTransformOrigin::StudioDefault
+                    ) && matches!(
+                        *shape,
+                        StaticRootTransformEntityKind::Circle
+                            | StaticRootTransformEntityKind::Rectangle
+                    ) && from_scale.is_finite()
+                        && *from_scale > 0.0
+                        && studio_authoring_point_is_finite(from_position)
+                        && studio_authoring_point_is_finite(to_position)
+                        && resize
+                            .replace((
+                                *shape,
+                                *from_dimensions,
+                                from_position.clone(),
+                                *from_scale,
+                                *to_dimensions,
+                                to_position.clone(),
+                            ))
+                            .is_none() => {}
+                    StaticRootTransformOperationKind::Position { .. }
+                    | StaticRootTransformOperationKind::UniformScale { .. }
+                    | StaticRootTransformOperationKind::Resize { .. }
+                    | StaticRootTransformOperationKind::PersistentRemove { .. }
+                    | StaticRootTransformOperationKind::Unsupported => {
+                        return Err(ApplyStaticRootTransformEditError::Unsupported);
+                    }
                 }
             }
         }
-        if (resize.is_some()
-            && (position.is_some() || uniform_scale.is_some() || operation_ids.len() != 1))
-            || (resize.is_none() && position.is_none() && uniform_scale.is_none())
+        if transform_operation_count > 2
+            || (resize.is_some()
+                && (position.is_some()
+                    || uniform_scale.is_some()
+                    || transform_operation_count != 1))
+            || (transform_operation_count > 0
+                && resize.is_none()
+                && position.is_none()
+                && uniform_scale.is_none())
+            || (transform_operation_count > 0 && !scene.animation_channels.is_empty())
         {
             return Err(ApplyStaticRootTransformEditError::Unsupported);
         }
 
-        let entity_id = entity_id.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-        let mut matching_studio_entities = studio_entities
-            .iter()
-            .filter(|entity| entity.object_graph_key == entity_id && entity.id == entity_id);
-        let studio_entity = matching_studio_entities
-            .next()
-            .filter(|entity| {
-                !entity.provisional
-                    && entity.transaction_id.is_none()
-                    && entity.source_identity.is_some()
-            })
+        let transform = if let Some(entity_id) = entity_id {
+            let (studio_entity, runtime_entity) = resolve_static_root_binding(
+                scene,
+                &studio_entities,
+                &source_runtime_bindings,
+                &entity_id,
+            )
             .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-        let semantic_position = studio_entity
-            .position
-            .as_ref()
-            .filter(|position| studio_authoring_point_is_finite(position));
-        let semantic_scale = studio_entity
-            .scale
-            .filter(|scale| scale.is_finite() && *scale > 0.0);
-        let primitive_size =
-            studio_authoring_shape_size(studio_entity.kind, studio_entity.dimensions);
-        let primitive_transform = matches!(
-            studio_entity.kind,
-            StaticRootTransformEntityKind::Circle | StaticRootTransformEntityKind::Rectangle
-        ) && (uniform_scale.is_some() || resize.is_some());
-        if matching_studio_entities.next().is_some()
-            || !matches!(
+            let semantic_position = studio_entity
+                .position
+                .as_ref()
+                .filter(|position| studio_authoring_point_is_finite(position));
+            let semantic_scale = studio_entity
+                .scale
+                .filter(|scale| scale.is_finite() && *scale > 0.0);
+            let primitive_size =
+                studio_authoring_shape_size(studio_entity.kind, studio_entity.dimensions);
+            let primitive_transform = matches!(
+                studio_entity.kind,
+                StaticRootTransformEntityKind::Circle | StaticRootTransformEntityKind::Rectangle
+            ) && (uniform_scale.is_some() || resize.is_some());
+            if !matches!(
                 studio_entity.kind,
                 StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
             ) && semantic_position.is_none()
-            || primitive_transform && (semantic_scale.is_none() || primitive_size.is_none())
-            || uniform_scale.is_some()
-                && !matches!(
-                    studio_entity.kind,
-                    StaticRootTransformEntityKind::Circle
-                        | StaticRootTransformEntityKind::Image
-                        | StaticRootTransformEntityKind::MathTex
-                        | StaticRootTransformEntityKind::Rectangle
-                )
-            || resize
-                .as_ref()
-                .is_some_and(|(shape, ..)| *shape != studio_entity.kind)
-        {
-            return Err(ApplyStaticRootTransformEditError::Unsupported);
-        }
-        let source_identity = studio_entity
-            .source_identity
-            .as_deref()
-            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-        let mut matching_bindings = source_runtime_bindings
-            .iter()
-            .filter(|binding| binding.source_identity_key == source_identity);
-        let binding = matching_bindings
-            .next()
-            .filter(|binding| binding.source_name == source_identity)
-            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-        if matching_bindings.next().is_some()
-            || source_runtime_bindings
-                .iter()
-                .filter(|candidate| candidate.runtime_entity_id == binding.runtime_entity_id)
-                .count()
-                != 1
-        {
-            return Err(ApplyStaticRootTransformEditError::Unsupported);
-        }
-        let runtime_entity = scene
-            .entities
-            .iter()
-            .find(|entity| entity.id == binding.runtime_entity_id)
-            .filter(|entity| {
-                entity.parent_id.is_none()
-                    && static_transform_geometry_matches(studio_entity.kind, entity)
-            })
-            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-
-        let intent = if let Some((
-            shape,
-            from_dimensions,
-            from_position,
-            from_scale,
-            to_dimensions,
-            to_position,
-        )) = resize
-        {
-            let from_size = studio_authoring_shape_size(shape, from_dimensions)
-                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let to_size = studio_authoring_shape_size(shape, to_dimensions)
-                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let semantic_position =
-                semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let semantic_scale =
-                semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let primitive_size =
-                primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            if !close_transform_baseline_value(from_size.width, primitive_size.width)
-                || !close_transform_baseline_value(from_size.height, primitive_size.height)
-                || !close_transform_baseline_value(from_scale, semantic_scale)
-                || !close_transform_baseline_value(from_position.x, semantic_position.x)
-                || !close_transform_baseline_value(from_position.y, semantic_position.y)
+                || primitive_transform && (semantic_scale.is_none() || primitive_size.is_none())
+                || uniform_scale.is_some()
+                    && !matches!(
+                        studio_entity.kind,
+                        StaticRootTransformEntityKind::Circle
+                            | StaticRootTransformEntityKind::Image
+                            | StaticRootTransformEntityKind::MathTex
+                            | StaticRootTransformEntityKind::Rectangle
+                    )
+                || resize
+                    .as_ref()
+                    .is_some_and(|(shape, ..)| *shape != studio_entity.kind)
             {
                 return Err(ApplyStaticRootTransformEditError::Unsupported);
             }
-            let world_center = studio_point_to_scene_point(
-                semantic_position,
-                frame,
-                viewport,
-                &scene.camera.view.center,
-            );
-            TransformSceneEntityIntent::FromBaseline {
-                expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize {
-                    height: primitive_size.height * semantic_scale,
-                    width: primitive_size.width * semantic_scale,
-                    world_center,
-                },
-                scale: Some(SceneEntityAxisFactors {
-                    x_factor: to_size.width / from_size.width,
-                    y_factor: to_size.height / from_size.height,
-                }),
-                target_center: Some(studio_point_to_scene_point(
-                    &to_position,
+            if runtime_entity.parent_id.is_some()
+                || !static_transform_geometry_matches(studio_entity.kind, runtime_entity)
+            {
+                return Err(ApplyStaticRootTransformEditError::Unsupported);
+            }
+
+            let intent = if let Some((
+                shape,
+                from_dimensions,
+                from_position,
+                from_scale,
+                to_dimensions,
+                to_position,
+            )) = resize
+            {
+                let from_size = studio_authoring_shape_size(shape, from_dimensions)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let to_size = studio_authoring_shape_size(shape, to_dimensions)
+                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let semantic_position =
+                    semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let semantic_scale =
+                    semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let primitive_size =
+                    primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                if !close_transform_baseline_value(from_size.width, primitive_size.width)
+                    || !close_transform_baseline_value(from_size.height, primitive_size.height)
+                    || !close_transform_baseline_value(from_scale, semantic_scale)
+                    || !close_transform_baseline_value(from_position.x, semantic_position.x)
+                    || !close_transform_baseline_value(from_position.y, semantic_position.y)
+                {
+                    return Err(ApplyStaticRootTransformEditError::Unsupported);
+                }
+                let world_center = studio_point_to_scene_point(
+                    semantic_position,
                     frame,
                     viewport,
                     &scene.camera.view.center,
-                )),
-            }
-        } else if !primitive_transform
-            && !matches!(
-                studio_entity.kind,
-                StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
-            )
-        {
-            let target = position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-            let baseline = studio_point_to_scene_point(
-                semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
-                frame,
-                viewport,
-                &scene.camera.view.center,
-            );
-            let target =
-                studio_point_to_scene_point(&target, frame, viewport, &scene.camera.view.center);
-            TransformSceneEntityIntent::Relative {
-                delta: PointV1 {
-                    x: target.x - baseline.x,
-                    y: target.y - baseline.y,
-                },
-                scale: None,
-            }
-        } else {
-            TransformSceneEntityIntent::FromBaseline {
-                expected_baseline: if primitive_transform {
-                    let size =
-                        primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-                    let scale =
-                        semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
-                    TransformSceneEntityExpectedBaseline::WorldSize {
-                        height: size.height * scale,
-                        width: size.width * scale,
-                        world_center: studio_point_to_scene_point(
-                            semantic_position
-                                .ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                );
+                TransformSceneEntityIntent::FromBaseline {
+                    expected_baseline: TransformSceneEntityExpectedBaseline::WorldSize {
+                        height: primitive_size.height * semantic_scale,
+                        width: primitive_size.width * semantic_scale,
+                        world_center,
+                    },
+                    scale: Some(SceneEntityAxisFactors {
+                        x_factor: to_size.width / from_size.width,
+                        y_factor: to_size.height / from_size.height,
+                    }),
+                    target_center: Some(studio_point_to_scene_point(
+                        &to_position,
+                        frame,
+                        viewport,
+                        &scene.camera.view.center,
+                    )),
+                }
+            } else if !primitive_transform
+                && !matches!(
+                    studio_entity.kind,
+                    StaticRootTransformEntityKind::Image | StaticRootTransformEntityKind::MathTex
+                )
+            {
+                let target = position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                let baseline = studio_point_to_scene_point(
+                    semantic_position.ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                    frame,
+                    viewport,
+                    &scene.camera.view.center,
+                );
+                let target = studio_point_to_scene_point(
+                    &target,
+                    frame,
+                    viewport,
+                    &scene.camera.view.center,
+                );
+                TransformSceneEntityIntent::Relative {
+                    delta: PointV1 {
+                        x: target.x - baseline.x,
+                        y: target.y - baseline.y,
+                    },
+                    scale: None,
+                }
+            } else {
+                TransformSceneEntityIntent::FromBaseline {
+                    expected_baseline: if primitive_transform {
+                        let size =
+                            primitive_size.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                        let scale =
+                            semantic_scale.ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+                        TransformSceneEntityExpectedBaseline::WorldSize {
+                            height: size.height * scale,
+                            width: size.width * scale,
+                            world_center: studio_point_to_scene_point(
+                                semantic_position
+                                    .ok_or(ApplyStaticRootTransformEditError::Unsupported)?,
+                                frame,
+                                viewport,
+                                &scene.camera.view.center,
+                            ),
+                        }
+                    } else if uniform_scale.is_some()
+                        && studio_entity.kind == StaticRootTransformEntityKind::MathTex
+                    {
+                        TransformSceneEntityExpectedBaseline::CurrentUniformAffine
+                    } else {
+                        TransformSceneEntityExpectedBaseline::CurrentCenter
+                    },
+                    scale: uniform_scale.map(|factor| SceneEntityAxisFactors {
+                        x_factor: factor,
+                        y_factor: factor,
+                    }),
+                    target_center: position.map(|target| {
+                        studio_point_to_scene_point(
+                            &target,
                             frame,
                             viewport,
                             &scene.camera.view.center,
-                        ),
-                    }
-                } else if uniform_scale.is_some()
-                    && studio_entity.kind == StaticRootTransformEntityKind::MathTex
-                {
-                    TransformSceneEntityExpectedBaseline::CurrentUniformAffine
-                } else {
-                    TransformSceneEntityExpectedBaseline::CurrentCenter
-                },
-                scale: uniform_scale.map(|factor| SceneEntityAxisFactors {
-                    x_factor: factor,
-                    y_factor: factor,
-                }),
-                target_center: position.map(|target| {
-                    studio_point_to_scene_point(&target, frame, viewport, &scene.camera.view.center)
-                }),
-            }
+                        )
+                    }),
+                }
+            };
+            Some((runtime_entity.id.clone(), intent))
+        } else {
+            None
         };
+        let mut resolved_removals = Vec::with_capacity(removals.len());
+        for mut removal in removals {
+            let (_, runtime_entity) = resolve_static_root_binding(
+                scene,
+                &studio_entities,
+                &source_runtime_bindings,
+                &removal.entity_id,
+            )
+            .ok_or(ApplyStaticRootTransformEditError::Unsupported)?;
+            removal.entity_id.clone_from(&runtime_entity.id);
+            resolved_removals.push(removal);
+        }
         let mut evidence = vec!["Studio static imported-root edit".to_owned()];
         evidence.extend(
-            operation_ids
+            ordered_operation_ids
                 .into_iter()
                 .map(|operation_id| format!("authorized operation {operation_id}")),
         );
         let provenance = ProvenanceRecordV1 {
             evidence,
-            id: format!("studio-static-transform:{next_revision}"),
+            id: if transform_operation_count > 0 {
+                format!("studio-static-transform:{next_revision}")
+            } else {
+                format!("studio-persistent-remove:{next_revision}")
+            },
             origin: ProvenanceOriginV1::StudioEditProgram,
         };
-        let runtime_entity_id = runtime_entity.id.clone();
-        self.transform_scene_entity(TransformSceneEntityCommand {
-            entity_id: runtime_entity_id,
-            expected_base_revision,
-            intent,
-            next_revision,
-            provenance,
-        })
-        .map_err(Into::into)
+        if scene
+            .provenance
+            .iter()
+            .any(|record| record.id == provenance.id)
+        {
+            return Err(
+                TransformSceneEntityError::ProvenanceConflict(provenance.id.clone()).into(),
+            );
+        }
+        let base_bundle = SceneIrBundleV1 {
+            assets: self.assets().clone(),
+            scene: scene.clone(),
+        };
+        let mut candidate = if let Some((runtime_entity_id, intent)) = transform {
+            let mut candidate_session = EngineSessionV1::new(base_bundle)?;
+            candidate_session.transform_scene_entity(TransformSceneEntityCommand {
+                entity_id: runtime_entity_id,
+                expected_base_revision: expected_base_revision.clone(),
+                intent,
+                next_revision: next_revision.clone(),
+                provenance: provenance.clone(),
+            })?
+        } else {
+            let mut candidate = base_bundle;
+            candidate.scene.provenance.push(provenance.clone());
+            candidate.scene.source = SceneSourceV1::StudioEditProgram {
+                edit_program_version: ContractVersionV1,
+                revision_hash: next_revision,
+            };
+            candidate
+        };
+        let persistent_remove_projection = if resolved_removals.is_empty() {
+            StudioPersistentRemoveProjection::default()
+        } else {
+            apply_persistent_scene_removals(
+                &mut candidate.scene,
+                &resolved_removals,
+                &provenance.id,
+            )?
+        };
+        let result = StudioAuthoringEditResult {
+            bundle: candidate.clone(),
+            persistent_remove_projection,
+        };
+        self.replace_snapshot(candidate)?;
+        Ok(result)
     }
 
     /// Atomically resolves and applies one world-space transform intent to one entity.
@@ -4842,6 +5483,72 @@ mod tests {
         }
     }
 
+    fn static_persistent_remove_program(
+        targets: &[(&str, &str)],
+        start: f64,
+        end: f64,
+    ) -> StaticRootTransformProgram {
+        StaticRootTransformProgram {
+            anchor_captured_playhead: start,
+            anchor_resolved_seconds: start,
+            anchor_source: StudioProgramAnchorSource::Playhead {
+                reference_seconds: Some(start),
+            },
+            intent_count: targets.len(),
+            lowering_supported: true,
+            operations: targets
+                .iter()
+                .map(|(operation_id, entity_id)| StaticRootTransformOperation {
+                    depends_on: vec![],
+                    entity_id: (*entity_id).to_owned(),
+                    id: (*operation_id).to_owned(),
+                    interval: IntervalV1 { end, start },
+                    kind: StaticRootTransformOperationKind::PersistentRemove { persistent: true },
+                    origin: StaticRootTransformOrigin::DirectManipulation,
+                })
+                .collect(),
+            origin: StaticRootTransformOrigin::DirectManipulation,
+            requested_execution: StudioProgramExecution::Parallel,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Parallel,
+            schedule_order: targets
+                .iter()
+                .map(|(operation_id, _)| (*operation_id).to_owned())
+                .collect(),
+            transaction_id: "persistent-remove".to_owned(),
+        }
+    }
+
+    fn studio_persistent_remove_program(
+        entity_id: &str,
+        start: f64,
+        end: f64,
+    ) -> StudioCreationProgram {
+        StudioCreationProgram {
+            anchor_captured_playhead: start,
+            anchor_resolved_seconds: start,
+            anchor_source: StudioProgramAnchorSource::Playhead {
+                reference_seconds: Some(start),
+            },
+            intent_count: 1,
+            lowering_supported: true,
+            operations: vec![StudioCreationOperation {
+                depends_on: vec![],
+                entity_id: Some(entity_id.to_owned()),
+                id: "remove-created".to_owned(),
+                interval: IntervalV1 { end, start },
+                kind: StudioCreationOperationKind::PersistentRemove { persistent: true },
+                origin: StudioAuthoringOrigin::DirectManipulation,
+            }],
+            origin: StudioAuthoringOrigin::DirectManipulation,
+            requested_execution: StudioProgramExecution::Parallel,
+            schedule_edge_count: 0,
+            schedule_mode: StudioProgramScheduleMode::Parallel,
+            schedule_order: vec!["remove-created".to_owned()],
+            transaction_id: "remove-created".to_owned(),
+        }
+    }
+
     fn command() -> RotateSceneEntityCommand {
         RotateSceneEntityCommand {
             angle_radians: std::f64::consts::FRAC_PI_2,
@@ -5273,6 +5980,7 @@ mod tests {
             ],
             expected_base_revision: bundle.scene.source.revision_hash().to_owned(),
             next_revision: NEXT_REVISION.to_owned(),
+            persistent_removals: vec![],
             provenance: ProvenanceRecordV1 {
                 evidence: vec!["authorized Studio creation batch".to_owned()],
                 id: "studio-create".to_owned(),
@@ -5874,6 +6582,7 @@ mod tests {
         let result = session
             .apply_static_root_transform_edit(static_root_position_command())
             .unwrap();
+        let result = result.bundle;
 
         let moved = result
             .scene
@@ -5912,6 +6621,7 @@ mod tests {
         let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
 
         let result = session.apply_static_root_transform_edit(command).unwrap();
+        let result = result.bundle;
         let resized = result
             .scene
             .entities
@@ -5983,6 +6693,7 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_static_root_transform_edit(command).unwrap();
+        let result = result.bundle;
         let transformed = result
             .scene
             .entities
@@ -6000,6 +6711,342 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the closed command stores these literal fade endpoints and opacity values"
+    )]
+    fn persistently_removes_multiple_imported_roots_with_nonzero_fades() {
+        let bundle = static_imported_bundle();
+        let mut command = static_root_position_command();
+        command.programs = vec![static_persistent_remove_program(
+            &[
+                ("remove-later", "source:circle"),
+                ("remove-earlier", "source:earlier"),
+            ],
+            1.0,
+            1.5,
+        )];
+        let mut earlier = command.studio_entities[0].clone();
+        earlier.dimensions.radius = Some(1.0);
+        earlier.id = "source:earlier".to_owned();
+        earlier.object_graph_key = earlier.id.clone();
+        earlier.position = Some(PointV1 { x: 280.0, y: 180.0 });
+        earlier.source_identity = Some("earlier".to_owned());
+        command.studio_entities.push(earlier);
+        command
+            .source_runtime_bindings
+            .push(StaticRootTransformSourceBinding {
+                source_identity_key: "earlier".to_owned(),
+                runtime_entity_id: "earlier".to_owned(),
+                source_name: "earlier".to_owned(),
+            });
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+
+        assert_eq!(result.persistent_remove_projection.removals.len(), 2);
+        for entity_id in ["later", "earlier"] {
+            let entity = result
+                .bundle
+                .scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == entity_id)
+                .unwrap();
+            assert_eq!(entity.lifetimes.last().unwrap().end, 1.5);
+            assert!(
+                result
+                    .bundle
+                    .scene
+                    .animation_channels
+                    .iter()
+                    .any(|channel| {
+                        matches!(
+                            channel,
+                            AnimationChannelV1::Opacity {
+                                entity_id: channel_entity_id,
+                                keyframes,
+                                ..
+                            } if channel_entity_id == entity_id
+                                && keyframes[0].at == 1.0
+                                && keyframes[0].value == 1.0
+                                && keyframes[1].at == 1.5
+                                && keyframes[1].value == 0.0
+                        )
+                    })
+            );
+        }
+        assert_eq!(
+            result.bundle.scene.provenance.last().unwrap().id,
+            format!("studio-persistent-remove:{NEXT_REVISION}")
+        );
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn applies_imported_move_then_persistent_remove_as_one_complete_batch() {
+        let mut command = static_root_position_command();
+        command.programs.push(static_persistent_remove_program(
+            &[("remove-later", "source:circle")],
+            1.0,
+            1.5,
+        ));
+        let mut session = EngineSessionV1::new(static_imported_bundle()).unwrap();
+
+        let result = session.apply_static_root_transform_edit(command).unwrap();
+        let moved = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+
+        assert!((moved.transform.tx - 1.0).abs() < f64::EPSILON);
+        assert!(moved.transform.ty.abs() < f64::EPSILON);
+        assert!((moved.lifetimes.last().unwrap().end - 1.5).abs() < f64::EPSILON);
+        assert_eq!(result.persistent_remove_projection.removals.len(), 1);
+        assert_eq!(session.scene(), &result.bundle.scene);
+    }
+
+    #[test]
+    fn zero_duration_persistent_remove_drops_every_future_lifetime() {
+        let mut scene = static_imported_bundle().scene;
+        let target = scene
+            .entities
+            .iter_mut()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        target.lifetimes = vec![
+            IntervalV1 {
+                start: 0.0,
+                end: 0.5,
+            },
+            IntervalV1 {
+                start: 1.0,
+                end: 1.5,
+            },
+            IntervalV1 {
+                start: 1.75,
+                end: 2.0,
+            },
+        ];
+
+        let projection = apply_persistent_scene_removals(
+            &mut scene,
+            &[PersistentSceneRemoval {
+                entity_id: "later".to_owned(),
+                interval: IntervalV1 {
+                    start: 1.2,
+                    end: 1.2,
+                },
+                operation_id: "remove-later".to_owned(),
+                studio_entity_id: "source:circle".to_owned(),
+                transaction_id: "remove-later".to_owned(),
+            }],
+            "remove-provenance",
+        )
+        .unwrap();
+
+        let target = scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == "later")
+            .unwrap();
+        assert_eq!(
+            target.lifetimes,
+            vec![
+                IntervalV1 {
+                    start: 0.0,
+                    end: 0.5,
+                },
+                IntervalV1 {
+                    start: 1.0,
+                    end: 1.2,
+                },
+            ]
+        );
+        assert!(scene.animation_channels.is_empty());
+        assert_eq!(projection.removals[0].fade_interval, None);
+        assert!((projection.removals[0].removed_at - 1.2).abs() < 1e-9);
+    }
+
+    #[test]
+    fn persistent_remove_owns_a_complete_subtree_and_rejects_overlapping_targets_atomically() {
+        let bundle = fixture_bundle("real-line-joints-v10.json");
+        let root_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.is_none())
+            .unwrap()
+            .id
+            .clone();
+        let child_id = bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.parent_id.as_deref() == Some(root_id.as_str()))
+            .unwrap()
+            .id
+            .clone();
+        let removal = |entity_id: &str, operation_id: &str| PersistentSceneRemoval {
+            entity_id: entity_id.to_owned(),
+            interval: IntervalV1 {
+                start: 0.5,
+                end: 0.75,
+            },
+            operation_id: operation_id.to_owned(),
+            studio_entity_id: entity_id.to_owned(),
+            transaction_id: "remove-subtree".to_owned(),
+        };
+        let mut rejected = bundle.scene.clone();
+        let expected = rejected.clone();
+
+        let error = apply_persistent_scene_removals(
+            &mut rejected,
+            &[
+                removal(&child_id, "remove-child"),
+                removal(&root_id, "remove-root"),
+            ],
+            "remove-provenance",
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ApplyStudioPersistentRemoveError::OverlappingTargets(_, _)
+        ));
+        assert_eq!(rejected, expected);
+
+        let mut rejected_child = expected.clone();
+        let error = apply_persistent_scene_removals(
+            &mut rejected_child,
+            &[removal(&child_id, "remove-child")],
+            "remove-provenance",
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ApplyStudioPersistentRemoveError::TargetIsNotRoot(id) if id == child_id
+        ));
+        assert_eq!(rejected_child, expected);
+
+        let mut scene = bundle.scene;
+        let projection = apply_persistent_scene_removals(
+            &mut scene,
+            &[removal(&root_id, "remove-root")],
+            "remove-provenance",
+        )
+        .unwrap();
+        assert_eq!(projection.removals[0].affected_scene_entity_ids.len(), 4);
+        assert!(
+            scene
+                .entities
+                .iter()
+                .all(|entity| (entity.lifetimes.last().unwrap().end - 0.75).abs() < 1e-9)
+        );
+        assert_eq!(
+            scene
+                .animation_channels
+                .iter()
+                .filter(|channel| matches!(channel, AnimationChannelV1::Opacity { .. }))
+                .count(),
+            1
+        );
+        assert!(scene.animation_channels.iter().any(|channel| {
+            matches!(
+                channel,
+                AnimationChannelV1::Opacity { entity_id, .. } if entity_id == &root_id
+            )
+        }));
+    }
+
+    #[test]
+    fn persistent_remove_preserves_past_child_history_and_drops_future_only_children() {
+        let mut bundle = fixture_bundle("real-line-joints-v10.json");
+        let root_id = bundle.scene.entities[0].id.clone();
+        let past_child_id = bundle.scene.entities[1].id.clone();
+        let short_child_id = bundle.scene.entities[2].id.clone();
+        let future_child_id = bundle.scene.entities[3].id.clone();
+        bundle.scene.entities[1].lifetimes = vec![IntervalV1 {
+            end: 0.25,
+            start: 0.0,
+        }];
+        bundle.scene.entities[2].lifetimes = vec![IntervalV1 {
+            end: 0.6,
+            start: 0.0,
+        }];
+        bundle.scene.entities[3].lifetimes = vec![IntervalV1 {
+            end: 1.0,
+            start: 0.8,
+        }];
+        let provenance_id = bundle.scene.provenance[0].id.clone();
+        let mut scene = bundle.scene;
+
+        let projection = apply_persistent_scene_removals(
+            &mut scene,
+            &[PersistentSceneRemoval {
+                entity_id: root_id.clone(),
+                interval: IntervalV1 {
+                    end: 0.75,
+                    start: 0.5,
+                },
+                operation_id: "remove-root".to_owned(),
+                studio_entity_id: "source:root".to_owned(),
+                transaction_id: "remove-subtree".to_owned(),
+            }],
+            &provenance_id,
+        )
+        .unwrap();
+
+        assert_eq!(
+            projection.removals[0].affected_scene_entity_ids,
+            vec![
+                root_id.clone(),
+                past_child_id.clone(),
+                short_child_id.clone(),
+                future_child_id.clone(),
+            ]
+        );
+        assert_eq!(
+            scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == past_child_id)
+                .unwrap()
+                .lifetimes,
+            vec![IntervalV1 {
+                end: 0.25,
+                start: 0.0,
+            }]
+        );
+        assert_eq!(
+            scene
+                .entities
+                .iter()
+                .find(|entity| entity.id == short_child_id)
+                .unwrap()
+                .lifetimes,
+            vec![IntervalV1 {
+                end: 0.6,
+                start: 0.0,
+            }]
+        );
+        assert!(
+            scene
+                .entities
+                .iter()
+                .all(|entity| entity.id != future_child_id)
+        );
+        EngineSessionV1::new(SceneIrBundleV1 {
+            assets: bundle.assets,
+            scene,
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn rejects_open_static_programs_without_mutating_the_session() {
         let bundle = static_imported_bundle();
         let mut unsupported = static_root_position_command();
@@ -6007,8 +7054,29 @@ mod tests {
         let mut missing_dependency = static_root_position_command();
         missing_dependency.programs[0].operations[0].depends_on =
             vec!["missing-operation".to_owned()];
+        let mut nonzero_transform = static_root_position_command();
+        nonzero_transform.programs[0].anchor_captured_playhead = 0.5;
+        nonzero_transform.programs[0].anchor_resolved_seconds = 0.5;
+        nonzero_transform.programs[0].anchor_source = StudioProgramAnchorSource::Playhead {
+            reference_seconds: Some(0.5),
+        };
+        nonzero_transform.programs[0].operations[0].interval = IntervalV1 {
+            end: 0.5,
+            start: 0.5,
+        };
+        let mut unknown_remove = static_root_position_command();
+        unknown_remove.programs = vec![static_persistent_remove_program(
+            &[("remove-missing", "source:missing")],
+            1.0,
+            1.5,
+        )];
 
-        for command in [unsupported, missing_dependency] {
+        for command in [
+            unsupported,
+            missing_dependency,
+            nonzero_transform,
+            unknown_remove,
+        ] {
             let expected_scene = bundle.scene.clone();
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
             let error = session
@@ -6072,6 +7140,7 @@ mod tests {
         let result = session
             .apply_studio_creation_edit(studio_creation_command(&bundle))
             .unwrap();
+        let result = result.bundle;
 
         assert_eq!(result.scene.duration, base_duration + 0.4);
         let created = result
@@ -6109,6 +7178,86 @@ mod tests {
                 ))
         );
         assert_eq!(session.scene(), &result.scene);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the normalized creation fixture stores exact authored keyframe values"
+    )]
+    fn normalized_creation_applies_transform_then_persistent_remove() {
+        let bundle = static_imported_bundle();
+        let entity_id = "tx:create/entity:circle";
+        let mut command = studio_creation_command(&bundle);
+        command
+            .programs
+            .push(studio_persistent_remove_program(entity_id, 1.4, 1.6));
+        let mut session = EngineSessionV1::new(bundle).unwrap();
+
+        let result = session.apply_studio_creation_edit(command).unwrap();
+        let created = result
+            .bundle
+            .scene
+            .entities
+            .iter()
+            .find(|entity| entity.id == entity_id)
+            .unwrap();
+
+        assert_eq!(created.lifetimes.last().unwrap().end, 2.0);
+        assert!(
+            result
+                .bundle
+                .scene
+                .animation_channels
+                .iter()
+                .any(|channel| {
+                    matches!(
+                        channel,
+                        AnimationChannelV1::AffineTransform {
+                            entity_id: channel_entity_id,
+                            keyframes,
+                            ..
+                        } if channel_entity_id == entity_id && keyframes[0].at == 1.25
+                    )
+                })
+        );
+        let opacity_keyframes = result
+            .bundle
+            .scene
+            .animation_channels
+            .iter()
+            .find_map(|channel| match channel {
+                AnimationChannelV1::Opacity {
+                    entity_id: channel_entity_id,
+                    keyframes,
+                    ..
+                } if channel_entity_id == entity_id => Some(keyframes),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(opacity_keyframes.len(), 4);
+        assert_eq!(opacity_keyframes[1].at, 0.9);
+        assert_eq!(
+            opacity_keyframes[1].easing_to_next,
+            Some(EasingV1::Linear {})
+        );
+        assert!((opacity_keyframes[2].at - 1.8).abs() < 1e-9);
+        assert_eq!(opacity_keyframes[2].value, 1.0);
+        assert_eq!(
+            opacity_keyframes[2].easing_to_next,
+            Some(EasingV1::Smooth {})
+        );
+        assert_eq!(opacity_keyframes[3].at, 2.0);
+        assert_eq!(opacity_keyframes[3].value, 0.0);
+        assert_eq!(result.persistent_remove_projection.removals.len(), 1);
+        let projection = &result.persistent_remove_projection.removals[0];
+        assert_eq!(projection.operation_id, "remove-created");
+        assert_eq!(projection.studio_entity_id, entity_id);
+        assert_eq!(projection.scene_entity_id, entity_id);
+        let fade_interval = projection.fade_interval.as_ref().unwrap();
+        assert!((fade_interval.start - 1.8).abs() < 1e-9);
+        assert!((fade_interval.end - 2.0).abs() < 1e-9);
+        assert_eq!(session.scene(), &result.bundle.scene);
     }
 
     #[test]
@@ -6193,6 +7342,7 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
+        let result = result.bundle;
         let first = result
             .scene
             .entities
@@ -6268,6 +7418,7 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.apply_studio_creation_edit(command).unwrap();
+        let result = result.bundle;
 
         let created = result
             .scene
@@ -6677,6 +7828,7 @@ mod tests {
         let mut session = EngineSessionV1::new(bundle).unwrap();
 
         let result = session.create_scene_entities(command.clone()).unwrap();
+        let result = result.bundle;
 
         assert_eq!(result.assets, original_assets);
         for (actual, original) in result.scene.entities[..original_entities.len()]

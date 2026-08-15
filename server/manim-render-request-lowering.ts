@@ -7,6 +7,7 @@ import {
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
 import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
+import type { RuntimeSceneState } from "../src/studio/model";
 import { STUDIO_STATE_VERSION } from "../src/studio/model";
 import { type CanonicalEditProgram, isSceneDurationOperation } from "../src/studio/operations";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "../src/studio/timeline-projection";
@@ -14,11 +15,22 @@ import { HttpError } from "./http/json";
 import { importedScene, importSourceSnapshot, sceneView } from "./manim-workspace";
 
 export type ManimRenderRequestLoweringInput = Readonly<{
+  persistentRemoveAuthorizer: PersistentRemoveAuthorizer | null;
   frame: Readonly<{ height: number; width: number }>;
   originalSource: string;
   projectId: string;
   request: ProgramRenderRequest;
 }>;
+
+export type PersistentRemoveAuthorizer = (
+  input: Readonly<{
+    frame: Readonly<{ height: number; width: number }>;
+    programs: readonly CanonicalEditProgram[];
+    projectId: string;
+    request: ProgramRenderRequest;
+    runtimeSceneState: RuntimeSceneState;
+  }>,
+) => Promise<void>;
 
 export type ManimRenderRequestLoweringResult = Readonly<{
   lowered: LoweredProgramBatchSource;
@@ -26,6 +38,7 @@ export type ManimRenderRequestLoweringResult = Readonly<{
 }>;
 
 export async function lowerManimRenderRequest({
+  persistentRemoveAuthorizer,
   frame,
   originalSource,
   projectId,
@@ -53,7 +66,16 @@ export async function lowerManimRenderRequest({
   if (orderedPrograms.some(({ program }) => program.loweringStatus !== "supported")) {
     throw new HttpError("Every Program in a render batch must have supported source lowering.", 400);
   }
+  const sourceOrderedPrograms = orderedPrograms.map(({ program }) => program);
+  const containsPersistentRemove = sourceOrderedPrograms.some((program) =>
+    program.operations.some(
+      (operation) => operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent,
+    ),
+  );
   if (request.sourceValidation === "runtime-trace") {
+    if (containsPersistentRemove) {
+      throw new HttpError("Runtime Trace does not authorize persistent remove Programs.", 400);
+    }
     try {
       const runtimeTraceEdit = lowerRuntimeTraceEditSource(
         originalSource,
@@ -71,7 +93,6 @@ export async function lowerManimRenderRequest({
       throw error;
     }
   }
-  const sourceOrderedPrograms = orderedPrograms.map(({ program }) => program);
   const containsSceneDurationOperation = sourceOrderedPrograms.some((program) =>
     program.operations.some(isSceneDurationOperation),
   );
@@ -91,6 +112,28 @@ export async function lowerManimRenderRequest({
         400,
       );
     }
+  } else if (containsPersistentRemove && !containsSceneDurationOperation) {
+    if (!persistentRemoveAuthorizer) {
+      throw new HttpError("Persistent remove requires a verified Rust Scene authorization.", 400);
+    }
+    try {
+      await persistentRemoveAuthorizer({
+        frame,
+        programs: sourceOrderedPrograms,
+        projectId,
+        request,
+        runtimeSceneState: activeScene.runtimeSceneState,
+      });
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(
+        `The Rust core rejected the persistent remove Program batch: ${error instanceof Error ? error.message : String(error)}`,
+        400,
+      );
+    }
+    // Rust owns Scene admission and lifetime semantics. Python alias and
+    // reference safety remain in the source lowerer below.
+    validatedPrograms = sourceOrderedPrograms;
   } else {
     if (containsSceneDurationOperation) {
       throw new HttpError(

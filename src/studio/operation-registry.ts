@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { StudioPersistentRemoveProjectionEntryV1 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type {
@@ -1092,6 +1093,9 @@ export const OPERATION_REGISTRY = {
       ],
     }),
     evaluate: (draft, operation, program) => {
+      if (operation.effect === "remove" && operation.persistent) {
+        throw new TypeError("Persistent remove requires the Rust authoring projection.");
+      }
       recordOperation(draft, operation, program);
       const isFade = operation.effect === "fade-in";
       const from = operation.effect === "remove" || operation.effect === "reveal" ? 1 : 0;
@@ -1112,33 +1116,6 @@ export const OPERATION_REGISTRY = {
           operationId: operation.id,
           provenanceId: `${operation.id}/provenance`,
           value: to,
-        });
-      }
-      if (operation.effect === "remove" && operation.persistent) {
-        const entity = draft.entities[operation.entityId];
-        if (entity) {
-          draft.entities[operation.entityId] = {
-            ...entity,
-            lifetime: entity.lifetime.map((interval) =>
-              operation.interval.start >= interval.start && operation.interval.start < interval.end
-                ? { ...interval, end: Math.min(interval.end, operation.interval.end) }
-                : interval,
-            ),
-          };
-          draft.lineage.push({
-            at: operation.interval.end,
-            from: operation.entityId,
-            operationId: operation.id,
-            relation: "removed",
-            to: operation.entityId,
-          });
-        }
-        appendSample(draft, operation.entityId, "presence", {
-          interval: { end: draft.duration, start: operation.interval.end },
-          kind: "exact",
-          operationId: operation.id,
-          provenanceId: `${operation.id}/provenance`,
-          value: false,
         });
       }
     },
@@ -1358,7 +1335,68 @@ export function evaluateOperation(
   draft: EvaluationDraft,
   operation: CanonicalEditOperation,
   program: CanonicalEditProgram,
+  persistentRemoveProjection?: StudioPersistentRemoveProjectionEntryV1,
 ) {
+  if (operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
+    if (
+      !persistentRemoveProjection ||
+      persistentRemoveProjection.operationId !== operation.id ||
+      persistentRemoveProjection.transactionId !== program.transactionId ||
+      persistentRemoveProjection.studioEntityId !== operation.entityId
+    ) {
+      throw new TypeError(`Persistent remove ${operation.id} is not correlated with the Rust authoring projection.`);
+    }
+    const entity = draft.entities[operation.entityId];
+    if (!entity) {
+      throw new TypeError(`Persistent remove target ${operation.entityId} is missing from the Studio projection.`);
+    }
+    recordOperation(draft, operation, program);
+    // `affectedSceneEntityIds` belongs to the Scene IR identity space. Rust has
+    // already truncated that root and every render descendant in `bundle`;
+    // Studio's object graph owns one logical entity under `studioEntityId`.
+    draft.entities[operation.entityId] = {
+      ...entity,
+      lifetime: entity.lifetime.flatMap((interval) => {
+        if (interval.start >= persistentRemoveProjection.removedAt) return [];
+        return interval.end > persistentRemoveProjection.removedAt
+          ? [{ ...interval, end: persistentRemoveProjection.resultingLifetimeEnd }]
+          : [interval];
+      }),
+    };
+    if (persistentRemoveProjection.fadeInterval) {
+      appendSample(draft, operation.entityId, "appearance", {
+        easing: "smooth",
+        from: 1,
+        interval: persistentRemoveProjection.fadeInterval,
+        kind: "animated",
+        operationId: operation.id,
+        provenanceId: `${operation.id}/provenance`,
+        value: 0,
+      });
+    }
+    appendSample(draft, operation.entityId, "appearance", {
+      interval: { end: draft.duration, start: persistentRemoveProjection.removedAt },
+      kind: "exact",
+      operationId: operation.id,
+      provenanceId: `${operation.id}/provenance`,
+      value: 0,
+    });
+    appendSample(draft, operation.entityId, "presence", {
+      interval: { end: draft.duration, start: persistentRemoveProjection.removedAt },
+      kind: "exact",
+      operationId: operation.id,
+      provenanceId: `${operation.id}/provenance`,
+      value: false,
+    });
+    draft.lineage.push({
+      at: persistentRemoveProjection.removedAt,
+      from: operation.entityId,
+      operationId: operation.id,
+      relation: "removed",
+      to: operation.entityId,
+    });
+    return;
+  }
   const evaluate = operationCapability(operation).evaluate;
   if (!evaluate) {
     throw new TypeError(`${operation.kind} requires the Rust timeline projection.`);

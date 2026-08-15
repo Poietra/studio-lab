@@ -11,6 +11,10 @@ import {
   renderRequestPrograms,
 } from "../src/render-pipeline/contracts";
 import { HttpError } from "./http/json";
+import {
+  authorizePersistentRemoveWithSnapshot,
+  type PersistentRemoveSnapshotLookup,
+} from "./manim-persistent-remove-authorizer";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import {
   renderCommitCorrelationKey,
@@ -37,6 +41,7 @@ export type DurableManimRenderServiceOptionsV1 = Readonly<{
   execution: Readonly<{ cancel: (sessionId: string) => Promise<void>; wake: () => void }>;
   executionTimeoutMs?: number;
   frame?: Readonly<{ height: number; width: number }>;
+  snapshotLookup?: PersistentRemoveSnapshotLookup;
   repository: RenderSessionRepositoryV1;
   sessionIdFactory?: () => string;
   sourceRepository: WorkspaceSourceRepositoryV1;
@@ -98,6 +103,7 @@ export class DurableManimRenderServiceV1 {
   readonly #frame: Readonly<{ height: number; width: number }>;
   readonly #repository: RenderSessionRepositoryV1;
   readonly #sessionIdFactory: () => string;
+  readonly #snapshotLookup: PersistentRemoveSnapshotLookup | undefined;
   readonly #sourceRepository: WorkspaceSourceRepositoryV1;
   readonly #tenantId: string;
   #closeRequest: Promise<void> | null = null;
@@ -127,6 +133,7 @@ export class DurableManimRenderServiceV1 {
     this.#sourceRepository = options.sourceRepository;
     this.#blobs = options.blobs;
     this.#sessionIdFactory = options.sessionIdFactory ?? randomUUID;
+    this.#snapshotLookup = options.snapshotLookup;
   }
 
   async ready(signal?: AbortSignal) {
@@ -162,6 +169,9 @@ export class DurableManimRenderServiceV1 {
     const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.#frame,
       originalSource,
+      persistentRemoveAuthorizer: this.#snapshotLookup
+        ? (input) => authorizePersistentRemoveWithSnapshot(input, this.#snapshotLookup!, signal)
+        : null,
       projectId: request.projectId,
       request,
     });

@@ -262,36 +262,54 @@ describe("Scene authoring WASM adapter", () => {
   it("forwards one complete static imported-root edit command without reconstructing it", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
+    const response = {
+      bundle,
+      persistentRemoveProjection: {
+        removals: [
+          {
+            affectedSceneEntityIds: ["later"],
+            fadeInterval: { end: 1, start: 0.5 },
+            operationId: "remove-circle",
+            removedAt: 1,
+            resultingLifetimeEnd: 1,
+            sceneEntityId: "later",
+            studioEntityId: "source:circle",
+            transactionId: "remove-circle",
+          },
+        ],
+      },
+    } as const;
     const compile = createApplyStaticRootTransformEditCompiler(async () => ({
       applyStaticRootTransformEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
         );
-        return new TextEncoder().encode(JSON.stringify(bundle));
+        return new TextEncoder().encode(JSON.stringify(response));
       },
     }));
 
     const result = await compile(bundle, staticRootTransformEditCommand);
-    expect(result).toEqual(calls[0]);
+    expect(result).toEqual(response);
     expect(calls[1]).toEqual(staticRootTransformEditCommand);
   });
 
   it("forwards one complete normalized Studio creation edit and base snapshot", async () => {
     const bundle = await fixtureBundle();
     const calls: unknown[] = [];
+    const response = { bundle, persistentRemoveProjection: { removals: [] } } as const;
     const compile = createApplyStudioCreationEditCompiler(async () => ({
       applyStudioCreationEditV1: (snapshotJson, commandJson) => {
         calls.push(
           JSON.parse(new TextDecoder().decode(snapshotJson)),
           JSON.parse(new TextDecoder().decode(commandJson)),
         );
-        return new TextEncoder().encode(JSON.stringify(bundle));
+        return new TextEncoder().encode(JSON.stringify(response));
       },
     }));
 
     const result = await compile(bundle, creationEditCommand);
-    expect(result).toEqual(calls[0]);
+    expect(result).toEqual(response);
     expect(calls[1]).toEqual(creationEditCommand);
   });
 

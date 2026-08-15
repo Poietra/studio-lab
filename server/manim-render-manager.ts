@@ -4,7 +4,6 @@ import { createReadStream } from "node:fs";
 import { lstat, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-
 import {
   MANIM_PROJECT_ID_PATTERN,
   type ManimProjectListView,
@@ -41,6 +40,7 @@ import {
 import { FastManimSnapshotRunner } from "./fast-manim-snapshot-runner";
 import { HttpError } from "./http/json";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
+import { authorizePersistentRemoveWithSnapshot } from "./manim-persistent-remove-authorizer";
 import type { ManimProjectKind } from "./manim-project-catalog";
 import {
   beginRenderSessionAction,
@@ -779,6 +779,12 @@ export class ManimRenderManager {
     const { lowered, renderRequest } = await lowerManimRenderRequest({
       frame: this.frame,
       originalSource,
+      persistentRemoveAuthorizer: (input) =>
+        authorizePersistentRemoveWithSnapshot(
+          input,
+          (_projectId, query) => this.snapshotRunner.snapshot(query),
+          signal,
+        ),
       projectId: this.projectId,
       request,
     });

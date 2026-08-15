@@ -104,8 +104,29 @@ type StaticRootTransformOperation = Readonly<{
         toDimensions: StaticRootTransformDimensions;
         toPosition: Readonly<{ x: number; y: number }>;
       }>
+    | Readonly<{ kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{ kind: "unsupported" }>
   );
+
+export type StudioPersistentRemoveProjectionEntryV1 = Readonly<{
+  affectedSceneEntityIds: readonly string[];
+  fadeInterval: Readonly<{ end: number; start: number }> | null;
+  operationId: string;
+  removedAt: number;
+  resultingLifetimeEnd: number;
+  sceneEntityId: string;
+  studioEntityId: string;
+  transactionId: string;
+}>;
+
+export type StudioPersistentRemoveProjectionV1 = Readonly<{
+  removals: readonly StudioPersistentRemoveProjectionEntryV1[];
+}>;
+
+export type StudioAuthoringEditResultV1 = Readonly<{
+  bundle: SceneIrBundleV1;
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1;
+}>;
 
 export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
   expectedBaseRevision: string;
@@ -136,7 +157,7 @@ export type ApplyStaticRootTransformEditWireCommandV1 = Readonly<{
 export type ApplyStaticRootTransformEditCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStaticRootTransformEditWireCommandV1,
-) => Promise<SceneIrBundleV1>;
+) => Promise<StudioAuthoringEditResultV1>;
 
 type StudioTimelineOperationV1 = Readonly<{
   dependsOn: readonly string[];
@@ -218,6 +239,30 @@ const finiteNumberSchema = z.number().finite();
 const studioTimelineProjectionIntervalV1Schema = z
   .object({ end: finiteNumberSchema, start: finiteNumberSchema })
   .strict();
+const studioPersistentRemoveProjectionV1Schema = z
+  .object({
+    removals: z.array(
+      z
+        .object({
+          affectedSceneEntityIds: z.array(z.string().min(1)),
+          fadeInterval: studioTimelineProjectionIntervalV1Schema.nullable(),
+          operationId: z.string().min(1),
+          removedAt: finiteNumberSchema,
+          resultingLifetimeEnd: finiteNumberSchema,
+          sceneEntityId: z.string().min(1),
+          studioEntityId: z.string().min(1),
+          transactionId: z.string().min(1),
+        })
+        .strict(),
+    ),
+  })
+  .strict();
+const studioAuthoringEditResultV1Schema = z
+  .object({
+    bundle: sceneIrBundleV1Schema,
+    persistentRemoveProjection: studioPersistentRemoveProjectionV1Schema,
+  })
+  .strict();
 const studioTimelineProjectionV1Schema = z
   .object({
     programProjections: z.array(
@@ -283,6 +328,7 @@ type StudioCreationOperationV1 = Readonly<{
       }>
     | Readonly<{ entityId: string; kind: "position"; position: Readonly<{ x: number; y: number }> | null }>
     | Readonly<{ entityId: string; kind: "fade-in"; persistent: boolean }>
+    | Readonly<{ entityId: string; kind: "persistent-remove"; persistent: boolean }>
     | Readonly<{
         controlPresent: boolean;
         entityId: string;
@@ -322,7 +368,7 @@ export type ApplyStudioCreationEditWireCommandV1 = Readonly<{
 export type ApplyStudioCreationEditCompiler = (
   snapshot: SceneIrBundleV1,
   command: ApplyStudioCreationEditWireCommandV1,
-) => Promise<SceneIrBundleV1>;
+) => Promise<StudioAuthoringEditResultV1>;
 
 type StudioMotionOperationV1 = Readonly<{
   dependsOn: readonly string[];
@@ -436,7 +482,7 @@ export function createApplyStaticRootTransformEditCompiler(
 ): ApplyStaticRootTransformEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStaticRootTransformEditV1);
+    return invokeStudioAuthoringEditCommand(snapshot, command, bindings.applyStaticRootTransformEditV1);
   };
 }
 
@@ -449,13 +495,22 @@ async function invokeSceneAuthoringCommand(
   return sceneIrBundleV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
 }
 
+async function invokeStudioAuthoringEditCommand(
+  snapshot: SceneIrBundleV1,
+  command: unknown,
+  invoke: (snapshotJson: Uint8Array, commandJson: Uint8Array) => Uint8Array,
+) {
+  const response = invoke(encoder.encode(JSON.stringify(snapshot)), encoder.encode(JSON.stringify(command)));
+  return studioAuthoringEditResultV1Schema.parse(JSON.parse(decoder.decode(response)) as unknown);
+}
+
 /** Passes the complete normalized Studio creation edit to the canonical core. */
 export function createApplyStudioCreationEditCompiler(
   getBindings: () => Promise<ApplyStudioCreationEditBindingsV1>,
 ): ApplyStudioCreationEditCompiler {
   return async (snapshot, command) => {
     const bindings = await getBindings();
-    return invokeSceneAuthoringCommand(snapshot, command, bindings.applyStudioCreationEditV1);
+    return invokeStudioAuthoringEditCommand(snapshot, command, bindings.applyStudioCreationEditV1);
   };
 }
 

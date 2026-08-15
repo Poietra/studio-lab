@@ -4,11 +4,11 @@ use poietra_eval::{
     ApplyStudioCreationEditCommand, ApplyStudioCreationEditError, ApplyStudioMotionEditCommand,
     ApplyStudioMotionEditError, ApplyStudioTimelineEditCommand, ApplyStudioTimelineEditError,
     EngineSessionV1, EvaluationError, StaticRootTransformProgram, StaticRootTransformSize,
-    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringSize,
-    StudioBoundEntityEditCandidate, StudioBoundEntityProgram, StudioCreationMathTexOutline,
-    StudioCreationProgram, StudioMotionEntityIdentity, StudioMotionProgram,
-    StudioMotionSourceBinding, StudioTimelineProgram, StudioTimelineProjection,
-    project_studio_timeline_programs,
+    StaticRootTransformSourceBinding, StaticRootTransformStudioEntity, StudioAuthoringEditResult,
+    StudioAuthoringSize, StudioBoundEntityEditCandidate, StudioBoundEntityProgram,
+    StudioCreationMathTexOutline, StudioCreationProgram, StudioMotionEntityIdentity,
+    StudioMotionProgram, StudioMotionSourceBinding, StudioTimelineProgram,
+    StudioTimelineProjection, project_studio_timeline_programs,
 };
 use poietra_scene_ir::{
     ContractJsonError, ContractVersionV1, SceneIrBundleV1, parse_scene_ir_bundle_json_v1,
@@ -285,6 +285,18 @@ fn studio_timeline_projection_response(
     Ok(response)
 }
 
+fn studio_authoring_edit_response(
+    result: &StudioAuthoringEditResult,
+) -> Result<Vec<u8>, SceneAuthoringAdapterError> {
+    let response = serde_json::to_vec(result).map_err(SceneAuthoringAdapterError::ResponseJson)?;
+    if response.len() > poietra_scene_ir::MAX_CONTRACT_JSON_BYTES_V1 {
+        return Err(SceneAuthoringAdapterError::ResponseTooLarge {
+            actual_bytes: response.len(),
+        });
+    }
+    Ok(response)
+}
+
 fn apply_static_root_transform_edit_json(
     snapshot_json: &[u8],
     command_json: &[u8],
@@ -297,7 +309,7 @@ fn apply_static_root_transform_edit_json(
         )?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_static_root_transform_edit(command.into())?;
-    scene_authoring_response(&result)
+    studio_authoring_edit_response(&result)
 }
 
 fn apply_studio_creation_edit_json(
@@ -311,7 +323,7 @@ fn apply_studio_creation_edit_json(
     )?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_studio_creation_edit(command.into())?;
-    scene_authoring_response(&result)
+    studio_authoring_edit_response(&result)
 }
 
 fn apply_studio_timeline_edit_json(
@@ -1028,7 +1040,14 @@ mod tests {
             &static_root_transform_command_json(),
         )
         .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+        assert_eq!(
+            response["persistentRemoveProjection"]["removals"],
+            json!([])
+        );
         let moved = bundle
             .scene
             .entities
@@ -1049,7 +1068,14 @@ mod tests {
         let response =
             apply_studio_creation_edit_json(&fixture_json(), &studio_creation_edit_command_json())
                 .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
+        assert_eq!(
+            response["persistentRemoveProjection"]["removals"],
+            json!([])
+        );
         let created = bundle
             .scene
             .entities

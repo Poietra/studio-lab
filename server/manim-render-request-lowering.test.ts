@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
-import { lowerManimRenderRequest } from "./manim-render-request-lowering";
+import { lowerManimRenderRequest, type PersistentRemoveAuthorizer } from "./manim-render-request-lowering";
 
 const frame = { height: 8, width: 14.222 } as const;
 const sourcePath = "scene.py";
@@ -123,10 +123,15 @@ function request(program = motionProgram(7, "render-request-lowering")): Program
   };
 }
 
-function lower(renderRequest: ProgramRenderRequest, originalSource = sceneSource) {
+function lower(
+  renderRequest: ProgramRenderRequest,
+  originalSource = sceneSource,
+  persistentRemoveAuthorizer: PersistentRemoveAuthorizer | null = null,
+) {
   return lowerManimRenderRequest({
     frame,
     originalSource,
+    persistentRemoveAuthorizer,
     projectId: "default",
     request: renderRequest,
   });
@@ -164,6 +169,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
+      persistentRemoveAuthorizer: null,
       projectId: "generic-preview",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -225,6 +231,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: staticSquareSource,
+      persistentRemoveAuthorizer: null,
       projectId: "generic-preview",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -282,6 +289,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
+      persistentRemoveAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -334,6 +342,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 14.222222222222221 },
       originalSource: exampleScenesSource,
+      persistentRemoveAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -397,6 +406,7 @@ describe("Manim render request lowering", () => {
     const result = await lowerManimRenderRequest({
       frame: { height: 8, width: 128 / 9 },
       originalSource: exampleScenesSource,
+      persistentRemoveAuthorizer: null,
       projectId: "default",
       request: {
         cameraCenter: { x: 0, y: 0 },
@@ -446,6 +456,139 @@ describe("Manim render request lowering", () => {
     expect(result.lowered.source.indexOf('poietra:transaction "batch-earlier"')).toBeLessThan(
       result.lowered.source.indexOf('poietra:transaction "batch-later"'),
     );
+  });
+
+  it("authorizes the complete imported transform and persistent-remove batch with exact Scene facts", async () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      effect: "remove",
+      entityId,
+      id: "tx:persistent-remove/operation:remove",
+      interval: { end: 7.4, start: 7 },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: { evidence: ["Delete command"], origin: "studio-default" },
+    };
+    const program: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 7,
+        evidence: ["captured-playhead:7.000"],
+        resolvedSeconds: 7,
+        source: { kind: "playhead", referenceSeconds: 7 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [operation],
+      provenance: { evidence: ["Delete command"], origin: "studio-default" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+      transactionId: "persistent-remove",
+      version: 1,
+    };
+    const moveOperation: CanonicalEditOperation = {
+      dependsOn: [],
+      entityId,
+      id: "tx:move-before-remove/operation:position",
+      interval: { end: 0, start: 0 },
+      key: "position",
+      kind: "SetProperty",
+      provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
+      value: { x: 320, y: 180 },
+    };
+    const moveProgram: CanonicalEditProgram = {
+      anchor: {
+        capturedPlayhead: 0,
+        evidence: ["source-time zero"],
+        resolvedSeconds: 0,
+        source: { kind: "absolute", seconds: 0 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [moveOperation],
+      provenance: { evidence: ["direct manipulation"], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: [moveOperation.id] },
+      transactionId: "move-before-remove",
+      version: 1,
+    };
+    const originalSource = sceneSource.replace(
+      "        self.add(equation)\n",
+      "        self.add(equation)\n        # poietra:anchor 0.000\n",
+    );
+    const renderRequest = {
+      ...request(moveProgram),
+      programs: [moveProgram, program],
+      sourceHash: createHash("sha256").update(originalSource).digest("hex"),
+    };
+
+    const authorizations: Parameters<PersistentRemoveAuthorizer>[0][] = [];
+    const result = await lower(renderRequest, originalSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    const authorization = authorizations[0];
+    expect(authorization?.programs).toEqual([moveProgram, program]);
+    expect(authorization?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      id: entityId,
+      provisional: false,
+      sourceIdentity: { kind: "known", value: "equation" },
+      type: "MathTex",
+    });
+    expect(result.renderRequest.program).toBe(moveProgram);
+    expect(result.renderRequest.programs).toEqual([moveProgram, program]);
+    expect(result.lowered.source).toContain("equation.move_to((0, 0, 0))");
+    expect(result.lowered.source).toContain("FadeOut(equation)");
+  });
+
+  it("fails persistent remove closed without a Rust Scene authorizer", async () => {
+    const program = request().program;
+    const remove: CanonicalEditProgram = {
+      ...program,
+      operations: [
+        {
+          dependsOn: [],
+          effect: "remove",
+          entityId,
+          id: "persistent-remove-without-authority",
+          interval: { end: 7.4, start: 7 },
+          kind: "ChangePresence",
+          persistent: true,
+          provenance: { evidence: [], origin: "studio-default" },
+        },
+      ],
+      schedule: { edges: [], mode: "sequence", order: ["persistent-remove-without-authority"] },
+    };
+
+    await expect(lower(request(remove))).rejects.toMatchObject({
+      message: "Persistent remove requires a verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
+  it("rejects Runtime Trace persistent remove before consulting the static authorizer", async () => {
+    const operation: CanonicalEditOperation = {
+      dependsOn: [],
+      effect: "remove",
+      entityId,
+      id: "runtime-trace-persistent-remove",
+      interval: { end: 7.4, start: 7 },
+      kind: "ChangePresence",
+      persistent: true,
+      provenance: { evidence: [], origin: "studio-default" },
+    };
+    const program: CanonicalEditProgram = {
+      ...request().program,
+      operations: [operation],
+      schedule: { edges: [], mode: "sequence", order: [operation.id] },
+    };
+    let authorizerCalls = 0;
+
+    await expect(
+      lower({ ...request(program), sourceValidation: "runtime-trace" }, sceneSource, async () => {
+        authorizerCalls += 1;
+      }),
+    ).rejects.toMatchObject({ message: "Runtime Trace does not authorize persistent remove Programs.", status: 400 });
+    expect(authorizerCalls).toBe(0);
   });
 
   it("rejects a source binding that is not proven by the imported Scene", async () => {
