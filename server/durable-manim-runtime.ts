@@ -19,11 +19,11 @@ import type { DurableManimRenderServiceV1 } from "./durable-manim-render-service
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunRequestV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
 import type { MutableManimProjectApiOperations } from "./manim-api";
-import { authorizePersistentRemoveWithSnapshot } from "./manim-persistent-remove-authorizer";
 import type { ProductionManimRuntimeAdapterV1 } from "./manim-production-server";
 import { lowerManimRenderRequest } from "./manim-render-request-lowering";
 import { manimTenantIdSchema } from "./manim-request-principal";
 import type { ManimRuntimeTraceEditVerifier } from "./manim-runtime-trace-edit-verifier";
+import { authorizeSnapshotProgramWithSnapshot } from "./manim-snapshot-program-authorizer";
 import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
@@ -426,9 +426,9 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     const lowered = await lowerManimRenderRequest({
       frame: this.#frame,
       originalSource: source,
-      persistentRemoveAuthorizer: this.#snapshots
+      snapshotProgramAuthorizer: this.#snapshots
         ? (input) =>
-            authorizePersistentRemoveWithSnapshot(
+            authorizeSnapshotProgramWithSnapshot(
               input,
               (projectId, query, lookupSignal) => this.#snapshots!.snapshot(projectId, query, lookupSignal),
               signal,

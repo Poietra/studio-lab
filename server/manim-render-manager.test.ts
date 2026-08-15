@@ -39,9 +39,21 @@ import {
 
 afterEach(cleanupManimRenderPipelineFixtures);
 
-async function installVerifiedEmptySnapshot(manager: ManimRenderManager, request: ProgramRenderRequest) {
+async function installVerifiedSnapshot(
+  manager: ManimRenderManager,
+  request: ProgramRenderRequest,
+  sourceBindingName?: string,
+) {
   const fixtureDocument = JSON.parse(
-    await readFile(new URL("../fixtures/engine-v1/studio-mathtex-preview.json", import.meta.url), "utf8"),
+    await readFile(
+      new URL(
+        sourceBindingName
+          ? "../fixtures/engine-v1/real-mathtex-morph-v5.json"
+          : "../fixtures/engine-v1/studio-mathtex-preview.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
   ) as Readonly<Pick<SceneIrBundleV1, "assets" | "scene">>;
   const fixture: SceneIrBundleV1 = { assets: fixtureDocument.assets, scene: fixtureDocument.scene };
   const runtimeConfigHash = "b".repeat(64);
@@ -54,7 +66,9 @@ async function installVerifiedEmptySnapshot(manager: ManimRenderManager, request
         ...fixture.scene.camera,
         view: { ...fixture.scene.camera.view, frameHeight: 8, frameWidth: 14.222 },
       },
+      animationChannels: sourceBindingName ? [] : fixture.scene.animationChannels,
       duration: 8,
+      requiredCapabilities: sourceBindingName ? ["cubic-path-geometry"] : fixture.scene.requiredCapabilities,
       source: {
         kind: "imported-manim-server-snapshot",
         runtimeConfigHash,
@@ -64,6 +78,7 @@ async function installVerifiedEmptySnapshot(manager: ManimRenderManager, request
       },
     },
   };
+  const runtimeEntityId = bundle.scene.entities[0]?.id;
   const snapshotRunner = Reflect.get(manager, "snapshotRunner") as Readonly<{
     snapshot: (query: Readonly<{ sceneName: string; sourcePath: string }>) => Promise<unknown>;
   }>;
@@ -91,6 +106,18 @@ async function installVerifiedEmptySnapshot(manager: ManimRenderManager, request
         sourcePath: request.sourcePath,
         version: 1,
       },
+      ...(sourceBindingName && runtimeEntityId
+        ? {
+            sourceRuntimeIdentity: {
+              mappings: [
+                {
+                  binding: { name: sourceBindingName },
+                  entityId: runtimeEntityId,
+                },
+              ],
+            },
+          }
+        : {}),
       sourcePath: request.sourcePath,
       status: "verified",
       version: 1,
@@ -240,15 +267,14 @@ class GroupedEquation(Scene):
     def construct(self):
         equation = MathTex("x")
         self.add(equation)
-        self.wait(7)
-        # poietra:cursor 7
+        # poietra:cursor 0
         # poietra:position {"kind":"absolute","value":{"x":320,"y":180},"variable":"equation","version":1}
         equation.move_to((0, 0, 0))
         # poietra:scale {"kind":"exact","value":2,"variable":"equation","version":1}
         equation.scale(2)
         # poietra:transaction "prior-transform"
-        # poietra:anchor 7
-        self.wait(1)
+        # poietra:anchor 0
+        self.wait(8)
 `;
     const { manager, projectRoot } = await fixture();
     await writeFile(join(projectRoot, "scene.py"), priorTransformSource, "utf8");
@@ -262,17 +288,17 @@ class GroupedEquation(Scene):
       throw new Error("Prior transform source did not import with exact geometry");
     }
     const move = createDirectManipulationPositionProgram({
-      capturedPlayhead: 7,
+      capturedPlayhead: 0,
       delta: { x: 24, y: -12 },
       positions: { [entityId]: entity.geometry.position.value },
       scene: imported.runtimeSceneState,
-      start: 7,
+      start: 0,
       targetEntityIds: [entityId],
       transactionId: "returned-position",
     });
     const scale = createDirectManipulationScaleProgram({
-      capturedPlayhead: 7,
-      interval: { end: 7, start: 7 },
+      capturedPlayhead: 0,
+      interval: { end: 0, start: 0 },
       scales: { [entityId]: { from: entity.geometry.scale.value, to: 3 } },
       scene: imported.runtimeSceneState,
       targetEntityIds: [entityId],
@@ -287,6 +313,7 @@ class GroupedEquation(Scene):
       programs: [move.program, scale.program],
       sourceHash: createHash("sha256").update(priorTransformSource).digest("hex"),
     };
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
 
     const exported = await manager.exportSource(renderRequest);
     const started = await manager.start(renderRequest);
@@ -296,7 +323,7 @@ class GroupedEquation(Scene):
     expect(sourceLines.slice(started.patch.anchorLine, started.patch.anchorLine + evidenceLines.length)).toEqual(
       evidenceLines,
     );
-    expect(sourceLines[started.patch.anchorLine + evidenceLines.length]).toMatch(/^\s*# poietra:anchor 7$/);
+    expect(sourceLines[started.patch.anchorLine + evidenceLines.length]).toMatch(/^\s*# poietra:anchor 0$/);
     expect(started.patch.anchorLines).toEqual([started.patch.anchorLine]);
     expect(started.patch.insertedCode).toContain("equation.scale(3)");
     expect(started.patch.insertedCode).not.toContain("equation.scale(1.5)");
@@ -655,7 +682,7 @@ class GroupedEquation(Scene):
     const scale = scaleCreatedEntityProgram(entityId);
     const removal = removeCreatedEntityProgram(entityId);
     const renderRequest = batchRequest([creation, scale, removal]);
-    await installVerifiedEmptySnapshot(manager, renderRequest);
+    await installVerifiedSnapshot(manager, renderRequest);
 
     const exported = await manager.exportSource(renderRequest);
 
@@ -684,7 +711,7 @@ class GroupedEquation(Scene):
       ),
     };
     const renderRequest = batchRequest([creation, removeCreatedEntityProgram(entityId)]);
-    await installVerifiedEmptySnapshot(manager, renderRequest);
+    await installVerifiedSnapshot(manager, renderRequest);
 
     await expect(manager.exportSource(renderRequest)).rejects.toMatchObject({
       message: "Server rendering cannot yet authorize Studio-created MathTex outlines.",
