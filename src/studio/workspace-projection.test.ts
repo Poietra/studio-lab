@@ -11,8 +11,7 @@ import {
 } from "./editor-revision-policy";
 import { evaluateWorkingState, programRecord } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene, projectVerifiedSourceDuration } from "./imported-workspace";
-import type { Interval } from "./model";
-import { hasImportedRootTransformTarget } from "./operations";
+import type { Interval, ProgramBatchAuthority, ProgramRecord } from "./model";
 import { createDirectManipulationPositionProgram, createDirectManipulationScaleProgram } from "./suggestion-program";
 import { projectStudioWorkspace, selectStudioWorkspaceProgramAuthority } from "./workspace-projection";
 
@@ -67,7 +66,7 @@ function withOnlyEntityLifetimes(scene: ManimWorkspaceScene, lifetime: readonly 
 }
 
 describe("Studio workspace projection", () => {
-  it("waits for imported-root authority while leaving created and source-bound targets on their existing paths", () => {
+  it("waits for exact Rust authority for non-timeline Program batches", () => {
     const imported = workspaceScene("Static", null);
     const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
     if (!entityId) throw new Error("Static fixture has no entity.");
@@ -81,38 +80,29 @@ describe("Studio workspace projection", () => {
       transactionId: "authority-target",
     });
     if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
+    const record = programRecord(validation.program, validation);
 
-    expect(hasImportedRootTransformTarget([validation.program])).toBe(true);
-    expect(selectStudioWorkspaceProgramAuthority([validation.program], null)).toBeUndefined();
-    expect(selectStudioWorkspaceProgramAuthority([validation.program], "static-imported-root")).toBe(
+    expect(selectStudioWorkspaceProgramAuthority([record], [record], null)).toBeUndefined();
+    expect(selectStudioWorkspaceProgramAuthority([record], [record], "static-imported-root")).toBe(
       "static-imported-root",
     );
-    expect(selectStudioWorkspaceProgramAuthority([validation.program], "source-bound-endpoint")).toBeNull();
+    expect(selectStudioWorkspaceProgramAuthority([record], [record], "source-bound-endpoint")).toBe(
+      "source-bound-endpoint",
+    );
+    expect(selectStudioWorkspaceProgramAuthority([record], [], "rust-authorized-batch")).toBeUndefined();
+    expect(selectStudioWorkspaceProgramAuthority([{ ...record }], [record], "rust-authorized-batch")).toBeUndefined();
+    expect(selectStudioWorkspaceProgramAuthority([], [record], "rust-authorized-batch")).toBeNull();
 
-    const position = validation.program.operations[0];
-    if (!position || position.kind !== "SetProperty") throw new Error("Position fixture is malformed.");
-    const createOperation = {
-      dependsOn: [],
-      entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
-      id: "created-target",
-      interval: { end: 0, start: 0 },
-      kind: "CreateEntity" as const,
-      provenance: position.provenance,
-    };
-    const createdProgram = {
-      ...validation.program,
-      operations: [createOperation, position],
-    };
-    expect(hasImportedRootTransformTarget([createdProgram])).toBe(false);
-    expect(selectStudioWorkspaceProgramAuthority([createdProgram], null)).toBeNull();
-    expect(
-      hasImportedRootTransformTarget([
-        {
-          ...createdProgram,
-          operations: [{ ...createOperation, entity: { ...createOperation.entity, id: "tx:created" } }, position],
-        },
-      ]),
-    ).toBe(true);
+    const wait = createSceneDurationProgram({
+      capturedPlayhead: imported.runtimeSceneState.duration,
+      scene: imported.runtimeSceneState,
+      sourceAnchor: imported.runtimeSceneState.duration,
+      targetDuration: imported.runtimeSceneState.duration + 1,
+      transactionId: "timeline-prefix",
+    });
+    if (wait.kind !== "valid") throw new Error(JSON.stringify(wait.issues));
+    const timelineRecord = programRecord(wait.program, wait);
+    expect(selectStudioWorkspaceProgramAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
   });
 
   it("uses an authorized uniform scale's explicit target instead of reevaluating its relative factor", () => {
@@ -158,10 +148,10 @@ describe("Studio workspace projection", () => {
       },
     } satisfies ManimWorkspaceScene;
     const record = programRecord(scale.program, scale);
-    const project = (programAuthority?: "static-imported-root") =>
+    const project = (programAuthority?: ProgramBatchAuthority, recordToProject: ProgramRecord = record) =>
       projectStudioWorkspace({
         activeScene: rebased,
-        appliedPrograms: [record],
+        appliedPrograms: [recordToProject],
         currentTime: rebased.runtimeSceneState.duration,
         draftProgram: null,
         nextScene: null,
@@ -171,6 +161,9 @@ describe("Studio workspace projection", () => {
 
     expect(project()).toBe(6);
     expect(project("static-imported-root")).toBe(2);
+    const locallyRejected = { ...record, validation: { issues: [], status: "invalid" as const } };
+    expect(project(undefined, locallyRejected)).toBe(3);
+    expect(project("rust-authorized-batch", locallyRejected)).toBe(6);
   });
 
   it("adopts verified duration only while pristine and retains it across delayed provider reloads", () => {

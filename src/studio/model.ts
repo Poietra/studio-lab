@@ -193,6 +193,8 @@ export type ProgramRecord = Readonly<{
   }>;
 }>;
 
+export type ProgramBatchAuthority = "rust-authorized-batch" | "source-bound-endpoint" | "static-imported-root";
+
 export type WorkingState = Readonly<{
   appliedPrograms: readonly ProgramRecord[];
   editorContext: EditorContext;
