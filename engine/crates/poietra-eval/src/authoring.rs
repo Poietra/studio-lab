@@ -247,11 +247,20 @@ struct PlannedMathTexTransform {
     content: StudioMathTexContent,
     interval: IntervalV1,
     operation_id: String,
-    path: CubicPathV1,
-    scene_source_entity_id: String,
     studio_source_entity_id: String,
     target_entity_id: String,
     transaction_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct StudioMathTexTransformPlan {
+    first_base_interval: IntervalV1,
+    initial_source_entity_id: String,
+    maximum_base_end: f64,
+    planned: Vec<PlannedMathTexTransform>,
+    projection_insertions: Vec<StudioMathTexTransformProjectionInsertion>,
+    projected_duration: f64,
+    timeline_insertions: Vec<SceneTimelineInsertion>,
 }
 
 /// One profile-free Studio command that rotates a root entity in world space.
@@ -548,6 +557,19 @@ pub struct StudioMathTexTransformProgram {
 #[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StudioMathTexTransformEntityIdentity {
+    pub object_graph_key: String,
+    pub provisional: bool,
+    pub scale: Option<f64>,
+    pub source_identity: Option<String>,
+    #[serde(rename = "type")]
+    pub entity_type: StudioAuthoringEntityKind,
+}
+
+/// Logical Studio entity facts used to authorize a `MathTex` transform without a Scene snapshot.
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StudioMathTexTransformProjectionEntityIdentity {
+    pub lifetime: Vec<IntervalV1>,
     pub object_graph_key: String,
     pub provisional: bool,
     pub scale: Option<f64>,
@@ -1951,6 +1973,267 @@ fn studio_math_tex_content_is_canonical(content: &StudioMathTexContent) -> bool 
         && content.tex_parts.iter().all(|part| !part.trim().is_empty())
 }
 
+fn studio_math_tex_transform_identity_is_closed(
+    provisional: bool,
+    entity_type: StudioAuthoringEntityKind,
+    scale: Option<f64>,
+    source_identity: Option<&str>,
+) -> bool {
+    !provisional
+        && entity_type == StudioAuthoringEntityKind::MathTex
+        && scale == Some(1.0)
+        && source_identity.is_some_and(|identity| !identity.is_empty())
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one small closed planner keeps projection and mutation admission identical"
+)]
+fn plan_studio_math_tex_transform_programs(
+    base_duration: f64,
+    programs: &[StudioMathTexTransformProgram],
+    existing_entity_ids: &BTreeSet<&str>,
+) -> Result<StudioMathTexTransformPlan, ApplyStudioMathTexTransformEditError> {
+    let operation_count = programs
+        .iter()
+        .map(|program| program.operations.len())
+        .sum::<usize>();
+    if !base_duration.is_finite() || base_duration <= 0.0 || !(1..=2).contains(&operation_count) {
+        return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+    }
+
+    let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
+    ordered_programs.sort_by(|left, right| {
+        programs[*left]
+            .anchor_resolved_seconds
+            .total_cmp(&programs[*right].anchor_resolved_seconds)
+            .then(left.cmp(right))
+    });
+    let mut operation_ids = BTreeSet::new();
+    let mut target_ids = BTreeSet::new();
+    let mut projection_insertions = Vec::with_capacity(programs.len());
+    let mut timeline_insertions = Vec::with_capacity(programs.len());
+    let mut planned = Vec::with_capacity(operation_count);
+    let mut resolved_offset = 0.0;
+    let mut projected_duration = base_duration;
+    let mut previous_target_id: Option<String> = None;
+    let mut previous_interval_end: Option<f64> = None;
+    let mut initial_source_entity_id: Option<String> = None;
+    let mut first_base_interval: Option<IntervalV1> = None;
+    let mut maximum_base_end = 0.0_f64;
+
+    for program_index in ordered_programs {
+        let program = &programs[program_index];
+        if !program.lowering_supported
+            || program.transaction_id.is_empty()
+            || !studio_program_anchor_is_closed(
+                &program.anchor_source,
+                program.anchor_captured_playhead,
+                program.anchor_resolved_seconds,
+                base_duration,
+            )
+            || !studio_math_tex_transform_program_is_closed(program)
+            || !studio_timeline_semantic_values_match(
+                program
+                    .operations
+                    .first()
+                    .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?
+                    .interval()
+                    .start,
+                program.anchor_resolved_seconds,
+            )
+        {
+            return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+        }
+        let maximum_end = program
+            .operations
+            .iter()
+            .map(|operation| operation.interval().end)
+            .fold(program.anchor_resolved_seconds, f64::max);
+        let insertion_duration = maximum_end - program.anchor_resolved_seconds;
+        let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
+        if !insertion_duration.is_finite()
+            || insertion_duration <= 0.0
+            || !resolved_anchor.is_finite()
+            || resolved_anchor > projected_duration + TIMELINE_ANCHOR_EPSILON
+        {
+            return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+        }
+
+        for operation in &program.operations {
+            let StudioMathTexTransformOperation::TransformContent {
+                id,
+                interval,
+                replacement,
+                source_entity_id,
+                strategy,
+                target_entity_id,
+                target_type,
+                ..
+            } = operation
+            else {
+                return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+            };
+            if id.is_empty()
+                || source_entity_id.is_empty()
+                || target_entity_id.is_empty()
+                || source_entity_id == target_entity_id
+                || *strategy != StudioMathTexTransformStrategy::TransformMatchingTex
+                || target_type.as_deref().is_some_and(|kind| kind != "MathTex")
+                || !studio_math_tex_content_is_canonical(replacement)
+                || !operation_ids.insert(id.as_str())
+                || !target_ids.insert(target_entity_id.as_str())
+                || existing_entity_ids.contains(target_entity_id.as_str())
+                || !interval.start.is_finite()
+                || !interval.end.is_finite()
+                || interval.start < 0.0
+                || interval.start >= interval.end
+                || interval.end > base_duration
+            {
+                return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+            }
+            maximum_base_end = maximum_base_end.max(interval.end);
+            if let Some(previous_target_id) = &previous_target_id {
+                if source_entity_id != previous_target_id {
+                    return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+                }
+            } else {
+                initial_source_entity_id = Some(source_entity_id.clone());
+                first_base_interval = Some(interval.clone());
+            }
+            let resolved_interval = IntervalV1 {
+                end: interval.end + resolved_offset,
+                start: interval.start + resolved_offset,
+            };
+            if previous_interval_end.is_some_and(|end| resolved_interval.start < end) {
+                return Err(ApplyStudioMathTexTransformEditError::Unsupported);
+            }
+            previous_interval_end = Some(resolved_interval.end);
+            previous_target_id = Some(target_entity_id.clone());
+            planned.push(PlannedMathTexTransform {
+                content: replacement.clone(),
+                interval: resolved_interval,
+                operation_id: id.clone(),
+                studio_source_entity_id: source_entity_id.clone(),
+                target_entity_id: target_entity_id.clone(),
+                transaction_id: program.transaction_id.clone(),
+            });
+        }
+
+        projection_insertions.push(StudioMathTexTransformProjectionInsertion {
+            at: resolved_anchor,
+            duration: insertion_duration,
+            transaction_id: program.transaction_id.clone(),
+        });
+        timeline_insertions.push(SceneTimelineInsertion {
+            at: resolved_anchor,
+            duration: insertion_duration,
+        });
+        resolved_offset += insertion_duration;
+        projected_duration += insertion_duration;
+    }
+
+    Ok(StudioMathTexTransformPlan {
+        first_base_interval: first_base_interval
+            .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?,
+        initial_source_entity_id: initial_source_entity_id
+            .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?,
+        maximum_base_end,
+        planned,
+        projection_insertions,
+        projected_duration,
+        timeline_insertions,
+    })
+}
+
+fn studio_math_tex_transform_projection_from_plan(
+    plan: &StudioMathTexTransformPlan,
+    inherited_end: f64,
+) -> StudioMathTexTransformProjection {
+    let replacements = plan
+        .planned
+        .iter()
+        .enumerate()
+        .map(
+            |(index, transform)| StudioMathTexTransformProjectedReplacement {
+                content: transform.content.clone(),
+                interval: transform.interval.clone(),
+                operation_id: transform.operation_id.clone(),
+                source_entity_id: transform.studio_source_entity_id.clone(),
+                target_entity_id: transform.target_entity_id.clone(),
+                target_lifetime: IntervalV1 {
+                    end: plan
+                        .planned
+                        .get(index + 1)
+                        .map_or(inherited_end, |next| next.interval.end),
+                    start: transform.interval.start,
+                },
+                target_type: StudioAuthoringEntityKind::MathTex,
+                transaction_id: transform.transaction_id.clone(),
+            },
+        )
+        .collect();
+    StudioMathTexTransformProjection {
+        insertions: plan.projection_insertions.clone(),
+        projected_duration: plan.projected_duration,
+        replacements,
+    }
+}
+
+/// Authorizes and projects a closed one-or-two-step `MathTex` replacement chain without a snapshot.
+///
+/// # Errors
+///
+/// Returns `Unsupported` when the Programs, logical source, target identities, or lifetime do not
+/// satisfy the same semantic planner used by Scene mutation.
+pub fn project_studio_math_tex_transform_programs(
+    base_duration: f64,
+    programs: &[StudioMathTexTransformProgram],
+    studio_entities: &[StudioMathTexTransformProjectionEntityIdentity],
+) -> Result<StudioMathTexTransformProjection, ApplyStudioMathTexTransformEditError> {
+    let existing_entity_ids = studio_entities
+        .iter()
+        .map(|entity| entity.object_graph_key.as_str())
+        .collect::<BTreeSet<_>>();
+    let plan =
+        plan_studio_math_tex_transform_programs(base_duration, programs, &existing_entity_ids)?;
+    let mut matching_sources = studio_entities
+        .iter()
+        .filter(|entity| entity.object_graph_key == plan.initial_source_entity_id);
+    let source = matching_sources
+        .next()
+        .filter(|entity| {
+            studio_math_tex_transform_identity_is_closed(
+                entity.provisional,
+                entity.entity_type,
+                entity.scale,
+                entity.source_identity.as_deref(),
+            )
+        })
+        .filter(|_| matching_sources.next().is_none())
+        .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
+    let source_lifetime = source
+        .lifetime
+        .first()
+        .filter(|_| source.lifetime.len() == 1)
+        .filter(|lifetime| {
+            lifetime.start.is_finite()
+                && lifetime.end.is_finite()
+                && lifetime.start <= plan.first_base_interval.start
+                && lifetime.end >= plan.maximum_base_end
+                && lifetime.start < lifetime.end
+        })
+        .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
+    let mut projected_source_lifetime = source_lifetime.clone();
+    for insertion in &plan.timeline_insertions {
+        shift_interval_for_insertion(&mut projected_source_lifetime, insertion);
+    }
+    Ok(studio_math_tex_transform_projection_from_plan(
+        &plan,
+        projected_source_lifetime.end,
+    ))
+}
+
 fn closed_studio_motion_operations(
     program: &StudioMotionProgram,
     scene_duration: f64,
@@ -2084,10 +2367,12 @@ fn resolve_imported_math_tex_transform_source(
         .iter()
         .filter(|entity| entity.object_graph_key == studio_entity_id);
     let entity = matching_entities.next().filter(|entity| {
-        !entity.provisional
-            && entity.entity_type == StudioAuthoringEntityKind::MathTex
-            && entity.scale == Some(1.0)
-            && entity.source_identity.is_some()
+        studio_math_tex_transform_identity_is_closed(
+            entity.provisional,
+            entity.entity_type,
+            entity.scale,
+            entity.source_identity.as_deref(),
+        )
     })?;
     if matching_entities.next().is_some() {
         return None;
@@ -5302,160 +5587,22 @@ impl EngineSessionV1 {
             return Err(ApplyStudioMathTexTransformEditError::Unsupported);
         }
 
-        let mut ordered_programs = (0..programs.len()).collect::<Vec<_>>();
-        ordered_programs.sort_by(|left, right| {
-            programs[*left]
-                .anchor_resolved_seconds
-                .total_cmp(&programs[*right].anchor_resolved_seconds)
-                .then(left.cmp(right))
-        });
-        let mut operation_ids = BTreeSet::new();
-        let mut target_ids = BTreeSet::new();
-        let mut projection_insertions = Vec::with_capacity(programs.len());
-        let mut timeline_insertions = Vec::with_capacity(programs.len());
-        let mut planned = Vec::with_capacity(operation_count);
-        let mut resolved_offset = 0.0;
-        let mut projected_duration = scene.duration;
-        let mut previous_target_id: Option<String> = None;
-        let mut previous_interval_end: Option<f64> = None;
-        let mut initial_runtime_entity_id: Option<String> = None;
-        let mut first_base_interval: Option<IntervalV1> = None;
-        let mut maximum_base_end = 0.0_f64;
-
-        for program_index in ordered_programs {
-            let program = &programs[program_index];
-            if !program.lowering_supported
-                || program.transaction_id.is_empty()
-                || !studio_program_anchor_is_closed(
-                    &program.anchor_source,
-                    program.anchor_captured_playhead,
-                    program.anchor_resolved_seconds,
-                    scene.duration,
-                )
-                || !studio_math_tex_transform_program_is_closed(program)
-                || !studio_timeline_semantic_values_match(
-                    program
-                        .operations
-                        .first()
-                        .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?
-                        .interval()
-                        .start,
-                    program.anchor_resolved_seconds,
-                )
-            {
-                return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-            }
-            let maximum_end = program
-                .operations
-                .iter()
-                .map(|operation| operation.interval().end)
-                .fold(program.anchor_resolved_seconds, f64::max);
-            let insertion_duration = maximum_end - program.anchor_resolved_seconds;
-            let resolved_anchor = program.anchor_resolved_seconds + resolved_offset;
-            if !insertion_duration.is_finite()
-                || insertion_duration <= 0.0
-                || !resolved_anchor.is_finite()
-                || resolved_anchor > projected_duration + TIMELINE_ANCHOR_EPSILON
-            {
-                return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-            }
-
-            for operation in &program.operations {
-                let StudioMathTexTransformOperation::TransformContent {
-                    id,
-                    interval,
-                    replacement,
-                    source_entity_id,
-                    strategy,
-                    target_entity_id,
-                    target_type,
-                    ..
-                } = operation
-                else {
-                    return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-                };
-                if id.is_empty()
-                    || source_entity_id.is_empty()
-                    || target_entity_id.is_empty()
-                    || source_entity_id == target_entity_id
-                    || *strategy != StudioMathTexTransformStrategy::TransformMatchingTex
-                    || target_type.as_deref().is_some_and(|kind| kind != "MathTex")
-                    || !studio_math_tex_content_is_canonical(replacement)
-                    || !operation_ids.insert(id.as_str())
-                    || !target_ids.insert(target_entity_id.as_str())
-                    || scene
-                        .entities
-                        .iter()
-                        .any(|entity| entity.id == *target_entity_id)
-                    || !interval.start.is_finite()
-                    || !interval.end.is_finite()
-                    || interval.start < 0.0
-                    || interval.start >= interval.end
-                    || interval.end > scene.duration
-                {
-                    return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-                }
-                maximum_base_end = maximum_base_end.max(interval.end);
-                let physical_source_id = if let Some(previous_target_id) = &previous_target_id {
-                    if source_entity_id != previous_target_id {
-                        return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-                    }
-                    source_entity_id.clone()
-                } else {
-                    let runtime_entity_id = resolve_imported_math_tex_transform_source(
-                        source_entity_id,
-                        &studio_entities,
-                        &source_runtime_bindings,
-                    )
-                    .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
-                    initial_runtime_entity_id = Some(runtime_entity_id.clone());
-                    first_base_interval = Some(interval.clone());
-                    runtime_entity_id
-                };
-                let mut matching_outlines = math_tex_outlines.iter().filter(|outline| {
-                    outline.entity_id == *target_entity_id
-                        && outline.tex_parts == replacement.tex_parts
-                });
-                let outline = matching_outlines
-                    .next()
-                    .filter(|_| matching_outlines.next().is_none())
-                    .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
-                let resolved_interval = IntervalV1 {
-                    end: interval.end + resolved_offset,
-                    start: interval.start + resolved_offset,
-                };
-                if previous_interval_end.is_some_and(|end| resolved_interval.start < end) {
-                    return Err(ApplyStudioMathTexTransformEditError::Unsupported);
-                }
-                previous_interval_end = Some(resolved_interval.end);
-                previous_target_id = Some(target_entity_id.clone());
-                planned.push(PlannedMathTexTransform {
-                    content: replacement.clone(),
-                    interval: resolved_interval,
-                    operation_id: id.clone(),
-                    path: outline.path.clone(),
-                    scene_source_entity_id: physical_source_id,
-                    studio_source_entity_id: source_entity_id.clone(),
-                    target_entity_id: target_entity_id.clone(),
-                    transaction_id: program.transaction_id.clone(),
-                });
-            }
-
-            projection_insertions.push(StudioMathTexTransformProjectionInsertion {
-                at: resolved_anchor,
-                duration: insertion_duration,
-                transaction_id: program.transaction_id.clone(),
-            });
-            timeline_insertions.push(SceneTimelineInsertion {
-                at: resolved_anchor,
-                duration: insertion_duration,
-            });
-            resolved_offset += insertion_duration;
-            projected_duration += insertion_duration;
-        }
-
-        let runtime_entity_id =
-            initial_runtime_entity_id.ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
+        let existing_entity_ids = scene
+            .entities
+            .iter()
+            .map(|entity| entity.id.as_str())
+            .collect::<BTreeSet<_>>();
+        let plan = plan_studio_math_tex_transform_programs(
+            scene.duration,
+            &programs,
+            &existing_entity_ids,
+        )?;
+        let runtime_entity_id = resolve_imported_math_tex_transform_source(
+            &plan.initial_source_entity_id,
+            &studio_entities,
+            &source_runtime_bindings,
+        )
+        .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
         let source_index = scene
             .entities
             .iter()
@@ -5467,8 +5614,6 @@ impl EngineSessionV1 {
             .first()
             .filter(|_| source.lifetimes.len() == 1)
             .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
-        let first_base_interval =
-            first_base_interval.ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
         if source.parent_id.is_some()
             || !matches!(source.geometry, SceneGeometryV1::CubicPath { .. })
             || !matches!(
@@ -5479,8 +5624,8 @@ impl EngineSessionV1 {
                     stroke: None,
                 } if *opacity == 1.0
             )
-            || source_lifetime.start > first_base_interval.start
-            || source_lifetime.end < maximum_base_end
+            || source_lifetime.start > plan.first_base_interval.start
+            || source_lifetime.end < plan.maximum_base_end
         {
             return Err(ApplyStudioMathTexTransformEditError::Unsupported);
         }
@@ -5490,11 +5635,12 @@ impl EngineSessionV1 {
             assets: self.assets().clone(),
             scene: scene.clone(),
         };
-        for insertion in &timeline_insertions {
+        for insertion in &plan.timeline_insertions {
             insert_scene_time(&mut candidate.scene, insertion);
         }
         let inherited_end = candidate.scene.entities[source_index].lifetimes[0].end;
-        let first_interval = &planned
+        let first_interval = &plan
+            .planned
             .first()
             .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?
             .interval;
@@ -5522,19 +5668,21 @@ impl EngineSessionV1 {
             .map(|entity| entity.scene_order)
             .max()
             .map_or(0, |maximum| maximum + 1);
-        let mut projected_replacements = Vec::with_capacity(planned.len());
-        for (index, transform) in planned.iter().enumerate() {
-            let lifetime_end = planned
-                .get(index + 1)
-                .map_or(inherited_end, |next| next.interval.end);
-            let target_lifetime = IntervalV1 {
-                end: lifetime_end,
-                start: transform.interval.start,
-            };
+        let projection = studio_math_tex_transform_projection_from_plan(&plan, inherited_end);
+        for (index, transform) in plan.planned.iter().enumerate() {
+            let mut matching_outlines = math_tex_outlines.iter().filter(|outline| {
+                outline.entity_id == transform.target_entity_id
+                    && outline.tex_parts == transform.content.tex_parts
+            });
+            let outline = matching_outlines
+                .next()
+                .filter(|_| matching_outlines.next().is_none())
+                .ok_or(ApplyStudioMathTexTransformEditError::Unsupported)?;
+            let target_lifetime = projection.replacements[index].target_lifetime.clone();
             candidate.scene.entities.push(SceneEntityV1 {
                 appearance: template.appearance.clone(),
                 geometry: SceneGeometryV1::CubicPath {
-                    path: transform.path.clone(),
+                    path: outline.path.clone(),
                 },
                 id: transform.target_entity_id.clone(),
                 lifetimes: vec![target_lifetime.clone()],
@@ -5544,16 +5692,6 @@ impl EngineSessionV1 {
                 source_z_index: template.source_z_index,
                 transform: template.transform.clone(),
             });
-            projected_replacements.push(StudioMathTexTransformProjectedReplacement {
-                content: transform.content.clone(),
-                interval: transform.interval.clone(),
-                operation_id: transform.operation_id.clone(),
-                source_entity_id: transform.studio_source_entity_id.clone(),
-                target_entity_id: transform.target_entity_id.clone(),
-                target_lifetime,
-                target_type: StudioAuthoringEntityKind::MathTex,
-                transaction_id: transform.transaction_id.clone(),
-            });
         }
 
         let source_channel_id = unused_channel_id(&candidate.scene, "studio-math-tex-source");
@@ -5561,12 +5699,12 @@ impl EngineSessionV1 {
             .scene
             .animation_channels
             .push(AnimationChannelV1::Opacity {
-                entity_id: planned[0].scene_source_entity_id.clone(),
+                entity_id: runtime_entity_id,
                 id: source_channel_id,
-                keyframes: math_tex_fade_out_keyframes(&planned[0].interval),
+                keyframes: math_tex_fade_out_keyframes(&plan.planned[0].interval),
                 provenance_id: provenance_id.clone(),
             });
-        for (index, transform) in planned.iter().enumerate() {
+        for (index, transform) in plan.planned.iter().enumerate() {
             let channel_id =
                 unused_channel_id(&candidate.scene, &format!("studio-math-tex-target-{index}"));
             candidate
@@ -5577,7 +5715,7 @@ impl EngineSessionV1 {
                     id: channel_id,
                     keyframes: math_tex_replacement_keyframes(
                         &transform.interval,
-                        planned.get(index + 1).map(|next| &next.interval),
+                        plan.planned.get(index + 1).map(|next| &next.interval),
                     ),
                     provenance_id: provenance_id.clone(),
                 });
@@ -5598,11 +5736,7 @@ impl EngineSessionV1 {
 
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
-            math_tex_transform_projection: Some(StudioMathTexTransformProjection {
-                insertions: projection_insertions,
-                projected_duration: candidate.scene.duration,
-                replacements: projected_replacements,
-            }),
+            math_tex_transform_projection: Some(projection),
             persistent_remove_projection: StudioPersistentRemoveProjection::default(),
             static_root_projection: None,
         };
@@ -7421,6 +7555,22 @@ mod tests {
                 width: 640.0,
             },
         }
+    }
+
+    fn math_tex_transform_projection_entities(
+        duration: f64,
+    ) -> Vec<StudioMathTexTransformProjectionEntityIdentity> {
+        vec![StudioMathTexTransformProjectionEntityIdentity {
+            entity_type: StudioAuthoringEntityKind::MathTex,
+            lifetime: vec![IntervalV1 {
+                end: duration,
+                start: 0.0,
+            }],
+            object_graph_key: "source:formula".to_owned(),
+            provisional: false,
+            scale: Some(1.0),
+            source_identity: Some("formula".to_owned()),
+        }]
     }
 
     fn static_root_position_command() -> ApplyStaticRootTransformEditCommand {
@@ -12744,6 +12894,102 @@ mod tests {
             ))
         ));
         assert_eq!(session.scene(), &before);
+    }
+
+    #[test]
+    #[allow(
+        clippy::float_cmp,
+        reason = "the normalized projection stores exact timeline values"
+    )]
+    fn math_tex_transform_projector_authorizes_one_and_two_step_chains() {
+        let command = math_tex_transform_command();
+        let duration = static_imported_math_tex_bundle().scene.duration;
+        let entities = math_tex_transform_projection_entities(duration);
+
+        let two_step =
+            project_studio_math_tex_transform_programs(duration, &command.programs, &entities)
+                .unwrap();
+        assert_eq!(two_step.projected_duration, duration + 1.0);
+        assert_eq!(two_step.replacements.len(), 2);
+        assert_eq!(two_step.replacements[0].target_lifetime.end, 1.25);
+        assert_eq!(two_step.replacements[1].target_lifetime.end, duration + 1.0);
+
+        let mut one_step_program = command.programs[0].clone();
+        one_step_program.intent_count = 1;
+        one_step_program.operations.truncate(1);
+        one_step_program.schedule_edge_count = 0;
+        one_step_program.schedule_order.truncate(1);
+        let one_step =
+            project_studio_math_tex_transform_programs(duration, &[one_step_program], &entities)
+                .unwrap();
+        assert_eq!(one_step.projected_duration, duration + 0.5);
+        assert_eq!(one_step.replacements.len(), 1);
+        assert_eq!(one_step.replacements[0].target_lifetime.end, duration + 0.5);
+    }
+
+    #[test]
+    fn math_tex_transform_projector_rejects_invalid_logical_batches() {
+        let command = math_tex_transform_command();
+        let duration = static_imported_math_tex_bundle().scene.duration;
+        let entities = math_tex_transform_projection_entities(duration);
+
+        let missing_source = Vec::new();
+
+        let mut wrong_type = entities.clone();
+        wrong_type[0].entity_type = StudioAuthoringEntityKind::Rectangle;
+
+        let mut existing_target = entities.clone();
+        existing_target.push(StudioMathTexTransformProjectionEntityIdentity {
+            entity_type: StudioAuthoringEntityKind::Other,
+            lifetime: vec![],
+            object_graph_key: "tx:math-tex-transform/entity:b".to_owned(),
+            provisional: false,
+            scale: None,
+            source_identity: None,
+        });
+
+        let mut wrong_strategy = command.programs.clone();
+        let StudioMathTexTransformOperation::TransformContent { strategy, .. } =
+            &mut wrong_strategy[0].operations[0]
+        else {
+            unreachable!();
+        };
+        *strategy = StudioMathTexTransformStrategy::ReplacementTransform;
+
+        let mut broken_chain = command.programs.clone();
+        let StudioMathTexTransformOperation::TransformContent {
+            source_entity_id, ..
+        } = &mut broken_chain[0].operations[1]
+        else {
+            unreachable!();
+        };
+        *source_entity_id = "source:formula".to_owned();
+
+        let mut invalid_interval = command.programs.clone();
+        let StudioMathTexTransformOperation::TransformContent { interval, .. } =
+            &mut invalid_interval[0].operations[0]
+        else {
+            unreachable!();
+        };
+        interval.end = interval.start;
+
+        for (programs, candidate_entities) in [
+            (command.programs.clone(), missing_source),
+            (command.programs.clone(), wrong_type),
+            (command.programs.clone(), existing_target),
+            (wrong_strategy, entities.clone()),
+            (broken_chain, entities.clone()),
+            (invalid_interval, entities.clone()),
+        ] {
+            assert!(matches!(
+                project_studio_math_tex_transform_programs(
+                    duration,
+                    &programs,
+                    &candidate_entities,
+                ),
+                Err(ApplyStudioMathTexTransformEditError::Unsupported)
+            ));
+        }
     }
 
     #[test]

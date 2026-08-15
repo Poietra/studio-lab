@@ -15,7 +15,9 @@ import {
   createApplyStudioMathTexTransformEditCompiler,
   createApplyStudioMotionEditCompiler,
   createApplyStudioTimelineEditCompiler,
+  createProjectStudioMathTexTransformCompiler,
   createProjectStudioTimelineCompiler,
+  type ProjectStudioMathTexTransformWireCommandV1,
   type ProjectStudioTimelineWireCommandV1,
 } from "./scene-authoring";
 
@@ -322,6 +324,14 @@ const studioTimelineProjectionCommand: ProjectStudioTimelineWireCommandV1 = {
   version: 1,
 };
 
+const studioMathTexTransformProjectionCommand: ProjectStudioMathTexTransformWireCommandV1 = {
+  baseDuration: 2,
+  programs: [],
+  schema: "poietra.project-studio-math-tex-transform",
+  studioEntities: [],
+  version: 1,
+};
+
 async function fixtureBundle() {
   const fixture = JSON.parse(
     await readFile(new URL("../../fixtures/engine-v1/shared-circle-opacity.json", import.meta.url), "utf8"),
@@ -532,6 +542,20 @@ describe("Scene authoring WASM adapter", () => {
     expect(calls).toEqual([studioTimelineProjectionCommand]);
   });
 
+  it("projects normalized MathTex transform Programs without a Scene snapshot", async () => {
+    const calls: unknown[] = [];
+    const projection = { insertions: [], projectedDuration: 2, replacements: [] } as const;
+    const project = createProjectStudioMathTexTransformCompiler(async () => ({
+      projectStudioMathTexTransformV1: (commandJson) => {
+        calls.push(JSON.parse(new TextDecoder().decode(commandJson)));
+        return new TextEncoder().encode(JSON.stringify(projection));
+      },
+    }));
+
+    await expect(project(studioMathTexTransformProjectionCommand)).resolves.toEqual(projection);
+    expect(calls).toEqual([studioMathTexTransformProjectionCommand]);
+  });
+
   it("rejects malformed or incomplete Rust responses", async () => {
     const bundle = await fixtureBundle();
     const compileCreation = createApplyStudioCreationEditCompiler(async () => ({
@@ -550,8 +574,15 @@ describe("Scene authoring WASM adapter", () => {
           }),
         ),
     }));
+    const projectMathTex = createProjectStudioMathTexTransformCompiler(async () => ({
+      projectStudioMathTexTransformV1: () =>
+        new TextEncoder().encode(
+          JSON.stringify({ insertions: [], projectedDuration: 2, replacements: [{ targetType: "text" }] }),
+        ),
+    }));
     await expect(compileCreation(bundle, creationEditCommand)).rejects.toThrow();
     await expect(compileBoundEntity(bundle, boundEntityEditCommand)).rejects.toThrow();
     await expect(projectTimeline(studioTimelineProjectionCommand)).rejects.toThrow();
+    await expect(projectMathTex(studioMathTexTransformProjectionCommand)).rejects.toThrow();
   });
 });

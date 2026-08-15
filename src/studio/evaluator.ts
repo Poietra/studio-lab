@@ -195,13 +195,9 @@ export function evaluateWorkingState(
     normalizePropertyChannels(draft);
     if (applied) {
       for (const operation of validation.program.operations) {
-        const entityId =
-          operation.kind === "CreateEntity"
-            ? operation.entity.id
-            : operation.kind === "TransformContent"
-              ? operation.targetEntityId
-              : null;
-        if (!entityId || !draft.entities[entityId]) continue;
+        if (operation.kind !== "CreateEntity") continue;
+        const entityId = operation.entity.id;
+        if (!draft.entities[entityId]) continue;
         draft.entities[entityId] = { ...draft.entities[entityId], provisional: false };
       }
     }
