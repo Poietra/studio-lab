@@ -5849,6 +5849,7 @@ impl EngineSessionV1 {
         let mut removals = Vec::new();
         let mut transform_operation_count = 0_usize;
         let mut uniform_scale: Option<f64> = None;
+        let mut uniform_scale_from: Option<f64> = None;
         let mut resize: Option<(
             StaticRootTransformEntityKind,
             StaticRootTransformDimensions,
@@ -6020,6 +6021,7 @@ impl EngineSessionV1 {
                         && close_transform_baseline_value(*to / *from, *factor)
                         && uniform_scale.replace(*factor).is_none() =>
                     {
+                        uniform_scale_from = Some(*from);
                         static_root_mutations.push(StudioStaticRootProjectedMutation {
                             mutation: StudioStaticRootMutation::UniformScale {
                                 entity_id: operation_entity_id.to_owned(),
@@ -6135,6 +6137,9 @@ impl EngineSessionV1 {
                             | StaticRootTransformEntityKind::MathTex
                             | StaticRootTransformEntityKind::Rectangle
                     )
+                || uniform_scale_from.is_some_and(|from| {
+                    semantic_scale.is_none_or(|scale| !close_transform_baseline_value(from, scale))
+                })
                 || resize
                     .as_ref()
                     .is_some_and(|(shape, ..)| *shape != studio_entity.kind)
@@ -8677,7 +8682,7 @@ mod tests {
             kind: StaticRootTransformEntityKind::MathTex,
             position: None,
             provisional: false,
-            scale: None,
+            scale: Some(1.0),
             source_identity: Some("formula".to_owned()),
             transaction_id: None,
         }];
@@ -9086,12 +9091,22 @@ mod tests {
             1.0,
             1.5,
         )];
+        let mut stale_scale = static_root_position_command();
+        stale_scale.programs[0].operations[0].kind =
+            StaticRootTransformOperationKind::UniformScale {
+                control_present: false,
+                from: Some(1.0),
+                relative_factor: Some(2.0),
+                to: Some(2.0),
+            };
+        stale_scale.studio_entities[0].scale = Some(3.0);
 
         for command in [
             unsupported,
             missing_dependency,
             nonzero_transform,
             unknown_remove,
+            stale_scale,
         ] {
             let expected_scene = bundle.scene.clone();
             let mut session = EngineSessionV1::new(bundle.clone()).unwrap();
