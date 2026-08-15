@@ -8,17 +8,7 @@ import type { Point, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingS
 import { PRISTINE_WORKING_REVISION, type StudioVerifiedPreviewSnapshotV1 } from "./preview-snapshot-provider";
 import { STUDIO_VIEWPORT } from "./studio-viewport-geometry";
 
-export type StudioPreviewTemporalRebaseIssueCode =
-  | "camera-edit-unsupported"
-  | "channel-timing-edit-unsupported"
-  | "conflicting-edit-unsupported"
-  | "geometry-edit-unsupported"
-  | "identity-unverified"
-  | "mid-animation-edit-unsupported"
-  | "motion-path-edit-unsupported"
-  | "profile-unsupported"
-  | "source-correlation-invalid"
-  | "target-edit-unsupported";
+export type StudioPreviewTemporalRebaseIssueCode = "source-correlation-invalid" | "target-edit-unsupported";
 
 export type StudioPreviewTemporalRebaseIssue = Readonly<{
   code: StudioPreviewTemporalRebaseIssueCode;
@@ -87,12 +77,11 @@ function closeEnough(left: number, right: number) {
   return Math.abs(left - right) <= 1e-9 * Math.max(1, Math.abs(left), Math.abs(right));
 }
 
-function genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot: StudioVerifiedPreviewSnapshotV1) {
+function genericRuntimeTraceSnapshotCorrelationIsExact(snapshot: StudioVerifiedPreviewSnapshotV1) {
   const { correlation, snapshot: bundle } = snapshot;
   const source = bundle.scene.source;
   return (
     source.kind === "imported-manim-runtime-trace" &&
-    source.traceVersion === 3 &&
     sceneIrSourceRevisionHash(bundle.scene) === correlation.engineRevisionHash &&
     source.sourceHash === correlation.context.sourceHash &&
     bundle.assets.manifestDigest === correlation.assetsManifestDigest &&
@@ -169,7 +158,7 @@ export function studioPreviewRuntimeTraceEditCandidates(
   sourceAnchor: number,
   sourceEvents: RuntimeSceneState["eventTrack"]["events"],
 ): readonly StudioPreviewRuntimeTraceEditCandidate[] {
-  if (!genericRuntimeTraceSnapshotCorrelationIsExactV3(snapshot)) return [];
+  if (!genericRuntimeTraceSnapshotCorrelationIsExact(snapshot)) return [];
   const identity = snapshot.sourceRuntimeIdentity;
   if (!identity || identity.size === 0) return [];
   const camera = snapshot.snapshot.scene.camera.view;

@@ -265,7 +265,7 @@ describe("StudioCanvas retained preview layer", () => {
         {...baseProps()}
         preview={previewView(presented, null, new Map(), {
           kind: "display-only",
-          reason: "aggregate-mathtex-morph-lineage",
+          reason: "source-runtime-identity-unverified",
         })}
         selectedIds={new Set([CIRCLE_ENTITY.id])}
       />,
@@ -281,7 +281,7 @@ describe("StudioCanvas retained preview layer", () => {
         {...baseProps()}
         preview={previewView({ detail: "device lost", phase: "fallback", reason: "renderer-failed" }, null, new Map(), {
           kind: "display-only",
-          reason: "aggregate-mathtex-morph-lineage",
+          reason: "source-runtime-identity-unverified",
         })}
       />,
     );

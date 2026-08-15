@@ -29,7 +29,6 @@ import { type ProposedState, type RuntimeSceneState, STUDIO_STATE_VERSION, type 
 import {
   PRISTINE_WORKING_REVISION,
   type StudioPreviewSnapshotProviderV1,
-  type StudioPreviewSourceRuntimeIdentityV1,
   type StudioPreviewSourceRuntimeMappingV1,
   type StudioVerifiedPreviewSnapshotV1,
   studioPreviewWorkspaceKeyV1,
@@ -732,7 +731,7 @@ describe("claimStudioPreviewCanvasV1", () => {
 });
 
 describe("studioPreviewInteractionAuthority", () => {
-  it("keeps V1 selection-only and bounds generic V3 edits to construction and settled endpoints", async () => {
+  it("keeps traces without endpoint evidence selection-only and bounds verified endpoint edits", async () => {
     const { snapshot } = await linePreviewInput();
     const leaf = snapshot.snapshot.scene.entities[0];
     if (!leaf) throw new Error("Expected one imported line fixture entity.");
@@ -874,25 +873,24 @@ describe("studioPreviewInteractionAuthority", () => {
     ]);
   });
 
-  it("keeps aggregate MathTex morph identity display-only even if mappings are supplied", async () => {
+  it("derives static interaction from verified root facts rather than the snapshot wire version", async () => {
     const { snapshot } = await linePreviewInput();
     const source = snapshot.snapshot.scene.source;
     if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
-    const v5 = {
+    const changedWireVersion = {
       ...snapshot,
       snapshot: {
         ...snapshot.snapshot,
-        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 5 } },
+        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 12 } },
       },
     } as StudioVerifiedPreviewSnapshotV1;
-    const authority = studioPreviewInteractionAuthority(v5, 0, []);
-    expect(authority).toEqual({ kind: "display-only", reason: "aggregate-mathtex-morph-lineage" });
-    expect(
-      studioPreviewInteractionEntityIdsV1(
-        new Map([["equation", { bindingId: "binding:equation", entityId: "runtime-line", sourceName: "equation" }]]),
-        authority,
-      ),
-    ).toEqual([]);
+
+    expect(studioPreviewInteractionAuthority(snapshot, 0, [])).toEqual({ kind: "interactive" });
+    expect(studioPreviewInteractionAuthority(changedWireVersion, 0, [])).toEqual({ kind: "interactive" });
+    expect(studioPreviewInteractionAuthority({ ...snapshot, sourceRuntimeIdentity: null }, 0, [])).toEqual({
+      kind: "display-only",
+      reason: "source-runtime-identity-unverified",
+    });
   });
 
   it("does not advertise mutations for an animated server snapshot the canonical compiler cannot edit", async () => {
@@ -929,326 +927,49 @@ describe("studioPreviewInteractionAuthority", () => {
     });
   });
 
-  it("keeps legacy runtime snapshots selection-only with verified identity", async () => {
+  it("keeps mixed root and nested mappings selection-only from generic Scene facts", async () => {
     const { snapshot } = await linePreviewInput();
-    const source = snapshot.snapshot.scene.source;
-    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
-    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
-      ["square", { bindingId: "binding:square", entityId: "runtime-line", sourceName: "square" }],
-    ]);
-    const v9 = {
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 9 } },
-      },
-      sourceRuntimeIdentity: identity,
-    } as StudioVerifiedPreviewSnapshotV1;
-    const authority = studioPreviewInteractionAuthority(v9, 0, []);
-    expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    expect(studioPreviewInteractionEntityIdsV1(identity, authority, v9.snapshot.scene.entities)).toEqual([
-      "runtime-line",
-    ]);
-  });
-
-  it("admits only the three drawable V10 leaves for selection while requiring the complete group identity", async () => {
-    const { proposedState, snapshot } = await linePreviewInput();
-    const source = snapshot.snapshot.scene.source;
     const leaf = snapshot.snapshot.scene.entities[0];
-    if (source.kind !== "imported-manim-server-snapshot" || !leaf) {
-      throw new Error("Expected one imported line fixture entity.");
-    }
+    if (!leaf) throw new Error("Expected one imported line fixture entity.");
     const groupId = "runtime-group";
-    const leafIds = ["runtime-t1", "runtime-t2", "runtime-t3"] as const;
+    const nestedId = "runtime-nested";
     const entities: SceneIrBundleV1["scene"]["entities"] = [
+      leaf,
       {
         ...leaf,
         appearance: { kind: "group", opacity: 1 },
         geometry: { kind: "group" },
         id: groupId,
         parentId: null,
+        sceneOrder: 1,
       },
-      ...leafIds.map((id) => ({ ...leaf, id, parentId: groupId })),
+      { ...leaf, id: nestedId, parentId: groupId, sceneOrder: 2 },
     ];
     const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
-      ["grp", { bindingId: "binding:grp", entityId: groupId, sourceName: "grp" }],
-      ...leafIds.map(
-        (entityId, index) =>
-          [`t${index + 1}`, { bindingId: `binding:t${index + 1}`, entityId, sourceName: `t${index + 1}` }] as const,
-      ),
-    ]);
-    const v10 = {
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          entities,
-          source: { ...source, snapshotVersion: 10 },
-        },
-      },
-      sourceRuntimeIdentity: identity,
-    } as StudioVerifiedPreviewSnapshotV1;
-
-    const authority = studioPreviewInteractionAuthority(v10, 0, []);
-    expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual([]);
-    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual(leafIds);
-    expect(
-      studioPreviewInteractionAuthority(
-        {
-          ...v10,
-          sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== "grp")),
-        },
-        0,
-        [],
-      ),
-    ).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-
-    const compiled = await compileStudioPreviewSceneV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      snapshot: v10,
-      workingState: proposedState.base,
-      workingRevision: PRISTINE_WORKING_REVISION,
-      workspaceKey: "project-a/example_scenes/basic.py/LineJoints",
-    });
-    expect(compiled.kind).toBe("compiled");
-    if (compiled.kind !== "compiled") throw new Error(compiled.error);
-    expect(compiled.scene.interactionEntityIds).toEqual(leafIds);
-  });
-
-  it("admits all five drawable V11 leaves for selection but never source mutation", async () => {
-    const { proposedState, snapshot } = await linePreviewInput();
-    const source = snapshot.snapshot.scene.source;
-    const leaf = snapshot.snapshot.scene.entities[0];
-    if (source.kind !== "imported-manim-server-snapshot" || !leaf) {
-      throw new Error("Expected one imported line fixture entity.");
-    }
-    const groupId = "runtime-shapes";
-    const leafIds = ["runtime-triangle", "runtime-square", "runtime-circle", "runtime-pentagon", "runtime-pi"] as const;
-    const sourceNames = ["triangle", "square", "circle", "pentagon", "pi"] as const;
-    const entities: SceneIrBundleV1["scene"]["entities"] = [
-      {
-        ...leaf,
-        appearance: { kind: "group", opacity: 1 },
-        geometry: { kind: "group" },
-        id: groupId,
-        parentId: null,
-      },
-      ...leafIds.map((id) => ({ ...leaf, id, parentId: groupId })),
-    ];
-    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
-      ["shapes", { bindingId: "binding:shapes", entityId: groupId, sourceName: "shapes" }],
-      ...leafIds.map(
-        (entityId, index) =>
-          [
-            sourceNames[index]!,
-            { bindingId: `binding:${sourceNames[index]}`, entityId, sourceName: sourceNames[index]! },
-          ] as const,
-      ),
-    ]);
-    const v11 = {
-      ...snapshot,
-      snapshot: {
-        ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          entities,
-          source: { ...source, snapshotVersion: 11 },
-        },
-      },
-      sourceRuntimeIdentity: identity,
-    } as StudioVerifiedPreviewSnapshotV1;
-
-    const authority = studioPreviewInteractionAuthority(v11, 0, []);
-    expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual(leafIds);
-    for (const missingName of ["shapes", ...sourceNames]) {
-      expect(
-        studioPreviewInteractionAuthority(
-          {
-            ...v11,
-            sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== missingName)),
-          },
-          0,
-          [],
-        ),
-      ).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    }
-
-    const compiled = await compileStudioPreviewSceneV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      snapshot: v11,
-      workingState: proposedState.base,
-      workingRevision: PRISTINE_WORKING_REVISION,
-      workspaceKey: "project-a/example_scenes/basic.py/SpiralInExample",
-    });
-    expect(compiled.kind).toBe("compiled");
-    if (compiled.kind !== "compiled") throw new Error(compiled.error);
-    expect(compiled.scene.interactionEntityIds).toEqual(leafIds);
-  });
-
-  it("selects only the two source-bound nested V12 Tex roots", async () => {
-    const { proposedState, snapshot } = await linePreviewInput();
-    const source = snapshot.snapshot.scene.source;
-    const leaf = snapshot.snapshot.scene.entities[0];
-    if (source.kind !== "imported-manim-server-snapshot" || !leaf) {
-      throw new Error("Expected one imported line fixture entity.");
-    }
-    const groupId = "runtime-write-stuff";
-    const textRootId = "runtime-example-text";
-    const texRootId = "runtime-example-tex";
-    const groupEntity = {
-      ...leaf,
-      appearance: { kind: "group", opacity: 1 } as const,
-      geometry: { kind: "group" } as const,
-      id: groupId,
-      parentId: null,
-      sceneOrder: 0,
-    };
-    const textRoot = { ...groupEntity, id: textRootId, parentId: groupId, sceneOrder: 1 };
-    const textRoles = Array.from({ length: 30 }, (_, index) => ({
-      ...leaf,
-      id: `runtime-text-role-${index}`,
-      parentId: textRootId,
-      sceneOrder: index + 2,
-    }));
-    const texRoot = { ...groupEntity, id: texRootId, parentId: groupId, sceneOrder: 32 };
-    const texRoles = Array.from({ length: 28 }, (_, index) => ({
-      ...leaf,
-      id: `runtime-tex-role-${index}`,
-      parentId: texRootId,
-      sceneOrder: index + 33,
-    }));
-    const entities: SceneIrBundleV1["scene"]["entities"] = [groupEntity, textRoot, ...textRoles, texRoot, ...texRoles];
-    const identity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
+      ["line", { bindingId: "binding:line", entityId: leaf.id, sourceName: "line" }],
       ["group", { bindingId: "binding:group", entityId: groupId, sourceName: "group" }],
-      ["example_text", { bindingId: "binding:example-text", entityId: textRootId, sourceName: "example_text" }],
-      ["example_tex", { bindingId: "binding:example-tex", entityId: texRootId, sourceName: "example_tex" }],
+      ["nested", { bindingId: "binding:nested", entityId: nestedId, sourceName: "nested" }],
     ]);
-    const v12 = {
+    const mixed = {
       ...snapshot,
       snapshot: {
         ...snapshot.snapshot,
-        scene: {
-          ...snapshot.snapshot.scene,
-          entities,
-          source: { ...source, snapshotVersion: 12 },
-        },
+        scene: { ...snapshot.snapshot.scene, entities },
       },
       sourceRuntimeIdentity: identity,
     } as StudioVerifiedPreviewSnapshotV1;
 
-    const authority = studioPreviewInteractionAuthority(v12, 0, []);
+    const authority = studioPreviewInteractionAuthority(mixed, 0, []);
     expect(authority).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([textRootId, texRootId]);
-    for (const missingName of ["group", "example_text", "example_tex"]) {
-      expect(
-        studioPreviewInteractionAuthority(
-          {
-            ...v12,
-            sourceRuntimeIdentity: new Map([...identity].filter(([sourceName]) => sourceName !== missingName)),
-          },
-          0,
-          [],
-        ),
-      ).toEqual({ kind: "selection-only", reason: "source-edit-anchor-unavailable" });
-    }
-
-    const compiled = await compileStudioPreviewSceneV1({
-      frame: { height: 8, width: 14.222222222222221 },
-      snapshot: v12,
-      workingState: proposedState.base,
-      workingRevision: PRISTINE_WORKING_REVISION,
-      workspaceKey: "project-a/example_scenes/basic.py/WriteStuff",
-    });
-    expect(compiled.kind).toBe("compiled");
-    if (compiled.kind !== "compiled") throw new Error(compiled.error);
-    expect(compiled.scene.interactionEntityIds).toEqual([textRootId, texRootId]);
-  });
-
-  it("keeps V6 static snapshots editable while legacy V7/V8 snapshots remain selectable but read-only", async () => {
-    const { snapshot } = await linePreviewInput();
-    const source = snapshot.snapshot.scene.source;
-    if (source.kind !== "imported-manim-server-snapshot") throw new Error("Expected imported snapshot source.");
-    const partialIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
-      ["line", { bindingId: "binding:line", entityId: "runtime-line", sourceName: "line" }],
-    ]);
-    const fullIdentity = new Map<string, StudioPreviewSourceRuntimeMappingV1>([
-      ...partialIdentity,
-      ["polygon", { bindingId: "binding:polygon", entityId: "runtime-polygon", sourceName: "polygon" }],
-    ]);
-    const displayOnly = { kind: "display-only", reason: "source-runtime-identity-unverified" } as const;
-    expect(studioPreviewInteractionAuthority({ ...snapshot, sourceRuntimeIdentity: null }, 0, [])).toEqual({
-      kind: "interactive",
-    });
-    for (const { expectedAuthority, expectedEntityIds, identity } of [
-      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: null },
-      { expectedAuthority: displayOnly, expectedEntityIds: [], identity: new Map() },
-      {
-        expectedAuthority: { kind: "interactive" } as const,
-        expectedEntityIds: ["runtime-line"],
-        identity: partialIdentity,
-      },
-      {
-        expectedAuthority: { kind: "interactive" } as const,
-        expectedEntityIds: ["runtime-line", "runtime-polygon"],
-        identity: fullIdentity,
-      },
-    ]) {
-      const v6 = {
-        ...snapshot,
-        snapshot: {
-          ...snapshot.snapshot,
-          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion: 6 } },
-        },
-        sourceRuntimeIdentity: identity,
-      } as StudioVerifiedPreviewSnapshotV1;
-      const authority = studioPreviewInteractionAuthority(v6, 0, []);
-      expect(authority).toEqual(expectedAuthority);
-      expect(studioPreviewInteractionEntityIdsV1(identity, authority)).toEqual(expectedEntityIds);
-    }
-
-    const identityBoundSnapshot = (snapshotVersion: 7 | 8, identity: StudioPreviewSourceRuntimeIdentityV1 | null) =>
-      ({
-        ...snapshot,
-        snapshot: {
-          ...snapshot.snapshot,
-          scene: { ...snapshot.snapshot.scene, source: { ...source, snapshotVersion } },
-        },
-        sourceRuntimeIdentity: identity,
-      }) as StudioVerifiedPreviewSnapshotV1;
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, null), 0, [])).toEqual(displayOnly);
-    const v7Partial = identityBoundSnapshot(7, partialIdentity);
-    const v7PartialAuthority = studioPreviewInteractionAuthority(v7Partial, 0, []);
-    expect(v7PartialAuthority).toEqual({
-      kind: "selection-only",
-      reason: "source-edit-anchor-unavailable",
-    });
-    expect(
-      studioPreviewInteractionEntityIdsV1(partialIdentity, v7PartialAuthority, v7Partial.snapshot.scene.entities),
-    ).toEqual(["runtime-line"]);
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(7, fullIdentity), 0, [])).toEqual({
-      kind: "selection-only",
-      reason: "source-edit-anchor-unavailable",
-    });
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(8, null), 0, [])).toEqual(displayOnly);
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(8, partialIdentity), 0, [])).toEqual({
-      kind: "selection-only",
-      reason: "source-edit-anchor-unavailable",
-    });
-    expect(studioPreviewInteractionAuthority(identityBoundSnapshot(8, fullIdentity), 0, [])).toEqual({
-      kind: "selection-only",
-      reason: "source-edit-anchor-unavailable",
-    });
+    expect(studioPreviewInteractionEntityIdsV1(identity, authority, entities)).toEqual([leaf.id, nestedId]);
   });
 });
 
 describe("compileStudioPreviewSceneV1", () => {
-  it("rejects legacy animated Scene motion before invoking a core planner", async () => {
+  it("rejects animated server-snapshot motion before invoking a core planner", async () => {
     const base = await compilablePreviewInput();
-    const legacySource = base.snapshot.snapshot.scene.source;
-    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
+    const importedSource = base.snapshot.snapshot.scene.source;
+    if (importedSource.kind !== "imported-manim-server-snapshot") throw new Error("Expected an imported snapshot.");
     const workingBase = exactImportedTimelineWorkingBase(base);
     const validation = validateMotionProgramFixture({
       capturedPlayhead: 0.5,
@@ -1270,7 +991,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...base.snapshot.snapshot,
         scene: {
           ...base.snapshot.snapshot.scene,
-          source: { ...legacySource, snapshotVersion: 7 as const },
+          source: importedSource,
           animationChannels: [
             {
               entityId: "earlier",
@@ -1522,10 +1243,10 @@ describe("compileStudioPreviewSceneV1", () => {
     });
   });
 
-  it("rejects a legacy animated Scene timeline edit before invoking the core use case", async () => {
+  it("rejects an animated server-snapshot timeline edit before invoking the core use case", async () => {
     const base = await compilablePreviewInput();
-    const legacySource = base.snapshot.snapshot.scene.source;
-    if (legacySource.kind !== "imported-manim-server-snapshot") throw new Error("Expected a legacy snapshot.");
+    const importedSource = base.snapshot.snapshot.scene.source;
+    if (importedSource.kind !== "imported-manim-server-snapshot") throw new Error("Expected an imported snapshot.");
     const animationChannels: SceneIrBundleV1["scene"]["animationChannels"] = [
       {
         entityId: "earlier",
@@ -1544,7 +1265,7 @@ describe("compileStudioPreviewSceneV1", () => {
         ...base.snapshot.snapshot.scene,
         animationChannels,
         requiredCapabilities: ["opacity-animation", "shape-primitives"],
-        source: { ...legacySource, snapshotVersion: 7 },
+        source: importedSource,
       },
     });
     const snapshot = { ...base.snapshot, snapshot: animatedBundle };
