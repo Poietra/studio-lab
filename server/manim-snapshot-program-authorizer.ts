@@ -1,11 +1,17 @@
 import { createHash } from "node:crypto";
 
 import { parseVerifiedSceneIrBundleV1, sceneIrSourceRevisionHash } from "../src/engine/contracts";
-import { compileApplyStaticRootTransformEdit, compileApplyStudioCreationEdit } from "../src/engine/scene-authoring";
+import {
+  compileApplyStaticRootTransformEdit,
+  compileApplyStudioCreationEdit,
+  compileApplyStudioMotionEdit,
+} from "../src/engine/scene-authoring";
 import {
   buildStaticRootTransformEditCommand,
   buildStudioCreationEditCommand,
+  buildStudioMotionEditCommand,
   staticRootTransformStudioEntities,
+  studioMotionStudioEntities,
 } from "../src/studio/scene-authoring-wire";
 import type { FastManimSnapshotQueryV1, FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
 import { HttpError } from "./http/json";
@@ -86,6 +92,30 @@ export async function authorizeSnapshotProgramWithSnapshot(
     );
     return;
   }
+  const sourceRuntimeBindings = (published.sourceRuntimeIdentity?.mappings ?? []).map((mapping) => ({
+    runtimeEntityId: mapping.entityId,
+    sourceIdentityKey: mapping.binding.name,
+    sourceName: mapping.binding.name,
+  }));
+  const isSingleCreateMotionProgram =
+    input.programs.length === 1 &&
+    input.programs[0]?.operations.length === 1 &&
+    input.programs[0].operations[0]?.kind === "CreateMotion";
+  if (isSingleCreateMotionProgram) {
+    await compileApplyStudioMotionEdit(
+      bundle,
+      buildStudioMotionEditCommand({
+        expectedBaseRevision: snapshot.snapshotHash,
+        frame: input.frame,
+        nextRevision,
+        programs: input.programs,
+        sourceRuntimeBindings,
+        studioEntities: studioMotionStudioEntities(input.runtimeSceneState),
+        viewport: input.request.viewport,
+      }),
+    );
+    return;
+  }
   await compileApplyStaticRootTransformEdit(
     bundle,
     buildStaticRootTransformEditCommand({
@@ -93,11 +123,7 @@ export async function authorizeSnapshotProgramWithSnapshot(
       frame: input.frame,
       nextRevision,
       programs: input.programs,
-      sourceRuntimeBindings: (published.sourceRuntimeIdentity?.mappings ?? []).map((mapping) => ({
-        runtimeEntityId: mapping.entityId,
-        sourceIdentityKey: mapping.binding.name,
-        sourceName: mapping.binding.name,
-      })),
+      sourceRuntimeBindings,
       studioEntities: staticRootTransformStudioEntities(input.runtimeSceneState),
       viewport: input.request.viewport,
     }),

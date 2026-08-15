@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,7 +7,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { ProgramRenderRequest } from "../src/render-pipeline/contracts";
-import { startElectronShellServer, type ElectronShellServer } from "./electron-shell-server";
+import { type ElectronShellServer, startElectronShellServer } from "./electron-shell-server";
+import { installVerifiedRegistrySnapshots } from "./manim-render-pipeline-test-fixtures";
 
 const fakeRenderer = fileURLToPath(new URL("./test-fixtures/fake-manim.mjs", import.meta.url));
 const roots: string[] = [];
@@ -155,9 +156,11 @@ describe("Electron shell HTTP adapter", () => {
     const scene = workspace.sources[0]!.scenes[0]!;
     const entityId = Object.entries(scene.sourceVariables).find(([, variable]) => variable === "circle")?.[0];
     expect(entityId).toBeTruthy();
+    const renderRequest = request(scene.sourceHash, entityId!);
+    await installVerifiedRegistrySnapshots(shell.registry, renderRequest, "circle");
 
     const renderResponse = await shellFetch(shell, "/api/manim/projects/shell-project/renders", {
-      body: JSON.stringify(request(scene.sourceHash, entityId!)),
+      body: JSON.stringify(renderRequest),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
@@ -169,7 +172,7 @@ describe("Electron shell HTTP adapter", () => {
     expect((await video.arrayBuffer()).byteLength).toBeGreaterThan(0);
 
     const exported = await shellFetch(shell, "/api/manim/projects/shell-project/export", {
-      body: JSON.stringify(request(scene.sourceHash, entityId!)),
+      body: JSON.stringify(renderRequest),
       headers: { "content-type": "application/json" },
       method: "POST",
     });

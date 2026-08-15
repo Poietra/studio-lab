@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import type { ProgramRenderRequest, RenderCommitRequest, RenderSessionView } from "../src/render-pipeline/contracts";
 import type { CanonicalEditOperation, CanonicalEditProgram } from "../src/studio/operations";
+import type { FastManimSnapshotRunViewV1 } from "./fast-manim-snapshot-contract";
 import { PersistentManimProjectCatalog } from "./manim-project-catalog";
 import { ManimProjectRegistry, ManimRenderManager } from "./manim-render-pipeline";
 import type { ManimSourceReadHooks } from "./manim-source-store";
@@ -118,6 +120,133 @@ export function motionProgram(
   };
 }
 
+export async function verifiedSnapshotView(
+  renderRequest: ProgramRenderRequest,
+  sourceBindingName?: string,
+): Promise<FastManimSnapshotRunViewV1> {
+  const fixtureDocument = JSON.parse(
+    await readFile(
+      new URL(
+        sourceBindingName
+          ? "../fixtures/engine-v1/real-mathtex-morph-v5.json"
+          : "../fixtures/engine-v1/studio-mathtex-preview.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as Readonly<Pick<SceneIrBundleV1, "assets" | "scene">>;
+  const runtimeConfigHash = "b".repeat(64);
+  const snapshotHash = "e".repeat(64);
+  const bundle: SceneIrBundleV1 = {
+    assets: fixtureDocument.assets,
+    scene: {
+      ...fixtureDocument.scene,
+      camera: {
+        ...fixtureDocument.scene.camera,
+        view: { ...fixtureDocument.scene.camera.view, frameHeight: 8, frameWidth: 14.222 },
+      },
+      animationChannels: sourceBindingName ? [] : fixtureDocument.scene.animationChannels,
+      duration: 8,
+      entities: sourceBindingName
+        ? fixtureDocument.scene.entities.map((entity) => ({
+            ...entity,
+            lifetimes: entity.lifetimes.map((lifetime) => ({ ...lifetime, end: 8 })),
+          }))
+        : fixtureDocument.scene.entities,
+      requiredCapabilities: sourceBindingName ? ["cubic-path-geometry"] : fixtureDocument.scene.requiredCapabilities,
+      source: {
+        kind: "imported-manim-server-snapshot",
+        runtimeConfigHash,
+        snapshotHash,
+        snapshotVersion: 1,
+        sourceHash: renderRequest.sourceHash,
+      },
+    },
+  };
+  const runtimeEntityId = bundle.scene.entities[0]?.id;
+  const runtimeProvenanceId = bundle.scene.entities[0]?.provenanceId;
+  return {
+    projectId: renderRequest.projectId,
+    publishedAt: "2026-08-15T00:00:00.000Z",
+    requestId: "server-motion-authority",
+    revision: 1,
+    runtimeConfigHash,
+    sceneName: renderRequest.sceneName,
+    schema: "poietra.fast-manim-snapshot-run" as const,
+    snapshot: {
+      bundle,
+      kind: "compiled" as const,
+      projectId: renderRequest.projectId,
+      requestId: "server-motion-authority",
+      runtimeConfigHash,
+      sceneId: bundle.scene.sceneId,
+      sceneName: renderRequest.sceneName,
+      schema: "poietra.fast-manim-snapshot-result" as const,
+      snapshotHash,
+      sourceHash: renderRequest.sourceHash,
+      sourcePath: renderRequest.sourcePath,
+      version: 1 as const,
+    },
+    ...(sourceBindingName && runtimeEntityId && runtimeProvenanceId
+      ? {
+          sourceRuntimeIdentity: {
+            mappings: [
+              {
+                binding: {
+                  id: `source-binding:${sourceBindingName}`,
+                  name: sourceBindingName,
+                  ordinal: 1,
+                  span: { endColumn: 16, endLine: 5, startColumn: 8, startLine: 5 },
+                },
+                entityId: runtimeEntityId,
+                familyPath: [],
+                provenanceId: runtimeProvenanceId,
+              },
+            ],
+            runtimeConfigHash,
+            sceneId: bundle.scene.sceneId,
+            schema: "poietra.studio-verified-source-runtime-identity-map" as const,
+            snapshotDigest: "d".repeat(64),
+            snapshotHash,
+            sourceHash: renderRequest.sourceHash,
+            version: 1 as const,
+          },
+        }
+      : {}),
+    sourcePath: renderRequest.sourcePath,
+    status: "verified" as const,
+    version: 1 as const,
+  };
+}
+
+export async function installVerifiedSnapshot(
+  manager: ManimRenderManager,
+  renderRequest: ProgramRenderRequest,
+  sourceBindingName?: string,
+) {
+  const snapshotRunner = Reflect.get(manager, "snapshotRunner") as Readonly<{
+    snapshot: (query: Readonly<{ sceneName: string; sourcePath: string }>) => Promise<unknown>;
+  }>;
+  Object.defineProperty(snapshotRunner, "snapshot", {
+    configurable: true,
+    value: async () => verifiedSnapshotView(renderRequest, sourceBindingName),
+    writable: true,
+  });
+}
+
+export async function installVerifiedRegistrySnapshots(
+  registry: ManimProjectRegistry,
+  renderRequest: ProgramRenderRequest,
+  sourceBindingName?: string,
+) {
+  const registryManagers = Reflect.get(registry, "managers") as ReadonlyMap<string, ManimRenderManager>;
+  await Promise.all(
+    [...registryManagers.entries()].map(([projectId, manager]) =>
+      installVerifiedSnapshot(manager, { ...renderRequest, projectId }, sourceBindingName),
+    ),
+  );
+}
+
 export function batchRequest(programs: readonly CanonicalEditProgram[]): ProgramRenderRequest {
   const base = request();
   return { ...base, program: programs[0]!, programs };
@@ -196,6 +325,7 @@ export async function fixture(
     projectRoot,
     tenantId: "test-tenant",
   });
+  await installVerifiedSnapshot(manager, request(), "equation");
   managers.push(manager);
   return { manager, projectRoot };
 }
@@ -247,6 +377,7 @@ export async function registryFixture(command: readonly string[] = [process.exec
     projects: seedProjects,
     tenantId: "test-tenant",
   });
+  await installVerifiedRegistrySnapshots(registry, request(), "equation");
   registries.push(registry);
   return { dataRoot, firstRoot, registry, secondRoot };
 }

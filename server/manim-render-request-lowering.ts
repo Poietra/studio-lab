@@ -81,6 +81,10 @@ export async function lowerManimRenderRequest({
     sourceOrderedPrograms.every(
       (program) => program.operations.length > 0 && program.operations.every(isStaticRootTransformOperation),
     );
+  const isSingleCreateMotionProgram =
+    sourceOrderedPrograms.length === 1 &&
+    sourceOrderedPrograms[0]?.operations.length === 1 &&
+    sourceOrderedPrograms[0].operations[0]?.kind === "CreateMotion";
   if (request.sourceValidation === "runtime-trace") {
     if (containsPersistentRemove) {
       throw new HttpError("Runtime Trace does not authorize persistent remove Programs.", 400);
@@ -121,7 +125,10 @@ export async function lowerManimRenderRequest({
         400,
       );
     }
-  } else if ((containsPersistentRemove || isStaticRootTransformBatch) && !containsSceneDurationOperation) {
+  } else if (
+    (containsPersistentRemove || isStaticRootTransformBatch || isSingleCreateMotionProgram) &&
+    !containsSceneDurationOperation
+  ) {
     if (!snapshotProgramAuthorizer) {
       throw new HttpError("This Program batch requires verified Rust Scene authorization.", 400);
     }

@@ -7,7 +7,6 @@ import { basename, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import type { SceneIrBundleV1 } from "../src/engine/contracts";
 import { type ProgramRenderRequest, renderProgramBatchId } from "../src/render-pipeline/contracts";
 import { importManimScene } from "../src/render-pipeline/source-import";
 import { createSceneDurationProgram } from "../src/studio/authoring-commands";
@@ -28,6 +27,7 @@ import {
   deferred,
   fakeRenderer,
   fixture,
+  installVerifiedSnapshot,
   motionProgram,
   request,
   sceneSource,
@@ -38,93 +38,6 @@ import {
 } from "./manim-render-pipeline-test-fixtures";
 
 afterEach(cleanupManimRenderPipelineFixtures);
-
-async function installVerifiedSnapshot(
-  manager: ManimRenderManager,
-  request: ProgramRenderRequest,
-  sourceBindingName?: string,
-) {
-  const fixtureDocument = JSON.parse(
-    await readFile(
-      new URL(
-        sourceBindingName
-          ? "../fixtures/engine-v1/real-mathtex-morph-v5.json"
-          : "../fixtures/engine-v1/studio-mathtex-preview.json",
-        import.meta.url,
-      ),
-      "utf8",
-    ),
-  ) as Readonly<Pick<SceneIrBundleV1, "assets" | "scene">>;
-  const fixture: SceneIrBundleV1 = { assets: fixtureDocument.assets, scene: fixtureDocument.scene };
-  const runtimeConfigHash = "b".repeat(64);
-  const snapshotHash = "e".repeat(64);
-  const bundle: SceneIrBundleV1 = {
-    ...fixture,
-    scene: {
-      ...fixture.scene,
-      camera: {
-        ...fixture.scene.camera,
-        view: { ...fixture.scene.camera.view, frameHeight: 8, frameWidth: 14.222 },
-      },
-      animationChannels: sourceBindingName ? [] : fixture.scene.animationChannels,
-      duration: 8,
-      requiredCapabilities: sourceBindingName ? ["cubic-path-geometry"] : fixture.scene.requiredCapabilities,
-      source: {
-        kind: "imported-manim-server-snapshot",
-        runtimeConfigHash,
-        snapshotHash,
-        snapshotVersion: 1,
-        sourceHash: request.sourceHash,
-      },
-    },
-  };
-  const runtimeEntityId = bundle.scene.entities[0]?.id;
-  const snapshotRunner = Reflect.get(manager, "snapshotRunner") as Readonly<{
-    snapshot: (query: Readonly<{ sceneName: string; sourcePath: string }>) => Promise<unknown>;
-  }>;
-  Object.defineProperty(snapshotRunner, "snapshot", {
-    configurable: true,
-    value: async () => ({
-      projectId: request.projectId,
-      publishedAt: "2026-08-15T00:00:00.000Z",
-      requestId: "server-delete-authority",
-      revision: 1,
-      runtimeConfigHash,
-      sceneName: request.sceneName,
-      schema: "poietra.fast-manim-snapshot-run",
-      snapshot: {
-        bundle,
-        kind: "compiled",
-        projectId: request.projectId,
-        requestId: "server-delete-authority",
-        runtimeConfigHash,
-        sceneId: bundle.scene.sceneId,
-        sceneName: request.sceneName,
-        schema: "poietra.fast-manim-snapshot-result",
-        snapshotHash,
-        sourceHash: request.sourceHash,
-        sourcePath: request.sourcePath,
-        version: 1,
-      },
-      ...(sourceBindingName && runtimeEntityId
-        ? {
-            sourceRuntimeIdentity: {
-              mappings: [
-                {
-                  binding: { name: sourceBindingName },
-                  entityId: runtimeEntityId,
-                },
-              ],
-            },
-          }
-        : {}),
-      sourcePath: request.sourcePath,
-      status: "verified",
-      version: 1,
-    }),
-    writable: true,
-  });
-}
 
 function scaleCreatedEntityProgram(entityId: string): CanonicalEditProgram {
   const operation = {
@@ -633,6 +546,7 @@ class GroupedEquation(Scene):
       program,
       sourceHash: createHash("sha256").update(temporalMetadataSource).digest("hex"),
     };
+    await installVerifiedSnapshot(manager, renderRequest, "equation");
 
     const exported = await manager.exportSource(renderRequest);
     const imported = importManimScene(exported.source, "scene.py", "GroupedEquation");
@@ -899,14 +813,14 @@ class Independent(Scene):
     expect(() => manager.view(started.id)).toThrow(/not found/i);
 
     const nextProgram = motionProgram(5, "render-after-commit");
-    await expect(
-      manager.start({
-        ...request(),
-        program: nextProgram,
-        programs: [nextProgram],
-        sourceHash: committed.patch.patchedSourceHash,
-      }),
-    ).resolves.toMatchObject({ status: "rendering" });
+    const nextRequest = {
+      ...request(),
+      program: nextProgram,
+      programs: [nextProgram],
+      sourceHash: committed.patch.patchedSourceHash,
+    };
+    await installVerifiedSnapshot(manager, nextRequest, "equation");
+    await expect(manager.start(nextRequest)).resolves.toMatchObject({ status: "rendering" });
   });
 
   it("atomically reserves retained-session capacity across concurrent starts", async () => {

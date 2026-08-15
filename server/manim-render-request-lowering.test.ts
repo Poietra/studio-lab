@@ -487,6 +487,36 @@ describe("Manim render request lowering", () => {
     );
   });
 
+  it("routes exactly one imported CreateMotion Program through snapshot authorization", async () => {
+    const program = motionProgram(7, "single-motion-authority");
+    const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
+
+    const result = await lower(request(program), sceneSource, async (input) => {
+      authorizations.push(input);
+    });
+
+    expect(authorizations).toHaveLength(1);
+    expect(authorizations[0]).toMatchObject({
+      frame,
+      programs: [program],
+      projectId: "default",
+      request: { sceneName: "GroupedEquation", sourcePath },
+    });
+    expect(authorizations[0]?.runtimeSceneState.objectGraph.entities[entityId]).toMatchObject({
+      id: entityId,
+      provisional: false,
+      sourceIdentity: { kind: "known", value: "equation" },
+    });
+    expect(result.lowered.source).toContain("equation.animate.shift(1.4222 * RIGHT)");
+  });
+
+  it("fails exactly one imported CreateMotion Program closed without snapshot authorization", async () => {
+    await expect(lower(request(motionProgram(7, "single-motion-without-authority")))).rejects.toMatchObject({
+      message: "This Program batch requires verified Rust Scene authorization.",
+      status: 400,
+    });
+  });
+
   it("requires snapshot authorization for an imported static-root transform-only batch", async () => {
     const program = staticRootMoveProgram("static-root-move");
     const authorizations: Parameters<SnapshotProgramAuthorizer>[0][] = [];
@@ -646,7 +676,7 @@ describe("Manim render request lowering", () => {
       destination: { sceneName: "NextScene", sourcePath },
     };
 
-    await expect(lower(renderRequest)).rejects.toThrow(
+    await expect(lower(renderRequest, sceneSource, async () => undefined)).rejects.toThrow(
       expect.objectContaining({
         message: "A render without a Scene boundary must not include a destination Scene.",
         status: 400,
@@ -694,7 +724,7 @@ describe("Manim render request lowering", () => {
   it("maps source lowering failures to a client-facing HttpError", async () => {
     const renderRequest = request(motionProgram(6, "missing-anchor"));
 
-    await expect(lower(renderRequest)).rejects.toThrow(
+    await expect(lower(renderRequest, sceneSource, async () => undefined)).rejects.toThrow(
       expect.objectContaining({
         message: expect.stringMatching(/No # poietra:anchor 6\.000 .*marker exists/),
         status: 400,
