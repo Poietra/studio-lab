@@ -867,13 +867,11 @@ export function App({
     ...(editingAppliedProgram || !draftProgram ? [] : [draftProgram]),
   ];
   function workspaceProgramAuthorityForRecords(records: readonly ProgramRecord[]) {
-    const programs = records.map(({ program }) => program);
-    const authority = selectStudioWorkspaceProgramAuthority(programs, previewRenderer?.programAuthority ?? null);
-    if (authority !== "static-imported-root") return authority;
-    const exactPreviewBatch =
-      records.length === previewProgramRecords.length &&
-      records.every((record, index) => record === previewProgramRecords[index]);
-    return exactPreviewBatch ? authority : undefined;
+    return selectStudioWorkspaceProgramAuthority(
+      records,
+      previewProgramRecords,
+      previewRenderer?.programAuthority ?? null,
+    );
   }
   const workspaceTimelineProjection = timelineProjectionForRecords(previewProgramRecords);
   const workspacePersistentRemoveProjection = persistentRemoveProjectionForRecords(previewProgramRecords);

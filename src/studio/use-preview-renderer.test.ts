@@ -1160,6 +1160,7 @@ describe("compileStudioPreviewSceneV1", () => {
 
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
+    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
     expect(commands[0]?.programs.map((program) => program.transactionId)).toEqual(["first-motion", "second-motion"]);
   });
 
@@ -1224,6 +1225,7 @@ describe("compileStudioPreviewSceneV1", () => {
 
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(commands).toHaveLength(1);
+    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
     expect(result.scene.timelineProjection?.projectedDuration).toBe(3);
     expect(commands[0]).toMatchObject({
       expectedBaseRevision: base.snapshot.correlation.engineRevisionHash,
@@ -1541,7 +1543,7 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     expect(result).toMatchObject({ kind: "compiled", scene: { persistentRemoveProjection: projection } });
     if (result.kind !== "compiled") throw new Error(result.error);
-    expect(result.scene.programAuthority).toBeUndefined();
+    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
   });
 
   it("rejects Runtime Trace persistent remove before invoking the static-root Rust use case", async () => {
@@ -1815,6 +1817,7 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.persistentRemoveProjection).toEqual(persistentRemoveProjection);
+    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
   });
 
   it("attaches compiled MathTex outlines to the normalized Rust command", async () => {
@@ -2030,6 +2033,7 @@ describe("compileStudioPreviewSceneV1", () => {
     ]);
     if (result.kind !== "compiled") throw new Error(result.error);
     expect(result.scene.interactionEntityIds).toContain(finalTargetEntityId);
+    expect(result.scene.programAuthority).toBe("rust-authorized-batch");
   });
 
   it("passes imported MathTex move and scale Programs to Rust without rebuilding geometry in TypeScript", async () => {

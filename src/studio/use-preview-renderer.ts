@@ -38,7 +38,7 @@ import {
   type StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { sceneIrSourceRevisionHash } from "../engine/scene-ir";
-import type { ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
+import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity, RuntimeSceneState, WorkingState } from "./model";
 import { hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
 import {
   detectStudioPreviewCapabilities,
@@ -120,7 +120,7 @@ export type StudioPreviewRendererView = Readonly<{
   verifiedSourceDuration: number | null;
 }>;
 
-export type StudioPreviewProgramAuthority = "source-bound-endpoint" | "static-imported-root";
+export type StudioPreviewProgramAuthority = ProgramBatchAuthority;
 
 export type StudioPreviewInteractionAuthority =
   | Readonly<{ kind: "interactive"; nestedGroupEntityIds?: readonly string[] }>
@@ -682,6 +682,7 @@ export async function compileStudioPreviewSceneV1(
           frame: { ...input.frame },
           interactionEntityIds,
           persistentRemoveProjection: result.persistentRemoveProjection,
+          programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -787,6 +788,7 @@ export async function compileStudioPreviewSceneV1(
           engineRevisionHash,
           frame: { ...input.frame },
           interactionEntityIds,
+          programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -843,7 +845,7 @@ export async function compileStudioPreviewSceneV1(
           persistentRemoveProjection: result.persistentRemoveProjection,
           ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
             ? { programAuthority: "static-imported-root" as const }
-            : {}),
+            : { programAuthority: "rust-authorized-batch" as const }),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -896,6 +898,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
+          programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           timelineProjection,
           workingRevision: input.workingRevision,
@@ -947,6 +950,7 @@ export async function compileStudioPreviewSceneV1(
             ),
             bundle.scene.entities,
           ),
+          programAuthority: "rust-authorized-batch",
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,
@@ -1043,7 +1047,7 @@ export async function compileStudioPreviewSceneV1(
           persistentRemoveProjection: result.persistentRemoveProjection,
           ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
             ? { programAuthority: "static-imported-root" as const }
-            : {}),
+            : { programAuthority: "rust-authorized-batch" as const }),
           snapshot: input.snapshot,
           workingRevision: input.workingRevision,
           workspaceKey: input.workspaceKey,

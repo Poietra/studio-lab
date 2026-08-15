@@ -1,8 +1,8 @@
 import type { StudioPersistentRemoveProjectionV1, StudioTimelineProjectionV1 } from "../engine/scene-authoring";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
-import type { ProgramRecord, ProjectedEntity } from "./model";
-import { type CanonicalEditProgram, hasImportedRootTransformTarget, isSceneDurationOperation } from "./operations";
+import type { ProgramBatchAuthority, ProgramRecord, ProjectedEntity } from "./model";
+import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -14,13 +14,14 @@ export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
 }
 
 export function selectStudioWorkspaceProgramAuthority(
-  programs: readonly CanonicalEditProgram[],
-  authority: "source-bound-endpoint" | "static-imported-root" | null,
+  records: readonly ProgramRecord[],
+  previewRecords: readonly ProgramRecord[],
+  authority: ProgramBatchAuthority | null,
 ) {
-  if (!hasImportedRootTransformTarget(programs)) return null;
-  if (authority === "static-imported-root") return authority;
-  if (authority === "source-bound-endpoint") return null;
-  return undefined;
+  if (records.length === 0) return null;
+  if (isSceneDurationProgramBatch(records.map(({ program }) => program))) return null;
+  if (!authority || records.length !== previewRecords.length) return undefined;
+  return records.every((record, index) => record === previewRecords[index]) ? authority : undefined;
 }
 
 export function selectPersistentRemoveProjection(
@@ -61,7 +62,7 @@ export function projectStudioWorkspace(
     draftProgram: ProgramRecord | null;
     nextScene: ManimWorkspaceScene | null;
     persistentRemoveProjection?: StudioPersistentRemoveProjectionV1 | null;
-    programAuthority?: "static-imported-root" | null;
+    programAuthority?: ProgramBatchAuthority | null;
     selectedObjectIds: readonly string[];
     timelineProjection?: StudioTimelineProjectionV1 | null;
   }>,
