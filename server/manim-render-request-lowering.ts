@@ -6,9 +6,7 @@ import {
   lowerRuntimeTraceEditSource,
   ProgramLoweringError,
 } from "../src/render-pipeline/source-lowering";
-import { evaluateWorkingState, programRecord } from "../src/studio/evaluator";
 import type { RuntimeSceneState } from "../src/studio/model";
-import { STUDIO_STATE_VERSION } from "../src/studio/model";
 import {
   type CanonicalEditProgram,
   isSceneDurationOperation,
@@ -207,39 +205,7 @@ export async function lowerManimRenderRequest({
         400,
       );
     }
-    const evaluated = evaluateWorkingState({
-      appliedPrograms: orderedPrograms.map(({ program }) => programRecord(program, { issues: [], kind: "valid" })),
-      editorContext: {
-        activeSceneId: activeScene.sceneId,
-        playhead: 0,
-        selection: [],
-        version: STUDIO_STATE_VERSION,
-        viewport: request.viewport,
-      },
-      runtimeSceneState: activeScene.runtimeSceneState,
-      sourceSnapshot: {
-        configId: projectId,
-        hash: request.sourceHash,
-        sourceId: request.sourcePath,
-        version: STUDIO_STATE_VERSION,
-      },
-      stagedPrograms: [],
-      staticSemanticState: {
-        entities: [],
-        unknowns: [],
-        version: STUDIO_STATE_VERSION,
-      },
-      version: STUDIO_STATE_VERSION,
-    });
-    const invalidRecord = evaluated.programs.find((record) => record.validation.status === "invalid");
-    if (invalidRecord) {
-      throw new HttpError(
-        invalidRecord.validation.issues.find((issue) => issue.severity === "error")?.message ??
-          "A Canonical EditProgram is invalid for the imported Scene after timeline insertion.",
-        400,
-      );
-    }
-    validatedPrograms = evaluated.programs.map((record) => record.program);
+    throw new HttpError("The Rust Scene core does not support this complete Program batch.", 400);
   }
   const renderRequest: ProgramRenderRequest = request.programs
     ? { ...request, program: validatedPrograms[0]!, programs: validatedPrograms }
