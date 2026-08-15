@@ -420,7 +420,7 @@ fn apply_studio_math_tex_transform_edit_json(
         )?;
     let mut session = scene_authoring_session(snapshot_json)?;
     let result = session.apply_studio_math_tex_transform_edit(command.into())?;
-    scene_authoring_response(&result)
+    studio_authoring_edit_response(&result)
 }
 
 fn apply_studio_bound_entity_edit_json(
@@ -627,7 +627,11 @@ mod tests {
                     "interval": { "end": 0.75, "start": 0.25 },
                     "kind": "transform-content",
                     "origin": "remote-model",
-                    "replacementTexParts": ["B"],
+                    "replacement": {
+                        "displayLines": ["B"],
+                        "label": "middle",
+                        "texParts": ["B"]
+                    },
                     "sourceEntityId": "source:formula",
                     "strategy": "transform-matching-tex",
                     "targetEntityId": "tx:math-tex-transform/entity:b",
@@ -638,7 +642,11 @@ mod tests {
                     "interval": { "end": 1.25, "start": 0.75 },
                     "kind": "transform-content",
                     "origin": "remote-model",
-                    "replacementTexParts": ["A"],
+                    "replacement": {
+                        "displayLines": ["A"],
+                        "label": "restored",
+                        "texParts": ["A"]
+                    },
                     "sourceEntityId": "tx:math-tex-transform/entity:b",
                     "strategy": "transform-matching-tex",
                     "targetEntityId": "tx:math-tex-transform/entity:a-prime",
@@ -1587,10 +1595,56 @@ mod tests {
             &math_tex_transform_edit_command_json(),
         )
         .unwrap();
-        let bundle = parse_scene_ir_bundle_json_v1(&response).unwrap();
+        let response: serde_json::Value = serde_json::from_slice(&response).unwrap();
+        let bundle =
+            parse_scene_ir_bundle_json_v1(&serde_json::to_vec(&response["bundle"]).unwrap())
+                .unwrap();
 
         assert_eq!(bundle.scene.entities.len(), 3);
         assert_eq!(bundle.scene.animation_channels.len(), 3);
+        assert_eq!(
+            response["mathTexTransformProjection"],
+            json!({
+                "insertions": [{
+                    "at": 0.25,
+                    "duration": 1.0,
+                    "transactionId": "math-tex-transform"
+                }],
+                "projectedDuration": 3.4,
+                "replacements": [{
+                    "content": {
+                        "displayLines": ["B"],
+                        "label": "middle",
+                        "texParts": ["B"]
+                    },
+                    "interval": { "end": 0.75, "start": 0.25 },
+                    "operationId": "transform-a-b",
+                    "sourceEntityId": "source:formula",
+                    "targetEntityId": "tx:math-tex-transform/entity:b",
+                    "targetLifetime": { "end": 1.25, "start": 0.25 },
+                    "targetType": "math-tex",
+                    "transactionId": "math-tex-transform"
+                }, {
+                    "content": {
+                        "displayLines": ["A"],
+                        "label": "restored",
+                        "texParts": ["A"]
+                    },
+                    "interval": { "end": 1.25, "start": 0.75 },
+                    "operationId": "transform-b-a",
+                    "sourceEntityId": "tx:math-tex-transform/entity:b",
+                    "targetEntityId": "tx:math-tex-transform/entity:a-prime",
+                    "targetLifetime": { "end": 3.4, "start": 0.75 },
+                    "targetType": "math-tex",
+                    "transactionId": "math-tex-transform"
+                }]
+            })
+        );
+        assert_eq!(
+            response["persistentRemoveProjection"]["removals"],
+            json!([])
+        );
+        assert!(response.get("staticRootProjection").is_none());
         assert!(bundle.scene.entities.iter().any(|entity| {
             entity.id == "tx:math-tex-transform/entity:a-prime"
                 && matches!(entity.geometry, SceneGeometryV1::CubicPath { .. })
