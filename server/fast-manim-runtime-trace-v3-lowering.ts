@@ -574,6 +574,7 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
           frameWidth: trace.camera.frameWidth,
         },
       },
+      compositing: "manim-cairo-srgb",
       coordinateSpace: {
         cpuPrecision: "f64",
         kind: "cartesian-2d",
@@ -605,6 +606,10 @@ export async function lowerVerifiedFastManimRuntimeTraceV3(trace: FastManimRunti
         sourceHash: trace.sourceHash,
         traceDigest,
         traceVersion: 3,
+      },
+      stateSampling: {
+        frameRate: FAST_MANIM_RUNTIME_TRACE_FRAME_RATE_V3,
+        retainsTerminalState: true,
       },
       version: 1,
     } satisfies SceneIrV1;

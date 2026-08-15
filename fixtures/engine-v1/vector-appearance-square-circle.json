@@ -242,6 +242,7 @@
       "background": { "alpha": 1, "blue": 0, "green": 0, "red": 0 },
       "view": { "center": { "x": 0, "y": 0 }, "frameHeight": 9, "frameWidth": 16 }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -318,6 +319,7 @@
     "requiredCapabilities": ["cubic-path-geometry", "path-morph-animation", "vector-appearance-animation"],
     "sceneId": "shared:square-circle-appearance",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",

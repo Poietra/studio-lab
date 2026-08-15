@@ -370,9 +370,16 @@ async function verifiedStaticPrimitivePreviewInput(type: "Circle" | "Rectangle")
   const producerFixtureUrl = new URL("../../server/test-fixtures/fast-manim-static-bundle.json", import.meta.url);
   const producerFixture = JSON.parse(await readFile(producerFixtureUrl, "utf8")) as Readonly<{
     assets: unknown;
-    scene: unknown;
+    scene: Readonly<Record<string, unknown>>;
   }>;
-  const producerBundle = await parseVerifiedSceneIrBundleV1(producerFixture);
+  const producerBundle = await parseVerifiedSceneIrBundleV1({
+    ...producerFixture,
+    scene: {
+      ...producerFixture.scene,
+      compositing: "linear-light",
+      stateSampling: { frameRate: null, retainsTerminalState: false },
+    },
+  });
   const producerEntity = producerBundle.scene.entities[type === "Circle" ? 0 : 1];
   if (producerEntity?.geometry.kind !== "cubic-path") {
     throw new Error("FastManim static primitive fixture lost its producer-shaped cubic path.");

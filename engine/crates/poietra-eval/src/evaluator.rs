@@ -713,7 +713,7 @@ fn compile_render_packet_from_validated_v1(
             right: camera.center.x + camera.frame_width / 2.0,
             top: camera.center.y + camera.frame_height / 2.0,
         },
-        compositing: options.scene.source.render_compositing(),
+        compositing: options.scene.compositing,
         coordinate_space: options.scene.coordinate_space.clone(),
         required_capabilities: render_capabilities(&draws),
         draws,
@@ -786,7 +786,7 @@ mod tests {
         AssetManifestReferenceV1, AssetManifestSchemaV1, CoordinateSpaceV1, FidelityV1, FillRuleV1,
         FillStyleV1, IntervalV1, ProvenanceOriginV1, ProvenanceRecordV1, RenderCompositingV1,
         RgbaColorV1, SceneCameraV1, SceneCapabilityV1, SceneIrSchemaV1, SceneSourceV1,
-        SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
+        SceneStateSamplingV1, SnapshotProfileVersionV1, StrokeCapV1, StrokeJoinV1, StrokeStyleV1,
     };
 
     const EMPTY_MANIFEST_DIGEST: &str =
@@ -839,6 +839,7 @@ mod tests {
                     frame_width: 16.0,
                 },
             },
+            compositing: RenderCompositingV1::LinearLight,
             coordinate_space: CoordinateSpaceV1::default(),
             duration: 2.0,
             entities: vec![SceneEntityV1 {
@@ -881,6 +882,10 @@ mod tests {
                 edit_program_version: ContractVersionV1,
                 revision_hash: "0".repeat(64),
             },
+            state_sampling: SceneStateSamplingV1 {
+                frame_rate: None,
+                retains_terminal_state: false,
+            },
             version: ContractVersionV1,
         };
         (assets, scene)
@@ -920,8 +925,9 @@ mod tests {
     }
 
     #[test]
-    fn emits_explicit_cairo_compositing_for_audited_imported_profiles() {
+    fn emits_scene_compositing_independently_of_source_profile() {
         let (assets, mut scene) = fixture();
+        scene.compositing = RenderCompositingV1::ManimCairoSrgb;
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash: "0".repeat(64),
             snapshot_hash: "0".repeat(64),
@@ -969,13 +975,17 @@ mod tests {
 
         set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V9);
         let v9 = compile(&scene, "packet:v9");
-        assert_eq!(v9.compositing, RenderCompositingV1::LinearLight);
+        assert_eq!(v9.compositing, RenderCompositingV1::ManimCairoSrgb);
 
         set_snapshot_version(&mut scene, SnapshotProfileVersionV1::V10);
         let v10 = compile(&scene, "packet:v10");
-        assert_eq!(v10.compositing, RenderCompositingV1::LinearLight);
+        assert_eq!(v10.compositing, RenderCompositingV1::ManimCairoSrgb);
+
+        scene.compositing = RenderCompositingV1::LinearLight;
+        let linear = compile(&scene, "packet:linear");
+        assert_eq!(linear.compositing, RenderCompositingV1::LinearLight);
         assert!(
-            serde_json::to_value(&v10)
+            serde_json::to_value(&linear)
                 .unwrap()
                 .get("compositing")
                 .is_none()
@@ -983,14 +993,15 @@ mod tests {
     }
 
     #[test]
-    fn imported_v12_retains_its_final_hold_at_the_correlated_duration() {
+    fn scene_sampling_retains_its_final_hold_independently_of_source_profile() {
         let (assets, mut scene) = fixture();
         scene.source = SceneSourceV1::ImportedManimServerSnapshot {
             runtime_config_hash: "0".repeat(64),
             snapshot_hash: "0".repeat(64),
-            snapshot_version: SnapshotProfileVersionV1::V12,
+            snapshot_version: SnapshotProfileVersionV1::V9,
             source_hash: "0".repeat(64),
         };
+        scene.state_sampling.retains_terminal_state = true;
         let packet = compile_render_packet_v1(CompileEngineFrameOptionsV1 {
             assets: &assets,
             evidence: &[],

@@ -358,12 +358,20 @@ export const sceneCapabilityV1Schema = z.enum([
   "vector-appearance-animation",
 ]);
 
+const sceneStateSamplingV1Schema = z
+  .object({
+    frameRate: finiteNumberV1Schema.positive().nullable(),
+    retainsTerminalState: z.boolean(),
+  })
+  .strict();
+
 /** Type and fixture decoder only; semantic admission belongs to the Rust core. */
 export const sceneIrV1Schema = z
   .object({
     animationChannels: z.array(animationChannelV1Schema).max(MAX_CHANNELS),
     assetManifest: assetManifestReferenceV1Schema,
     camera: sceneCameraV1Schema,
+    compositing: z.enum(["linear-light", "manim-cairo-srgb"]),
     coordinateSpace: z
       .object({
         cpuPrecision: z.literal("f64"),
@@ -385,6 +393,7 @@ export const sceneIrV1Schema = z
     sceneId: sourceIdentityV1Schema,
     schema: z.literal("poietra.scene-ir"),
     source: sceneSourceV1Schema,
+    stateSampling: sceneStateSamplingV1Schema,
     version: z.literal(POIETRA_ENGINE_CONTRACT_VERSION),
   })
   .strict();
@@ -396,14 +405,6 @@ export type AnimationChannelV1 = SceneIrV1Input["animationChannels"][number];
 export type SceneIrV1 = z.infer<typeof sceneIrV1Schema>;
 export type SceneEntityGeometryV1 = SceneEntityV1["geometry"];
 export type SceneSourceV1 = z.infer<typeof sceneSourceV1Schema>;
-
-export function sceneSourceRenderCompositingV1(source: SceneSourceV1) {
-  return source.kind === "imported-manim-runtime-trace" ||
-    (source.kind === "imported-manim-server-snapshot" &&
-      (source.snapshotVersion === 8 || source.snapshotVersion === 11 || source.snapshotVersion === 12))
-    ? ("manim-cairo-srgb" as const)
-    : ("linear-light" as const);
-}
 
 export function sceneIrSourceRevisionHash(scene: SceneIrV1) {
   return scene.source.kind === "studio-edit-program"

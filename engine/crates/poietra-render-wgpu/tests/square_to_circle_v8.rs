@@ -8,7 +8,7 @@ use poietra_eval::{
 use poietra_geometry::apply_easing_v1;
 use poietra_render_wgpu::{PreparedGeometryCacheV1, prepare_frame_v1, prepare_frame_with_cache_v1};
 use poietra_scene_ir::{EasingV1, RenderCompositingV1, RenderDrawV1, SceneIrBundleV1, ViewportV1};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 const CUBIC_SIGNED_AREA_ROOT_PROGRESS: f64 = 0.530_158_360_440_676_8;
 // This is Scene time, not raw morph progress: inverse Manim smooth maps its
@@ -33,7 +33,10 @@ fn real_producer_bundle() -> SceneIrBundleV1 {
         .expect("the combined fixture must carry its producer snapshot JSON");
     let snapshot: Value = serde_json::from_str(snapshot_json)
         .expect("the real fast-manim V8 producer snapshot must be JSON");
-    serde_json::from_value(snapshot["bundle"].clone())
+    let mut bundle = snapshot["bundle"].clone();
+    bundle["scene"]["compositing"] = json!("manim-cairo-srgb");
+    bundle["scene"]["stateSampling"] = json!({ "frameRate": null, "retainsTerminalState": false });
+    serde_json::from_value(bundle)
         .expect("the real fast-manim V8 producer bundle must match Scene IR")
 }
 

@@ -319,7 +319,7 @@ const REAL_MATHTEX_MORPH_V5_SOURCE_SHA256: &str =
 const REAL_MATHTEX_MORPH_V5_ENGINE_COMMIT: &str = "be671c1ddcfc8466548c8822956e19579256e581";
 const REAL_MATHTEX_MORPH_V5_FAST_MANIM_COMMIT: &str = "3083db9ed9a9a93c2808ee3f51189ceca92d230b";
 const REAL_MATHTEX_MORPH_V5_SNAPSHOT_HASH: &str =
-    "05c0318c662004e9b1898a4018eaedef3a11b0926be9a166daa621145f645cbf";
+    "15f721e080cf27abad0f8af09c2f861835338a97e3c171f8f76922264a1a9c2e";
 const REAL_MATHTEX_MORPH_V5_SAMPLES: [(&str, &str, f64); 5] = [
     ("real-mathtex-morph-v5--a-initial", "a-initial", 0.5),
     (
@@ -345,7 +345,7 @@ const REAL_SQUARE_TO_CIRCLE_V8_SOURCE_SHA256: &str =
 const REAL_SQUARE_TO_CIRCLE_V8_ENGINE_COMMIT: &str = "1f195ba48d4e2ea92dd45b3cac4928342da320c9";
 const REAL_SQUARE_TO_CIRCLE_V8_FAST_MANIM_COMMIT: &str = "a1e886fb854268ad7d06b00168f9a5ce3339857d";
 const REAL_SQUARE_TO_CIRCLE_V8_SNAPSHOT_HASH: &str =
-    "de7db7be8e1c633bd5668ed13b4daf3c3e945026db107bddc70e5366b0af80f1";
+    "af546de8a922b83ed620133f917867ef67cdb88eac65a0d9b06e42c3162ff0b2";
 const REAL_SQUARE_TO_CIRCLE_V8_SAMPLES: [(&str, &str, f64); 5] = [
     (
         "real-square-to-circle-v8--create-midpoint",
@@ -375,7 +375,7 @@ const REAL_WARP_SQUARE_V9_SOURCE_SHA256: &str =
 const REAL_WARP_SQUARE_V9_ENGINE_COMMIT: &str = "0b331ce781411f38185dcabccdffdccee02d4376";
 const REAL_WARP_SQUARE_V9_FAST_MANIM_COMMIT: &str = "2c1e56287193e3acddbe6779f6ecd4bd91094588";
 const REAL_WARP_SQUARE_V9_SNAPSHOT_HASH: &str =
-    "b8854f07baa588b01a2a5694d8ade2800601f1e26b6e12d626cc170ffa1be9ed";
+    "ebac8286ff6c03240b0d4bc9b0d548b15a089bf41a2c24eea2bebc552a49054f";
 const REAL_WARP_SQUARE_V9_SAMPLES: [(&str, &str, f64); 5] = [
     ("real-warp-square-v9--source", "source", 0.0),
     ("real-warp-square-v9--quarter", "quarter", 0.75),
@@ -393,7 +393,7 @@ const REAL_LINE_JOINTS_V10_SOURCE_SHA256: &str =
     "d75fa2596a5dd2c15d833bdb41846006b931617998dc87f88b723048a323af4f";
 const REAL_LINE_JOINTS_V10_FAST_MANIM_COMMIT: &str = "29d21a2bd213df8ffeed0454278aa86289d190b8";
 const REAL_LINE_JOINTS_V10_SNAPSHOT_HASH: &str =
-    "53fd284f9fd30f8223f90dfc9c291d571bab25d61b55170d5e57cf346e1b2827";
+    "d9f5459beb56066e9b4804438aea0d96c310e931138a21d93910b61521bbcc96";
 const REAL_LINE_JOINTS_V10_EDITED_ENTRY_V1: &str = "real-line-joints-v10-edited--static";
 const REAL_LINE_JOINTS_V10_EDITED_FIXTURE_ID: &str = "eng-v1-real-line-joints-v10-edited";
 const REAL_LINE_JOINTS_V10_EDITED_FIXTURE_PATH: &str =
@@ -407,7 +407,7 @@ const REAL_LINE_JOINTS_V10_EDITED_FAST_MANIM_TREE: &str =
 const REAL_LINE_JOINTS_V10_EDITED_PRODUCER_SNAPSHOT_DIGEST: &str =
     "6262b10ed9af78be6ad939987f043ed52d6500b392c4d0007070937bc1abaac8";
 const REAL_LINE_JOINTS_V10_EDITED_SNAPSHOT_HASH: &str =
-    "3de97161c0f5ff210f2a0b7e461bc7067dcc8a0eb92c66f02d3a870dfbd27a7f";
+    "909a4cf37a4b883821b2f91da4df8b5ae0cfc79c1ee041745e69fc48e5c74cd9";
 const REAL_LINE_JOINTS_V10_EDIT_ANCHOR: &str =
     "        grp.set(width=config.frame_width - 1)\n\n        self.add(grp)";
 const REAL_LINE_JOINTS_V10_EDIT_REPLACEMENT: &str = "        grp.set(width=config.frame_width - 1)\n        t2.move_to((1.25, -0.5, 0))\n        t2.scale(0.5)\n\n        self.add(grp)";
@@ -424,7 +424,7 @@ const REAL_SPIRAL_IN_V11_FAST_MANIM_TREE: &str = "6fad77addc72e1a97440265e27d026
 const REAL_SPIRAL_IN_V11_PRODUCER_SNAPSHOT_DIGEST: &str =
     "f10b64b47c0aa8d663a01dfb58a6d20057608a0c324f97b436a9c13becefcbea";
 const REAL_SPIRAL_IN_V11_SNAPSHOT_HASH: &str =
-    "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0";
+    "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde";
 const REAL_SPIRAL_IN_V11_SAMPLES: [(&str, &str, f64); 7] = [
     ("real-spiral-in-v11--start", "start", 0.0),
     ("real-spiral-in-v11--early-reveal", "early-reveal", 0.1),
@@ -455,7 +455,7 @@ const REAL_WRITE_STUFF_V12_FAST_MANIM_TREE: &str = "996ad2b7375a6f911b1b00747eaa
 const REAL_WRITE_STUFF_V12_PRODUCER_SNAPSHOT_DIGEST: &str =
     "dd6ca2c3e1015718f9fa9b8ad0e926de8260013eb85d17574c3c7fdeaba89817";
 const REAL_WRITE_STUFF_V12_SNAPSHOT_HASH: &str =
-    "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594";
+    "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f";
 const REAL_WRITE_STUFF_V12_SAMPLES: [(&str, &str, f64); 8] = [
     ("real-write-stuff-v12--start", "start", 0.0),
     ("real-write-stuff-v12--tex-early", "tex-early", 0.25),
@@ -480,7 +480,7 @@ const REAL_WRITE_STUFF_V12_EDITED_FAST_MANIM_TREE: &str =
 const REAL_WRITE_STUFF_V12_EDITED_PRODUCER_SNAPSHOT_DIGEST: &str =
     "49e7491506b1514da26e70d035bf4b4cc34248ac17ac2688e801cf3459e98a24";
 const REAL_WRITE_STUFF_V12_EDITED_SNAPSHOT_HASH: &str =
-    "0b7fe0cef87705b148916bdb857d61c177e4edb121f7883db5122f439f706d48";
+    "7a6968f889e9993abb8c65a50c32549064f4fa51baf46491616b93de99483e00";
 const REAL_WRITE_STUFF_V12_EDIT_ANCHOR: &str =
     "        group.width = config[\"frame_width\"] - 2 * LARGE_BUFF\n";
 const REAL_WRITE_STUFF_V12_EDIT_REPLACEMENT: &str = "        group.width = config[\"frame_width\"] - 2 * LARGE_BUFF\n        example_tex.move_to((1.25, -0.5, 0))\n        example_tex.scale(0.5)\n";
@@ -2395,7 +2395,7 @@ fn renders_real_square_to_circle_v8_samples_with_fallback_adapter() {
     );
     assert_eq!(bundle.scene.duration.to_bits(), 3.0_f64.to_bits());
     assert_eq!(
-        bundle.scene.source.render_compositing(),
+        bundle.scene.compositing,
         RenderCompositingV1::ManimCairoSrgb
     );
     assert_eq!(bundle.scene.entities.len(), 1);

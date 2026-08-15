@@ -21,6 +21,7 @@
         "frameWidth": 16
       }
     },
+    "compositing": "linear-light",
     "coordinateSpace": {
       "cpuPrecision": "f64",
       "kind": "cartesian-2d",
@@ -239,6 +240,7 @@
     "requiredCapabilities": ["cubic-path-geometry"],
     "sceneId": "shared:generic-fill-topology",
     "schema": "poietra.scene-ir",
+    "stateSampling": { "frameRate": null, "retainsTerminalState": false },
     "source": {
       "editProgramVersion": 1,
       "kind": "studio-edit-program",

@@ -158,7 +158,7 @@ describe("SpiralIn Cairo reference v1", () => {
           path: "fixtures/engine-v1/real-spiral-in-v11.json",
           revision: {
             kind: "imported-manim-server-snapshot",
-            sha256: "fccc297be458cb3a066842d0f94f8d60575dd5492371c82d6d8be1e53b01d1e0",
+            sha256: "314925213257783d7179bbf17242f415995735657f2616f85e169923c110bbde",
           },
         },
         sample: { id: sampleId, sampleTime, viewport: { heightPx: 360, widthPx: 640 } },

@@ -4369,6 +4369,23 @@ function fastManimSnapshotProvenanceEvidence(
   }
 }
 
+function fastManimSnapshotSceneSemantics(snapshotVersion: FastManimSnapshotProfileVersionV1) {
+  return {
+    compositing: [8, 11, 12].includes(snapshotVersion) ? ("manim-cairo-srgb" as const) : ("linear-light" as const),
+    stateSampling: { frameRate: null, retainsTerminalState: snapshotVersion === 12 },
+  };
+}
+
+function attachFastManimSnapshotSceneSemantics(bundle: unknown, snapshotVersion: FastManimSnapshotProfileVersionV1) {
+  if (typeof bundle !== "object" || bundle === null || !("scene" in bundle)) {
+    return bundle;
+  }
+  const scene = bundle.scene;
+  return typeof scene === "object" && scene !== null
+    ? { ...bundle, scene: { ...scene, ...fastManimSnapshotSceneSemantics(snapshotVersion) } }
+    : bundle;
+}
+
 async function parseFastManimSnapshotResultV1(
   value: unknown,
   expectedValue: ExpectedFastManimSnapshotCorrelationV1,
@@ -4395,7 +4412,11 @@ async function parseFastManimSnapshotResultV1(
     );
   }
 
-  const bundle = await parseVerifiedSceneIrBundleV1(result.bundle);
+  const bundle = await parseVerifiedSceneIrBundleV1(
+    mode === "producer"
+      ? attachFastManimSnapshotSceneSemantics(result.bundle, expected.snapshotVersion)
+      : result.bundle,
+  );
   const { source } = bundle.scene;
   if (source.kind !== "imported-manim-server-snapshot") {
     throw new FastManimSnapshotContractError(
@@ -4413,6 +4434,17 @@ async function parseFastManimSnapshotResultV1(
     throw new FastManimSnapshotContractError(
       "snapshot-source-mismatch",
       "The compiled Scene source evidence does not match its snapshot envelope.",
+    );
+  }
+  const expectedSceneSemantics = fastManimSnapshotSceneSemantics(expected.snapshotVersion);
+  if (
+    bundle.scene.compositing !== expectedSceneSemantics.compositing ||
+    bundle.scene.stateSampling.frameRate !== expectedSceneSemantics.stateSampling.frameRate ||
+    bundle.scene.stateSampling.retainsTerminalState !== expectedSceneSemantics.stateSampling.retainsTerminalState
+  ) {
+    throw new FastManimSnapshotContractError(
+      "snapshot-source-mismatch",
+      "The compiled Scene semantics do not match its snapshot profile.",
     );
   }
   if (bundle.scene.provenance.some(({ origin }) => origin !== "fast-manim-server-snapshot")) {

@@ -551,7 +551,11 @@ mod tests {
         let combined: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
         let producer_snapshot: Value =
             serde_json::from_str(combined["snapshotJson"].as_str().unwrap()).unwrap();
-        serde_json::to_vec(&producer_snapshot["bundle"]).unwrap()
+        let mut bundle = producer_snapshot["bundle"].clone();
+        bundle["scene"]["compositing"] = json!("manim-cairo-srgb");
+        bundle["scene"]["stateSampling"] =
+            json!({ "frameRate": null, "retainsTerminalState": false });
+        serde_json::to_vec(&bundle).unwrap()
     }
 
     fn real_warp_square_v9_snapshot() -> Vec<u8> {

@@ -95,6 +95,7 @@ function scene(assets: AssetManifestV1): SceneIrV1 {
       background: { ...white, blue: 0, green: 0, red: 0 },
       view: { center: { x: 0, y: 0 }, frameHeight: 9, frameWidth: 16 },
     },
+    compositing: "linear-light",
     coordinateSpace: {
       cpuPrecision: "f64",
       kind: "cartesian-2d",
@@ -155,6 +156,7 @@ function scene(assets: AssetManifestV1): SceneIrV1 {
     sceneId: "scene",
     schema: "poietra.scene-ir",
     source: { editProgramVersion: 1, kind: "studio-edit-program", revisionHash: SCENE_HASH },
+    stateSampling: { frameRate: null, retainsTerminalState: false },
     version: 1,
   });
 }

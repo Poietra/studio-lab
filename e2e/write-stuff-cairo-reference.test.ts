@@ -218,7 +218,7 @@ describe("WriteStuff Cairo reference v1", () => {
           path: "fixtures/engine-v1/real-write-stuff-v12.json",
           revision: {
             kind: "imported-manim-server-snapshot",
-            sha256: "b4cb36f1756e1204d6093f9fd838f75eb6810429b5aad30abc68af4c7d7c2594",
+            sha256: "58ec83a4bf4e4e155a9d9bcee48cabbb230d38722518ff7f21245ac3c80c532f",
           },
         },
         sample: { id: sampleId, sampleTime, viewport: { heightPx: 360, widthPx: 640 } },
