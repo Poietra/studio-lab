@@ -23,6 +23,7 @@ flate2 = "=1.1.9"
 poietra-geometry = { path = "crates/poietra-geometry" }
 poietra-scene-ir = { path = "crates/poietra-scene-ir" }
 poietra-eval = { path = "crates/poietra-eval" }
+poietra-export-mux = { path = "crates/poietra-export-mux" }
 poietra-mathtex-outline = { path = "crates/poietra-mathtex-outline" }
 pyo3 = { version = "=0.28.3", features = ["abi3-py310"] }
 lyon_tessellation = "=1.0.20"

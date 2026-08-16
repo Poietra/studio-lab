@@ -545,11 +545,21 @@ fn render_packet_rejects_invalid_time_and_camera_aspect() {
             .contains_message("camera and viewport aspect ratios must match")
     );
 
-    let mut even_rounded_sd_export = empty_packet();
-    even_rounded_sd_export.viewport.width_px = 854;
-    even_rounded_sd_export.viewport.height_px = 480;
-    validate_render_packet_v1(&even_rounded_sd_export)
-        .expect("the closed 854x480 export rung must accept its even-rounded 16:9 width");
+    // The packet gate itself stays strict, keeping square pixels for every
+    // consumer: a 16:9 camera does not match the 854x480 export rung here.
+    // The rung is admitted upstream by fitting the sampled camera window
+    // (`EngineSessionV1::sample_export_render_packet`), never by loosening
+    // this validation.
+    let mut rounded_export_aspect = empty_packet();
+    rounded_export_aspect.viewport = ViewportV1 {
+        height_px: 480,
+        width_px: 854,
+    };
+    assert!(
+        validate_render_packet_v1(&rounded_export_aspect)
+            .unwrap_err()
+            .contains_message("camera and viewport aspect ratios must match")
+    );
 }
 
 #[test]

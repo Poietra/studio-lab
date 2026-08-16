@@ -83,6 +83,24 @@ export type PreparedCanvasPngAssetTransferV1 = Readonly<{
   transfers: readonly CanvasPngAssetTransferV1[];
 }>;
 
+/** Encodes already-verified transfer metadata for the Rust PNG registry. */
+export function encodeCanvasPngAssetTransfersForWasmV1(assets: readonly CanvasPngAssetTransferV1[]) {
+  return {
+    bytes: assets.map((asset) => new Uint8Array(asset.bytes)),
+    metadataJson: new TextEncoder().encode(
+      JSON.stringify(
+        assets.map(({ assetId, bytes: _bytes, ...metadata }) => ({
+          alphaMode: "straight",
+          colorSpace: "srgb",
+          id: assetId,
+          kind: "png-image",
+          ...metadata,
+        })),
+      ),
+    ),
+  };
+}
+
 export class CanvasPngAssetValidationError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);

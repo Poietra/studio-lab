@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { CanvasPngAssetTransferV1 } from "../engine/canvas-png-assets";
 import type { CaptureCanvasFrameEvidenceInputV1 } from "../engine/canvas-worker-client";
 import { MAX_CANVAS_INTERACTION_ENTITY_IDS } from "../engine/canvas-worker-protocol";
 import type { SceneIrBundleV1 } from "../engine/contracts";
@@ -114,6 +115,11 @@ import {
 
 export type StudioPreviewRendererView = Readonly<{
   attachCanvas: (canvas: HTMLCanvasElement | null) => void;
+  /** Exact Rust-admitted Scene currently presented by the retained renderer. */
+  canonicalScene: Readonly<{
+    assetPayloads: readonly CanvasPngAssetTransferV1[];
+    bundle: SceneIrBundleV1;
+  }> | null;
   /** Verified world-space center used to project Studio viewport positions. */
   cameraCenter: Readonly<{ x: number; y: number }> | null;
   epoch: number;
@@ -1725,6 +1731,13 @@ export function useStudioPreviewRenderer(input: UseStudioPreviewRendererInput): 
     attachCanvas,
     boundEntityProjection: state.phase === "presented" ? (currentCompiledScene?.boundEntityProjection ?? null) : null,
     cameraCenter: snapshot ? { ...snapshot.snapshot.scene.camera.view.center } : null,
+    canonicalScene:
+      state.phase === "presented" && currentCompiledScene
+        ? {
+            assetPayloads: currentCompiledScene.snapshot.assetPayloads,
+            bundle: currentCompiledScene.bundle,
+          }
+        : null,
     creationProjection: state.phase === "presented" ? (currentCompiledScene?.creationProjection ?? null) : null,
     epoch,
     interactionGeometry,

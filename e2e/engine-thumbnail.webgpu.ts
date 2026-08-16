@@ -7,7 +7,9 @@ const THUMBNAIL_WIDTH = 854;
 const THUMBNAIL_HEIGHT = 480;
 const MAX_THUMBNAIL_BYTES = 4 * 1024 * 1024;
 
-test("renders the representative Scene frame as the durable PNG thumbnail shape", async ({ page }) => {
+test("renders the representative Scene frame as the durable PNG thumbnail shape", { tag: "@ci-smoke" }, async ({
+  page,
+}) => {
   test.setTimeout(120_000);
   const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as {
     assets: unknown;

@@ -1,5 +1,6 @@
 import { POIETRA_CANVAS_ABI_VERSION } from "./canvas-abi";
 import type { CanvasFrameEvidenceCaptureV1 } from "./canvas-frame-evidence";
+import { encodeCanvasPngAssetTransfersForWasmV1 } from "./canvas-png-assets";
 import {
   type CanvasRenderResponseV1,
   type CanvasRenderTelemetryResponseV1,
@@ -173,26 +174,6 @@ function decodeBoundedJson(responseJson: Uint8Array, maximumBytes: number) {
   }
 }
 
-function encodeAssetTransfers(
-  assets: Extract<CanvasWorkerRequestV1, Readonly<{ kind: "install-canvas" | "replace-scene" }>>["assetPayloads"],
-) {
-  const metadataJson = new TextEncoder().encode(
-    JSON.stringify(
-      assets.map(({ assetId, bytes: _bytes, ...metadata }) => ({
-        alphaMode: "straight",
-        colorSpace: "srgb",
-        id: assetId,
-        kind: "png-image",
-        ...metadata,
-      })),
-    ),
-  );
-  return {
-    bytes: assets.map((asset) => new Uint8Array(asset.bytes)),
-    metadataJson,
-  };
-}
-
 function decodeRenderResponse(responseJson: Uint8Array) {
   const decoded = decodeBoundedJson(responseJson, MAX_CANVAS_RENDER_RESPONSE_JSON_BYTES);
   const parsed = canvasRenderResponseV1Schema.safeParse(decoded);
@@ -335,7 +316,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
       if (request.captureFrameEvidence === true && this.evidence) {
         this.evidenceCapture = this.evidence.createCapture(request.canvas);
       }
-      const assets = encodeAssetTransfers(request.assetPayloads);
+      const assets = encodeCanvasPngAssetTransfersForWasmV1(request.assetPayloads);
       this.engine = await Engine.create(
         new Uint8Array(request.snapshotJson),
         assets.metadataJson,
@@ -379,7 +360,7 @@ export class PoietraCanvasWorkerRuntimeV1 {
       return;
     }
     try {
-      const assets = encodeAssetTransfers(request.assetPayloads);
+      const assets = encodeCanvasPngAssetTransfersForWasmV1(request.assetPayloads);
       this.engine.replaceSnapshot(new Uint8Array(request.snapshotJson), assets.metadataJson, assets.bytes);
       this.currentRevision = request.revision;
     } catch (error) {

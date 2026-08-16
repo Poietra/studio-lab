@@ -159,6 +159,7 @@ function previewView(
     attachCanvas: vi.fn(),
     boundEntityProjection: null,
     cameraCenter: null,
+    canonicalScene: null,
     creationProjection: null,
     epoch: 0,
     interactionGeometry,

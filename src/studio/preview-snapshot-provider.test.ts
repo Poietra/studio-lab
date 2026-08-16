@@ -11,6 +11,7 @@ import {
   studioPreviewWorkspaceKeyV1,
 } from "./preview-snapshot-provider";
 import {
+  createExportFixturePreviewSnapshotProviderV1,
   createFixturePreviewSnapshotProviderV1,
   createMathTexFixturePreviewSnapshotProviderV1,
 } from "./preview-snapshot-provider.fixture";
@@ -29,13 +30,24 @@ describe("resolveStudioPreviewSnapshotProvider", () => {
     expect(import.meta.env.DEV).toBe(true);
     const provider = await resolveStudioPreviewSnapshotProvider("fixture");
     const mathTexProvider = await resolveStudioPreviewSnapshotProvider("mathtex-fixture");
+    const exportProvider = await resolveStudioPreviewSnapshotProvider("export-fixture");
     expect(provider?.id).toBe("checked-in-fixture");
     expect(mathTexProvider?.id).toBe("checked-in-mathtex-fixture");
+    expect(exportProvider?.id).toBe("checked-in-export-fixture");
     // The dev evidence client extension is wired explicitly by the harness
     // provider, never implicitly by being a snapshot provider.
     expect(provider?.evidence).toBeDefined();
     expect(typeof provider?.evidence?.capture).toBe("function");
     expect(typeof mathTexProvider?.evidence?.capture).toBe("function");
+    expect(typeof exportProvider?.evidence?.capture).toBe("function");
+  });
+
+  it("keeps the export fixture to six frames at 30 fps", async () => {
+    const provider = createExportFixturePreviewSnapshotProviderV1();
+    const result = await provider.loadVerifiedSnapshot({ identity: HARNESS_IDENTITY });
+    expect(result.duration).toBeCloseTo(0.2);
+    expect(result.snapshot.scene.entities).toHaveLength(3);
+    expect(result.snapshot.scene.animationChannels[0]?.keyframes.at(-1)?.at).toBeCloseTo(0.2);
   });
 });
 

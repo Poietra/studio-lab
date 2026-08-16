@@ -401,7 +401,7 @@ impl EngineWorkerSessionV1 {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn sample_render_packet(
+    pub(crate) fn sample_export_render_packet(
         &self,
         packet_id: &str,
         sample_time: f64,
@@ -409,7 +409,7 @@ impl EngineWorkerSessionV1 {
     ) -> Result<RenderPacketV1, EvaluationError> {
         let evidence = ["Poietra engine thumbnail".to_owned()];
         self.session
-            .sample_render_packet(SampleEngineSessionOptionsV1 {
+            .sample_export_render_packet(SampleEngineSessionOptionsV1 {
                 evidence: &evidence,
                 packet_id,
                 sample_time,

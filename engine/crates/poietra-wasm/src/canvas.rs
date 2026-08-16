@@ -3,21 +3,18 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use poietra_render_wgpu::{
-    MAX_ENCODED_PNG_BYTES_V1, PreparedFrameV1, PreparedGeometryCacheFrameStatsV1,
-    PreparedGeometryCacheV1, WgpuPaintRendererV1, WgpuRenderTargetV1,
-    prepare_frame_with_cache_and_assets_v1, render_thumbnail_png,
-    tessellate_validated_frame_with_cache_and_assets_v1, validate_frame_packet_v1,
+    PreparedFrameV1, PreparedGeometryCacheFrameStatsV1, PreparedGeometryCacheV1,
+    WgpuPaintRendererV1, WgpuRenderTargetV1, prepare_frame_with_cache_and_assets_v1,
+    render_thumbnail_png, tessellate_validated_frame_with_cache_and_assets_v1,
+    validate_frame_packet_v1,
 };
-use poietra_scene_ir::{
-    MAX_ASSETS_V1, MAX_ENCODED_ASSET_BYTES_V1, RenderDrawV1, ViewportV1,
-    parse_scene_ir_bundle_json_v1,
-};
+use poietra_scene_ir::{RenderDrawV1, ViewportV1, parse_scene_ir_bundle_json_v1};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::OffscreenCanvas;
 
-use crate::canvas_assets::CanvasPngAssetRegistryV1;
+use crate::canvas_assets::{CanvasPngAssetRegistryV1, copy_asset_byte_arrays};
 use crate::canvas_protocol::{
     CanvasRenderErrorCodeV1, error_response, error_result, gpu_error_code_from_js_class_name,
     interaction_metadata, presented_response_with_interaction, presented_result, sample_error_code,
@@ -66,39 +63,6 @@ fn wasm_linear_memory_bytes() -> Result<u64, String> {
     // The finite, non-negative, integral and JS-safe checks above make this
     // conversion exact; Rust has no checked f64-to-u64 conversion primitive.
     Ok(byte_length as u64)
-}
-
-fn copy_asset_byte_arrays(values: &js_sys::Array) -> Result<Vec<Vec<u8>>, String> {
-    let count = usize::try_from(values.length())
-        .map_err(|_| "PNG transfer count is not representable".to_owned())?;
-    if count > MAX_ASSETS_V1 {
-        return Err(format!(
-            "PNG transfer contains more than {MAX_ASSETS_V1} assets"
-        ));
-    }
-    let mut copied = Vec::with_capacity(count);
-    let mut total_bytes = 0_u64;
-    for index in 0..values.length() {
-        let bytes = values
-            .get(index)
-            .dyn_into::<js_sys::Uint8Array>()
-            .map_err(|_| format!("PNG transfer {index} is not a Uint8Array"))?;
-        if u64::from(bytes.length()) > MAX_ENCODED_PNG_BYTES_V1 {
-            return Err(format!(
-                "PNG transfer {index} exceeds the {MAX_ENCODED_PNG_BYTES_V1}-byte limit"
-            ));
-        }
-        total_bytes = total_bytes
-            .checked_add(u64::from(bytes.length()))
-            .ok_or_else(|| "PNG transfer byte length overflowed".to_owned())?;
-        if total_bytes > MAX_ENCODED_ASSET_BYTES_V1 {
-            return Err(format!(
-                "PNG transfers exceed the {MAX_ENCODED_ASSET_BYTES_V1}-byte limit"
-            ));
-        }
-        copied.push(bytes.to_vec());
-    }
-    Ok(copied)
 }
 
 fn prepared_geometry_cache_outcome(stats: PreparedGeometryCacheFrameStatsV1) -> CacheOutcomeV1 {
@@ -637,7 +601,7 @@ impl PoietraCanvasEngineV1 {
             &self.asset_registry,
             |sample_time, viewport| {
                 self.session
-                    .sample_render_packet("thumbnail:representative", sample_time, viewport)
+                    .sample_export_render_packet("thumbnail:representative", sample_time, viewport)
                     .map_err(|error| error.to_string())
             },
         )

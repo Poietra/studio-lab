@@ -25,6 +25,7 @@ import {
   MAX_EDITOR_LIVE_PLAYHEAD_SECONDS_V1,
   MAX_EDITOR_LIVE_SELECTED_ENTITY_IDS_V1,
 } from "./collaboration/editor-live-contract";
+import { DEFAULT_BROWSER_MP4_EXPORT_PROFILE, downloadBrowserMp4 } from "./engine/browser-mp4-export";
 import { cn } from "./lib/cn";
 import { exportManimSource } from "./render-pipeline/client";
 import type { RenderSessionView } from "./render-pipeline/contracts";
@@ -174,6 +175,11 @@ const NUDGE_DELTAS: Readonly<Record<string, Readonly<{ x: number; y: number }>>>
   ArrowRight: { x: 2, y: 0 },
   ArrowUp: { x: 0, y: -2 },
 };
+
+function sceneMp4FileName(sceneId: string) {
+  const base = sceneId.replaceAll(/[^A-Za-z0-9._-]+/g, "-").replaceAll(/^-+|-+$/g, "");
+  return `${base || "poietra-scene"}.mp4`;
+}
 
 type CanvasDragState = Readonly<{
   pointerId: number;
@@ -418,6 +424,7 @@ export function App({
   );
   const [inspectorReturnFocus, setInspectorReturnFocus] = useState<InspectorEditField | null>(null);
   const [sessionTransitionPending, setSessionTransitionPending] = useState(false);
+  const [browserExportPending, setBrowserExportPending] = useState(false);
   const suggestionContext = useRef("");
   const canvasDrag = useRef<CanvasDragState | null>(null);
   const canvasResize = useRef<CanvasResizeState | null>(null);
@@ -801,6 +808,27 @@ export function App({
     sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
     workingState: previewWorkingState,
   });
+
+  async function exportCanonicalSceneMp4() {
+    const canonicalScene = previewRenderer?.canonicalScene;
+    if (!canonicalScene || browserExportPending) return;
+    setBrowserExportPending(true);
+    setDraftError(null);
+    try {
+      await downloadBrowserMp4(
+        {
+          assetPayloads: canonicalScene.assetPayloads,
+          profile: DEFAULT_BROWSER_MP4_EXPORT_PROFILE,
+          snapshot: canonicalScene.bundle,
+        },
+        sceneMp4FileName(canonicalScene.bundle.scene.sceneId),
+      );
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : "The browser MP4 export was refused.");
+    } finally {
+      setBrowserExportPending(false);
+    }
+  }
   function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
     if (!programs.some((program) => program.operations.some(isSceneDurationOperation))) return null;
     if (!projectedActiveScene || !previewRenderer?.timelineProjection || !isSceneDurationProgramBatch(programs)) {
@@ -3473,6 +3501,15 @@ export function App({
                 renderer={previewRenderer}
               />
             ) : null}
+            <button
+              className="border border-zinc-700 px-2 py-1 text-zinc-300 hover:bg-zinc-800 disabled:cursor-wait disabled:text-zinc-600"
+              disabled={browserExportPending || previewRenderer?.canonicalScene === null || !previewRenderer}
+              onClick={() => void exportCanonicalSceneMp4()}
+              title="Export the exact Scene shown by the canonical WebGPU preview"
+              type="button"
+            >
+              {browserExportPending ? "Exporting MP4…" : "Export MP4"}
+            </button>
             <button
               className="border border-zinc-700 px-2 py-1 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 disabled:cursor-wait disabled:text-zinc-600"
               disabled={

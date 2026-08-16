@@ -96,9 +96,9 @@ extern "C" {
 }
 
 #[derive(Clone, Debug)]
-struct EncoderFailureV1 {
-    message: String,
-    reason: ExportEncoderRefusalReasonV1,
+pub(crate) struct EncoderFailureV1 {
+    pub(crate) message: String,
+    pub(crate) reason: ExportEncoderRefusalReasonV1,
 }
 
 impl EncoderFailureV1 {
@@ -115,17 +115,27 @@ impl EncoderFailureV1 {
 }
 
 #[derive(Debug)]
-struct CollectedChunkV1 {
-    bytes: Vec<u8>,
-    duration_microseconds: Option<u64>,
-    key_frame: bool,
-    timestamp_microseconds: u64,
+pub(crate) struct CollectedChunkV1 {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) duration_microseconds: Option<u64>,
+    pub(crate) key_frame: bool,
+    pub(crate) timestamp_microseconds: u64,
 }
 
 #[derive(Debug)]
 struct CollectedDecoderConfigV1 {
     color_space: ExportEncoderColorSpaceEvidenceV1,
     description: Vec<u8>,
+}
+
+/// Finished `WebCodecs` evidence and samples moved without cloning into the MP4
+/// composition path. This is crate-internal: JavaScript callers retain the
+/// existing bounded status/byte accessors.
+#[derive(Debug)]
+pub(crate) struct FinishedEncoderOutputV1 {
+    pub(crate) chunks: Vec<CollectedChunkV1>,
+    pub(crate) color_space: ExportEncoderColorSpaceEvidenceV1,
+    pub(crate) decoder_configuration: Vec<u8>,
 }
 
 /// State shared between the session and the encoder's JS callbacks. Borrows
@@ -893,34 +903,9 @@ impl PoietraExportEncoderSessionV1 {
         let config = parse_export_encoder_session_request_v1(request_json).map_err(|error| {
             refused_js_error(ExportEncoderRefusalReasonV1::InvalidRequest, &error)
         })?;
-        if !video_encoder_constructor_available() {
-            return Err(refused_js_error(
-                ExportEncoderRefusalReasonV1::ApiUnavailable,
-                "VideoEncoder is unavailable in this scope",
-            ));
-        }
-        let encoder_config = build_encoder_config(
-            &config.codec,
-            config.width_px,
-            config.height_px,
-            config.bitrate,
-            config.frames_per_second,
-        )
-        .map_err(|failure| refused_js_error(failure.reason, &failure.message))?;
-        prove_encoder_config(&config, &encoder_config)
+        Self::create_config(config)
             .await
-            .map_err(|failure| refused_js_error(failure.reason, &failure.message))?;
-        let harness = EncoderHarnessV1::create(&encoder_config)
-            .map_err(|failure| refused_js_error(failure.reason, &failure.message))?;
-        Ok(Self {
-            config,
-            failure: None,
-            frame_count: 0,
-            harness,
-            last_key_frame_timestamp_microseconds: None,
-            last_timestamp_microseconds: None,
-            state: ExportEncoderSessionStateV1::Encoding,
-        })
+            .map_err(|failure| refused_js_error(failure.reason, &failure.message))
     }
 
     /// Encodes one tight RGBA frame at its canonical integer-microsecond timestamp.
@@ -1163,6 +1148,93 @@ impl PoietraExportEncoderSessionV1 {
 }
 
 impl PoietraExportEncoderSessionV1 {
+    pub(crate) async fn create_config(
+        config: ExportEncoderSessionConfigV1,
+    ) -> Result<Self, EncoderFailureV1> {
+        if !video_encoder_constructor_available() {
+            return Err(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::ApiUnavailable,
+                "VideoEncoder is unavailable in this scope",
+            ));
+        }
+        let encoder_config = build_encoder_config(
+            &config.codec,
+            config.width_px,
+            config.height_px,
+            config.bitrate,
+            config.frames_per_second,
+        )?;
+        prove_encoder_config(&config, &encoder_config).await?;
+        let harness = EncoderHarnessV1::create(&encoder_config)?;
+        Ok(Self {
+            config,
+            failure: None,
+            frame_count: 0,
+            harness,
+            last_key_frame_timestamp_microseconds: None,
+            last_timestamp_microseconds: None,
+            state: ExportEncoderSessionStateV1::Encoding,
+        })
+    }
+
+    pub(crate) async fn push_frame_for_export(
+        &mut self,
+        rgba: Vec<u8>,
+        timestamp_microseconds: u64,
+    ) -> Result<(), EncoderFailureV1> {
+        #[allow(clippy::cast_precision_loss)]
+        let timestamp = timestamp_microseconds as f64;
+        drop(self.push_frame(rgba, timestamp).await);
+        match self.state {
+            ExportEncoderSessionStateV1::Encoding => Ok(()),
+            ExportEncoderSessionStateV1::Failed => Err(self.failure.clone().unwrap_or_else(|| {
+                EncoderFailureV1::new(
+                    ExportEncoderRefusalReasonV1::EncoderError,
+                    "the encoder failed without retaining its refusal",
+                )
+            })),
+            ExportEncoderSessionStateV1::Finished => Err(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::SessionClosed,
+                "the encoder session already finished",
+            )),
+        }
+    }
+
+    pub(crate) async fn finish_for_export(&mut self) -> Result<(), EncoderFailureV1> {
+        drop(self.finish().await);
+        match self.state {
+            ExportEncoderSessionStateV1::Finished => Ok(()),
+            ExportEncoderSessionStateV1::Failed => Err(self.failure.clone().unwrap_or_else(|| {
+                EncoderFailureV1::new(
+                    ExportEncoderRefusalReasonV1::EncoderError,
+                    "the encoder failed without retaining its refusal",
+                )
+            })),
+            ExportEncoderSessionStateV1::Encoding => Err(EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::EncoderError,
+                "the encoder did not settle during finish",
+            )),
+        }
+    }
+
+    pub(crate) fn take_finished_output(
+        &mut self,
+    ) -> Result<FinishedEncoderOutputV1, EncoderFailureV1> {
+        self.require_finished()?;
+        let mut state = self.harness.shared.borrow_mut();
+        let decoder_config = state.decoder_config.take().ok_or_else(|| {
+            EncoderFailureV1::new(
+                ExportEncoderRefusalReasonV1::NoDecoderConfig,
+                "the finished session retained no decoderConfig.description",
+            )
+        })?;
+        Ok(FinishedEncoderOutputV1 {
+            chunks: std::mem::take(&mut state.chunks),
+            color_space: decoder_config.color_space,
+            decoder_configuration: decoder_config.description,
+        })
+    }
+
     /// Non-encoding states answer every mutation with a named refusal: the
     /// original failure is echoed verbatim, a finished session is closed.
     fn reject_unless_encoding(&self) -> Option<Vec<u8>> {
