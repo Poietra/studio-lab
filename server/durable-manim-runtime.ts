@@ -196,12 +196,16 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
 
   async workspaceReady(signal?: AbortSignal) {
     signal?.throwIfAborted();
-    const [repositoryReady, blobsReady] = await Promise.all([
-      this.#repository.ready(signal),
-      this.#blobs.ready(signal),
-    ]);
+    const [repositoryReady, blobsReady, editorDocumentsReady, projectPngRepositoryReady, projectPngsReady] =
+      await Promise.all([
+        this.#repository.ready(signal),
+        this.#blobs.ready(signal),
+        this.editorDocuments?.ready(signal) ?? Promise.resolve(true),
+        this.#projectPngRepository?.ready(signal) ?? Promise.resolve(true),
+        this.#projectPngs?.ready(signal) ?? Promise.resolve(true),
+      ]);
     signal?.throwIfAborted();
-    return repositoryReady && blobsReady;
+    return repositoryReady && blobsReady && editorDocumentsReady && projectPngRepositoryReady && projectPngsReady;
   }
 
   async editorReady(signal?: AbortSignal) {

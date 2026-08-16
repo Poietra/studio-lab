@@ -769,9 +769,10 @@ export async function startProductionManimServer(
         );
         return;
       }
-      // Project/workspace bootstrap and bounded browser source import require
-      // only durable source storage, so they remain available through a render
-      // outage. Render-start routes use the exact reported render boundary.
+      // Project/workspace bootstrap and bounded browser import require only
+      // their durable source, editor-document, and optional PNG stores, so they
+      // remain available through a render outage. Render-start routes use the
+      // exact reported render boundary.
       // TenantCell storage-lane routes (project catalog mutations, thumbnail
       // reads, Scene snapshot PNG reads) gate on storage/tenant readiness
       // alone, so a cell without a configured sandbox still serves them;

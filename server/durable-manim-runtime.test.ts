@@ -333,6 +333,14 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
       tenantId: "tenant-a",
     });
+    const projectPngRepositoryUnavailable = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "tenant-cell-png-repository-test",
+      projectPngRepository: partial<ProjectPngRepositoryV1>({ ready: async () => false }),
+      projectPngs: partial<ProjectPngBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
     const publicationUnavailable = new DurableManimRuntimeV1({
       blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
       namespace: "tenant-cell-publication-test",
@@ -346,8 +354,17 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
     await expect(editorUnavailable.tenantCellStorageReady()).resolves.toBe(false);
     await expect(projectPngUnavailable.tenantCellStorageReady()).resolves.toBe(false);
+    await expect(projectPngRepositoryUnavailable.tenantCellStorageReady()).resolves.toBe(false);
     await expect(publicationUnavailable.tenantCellStorageReady()).resolves.toBe(false);
-    await Promise.all([editorUnavailable.close(), projectPngUnavailable.close(), publicationUnavailable.close()]);
+    await expect(editorUnavailable.workspaceReady()).resolves.toBe(false);
+    await expect(projectPngUnavailable.workspaceReady()).resolves.toBe(false);
+    await expect(projectPngRepositoryUnavailable.workspaceReady()).resolves.toBe(false);
+    await Promise.all([
+      editorUnavailable.close(),
+      projectPngUnavailable.close(),
+      projectPngRepositoryUnavailable.close(),
+      publicationUnavailable.close(),
+    ]);
   });
 
   it("gates the TenantCell storage lane on storage-integrity maintenance while render admission requires every worker", async () => {
@@ -518,14 +535,14 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
     await expect(runtime.ready()).resolves.toBe(true);
     expect(editorDocumentsReady).not.toHaveBeenCalled();
-    await expect(runtime.workspaceReady()).resolves.toBe(true);
+    await expect(runtime.workspaceReady()).resolves.toBe(false);
     await expect(runtime.productionReady()).resolves.toBe(false);
     expect(adapter.editorDocuments).toBe(editorDocuments);
     if (!adapter.editorReady) throw new Error("The durable adapter did not expose editor readiness.");
     const workspaceProbeCounts = [repositoryReady.mock.calls.length, blobsReady.mock.calls.length];
     await expect(adapter.editorReady(new AbortController().signal)).resolves.toBe(false);
     expect([repositoryReady.mock.calls.length, blobsReady.mock.calls.length]).toEqual(workspaceProbeCounts);
-    await expect(adapter.workspaceReady(new AbortController().signal)).resolves.toBe(true);
+    await expect(adapter.workspaceReady(new AbortController().signal)).resolves.toBe(false);
     await expect(adapter.ready(new AbortController().signal)).resolves.toEqual({ ready: false });
 
     await Promise.all([adapter.close(), adapter.close()]);
