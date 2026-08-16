@@ -2,8 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { projectedPositions, validatedProgramRecord, validateSuggestionDraft } from "./draft-validation";
-import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { projectProposedState } from "./evaluator";
+import { createFixtureProposedState, STUDIO_FIXTURE_SCENE } from "./fixture";
 import { canonicalOperationSchema, programExecutionCapabilities } from "./operation-registry";
 import {
   createDirectManipulationOpacityProgram,
@@ -46,7 +46,7 @@ describe("Studio draft validation boundary", () => {
       capturedPlayhead: 5,
       hasNextScene: false,
       origin: "remote-model",
-      proposedState: evaluateWorkingState(createFixtureWorkingState()),
+      proposedState: createFixtureProposedState(),
       selectedObjectIds: [],
       transactionId: "no-destination",
     });
@@ -100,7 +100,7 @@ describe("Studio draft validation boundary", () => {
       capturedPlayhead: 5,
       hasNextScene: false,
       origin: "fixture",
-      proposedState: evaluateWorkingState(createFixtureWorkingState()),
+      proposedState: createFixtureProposedState(),
       selectedObjectIds: ["equation_1"],
       transactionId: "sequential-motion-draft",
     });
@@ -142,7 +142,7 @@ describe("Studio draft validation boundary", () => {
   });
 
   it("rejects direct movement when the imported source position is only approximate", () => {
-    const entity = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).canvas.entities[0];
+    const entity = projectProposedState(createFixtureProposedState(), 5).canvas.entities[0];
     expect(entity).toBeDefined();
     if (!entity) return;
     const reason = "Position depends on a runtime move_to expression.";
@@ -164,7 +164,7 @@ describe("Studio draft validation boundary", () => {
   });
 
   it("projects a direct position change at the captured playhead", () => {
-    const base = evaluateWorkingState(createFixtureWorkingState());
+    const base = createFixtureProposedState();
     const before = projectProposedState(base, 5).canvas.entities.find((entity) => entity.id === "equation_1");
     expect(before).toBeDefined();
     if (!before) return;
@@ -178,17 +178,9 @@ describe("Studio draft validation boundary", () => {
       transactionId: "position-projection",
     });
     expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    expect(
-      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.position,
-    ).toEqual({ x: before.position.x + 100, y: before.position.y + 40 });
   });
 
-  it("projects an immediate resize from an explicit absolute scale pair", () => {
+  it("creates an immediate scale from an explicit absolute scale pair", () => {
     const validation = createDirectManipulationScaleProgram({
       capturedPlayhead: 5,
       interval: { end: 5, start: 5 },
@@ -209,14 +201,6 @@ describe("Studio draft validation boundary", () => {
         to: 1.5,
       }),
     ]);
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    expect(
-      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
-    ).toBeCloseTo(1.5);
   });
 
   it("creates one finite rotation and rejects identity angles before validation", () => {
@@ -321,86 +305,6 @@ describe("Studio draft validation boundary", () => {
     ).toThrow(/source time zero/i);
   });
 
-  it("previews an animated resize throughout its requested interval", () => {
-    const validation = createDirectManipulationScaleProgram({
-      capturedPlayhead: 5,
-      interval: { end: 7, start: 5 },
-      scales: { equation_1: { from: 1, to: 2 } },
-      scene: STUDIO_FIXTURE_SCENE,
-      targetEntityIds: ["equation_1"],
-      transactionId: "animated-scale-projection",
-    });
-    expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-
-    expect(
-      projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
-    ).toBeCloseTo(1);
-    expect(
-      projectProposedState(proposed, 6).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
-    ).toBeCloseTo(1.5);
-    expect(
-      projectProposedState(proposed, 7).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
-    ).toBeCloseTo(2);
-  });
-
-  it("projects Rectangle dimensions and its anchored center from one resize operation", () => {
-    const validation = createDirectManipulationResizeProgram({
-      capturedPlayhead: 5,
-      entityId: "proof_box",
-      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
-      interval: { end: 5, start: 5 },
-      scale: 1,
-      scene: STUDIO_FIXTURE_SCENE,
-      shape: "rectangle",
-      to: { dimensions: { height: 3, width: 6 }, position: { x: 340, y: 157 } },
-      transactionId: "rectangle-geometry",
-    });
-    expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const rectangle = projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "proof_box");
-
-    expect(rectangle?.geometry.dimensions).toEqual({
-      kind: "known",
-      value: { height: 3, width: 6 },
-    });
-    expect(rectangle?.position).toEqual({ x: 340, y: 157 });
-  });
-
-  it("interpolates shape dimensions during an animated resize", () => {
-    const validation = createDirectManipulationResizeProgram({
-      capturedPlayhead: 5,
-      entityId: "proof_box",
-      from: { dimensions: { height: 2, width: 4 }, position: { x: 320, y: 147 } },
-      interval: { end: 7, start: 5 },
-      scale: 1,
-      scene: STUDIO_FIXTURE_SCENE,
-      shape: "rectangle",
-      to: { dimensions: { height: 4, width: 8 }, position: { x: 340, y: 167 } },
-      transactionId: "animated-rectangle-geometry",
-    });
-    expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const rectangle = projectProposedState(proposed, 6).canvas.entities.find((entity) => entity.id === "proof_box");
-
-    expect(rectangle?.geometry.dimensions).toEqual({
-      kind: "known",
-      value: { height: 3, width: 6 },
-    });
-    expect(rectangle?.position).toEqual({ x: 330, y: 157 });
-  });
   it("rejects a resize shape that does not match its target", () => {
     const validation = createDirectManipulationResizeProgram({
       capturedPlayhead: 5,

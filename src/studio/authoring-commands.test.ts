@@ -9,8 +9,8 @@ import {
   duplicateEntityInput,
   replaceStudioEntityLifetimeProgram,
 } from "./authoring-commands";
-import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { programRecord, projectProposedState } from "./evaluator";
+import { createFixtureProposedState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { CanonicalEditOperation } from "./operations";
 import { rebaseProgramTime } from "./program-composition";
 import { validateAndScheduleProgram } from "./program-validation";
@@ -99,17 +99,6 @@ describe("manual Studio authoring commands", () => {
         value: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
       }),
     ]);
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    expect(projectProposedState(proposed, 5).canvas.entities.find((entity) => entity.id === "equation_1")).toEqual(
-      expect.objectContaining({
-        content: expect.objectContaining({ texParts: ["F", "=", "m", "a"] }),
-        position: { x: 410, y: 170 },
-      }),
-    );
   });
 
   it("preserves requested Text content in the canonical creation Program", () => {
@@ -361,7 +350,7 @@ describe("manual Studio authoring commands", () => {
   });
 
   it("duplicates only types supported by the Insert tool", () => {
-    const equation = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).canvas.entities.find(
+    const equation = projectProposedState(createFixtureProposedState(), 5).canvas.entities.find(
       (entity) => entity.id === "equation_1",
     );
     expect(equation).toBeDefined();
@@ -396,10 +385,6 @@ describe("manual Studio authoring commands", () => {
     expect(result.program.operations).toEqual([
       expect.objectContaining({ effect: "remove", entityId: "equation_1", persistent: true }),
     ]);
-    const workingState = createFixtureWorkingState({
-      stagedPrograms: [programRecord(result.program, result)],
-    });
-    expect(() => evaluateWorkingState(workingState)).toThrow(/Rust authoring projection/i);
     const proposed = projectPersistentRemoveFixture(result.program, STUDIO_FIXTURE_SCENE, true);
     expect(
       projectProposedState(proposed, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.present,

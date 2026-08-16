@@ -7,9 +7,15 @@ import type {
   EditSuggestionOperation,
   MathTexSuggestionTarget,
 } from "../ai/edit-suggestions";
-import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
+import { programRecord } from "./evaluator";
 import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
-import { type CanonicalEditProgram, EDIT_OPERATION_VERSION, operationId } from "./operations";
+import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  EDIT_OPERATION_VERSION,
+  operationId,
+  provisionalEntityId,
+} from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 import { appendAppliedProgram, replaceAppliedProgram } from "./transactions";
@@ -209,19 +215,6 @@ function threeStepSuggestion(playhead = 5): EditSuggestionOperation {
         text: "電場と磁場の変化が互いを生み出します",
       },
     ],
-  };
-}
-
-function cameraFocusSuggestion(playhead = 4.42): EditSuggestionOperation {
-  return {
-    anchor: { kind: "playhead", referenceSeconds: playhead },
-    easing: "smooth",
-    emphasisScale: 1.12,
-    end: playhead + 1.5,
-    kind: "create-camera-focus",
-    start: playhead,
-    targetObjectIds: ["equation_1"],
-    zoomScale: 1.35,
   };
 }
 
@@ -549,6 +542,138 @@ describe("Studio time and transaction invariants", () => {
 });
 
 describe("canonical operation expansion and DAG validation", () => {
+  function validationProgram(
+    operations: readonly CanonicalEditOperation[],
+    transactionId: string,
+  ): CanonicalEditProgram {
+    return {
+      anchor: {
+        capturedPlayhead: 8,
+        evidence: ["captured-playhead:8.000"],
+        resolvedSeconds: 8,
+        source: { kind: "playhead", referenceSeconds: 8 },
+      },
+      intentCount: 1,
+      loweringStatus: "illustrative",
+      operations,
+      provenance: { evidence: [], origin: "fixture" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
+      transactionId,
+      version: EDIT_OPERATION_VERSION,
+    };
+  }
+
+  it("rejects an EditProgram that declares an intent but contains no operations", () => {
+    const validation = validateAndScheduleProgram(validationProgram([], "empty-program"), STUDIO_FIXTURE_SCENE);
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(expect.objectContaining({ code: "operation-count", field: "operations" }));
+  });
+
+  it("rejects two operations that produce the same provisional identity", () => {
+    const transactionId = "duplicate-producer";
+    const entityId = provisionalEntityId(transactionId, "created");
+    const create = (index: number): CanonicalEditOperation => ({
+      dependsOn: [],
+      entity: { id: entityId, lifetime: { end: null, start: 8 }, type: "Text" },
+      id: operationId(transactionId, `create-${index}`),
+      interval: { end: 8, start: 8 },
+      kind: "CreateEntity",
+      provenance: { evidence: [], origin: "fixture" },
+    });
+
+    const validation = validateAndScheduleProgram(
+      validationProgram([create(0), create(1)], transactionId),
+      STUDIO_FIXTURE_SCENE,
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({ code: "schema-invalid", message: expect.stringMatching(/produced more than once/i) }),
+    );
+  });
+
+  it("rejects canonical scale on a TransformContent identity", () => {
+    const transactionId = "canonical-scale-transform";
+    const targetEntityId = provisionalEntityId(transactionId, "target");
+    const transform: CanonicalEditOperation = {
+      dependsOn: [],
+      id: operationId(transactionId, "transform"),
+      interval: { end: 9, start: 8 },
+      kind: "TransformContent",
+      provenance: { evidence: [], origin: "fixture" },
+      replacement: { displayLines: ["F = ma"], texParts: ["F", "=", "m", "a"] },
+      sourceEntityId: "equation_1",
+      strategy: "transform-matching-tex",
+      targetEntityId,
+    };
+    const scale: CanonicalEditOperation = {
+      dependsOn: [transform.id],
+      easing: "smooth",
+      entityId: targetEntityId,
+      from: 2,
+      id: operationId(transactionId, "scale"),
+      interval: { end: 10, start: 9 },
+      key: "scale",
+      kind: "AnimateProperty",
+      provenance: { evidence: [], origin: "fixture" },
+      to: 3,
+    };
+
+    const validation = validateAndScheduleProgram(
+      validationProgram([transform, scale], transactionId),
+      STUDIO_FIXTURE_SCENE,
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scale and TransformContent/),
+        operationId: scale.id,
+      }),
+    );
+  });
+
+  it("rejects canonical work after a Scene boundary", () => {
+    const transactionId = "canonical-boundary-first";
+    const boundary: CanonicalEditOperation = {
+      at: 8,
+      dependsOn: [],
+      destination: "next-scene",
+      id: operationId(transactionId, "boundary"),
+      interval: { end: 8, start: 8 },
+      kind: "InsertSceneBoundary",
+      provenance: { evidence: [], origin: "fixture" },
+    };
+    const motion: CanonicalEditOperation = {
+      controlOffset: { x: 0, y: 0 },
+      delta: { x: 10, y: 0 },
+      dependsOn: [boundary.id],
+      easing: "smooth",
+      id: operationId(transactionId, "motion"),
+      interval: { end: 9, start: 8 },
+      kind: "CreateMotion",
+      provenance: { evidence: [], origin: "fixture" },
+      targetEntityIds: ["equation_1"],
+    };
+
+    const validation = validateAndScheduleProgram(
+      validationProgram([boundary, motion], transactionId),
+      STUDIO_FIXTURE_SCENE,
+    );
+
+    expect(validation.kind).toBe("invalid");
+    expect(validation.issues).toContainEqual(
+      expect.objectContaining({
+        code: "lowering-unsupported",
+        message: expect.stringMatching(/Scene boundary must be terminal/),
+        operationId: motion.id,
+      }),
+    );
+  });
+
   it("rejects mixed easing before a parallel Program can be applied", () => {
     const validation = canonicalize(
       {
@@ -757,25 +882,7 @@ describe("canonical operation expansion and DAG validation", () => {
   });
 });
 
-describe("one ProposedState feeds every Studio projection", () => {
-  it("evaluates camera focus and selected-object emphasis through shared channels", () => {
-    const operation = cameraFocusSuggestion();
-    expect(operation.kind).toBe("create-camera-focus");
-    if (operation.kind !== "create-camera-focus") return;
-    const validation = canonicalize(operation, "camera-focus", 4.42);
-    expect(validation.kind).toBe("valid");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        stagedPrograms: [programRecord(validation.program, validation)],
-      }),
-    );
-    const projection = projectProposedState(proposed, operation.end);
-    const equation = projection.canvas.entities.find((entity) => entity.id === "equation_1");
-    expect(projection.camera.scale).toBeCloseTo(1.35);
-    expect(equation?.scale).toBeCloseTo(1.12);
-    expect(projection.camera.sampleId).toBe(projection.canvas.sampleId);
-  });
-
+describe("Studio semantic model", () => {
   it("resolves immediately-before once and preserves the replacement identity", () => {
     const operation = textTransformSuggestion();
     expect(operation.kind).toBe("create-text-transform");
@@ -924,11 +1031,6 @@ describe("one ProposedState feeds every Studio projection", () => {
     expect(validation.program.operations.find((candidate) => candidate.kind === "InsertSceneBoundary")).toEqual(
       expect.objectContaining({ interval: expect.objectContaining({ start: 7.25 }) }),
     );
-    expect(() =>
-      evaluateWorkingState(
-        createFixtureWorkingState({ stagedPrograms: [programRecord(validation.program, validation)] }),
-      ),
-    ).toThrow(/Rust authoring projection/i);
   });
 
   it("accepts an applied created entity as the target of the next direct edit", () => {
@@ -996,11 +1098,6 @@ describe("one ProposedState feeds every Studio projection", () => {
       }),
     );
     expect(validation.program.operations.some((candidate) => candidate.kind === "SetRelation")).toBe(true);
-    expect(() =>
-      evaluateWorkingState(
-        createFixtureWorkingState({ stagedPrograms: [programRecord(validation.program, validation)] }),
-      ),
-    ).toThrow(/Rust authoring projection/i);
   });
 
   it("keeps Scene-level transition creation explicit until Rust supports its overlay", () => {

@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { evaluateWorkingState, projectProposedState } from "./evaluator";
+import { projectProposedState } from "./evaluator";
 import { entityInspectorKey } from "./entity-inspector";
-import { createFixtureWorkingState } from "./fixture";
+import { createFixtureProposedState } from "./fixture";
 import { initialInspectorEditValues, validateInspectorEdits, type InspectorEditValues } from "./inspector-edit";
 import type { ProjectedEntity } from "./model";
 
 function fixtureEntity(id: string) {
-  const entity = projectProposedState(evaluateWorkingState(createFixtureWorkingState()), 5).inspector.entities.find(
+  const entity = projectProposedState(createFixtureProposedState(), 5).inspector.entities.find(
     (candidate) => candidate.id === id,
   );
   if (!entity) throw new Error(`Missing fixture entity ${id}.`);

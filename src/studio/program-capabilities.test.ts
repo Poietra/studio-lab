@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { CreateCameraFocusSuggestion } from "../ai/edit-suggestions";
-import { evaluateWorkingState, programRecord, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
+import { STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import { programExecutionCapabilities } from "./operation-registry";
 import type { CanonicalEditOperation } from "./operations";
 import { validateAndScheduleProgram } from "./program-validation";
@@ -141,10 +140,6 @@ describe("EditProgram execution capabilities", () => {
         severity: "warning",
       }),
     );
-
-    const record = programRecord(validation.program, validation);
-    const preview = evaluateWorkingState(createFixtureWorkingState({ stagedPrograms: [record] }));
-    expect(projectProposedState(preview, 5.92).camera.scale).toBeCloseTo(1.35);
   });
 
   it("preserves supported motion, position, and scale authoring paths", () => {

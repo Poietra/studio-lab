@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createStudioEntitiesProgram } from "./authoring-commands";
-import { evaluateWorkingState, programRecord } from "./evaluator";
-import { createFixtureWorkingState, STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
+import { STUDIO_FIXTURE_SCENE, validateMotionProgramFixture } from "./fixture";
 import type { CanonicalEditProgram } from "./operations";
 import {
   insertedProgramDuration,
@@ -31,30 +30,6 @@ function motionProgram(anchor: number, transactionId: string, targetEntityIds = 
       transactionId,
     }),
   );
-}
-
-function record(program: CanonicalEditProgram) {
-  return programRecord(program, { issues: [], kind: "valid" });
-}
-
-function animatedScaleProgram(anchor: number, transactionId: string): CanonicalEditProgram {
-  const base = motionProgram(anchor, transactionId);
-  const operation = base.operations[0]!;
-  return {
-    ...base,
-    operations: [
-      {
-        ...operation,
-        easing: "smooth",
-        entityId: "equation_1",
-        from: 1,
-        interval: { end: anchor + 1, start: anchor },
-        key: "scale",
-        kind: "AnimateProperty",
-        to: 1.5,
-      },
-    ],
-  };
 }
 
 function timelineWaitProgram(): CanonicalEditProgram {
@@ -146,46 +121,6 @@ describe("inserted Program timeline composition", () => {
       workingTime: 9,
     });
     expect(latestSafeSourceAnchor(programs, [5, 7], 4.9)).toBeNull();
-  });
-
-  it("places later applied Programs after earlier Programs at the same source anchor", () => {
-    const first = animatedScaleProgram(5, "same-anchor-first");
-    const second = animatedScaleProgram(5, "same-anchor-second");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [record(first), record(second)],
-      }),
-    );
-    const firstEvent = proposed.evaluatedScene.eventTrack.events.find(
-      (event) => event.transactionId === first.transactionId && event.kind === "operation",
-    );
-    const secondEvent = proposed.evaluatedScene.eventTrack.events.find(
-      (event) => event.transactionId === second.transactionId && event.kind === "operation",
-    );
-
-    expect(firstEvent?.interval).toEqual({ end: 6, start: 5 });
-    expect(secondEvent?.interval).toEqual({ end: 7, start: 6 });
-    expect(proposed.programs.map((entry) => entry.validation.status)).toEqual(["valid", "valid"]);
-  });
-
-  it("uses original anchors for offsets even when Programs were applied out of timeline order", () => {
-    const laterFirst = animatedScaleProgram(7, "out-of-order-later-first");
-    const earlierSecond = animatedScaleProgram(5, "out-of-order-earlier-second");
-    const laterThird = animatedScaleProgram(7, "out-of-order-later-third");
-    const proposed = evaluateWorkingState(
-      createFixtureWorkingState({
-        appliedPrograms: [record(laterFirst), record(earlierSecond), record(laterThird)],
-      }),
-    );
-    const intervalFor = (transactionId: string) =>
-      proposed.evaluatedScene.eventTrack.events.find(
-        (event) => event.transactionId === transactionId && event.kind === "operation",
-      )?.interval;
-
-    expect(intervalFor(earlierSecond.transactionId)).toEqual({ end: 6, start: 5 });
-    expect(intervalFor(laterFirst.transactionId)).toEqual({ end: 9, start: 8 });
-    expect(intervalFor(laterThird.transactionId)).toEqual({ end: 10, start: 9 });
-    expect(proposed.programs.map((entry) => entry.validation.status)).toEqual(["valid", "valid", "valid"]);
   });
 
   it("rebases operation intervals and created-entity lifetimes together", () => {

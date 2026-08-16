@@ -3,8 +3,13 @@ import { describe, expect, it } from "vitest";
 import { validateEditProgram } from "../ai/edit-program-validation";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { validateSuggestionDraft } from "./draft-validation";
-import { evaluateWorkingState, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { projectProposedState } from "./evaluator";
+import {
+  createFixtureProposedState,
+  createFixtureWorkingState,
+  projectPersistentRemoveFixture,
+  STUDIO_FIXTURE_SCENE,
+} from "./fixture";
 import type { RuntimeSceneState } from "./model";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
@@ -66,14 +71,14 @@ function validate(
     capturedPlayhead: 5,
     hasNextScene: true,
     origin: "remote-model",
-    proposedState: evaluateWorkingState({ ...workingState, runtimeSceneState: scene }),
+    proposedState: createFixtureProposedState({ ...workingState, runtimeSceneState: scene }),
     selectedObjectIds,
     transactionId: "magic-object-edit",
   });
 }
 
 describe("Magic Edit scale and delete canonicalization", () => {
-  it("previews a relative scale through absolute Canonical values", () => {
+  it("canonicalizes a relative scale through absolute values", () => {
     const result = validate(scaleSuggestion());
     expect(result.kind).toBe("valid");
     if (result.kind !== "valid") return;
@@ -87,12 +92,6 @@ describe("Magic Edit scale and delete canonicalization", () => {
         to: 1.5,
       }),
     ]);
-
-    const staged = createFixtureWorkingState({ stagedPrograms: [result.record] });
-    const preview = evaluateWorkingState(staged);
-    expect(
-      projectProposedState(preview, 5.5).canvas.entities.find((entity) => entity.id === "equation_1")?.scale,
-    ).toBeCloseTo(1.25);
   });
 
   it("previews a persistent deletion", () => {
@@ -380,49 +379,6 @@ describe("Magic Edit scale and delete canonicalization", () => {
       kind: "invalid",
       message: expect.stringMatching(/requires .* effective 1x scale.*2x/i),
     });
-  });
-
-  it("rejects a later TransformContent after an applied scale Program", () => {
-    const scaled = validate(scaleSuggestion());
-    expect(scaled.kind).toBe("valid");
-    if (scaled.kind !== "valid") return;
-    const proposed = evaluateWorkingState({
-      ...createFixtureWorkingState(),
-      appliedPrograms: [scaled.record],
-      runtimeSceneState: KNOWN_SCALE_SCENE,
-    });
-    const transform: EditSuggestionOperation = {
-      anchor: { kind: "playhead", referenceSeconds: 7 },
-      easing: "smooth",
-      end: 8,
-      identityAfter: "target-replaces-source",
-      kind: "create-transform",
-      mismatchMode: "transform",
-      sourceObjectId: "equation_1",
-      start: 7,
-      strategy: "transform-matching-tex",
-      target: {
-        displayLines: ["F = ma"],
-        kind: "mathtex",
-        label: "Newton's second law",
-        texParts: ["F", "=", "m", "a"],
-      },
-    };
-
-    const validation = canonicalizeSuggestionProgram(transform, {
-      capturedPlayhead: 7,
-      origin: "remote-model",
-      scene: proposed.evaluatedScene,
-      transactionId: "transform-after-applied-scale",
-    });
-
-    expect(validation.kind).toBe("invalid");
-    expect(validation.issues).toContainEqual(
-      expect.objectContaining({
-        code: "lowering-unsupported",
-        message: expect.stringMatching(/requires .* effective 1x scale.*1\.5x/i),
-      }),
-    );
   });
 
   it("requires source-sequential execution with a Scene transition", () => {

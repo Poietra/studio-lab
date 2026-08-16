@@ -1,24 +1,8 @@
 import { z } from "zod";
 import { canonicalEditableContent } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
-import type {
-  EntityDimensions,
-  IdentityLineage,
-  PropertyChannel,
-  PropertyChannelSample,
-  ProvenanceRecord,
-  RuntimeEntity,
-  RuntimeSceneState,
-  SceneConstraint,
-  TimelineEvent,
-} from "./model";
-import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  type ChannelAccess,
-  isSceneDurationOperation,
-  type ProgramValidationIssue,
-} from "./operations";
+import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
+import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
 import {
   isEntityDimensionsValue,
   isPointValue,
@@ -138,16 +122,6 @@ export const canonicalOperationSchema = z.discriminatedUnion("kind", [
   }),
 ]);
 
-export type EvaluationDraft = {
-  constraints: SceneConstraint[];
-  duration: number;
-  entities: Record<string, RuntimeEntity>;
-  events: TimelineEvent[];
-  lineage: IdentityLineage[];
-  propertyChannels: Record<string, PropertyChannel>;
-  provenance: ProvenanceRecord[];
-};
-
 export type OperationExecutionCapabilities = Readonly<{
   apply: "blocked" | "supported";
   applyBlocker: string | null;
@@ -161,11 +135,6 @@ type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
     reads: readonly ChannelAccess[];
     writes: readonly ChannelAccess[];
   }>;
-  evaluate?: (
-    draft: EvaluationDraft,
-    operation: Extract<CanonicalEditOperation, { kind: TKind }>,
-    program: CanonicalEditProgram,
-  ) => void;
   execution: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => OperationExecutionCapabilities;
   validate: (
     operation: Extract<CanonicalEditOperation, { kind: TKind }>,
@@ -354,26 +323,6 @@ function propertyKey(entityId: string, key: PropertyChannel["key"]) {
   return `${entityId}/${key}`;
 }
 
-function appendSample(
-  draft: EvaluationDraft,
-  entityId: string,
-  key: PropertyChannel["key"],
-  sample: PropertyChannelSample,
-) {
-  const id = propertyKey(entityId, key);
-  const channel = draft.propertyChannels[id];
-  draft.propertyChannels[id] = {
-    entityId,
-    key,
-    samples: [...(channel?.samples ?? []), sample],
-  };
-}
-
-function sampleChannel(draft: EvaluationDraft, entityId: string, key: PropertyChannel["key"], time: number) {
-  const samples = draft.propertyChannels[propertyKey(entityId, key)]?.samples ?? [];
-  return samplePropertyValue(samples, time);
-}
-
 function baseIssues(operation: CanonicalEditOperation, scene: RuntimeSceneState): ProgramValidationIssue[] {
   const issues: ProgramValidationIssue[] = [];
   if (
@@ -430,25 +379,6 @@ function entityIssues(entityIds: readonly string[], operation: CanonicalEditOper
     }
   }
   return issues;
-}
-
-function recordOperation(draft: EvaluationDraft, operation: CanonicalEditOperation, program: CanonicalEditProgram) {
-  const provenanceId = `${operation.id}/provenance`;
-  draft.provenance.push({
-    evidence: [...program.anchor.evidence, ...operation.provenance.evidence],
-    id: provenanceId,
-    operationId: operation.id,
-    origin: operation.provenance.origin,
-    transactionId: program.transactionId,
-  });
-  draft.events.push({
-    id: `${operation.id}/event`,
-    interval: operation.interval,
-    kind: "operation",
-    label: operation.kind,
-    operationId: operation.id,
-    transactionId: program.transactionId,
-  });
 }
 
 const TIME_EPSILON = 0.0005;
@@ -618,16 +548,6 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"CreateEntity">,
   SetProperty: {
     access: (operation) => ({ reads: [], writes: [{ channel: operation.key, entityId: operation.entityId }] }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      appendSample(draft, operation.entityId, operation.key, {
-        interval: { end: draft.duration, start: operation.interval.start },
-        kind: "exact",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: operation.value,
-      });
-    },
     execution: setPropertyExecution,
     validate: setPropertyIssues,
   } satisfies Capability<"SetProperty">,
@@ -636,43 +556,6 @@ export const OPERATION_REGISTRY = {
       reads: [{ channel: operation.key, entityId: operation.entityId }],
       writes: [{ channel: operation.key, entityId: operation.entityId }],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      const sampledFrom = sampleChannel(draft, operation.entityId, operation.key, operation.interval.start);
-      const relativeScale =
-        operation.key === "scale" &&
-        operation.relativeFactor !== undefined &&
-        typeof sampledFrom === "number" &&
-        Number.isFinite(sampledFrom) &&
-        sampledFrom > 0;
-      const relativeRotation =
-        operation.key === "rotation" &&
-        operation.relativeDelta !== undefined &&
-        (typeof sampledFrom === "number" || sampledFrom === undefined);
-      const relativeFrom = typeof sampledFrom === "number" ? sampledFrom : 0;
-      const from = relativeScale
-        ? sampledFrom
-        : relativeRotation
-          ? relativeFrom
-          : (operation.from ??
-            (isPointValue(sampledFrom) || typeof sampledFrom === "number" ? sampledFrom : undefined));
-      const value = relativeScale
-        ? sampledFrom * operation.relativeFactor!
-        : relativeRotation
-          ? relativeFrom + operation.relativeDelta!
-          : operation.to;
-      appendSample(draft, operation.entityId, operation.key, {
-        control: operation.control,
-        easing: operation.easing,
-        from,
-        interval: operation.interval,
-        kind: "animated",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        ...(relativeScale || relativeRotation ? { relative: true } : {}),
-        value,
-      });
-    },
     execution: animatePropertyExecution,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
@@ -757,26 +640,6 @@ export const OPERATION_REGISTRY = {
         { channel: "position", entityId: operation.entityId },
       ],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      const kind = operation.interval.end > operation.interval.start ? "animated" : "exact";
-      appendSample(draft, operation.entityId, "dimensions", {
-        from: operation.from.dimensions,
-        interval: operation.interval,
-        kind,
-        operationId: operation.id,
-        provenanceId: `${operation.id}/dimensions-provenance`,
-        value: operation.to.dimensions,
-      });
-      appendSample(draft, operation.entityId, "position", {
-        from: operation.from.position,
-        interval: operation.interval,
-        kind,
-        operationId: operation.id,
-        provenanceId: `${operation.id}/position-provenance`,
-        value: operation.to.position,
-      });
-    },
     execution: () => SUPPORTED_EXECUTION,
     validate: (operation, scene) => {
       const issues = entityIssues([operation.entityId], operation, scene);
@@ -906,28 +769,6 @@ export const OPERATION_REGISTRY = {
       ],
       writes: [{ channel: "position", entityId: operation.sourceEntityId }],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      const targetPosition = sampleChannel(draft, operation.targetEntityId, "position", operation.interval.start);
-      const position = isPointValue(targetPosition)
-        ? { x: targetPosition.x + operation.offset.x, y: targetPosition.y + operation.offset.y }
-        : operation.offset;
-      draft.constraints.push({
-        id: `${operation.id}/constraint`,
-        mode: operation.mode,
-        operationId: operation.id,
-        relation: operation.relation,
-        sourceEntityId: operation.sourceEntityId,
-        targetEntityId: operation.targetEntityId,
-      });
-      appendSample(draft, operation.sourceEntityId, "position", {
-        interval: { end: draft.duration, start: operation.interval.start },
-        kind: "exact",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: position,
-      });
-    },
     execution: (operation) =>
       operation.mode === "snapshot"
         ? SUPPORTED_EXECUTION
@@ -945,52 +786,11 @@ export const OPERATION_REGISTRY = {
         { channel: "presence", entityId: operation.entityId },
       ],
     }),
-    evaluate: (draft, operation, program) => {
-      if (operation.effect === "remove" && operation.persistent) {
-        throw new TypeError("Persistent remove requires the Rust authoring projection.");
-      }
-      recordOperation(draft, operation, program);
-      const isFade = operation.effect === "fade-in";
-      const from = operation.effect === "remove" || operation.effect === "reveal" ? 1 : 0;
-      const to = operation.effect === "remove" || operation.effect === "reveal" ? 0 : 1;
-      appendSample(draft, operation.entityId, "appearance", {
-        easing: "smooth",
-        from,
-        interval: operation.interval,
-        kind: "animated",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: to,
-      });
-      if (operation.persistent || isFade) {
-        appendSample(draft, operation.entityId, "appearance", {
-          interval: { end: draft.duration, start: operation.interval.end },
-          kind: "exact",
-          operationId: operation.id,
-          provenanceId: `${operation.id}/provenance`,
-          value: to,
-        });
-      }
-    },
     execution: changePresenceExecution,
     validate: (operation, scene) => entityIssues([operation.entityId], operation, scene),
   } satisfies Capability<"ChangePresence">,
   InsertTimelineEvent: {
     access: () => ({ reads: [], writes: [] }),
-    evaluate: (draft, operation, program) => {
-      if (isSceneDurationOperation(operation)) {
-        throw new TypeError("InsertTimelineEvent scene-duration waits require the Rust timeline projection.");
-      }
-      recordOperation(draft, operation, program);
-      draft.events.push({
-        id: `${operation.id}/timeline`,
-        interval: operation.interval,
-        kind: operation.eventKind,
-        label: operation.label,
-        operationId: operation.id,
-        transactionId: program.transactionId,
-      });
-    },
     execution: (operation) =>
       operation.eventKind === "wait"
         ? SUPPORTED_EXECUTION
@@ -1084,17 +884,6 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"TrimSceneDuration">,
   InsertSceneBoundary: {
     access: () => ({ reads: [], writes: [] }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      draft.events.push({
-        at: operation.at,
-        id: `${operation.id}/boundary`,
-        kind: "scene-boundary",
-        label: "Full-cover Scene boundary",
-        operationId: operation.id,
-        transactionId: program.transactionId,
-      });
-    },
     execution: () => SUPPORTED_EXECUTION,
     validate: (operation, scene) => baseIssues(operation, scene),
   } satisfies Capability<"InsertSceneBoundary">,
@@ -1103,20 +892,6 @@ export const OPERATION_REGISTRY = {
       reads: [{ channel: "camera", entityId: "camera" }],
       writes: [{ channel: "camera", entityId: "camera" }],
     }),
-    evaluate: (draft, operation, program) => {
-      recordOperation(draft, operation, program);
-      const fallback = operation.property === "position" ? { x: 0, y: 0 } : 1;
-      const current = sampleChannel(draft, "camera", "camera", operation.interval.start) ?? fallback;
-      appendSample(draft, "camera", "camera", {
-        easing: "smooth",
-        from: current,
-        interval: operation.interval,
-        kind: "animated",
-        operationId: operation.id,
-        provenanceId: `${operation.id}/provenance`,
-        value: operation.value,
-      });
-    },
     execution: () =>
       previewOnlyExecution(
         "CameraFocus can be previewed, but ChangeCamera cannot yet be lowered back to Manim source.",
@@ -1182,16 +957,4 @@ export function validateOperation(operation: CanonicalEditOperation, scene: Runt
     ];
   }
   return operationCapability(operation).validate(operation as never, scene);
-}
-
-export function evaluateOperation(
-  draft: EvaluationDraft,
-  operation: CanonicalEditOperation,
-  program: CanonicalEditProgram,
-) {
-  const evaluate = operationCapability(operation).evaluate;
-  if (!evaluate) {
-    throw new TypeError(`${operation.kind} requires the Rust authoring projection.`);
-  }
-  evaluate(draft, operation as never, program);
 }
