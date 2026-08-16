@@ -8000,13 +8000,9 @@ impl EngineSessionV1 {
             )?
         };
         let static_root_projection =
-            if transform_operation_count > 0 && resolved_removals.is_empty() {
-                Some(StudioStaticRootProjection {
-                    mutations: static_root_mutations,
-                })
-            } else {
-                None
-            };
+            (transform_operation_count > 0).then_some(StudioStaticRootProjection {
+                mutations: static_root_mutations,
+            });
         let result = StudioAuthoringEditResult {
             bundle: candidate.clone(),
             creation_projection: None,
@@ -10511,6 +10507,16 @@ mod tests {
         assert!((moved.transform.tx - 1.0).abs() < f64::EPSILON);
         assert!(moved.transform.ty.abs() < f64::EPSILON);
         assert!((moved.lifetimes.last().unwrap().end - 1.5).abs() < f64::EPSILON);
+        assert!(matches!(
+            result
+                .static_root_projection
+                .as_ref()
+                .map(|projection| projection.mutations.as_slice()),
+            Some([StudioStaticRootProjectedMutation {
+                mutation: StudioStaticRootMutation::Position { .. },
+                ..
+            }])
+        ));
         assert_eq!(result.persistent_remove_projection.removals.len(), 1);
         assert_eq!(session.scene(), &result.bundle.scene);
     }

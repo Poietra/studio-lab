@@ -1008,6 +1008,18 @@ export async function compileStudioPreviewSceneV1(
         input.snapshot.snapshot,
         staticRootTransformEditCommand(input, engineRevisionHash),
       );
+      const hasStaticRootTransform = hasImportedRootTransformTarget(sourceProgramBatch);
+      let staticRootProjection: StudioStaticRootProjectionV1 | null = null;
+      if (hasStaticRootTransform) {
+        try {
+          staticRootProjection = selectStaticRootProjection(sourceProgramBatch, result.staticRootProjection ?? null);
+        } catch {
+          return { error: "Rust core returned an uncorrelated persistent-remove transform.", kind: "unsupported" };
+        }
+        if (!staticRootProjection) {
+          return { error: "Rust core did not return the persistent-remove transform projection.", kind: "unsupported" };
+        }
+      }
       const hasMotion = sourceProgramBatch.some((program) =>
         program.operations.some(({ kind }) => kind === "CreateMotion"),
       );
@@ -1044,7 +1056,8 @@ export async function compileStudioPreviewSceneV1(
           ),
           ...(motionProjection ? { motionProjection } : {}),
           persistentRemoveProjection: result.persistentRemoveProjection,
-          ...(hasImportedRootTransformTarget(sourcePrograms.map(({ program }) => program))
+          ...(staticRootProjection ? { staticRootProjection } : {}),
+          ...(hasStaticRootTransform
             ? { programAuthority: "static-imported-root" as const }
             : { programAuthority: "rust-authorized-batch" as const }),
           snapshot: input.snapshot,

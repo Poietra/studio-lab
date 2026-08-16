@@ -1,4 +1,4 @@
-import type { StudioMotionProjectionV1, StudioPersistentRemoveProjectionV1 } from "../engine/scene-authoring";
+import type { StudioMotionProjectionV1 } from "../engine/scene-authoring";
 import { UNKNOWN_EDITABLE_CONTENT } from "./editable-content";
 import type {
   EntityContent,
@@ -125,7 +125,6 @@ function normalizePropertyChannels(draft: EvaluationDraft) {
 
 export function evaluateWorkingState(
   workingState: WorkingState,
-  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
   programAuthority: ProgramBatchAuthority | null = null,
   rustMotionProjection: StudioMotionProjectionV1 | null = null,
 ): ProposedState {
@@ -160,13 +159,6 @@ export function evaluateWorkingState(
   if (rustInsertionByTransactionId.size !== (rustMotionProjection?.insertions.length ?? 0)) {
     throw new TypeError("The Rust motion projection contains duplicate Program insertions.");
   }
-  const persistentRemoveByOperationId = new Map(
-    (persistentRemoveProjection?.removals ?? []).map((removal) => [removal.operationId, removal] as const),
-  );
-  if (persistentRemoveByOperationId.size !== (persistentRemoveProjection?.removals.length ?? 0)) {
-    throw new TypeError("The Rust persistent remove projection contains duplicate operation IDs.");
-  }
-  const usedPersistentRemoveOperationIds = new Set<string>();
   const draft = cloneScene(workingState.runtimeSceneState);
   const evaluatedPrograms: Array<ProgramRecord | undefined> = new Array(programs.length);
   const insertions: Array<Readonly<{ duration: number; sourceAnchor: number }>> = [];
@@ -222,18 +214,13 @@ export function evaluateWorkingState(
           usedRustMotionOperationIds.add(operation.id);
           continue;
         }
-        const removal = persistentRemoveByOperationId.get(operation.id);
         evaluateOperation(
           draft,
           staticRootProjection && operation.kind === "AnimateProperty" && operation.key === "scale"
             ? { ...operation, relativeFactor: undefined }
             : operation,
           validation.program,
-          removal,
         );
-        if (removal && operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent) {
-          usedPersistentRemoveOperationIds.add(operation.id);
-        }
       }
     }
     normalizePropertyChannels(draft);
@@ -248,9 +235,6 @@ export function evaluateWorkingState(
     if (!rustMotionProjection) {
       insertions.push({ duration: timelineDelta, sourceAnchor });
     }
-  }
-  if (usedPersistentRemoveOperationIds.size !== persistentRemoveByOperationId.size) {
-    throw new TypeError("The Rust persistent remove projection does not match the evaluated Program batch.");
   }
   if (
     usedRustInsertionTransactionIds.size !== rustInsertionByTransactionId.size ||

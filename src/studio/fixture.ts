@@ -2,6 +2,7 @@ import type { StudioPersistentRemoveProjectionV1 } from "../engine/scene-authori
 import { type RuntimeSceneState, STUDIO_STATE_VERSION, type StaticSemanticState, type WorkingState } from "./model";
 import type { CanonicalEditProgram } from "./operations";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
+import { projectStudioWorkspace } from "./workspace-projection";
 
 const duration = 12;
 
@@ -33,6 +34,34 @@ export function persistentRemoveProjectionFixture(
         : [],
     ),
   };
+}
+
+export function projectPersistentRemoveFixture(
+  program: CanonicalEditProgram,
+  scene = STUDIO_FIXTURE_SCENE,
+  draft = false,
+) {
+  const record = { program, validation: { issues: [], status: "valid" as const } };
+  return projectStudioWorkspace({
+    activeScene: {
+      anchors: [0, 5, 7],
+      name: "GroupedEquation",
+      nextSceneId: null,
+      runtimeSceneState: scene,
+      sceneId: scene.sceneId,
+      sourceHash: "fixture-grouped-equation-v1",
+      sourcePath: "examples/relativity.py",
+      sourceVariables: {},
+      staticSemanticState: STUDIO_FIXTURE_STATIC_STATE,
+    },
+    appliedPrograms: draft ? [] : [record],
+    currentTime: 0,
+    draftProgram: draft ? record : null,
+    nextScene: null,
+    persistentRemoveProjection: persistentRemoveProjectionFixture(program),
+    programAuthority: "rust-authorized-batch",
+    selectedObjectIds: [],
+  }).proposedState;
 }
 
 export const STUDIO_FIXTURE_SCENE: RuntimeSceneState = {

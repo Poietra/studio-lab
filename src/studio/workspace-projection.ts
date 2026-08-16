@@ -29,6 +29,7 @@ import {
   type CanonicalEditProgram,
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
+  isStaticRootTransformOperation,
 } from "./operations";
 import { normalizeContentSamples } from "./property-sampling";
 import { isExactStudioMathTexTransformProgramBatch, studioMotionProjectionBatchKind } from "./scene-authoring-wire";
@@ -40,6 +41,37 @@ import {
 
 export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
   return entity.type.startsWith("TransitionOverlay:");
+}
+
+function isPersistentRemoveOperation(
+  operation: CanonicalEditOperation,
+): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> {
+  return operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent;
+}
+
+function isPersistentRemoveProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  return (
+    programs.length > 0 &&
+    programs.every((program) => program.operations.length > 0 && program.operations.every(isPersistentRemoveOperation))
+  );
+}
+
+function isStaticRootWorkspaceProjectionProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  if (
+    isExactStaticRootProjectionProgramBatch(programs) ||
+    studioMotionProjectionBatchKind(programs) === "static-root"
+  ) {
+    return true;
+  }
+  return (
+    programs.some((program) => program.operations.some(isStaticRootTransformOperation)) &&
+    programs.every(
+      (program) =>
+        program.operations.length > 0 &&
+        (program.operations.every(isStaticRootTransformOperation) ||
+          program.operations.every(isPersistentRemoveOperation)),
+    )
+  );
 }
 
 export function selectStudioWorkspaceProgramAuthority(
@@ -59,7 +91,7 @@ export function selectPersistentRemoveProjection(
 ): StudioPersistentRemoveProjectionV1 | null {
   const expected = programs.flatMap((program) =>
     program.operations.flatMap((operation) =>
-      operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent
+      isPersistentRemoveOperation(operation)
         ? [{ entityId: operation.entityId, operationId: operation.id, transactionId: program.transactionId }]
         : [],
     ),
@@ -557,14 +589,15 @@ function correlateStaticRootProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioStaticRootProjectionV1 | null,
 ): readonly CorrelatedStaticRootMutation[] | null {
-  if (!isExactStaticRootProjectionProgramBatch(programs) && studioMotionProjectionBatchKind(programs) !== "static-root")
-    return null;
+  if (!isStaticRootWorkspaceProjectionProgramBatch(programs)) return null;
   if (!projection) {
     throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
   }
   const operations = programs.flatMap((program) =>
     program.operations.flatMap((operation) =>
-      operation.kind === "CreateMotion" ? [] : [{ operation, program } as const],
+      operation.kind === "CreateMotion" || isPersistentRemoveOperation(operation)
+        ? []
+        : [{ operation, program } as const],
     ),
   );
   const operationById = new Map(operations.map((entry) => [entry.operation.id, entry] as const));
@@ -591,8 +624,7 @@ export function selectStaticRootProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioStaticRootProjectionV1 | null,
 ): StudioStaticRootProjectionV1 | null {
-  if (!isExactStaticRootProjectionProgramBatch(programs) && studioMotionProjectionBatchKind(programs) !== "static-root")
-    return null;
+  if (!isStaticRootWorkspaceProjectionProgramBatch(programs)) return null;
   const correlated = correlateStaticRootProjection(programs, projection);
   return correlated ? { mutations: correlated.map(({ mutation }) => mutation) } : null;
 }
@@ -793,6 +825,62 @@ function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: reado
   }
 }
 
+function appendPersistentRemovals(
+  draft: WorkspaceProjectionDraft,
+  programs: readonly CanonicalEditProgram[],
+  projection: StudioPersistentRemoveProjectionV1,
+) {
+  const operationById = new Map(
+    programs.flatMap((program) =>
+      program.operations.map((operation) => [operation.id, { operation, program }] as const),
+    ),
+  );
+  for (const removal of projection.removals) {
+    const expected = operationById.get(removal.operationId);
+    const operation = expected?.operation;
+    const entity = draft.entities[removal.studioEntityId];
+    if (!expected || !operation || !isPersistentRemoveOperation(operation) || !entity) {
+      throw new TypeError(`Persistent remove ${removal.operationId} is not available in the workspace projection.`);
+    }
+    const eventInterval = removal.fadeInterval ?? { end: removal.removedAt, start: removal.removedAt };
+    appendProjectedOperationRecord(draft, operation, expected.program, eventInterval);
+    draft.entities[removal.studioEntityId] = {
+      ...entity,
+      lifetime: entity.lifetime.flatMap((interval) => {
+        if (interval.start >= removal.removedAt) return [];
+        return interval.end > removal.removedAt ? [{ ...interval, end: removal.resultingLifetimeEnd }] : [interval];
+      }),
+    };
+    if (removal.fadeInterval) {
+      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, "appearance", {
+        easing: "smooth",
+        from: 1,
+        interval: removal.fadeInterval,
+        kind: "animated",
+        operationId: removal.operationId,
+        provenanceId: `${removal.operationId}/provenance`,
+        value: 0,
+      });
+    }
+    for (const key of ["appearance", "presence"] as const) {
+      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, key, {
+        interval: { end: draft.duration, start: removal.removedAt },
+        kind: "exact",
+        operationId: removal.operationId,
+        provenanceId: `${removal.operationId}/provenance`,
+        value: key === "appearance" ? 0 : false,
+      });
+    }
+    draft.lineage.push({
+      at: removal.removedAt,
+      from: removal.studioEntityId,
+      operationId: removal.operationId,
+      relation: "removed",
+      to: removal.studioEntityId,
+    });
+  }
+}
+
 function projectCreationWorkingState(
   workingState: WorkingState,
   projection: StudioCreationProjectionV1,
@@ -864,62 +952,7 @@ function projectCreationWorkingState(
     appendProjectedMutation(draft, mutation, projection.projectedDuration);
   }
   appendCorrelatedMotions(draft, correlated.motions);
-
-  const operationById = new Map(
-    programs.flatMap((program) =>
-      program.operations.map((operation) => [operation.id, { operation, program }] as const),
-    ),
-  );
-  for (const removal of correlated.removals.removals) {
-    const expected = operationById.get(removal.operationId);
-    const operation = expected?.operation;
-    const entity = draft.entities[removal.studioEntityId];
-    if (
-      !expected ||
-      operation?.kind !== "ChangePresence" ||
-      operation.effect !== "remove" ||
-      !operation.persistent ||
-      !entity
-    ) {
-      throw new TypeError(`Persistent remove ${removal.operationId} is not available in the creation projection.`);
-    }
-    const eventInterval = removal.fadeInterval ?? { end: removal.removedAt, start: removal.removedAt };
-    appendProjectedOperationRecord(draft, operation, expected.program, eventInterval);
-    draft.entities[removal.studioEntityId] = {
-      ...entity,
-      lifetime: entity.lifetime.flatMap((interval) => {
-        if (interval.start >= removal.removedAt) return [];
-        return interval.end > removal.removedAt ? [{ ...interval, end: removal.resultingLifetimeEnd }] : [interval];
-      }),
-    };
-    if (removal.fadeInterval) {
-      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, "appearance", {
-        easing: "smooth",
-        from: 1,
-        interval: removal.fadeInterval,
-        kind: "animated",
-        operationId: removal.operationId,
-        provenanceId: `${removal.operationId}/provenance`,
-        value: 0,
-      });
-    }
-    for (const key of ["appearance", "presence"] as const) {
-      appendProjectedSample(draft.propertyChannels, removal.studioEntityId, key, {
-        interval: { end: projection.projectedDuration, start: removal.removedAt },
-        kind: "exact",
-        operationId: removal.operationId,
-        provenanceId: `${removal.operationId}/provenance`,
-        value: key === "appearance" ? 0 : false,
-      });
-    }
-    draft.lineage.push({
-      at: removal.removedAt,
-      from: removal.studioEntityId,
-      operationId: removal.operationId,
-      relation: "removed",
-      to: removal.studioEntityId,
-    });
-  }
+  appendPersistentRemovals(draft, programs, correlated.removals);
 
   return projectedWorkingState(workingState, records, draft);
 }
@@ -928,6 +961,7 @@ function projectStaticRootWorkingState(
   workingState: WorkingState,
   projection: StudioStaticRootProjectionV1,
   motionProjection: StudioMotionProjectionV1 | null = null,
+  persistentRemoveProjection: StudioPersistentRemoveProjectionV1 | null = null,
 ): ProposedState {
   const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
   const programs = records.map(({ program }) => program);
@@ -958,6 +992,21 @@ function projectStaticRootWorkingState(
     }
     appendCorrelatedMotions(draft, correlatedMotions);
   }
+  if (persistentRemoveProjection) appendPersistentRemovals(draft, programs, persistentRemoveProjection);
+  return projectedWorkingState(workingState, records, draft);
+}
+
+function projectPersistentRemoveWorkingState(
+  workingState: WorkingState,
+  projection: StudioPersistentRemoveProjectionV1,
+): ProposedState {
+  const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
+  const programs = records.map(({ program }) => program);
+  if (!isPersistentRemoveProgramBatch(programs)) {
+    throw new TypeError("Persistent remove projection requires one closed remove-only Program batch.");
+  }
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  appendPersistentRemovals(draft, programs, projection);
   return projectedWorkingState(workingState, records, draft);
 }
 
@@ -1178,7 +1227,7 @@ export function projectStudioWorkspace(
     proposedState = projectMathTexTransformWorkingState(workingState, input.mathTexTransformProjection);
   } else if (
     input.programAuthority === "static-imported-root" &&
-    (isExactStaticRootProjectionProgramBatch(programs) || studioMotionProjectionBatchKind(programs) === "static-root")
+    isStaticRootWorkspaceProjectionProgramBatch(programs)
   ) {
     if (!input.staticRootProjection) {
       throw new TypeError("A Rust static-root projection is required to project static imported-root Programs.");
@@ -1190,11 +1239,20 @@ export function projectStudioWorkspace(
       workingState,
       input.staticRootProjection,
       hasMotion ? input.motionProjection : null,
+      persistentRemoveProjection,
     );
+  } else if (
+    input.programAuthority === "rust-authorized-batch" &&
+    persistentRemoveProjection &&
+    isPersistentRemoveProgramBatch(programs)
+  ) {
+    proposedState = projectPersistentRemoveWorkingState(workingState, persistentRemoveProjection);
   } else {
+    if (persistentRemoveProjection) {
+      throw new TypeError("Persistent remove Programs require one closed Rust-authorized projection batch.");
+    }
     proposedState = evaluateWorkingState(
       workingState,
-      persistentRemoveProjection,
       input.programAuthority ?? null,
       correlatedMotions ? (input.motionProjection ?? null) : null,
     );

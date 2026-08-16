@@ -4,7 +4,7 @@ import { validateEditProgram } from "../ai/edit-program-validation";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import { validateSuggestionDraft } from "./draft-validation";
 import { evaluateWorkingState, projectProposedState } from "./evaluator";
-import { createFixtureWorkingState, persistentRemoveProjectionFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
+import { createFixtureWorkingState, projectPersistentRemoveFixture, STUDIO_FIXTURE_SCENE } from "./fixture";
 import type { RuntimeSceneState } from "./model";
 import { canonicalizeSuggestionProgram } from "./suggestion-program";
 
@@ -108,8 +108,7 @@ describe("Magic Edit scale and delete canonicalization", () => {
       }),
     ]);
 
-    const staged = createFixtureWorkingState({ stagedPrograms: [result.record] });
-    const preview = evaluateWorkingState(staged, persistentRemoveProjectionFixture(result.record.program));
+    const preview = projectPersistentRemoveFixture(result.record.program, STUDIO_FIXTURE_SCENE, true);
     expect(
       projectProposedState(preview, 5.2).canvas.entities.find((entity) => entity.id === "equation_1")?.opacity,
     ).toBeGreaterThan(0);
