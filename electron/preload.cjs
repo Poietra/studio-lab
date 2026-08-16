@@ -9,5 +9,8 @@ contextBridge.exposeInMainWorld(
     savePythonSource(fileName, source) {
       return ipcRenderer.invoke("poietra:save-python-source", { fileName, source });
     },
+    saveVideoFile(fileName, bytes) {
+      return ipcRenderer.invoke("poietra:save-video-file", { bytes, fileName });
+    },
   }),
 );

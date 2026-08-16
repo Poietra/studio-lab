@@ -1217,6 +1217,12 @@ impl PoietraExportEncoderSessionV1 {
         }
     }
 
+    /// Total encoded media bytes retained so far, readable mid-run for the
+    /// bounded export progress report (#723).
+    pub(crate) fn collected_media_bytes(&self) -> u64 {
+        self.harness.shared.borrow().total_chunk_bytes
+    }
+
     pub(crate) fn take_finished_output(
         &mut self,
     ) -> Result<FinishedEncoderOutputV1, EncoderFailureV1> {

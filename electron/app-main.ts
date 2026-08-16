@@ -5,6 +5,7 @@ import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { manimProjectNameSchema } from "../src/render-pipeline/contracts";
+import { parseSaveVideoFileRequestV1 } from "./save-video-file";
 import { startElectronShellServer, type ElectronShellServer } from "../server/electron-shell-server";
 import { HttpError } from "../server/http/json";
 import { createConsoleJsonSink, createStructuredLogger } from "../server/logging/structured-logger";
@@ -128,6 +129,19 @@ function registerNativeHandlers() {
     await writeFile(selection.filePath, source, { encoding: "utf8", mode: 0o600 });
     return { cancelled: false };
   });
+
+  ipcMain.handle("poietra:save-video-file", async (event, input: unknown) => {
+    const senderWindow = trustedSender(event);
+    const { bytes, fileName } = parseSaveVideoFileRequestV1(input);
+    const selection = await dialog.showSaveDialog(senderWindow, {
+      defaultPath: fileName,
+      filters: [{ extensions: ["mp4"], name: "MP4 video" }],
+      title: "Save exported video",
+    });
+    if (selection.canceled || !selection.filePath) return { cancelled: true };
+    await writeFile(selection.filePath, bytes, { mode: 0o600 });
+    return { cancelled: false };
+  });
 }
 
 function secureWindow(window: BrowserWindow) {
@@ -178,6 +192,7 @@ function shutdown() {
   shutdownRequest ??= (async () => {
     ipcMain.removeHandler("poietra:register-existing-workspace");
     ipcMain.removeHandler("poietra:save-python-source");
+    ipcMain.removeHandler("poietra:save-video-file");
     await shellServer?.close();
   })();
   return shutdownRequest;
