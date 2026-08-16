@@ -50,13 +50,13 @@ describe("immutable source and project PNG storage contracts", () => {
     );
     expect(parseImmutableSourceBlobObjectKeyV1(TENANT, SOURCE_KEY)).toEqual({
       digest: DIGEST,
-      objectGeneration: GENERATION,
       objectKey: SOURCE_KEY,
+      objectLocatorToken: GENERATION,
     });
     expect(parseImmutableProjectPngObjectKeyV1(TENANT, PNG_KEY)).toEqual({
       digest: DIGEST,
-      objectGeneration: GENERATION,
       objectKey: PNG_KEY,
+      objectLocatorToken: GENERATION,
       projectId: PROJECT,
     });
 

@@ -1,8 +1,8 @@
 import { manimTenantIdSchema } from "../manim-request-principal";
 import {
-  createImmutableObjectGenerationV1,
-  immutableObjectGenerationV1,
+  createImmutableObjectLocatorTokenV1,
   immutableObjectKeyV1,
+  immutableObjectLocatorTokenV1,
   parseImmutableObjectLocatorV1,
 } from "./immutable-object-contract";
 
@@ -45,6 +45,7 @@ export type VersionedRenderArtifactReceiptV1 = RenderArtifactIdentityV1 &
 export type ImmutableRenderArtifactReceiptV1 = RenderArtifactIdentityV1 &
   Readonly<{
     etag: string;
+    /** Legacy persisted spelling of the random object locator token (#715); never ordered or monotonic. */
     objectGeneration: string;
     objectKey: string;
     versionId?: never;
@@ -201,23 +202,24 @@ function assertRenderArtifactReceiptFieldsV1(value: Record<string, unknown>) {
 export function immutableRenderArtifactObjectKeyV1(
   tenantValue: string,
   value: RenderArtifactIdentityV1,
-  objectGeneration: string,
+  objectLocatorToken: string,
 ) {
   const tenant = tenantId(tenantValue);
   const identity = parseRenderArtifactIdentityV1(tenant, value);
   return immutableObjectKeyV1({
     contentAddressedKey: renderArtifactObjectKeyV1(tenant, identity),
     contentDigest: identity.artifactDigest,
-    objectGeneration,
+    objectLocatorToken,
     tenantId: tenant,
   });
 }
 
+/** Allocates a fresh random locator token and returns the legacy-spelled locator pair receipts persist. */
 export function createImmutableRenderArtifactLocatorV1(tenantValue: string, value: RenderArtifactIdentityV1) {
-  const objectGeneration = createImmutableObjectGenerationV1();
+  const objectLocatorToken = createImmutableObjectLocatorTokenV1();
   return {
-    objectGeneration,
-    objectKey: immutableRenderArtifactObjectKeyV1(tenantValue, value, objectGeneration),
+    objectGeneration: objectLocatorToken,
+    objectKey: immutableRenderArtifactObjectKeyV1(tenantValue, value, objectLocatorToken),
   } as const;
 }
 
@@ -299,6 +301,12 @@ export function isImmutableRenderArtifactReceiptV1(
   return typeof value.objectGeneration === "string";
 }
 
+/**
+ * Column-spelled exact locator for repository adapters. `objectGeneration`
+ * mirrors the legacy `object_generation` column that stores the random locator
+ * token, and the `generation:` advisory-identity prefix must stay stable
+ * across deployments (#715 compatibility).
+ */
 export type RenderArtifactLocatorV1 =
   | Readonly<{
       advisoryIdentity: string;
@@ -325,11 +333,11 @@ export function renderArtifactLocatorV1(value: RenderArtifactReceiptV1): RenderA
       versionId: value.versionId,
     };
   }
-  const objectGeneration = immutableObjectGenerationV1(value.objectGeneration);
+  const objectLocatorToken = immutableObjectLocatorTokenV1(value.objectGeneration);
   return {
-    advisoryIdentity: `generation:${objectGeneration}`,
+    advisoryIdentity: `generation:${objectLocatorToken}`,
     kind: "immutable",
-    objectGeneration,
+    objectGeneration: objectLocatorToken,
     objectKey: value.objectKey,
     versionId: null,
   };

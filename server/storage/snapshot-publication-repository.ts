@@ -27,6 +27,7 @@ export type VersionedSnapshotArtifactReceiptV1 = SnapshotArtifactIdentityV1 &
 
 export type SnapshotArtifactReceiptV1 = VersionedSnapshotArtifactReceiptV1 | ImmutableSnapshotArtifactReceiptV1;
 
+/** Exact snapshot-artifact locator; `objectGeneration` keeps the legacy persisted spelling of the random object locator token (#715), never an ordered generation. */
 export type SnapshotArtifactLocatorV1 =
   | Readonly<{ kind: "immutable"; objectGeneration: string; objectKey: string }>
   | Readonly<{ kind: "versioned"; objectKey: string; versionId: string }>;

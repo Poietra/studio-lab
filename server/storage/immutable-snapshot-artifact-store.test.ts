@@ -61,13 +61,13 @@ describe("immutable snapshot artifact contract", () => {
     expect(runtimeKey).not.toBe(legacyKey);
     expect(parseImmutableSnapshotArtifactObjectKeyV1(TENANT, legacyKey)).toEqual({
       identity: legacyIdentity,
-      objectGeneration: GENERATION,
       objectKey: legacyKey,
+      objectLocatorToken: GENERATION,
     });
     expect(parseImmutableSnapshotArtifactObjectKeyV1(TENANT, runtimeKey)).toEqual({
       identity: runtimeIdentity,
-      objectGeneration: GENERATION,
       objectKey: runtimeKey,
+      objectLocatorToken: GENERATION,
     });
   });
 

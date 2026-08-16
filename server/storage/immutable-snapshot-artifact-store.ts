@@ -1,7 +1,7 @@
 import { manimTenantIdSchema } from "../manim-request-principal";
 import {
-  immutableObjectGenerationV1,
   immutableObjectKeyV1,
+  immutableObjectLocatorTokenV1,
   parseImmutableObjectLocatorV1,
 } from "./immutable-object-contract";
 import {
@@ -44,13 +44,20 @@ export type ImmutableSnapshotArtifactReceiptV1 = Readonly<{
   byteSize: number;
   etag: string;
   identity: ImmutableSnapshotArtifactIdentityV1;
+  /** Legacy serialized spelling of the random object locator token (#715); never ordered or monotonic. */
   objectGeneration: string;
   objectKey: string;
   schema: typeof IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1;
   version: 1;
 }>;
 
-/** Provider-neutral payload suitable for a future database-owned tombstone. */
+/**
+ * Provider-neutral payload suitable for a future database-owned tombstone. The
+ * tombstone pins the exact object key and locator token so deletion can never
+ * resurrect or remove a later object; `objectGeneration` keeps the legacy
+ * serialized spelling of the locator token until an explicit versioned cutover
+ * (#715).
+ */
 export type ImmutableSnapshotArtifactDeletionTargetV1 = Readonly<{
   identity: ImmutableSnapshotArtifactIdentityV1;
   objectGeneration: string;
@@ -206,15 +213,15 @@ export function immutableSnapshotArtifactContentAddressedKeyV1(tenantValue: unkn
 export function immutableSnapshotArtifactObjectKeyV1(
   tenantValue: unknown,
   identityValue: unknown,
-  objectGenerationValue: unknown,
+  objectLocatorTokenValue: unknown,
 ) {
   const tenantId = immutableSnapshotArtifactTenantIdV1(tenantValue);
   const identity = parseImmutableSnapshotArtifactIdentityV1(identityValue);
-  const objectGeneration = immutableObjectGenerationV1(objectGenerationValue);
+  const objectLocatorToken = immutableObjectLocatorTokenV1(objectLocatorTokenValue);
   return immutableObjectKeyV1({
     contentAddressedKey: immutableSnapshotArtifactContentAddressedKeyV1(tenantId, identity),
     contentDigest: identity.resultDigest,
-    objectGeneration,
+    objectLocatorToken,
     tenantId,
   });
 }
@@ -228,7 +235,7 @@ export function parseImmutableSnapshotArtifactObjectKeyV1(tenantValue: unknown, 
   if ((parts.length !== 6 && parts.length !== 7) || parts.at(-2) !== "g") {
     throw new TypeError("Immutable snapshot artifact object key is invalid.");
   }
-  const objectGeneration = immutableObjectGenerationV1(parts.at(-1));
+  const objectLocatorToken = immutableObjectLocatorTokenV1(parts.at(-1));
   const identity = parseImmutableSnapshotArtifactIdentityV1(
     parts.length === 6
       ? {
@@ -247,9 +254,9 @@ export function parseImmutableSnapshotArtifactObjectKeyV1(tenantValue: unknown, 
           sourceDigest: parts[0],
         },
   );
-  const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectGeneration);
+  const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectLocatorToken);
   if (objectKey !== value) throw new TypeError("Immutable snapshot artifact object key is invalid.");
-  return { identity, objectGeneration, objectKey } as const;
+  return { identity, objectKey, objectLocatorToken } as const;
 }
 
 function boundedEtag(value: unknown) {
@@ -303,15 +310,16 @@ export function parseImmutableSnapshotArtifactReceiptV1(
 export function immutableSnapshotArtifactMetadataV1(
   tenantValue: unknown,
   identityValue: unknown,
-  objectGenerationValue: unknown,
+  objectLocatorTokenValue: unknown,
 ) {
   const tenantId = immutableSnapshotArtifactTenantIdV1(tenantValue);
   const identity = parseImmutableSnapshotArtifactIdentityV1(identityValue);
-  const objectGeneration = immutableObjectGenerationV1(objectGenerationValue);
+  const objectLocatorToken = immutableObjectLocatorTokenV1(objectLocatorTokenValue);
   return {
     "artifact-schema": IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1,
     "identity-kind": identity.kind,
-    "object-generation": objectGeneration,
+    // The provider metadata key keeps the legacy `object-generation` spelling (#715 compatibility).
+    "object-generation": objectLocatorToken,
     "profile-digest": identity.profileDigest,
     "result-digest": identity.resultDigest,
     "runtime-config-hash": identity.runtimeConfigHash,
@@ -351,12 +359,12 @@ export function parseImmutableSnapshotArtifactDeletionTargetV1(
     throw new TypeError("Immutable snapshot artifact deletion target is invalid.");
   }
   const identity = parseImmutableSnapshotArtifactIdentityV1(candidate.identity);
-  const objectGeneration = immutableObjectGenerationV1(candidate.objectGeneration);
-  const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectGeneration);
+  const objectLocatorToken = immutableObjectLocatorTokenV1(candidate.objectGeneration);
+  const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectLocatorToken);
   if (candidate.objectKey !== objectKey) throw new TypeError("Immutable snapshot artifact deletion target is invalid.");
   return {
     identity,
-    objectGeneration,
+    objectGeneration: objectLocatorToken,
     objectKey,
     schema: IMMUTABLE_SNAPSHOT_ARTIFACT_DELETION_SCHEMA_V1,
     tenantId,

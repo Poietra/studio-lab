@@ -137,7 +137,7 @@ export function assertSourceBlobReceiptV1(tenantId: string, value: SourceBlobRec
     ? immutableObjectKeyV1({
         contentAddressedKey: baseKey,
         contentDigest: digest,
-        objectGeneration: locator.objectGeneration,
+        objectLocatorToken: locator.objectGeneration,
         tenantId,
       })
     : baseKey;

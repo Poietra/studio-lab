@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createImmutableObjectGenerationV1, immutableObjectGenerationV1 } from "../immutable-object-contract";
+import { createImmutableObjectLocatorTokenV1, immutableObjectLocatorTokenV1 } from "../immutable-object-contract";
 import {
   type ImmutableProjectPngBlobStoreV1,
   type ImmutableProjectPngReceiptV1,
@@ -37,12 +37,15 @@ import {
   type PrivateImmutableS3BucketTransportLeaseV1,
 } from "./s3-private-immutable-bucket-transport";
 
-const MAX_GENERATION_ATTEMPTS_V1 = 3;
+const MAX_LOCATOR_TOKEN_ATTEMPTS_V1 = 3;
 const SOURCE_CONTENT_TYPE_V1 = "text/x-python";
 const PROJECT_PNG_CONTENT_TYPE_V1 = "image/png";
 
 export type ImmutableS3AdapterDependenciesV1 = Readonly<{
+  /** @deprecated Legacy `generation` vocabulary for {@link ImmutableS3AdapterDependenciesV1.createObjectLocatorToken}; remove only through the #715 versioned cutover. */
   createObjectGeneration?: () => string;
+  /** Factory for the random immutable-object locator token appended under `/g/`. */
+  createObjectLocatorToken?: () => string;
 }>;
 
 type ImmutableObjectPropertiesV1 = Readonly<{
@@ -160,41 +163,45 @@ function responseProperties(response: PrivateImmutableObjectHeadV1 | PrivateImmu
   return { contentType: response.contentType, metadata: response.metadata };
 }
 
-function generationFactory(dependencies: ImmutableS3AdapterDependenciesV1) {
-  const create = dependencies.createObjectGeneration ?? createImmutableObjectGenerationV1;
-  if (typeof create !== "function") throw new TypeError("Immutable object generation factory is invalid.");
-  return () => immutableObjectGenerationV1(create());
+function locatorTokenFactory(dependencies: ImmutableS3AdapterDependenciesV1) {
+  const create =
+    dependencies.createObjectLocatorToken ?? dependencies.createObjectGeneration ?? createImmutableObjectLocatorTokenV1;
+  if (typeof create !== "function") throw new TypeError("Immutable object locator token factory is invalid.");
+  return () => immutableObjectLocatorTokenV1(create());
 }
 
-async function putWithGenerations(
+/** Retries conditional creates with fresh locator tokens; the returned pair keeps the legacy `objectGeneration` receipt spelling (#715). */
+async function putWithLocatorTokens(
   operation: PrivateImmutableS3BucketOperationV1,
-  createGeneration: () => string,
-  createInput: (objectGeneration: string) => Readonly<{
+  createObjectLocatorToken: () => string,
+  createInput: (objectLocatorToken: string) => Readonly<{
     body: Uint8Array;
     contentType: string;
     metadata: Readonly<Record<string, string>>;
     objectKey: string;
   }>,
 ) {
-  for (let attempt = 0; attempt < MAX_GENERATION_ATTEMPTS_V1; attempt += 1) {
+  for (let attempt = 0; attempt < MAX_LOCATOR_TOKEN_ATTEMPTS_V1; attempt += 1) {
     operation.signal.throwIfAborted();
-    const objectGeneration = createGeneration();
-    const input = createInput(objectGeneration);
+    const objectLocatorToken = createObjectLocatorToken();
+    const input = createInput(objectLocatorToken);
     const result = await operation.putObject(input);
-    if (result.kind === "created") return { etag: result.etag, objectGeneration, objectKey: input.objectKey };
+    if (result.kind === "created") {
+      return { etag: result.etag, objectGeneration: objectLocatorToken, objectKey: input.objectKey };
+    }
   }
-  throw new Error(`Immutable object creation collided ${MAX_GENERATION_ATTEMPTS_V1} consecutive times.`);
+  throw new Error(`Immutable object creation collided ${MAX_LOCATOR_TOKEN_ATTEMPTS_V1} consecutive times.`);
 }
 
 export type ImmutableS3SourceBlobStoreOptionsV1 = PrivateImmutableS3BucketConsumerOptionsV1;
 
-/** Unversioned source storage pinned by an application-owned object generation and exact ETag. */
+/** Unversioned source storage pinned by an application-owned object locator token and exact ETag. */
 export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobStoreV1, SourceContentBlobStoreV1 {
-  readonly #createGeneration: () => string;
+  readonly #createObjectLocatorToken: () => string;
   readonly #transport: PrivateImmutableS3BucketTransportLeaseV1;
 
   constructor(options: ImmutableS3SourceBlobStoreOptionsV1, dependencies: ImmutableS3AdapterDependenciesV1 = {}) {
-    this.#createGeneration = generationFactory(dependencies);
+    this.#createObjectLocatorToken = locatorTokenFactory(dependencies);
     this.#transport = acquirePrivateImmutableS3BucketTransportV1(options);
   }
 
@@ -242,12 +249,12 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
     const contentDigest = digest(bytes);
     sourceBlobContentAddressedKeyV1(tenantId, contentDigest);
     const operation = this.#transport.operation(signal);
-    const created = await putWithGenerations(operation, this.#createGeneration, (objectGeneration) => {
-      const objectKey = immutableSourceBlobObjectKeyV1(tenantId, contentDigest, objectGeneration);
+    const created = await putWithLocatorTokens(operation, this.#createObjectLocatorToken, (objectLocatorToken) => {
+      const objectKey = immutableSourceBlobObjectKeyV1(tenantId, contentDigest, objectLocatorToken);
       return {
         body: bytes,
         contentType: SOURCE_CONTENT_TYPE_V1,
-        metadata: sourceMetadata({ digest: contentDigest, objectGeneration }),
+        metadata: sourceMetadata({ digest: contentDigest, objectGeneration: objectLocatorToken }),
         objectKey,
       };
     });
@@ -293,7 +300,7 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
             byteSize: object.byteSize,
             digest: identity.digest,
             etag: object.etag,
-            objectGeneration: identity.objectGeneration,
+            objectGeneration: identity.objectLocatorToken,
             objectKey: identity.objectKey,
           }),
         };
@@ -328,13 +335,13 @@ export class ImmutableS3SourceBlobStoreV1 implements ImmutableSourceContentBlobS
 
 export type ImmutableS3ProjectPngStoreOptionsV1 = PrivateImmutableS3BucketConsumerOptionsV1;
 
-/** Unversioned project image storage pinned by an application-owned object generation and exact ETag. */
+/** Unversioned project image storage pinned by an application-owned object locator token and exact ETag. */
 export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStoreV1, ProjectPngBlobStoreV1 {
-  readonly #createGeneration: () => string;
+  readonly #createObjectLocatorToken: () => string;
   readonly #transport: PrivateImmutableS3BucketTransportLeaseV1;
 
   constructor(options: ImmutableS3ProjectPngStoreOptionsV1, dependencies: ImmutableS3AdapterDependenciesV1 = {}) {
-    this.#createGeneration = generationFactory(dependencies);
+    this.#createObjectLocatorToken = locatorTokenFactory(dependencies);
     this.#transport = acquirePrivateImmutableS3BucketTransportV1(options);
   }
 
@@ -398,12 +405,12 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
     const inspected = inspectProjectPngBytesV1(bytes);
     projectPngObjectKeyV1(tenantId, projectId, inspected.digest);
     const operation = this.#transport.operation(signal);
-    const created = await putWithGenerations(operation, this.#createGeneration, (objectGeneration) => {
-      const objectKey = immutableProjectPngObjectKeyV1(tenantId, projectId, inspected.digest, objectGeneration);
+    const created = await putWithLocatorTokens(operation, this.#createObjectLocatorToken, (objectLocatorToken) => {
+      const objectKey = immutableProjectPngObjectKeyV1(tenantId, projectId, inspected.digest, objectLocatorToken);
       return {
         body: inspected.bytes,
         contentType: PROJECT_PNG_CONTENT_TYPE_V1,
-        metadata: projectPngMetadata(projectId, { digest: inspected.digest, objectGeneration }),
+        metadata: projectPngMetadata(projectId, { digest: inspected.digest, objectGeneration: objectLocatorToken }),
         objectKey,
       };
     });
@@ -460,7 +467,7 @@ export class ImmutableS3ProjectPngStoreV1 implements ImmutableProjectPngBlobStor
             byteSize: object.byteSize,
             digest: identity.digest,
             etag: object.etag,
-            objectGeneration: identity.objectGeneration,
+            objectGeneration: identity.objectLocatorToken,
             objectKey: identity.objectKey,
           }),
         };

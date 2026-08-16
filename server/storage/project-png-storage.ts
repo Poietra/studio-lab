@@ -130,7 +130,7 @@ export function assertProjectPngReceiptV1(
     ? immutableObjectKeyV1({
         contentAddressedKey,
         contentDigest: value.digest,
-        objectGeneration: locator.objectGeneration,
+        objectLocatorToken: locator.objectGeneration,
         tenantId,
       })
     : contentAddressedKey;
