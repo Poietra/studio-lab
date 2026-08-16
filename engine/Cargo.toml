@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/poietra-eval",
+  "crates/poietra-export-mux",
   "crates/poietra-geometry",
   "crates/poietra-mathtex-outline",
   "crates/poietra-mathtex-py",
@@ -26,6 +27,7 @@ poietra-mathtex-outline = { path = "crates/poietra-mathtex-outline" }
 pyo3 = { version = "=0.28.3", features = ["abi3-py310"] }
 lyon_tessellation = "=1.0.20"
 kurbo = "=0.13.1"
+mp4-atom = "=0.15.0"
 png = "=0.18.1"
 ratex-font = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
 ratex-katex-fonts = { git = "https://github.com/erweixin/RaTeX.git", rev = "ae391d727ac615437c63c308f4538d971a84bede" }
