@@ -14,6 +14,10 @@ mod canvas_assets;
 mod canvas_protocol;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod canvas_telemetry;
+// Test-only browser proof for the offscreen async export readback (#718);
+// superseded by the #721 export contract.
+#[cfg(target_arch = "wasm32")]
+mod export_readback_proof;
 mod protocol;
 
 use wasm_bindgen::prelude::*;
