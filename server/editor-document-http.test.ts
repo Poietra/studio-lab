@@ -44,6 +44,18 @@ const sessionSnapshot = {
   verifiedSourceDurationBasis: null,
 } as const;
 
+function previewOnlySessionSnapshot() {
+  return {
+    ...sessionSnapshot,
+    appliedPrograms: [
+      {
+        program: { ...program("preview-only"), loweringStatus: "illustrative" as const },
+        validation: { issues: [], status: "valid" as const },
+      },
+    ],
+  };
+}
+
 function program(transactionId = "motion", evidence: readonly string[] = []): CanonicalEditProgram {
   const operation = {
     controlOffset: { x: 0, y: 0 },
@@ -369,6 +381,20 @@ describe("authenticated Editor document HTTP handler", () => {
       },
       signal,
     );
+    expect(
+      await send(port, path, {
+        body: {
+          documentRevision: "0",
+          epoch: EPOCH,
+          expectedSessionGeneration: "0",
+          snapshot: previewOnlySessionSnapshot(),
+          snapshotVersion: 1,
+        },
+        headers: mutationHeaders(),
+        method: "PUT",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(putSessionSnapshot).toHaveBeenCalledTimes(1);
     expect(isEditorDocumentRequest(path.split("?", 1)[0]!)).toBe(true);
   });
 
@@ -443,6 +469,23 @@ describe("authenticated Editor document HTTP handler", () => {
       }),
       undefined,
     );
+    expect(
+      await send(port, path, {
+        body: {
+          baseRevision: "0",
+          clientMutationId: MUTATION_ID,
+          epoch: EPOCH,
+          mutation,
+          sessionUpdate: {
+            ...sessionUpdate,
+            snapshot: previewOnlySessionSnapshot(),
+          },
+        },
+        headers: mutationHeaders(),
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 400 });
+    expect(commitMutation).toHaveBeenCalledTimes(1);
   });
 
   it("admits a valid session snapshot above the legacy event-only route limit", async () => {

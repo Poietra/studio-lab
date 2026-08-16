@@ -474,6 +474,16 @@ describe("editor document HTTP views", () => {
     const sessionView = serializeEditorDocumentSessionViewV1(session);
     expect(editorDocumentSessionViewSchemaV1.safeParse({ ...sessionView, subjectId: "forged" }).success).toBe(false);
     expect(editorDocumentSessionViewSchemaV1.safeParse({ ...sessionView, internal: true }).success).toBe(false);
+    const previewOnlyProgram = { ...program("preview-only"), loweringStatus: "illustrative" as const };
+    expect(
+      editorDocumentSessionViewSchemaV1.safeParse({
+        ...sessionView,
+        snapshot: {
+          ...sessionSnapshot,
+          appliedPrograms: [{ program: previewOnlyProgram, validation: { issues: [], status: "valid" } }],
+        },
+      }).success,
+    ).toBe(false);
     expect(
       editorDocumentSessionPutResultViewSchemaV1.safeParse({
         kind: "stored",

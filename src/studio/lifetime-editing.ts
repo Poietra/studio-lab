@@ -18,9 +18,9 @@ export type ImportedLifetimeEditMetadata = Readonly<{
   original: Interval;
 }>;
 
-export type StudioLifetimeOwner = Readonly<{
+export type StudioLifetimeOwner<TRecord extends ProgramRecord = ProgramRecord> = Readonly<{
   index: number;
-  record: ProgramRecord;
+  record: TRecord;
 }>;
 
 export type ProgramSourceAnchorBounds = Readonly<{
@@ -87,7 +87,11 @@ export function importedLifetimeEditMetadata(record: ProgramRecord): ImportedLif
   }
 }
 
-export function findImportedLifetimeEdit(programs: readonly ProgramRecord[], entityId: string, originalStart: number) {
+export function findImportedLifetimeEdit<TRecord extends ProgramRecord>(
+  programs: readonly TRecord[],
+  entityId: string,
+  originalStart: number,
+) {
   const index = programs.findIndex((record) => {
     const metadata = importedLifetimeEditMetadata(record);
     return metadata?.entityId === entityId && Math.abs(metadata.original.start - originalStart) < 0.001;
@@ -95,10 +99,10 @@ export function findImportedLifetimeEdit(programs: readonly ProgramRecord[], ent
   return index < 0 ? null : ({ index, record: programs[index]! } as const);
 }
 
-export function findStudioLifetimeOwner(
-  programs: readonly ProgramRecord[],
+export function findStudioLifetimeOwner<TRecord extends ProgramRecord>(
+  programs: readonly TRecord[],
   entityId: string,
-): StudioLifetimeOwner | null {
+): StudioLifetimeOwner<TRecord> | null {
   const index = programs.findIndex((record) =>
     record.program.operations.some(
       (operation) => operation.kind === "CreateEntity" && operation.entity.id === entityId,

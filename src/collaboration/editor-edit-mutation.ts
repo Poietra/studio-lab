@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import { canonicalEditProgramSchemaV1 } from "../render-pipeline/contracts";
 import { APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1, type CanonicalEditProgram } from "../studio/operations";
+import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../studio/scene-edit-contract";
 
 export const MAX_APPLIED_EDITOR_PROGRAMS_V1 = 32;
 

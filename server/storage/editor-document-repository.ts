@@ -11,12 +11,9 @@ import {
 } from "../../src/collaboration/editor-session-contract";
 import { canonicalJsonV1 } from "../../src/engine/fast-manim-snapshot-digest";
 import { sha256V1Schema } from "../../src/engine/primitives";
-import {
-  canonicalEditProgramSchemaV1,
-  manimProjectIdSchema,
-  manimSourcePathSchema,
-} from "../../src/render-pipeline/contracts";
+import { manimProjectIdSchema, manimSourcePathSchema } from "../../src/render-pipeline/contracts";
 import type { CanonicalEditProgram } from "../../src/studio/operations";
+import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../../src/studio/scene-edit-contract";
 import { manimTenantIdSchema } from "../manim-request-principal";
 
 export const MAX_EDITOR_PROGRAM_BYTES_V1 = 256 * 1024;

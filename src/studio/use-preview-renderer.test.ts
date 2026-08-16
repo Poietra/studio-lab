@@ -351,7 +351,10 @@ async function editedStaticRootPreviewInput(
   if (validation.kind !== "valid") {
     throw new Error(`Imported root move fixture is invalid: ${JSON.stringify(validation.issues)}`);
   }
-  const record = programRecord(validation.program, validation);
+  const record = {
+    ...programRecord(validation.program, validation),
+    validation: { issues: validation.issues, status: "valid" as const },
+  };
   return {
     ...base,
     operationId: validation.program.operations[0]?.id,
@@ -2038,7 +2041,10 @@ describe("compileStudioPreviewSceneV1", () => {
       transactionId: "resize-imported-rectangle",
     });
     if (validation.kind !== "valid") throw new Error(JSON.stringify(validation.issues));
-    const record = programRecord(validation.program, validation);
+    const record = {
+      ...programRecord(validation.program, validation),
+      validation: { issues: validation.issues, status: "valid" as const },
+    };
     const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
     const result = await compileStudioPreviewSceneV1({
       applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands),

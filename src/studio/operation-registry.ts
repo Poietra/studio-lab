@@ -1,4 +1,3 @@
-import { z } from "zod";
 import { canonicalEditableContent } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
@@ -9,118 +8,9 @@ import {
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
+import { sceneEditOperationSchema } from "./scene-edit-contract";
 
-const pointSchema = z.object({ x: z.number(), y: z.number() });
-const dimensionsSchema = z
-  .object({
-    height: z.number().positive().optional(),
-    radius: z.number().positive().optional(),
-    width: z.number().positive().optional(),
-  })
-  .strict();
-const intervalSchema = z.object({ end: z.number(), start: z.number() });
-const provenanceSchema = z.object({
-  evidence: z.array(z.string()),
-  origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
-});
-const baseSchema = z.object({
-  dependsOn: z.array(z.string()),
-  id: z.string().min(1),
-  interval: intervalSchema,
-  provenance: provenanceSchema,
-});
-const contentSchema = z.object({
-  displayLines: z.array(z.string()),
-  label: z.string().optional(),
-  texParts: z.array(z.string()).optional(),
-  text: z.string().optional(),
-});
-
-export const canonicalOperationSchema = z.discriminatedUnion("kind", [
-  baseSchema.extend({
-    entity: z.object({
-      content: contentSchema.optional(),
-      dimensions: dimensionsSchema.optional(),
-      id: z.string(),
-      lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
-      type: z.string(),
-    }),
-    kind: z.literal("CreateEntity"),
-  }),
-  baseSchema.extend({
-    entityId: z.string(),
-    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
-    kind: z.literal("SetProperty"),
-    value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
-  }),
-  baseSchema.extend({
-    control: pointSchema.optional(),
-    easing: z.literal("smooth"),
-    entityId: z.string(),
-    from: z.union([pointSchema, z.number()]).optional(),
-    key: z.enum(["appearance", "position", "rotation", "scale"]),
-    kind: z.literal("AnimateProperty"),
-    relativeDelta: z.number().optional(),
-    relativeFactor: z.number().positive().optional(),
-    to: z.union([pointSchema, z.number()]),
-  }),
-  baseSchema.extend({
-    entityId: z.string(),
-    from: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
-    kind: z.literal("ResizeEntity"),
-    scale: z.number().positive(),
-    shape: z.enum(["circle", "rectangle"]),
-    to: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
-  }),
-  baseSchema.extend({
-    controlOffset: pointSchema,
-    delta: pointSchema,
-    easing: z.enum(["linear", "smooth"]),
-    kind: z.literal("CreateMotion"),
-    targetEntityIds: z.array(z.string()).min(1),
-  }),
-  baseSchema.extend({
-    kind: z.literal("TransformContent"),
-    replacement: contentSchema,
-    sourceEntityId: z.string(),
-    strategy: z.enum(["replacement-transform", "transform-matching-tex"]),
-    targetEntityId: z.string(),
-    targetType: z.string().optional(),
-  }),
-  baseSchema.extend({
-    kind: z.literal("SetRelation"),
-    mode: z.enum(["live", "snapshot"]),
-    offset: pointSchema,
-    placement: z.enum(["above", "below", "left", "right"]),
-    relation: z.literal("next-to"),
-    sourceEntityId: z.string(),
-    targetEntityId: z.string(),
-  }),
-  baseSchema.extend({
-    effect: z.enum(["cover", "fade-in", "remove", "reveal"]),
-    entityId: z.string(),
-    kind: z.literal("ChangePresence"),
-    persistent: z.boolean(),
-  }),
-  baseSchema.extend({
-    eventKind: z.enum(["play", "wait"]),
-    kind: z.literal("InsertTimelineEvent"),
-    label: z.string(),
-    purpose: z.literal("scene-duration").optional(),
-  }),
-  baseSchema.extend({
-    kind: z.literal("TrimSceneDuration"),
-    removedDuration: z.number().finite().positive(),
-    targetDuration: z.number().finite().positive(),
-    waitOperationIds: z.array(z.string().min(1)).min(1).max(32),
-  }),
-  baseSchema.extend({ at: z.number(), destination: z.literal("next-scene"), kind: z.literal("InsertSceneBoundary") }),
-  baseSchema.extend({
-    kind: z.literal("ChangeCamera"),
-    property: z.enum(["position", "rotation", "scale"]),
-    value: z.union([z.number(), pointSchema]),
-  }),
-]);
+export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
 
 export type OperationExecutionCapabilities = Readonly<{
   apply: "blocked" | "supported";
@@ -944,7 +834,7 @@ export function operationAccess(operation: CanonicalEditOperation) {
 }
 
 export function validateOperation(operation: CanonicalEditOperation, scene: RuntimeSceneState) {
-  const parsed = canonicalOperationSchema.safeParse(operation);
+  const parsed = sceneEditOperationSchema.safeParse(operation);
   if (!parsed.success) {
     return [
       {

@@ -1,0 +1,246 @@
+import { z } from "zod";
+
+export const SCENE_EDIT_VERSION = 1 as const;
+
+const pointSchema = z.object({ x: z.number(), y: z.number() });
+const dimensionsSchema = z
+  .object({
+    height: z.number().positive().optional(),
+    radius: z.number().positive().optional(),
+    width: z.number().positive().optional(),
+  })
+  .strict();
+const intervalSchema = z.object({ end: z.number(), start: z.number() });
+const provenanceSchema = z.object({
+  evidence: z.array(z.string()),
+  origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+});
+const operationBaseSchema = z.object({
+  dependsOn: z.array(z.string()),
+  id: z.string().min(1),
+  interval: intervalSchema,
+  provenance: provenanceSchema,
+});
+const contentSchema = z.object({
+  displayLines: z.array(z.string()),
+  label: z.string().optional(),
+  texParts: z.array(z.string()).optional(),
+  text: z.string().optional(),
+});
+
+/** Structural grammar shared by every accepted Scene Edit boundary. */
+export const sceneEditOperationSchema = z.discriminatedUnion("kind", [
+  operationBaseSchema.extend({
+    entity: z.object({
+      content: contentSchema.optional(),
+      dimensions: dimensionsSchema.optional(),
+      id: z.string(),
+      lifetime: z.object({ end: z.number().nullable(), start: z.number() }),
+      type: z.string(),
+    }),
+    kind: z.literal("CreateEntity"),
+  }),
+  operationBaseSchema.extend({
+    entityId: z.string(),
+    key: z.enum(["appearance", "camera", "content", "ordering", "position", "presence", "rotation", "scale"]),
+    kind: z.literal("SetProperty"),
+    value: z.union([z.boolean(), z.number(), z.string(), pointSchema, contentSchema]),
+  }),
+  operationBaseSchema.extend({
+    control: pointSchema.optional(),
+    easing: z.literal("smooth"),
+    entityId: z.string(),
+    from: z.union([pointSchema, z.number()]).optional(),
+    key: z.enum(["appearance", "position", "rotation", "scale"]),
+    kind: z.literal("AnimateProperty"),
+    relativeDelta: z.number().optional(),
+    relativeFactor: z.number().positive().optional(),
+    to: z.union([pointSchema, z.number()]),
+  }),
+  operationBaseSchema.extend({
+    entityId: z.string(),
+    from: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
+    kind: z.literal("ResizeEntity"),
+    scale: z.number().positive(),
+    shape: z.enum(["circle", "rectangle"]),
+    to: z.object({ dimensions: dimensionsSchema, position: pointSchema }).strict(),
+  }),
+  operationBaseSchema.extend({
+    controlOffset: pointSchema,
+    delta: pointSchema,
+    easing: z.enum(["linear", "smooth"]),
+    kind: z.literal("CreateMotion"),
+    targetEntityIds: z.array(z.string()).min(1),
+  }),
+  operationBaseSchema.extend({
+    kind: z.literal("TransformContent"),
+    replacement: contentSchema,
+    sourceEntityId: z.string(),
+    strategy: z.enum(["replacement-transform", "transform-matching-tex"]),
+    targetEntityId: z.string(),
+    targetType: z.string().optional(),
+  }),
+  operationBaseSchema.extend({
+    kind: z.literal("SetRelation"),
+    mode: z.enum(["live", "snapshot"]),
+    offset: pointSchema,
+    placement: z.enum(["above", "below", "left", "right"]),
+    relation: z.literal("next-to"),
+    sourceEntityId: z.string(),
+    targetEntityId: z.string(),
+  }),
+  operationBaseSchema.extend({
+    effect: z.enum(["cover", "fade-in", "remove", "reveal"]),
+    entityId: z.string(),
+    kind: z.literal("ChangePresence"),
+    persistent: z.boolean(),
+  }),
+  operationBaseSchema.extend({
+    eventKind: z.enum(["play", "wait"]),
+    kind: z.literal("InsertTimelineEvent"),
+    label: z.string(),
+    purpose: z.literal("scene-duration").optional(),
+  }),
+  operationBaseSchema.extend({
+    kind: z.literal("TrimSceneDuration"),
+    removedDuration: z.number().finite().positive(),
+    targetDuration: z.number().finite().positive(),
+    waitOperationIds: z.array(z.string().min(1)).min(1).max(32),
+  }),
+  operationBaseSchema.extend({
+    at: z.number(),
+    destination: z.literal("next-scene"),
+    kind: z.literal("InsertSceneBoundary"),
+  }),
+  operationBaseSchema.extend({
+    kind: z.literal("ChangeCamera"),
+    property: z.enum(["position", "rotation", "scale"]),
+    value: z.union([z.number(), pointSchema]),
+  }),
+]);
+
+const finiteNumber = z.number().finite();
+const resolvedAnchorSchema = z.object({
+  capturedPlayhead: finiteNumber,
+  evidence: z.array(z.string().max(500)).max(32),
+  resolvedSeconds: finiteNumber.nonnegative(),
+  source: z.discriminatedUnion("kind", [
+    z.object({ kind: z.literal("absolute"), seconds: finiteNumber }),
+    z.object({ kind: z.literal("playhead"), referenceSeconds: finiteNumber }),
+    z.object({
+      kind: z.literal("playhead-offset"),
+      offsetSeconds: finiteNumber,
+      referenceSeconds: finiteNumber,
+    }),
+    z.object({
+      boundary: z.enum(["play-end", "play-start", "scene-end", "scene-start"]),
+      eventId: z.string(),
+      kind: z.literal("structural"),
+      offsetSeconds: finiteNumber.optional(),
+    }),
+  ]),
+});
+
+/** Non-empty structurally accepted edit. Semantic applicability remains a Rust decision. */
+export const sceneEditSchema = z.object({
+  anchor: resolvedAnchorSchema,
+  intentCount: z.number().int().min(1).max(16),
+  loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
+  operations: z.array(sceneEditOperationSchema).min(1).max(64),
+  provenance: z.object({
+    evidence: z.array(z.string().max(500)).max(64),
+    origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+  }),
+  requestedExecution: z.enum(["parallel", "sequence"]),
+  schedule: z.object({
+    edges: z
+      .array(
+        z.object({
+          from: z.string(),
+          reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
+          to: z.string(),
+        }),
+      )
+      .max(256),
+    mode: z.enum(["dependency-dag", "parallel", "sequence"]),
+    order: z.array(z.string()).min(1).max(64),
+  }),
+  transactionId: z.string().min(1).max(160),
+  version: z.literal(SCENE_EDIT_VERSION),
+});
+
+const draftBoundedIdSchema = z.string().min(1).max(512);
+const draftEvidenceSchema = z.array(z.string().max(500)).max(64);
+const draftTimeAnchorSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("absolute"), seconds: finiteNumber }).strict(),
+  z.object({ kind: z.literal("playhead"), referenceSeconds: finiteNumber }).strict(),
+  z
+    .object({
+      kind: z.literal("playhead-offset"),
+      offsetSeconds: finiteNumber,
+      referenceSeconds: finiteNumber,
+    })
+    .strict(),
+  z
+    .object({
+      boundary: z.enum(["play-end", "play-start", "scene-end", "scene-start"]),
+      eventId: draftBoundedIdSchema,
+      kind: z.literal("structural"),
+      offsetSeconds: finiteNumber.optional(),
+    })
+    .strict(),
+]);
+
+/** Private, unaccepted envelope used while an edit may still be empty or invalid. */
+export const sceneEditDraftSchema = z
+  .object({
+    anchor: z
+      .object({
+        capturedPlayhead: finiteNumber,
+        evidence: draftEvidenceSchema,
+        resolvedSeconds: finiteNumber.nonnegative(),
+        source: draftTimeAnchorSchema,
+      })
+      .strict(),
+    intentCount: z.number().int().min(0).max(16),
+    loweringStatus: z.enum(["illustrative", "supported", "unsupported"]),
+    operations: z.array(sceneEditOperationSchema).max(64),
+    provenance: z
+      .object({
+        evidence: draftEvidenceSchema,
+        origin: z.enum(["direct-manipulation", "fixture", "remote-model", "studio-default"]),
+      })
+      .strict(),
+    requestedExecution: z.enum(["parallel", "sequence"]),
+    schedule: z
+      .object({
+        edges: z
+          .array(
+            z
+              .object({
+                from: draftBoundedIdSchema,
+                reason: z.enum(["explicit", "identity", "lifetime", "read-after-write", "write-conflict"]),
+                to: draftBoundedIdSchema,
+              })
+              .strict(),
+          )
+          .max(256),
+        mode: z.enum(["dependency-dag", "parallel", "sequence"]),
+        order: z.array(draftBoundedIdSchema).max(64),
+      })
+      .strict(),
+    transactionId: z.string().min(1).max(160),
+    version: z.literal(SCENE_EDIT_VERSION),
+  })
+  .strict();
+
+type DeepReadonly<T> = T extends readonly (infer Item)[]
+  ? readonly DeepReadonly<Item>[]
+  : T extends object
+    ? { readonly [Key in keyof T]: DeepReadonly<T[Key]> }
+    : T;
+
+export type SceneEditOperation = DeepReadonly<z.infer<typeof sceneEditOperationSchema>>;
+export type SceneEdit = DeepReadonly<z.infer<typeof sceneEditSchema>>;
+export type SceneEditDraft = DeepReadonly<z.infer<typeof sceneEditDraftSchema>>;
+export type SceneEditOrigin = SceneEdit["provenance"]["origin"];

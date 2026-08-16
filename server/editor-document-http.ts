@@ -15,7 +15,9 @@ import {
 } from "../src/collaboration/editor-document-http-contract";
 import {
   canonicalEditorSessionSnapshotJsonV1,
+  type EditorSessionSnapshotV1,
   editorSessionSnapshotByteSizeV1,
+  parseEditorSessionSnapshotV1,
 } from "../src/collaboration/editor-session-contract";
 import { canonicalJsonV1 } from "../src/engine/fast-manim-snapshot-digest";
 import { manimProjectIdSchema } from "../src/render-pipeline/contracts";
@@ -337,6 +339,14 @@ async function commitEventV1(
   if (Buffer.byteLength(canonicalJsonV1(parsed.data.mutation.program), "utf8") > MAX_EDITOR_PROGRAM_BYTES_V1) {
     throw new HttpError("Editor mutation request is invalid.", 400);
   }
+  let admittedSessionSnapshot: EditorSessionSnapshotV1 | undefined = parsed.data.sessionUpdate?.snapshot;
+  if (admittedSessionSnapshot !== undefined) {
+    try {
+      admittedSessionSnapshot = parseEditorSessionSnapshotV1(admittedSessionSnapshot);
+    } catch {
+      throw new HttpError("Editor mutation request is invalid.", 400);
+    }
+  }
   signal?.throwIfAborted();
   const result = await repository.commitMutation(
     {
@@ -352,7 +362,7 @@ async function commitEventV1(
             sessionUpdate: {
               documentRevision: BigInt(parsed.data.sessionUpdate.documentRevision),
               expectedSessionGeneration: BigInt(parsed.data.sessionUpdate.expectedSessionGeneration),
-              snapshot: parsed.data.sessionUpdate.snapshot,
+              snapshot: admittedSessionSnapshot!,
               snapshotVersion: parsed.data.sessionUpdate.snapshotVersion,
             },
           }),
@@ -469,6 +479,12 @@ async function putSessionV1(
   if (!parsed.success || parsed.data.epoch !== query.epoch) {
     throw new HttpError("Editor session update request is invalid.", 400);
   }
+  let admittedSnapshot;
+  try {
+    admittedSnapshot = parseEditorSessionSnapshotV1(parsed.data.snapshot);
+  } catch {
+    throw new HttpError("Editor session update request is invalid.", 400);
+  }
   signal?.throwIfAborted();
   const result = await repository.putSessionSnapshot(
     {
@@ -477,7 +493,7 @@ async function putSessionV1(
       epoch: query.epoch,
       expectedSessionGeneration: BigInt(parsed.data.expectedSessionGeneration),
       projectId,
-      snapshot: parsed.data.snapshot,
+      snapshot: admittedSnapshot,
       snapshotVersion: parsed.data.snapshotVersion,
       subjectId,
       tenantId: principal.tenantId,

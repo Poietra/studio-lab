@@ -6,7 +6,6 @@ import {
   canonicalEditorSessionSnapshotJsonV1,
   EDITOR_SESSION_SNAPSHOT_VERSION_V1,
   type EditorProgramRecord,
-  type EditorSessionSnapshotV1,
   editorSessionSnapshotByteSizeV1,
   MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1,
   parseEditorSessionSnapshotV1,
@@ -23,29 +22,73 @@ const motionOperation: EditSuggestionOperation = {
   targetObjectIds: ["equation"],
 };
 
-function record(transactionId: string, evidence: readonly string[] = []): ProgramRecord {
+function record(transactionId: string, evidence: readonly string[] = []) {
+  const operationId = `${transactionId}/set-appearance`;
   return {
     program: {
       anchor: {
         capturedPlayhead: 2,
-        evidence,
+        evidence: evidence.slice(0, 32),
+        resolvedSeconds: 2,
+        source: { kind: "absolute", seconds: 2 },
+      },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId: "equation",
+          id: operationId,
+          interval: { end: 2, start: 2 },
+          key: "appearance",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "fixture" },
+          value: 0.5,
+        },
+      ],
+      provenance: { evidence, origin: "studio-default" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: [operationId] },
+      transactionId,
+      version: 1,
+    },
+    validation: { issues: [], status: "valid" },
+  } as const satisfies ProgramRecord;
+}
+
+function draftRecord(transactionId: string) {
+  return {
+    program: {
+      anchor: {
+        capturedPlayhead: 2,
+        evidence: [],
         resolvedSeconds: 2,
         source: { kind: "absolute", seconds: 2 },
       },
       intentCount: 0,
       loweringStatus: "supported",
       operations: [],
-      provenance: { evidence, origin: "studio-default" },
+      provenance: { evidence: [], origin: "studio-default" },
       requestedExecution: "sequence",
       schedule: { edges: [], mode: "sequence", order: [] },
       transactionId,
       version: 1,
     },
-    validation: { issues: [], status: "valid" },
-  };
+    validation: {
+      issues: [
+        {
+          code: "operation-count",
+          field: "operations",
+          message: "The draft has no operations yet.",
+          severity: "error",
+        },
+      ],
+      status: "invalid",
+    },
+  } as const;
 }
 
-function snapshot(): EditorSessionSnapshotV1 {
+function snapshot() {
   const original = record("motion");
   const applied: EditorProgramRecord = {
     ...original,
@@ -55,13 +98,13 @@ function snapshot(): EditorSessionSnapshotV1 {
     appliedPrograms: [applied],
     currentTime: 7.25,
     draftOperation: motionOperation,
-    draftProgram: original,
+    draftProgram: draftRecord("motion"),
     editingAppliedProgram: { index: 0, original: applied },
     insertTool: "Circle",
     interactionMode: "position",
     motionDuration: 2.5,
     programUndoEntries: [{ index: 0, kind: "append", value: applied }],
-    redoPrograms: [{ edit: null, kind: "draft", value: record("redo") }],
+    redoPrograms: [{ edit: null, kind: "draft", value: draftRecord("redo") }],
     selectedObjectIds: ["equation"],
     verifiedSourceDurationBasis: { duration: 8, sessionKey: "source-session" },
   };
@@ -72,6 +115,10 @@ describe("editor session snapshot V1 contract", () => {
     const value = snapshot();
 
     expect(parseEditorSessionSnapshotV1(value)).toEqual(value);
+    expect(value.draftProgram).toMatchObject({
+      program: { intentCount: 0, operations: [] },
+      validation: { status: "invalid" },
+    });
     expect(EDITOR_SESSION_SNAPSHOT_VERSION_V1).toBe(1);
     expect(MAX_EDITOR_SESSION_SNAPSHOT_BYTES_V1).toBe(384 * 1024);
     expect(() => parseEditorSessionSnapshotV1({ ...value, instruction: "transient" })).toThrow();
@@ -134,7 +181,7 @@ describe("editor session snapshot V1 contract", () => {
     const evidence = Array.from({ length: 64 }, () => "x".repeat(500));
     const oversized = {
       ...snapshot(),
-      appliedPrograms: Array.from({ length: 7 }, (_, index) => record(`large-${index}`, evidence)),
+      appliedPrograms: Array.from({ length: 9 }, (_, index) => record(`large-${index}`, evidence)),
       draftOperation: null,
       draftProgram: null,
       editingAppliedProgram: null,
@@ -152,18 +199,37 @@ describe("editor session snapshot V1 contract", () => {
     expect(() =>
       parseEditorSessionSnapshotV1({
         ...value,
-        draftProgram: record("different"),
+        draftProgram: draftRecord("different"),
       }),
     ).toThrow(/no longer matches/i);
+
+    const emptyInvalidDraft = draftRecord("empty-invalid");
     expect(() =>
       parseEditorSessionSnapshotV1({
         ...value,
-        appliedPrograms: [
-          {
-            ...value.appliedPrograms[0],
-            validation: { issues: [], status: "invalid" },
-          },
-        ],
+        appliedPrograms: [emptyInvalidDraft],
+        editingAppliedProgram: null,
+        programUndoEntries: [],
+      }),
+    ).toThrow();
+    expect(() =>
+      parseEditorSessionSnapshotV1({
+        ...value,
+        editingAppliedProgram: null,
+        programUndoEntries: [{ index: 0, kind: "append", value: emptyInvalidDraft }],
+      }),
+    ).toThrow();
+
+    const previewOnly = {
+      ...value.appliedPrograms[0],
+      program: { ...value.appliedPrograms[0].program, loweringStatus: "illustrative" },
+    };
+    expect(() =>
+      parseEditorSessionSnapshotV1({
+        ...value,
+        appliedPrograms: [previewOnly],
+        editingAppliedProgram: null,
+        programUndoEntries: [],
       }),
     ).toThrow(/truthfully applicable/i);
   });
