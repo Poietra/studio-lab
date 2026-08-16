@@ -9,7 +9,7 @@ import {
 } from "./durable-manim-render-cancellation";
 import { DurableManimRenderServiceV1 } from "./durable-manim-render-service";
 import { DurableManimRenderWorkerV1 } from "./durable-manim-render-worker";
-import { createDurableProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
+import { createTenantCellProductionManimRuntimeAdapterV1, DurableManimRuntimeV1 } from "./durable-manim-runtime";
 import {
   type FastManimProductionSnapshotRunnerFactoryOptionsV1,
   FastManimProductionSnapshotRunnerFactoryV1,
@@ -718,16 +718,45 @@ export async function createDurablePostgresS3ProductionRuntimeV1(
       signal,
     );
     retentionMaintenance = retention;
+    // TenantCell maintenance split (ADR 0005 §"Tenant Cell decision", #711).
+    //
+    // Storage-integrity workers reclaim durable families that storage-lane
+    // routes themselves write, so an unhealthy worker keeps that lane
+    // fail-closed:
+    // - sourceGc (createDurableSourceBlobGcWorkerV1): source blobs are queued
+    //   for deletion by failed browser imports
+    //   (DurableManimRuntimeV1.importBrowserProject cleanup) and superseded
+    //   source heads.
+    // - projectPngGc (createDurableProjectPngGcWorkerV1): project PNG heads
+    //   are written by browser import and detached by project deletion
+    //   (detachProjectPngHeadInTransactionV1 in both softDeleteProject paths).
+    // - artifactGc (createDurableSnapshotArtifactGcWorkerV1): project deletion
+    //   (PostgresSnapshotPublicationRepositoryV1.softDeleteProject) clears
+    //   snapshot_scene_heads publications and their references, and only this
+    //   worker reclaims the orphaned snapshot artifacts and publication
+    //   tombstones.
+    //
+    // Render-only workers reclaim families that only render execution grows,
+    // so they gate render admission but no longer the storage lane:
+    // - mediaGc (createDurableRenderArtifactGcWorkerV1): render artifacts are
+    //   produced solely by render publication (VerifiedArtifactPublisherV1 via
+    //   DurableManimRenderWorkerV1); thumbnail and video reads only take
+    //   bounded read claims, and a paused GC deletes nothing, so reads stay
+    //   safe while it is unhealthy.
+    // - retention (createDurableRenderSessionRetentionWorkerV1): prunes render
+    //   session audit/input rows that only render starts create.
     const maintenance = {
-      close: () =>
-        closeAll(
-          [retention, mediaGc, artifactGc, projectPngGc, sourceGc],
-          "Could not fully close durable storage maintenance.",
-        ),
-      ready: () =>
-        sourceGc.ready() && projectPngGc.ready() && artifactGc.ready() && mediaGc.ready() && retention.ready(),
+      execution: {
+        close: () => closeAll([retention, mediaGc], "Could not fully close durable storage maintenance."),
+        ready: () => mediaGc.ready() && retention.ready(),
+      },
+      storage: {
+        close: () =>
+          closeAll([artifactGc, projectPngGc, sourceGc], "Could not fully close durable storage maintenance."),
+        ready: () => sourceGc.ready() && projectPngGc.ready() && artifactGc.ready(),
+      },
     };
-    const adapter = createDurableProductionManimRuntimeAdapterV1(runtime, maintenance);
+    const adapter = createTenantCellProductionManimRuntimeAdapterV1(runtime, maintenance);
     return createProductionStorageOwnershipBoundaryV1(
       adapter,
       [

@@ -54,7 +54,7 @@ const EXPORT_BYTES_PER_PIXEL_V1: u32 = 4;
 /// Unified export view format. Manim/Cairo frames resolve into this format's
 /// exact base-Unorm variant through the renderer's existing four-sample paint
 /// path, exactly as the interactive canvas target does.
-const EXPORT_TARGET_FORMAT_V1: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+pub(crate) const EXPORT_TARGET_FORMAT_V1: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
 /// Export limits derived from the closed `ExportProfileV1` resolution and
 /// frame-rate choices. The duration ceiling is imported from the same

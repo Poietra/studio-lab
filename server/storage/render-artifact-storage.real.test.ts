@@ -1446,6 +1446,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
     });
     const snapshots = {
       async close() {},
+      async publicationStorageReady(signal?: AbortSignal) {
+        signal?.throwIfAborted();
+        return true;
+      },
       async ready(signal?: AbortSignal) {
         signal?.throwIfAborted();
         return true;

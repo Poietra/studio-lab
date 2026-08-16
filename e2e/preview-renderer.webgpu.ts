@@ -294,7 +294,7 @@ test("presents exactly correlated WebGPU frames with a paint-free interaction ov
   await expect(page.getByRole("heading", { name: "Draft program" })).toHaveCount(0);
 });
 
-test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", async ({ page }) => {
+test("downloads a playable 30 fps MP4 from the exact presented Rust Scene", { tag: "@ci-smoke" }, async ({ page }) => {
   test.setTimeout(120_000);
   await page.goto(`/${EXPORT_FIXTURE_QUERY}`);
   await expect(page.getByRole("heading", { name: "Choose a workspace" })).toBeVisible();
