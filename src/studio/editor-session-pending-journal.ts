@@ -36,13 +36,15 @@ const pendingJournalScopeSchemaV1 = z
   .object({ organizationId: accountOrganizationIdSchemaV1, userId: z.uuid() })
   .strict();
 
+// A Studio-native document has no source binding; both fields are null for
+// that lane. Historical imported entries keep parsing unchanged.
 const pendingJournalLaneIdentitySchemaV1 = z
   .object({
     documentKey: editorDocumentKeySchemaV1,
     epoch: z.uuid(),
     projectId: manimProjectIdSchema,
-    sourceHash: sha256V1Schema,
-    sourcePath: manimSourcePathSchema,
+    sourceHash: sha256V1Schema.nullable(),
+    sourcePath: manimSourcePathSchema.nullable(),
   })
   .strict();
 

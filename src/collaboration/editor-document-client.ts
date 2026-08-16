@@ -4,7 +4,7 @@ import { manimProjectIdSchema } from "../render-pipeline/contracts";
 import {
   type EditorDocumentCommitRequestV1,
   type EditorDocumentCommitResultViewV1,
-  type EditorDocumentOpenRequestV1,
+  type EditorDocumentOpenRequestUnionV1,
   type EditorDocumentOpenResultViewV1,
   type EditorDocumentSessionPutRequestV1,
   type EditorDocumentSessionPutResultViewV1,
@@ -13,7 +13,7 @@ import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentCommitResultViewSchemaV1,
   editorDocumentKeySchemaV1,
-  editorDocumentOpenRequestSchemaV1,
+  editorDocumentOpenRequestUnionSchemaV1,
   editorDocumentOpenResultViewSchemaV1,
   editorDocumentSessionPutRequestSchemaV1,
   editorDocumentSessionPutResultViewSchemaV1,
@@ -53,7 +53,7 @@ export interface EditorDocumentClientV1 {
   ): Promise<EditorDocumentCommitResultViewV1>;
   open(
     identity: EditorDocumentClientIdentityV1,
-    request: EditorDocumentOpenRequestV1,
+    request: EditorDocumentOpenRequestUnionV1,
     signal?: AbortSignal,
   ): Promise<EditorDocumentOpenResultViewV1>;
   putSession(
@@ -193,11 +193,11 @@ export class FetchEditorDocumentClientV1 implements EditorDocumentClientV1 {
 
   async open(
     identityValue: EditorDocumentClientIdentityV1,
-    requestValue: EditorDocumentOpenRequestV1,
+    requestValue: EditorDocumentOpenRequestUnionV1,
     signal?: AbortSignal,
   ) {
     const identity = parseIdentityV1(identityValue);
-    const request = editorDocumentOpenRequestSchemaV1.parse(requestValue);
+    const request = editorDocumentOpenRequestUnionSchemaV1.parse(requestValue);
     const response = await this.fetchImpl(editorPathV1(identity.projectId, "documents/open"), {
       body: JSON.stringify(request),
       cache: "no-store",

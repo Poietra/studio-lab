@@ -71,6 +71,13 @@ const editorDocumentNativeCreateInputSchemaV1 = z
   })
   .strict();
 
+const editorDocumentNativeOpenInputSchemaV1 = z
+  .object({
+    projectId: manimProjectIdSchema,
+    tenantId: manimTenantIdSchema,
+  })
+  .strict();
+
 const editorDocumentCommitInputSchemaV1 = z
   .object({
     baseRevision: editorRevisionSchemaV1,
@@ -239,6 +246,17 @@ export type EditorDocumentNativeCreateResultV1 = Readonly<{
   projection: EditorDocumentProjectionV1;
 }>;
 
+export type EditorDocumentNativeOpenInputV1 = Readonly<{
+  projectId: string;
+  tenantId: string;
+}>;
+
+export type EditorDocumentNativeHeadV1 = Readonly<{
+  documentKey: string;
+  epoch: string;
+  revision: bigint;
+}>;
+
 export type EditorDocumentProjectionV1 = Readonly<{
   programs: readonly SceneEdit[];
   revision: bigint;
@@ -394,6 +412,10 @@ export function parseEditorDocumentNativeCreateInputV1(value: unknown): EditorDo
   return editorDocumentNativeCreateInputSchemaV1.parse(value);
 }
 
+export function parseEditorDocumentNativeOpenInputV1(value: unknown): EditorDocumentNativeOpenInputV1 {
+  return editorDocumentNativeOpenInputSchemaV1.parse(value);
+}
+
 export function parseEditorDocumentCommitInputV1(value: unknown): EditorDocumentCommitInputV1 {
   const parsed = editorDocumentCommitInputSchemaV1.parse(value);
   const { sessionUpdate, ...base } = parsed;
@@ -435,6 +457,18 @@ export interface EditorDocumentRepositoryV1 {
     signal?: AbortSignal,
   ): Promise<EditorDocumentNativeCreateResultV1>;
   openDocument(input: EditorDocumentOpenInputV1, signal?: AbortSignal): Promise<EditorDocumentOpenResultV1>;
+  /**
+   * Opens the project's Studio-native document without any source binding:
+   * no source path, no source hash, and no `workspace_source_heads` read. The
+   * result never reports `created` (the native document is created with its
+   * Project) and never reports a source conflict.
+   */
+  openNativeDocument(input: EditorDocumentNativeOpenInputV1, signal?: AbortSignal): Promise<EditorDocumentOpenResultV1>;
+  /** Lock-free existence probe for the project's open native document. */
+  readNativeDocumentHead(
+    input: EditorDocumentNativeOpenInputV1,
+    signal?: AbortSignal,
+  ): Promise<EditorDocumentNativeHeadV1 | null>;
   putSessionSnapshot(
     input: EditorSessionSnapshotPutInputV1,
     signal?: AbortSignal,

@@ -301,7 +301,10 @@ describe("DurableManimRuntimeV1 production readiness", () => {
   it("includes the production maintenance gate in both capability and render admission readiness", async () => {
     let maintenanceAvailable = false;
     const runtime = workspaceRuntime({
-      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({
+        close: async () => undefined,
+        readNativeDocumentHead: async () => null,
+      }),
       executionReady: async () => true,
       renderReady: async () => true,
     });
@@ -604,6 +607,91 @@ describe("DurableManimRuntimeV1 production readiness", () => {
       status: 503,
     });
     await withoutEditorStorage.close();
+  });
+
+  it("marks only head-less native workspaces with their native document identity", async () => {
+    const project = {
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      name: "Native demo",
+      projectId: "project-native",
+      tenantId: "tenant-a",
+      updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+    };
+    const readNativeDocumentHead = vi.fn(async () => ({
+      documentKey: "ab".repeat(32),
+      epoch: "70000000-0000-4000-8000-000000000007",
+      revision: 0n,
+    }));
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => {
+          throw new Error("A head-less native workspace must not read source blobs.");
+        },
+        ready: async () => true,
+      }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, readNativeDocumentHead }),
+      namespace: "native-workspace-marker-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [],
+        readProject: async () => project,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.workspace("project-native")).resolves.toMatchObject({
+      nativeDocument: { documentKey: "ab".repeat(32) },
+      projectId: "project-native",
+      sources: [],
+    });
+    expect(readNativeDocumentHead).toHaveBeenCalledWith(
+      { projectId: "project-native", tenantId: "tenant-a" },
+      undefined,
+    );
+    await runtime.close();
+
+    const source = "from manim import *\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const digest = createHash("sha256").update(source).digest("hex");
+    const head = {
+      blob: {
+        byteSize: Buffer.byteLength(source),
+        digest,
+        etag: '"source-imported"',
+        objectKey: `tenants/tenant-a/sources/${digest}`,
+        versionId: "source-version-imported",
+      },
+      generation: 1n,
+      projectId: "project-imported",
+      sourcePath: "main.py",
+      tenantId: "tenant-a",
+    };
+    const neverProbed = vi.fn(async () => null);
+    const importedRuntime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => source,
+        ready: async () => true,
+      }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({
+        close: async () => undefined,
+        readNativeDocumentHead: neverProbed,
+      }),
+      namespace: "imported-workspace-marker-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [head],
+        readProject: async () => ({ ...project, name: "Imported demo", projectId: "project-imported" }),
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    const importedWorkspace = await importedRuntime.workspace("project-imported");
+    expect("nativeDocument" in importedWorkspace).toBe(false);
+    expect(neverProbed).not.toHaveBeenCalled();
+    await importedRuntime.close();
   });
 
   it("atomically publishes a browser-imported Scene under one server-owned project identity", async () => {

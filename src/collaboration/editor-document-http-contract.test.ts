@@ -5,7 +5,9 @@ import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentCommitResultViewSchemaV1,
   editorDocumentOpenRequestSchemaV1,
+  editorDocumentOpenRequestUnionSchemaV1,
   editorDocumentOpenResultViewSchemaV1,
+  editorDocumentViewUnionSchemaV1,
   editorDocumentProjectionViewSchemaV1,
   editorDocumentSessionPutRequestSchemaV1,
   editorDocumentSessionPutResultViewSchemaV1,
@@ -585,5 +587,93 @@ describe("editor document HTTP views", () => {
     ).toThrow();
     expect(() => serializeEditorDocumentViewV1({ ...document, updatedAt: new Date(Number.NaN) })).toThrow();
     expect(() => serializeEditorDocumentTailResultV1({ document, events: Array(33).fill(event) })).toThrow();
+  });
+});
+
+describe("editor document HTTP native origin", () => {
+  const nativeDocument = {
+    documentKey: DOCUMENT_KEY,
+    epoch: EPOCH,
+    openedAt: new Date("2026-08-01T01:02:03.004Z"),
+    origin: "studio-native",
+    projectId: "project-a",
+    revision: 0n,
+    sealedAt: null,
+    sourceHash: null,
+    sourcePath: null,
+    tenantId: "tenant-a",
+    updatedAt: new Date("2026-08-01T02:03:04.005Z"),
+  } as const;
+
+  it("keeps the imported document view byte-identical without an origin field", () => {
+    const view = serializeEditorDocumentViewV1(document);
+    expect("origin" in view).toBe(false);
+    expect(Object.keys(view).toSorted()).toEqual([
+      "documentKey",
+      "epoch",
+      "openedAt",
+      "projectId",
+      "revision",
+      "sealedAt",
+      "sourceHash",
+      "sourcePath",
+      "tenantId",
+      "updatedAt",
+    ]);
+    expect(editorDocumentViewUnionSchemaV1.parse(view)).toEqual(view);
+  });
+
+  it("serializes a native document with its explicit origin and null source binding", () => {
+    const view = serializeEditorDocumentViewV1(nativeDocument);
+    expect(view).toMatchObject({
+      documentKey: DOCUMENT_KEY,
+      origin: "studio-native",
+      revision: "0",
+      sourceHash: null,
+      sourcePath: null,
+    });
+    expect(editorDocumentViewUnionSchemaV1.parse(view)).toEqual(view);
+    expect(
+      serializeEditorDocumentOpenResultV1({
+        created: false,
+        document: nativeDocument,
+        kind: "opened",
+        projection: { programs: [], revision: 0n },
+      }),
+    ).toMatchObject({ document: { origin: "studio-native", sourceHash: null }, kind: "opened" });
+    expect(serializeEditorDocumentTailResultV1({ document: nativeDocument, events: [] })).toMatchObject({
+      document: { origin: "studio-native" },
+      events: [],
+    });
+  });
+
+  it("rejects cross-lane document views that mix an origin with a source binding", () => {
+    const importedView = serializeEditorDocumentViewV1(document);
+    expect(editorDocumentViewUnionSchemaV1.safeParse({ ...importedView, origin: "studio-native" }).success).toBe(false);
+    const nativeView = serializeEditorDocumentViewV1(nativeDocument);
+    expect(editorDocumentViewUnionSchemaV1.safeParse({ ...nativeView, sourcePath: "scene.py" }).success).toBe(false);
+    expect(editorDocumentViewUnionSchemaV1.safeParse({ ...nativeView, origin: "imported-manim" }).success).toBe(false);
+    const { origin: _origin, ...withoutOrigin } = nativeView as Record<string, unknown>;
+    expect(editorDocumentViewUnionSchemaV1.safeParse(withoutOrigin).success).toBe(false);
+  });
+
+  it("accepts the native open request beside the unchanged imported request", () => {
+    expect(editorDocumentOpenRequestUnionSchemaV1.parse({ origin: "studio-native" })).toEqual({
+      origin: "studio-native",
+    });
+    expect(
+      editorDocumentOpenRequestUnionSchemaV1.parse({
+        sceneName: "Demo",
+        sourceHash: SOURCE_HASH,
+        sourcePath: "scene.py",
+      }),
+    ).toEqual({ sceneName: "Demo", sourceHash: SOURCE_HASH, sourcePath: "scene.py" });
+    expect(editorDocumentOpenRequestUnionSchemaV1.safeParse({ origin: "imported-manim" }).success).toBe(false);
+    expect(
+      editorDocumentOpenRequestUnionSchemaV1.safeParse({ origin: "studio-native", sourcePath: "scene.py" }).success,
+    ).toBe(false);
+    expect(
+      editorDocumentOpenRequestUnionSchemaV1.safeParse({ origin: "studio-native", sceneName: "Demo" }).success,
+    ).toBe(false);
   });
 });

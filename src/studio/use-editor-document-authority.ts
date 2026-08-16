@@ -164,6 +164,7 @@ function identityKeyV1(identity: EditorDocumentAuthorityIdentityV1 | null, owner
         ownerKey,
         identity.organizationId,
         identity.projectId,
+        identity.origin ?? "imported-manim",
         identity.sourcePath,
         identity.sceneName,
         identity.sourceHash,
@@ -200,14 +201,14 @@ function pendingMutationJournalIdentityV1(
 }
 
 function pendingMutationJournalLookupV1(
-  identity: Pick<EditorDocumentAuthorityIdentityV1, "projectId" | "sourceHash" | "sourcePath">,
+  identity: Readonly<{ projectId: string; sourceHash?: string | null; sourcePath?: string | null }>,
   documentKey: string,
 ): EditorMutationPendingJournalLookupV1 {
   return {
     documentKey,
     projectId: identity.projectId,
-    sourceHash: identity.sourceHash,
-    sourcePath: identity.sourcePath,
+    sourceHash: identity.sourceHash ?? null,
+    sourcePath: identity.sourcePath ?? null,
   };
 }
 
@@ -295,6 +296,11 @@ export async function recoverPendingEditorMutationBeforeOpenV1(
   }>,
 ) {
   if (!input.journal) return { kind: "empty" } as const;
+  // A native documentKey is server-issued and unknown before open, so this
+  // pre-open auto-replay lane is exclusive to the imported derivation. A
+  // retained native mutation instead surfaces as an explicit journal conflict
+  // with the existing discard affordance at the next commit attempt.
+  if (input.identity.origin === "studio-native") return { kind: "empty" } as const;
   input.signal?.throwIfAborted();
   const documentKey = await createBrowserEditorDocumentKeyV1(input.identity);
   input.signal?.throwIfAborted();

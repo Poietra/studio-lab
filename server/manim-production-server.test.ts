@@ -739,6 +739,10 @@ describe("standalone production Manim HTTP adapter", () => {
         throw new Error("createNativeDocument was not expected");
       },
       openDocument,
+      openNativeDocument: async () => {
+        throw new Error("openNativeDocument was not expected");
+      },
+      readNativeDocumentHead: async () => null,
       putSessionSnapshot,
       readEventTail: async () => {
         throw new Error("readEventTail was not expected");

@@ -352,7 +352,7 @@ export function WorkspaceLauncher({
   const removeDialog = useRef<HTMLDialogElement | null>(null);
   const [createName, setCreateName] = useState("");
   const [createRoot, setCreateRoot] = useState("");
-  const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "starter">("starter");
+  const [browserCreationKind, setBrowserCreationKind] = useState<"import" | "starter" | "studio-native">("starter");
   const [importFile, setImportFile] = useState<File | null>(null);
   const [importImageFile, setImportImageFile] = useState<File | null>(null);
   const [renameName, setRenameName] = useState("");
@@ -458,7 +458,9 @@ export function WorkspaceLauncher({
         ? { kind: "native-existing", name }
         : importingBrowserProject && importFile
           ? { file: importFile, imageFile: importImageFile, kind: "browser-import", name }
-          : { kind: "managed", name };
+          : creationMode === "managed" && browserCreationKind === "studio-native"
+            ? { kind: "studio-native", name }
+            : { kind: "managed", name };
     if (await onCreate(input)) addDialog.current?.close();
   }
 
@@ -603,7 +605,9 @@ export function WorkspaceLauncher({
                 : "Register an existing folder on this machine. Studio will not move or copy its files."
               : importingBrowserProject
                 ? "Upload one existing Manim Python file and an optional image.png to private Studio storage. No local path is sent."
-                : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
+                : creationMode === "managed" && browserCreationKind === "studio-native"
+                  ? "Create a new workspace whose durable root is a Studio-native document. No starter Python file is persisted."
+                  : "Create a new workspace with a starter Manim Scene. No folder setup is required."}
           </p>
           {creationMode === "managed" ? (
             <fieldset className="mt-4">
@@ -644,6 +648,25 @@ export function WorkspaceLauncher({
                     <span className="block font-medium text-zinc-100">Import Python</span>
                     <span className="mt-1 block text-pretty leading-5 text-zinc-500">
                       Upload one .py file and an optional image.png.
+                    </span>
+                  </span>
+                </label>
+                <label className="flex cursor-pointer gap-2 border border-zinc-700 p-3 text-xs text-zinc-300 has-checked:border-sky-500 has-checked:bg-sky-950/40">
+                  <input
+                    checked={browserCreationKind === "studio-native"}
+                    disabled={creating}
+                    name="workspace-content"
+                    onChange={() => {
+                      setBrowserCreationKind("studio-native");
+                      clearDialogError();
+                    }}
+                    type="radio"
+                    value="studio-native"
+                  />
+                  <span>
+                    <span className="block font-medium text-zinc-100">Studio document</span>
+                    <span className="mt-1 block text-pretty leading-5 text-zinc-500">
+                      Start from an empty Studio-native document. No Python file is created.
                     </span>
                   </span>
                 </label>

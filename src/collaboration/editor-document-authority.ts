@@ -10,7 +10,7 @@ import type {
   EditorDocumentCommittedSessionUpdateViewV1,
   EditorDocumentSessionPutRequestV1,
   EditorDocumentSessionViewV1,
-  EditorDocumentViewV1,
+  EditorDocumentViewUnionV1,
   EditorEditEventViewV1,
 } from "./editor-document-http-contract";
 import {
@@ -34,15 +34,33 @@ import {
 const MAX_RECONCILED_EDITOR_EVENTS_V1 = 512;
 const MAX_OPEN_SESSION_RECONCILIATIONS_V1 = 4;
 
-export type EditorDocumentAuthorityIdentityV1 = EditorDocumentClientIdentityV1 &
+export type ImportedEditorDocumentAuthorityIdentityV1 = EditorDocumentClientIdentityV1 &
   Readonly<{
+    origin?: "imported-manim";
     sceneName: string;
     sourceHash: string;
     sourcePath: string;
   }>;
 
+/**
+ * A Studio-native identity names no Scene and no source binding. The server
+ * mints and returns the opaque 32-byte `documentKey`; the browser never
+ * derives one for this lane (ADR 0005).
+ */
+export type NativeEditorDocumentAuthorityIdentityV1 = EditorDocumentClientIdentityV1 &
+  Readonly<{
+    origin: "studio-native";
+    sceneName?: undefined;
+    sourceHash?: undefined;
+    sourcePath?: undefined;
+  }>;
+
+export type EditorDocumentAuthorityIdentityV1 =
+  | ImportedEditorDocumentAuthorityIdentityV1
+  | NativeEditorDocumentAuthorityIdentityV1;
+
 export type EditorDocumentAuthoritySnapshotV1 = Readonly<{
-  document: EditorDocumentViewV1;
+  document: EditorDocumentViewUnionV1;
   programs: readonly SceneEdit[];
   revision: string;
   sessionGeneration: string;
@@ -138,7 +156,7 @@ function assertSessionProjectionV1(snapshot: EditorSessionSnapshotV1, programs: 
 function assertSessionIdentityV1(
   session: EditorDocumentSessionViewV1,
   identity: EditorDocumentAuthorityIdentityV1,
-  document: EditorDocumentViewV1,
+  document: EditorDocumentViewUnionV1,
 ) {
   if (
     session.tenantId !== identity.organizationId ||
@@ -187,8 +205,13 @@ async function assertCommittedSessionEvidenceV1(
   }
 }
 
-/** Browser equivalent of the server's Scene ID + Editor document-key derivation. */
-export async function createBrowserEditorDocumentKeyV1(identity: EditorDocumentAuthorityIdentityV1) {
+/**
+ * Browser equivalent of the server's Scene ID + Editor document-key
+ * derivation. This deterministic shape is exclusive to the imported
+ * compatibility lane; a Studio-native `documentKey` is server-issued and is
+ * never derived here.
+ */
+export async function createBrowserEditorDocumentKeyV1(identity: ImportedEditorDocumentAuthorityIdentityV1) {
   const request = editorDocumentOpenRequestSchemaV1.parse({
     sceneName: identity.sceneName,
     sourceHash: identity.sourceHash,
@@ -203,15 +226,23 @@ function authorityErrorV1(message: string, code: EditorDocumentAuthorityErrorV1[
 }
 
 function assertDocumentIdentityV1(
-  document: EditorDocumentViewV1,
+  document: EditorDocumentViewUnionV1,
   identity: EditorDocumentAuthorityIdentityV1,
   expected: Readonly<{ documentKey?: string; epoch?: string }> = {},
 ) {
+  const bindingMatchesIdentity =
+    identity.origin === "studio-native"
+      ? "origin" in document &&
+        document.origin === "studio-native" &&
+        document.sourceHash === null &&
+        document.sourcePath === null
+      : !("origin" in document) &&
+        document.sourceHash === identity.sourceHash &&
+        document.sourcePath === identity.sourcePath;
   if (
     document.tenantId !== identity.organizationId ||
     document.projectId !== identity.projectId ||
-    document.sourceHash !== identity.sourceHash ||
-    document.sourcePath !== identity.sourcePath ||
+    !bindingMatchesIdentity ||
     document.sealedAt !== null ||
     (expected.documentKey !== undefined && document.documentKey !== expected.documentKey) ||
     (expected.epoch !== undefined && document.epoch !== expected.epoch)
@@ -223,7 +254,7 @@ function assertDocumentIdentityV1(
 function assertEventIdentityV1(
   event: EditorEditEventViewV1,
   identity: EditorDocumentAuthorityIdentityV1,
-  document: EditorDocumentViewV1,
+  document: EditorDocumentViewUnionV1,
 ) {
   if (
     event.tenantId !== identity.organizationId ||
@@ -247,7 +278,7 @@ function applyEventV1(programs: readonly SceneEdit[], revision: bigint, event: E
 }
 
 function snapshotV1(
-  document: EditorDocumentViewV1,
+  document: EditorDocumentViewUnionV1,
   revision: bigint,
   programs: readonly SceneEdit[],
   sessionGeneration: bigint,
@@ -264,7 +295,7 @@ function snapshotV1(
 }
 
 export class EditorDocumentAuthorityV1 {
-  #document: EditorDocumentViewV1 | null = null;
+  #document: EditorDocumentViewUnionV1 | null = null;
   #inFlight = false;
   #pending: PendingMutationV1 | null = null;
   #pendingSession: PendingSessionSaveV1 | null = null;
@@ -297,25 +328,41 @@ export class EditorDocumentAuthorityV1 {
     if (this.#inFlight) authorityErrorV1("An Editor authority request is already active.", "busy");
     this.#inFlight = true;
     try {
-      const [result, expectedDocumentKey] = await Promise.all([
-        this.client.open(
-          this.identity,
-          {
-            sceneName: this.identity.sceneName,
-            sourceHash: this.identity.sourceHash,
-            sourcePath: this.identity.sourcePath,
-          },
-          signal,
-        ),
-        createBrowserEditorDocumentKeyV1(this.identity),
-      ]);
+      const [result, expectedDocumentKey] = await Promise.all(
+        this.identity.origin === "studio-native"
+          ? // The native lane opens by origin alone and accepts the
+            // server-issued documentKey; no browser-side derivation exists.
+            ([this.client.open(this.identity, { origin: "studio-native" }, signal), undefined] as const)
+          : ([
+              this.client.open(
+                this.identity,
+                {
+                  sceneName: this.identity.sceneName,
+                  sourceHash: this.identity.sourceHash,
+                  sourcePath: this.identity.sourcePath,
+                },
+                signal,
+              ),
+              createBrowserEditorDocumentKeyV1(this.identity),
+            ] as const),
+      );
       if (result.kind === "not-found") {
         authorityErrorV1("The selected Editor document is unavailable.", "unavailable");
       }
       if (result.kind === "source-conflict") {
+        if (this.identity.origin === "studio-native") {
+          authorityErrorV1(
+            "The Editor service returned a source conflict for a source-free native document.",
+            "corrupt-response",
+          );
+        }
         authorityErrorV1("The selected Scene source changed before its Editor document could open.", "source-conflict");
       }
-      assertDocumentIdentityV1(result.document, this.identity, { documentKey: expectedDocumentKey });
+      assertDocumentIdentityV1(
+        result.document,
+        this.identity,
+        expectedDocumentKey === undefined ? {} : { documentKey: expectedDocumentKey },
+      );
       if (result.document.revision !== result.projection.revision) {
         authorityErrorV1("The Editor open projection is not aligned to its document.", "corrupt-response");
       }
