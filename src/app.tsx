@@ -81,7 +81,7 @@ import {
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
-import { type CanonicalEditProgram, isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
+import { isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewRuntimeTraceEntityPresence,
@@ -96,6 +96,7 @@ import {
 } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
 import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
+import type { SceneEdit } from "./studio/scene-edit-contract";
 import {
   hasShapeDimensions,
   type ResizeHandleDirection,
@@ -807,7 +808,7 @@ export function App({
     sourceEvents: projectedActiveScene?.runtimeSceneState.eventTrack.events ?? [],
     workingState: previewWorkingState,
   });
-  function timelineProjectionForPrograms(programs: readonly CanonicalEditProgram[]) {
+  function timelineProjectionForPrograms(programs: readonly SceneEdit[]) {
     if (!programs.some((program) => program.operations.some(isSceneDurationOperation))) return null;
     if (!projectedActiveScene || !previewRenderer?.timelineProjection || !isSceneDurationProgramBatch(programs)) {
       return undefined;
@@ -827,7 +828,7 @@ export function App({
   function timelineProjectionForRecords(records: readonly ProgramRecord[]) {
     return timelineProjectionForPrograms(records.map((record) => record.program));
   }
-  function persistentRemoveProjectionForPrograms(programs: readonly CanonicalEditProgram[]) {
+  function persistentRemoveProjectionForPrograms(programs: readonly SceneEdit[]) {
     if (programs.some((program) => program.operations.some(({ kind }) => kind === "CreateEntity"))) return null;
     const containsPersistentRemove = programs.some((program) =>
       program.operations.some(
@@ -897,7 +898,7 @@ export function App({
       return undefined;
     }
   }
-  function sourceTimeToWorkingTime(programs: readonly CanonicalEditProgram[], sourceTime: number) {
+  function sourceTimeToWorkingTime(programs: readonly SceneEdit[], sourceTime: number) {
     const timelineProjection = timelineProjectionForPrograms(programs);
     if (timelineProjection === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this source timestamp.");
@@ -906,7 +907,7 @@ export function App({
       ? sourceTimeToWorkingTimeFromProjection(timelineProjection.transforms, sourceTime)
       : sourceTimeToWorkingTimeWithoutTimeline(programs, sourceTime);
   }
-  function workingTimeToSourceTime(programs: readonly CanonicalEditProgram[], workingTime: number) {
+  function workingTimeToSourceTime(programs: readonly SceneEdit[], workingTime: number) {
     const timelineProjection = timelineProjectionForPrograms(programs);
     if (timelineProjection === undefined) {
       throw new Error("Wait for the Rust timeline projection before resolving this working timestamp.");
@@ -915,7 +916,7 @@ export function App({
       ? workingTimeToSourceTimeFromProjection(timelineProjection.transforms, workingTime)
       : workingTimeToSourceTimeWithoutTimeline(programs, workingTime);
   }
-  function projectRuntimeSceneToSourceTimeline(scene: RuntimeSceneState, programs: readonly CanonicalEditProgram[]) {
+  function projectRuntimeSceneToSourceTimeline(scene: RuntimeSceneState, programs: readonly SceneEdit[]) {
     const timelineProjection = timelineProjectionForPrograms(programs);
     if (timelineProjection === undefined) {
       throw new Error("Wait for the Rust timeline projection before mapping this Scene to source time.");

@@ -10,8 +10,8 @@ import type {
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
 import type { RuntimeSceneState } from "./model";
-import type { CanonicalEditOperation, CanonicalEditProgram } from "./operations";
 import { isPointValue } from "./property-sampling";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 
 type StaticRootTransformCommandInput = Omit<
   ApplyStaticRootTransformEditWireCommandV1,
@@ -19,30 +19,30 @@ type StaticRootTransformCommandInput = Omit<
 > &
   Readonly<{
     mathTexOutlines?: ApplyStaticRootTransformEditWireCommandV1["mathTexOutlines"];
-    programs: readonly CanonicalEditProgram[];
+    programs: readonly SceneEdit[];
   }>;
 
 type StudioCreationCommandInput = Omit<ApplyStudioCreationEditWireCommandV1, "programs" | "schema" | "version"> &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{ programs: readonly SceneEdit[] }>;
 
 type StudioMotionCommandInput = Omit<ApplyStudioMotionEditWireCommandV1, "programs" | "schema" | "version"> &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{ programs: readonly SceneEdit[] }>;
 
 type StudioMathTexTransformCommandInput = Omit<
   ApplyStudioMathTexTransformEditWireCommandV1,
   "programs" | "schema" | "version"
 > &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{ programs: readonly SceneEdit[] }>;
 
 type StudioMathTexTransformProjectionCommandInput = Omit<
   ProjectStudioMathTexTransformWireCommandV1,
   "programs" | "schema" | "version"
 > &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{ programs: readonly SceneEdit[] }>;
 
 type StudioMotionProjectionCommandInput = Readonly<{
   baseDuration: number;
-  programs: readonly CanonicalEditProgram[];
+  programs: readonly SceneEdit[];
   runtimeSceneState: RuntimeSceneState;
 }>;
 
@@ -50,9 +50,9 @@ type StudioCreationProjectionCommandInput = Omit<
   ProjectStudioCreationEditWireCommandV1,
   "programs" | "schema" | "version"
 > &
-  Readonly<{ programs: readonly CanonicalEditProgram[] }>;
+  Readonly<{ programs: readonly SceneEdit[] }>;
 
-function studioProgramEnvelope(program: CanonicalEditProgram) {
+function studioProgramEnvelope(program: SceneEdit) {
   const source = program.anchor.source;
   const anchorSource =
     source.kind === "absolute"
@@ -76,7 +76,7 @@ function studioProgramEnvelope(program: CanonicalEditProgram) {
 }
 
 function normalizedStaticRootOperation(
-  operation: CanonicalEditOperation,
+  operation: SceneEditOperation,
 ): ApplyStaticRootTransformEditWireCommandV1["programs"][number]["operations"][number] {
   const common = {
     dependsOn: operation.dependsOn,
@@ -143,7 +143,7 @@ function normalizedStaticRootOperation(
   return { ...common, kind: "unsupported" };
 }
 
-function normalizedStaticRootPrograms(programs: readonly CanonicalEditProgram[]) {
+function normalizedStaticRootPrograms(programs: readonly SceneEdit[]) {
   return programs.map((program) => ({
     ...studioProgramEnvelope(program),
     operations: program.operations.map(normalizedStaticRootOperation),
@@ -168,7 +168,7 @@ export function studioCreationMathTexParts(value: unknown): readonly string[] | 
 }
 
 function normalizedStudioCreationOperation(
-  operation: CanonicalEditOperation,
+  operation: SceneEditOperation,
 ): ApplyStudioCreationEditWireCommandV1["programs"][number]["operations"][number] {
   const common = {
     dependsOn: operation.dependsOn,
@@ -284,7 +284,7 @@ export function buildStudioCreationProjectionCommand(
 }
 
 /** Selects the bounded MathTex transform family; Rust owns sequence, target, and motion semantics. */
-export function isExactStudioMathTexTransformProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
+export function isExactStudioMathTexTransformProgramBatch(programs: readonly SceneEdit[]): boolean {
   const operations = programs.flatMap(({ operations }) => operations);
   const transformCount = operations.filter(({ kind }) => kind === "TransformContent").length;
   const motionCount = operations.filter(({ kind }) => kind === "CreateMotion").length;
@@ -311,7 +311,7 @@ export function buildStudioMathTexTransformEditCommand(
 }
 
 function normalizedStudioMathTexTransformPrograms(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
 ): ProjectStudioMathTexTransformWireCommandV1["programs"] {
   return programs.map((program) => ({
     ...studioProgramEnvelope(program),
@@ -395,7 +395,7 @@ export function studioMathTexTransformProjectionStudioEntities(
 }
 
 function normalizedStudioMotionOperation(
-  operation: CanonicalEditOperation,
+  operation: SceneEditOperation,
 ): ApplyStudioMotionEditWireCommandV1["programs"][number]["operations"][number] {
   const common = {
     dependsOn: operation.dependsOn,
@@ -417,7 +417,7 @@ function normalizedStudioMotionOperation(
 }
 
 /** Selects the closed server-authorized motion family without validating its semantics in TypeScript. */
-export function isExactStudioMotionProgramBatch(programs: readonly CanonicalEditProgram[]): boolean {
+export function isExactStudioMotionProgramBatch(programs: readonly SceneEdit[]): boolean {
   return (
     programs.length > 0 &&
     programs.every(
@@ -443,7 +443,7 @@ export type StudioMotionProjectionBatchKind = "standalone" | "static-root";
 
 /** Coarsely selects a Rust motion planner; exact family admission remains in Rust. */
 export function studioMotionProjectionBatchKind(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
 ): StudioMotionProjectionBatchKind | null {
   if (programs.length === 0 || programs.some((program) => program.operations.length === 0)) return null;
   const operations = programs.flatMap(({ operations }) => operations);

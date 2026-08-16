@@ -6,8 +6,7 @@ import {
   manimSceneNameSchema,
   manimSourcePathSchema,
 } from "../render-pipeline/manim-identity-contract";
-import type { CanonicalEditProgram } from "../studio/operations";
-import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../studio/scene-edit-contract";
+import { sceneEditSchema as canonicalEditProgramSchemaV1, type SceneEdit } from "../studio/scene-edit-contract";
 import { deepStrictWireSchemaV1 } from "./deep-strict-wire-schema";
 import {
   type EditorEditMutationV1,
@@ -427,7 +426,7 @@ export type EditorEditEventSerializationInputV1 = Readonly<{
 }>;
 
 export type EditorDocumentProjectionSerializationInputV1 = Readonly<{
-  programs: readonly CanonicalEditProgram[];
+  programs: readonly SceneEdit[];
   revision: bigint;
 }>;
 

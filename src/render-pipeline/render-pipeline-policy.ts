@@ -1,4 +1,4 @@
-import type { CanonicalEditProgram } from "../studio/operations";
+import type { SceneEdit } from "../studio/scene-edit-contract";
 import {
   type ManimRenderCapability,
   type ManimWorkspaceView,
@@ -12,8 +12,8 @@ export type RenderProgramCandidate = Readonly<{
   anchors: readonly number[];
   cameraCenter?: ProgramRenderRequest["cameraCenter"];
   destination: ProgramRenderRequest["destination"];
-  program: CanonicalEditProgram;
-  programs: readonly CanonicalEditProgram[];
+  program: SceneEdit;
+  programs: readonly SceneEdit[];
   projectId: string;
   sceneName: string;
   sourceValidation?: ProgramRenderRequest["sourceValidation"];

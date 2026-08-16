@@ -13,10 +13,10 @@ import {
   type TimelineEvent,
   type WorkingState,
 } from "./model";
-import type { CanonicalEditProgram, SceneDurationOperation } from "./operations";
-import { isSceneDurationOperation } from "./operations";
+import { isSceneDurationOperation, type SceneDurationOperation } from "./operations";
+import type { SceneEdit } from "./scene-edit-contract";
 
-export type SceneDurationProgram = Omit<CanonicalEditProgram, "operations"> &
+export type SceneDurationProgram = Omit<SceneEdit, "operations"> &
   Readonly<{ operations: readonly [SceneDurationOperation] }>;
 
 export type TimelineProgramBatchProjection = Readonly<{
@@ -34,18 +34,18 @@ export type SceneDurationTrimAvailability = Readonly<{
 
 const TIMELINE_EPSILON = 0.0005;
 
-export function isSceneDurationProgram(program: CanonicalEditProgram): program is SceneDurationProgram {
+export function isSceneDurationProgram(program: SceneEdit): program is SceneDurationProgram {
   return program.operations.length === 1 && isSceneDurationOperation(program.operations[0]!);
 }
 
 export function isSceneDurationProgramBatch(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
 ): programs is readonly SceneDurationProgram[] {
   return programs.length > 0 && programs.every(isSceneDurationProgram);
 }
 
 function assertSceneDurationProgramBatch(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
 ): asserts programs is readonly SceneDurationProgram[] {
   const operations = programs.flatMap((program) => program.operations);
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
@@ -58,7 +58,7 @@ function assertSceneDurationProgramBatch(
 }
 
 function timelineAnchorSource(
-  program: CanonicalEditProgram,
+  program: SceneEdit,
 ): ProjectStudioTimelineWireCommandV1["programs"][number]["anchorSource"] {
   const source = program.anchor.source;
   if (source.kind === "absolute") return { kind: "absolute", seconds: source.seconds };
@@ -67,7 +67,7 @@ function timelineAnchorSource(
 }
 
 function timelineOperation(
-  operation: CanonicalEditProgram["operations"][number],
+  operation: SceneEdit["operations"][number],
 ): ProjectStudioTimelineWireCommandV1["programs"][number]["operations"][number] {
   const common = {
     dependsOn: operation.dependsOn,
@@ -97,7 +97,7 @@ function timelineOperation(
 
 export function normalizeTimelineProjectionCommand(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
 ): ProjectStudioTimelineWireCommandV1 {
   return {
     baseDuration,
@@ -148,7 +148,7 @@ function assertProjectionCorrelation(
 
 export async function projectTimelineProgramBatch(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   compiler: ProjectStudioTimelineCompiler = projectStudioTimeline,
 ): Promise<TimelineProgramBatchProjection> {
   assertSceneDurationProgramBatch(programs);
@@ -158,7 +158,7 @@ export async function projectTimelineProgramBatch(
 }
 
 export function correlateTimelineProgramBatch(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioTimelineProjectionV1,
 ): TimelineProgramBatchProjection {
   assertSceneDurationProgramBatch(programs);
@@ -178,7 +178,7 @@ export function correlateTimelineProgramBatch(
 
 export function selectTimelineProgramBatchProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   fullProjection: StudioTimelineProjectionV1,
 ): TimelineProgramBatchProjection {
   assertSceneDurationProgramBatch(programs);

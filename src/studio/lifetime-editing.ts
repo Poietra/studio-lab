@@ -1,5 +1,5 @@
 import type { Interval, ProgramRecord, RuntimeSceneState, TimelineObjectTrack } from "./model";
-import { type CanonicalEditOperation, isSceneDurationOperation } from "./operations";
+import { isSceneDurationOperation } from "./operations";
 import {
   insertedProgramDuration,
   shiftIntervalForInsertion,
@@ -7,6 +7,7 @@ import {
   timelineInsertionOffset,
   workingTimeToSourceTime,
 } from "./program-composition";
+import type { SceneEditOperation } from "./scene-edit-contract";
 
 const LIFETIME_EDIT_EVIDENCE_PREFIX = "studio-lifetime-edit:";
 
@@ -165,9 +166,9 @@ function projectImportedInterval(source: Interval, programs: readonly ProgramRec
 }
 
 function createsEntity(
-  operation: CanonicalEditOperation,
+  operation: SceneEditOperation,
   entityId: string,
-): operation is Extract<CanonicalEditOperation, { kind: "CreateEntity" }> {
+): operation is Extract<SceneEditOperation, { kind: "CreateEntity" }> {
   return operation.kind === "CreateEntity" && operation.entity.id === entityId;
 }
 

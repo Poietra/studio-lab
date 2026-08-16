@@ -1,7 +1,7 @@
-import { editableSuggestionSteps, replaceSuggestionStep, type EditableSuggestionStep } from "../ai/draft-operation";
+import { type EditableSuggestionStep, editableSuggestionSteps, replaceSuggestionStep } from "../ai/draft-operation";
 import type { EditSuggestionOperation } from "../ai/edit-suggestions";
 import type { Point } from "./model";
-import type { CanonicalEditProgram } from "./operations";
+import type { SceneEdit } from "./scene-edit-contract";
 
 const MINIMUM_MOTION_DURATION = 0.1;
 
@@ -19,7 +19,7 @@ export type MotionClipEditResult =
     }>;
 
 function editableMotionStep(
-  program: CanonicalEditProgram,
+  program: SceneEdit,
   operation: EditSuggestionOperation,
   operationId: string,
 ): Readonly<{ index: number; step: MotionStep }> | null {
@@ -57,7 +57,7 @@ function replaceMotionControlOffset(
 }
 
 export function appliedMotionClipReadOnlyReason(
-  program: CanonicalEditProgram,
+  program: SceneEdit,
   operation: EditSuggestionOperation | null | undefined,
   operationId: string,
 ) {
@@ -73,7 +73,7 @@ export function retimeAppliedMotionClip(
     duration: number;
     operation: EditSuggestionOperation;
     operationId: string;
-    program: CanonicalEditProgram;
+    program: SceneEdit;
     start: number;
   }>,
 ): MotionClipEditResult {
@@ -122,7 +122,7 @@ export function adjustAppliedMotionClipControl(
     delta: Point;
     operation: EditSuggestionOperation;
     operationId: string;
-    program: CanonicalEditProgram;
+    program: SceneEdit;
   }>,
 ): MotionClipEditResult {
   if (!Number.isFinite(input.delta.x) || !Number.isFinite(input.delta.y)) {

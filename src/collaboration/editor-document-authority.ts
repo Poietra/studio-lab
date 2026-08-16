@@ -1,5 +1,5 @@
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import type { CanonicalEditProgram } from "../studio/operations";
+import type { SceneEdit } from "../studio/scene-edit-contract";
 import {
   type EditorDocumentClientIdentityV1,
   type EditorDocumentClientV1,
@@ -43,7 +43,7 @@ export type EditorDocumentAuthorityIdentityV1 = EditorDocumentClientIdentityV1 &
 
 export type EditorDocumentAuthoritySnapshotV1 = Readonly<{
   document: EditorDocumentViewV1;
-  programs: readonly CanonicalEditProgram[];
+  programs: readonly SceneEdit[];
   revision: string;
   sessionGeneration: string;
 }>;
@@ -129,11 +129,7 @@ function snapshotProgramsCanonicalJsonV1(snapshot: EditorSessionSnapshotV1) {
   return canonicalJsonV1(snapshot.appliedPrograms.map((record) => record.program));
 }
 
-function assertSessionProjectionV1(
-  snapshot: EditorSessionSnapshotV1,
-  programs: readonly CanonicalEditProgram[],
-  message: string,
-) {
+function assertSessionProjectionV1(snapshot: EditorSessionSnapshotV1, programs: readonly SceneEdit[], message: string) {
   if (snapshotProgramsCanonicalJsonV1(snapshot) !== canonicalJsonV1(programs)) {
     authorityErrorV1(message, "session-conflict");
   }
@@ -239,7 +235,7 @@ function assertEventIdentityV1(
   }
 }
 
-function applyEventV1(programs: readonly CanonicalEditProgram[], revision: bigint, event: EditorEditEventViewV1) {
+function applyEventV1(programs: readonly SceneEdit[], revision: bigint, event: EditorEditEventViewV1) {
   if (revisionV1(event.baseRevision) !== revision || revisionV1(event.revision) !== revision + 1n) {
     authorityErrorV1("The Editor service returned a non-contiguous event tail.", "corrupt-response");
   }
@@ -253,7 +249,7 @@ function applyEventV1(programs: readonly CanonicalEditProgram[], revision: bigin
 function snapshotV1(
   document: EditorDocumentViewV1,
   revision: bigint,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   sessionGeneration: bigint,
 ): EditorDocumentAuthoritySnapshotV1 {
   if (revisionV1(document.revision) !== revision) {
@@ -272,7 +268,7 @@ export class EditorDocumentAuthorityV1 {
   #inFlight = false;
   #pending: PendingMutationV1 | null = null;
   #pendingSession: PendingSessionSaveV1 | null = null;
-  #programs: readonly CanonicalEditProgram[] = [];
+  #programs: readonly SceneEdit[] = [];
   #recovery: "tail" | null = null;
   #revision = 0n;
   #sessionGeneration = 0n;

@@ -1,14 +1,14 @@
 import { canonicalEditableContent } from "./editable-content";
 import { exactEntityScaleAt, MAX_ENTITY_SCALE, MIN_ENTITY_SCALE } from "./magic-edit-capabilities";
 import type { EntityDimensions, PropertyChannel, RuntimeSceneState } from "./model";
-import type { CanonicalEditOperation, CanonicalEditProgram, ChannelAccess, ProgramValidationIssue } from "./operations";
+import type { ChannelAccess, SceneEditValidationIssue } from "./operations";
 import {
   isEntityDimensionsValue,
   isPointValue,
   samplePropertyKnowledge,
   samplePropertyValue,
 } from "./property-sampling";
-import { sceneEditOperationSchema } from "./scene-edit-contract";
+import { type SceneEdit, type SceneEditOperation, sceneEditOperationSchema } from "./scene-edit-contract";
 
 export { sceneEditOperationSchema as canonicalOperationSchema } from "./scene-edit-contract";
 
@@ -20,16 +20,16 @@ export type OperationExecutionCapabilities = Readonly<{
 
 export type ProgramExecutionCapabilities = OperationExecutionCapabilities;
 
-type Capability<TKind extends CanonicalEditOperation["kind"]> = Readonly<{
-  access: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => Readonly<{
+type Capability<TKind extends SceneEditOperation["kind"]> = Readonly<{
+  access: (operation: Extract<SceneEditOperation, { kind: TKind }>) => Readonly<{
     reads: readonly ChannelAccess[];
     writes: readonly ChannelAccess[];
   }>;
-  execution: (operation: Extract<CanonicalEditOperation, { kind: TKind }>) => OperationExecutionCapabilities;
+  execution: (operation: Extract<SceneEditOperation, { kind: TKind }>) => OperationExecutionCapabilities;
   validate: (
-    operation: Extract<CanonicalEditOperation, { kind: TKind }>,
+    operation: Extract<SceneEditOperation, { kind: TKind }>,
     scene: RuntimeSceneState,
-  ) => readonly ProgramValidationIssue[];
+  ) => readonly SceneEditValidationIssue[];
 }>;
 
 const SUPPORTED_EXECUTION: OperationExecutionCapabilities = {
@@ -59,7 +59,7 @@ function finiteNonNoopRotationDelta(value: unknown): value is number {
 }
 
 function createEntityExecution(
-  operation: Extract<CanonicalEditOperation, { kind: "CreateEntity" }>,
+  operation: Extract<SceneEditOperation, { kind: "CreateEntity" }>,
 ): OperationExecutionCapabilities {
   const { content, type } = operation.entity;
   const hasMathTexContent =
@@ -71,7 +71,7 @@ function createEntityExecution(
 }
 
 function setPropertyExecution(
-  operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
+  operation: Extract<SceneEditOperation, { kind: "SetProperty" }>,
 ): OperationExecutionCapabilities {
   if (operation.key === "position" && isPointValue(operation.value)) return SUPPORTED_EXECUTION;
   if (
@@ -93,7 +93,7 @@ function setPropertyExecution(
 }
 
 function animatePropertyExecution(
-  operation: Extract<CanonicalEditOperation, { kind: "AnimateProperty" }>,
+  operation: Extract<SceneEditOperation, { kind: "AnimateProperty" }>,
 ): OperationExecutionCapabilities {
   if (
     operation.key === "rotation" &&
@@ -125,7 +125,7 @@ function animatePropertyExecution(
 }
 
 function createMotionExecution(
-  operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>,
+  operation: Extract<SceneEditOperation, { kind: "CreateMotion" }>,
 ): OperationExecutionCapabilities {
   if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) {
     return previewOnlyExecution(
@@ -140,7 +140,7 @@ function createMotionExecution(
 }
 
 function changePresenceExecution(
-  operation: Extract<CanonicalEditOperation, { kind: "ChangePresence" }>,
+  operation: Extract<SceneEditOperation, { kind: "ChangePresence" }>,
 ): OperationExecutionCapabilities {
   const hasDuration = operation.interval.end - operation.interval.start > 0.0005;
   if (hasDuration || operation.effect === "remove") return SUPPORTED_EXECUTION;
@@ -149,11 +149,11 @@ function changePresenceExecution(
   );
 }
 
-function operationSourceTime(operation: CanonicalEditOperation) {
+function operationSourceTime(operation: SceneEditOperation) {
   return operation.kind === "InsertSceneBoundary" ? operation.at : operation.interval.start;
 }
 
-function sourceAnimationEnd(operation: CanonicalEditOperation) {
+function sourceAnimationEnd(operation: SceneEditOperation) {
   if (operation.interval.end - operation.interval.start <= SOURCE_LOWERING_EPSILON) return null;
   if (
     operation.kind === "ChangePresence" ||
@@ -166,14 +166,14 @@ function sourceAnimationEnd(operation: CanonicalEditOperation) {
   return null;
 }
 
-function programStructureBlocker(program: CanonicalEditProgram) {
+function programStructureBlocker(program: SceneEdit) {
   const scheduleIndex = new Map(program.schedule.order.map((id, index) => [id, index]));
   const operations = [...program.operations].sort(
     (left, right) =>
       operationSourceTime(left) - operationSourceTime(right) ||
       (scheduleIndex.get(left.id) ?? 0) - (scheduleIndex.get(right.id) ?? 0),
   );
-  const buckets: Array<Readonly<{ operations: CanonicalEditOperation[]; time: number }>> = [];
+  const buckets: Array<Readonly<{ operations: SceneEditOperation[]; time: number }>> = [];
   for (const operation of operations) {
     const time = operationSourceTime(operation);
     const current = buckets.at(-1);
@@ -213,8 +213,8 @@ function propertyKey(entityId: string, key: PropertyChannel["key"]) {
   return `${entityId}/${key}`;
 }
 
-function baseIssues(operation: CanonicalEditOperation, scene: RuntimeSceneState): ProgramValidationIssue[] {
-  const issues: ProgramValidationIssue[] = [];
+function baseIssues(operation: SceneEditOperation, scene: RuntimeSceneState): SceneEditValidationIssue[] {
+  const issues: SceneEditValidationIssue[] = [];
   if (
     !Number.isFinite(operation.interval.start) ||
     !Number.isFinite(operation.interval.end) ||
@@ -233,7 +233,7 @@ function baseIssues(operation: CanonicalEditOperation, scene: RuntimeSceneState)
   return issues;
 }
 
-function entityIssues(entityIds: readonly string[], operation: CanonicalEditOperation, scene: RuntimeSceneState) {
+function entityIssues(entityIds: readonly string[], operation: SceneEditOperation, scene: RuntimeSceneState) {
   const issues = baseIssues(operation, scene);
   for (const entityId of entityIds) {
     const entity = scene.objectGraph.entities[entityId];
@@ -291,7 +291,7 @@ function closeEnough(left: number, right: number) {
 }
 
 function matchingResizeStart(
-  operation: Extract<CanonicalEditOperation, { kind: "ResizeEntity" }>,
+  operation: Extract<SceneEditOperation, { kind: "ResizeEntity" }>,
   scene: RuntimeSceneState,
 ) {
   const dimensionsSamples = scene.propertyChannels[propertyKey(operation.entityId, "dimensions")]?.samples ?? [];
@@ -355,10 +355,7 @@ function matchingResizeStart(
   );
 }
 
-function setPropertyIssues(
-  operation: Extract<CanonicalEditOperation, { kind: "SetProperty" }>,
-  scene: RuntimeSceneState,
-) {
+function setPropertyIssues(operation: Extract<SceneEditOperation, { kind: "SetProperty" }>, scene: RuntimeSceneState) {
   const issues = entityIssues([operation.entityId], operation, scene);
   if (
     operation.key === "position" &&
@@ -686,7 +683,7 @@ export const OPERATION_REGISTRY = {
         ? SUPPORTED_EXECUTION
         : previewOnlyExecution("Only an explicit wait timeline event has truthful Manim source lowering."),
     validate: (operation, scene) => {
-      const issues: ProgramValidationIssue[] = [];
+      const issues: SceneEditValidationIssue[] = [];
       if (
         !Number.isFinite(operation.interval.start) ||
         !Number.isFinite(operation.interval.end) ||
@@ -727,7 +724,7 @@ export const OPERATION_REGISTRY = {
     access: () => ({ reads: [], writes: [] }),
     execution: () => SUPPORTED_EXECUTION,
     validate: (operation) => {
-      const issues: ProgramValidationIssue[] = [];
+      const issues: SceneEditValidationIssue[] = [];
       if (Math.abs(operation.interval.end - operation.interval.start) >= TIME_EPSILON) {
         issues.push({
           code: "interval-invalid",
@@ -790,11 +787,11 @@ export const OPERATION_REGISTRY = {
   } satisfies Capability<"ChangeCamera">,
 } as const;
 
-export function operationCapability(operation: CanonicalEditOperation) {
-  return OPERATION_REGISTRY[operation.kind] as Capability<CanonicalEditOperation["kind"]>;
+export function operationCapability(operation: SceneEditOperation) {
+  return OPERATION_REGISTRY[operation.kind] as Capability<SceneEditOperation["kind"]>;
 }
 
-export function operationExecutionCapabilities(operation: CanonicalEditOperation): OperationExecutionCapabilities {
+export function operationExecutionCapabilities(operation: SceneEditOperation): OperationExecutionCapabilities {
   return operationCapability(operation).execution(operation as never);
 }
 
@@ -804,7 +801,7 @@ const LOWERING_PRIORITY: Readonly<Record<OperationExecutionCapabilities["lowerin
   unsupported: 2,
 };
 
-export function programExecutionCapabilities(program: CanonicalEditProgram): ProgramExecutionCapabilities {
+export function programExecutionCapabilities(program: SceneEdit): ProgramExecutionCapabilities {
   const operationCapabilities = program.operations.map(operationExecutionCapabilities);
   const operationLowering = [
     program.loweringStatus,
@@ -829,11 +826,11 @@ export function programExecutionCapabilities(program: CanonicalEditProgram): Pro
   };
 }
 
-export function operationAccess(operation: CanonicalEditOperation) {
+export function operationAccess(operation: SceneEditOperation) {
   return operationCapability(operation).access(operation as never);
 }
 
-export function validateOperation(operation: CanonicalEditOperation, scene: RuntimeSceneState) {
+export function validateOperation(operation: SceneEditOperation, scene: RuntimeSceneState) {
   const parsed = sceneEditOperationSchema.safeParse(operation);
   if (!parsed.success) {
     return [

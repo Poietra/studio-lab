@@ -13,8 +13,6 @@ import type { EditorProgramRecord } from "./editor-session-store";
 import type { ManimWorkspaceScene } from "./imported-workspace";
 import { programExecutionCapabilities } from "./operation-registry";
 import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
@@ -28,6 +26,7 @@ import {
   studioMathTexTransformProjectionStudioEntities,
   studioMotionProjectionBatchKind,
 } from "./scene-authoring-wire";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { isSceneDurationProgramBatch, projectTimelineProgramBatch } from "./timeline-projection";
 import {
   selectCreationProjection,
@@ -65,18 +64,18 @@ export class EditorMotionAdmissionError extends Error {
 
 export function editorProgramsMatchAuthorityV1(
   local: readonly EditorProgramRecord[],
-  authoritative: readonly CanonicalEditProgram[],
+  authoritative: readonly SceneEdit[],
 ) {
   return canonicalJsonV1(local.map((record) => record.program)) === canonicalJsonV1(authoritative);
 }
 
 function isPersistentRemoveOperation(
-  operation: CanonicalEditOperation,
-): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> {
+  operation: SceneEditOperation,
+): operation is Extract<SceneEditOperation, { kind: "ChangePresence" }> {
   return operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent;
 }
 
-function isExactSourceBoundEndpointProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isExactSourceBoundEndpointProgramBatch(programs: readonly SceneEdit[]) {
   if (programs.length !== 1 || programs[0]?.operations.length !== 1) return false;
   const operation = programs[0].operations[0];
   return (
@@ -85,7 +84,7 @@ function isExactSourceBoundEndpointProgramBatch(programs: readonly CanonicalEdit
   );
 }
 
-function isClosedValidationProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isClosedValidationProgramBatch(programs: readonly SceneEdit[]) {
   return (
     isExactStaticRootProjectionProgramBatch(programs) ||
     isExactSourceBoundEndpointProgramBatch(programs) ||

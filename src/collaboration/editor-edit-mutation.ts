@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { canonicalJsonV1 } from "../engine/fast-manim-snapshot-digest";
-import { APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1, type CanonicalEditProgram } from "../studio/operations";
-import { sceneEditSchema as canonicalEditProgramSchemaV1 } from "../studio/scene-edit-contract";
+import { APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1 } from "../studio/operations";
+import { sceneEditSchema as canonicalEditProgramSchemaV1, type SceneEdit } from "../studio/scene-edit-contract";
 
 export const MAX_APPLIED_EDITOR_PROGRAMS_V1 = 32;
 
@@ -32,15 +32,15 @@ export const editorEditMutationV1Schema = z.discriminatedUnion("kind", [
 ]);
 
 export type EditorEditMutationV1 =
-  | Readonly<{ kind: "append"; program: CanonicalEditProgram }>
+  | Readonly<{ kind: "append"; program: SceneEdit }>
   | Readonly<{
       kind: "replace";
-      program: CanonicalEditProgram;
+      program: SceneEdit;
       targetTransactionId: string;
     }>
   | Readonly<{
       kind: "remove";
-      program: CanonicalEditProgram;
+      program: SceneEdit;
       targetTransactionId: string;
     }>;
 
@@ -55,7 +55,7 @@ export type EditorEditMutationConflictReasonV1 =
 export type EditorEditMutationApplyResultV1 =
   | Readonly<{
       kind: "applied";
-      programs: readonly CanonicalEditProgram[];
+      programs: readonly SceneEdit[];
     }>
   | Readonly<{
       kind: "conflict";
@@ -67,10 +67,10 @@ export function parseEditorEditMutationV1(value: unknown): EditorEditMutationV1 
 }
 
 function canonicalProgramV1(value: unknown) {
-  return strictCanonicalEditProgramSchemaV1.parse(value) as CanonicalEditProgram;
+  return strictCanonicalEditProgramSchemaV1.parse(value) as SceneEdit;
 }
 
-export function parseAuthoritativeEditorProgramsV1(value: unknown): readonly CanonicalEditProgram[] {
+export function parseAuthoritativeEditorProgramsV1(value: unknown): readonly SceneEdit[] {
   if (!Array.isArray(value)) {
     throw new TypeError("The authoritative Editor Program projection must be an array.");
   }
@@ -96,7 +96,7 @@ export function parseAuthoritativeEditorProgramsV1(value: unknown): readonly Can
   });
 }
 
-function sourceOrderConflictV1(programs: readonly CanonicalEditProgram[], index: number, anchor: number) {
+function sourceOrderConflictV1(programs: readonly SceneEdit[], index: number, anchor: number) {
   const previousAnchor = programs[index - 1]?.anchor.resolvedSeconds;
   if (previousAnchor !== undefined && anchor < previousAnchor - APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1) {
     return true;
@@ -111,7 +111,7 @@ function sourceOrderConflictV1(programs: readonly CanonicalEditProgram[], index:
  * and throw; expected concurrent-edit conflicts are returned as values.
  */
 export function applyEditorEditMutationV1(
-  currentPrograms: readonly CanonicalEditProgram[],
+  currentPrograms: readonly SceneEdit[],
   mutationValue: EditorEditMutationV1,
 ): EditorEditMutationApplyResultV1 {
   const programs = parseAuthoritativeEditorProgramsV1(currentPrograms);

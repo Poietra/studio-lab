@@ -19,15 +19,9 @@ import {
   MIN_ENTITY_SCALE,
 } from "./magic-edit-capabilities";
 import type { EntityDimensions, Point, RuntimeSceneState } from "./model";
-import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
-  EDIT_OPERATION_VERSION,
-  type OperationOrigin,
-  operationId,
-  provisionalEntityId,
-} from "./operations";
-import { type ProgramValidationResult, validateAndScheduleProgram } from "./program-validation";
+import { EDIT_OPERATION_VERSION, type OperationOrigin, operationId, provisionalEntityId } from "./operations";
+import { type SceneEditValidationResult, validateAndScheduleProgram } from "./program-validation";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import { resolveTimeAnchorOnce } from "./time";
 
 type CanonicalizationContext = Readonly<{
@@ -73,7 +67,7 @@ function transformOperation(
       sourceEntityId,
       strategy: operation.strategy,
       targetEntityId,
-    } satisfies CanonicalEditOperation,
+    } satisfies SceneEditOperation,
     sourceEntityId,
     targetEntityId,
   };
@@ -99,7 +93,7 @@ function textTransformOperation(
     strategy: operation.strategy,
     targetEntityId: provisionalEntityId(transactionId, "text-transform-target"),
     targetType: "Text",
-  } satisfies CanonicalEditOperation;
+  } satisfies SceneEditOperation;
 }
 
 function equationOperations(
@@ -149,7 +143,7 @@ function equationOperations(
       persistent: true,
       provenance: provenance(origin, [operation.animation, "persistent after interval"]),
     },
-  ] satisfies readonly CanonicalEditOperation[];
+  ] satisfies readonly SceneEditOperation[];
 }
 
 function cameraFocusOperations(operation: CreateCameraFocusSuggestion, transactionId: string, origin: OperationOrigin) {
@@ -165,7 +159,7 @@ function cameraFocusOperations(operation: CreateCameraFocusSuggestion, transacti
       value: operation.zoomScale,
     },
     ...operation.targetObjectIds.map(
-      (entityId, index): CanonicalEditOperation => ({
+      (entityId, index): SceneEditOperation => ({
         dependsOn: [],
         easing: operation.easing,
         entityId,
@@ -178,7 +172,7 @@ function cameraFocusOperations(operation: CreateCameraFocusSuggestion, transacti
         to: operation.emphasisScale,
       }),
     ),
-  ] satisfies readonly CanonicalEditOperation[];
+  ] satisfies readonly SceneEditOperation[];
 }
 
 function explanationOperations(
@@ -232,7 +226,7 @@ function explanationOperations(
       persistent: true,
       provenance: provenance(origin, [operation.animation, "persistent after interval"]),
     },
-  ] satisfies readonly CanonicalEditOperation[];
+  ] satisfies readonly SceneEditOperation[];
 }
 
 function explainedEquationOperations(
@@ -259,7 +253,7 @@ function explainedEquationOperations(
       0,
       new Map(),
     ),
-  ] satisfies readonly CanonicalEditOperation[];
+  ] satisfies readonly SceneEditOperation[];
 }
 
 function motionOperation(
@@ -282,14 +276,14 @@ function motionOperation(
     targetEntityIds: operation.targetObjectIds.map(
       (entityId, targetIndex) => replacements[targetIndex]?.targetEntityId ?? entityId,
     ),
-  } satisfies CanonicalEditOperation;
+  } satisfies SceneEditOperation;
 }
 
 type TargetReplacement = Readonly<{ operationId: string; targetEntityId: string }>;
 
 type OperationBuildResult =
   | Readonly<{ kind: "invalid"; message: string }>
-  | Readonly<{ kind: "valid"; operations: readonly CanonicalEditOperation[] }>;
+  | Readonly<{ kind: "valid"; operations: readonly SceneEditOperation[] }>;
 
 const MIN_MAGIC_SCALE_FACTOR = 0.01;
 const MAX_MAGIC_SCALE_FACTOR = 80;
@@ -300,7 +294,7 @@ function scaleOperations(
   index: number,
   transformedTargets: ReadonlyMap<string, TargetReplacement>,
 ): OperationBuildResult {
-  const operations: CanonicalEditOperation[] = [];
+  const operations: SceneEditOperation[] = [];
   for (const [targetIndex, logicalEntityId] of operation.targetObjectIds.entries()) {
     const entity = context.scene.objectGraph.entities[logicalEntityId];
     if (!entity) {
@@ -366,7 +360,7 @@ function deleteOperations(
   index: number,
   transformedTargets: ReadonlyMap<string, TargetReplacement>,
 ): OperationBuildResult {
-  const operations: CanonicalEditOperation[] = [];
+  const operations: SceneEditOperation[] = [];
   for (const [targetIndex, logicalEntityId] of operation.targetObjectIds.entries()) {
     const replacement = transformedTargets.get(logicalEntityId);
     const entity = context.scene.objectGraph.entities[logicalEntityId];
@@ -451,7 +445,7 @@ function transitionOperations(
       persistent: true,
       provenance: provenance(origin, ["reveal incoming Scene", "remove overlay"]),
     },
-  ] satisfies readonly CanonicalEditOperation[];
+  ] satisfies readonly SceneEditOperation[];
 }
 
 function operationSteps(operation: EditSuggestionOperation) {
@@ -494,13 +488,13 @@ function requestedExecution(operation: EditSuggestionOperation) {
 export function canonicalizeSuggestionProgram(
   operation: EditSuggestionOperation,
   context: CanonicalizationContext,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const resolution = resolveTimeAnchorOnce(operationAnchor(operation), {
     capturedPlayhead: context.capturedPlayhead,
     sceneDuration: context.scene.duration,
   });
   if (resolution.kind === "invalid") {
-    const fallback: CanonicalEditProgram = {
+    const fallback: SceneEdit = {
       anchor: {
         capturedPlayhead: context.capturedPlayhead,
         evidence: [],
@@ -523,7 +517,7 @@ export function canonicalizeSuggestionProgram(
     };
   }
 
-  const invalidCanonicalization = (message: string): ProgramValidationResult => ({
+  const invalidCanonicalization = (message: string): SceneEditValidationResult => ({
     issues: [
       {
         code: "schema-invalid",
@@ -546,7 +540,7 @@ export function canonicalizeSuggestionProgram(
     },
   });
 
-  let operations: readonly CanonicalEditOperation[];
+  let operations: readonly SceneEditOperation[];
   if (operation.kind === "create-scene-transition") {
     operations = transitionOperations(operation, context.transactionId, context.origin);
   } else if (operation.kind === "create-camera-focus") {
@@ -604,7 +598,7 @@ export function canonicalizeSuggestionProgram(
         });
       });
     }
-    operations = steps.flatMap((step, index): readonly CanonicalEditOperation[] => {
+    operations = steps.flatMap((step, index): readonly SceneEditOperation[] => {
       if (step.kind === "create-motion") {
         return [
           motionOperation(
@@ -658,7 +652,7 @@ export function canonicalizeSuggestionProgram(
     if (buildFailure) return invalidCanonicalization(buildFailure);
   }
 
-  const program: CanonicalEditProgram = {
+  const program: SceneEdit = {
     anchor: resolution.anchor,
     intentCount: intentCount(operation),
     loweringStatus: requiresIllustrativeLowering(operation) ? "illustrative" : "supported",
@@ -686,7 +680,7 @@ export function createDirectManipulationPositionProgram(
     targetEntityIds: readonly string[];
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const sourceAnchor =
     Math.abs(input.start - input.capturedPlayhead) < 0.001
       ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
@@ -698,7 +692,7 @@ export function createDirectManipulationPositionProgram(
   if (resolution.kind === "invalid") {
     throw new Error(resolution.message);
   }
-  const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
+  const operations = input.targetEntityIds.map((entityId, index): SceneEditOperation => {
     const position = input.positions[entityId];
     if (!position) throw new Error(`Direct manipulation requires a projected position for ${entityId}.`);
     return {
@@ -737,7 +731,7 @@ export function createDirectManipulationRotationProgram(
     start: number;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   if (!Number.isFinite(input.angleRadians)) throw new Error("Object rotation must be a finite angle.");
   const normalizedAngle = Math.atan2(Math.sin(input.angleRadians), Math.cos(input.angleRadians));
   if (Math.abs(normalizedAngle) <= 1e-12) throw new Error("Object rotation must change the current angle.");
@@ -753,7 +747,7 @@ export function createDirectManipulationRotationProgram(
     sceneDuration: input.scene.duration,
   });
   if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: CanonicalEditOperation = {
+  const operation: SceneEditOperation = {
     dependsOn: [],
     easing: "smooth",
     entityId: input.entityId,
@@ -791,7 +785,7 @@ export function createDirectManipulationOpacityProgram(
     start: number;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   if (!Number.isFinite(input.opacity) || input.opacity < 0 || input.opacity > 1) {
     throw new Error("Object opacity must be a finite number from 0 to 1.");
   }
@@ -806,7 +800,7 @@ export function createDirectManipulationOpacityProgram(
     },
   );
   if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: CanonicalEditOperation = {
+  const operation: SceneEditOperation = {
     dependsOn: [],
     entityId: input.entityId,
     id: operationId(input.transactionId, "set-opacity"),
@@ -841,7 +835,7 @@ export function createDirectManipulationScaleProgram(
     targetEntityIds: readonly string[];
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const sourceAnchor =
     Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
       ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
@@ -851,7 +845,7 @@ export function createDirectManipulationScaleProgram(
     sceneDuration: input.scene.duration,
   });
   if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operations = input.targetEntityIds.map((entityId, index): CanonicalEditOperation => {
+  const operations = input.targetEntityIds.map((entityId, index): SceneEditOperation => {
     const scale = input.scales[entityId];
     if (!scale) throw new Error(`Direct manipulation requires a projected scale for ${entityId}.`);
     if (!Number.isFinite(scale.from) || !Number.isFinite(scale.to) || scale.from <= 0 || scale.to <= 0) {
@@ -902,7 +896,7 @@ export function createDirectManipulationResizeProgram(
     to: Readonly<{ dimensions: EntityDimensions; position: Point }>;
     transactionId: string;
   }>,
-): ProgramValidationResult {
+): SceneEditValidationResult {
   const sourceAnchor =
     Math.abs(input.interval.start - input.capturedPlayhead) < 0.001
       ? { kind: "playhead" as const, referenceSeconds: input.capturedPlayhead }
@@ -912,7 +906,7 @@ export function createDirectManipulationResizeProgram(
     sceneDuration: input.scene.duration,
   });
   if (resolution.kind === "invalid") throw new Error(resolution.message);
-  const operation: CanonicalEditOperation = {
+  const operation: SceneEditOperation = {
     dependsOn: [],
     entityId: input.entityId,
     from: input.from,

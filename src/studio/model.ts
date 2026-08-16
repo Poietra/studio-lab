@@ -1,4 +1,5 @@
-import type { CanonicalEditProgram, ProgramValidationIssue } from "./operations";
+import type { SceneEditValidationIssue } from "./operations";
+import type { SceneEdit } from "./scene-edit-contract";
 
 export const STUDIO_STATE_VERSION = 1 as const;
 
@@ -186,9 +187,9 @@ export type EditorContext = Readonly<{
 }>;
 
 export type ProgramRecord = Readonly<{
-  program: CanonicalEditProgram;
+  program: SceneEdit;
   validation: Readonly<{
-    issues: readonly ProgramValidationIssue[];
+    issues: readonly SceneEditValidationIssue[];
     status: "invalid" | "valid";
   }>;
 }>;
@@ -208,7 +209,7 @@ export type WorkingState = Readonly<{
 export type ProposedState = Readonly<{
   base: WorkingState;
   evaluatedScene: RuntimeSceneState;
-  issues: readonly ProgramValidationIssue[];
+  issues: readonly SceneEditValidationIssue[];
   programs: readonly ProgramRecord[];
   version: typeof STUDIO_STATE_VERSION;
 }>;
@@ -232,7 +233,7 @@ export type ProposedStateProjection = Readonly<{
   canvas: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;
   inspector: Readonly<{
     entities: readonly ProjectedEntity[];
-    issues: readonly ProgramValidationIssue[];
+    issues: readonly SceneEditValidationIssue[];
     sampleId: string;
   }>;
   objectList: Readonly<{ entities: readonly ProjectedEntity[]; sampleId: string }>;

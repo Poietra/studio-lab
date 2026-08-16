@@ -44,7 +44,7 @@ import {
   type EditorSessionPendingJournalLaneIdentityV1,
   EditorSessionPendingJournalReadErrorV1,
 } from "./editor-session-pending-journal";
-import type { CanonicalEditProgram } from "./operations";
+import type { SceneEdit } from "./scene-edit-contract";
 import type { StudioPresenceParticipantV1 } from "./studio-presence-overlay";
 
 const defaultEditorDocumentClientV1 = new FetchEditorDocumentClientV1();
@@ -153,7 +153,7 @@ type UseEditorDocumentAuthorityInputV1 = Readonly<{
   identity: EditorDocumentAuthorityIdentityV1 | null;
   liveClient?: EditorLiveClientV1 | null;
   onOpen: (outcome: EditorDocumentAuthorityOpenOutcomeV1) => Promise<EditorDocumentSessionBootstrapV1>;
-  onProjection: (programs: readonly CanonicalEditProgram[], reason: "open" | "remote") => Promise<void>;
+  onProjection: (programs: readonly SceneEdit[], reason: "open" | "remote") => Promise<void>;
   ownerKey: string | null;
   sessionSnapshot: EditorSessionSnapshotV1 | null;
 }>;
@@ -423,7 +423,7 @@ export function useEditorDocumentAuthorityV1(input: UseEditorDocumentAuthorityIn
     [input.identity?.organizationId, input.ownerKey],
   );
   const authoritySnapshot = useRef<EditorDocumentAuthoritySnapshotV1 | null>(null);
-  const rejectedTimelineProgram = useRef<Readonly<{ program: CanonicalEditProgram; revision: string }> | null>(null);
+  const rejectedTimelineProgram = useRef<Readonly<{ program: SceneEdit; revision: string }> | null>(null);
   const journalBasis = useRef<EditorSessionPendingJournalBasisV1 | null>(null);
   const journalConflictIdentity = useRef<EditorSessionPendingJournalLaneIdentityV1 | null>(null);
   const mutationConflictLookup = useRef<EditorMutationPendingJournalLookupV1 | null>(null);

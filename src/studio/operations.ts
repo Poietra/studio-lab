@@ -1,6 +1,7 @@
 import { canonicalEditableContent } from "./editable-content";
 import type { SceneEdit, SceneEditOperation, SceneEditOrigin } from "./scene-edit-contract";
 
+export type { SceneEdit, SceneEditOperation, SceneEditOrigin } from "./scene-edit-contract";
 export { SCENE_EDIT_VERSION as EDIT_OPERATION_VERSION } from "./scene-edit-contract";
 
 export type PropertyChannelKey =
@@ -46,7 +47,7 @@ export type InsertSceneBoundaryOperation = Extract<SceneEditOperation, { kind: "
 export type ChangeCameraOperation = Extract<SceneEditOperation, { kind: "ChangeCamera" }>;
 export type CanonicalEditOperation = SceneEditOperation;
 
-export function isSceneDurationOperation(operation: CanonicalEditOperation): operation is SceneDurationOperation {
+export function isSceneDurationOperation(operation: SceneEditOperation): operation is SceneDurationOperation {
   return (
     operation.kind === "TrimSceneDuration" ||
     (operation.kind === "InsertTimelineEvent" &&
@@ -56,7 +57,7 @@ export function isSceneDurationOperation(operation: CanonicalEditOperation): ope
   );
 }
 
-export function isStaticRootTransformOperation(operation: CanonicalEditOperation) {
+export function isStaticRootTransformOperation(operation: SceneEditOperation) {
   return (
     operation.kind === "ResizeEntity" ||
     (operation.kind === "SetProperty" && operation.key === "position") ||
@@ -64,7 +65,7 @@ export function isStaticRootTransformOperation(operation: CanonicalEditOperation
   );
 }
 
-export function isExactStaticRootTransformProgramBatch(programs: readonly CanonicalEditProgram[]) {
+export function isExactStaticRootTransformProgramBatch(programs: readonly SceneEdit[]) {
   return (
     programs.length > 0 &&
     programs.every(
@@ -73,7 +74,7 @@ export function isExactStaticRootTransformProgramBatch(programs: readonly Canoni
   );
 }
 
-export function isExactStudioMathTexContentProgramBatch(programs: readonly CanonicalEditProgram[]) {
+export function isExactStudioMathTexContentProgramBatch(programs: readonly SceneEdit[]) {
   if (programs.length !== 1 || programs[0]?.operations.length !== 1) return false;
   const program = programs[0];
   const operation = program.operations[0];
@@ -88,11 +89,11 @@ export function isExactStudioMathTexContentProgramBatch(programs: readonly Canon
   );
 }
 
-export function isExactStaticRootProjectionProgramBatch(programs: readonly CanonicalEditProgram[]) {
+export function isExactStaticRootProjectionProgramBatch(programs: readonly SceneEdit[]) {
   return isExactStaticRootTransformProgramBatch(programs) || isExactStudioMathTexContentProgramBatch(programs);
 }
 
-export function hasImportedRootTransformTarget(programs: readonly CanonicalEditProgram[]) {
+export function hasImportedRootTransformTarget(programs: readonly SceneEdit[]) {
   const operations = programs.flatMap((program) => program.operations);
   const createdEntityIds = new Set(
     operations.flatMap((operation) => (operation.kind === "CreateEntity" ? [operation.entity.id] : [])),
@@ -111,7 +112,7 @@ export type DependencyEdge = Readonly<{
   to: string;
 }>;
 
-export type ProgramValidationIssue = Readonly<{
+export type SceneEditValidationIssue = Readonly<{
   code:
     | "anchor-invalid"
     | "cycle"
@@ -131,6 +132,7 @@ export type ProgramValidationIssue = Readonly<{
 }>;
 
 export type CanonicalEditProgram = SceneEdit;
+export type ProgramValidationIssue = SceneEditValidationIssue;
 
 /** Shared tolerance for preserving applied Program source order. */
 export const APPLIED_PROGRAM_SOURCE_ORDER_EPSILON_V1 = 0.0005;

@@ -26,14 +26,13 @@ import {
   type WorkingState,
 } from "./model";
 import {
-  type CanonicalEditOperation,
-  type CanonicalEditProgram,
   isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
 } from "./operations";
 import { normalizeContentSamples } from "./property-sampling";
 import { isExactStudioMathTexTransformProgramBatch, studioMotionProjectionBatchKind } from "./scene-authoring-wire";
+import type { SceneEdit, SceneEditOperation } from "./scene-edit-contract";
 import {
   correlateTimelineProgramBatch,
   isSceneDurationProgramBatch,
@@ -45,19 +44,19 @@ export function isTransitionOverlay(entity: Pick<ProjectedEntity, "type">) {
 }
 
 function isPersistentRemoveOperation(
-  operation: CanonicalEditOperation,
-): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> {
+  operation: SceneEditOperation,
+): operation is Extract<SceneEditOperation, { kind: "ChangePresence" }> {
   return operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent;
 }
 
-function isPersistentRemoveProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isPersistentRemoveProgramBatch(programs: readonly SceneEdit[]) {
   return (
     programs.length > 0 &&
     programs.every((program) => program.operations.length > 0 && program.operations.every(isPersistentRemoveOperation))
   );
 }
 
-function isStaticRootWorkspaceProjectionProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isStaticRootWorkspaceProjectionProgramBatch(programs: readonly SceneEdit[]) {
   if (
     isExactStaticRootProjectionProgramBatch(programs) ||
     studioMotionProjectionBatchKind(programs) === "static-root"
@@ -88,7 +87,7 @@ export function selectStudioWorkspaceProgramAuthority(
 }
 
 export function selectPersistentRemoveProjection(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioPersistentRemoveProjectionV1 | null,
 ): StudioPersistentRemoveProjectionV1 | null {
   const expected = programs.flatMap((program) =>
@@ -119,8 +118,8 @@ export function selectPersistentRemoveProjection(
 
 type CorrelatedStaticRootMutation = Readonly<{
   mutation: StudioStaticRootMutationV1;
-  operation: CanonicalEditOperation;
-  program: CanonicalEditProgram;
+  operation: SceneEditOperation;
+  program: SceneEdit;
 }>;
 
 function sameStrings(left: readonly string[], right: readonly string[]) {
@@ -141,8 +140,8 @@ function isFiniteProjectionPoint(point: Readonly<{ x: number; y: number }>) {
 
 type CorrelatedProjectedMotion = Readonly<{
   motion: StudioProjectedMotionV1;
-  operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
-  program: CanonicalEditProgram;
+  operation: Extract<SceneEditOperation, { kind: "CreateMotion" }>;
+  program: SceneEdit;
 }>;
 
 function motionProjectionKey(operationId: string, targetEntityId: string) {
@@ -151,7 +150,7 @@ function motionProjectionKey(operationId: string, targetEntityId: string) {
 
 function correlateMotionProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioMotionProjectionV1 | null,
   requireOneInsertionPerProgram = false,
 ): readonly CorrelatedProjectedMotion[] | null {
@@ -245,7 +244,7 @@ function correlateMotionProjection(
 
 export function selectMotionProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioMotionProjectionV1 | null,
 ): StudioMotionProjectionV1 | null {
   const correlated = correlateMotionProjection(
@@ -267,7 +266,7 @@ function creationEntityKind(type: string): StudioCreationProjectionV1["entities"
   return null;
 }
 
-function creationMutationKind(operation: CanonicalEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
+function creationMutationKind(operation: SceneEditOperation): StudioCreationProjectionMutationV1["kind"] | null {
   if (operation.kind === "SetProperty" && operation.key === "position") return "position";
   if (operation.kind === "ChangePresence" && operation.effect === "fade-in") return "fade-in";
   if (operation.kind === "AnimateProperty" && operation.key === "scale") return "uniform-scale";
@@ -277,7 +276,7 @@ function creationMutationKind(operation: CanonicalEditOperation): StudioCreation
 
 function correlateCreationProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioCreationProjectionV1 | null,
 ) {
   const operations = programs.flatMap((program) =>
@@ -399,7 +398,7 @@ function correlateCreationProjection(
 
 export function selectCreationProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioCreationProjectionV1 | null,
 ): StudioCreationProjectionV1 | null {
   return correlateCreationProjection(baseDuration, programs, projection) ? projection : null;
@@ -418,15 +417,15 @@ function mathTexContentMatches(
 }
 
 type CorrelatedMathTexTransformReplacement = Readonly<{
-  operation: Extract<CanonicalEditOperation, { kind: "TransformContent" }>;
-  program: CanonicalEditProgram;
+  operation: Extract<SceneEditOperation, { kind: "TransformContent" }>;
+  program: SceneEdit;
   replacement: StudioMathTexTransformProjectionV1["replacements"][number];
 }>;
 
 type CorrelatedMathTexTransformMotion = Readonly<{
   motion: StudioMathTexTransformProjectionV1["motions"][number];
-  operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
-  program: CanonicalEditProgram;
+  operation: Extract<SceneEditOperation, { kind: "CreateMotion" }>;
+  program: SceneEdit;
 }>;
 
 type CorrelatedMathTexTransformProjection = Readonly<{
@@ -436,7 +435,7 @@ type CorrelatedMathTexTransformProjection = Readonly<{
 
 function correlateMathTexTransformProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioMathTexTransformProjectionV1 | null,
 ): CorrelatedMathTexTransformProjection | null {
   if (!isExactStudioMathTexTransformProgramBatch(programs)) return null;
@@ -450,16 +449,16 @@ function correlateMathTexTransformProjection(
     (
       entry,
     ): entry is Readonly<{
-      operation: Extract<CanonicalEditOperation, { kind: "TransformContent" }>;
-      program: CanonicalEditProgram;
+      operation: Extract<SceneEditOperation, { kind: "TransformContent" }>;
+      program: SceneEdit;
     }> => entry.operation.kind === "TransformContent",
   );
   const motionOperations = operations.filter(
     (
       entry,
     ): entry is Readonly<{
-      operation: Extract<CanonicalEditOperation, { kind: "CreateMotion" }>;
-      program: CanonicalEditProgram;
+      operation: Extract<SceneEditOperation, { kind: "CreateMotion" }>;
+      program: SceneEdit;
     }> => entry.operation.kind === "CreateMotion",
   );
   const correlatedMotions =
@@ -570,7 +569,7 @@ function correlateMathTexTransformProjection(
 
 export function selectMathTexTransformProjection(
   baseDuration: number,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioMathTexTransformProjectionV1 | null,
 ): StudioMathTexTransformProjectionV1 | null {
   const correlated = correlateMathTexTransformProjection(baseDuration, programs, projection);
@@ -584,10 +583,7 @@ export function selectMathTexTransformProjection(
   };
 }
 
-function mathTexContentMutationMatchesOperation(
-  mutation: StudioStaticRootMutationV1,
-  operation: CanonicalEditOperation,
-) {
+function mathTexContentMutationMatchesOperation(mutation: StudioStaticRootMutationV1, operation: SceneEditOperation) {
   const isContentOperation = operation.kind === "SetProperty" && operation.key === "content";
   if (mutation.kind !== "math-tex-content" || !isContentOperation) {
     return mutation.kind !== "math-tex-content" && !isContentOperation;
@@ -605,7 +601,7 @@ function mathTexContentMutationMatchesOperation(
 }
 
 function correlateStaticRootProjection(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioStaticRootProjectionV1 | null,
 ): readonly CorrelatedStaticRootMutation[] | null {
   if (!isStaticRootWorkspaceProjectionProgramBatch(programs)) return null;
@@ -640,7 +636,7 @@ function correlateStaticRootProjection(
 }
 
 export function selectStaticRootProjection(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioStaticRootProjectionV1 | null,
 ): StudioStaticRootProjectionV1 | null {
   if (!isStaticRootWorkspaceProjectionProgramBatch(programs)) return null;
@@ -654,10 +650,7 @@ export function selectStaticRootProjection(
     : null;
 }
 
-function boundEntityProjectionPayloadMatches(
-  operation: CanonicalEditOperation,
-  projection: StudioBoundEntityProjectionV1,
-) {
+function boundEntityProjectionPayloadMatches(operation: SceneEditOperation, projection: StudioBoundEntityProjectionV1) {
   if (projection.kind === "position") {
     return (
       operation.kind === "SetProperty" &&
@@ -688,7 +681,7 @@ function boundEntityProjectionPayloadMatches(
 }
 
 export function selectBoundEntityProjection(
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioBoundEntityProjectionV1 | null,
 ): StudioBoundEntityProjectionV1 | null {
   const program = programs.length === 1 ? programs[0] : undefined;
@@ -874,8 +867,8 @@ function projectedWorkingState(
 
 function appendProjectedOperationRecord(
   draft: MotionProjectionDraft,
-  operation: CanonicalEditOperation,
-  program: CanonicalEditProgram,
+  operation: SceneEditOperation,
+  program: SceneEdit,
   interval: Readonly<{ end: number; start: number }>,
 ) {
   const provenanceId = `${operation.id}/provenance`;
@@ -951,7 +944,7 @@ function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: reado
 
 function appendPersistentRemovals(
   draft: WorkspaceProjectionDraft,
-  programs: readonly CanonicalEditProgram[],
+  programs: readonly SceneEdit[],
   projection: StudioPersistentRemoveProjectionV1,
 ) {
   const operationById = new Map(
