@@ -235,10 +235,10 @@ framework:
 
 | Surface | Required constraints |
 | --- | --- |
-| `client_export_artifacts` | Primary key `(tenant_id, artifact_id)` and tenant foreign key; immutable private object key, `objectLocatorId`, ETag, exact `contentDigest`, and `byteSize`; unique exact locator; `video/mp4`; `1 <= byteSize <= 128 MiB`. |
+| `client_export_artifacts` | Primary key `(tenant_id, artifact_id)` and tenant foreign key; immutable private object key, `objectLocatorToken`, ETag, exact `contentDigest`, and `byteSize`; unique exact locator; `video/mp4`; `1 <= byteSize <= 128 MiB`. |
 | `client_export_publications` | Primary key `(tenant_id, publication_id)`; foreign keys to Project, Editor Document identity `(tenant, project, documentKey, epoch)`, artifact, and creating User; unique `(tenant_id, artifact_id)` so v1 is artifact-to-publication 1:1; the lineage fields above; encoder evidence is a JSON object no larger than 16 KiB; `expiresAt > publishedAt`. |
 | `client_export_read_claims` | Tenant-scoped claim identity, artifact foreign key, and bounded expiry. Expiry GC queues physical deletion only when no live claim pins the artifact. |
-| `client_export_deletions` | One queue/tombstone row per artifact, copying the exact object key, `objectLocatorId`, ETag, `contentDigest`, and `byteSize`; a worker deletes only that receipt and records acknowledgement without resurrecting a later object version. |
+| `client_export_deletions` | One queue/tombstone row per artifact, copying the exact object key, `objectLocatorToken`, ETag, `contentDigest`, and `byteSize`; a worker deletes only that receipt and records acknowledgement without resurrecting a later object version. |
 
 The initial publication table may contain its lineage columns directly. It does
 not need a generic lineage table, mutable head, status ledger, or upload-session
