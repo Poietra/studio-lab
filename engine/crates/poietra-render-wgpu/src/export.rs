@@ -24,9 +24,9 @@
 //! `retains_terminal_state` — belongs to
 //! [`SceneIrV1::state_sample_time`](poietra_scene_ir::SceneIrV1::state_sample_time)
 //! inside the caller's sampler (#721 decision). Every failure is a typed error
-//! and no partial frame is ever yielded. The public `ExportProfileV1` wire
-//! contract deliberately does not exist yet (#721), so everything here is
-//! crate-private except one hidden browser-proof hook.
+//! and no partial frame is ever yielded. Export bounds come from the canonical
+//! [`ExportProfileV1`](poietra_scene_ir::ExportProfileV1) contract; everything
+//! here remains crate-private except one hidden browser-proof hook.
 
 use std::future::Future;
 use std::marker::PhantomData;
@@ -36,7 +36,10 @@ use std::task::{Context, Poll, Waker};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
-use poietra_scene_ir::{RenderPacketV1, SceneIrV1, ViewportV1};
+use poietra_scene_ir::{
+    ExportFrameRateV1, ExportResolutionV1, MAX_EXPORT_DURATION_SECONDS_V1, RenderPacketV1,
+    SceneIrV1, ViewportV1,
+};
 
 use crate::WgpuPaintRendererV1;
 use crate::gpu::{CreateRendererErrorV1, RenderFrameErrorV1, WgpuRenderTargetV1};
@@ -52,30 +55,23 @@ const EXPORT_BYTES_PER_PIXEL_V1: u32 = 4;
 /// path, exactly as the interactive canvas target does.
 const EXPORT_TARGET_FORMAT_V1: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// Widest frame of the closed `ExportProfileV1` resolution ladder
-/// (854x480 / 1280x720 / 1920x1080).
-///
-/// The export bounds here mirror the #721 contract values proposed in
-/// PR #729. That PR has not merged into `poietra-scene-ir` yet, so the values
-/// are duplicated as named constants; once the contract lands these must
-/// derive from its exported constants instead.
-pub(crate) const MAX_EXPORT_FRAME_WIDTH_PX_V1: u32 = 1_920;
-
-/// Tallest frame of the closed `ExportProfileV1` resolution ladder; see
-/// [`MAX_EXPORT_FRAME_WIDTH_PX_V1`] for the mirroring caveat.
-pub(crate) const MAX_EXPORT_FRAME_HEIGHT_PX_V1: u32 = 1_080;
-
-/// Fastest rate of the closed `ExportProfileV1` frame-rate set `{30, 60}`;
-/// see [`MAX_EXPORT_FRAME_WIDTH_PX_V1`] for the mirroring caveat.
-pub(crate) const MAX_EXPORT_FPS_V1: u32 = 60;
-
-/// `ExportProfileV1` `maxDurationSeconds` cap (900 s, the legacy accepted
-/// server render profile); see [`MAX_EXPORT_FRAME_WIDTH_PX_V1`] for the
-/// mirroring caveat.
-pub(crate) const MAX_EXPORT_DURATION_SECONDS_V1: f64 = 900.0;
-
-/// Ceiling of every boundable export frame grid: 900 s at 60 fps.
-pub(crate) const MAX_EXPORT_FRAME_COUNT_V1: u64 = 54_000;
+/// Export limits derived from the closed `ExportProfileV1` resolution and
+/// frame-rate choices. The duration ceiling is imported from the same
+/// contract, leaving `poietra-scene-ir` as their single authority.
+const MAX_EXPORT_FRAME_WIDTH_PX_V1: u32 = ExportResolutionV1::FullHd1920x1080.width_px();
+const MAX_EXPORT_FRAME_HEIGHT_PX_V1: u32 = ExportResolutionV1::FullHd1920x1080.height_px();
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "the closed ExportFrameRateV1 value is an integer frame rate"
+)]
+const MAX_EXPORT_FPS_V1: u32 = ExportFrameRateV1::Fps60.frames_per_second() as u32;
+#[allow(
+    clippy::cast_lossless,
+    reason = "const evaluation cannot call the From conversions"
+)]
+const MAX_EXPORT_FRAME_COUNT_V1: u64 =
+    (MAX_EXPORT_DURATION_SECONDS_V1 as u64) * (MAX_EXPORT_FPS_V1 as u64);
 
 /// Upper bound on frames the [`prove_export_frame_sequence_readback_v1`]
 /// proof hook may return; mirrors the browser readback e2e sequence cap.
@@ -194,9 +190,8 @@ pub(crate) enum ExportBlockingDriveErrorV1 {
     Stalled,
 }
 
-/// Minimal crate-private export parameters. The closed public contract
-/// (`ExportProfileV1`) is deliberately deferred to #721 and must not be
-/// defined here.
+/// Minimal crate-private parameters consumed after the canonical
+/// `ExportProfileV1` contract has selected the export settings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ExportFrameSequenceParamsV1 {
     /// Frames per second for the uniform requested-time grid `i / fps`.
@@ -243,9 +238,9 @@ impl ExportFrameTimelineV1 {
     ///
     /// # Errors
     ///
-    /// Fails closed when `fps` leaves the mirrored `ExportProfileV1` rate cap,
+    /// Fails closed when `fps` leaves the canonical `ExportProfileV1` rate cap,
     /// when the duration is not a positive finite time, or when the grid
-    /// exceeds the mirrored duration/frame-count caps.
+    /// exceeds the canonical duration/frame-count caps.
     pub(crate) fn new(duration: f64, fps: u32) -> Result<Self, ExportFrameSequenceParamsErrorV1> {
         if fps == 0 || fps > MAX_EXPORT_FPS_V1 {
             return Err(ExportFrameSequenceParamsErrorV1::FpsOutOfRange { fps });
@@ -253,11 +248,12 @@ impl ExportFrameTimelineV1 {
         if !duration.is_finite() || duration <= 0.0 {
             return Err(ExportFrameSequenceParamsErrorV1::InvalidSceneDuration { duration });
         }
-        if duration > MAX_EXPORT_DURATION_SECONDS_V1 {
+        if duration > f64::from(MAX_EXPORT_DURATION_SECONDS_V1) {
             return Err(ExportFrameSequenceParamsErrorV1::DurationExceedsExportCap { duration });
         }
         let fps_hz = f64::from(fps);
-        // `0 < duration * fps <= 54_000`, so the ceiling is exact in u64.
+        // The validated grid stays below the profile-derived frame ceiling,
+        // so the ceiling is exact in u64.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let frame_count = (duration * fps_hz).ceil() as u64;
         if frame_count > MAX_EXPORT_FRAME_COUNT_V1 {
@@ -287,12 +283,13 @@ impl ExportFrameTimelineV1 {
     }
 }
 
-/// Rejects export viewports outside the mirrored `ExportProfileV1` resolution
+/// Rejects export viewports outside the canonical `ExportProfileV1` resolution
 /// caps before any GPU resource exists.
 ///
 /// # Errors
 ///
-/// Fails closed when either side leaves `1..=1920` x `1..=1080`.
+/// Fails closed when either side leaves the positive range bounded by the
+/// largest canonical export resolution.
 pub(crate) fn validate_export_viewport_v1(
     params: ExportFrameSequenceParamsV1,
 ) -> Result<(), ExportFrameSequenceParamsErrorV1> {
@@ -649,7 +646,7 @@ where
     SampleError: std::error::Error + 'static,
     SamplePacket: FnMut(ExportFrameRequestV1) -> Result<RenderPacketV1, SampleError>,
 {
-    /// Validates the export parameters against the mirrored `ExportProfileV1`
+    /// Validates the export parameters against the canonical `ExportProfileV1`
     /// caps and prepares the session for its first frame. No GPU frame work
     /// happens until [`Self::next_frame`].
     ///
@@ -660,7 +657,7 @@ where
     ///
     /// # Errors
     ///
-    /// Fails closed on parameters outside the mirrored caps or when the
+    /// Fails closed on parameters outside the canonical caps or when the
     /// unified-format renderer cannot be created.
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -1152,14 +1149,16 @@ mod tests {
     }
 
     #[test]
-    fn rejects_grids_outside_the_mirrored_export_profile_caps() {
+    fn rejects_grids_outside_the_export_profile_caps() {
         assert_eq!(
             ExportFrameTimelineV1::new(2.0, 0),
             Err(ExportFrameSequenceParamsErrorV1::FpsOutOfRange { fps: 0 })
         );
         assert_eq!(
-            ExportFrameTimelineV1::new(2.0, 61),
-            Err(ExportFrameSequenceParamsErrorV1::FpsOutOfRange { fps: 61 })
+            ExportFrameTimelineV1::new(2.0, MAX_EXPORT_FPS_V1 + 1),
+            Err(ExportFrameSequenceParamsErrorV1::FpsOutOfRange {
+                fps: MAX_EXPORT_FPS_V1 + 1,
+            })
         );
         assert!(matches!(
             ExportFrameTimelineV1::new(f64::NAN, 30),
@@ -1174,16 +1173,19 @@ mod tests {
             Err(ExportFrameSequenceParamsErrorV1::InvalidSceneDuration { .. })
         ));
         assert!(matches!(
-            ExportFrameTimelineV1::new(900.25, 30),
+            ExportFrameTimelineV1::new(f64::from(MAX_EXPORT_DURATION_SECONDS_V1) + 0.25, 30,),
             Err(ExportFrameSequenceParamsErrorV1::DurationExceedsExportCap { .. })
         ));
-        let full = ExportFrameTimelineV1::new(900.0, 60)
-            .expect("the full 900-second grid at 60 fps must be boundable");
+        let full = ExportFrameTimelineV1::new(
+            f64::from(MAX_EXPORT_DURATION_SECONDS_V1),
+            MAX_EXPORT_FPS_V1,
+        )
+        .expect("the largest export-profile grid must be boundable");
         assert_eq!(full.frame_count(), MAX_EXPORT_FRAME_COUNT_V1);
     }
 
     #[test]
-    fn mirrors_export_profile_viewport_caps() {
+    fn enforces_export_profile_viewport_caps() {
         let params = |width_px, height_px| ExportFrameSequenceParamsV1 {
             fps: 30,
             height_px,
@@ -1194,15 +1196,33 @@ mod tests {
             Err(ExportFrameSequenceParamsErrorV1::ViewportSideOutOfRange { .. })
         ));
         assert!(matches!(
-            validate_export_viewport_v1(params(1_921, 1_080)),
+            validate_export_viewport_v1(params(
+                MAX_EXPORT_FRAME_WIDTH_PX_V1 + 1,
+                MAX_EXPORT_FRAME_HEIGHT_PX_V1,
+            )),
             Err(ExportFrameSequenceParamsErrorV1::ViewportSideOutOfRange { .. })
         ));
         assert!(matches!(
-            validate_export_viewport_v1(params(1_920, 1_081)),
+            validate_export_viewport_v1(params(
+                MAX_EXPORT_FRAME_WIDTH_PX_V1,
+                MAX_EXPORT_FRAME_HEIGHT_PX_V1 + 1,
+            )),
             Err(ExportFrameSequenceParamsErrorV1::ViewportSideOutOfRange { .. })
         ));
-        assert_eq!(validate_export_viewport_v1(params(1_920, 1_080)), Ok(()));
-        assert_eq!(validate_export_viewport_v1(params(854, 480)), Ok(()));
+        assert_eq!(
+            validate_export_viewport_v1(params(
+                MAX_EXPORT_FRAME_WIDTH_PX_V1,
+                MAX_EXPORT_FRAME_HEIGHT_PX_V1,
+            )),
+            Ok(())
+        );
+        assert_eq!(
+            validate_export_viewport_v1(params(
+                ExportResolutionV1::Sd854x480.width_px(),
+                ExportResolutionV1::Sd854x480.height_px(),
+            )),
+            Ok(())
+        );
         assert_eq!(validate_export_viewport_v1(params(160, 90)), Ok(()));
     }
 

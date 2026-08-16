@@ -19,11 +19,7 @@ function pixelAt(rgba: readonly number[], frame: number, x: number, y: number) {
   return [rgba[offset], rgba[offset + 1], rgba[offset + 2], rgba[offset + 3]] as const;
 }
 
-function expectPixelClose(
-  actual: readonly (number | undefined)[],
-  expected: readonly number[],
-  tolerance: number,
-) {
+function expectPixelClose(actual: readonly (number | undefined)[], expected: readonly number[], tolerance: number) {
   expected.forEach((component, index) => {
     expect(Math.abs((actual[index] ?? -1) - component)).toBeLessThanOrEqual(tolerance);
   });
@@ -31,9 +27,10 @@ function expectPixelClose(
 
 test("proves the async offscreen export readback sequence in the browser WebGPU runtime", async ({ page }) => {
   test.setTimeout(120_000);
-  const fixture = JSON.parse(
-    await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8"),
-  ) as Readonly<{ assets: unknown; scene: unknown }>;
+  const fixture = JSON.parse(await readFile("fixtures/engine-v1/shared-circle-opacity.json", "utf8")) as Readonly<{
+    assets: unknown;
+    scene: unknown;
+  }>;
   const bundle = { assets: fixture.assets, scene: fixture.scene } as const;
 
   await page.goto("/");
