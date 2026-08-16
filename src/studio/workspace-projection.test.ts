@@ -4,10 +4,15 @@ import type {
   StudioCreationProjectionV1,
   StudioMathTexTransformProjectionV1,
   StudioMotionProjectionV1,
+  StudioPersistentRemoveProjectionV1,
   StudioStaticRootProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
-import { createInspectorEntityEditProgram, createSceneDurationProgram } from "./authoring-commands";
+import {
+  createInspectorEntityEditProgram,
+  createRemoveEntitiesProgram,
+  createSceneDurationProgram,
+} from "./authoring-commands";
 import {
   canResolveSourceDurationMismatch,
   clampPlayheadToResolvedSourceDuration,
@@ -563,7 +568,7 @@ describe("Studio workspace projection", () => {
     expect(selectStudioWorkspaceProgramAuthority([timelineRecord], [record], "rust-authorized-batch")).toBeNull();
   });
 
-  it("requires and mechanically applies Rust's static-root scale projection", () => {
+  it("requires and mechanically composes Rust's static-root and persistent-remove projections", () => {
     const imported = workspaceScene("Static", null);
     const base = projectStudioWorkspace({
       activeScene: imported,
@@ -588,6 +593,17 @@ describe("Studio workspace projection", () => {
       ...imported,
       runtimeSceneState: {
         ...imported.runtimeSceneState,
+        duration: 2,
+        objectGraph: {
+          ...imported.runtimeSceneState.objectGraph,
+          entities: {
+            ...imported.runtimeSceneState.objectGraph.entities,
+            [entity.id]: {
+              ...imported.runtimeSceneState.objectGraph.entities[entity.id]!,
+              lifetime: [{ end: 2, start: 0 }],
+            },
+          },
+        },
         propertyChannels: {
           ...imported.runtimeSceneState.propertyChannels,
           [`${entity.id}/scale`]: {
@@ -595,7 +611,7 @@ describe("Studio workspace projection", () => {
             key: "scale" as const,
             samples: [
               {
-                interval: { end: imported.runtimeSceneState.duration, start: 0 },
+                interval: { end: 2, start: 0 },
                 kind: "exact" as const,
                 provenanceId: "rebased-scale",
                 value: 3,
@@ -635,6 +651,61 @@ describe("Studio workspace projection", () => {
 
     expect(() => project()).toThrow("A Rust static-root projection is required");
     expect(project(staticRootProjection)).toBe(7);
+    const removal = createRemoveEntitiesProgram({
+      capturedPlayhead: 1,
+      entityIds: [entity.id],
+      scene: rebased.runtimeSceneState,
+      transactionId: "authorized-remove",
+    });
+    if (removal.kind !== "valid") throw new Error(JSON.stringify(removal.issues));
+    const removeOperation = removal.program.operations[0];
+    if (removeOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
+    const removeRecord = programRecord(removal.program, removal);
+    const persistentRemoveProjection: StudioPersistentRemoveProjectionV1 = {
+      removals: [
+        {
+          affectedSceneEntityIds: [entity.id],
+          fadeInterval: removeOperation.interval,
+          operationId: removeOperation.id,
+          removedAt: removeOperation.interval.end,
+          resultingLifetimeEnd: removeOperation.interval.end,
+          sceneEntityId: entity.id,
+          studioEntityId: entity.id,
+          transactionId: removal.program.transactionId,
+        },
+      ],
+    };
+    const combined = projectStudioWorkspace({
+      activeScene: rebased,
+      appliedPrograms: [record, removeRecord],
+      currentTime: 1.5,
+      draftProgram: null,
+      nextScene: null,
+      persistentRemoveProjection,
+      programAuthority: "static-imported-root",
+      selectedObjectIds: [],
+      staticRootProjection,
+    });
+    expect(combined.projection.canvas.entities[0]).toMatchObject({ opacity: 0, present: false, scale: 7 });
+    expect(combined.proposedState.evaluatedScene.objectGraph.entities[entity.id]?.lifetime).toEqual([
+      { end: removeOperation.interval.end, start: 0 },
+    ]);
+    expect(combined.proposedState.evaluatedScene.objectGraph.lineage.at(-1)).toMatchObject({
+      operationId: removeOperation.id,
+      relation: "removed",
+    });
+
+    const pureRemoval = projectStudioWorkspace({
+      activeScene: rebased,
+      appliedPrograms: [removeRecord],
+      currentTime: 1.5,
+      draftProgram: null,
+      nextScene: null,
+      persistentRemoveProjection,
+      programAuthority: "rust-authorized-batch",
+      selectedObjectIds: [],
+    });
+    expect(pureRemoval.projection.canvas.entities[0]).toMatchObject({ opacity: 0, present: false, scale: 3 });
     expect(
       projectStudioWorkspace({
         activeScene: rebased,

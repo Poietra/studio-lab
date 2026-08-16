@@ -1810,6 +1810,73 @@ describe("compileStudioPreviewSceneV1", () => {
     expect(result.scene.programAuthority).toBe("rust-authorized-batch");
   });
 
+  it("keeps Rust static-root and persistent-remove projections for one combined batch", async () => {
+    const fixture = await editedStaticRootPreviewInput();
+    const removal = createRemoveEntitiesProgram({
+      capturedPlayhead: 0.5,
+      entityIds: ["source:circle"],
+      scene: fixture.proposedState.evaluatedScene,
+      transactionId: "remove-moved-imported-circle",
+    });
+    if (removal.kind !== "valid") throw new Error(JSON.stringify(removal.issues));
+    const removeOperation = removal.program.operations[0];
+    if (removeOperation?.kind !== "ChangePresence") throw new Error("Expected a persistent remove operation.");
+    const staticRootProjection = {
+      mutations: [
+        {
+          entityId: "source:circle",
+          interval: { end: 0, start: 0 },
+          kind: "position" as const,
+          operationId: fixture.operationId!,
+          transactionId: fixture.programRecord.program.transactionId,
+          value: { x: 384, y: 144 },
+        },
+      ],
+    };
+    const persistentRemoveProjection = {
+      removals: [
+        {
+          affectedSceneEntityIds: [fixture.snapshot.snapshot.scene.entities[0]!.id],
+          fadeInterval: removeOperation.interval,
+          operationId: removeOperation.id,
+          removedAt: removeOperation.interval.end,
+          resultingLifetimeEnd: removeOperation.interval.end,
+          sceneEntityId: fixture.snapshot.snapshot.scene.entities[0]!.id,
+          studioEntityId: removeOperation.entityId,
+          transactionId: removal.program.transactionId,
+        },
+      ],
+    } as const;
+    const commands: ApplyStaticRootTransformEditWireCommandV1[] = [];
+
+    const result = await compileStudioPreviewSceneV1({
+      applyStaticRootTransformEditCompiler: recordingStaticRootTransformEditCompiler(commands, async (bundle) => ({
+        ...unchangedAuthoringResult(bundle),
+        persistentRemoveProjection,
+        staticRootProjection,
+      })),
+      frame: { height: 9, width: 16 },
+      snapshot: fixture.snapshot,
+      workingState: {
+        ...fixture.proposedState.base,
+        appliedPrograms: [fixture.programRecord, programRecord(removal.program, removal)],
+      },
+      workingRevision: "studio-working-v1:move-then-remove-imported-circle",
+      workspaceKey: fixture.workspaceKey,
+    });
+
+    if (result.kind !== "compiled") throw new Error(result.error);
+    expect(commands[0]?.programs.map(({ transactionId }) => transactionId)).toEqual([
+      fixture.programRecord.program.transactionId,
+      removal.program.transactionId,
+    ]);
+    expect(result.scene).toMatchObject({
+      persistentRemoveProjection,
+      programAuthority: "static-imported-root",
+      staticRootProjection,
+    });
+  });
+
   it("rejects Runtime Trace persistent remove before invoking the static-root Rust use case", async () => {
     const fixture = await compilablePreviewInput();
     const workingBase = exactImportedTimelineWorkingBase(fixture);

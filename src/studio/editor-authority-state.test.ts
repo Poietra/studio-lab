@@ -9,7 +9,7 @@ import type {
   StudioMotionProjectionV1,
 } from "../engine/scene-authoring";
 import { importManimScene } from "../render-pipeline/source-import";
-import { createStudioEntitiesProgram } from "./authoring-commands";
+import { createRemoveEntitiesProgram, createStudioEntitiesProgram } from "./authoring-commands";
 import {
   EditorCreationAdmissionError,
   EditorMathTexTransformAdmissionError,
@@ -19,6 +19,7 @@ import {
 } from "./editor-authority-state";
 import type { EditorProgramRecord } from "./editor-session-store";
 import type { CanonicalEditProgram } from "./operations";
+import { createDirectManipulationPositionProgram } from "./suggestion-program";
 
 const source = `from manim import *
 
@@ -265,6 +266,43 @@ describe("authoritative Editor Program materialization", () => {
         schema: "poietra.project-studio-motion-edit",
       }),
     );
+  });
+
+  it("installs authoritative static-transform and persistent-remove Programs without TypeScript evaluation", async () => {
+    const targetScene = scene();
+    const move = createDirectManipulationPositionProgram({
+      capturedPlayhead: 0,
+      delta: { x: 40, y: -20 },
+      positions: { [MATH_TEX_SOURCE_ID]: { x: 320, y: 180 } },
+      scene: targetScene.runtimeSceneState,
+      start: 0,
+      targetEntityIds: [MATH_TEX_SOURCE_ID],
+      transactionId: "move-imported-equation",
+    });
+    const remove = createRemoveEntitiesProgram({
+      capturedPlayhead: 1,
+      entityIds: [MATH_TEX_SOURCE_ID],
+      scene: targetScene.runtimeSceneState,
+      transactionId: "remove-imported-equation",
+    });
+    if (move.kind !== "valid" || remove.kind !== "valid") {
+      throw new Error(`fixture validation failed: ${JSON.stringify([...move.issues, ...remove.issues])}`);
+    }
+
+    const programs = [move.program, remove.program];
+    const materialized = await materializeAuthoritativeEditorProgramsV1(targetScene, [], programs);
+
+    expect(materialized).toEqual(programs.map((program) => ({ program, validation: { issues: [], status: "valid" } })));
+
+    const missingTarget = {
+      ...remove.program,
+      operations: remove.program.operations.map((operation) =>
+        operation.kind === "ChangePresence" ? { ...operation, entityId: "source:missing" } : operation,
+      ),
+    };
+    await expect(
+      materializeAuthoritativeEditorProgramsV1(targetScene, [], [move.program, missingTarget]),
+    ).rejects.toThrow(/invalid for the selected Scene source/i);
   });
 
   it("compares accepted local state to the exact authoritative projection", () => {

@@ -13,7 +13,13 @@ import type { EditorProgramRecord } from "./editor-session-store";
 import { evaluateWorkingState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import { programExecutionCapabilities } from "./operation-registry";
-import { type CanonicalEditProgram, isSceneDurationOperation } from "./operations";
+import {
+  type CanonicalEditOperation,
+  type CanonicalEditProgram,
+  isSceneDurationOperation,
+  isStaticRootTransformOperation,
+} from "./operations";
+import { validateAndScheduleProgram } from "./program-validation";
 import {
   buildStudioCreationProjectionCommand,
   buildStudioMathTexTransformProjectionCommand,
@@ -64,6 +70,24 @@ export function editorProgramsMatchAuthorityV1(
   return canonicalJsonV1(local.map((record) => record.program)) === canonicalJsonV1(authoritative);
 }
 
+function isPersistentRemoveOperation(
+  operation: CanonicalEditOperation,
+): operation is Extract<CanonicalEditOperation, { kind: "ChangePresence" }> {
+  return operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent;
+}
+
+function isStaticRootOrPersistentRemoveProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  return (
+    programs.length > 0 &&
+    programs.every(
+      (program) =>
+        program.operations.length > 0 &&
+        (program.operations.every(isStaticRootTransformOperation) ||
+          program.operations.every(isPersistentRemoveOperation)),
+    )
+  );
+}
+
 /**
  * Revalidates a wire projection against the selected imported Scene. The
  * durable authority owns canonical Programs, while validation and optional
@@ -87,6 +111,8 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const hasMathTexTransform = operations.some(({ kind }) => kind === "TransformContent");
   const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
   const hasCreation = operations.some(({ kind }) => kind === "CreateEntity");
+  const hasPersistentRemove = operations.some(isPersistentRemoveOperation);
+  const isStaticRootOrPersistentRemove = isStaticRootOrPersistentRemoveProgramBatch(programs);
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
   if (hasMathTexTransform && !isExactMathTexTransform) {
     throw new TypeError(
@@ -99,6 +125,9 @@ export async function materializeAuthoritativeEditorProgramsV1(
     throw new EditorMotionAdmissionError(
       "The authoritative Editor projection contains CreateMotion outside a supported Rust motion batch.",
     );
+  }
+  if (hasPersistentRemove && !hasCreation && !isStaticRootOrPersistentRemove) {
+    throw new TypeError("The authoritative Editor projection contains persistent remove outside a closed Rust batch.");
   }
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
   if (sceneDurationOperationCount > 0 && sceneDurationOperationCount < operations.length) {
@@ -176,6 +205,15 @@ export async function materializeAuthoritativeEditorProgramsV1(
           });
       })()
     : null;
+  const validatedStaticRootOrPersistentRemove = isStaticRootOrPersistentRemove
+    ? programs.map((program) => {
+        const validation = validateAndScheduleProgram(program, scene.runtimeSceneState);
+        return {
+          program,
+          validation: { issues: validation.issues, status: validation.kind },
+        };
+      })
+    : null;
   const evaluatedPrograms =
     timelineProjection?.programs.map((program) => ({
       program,
@@ -183,14 +221,16 @@ export async function materializeAuthoritativeEditorProgramsV1(
     })) ??
     (creationProjection || mathTexTransformProjection || motionProjection
       ? seeds
-      : evaluateWorkingState(
-          importedWorkingState(scene, {
-            appliedPrograms: seeds,
-            playhead: 0,
-            selection: [],
-            stagedPrograms: [],
-          }),
-        ).programs);
+      : validatedStaticRootOrPersistentRemove
+        ? validatedStaticRootOrPersistentRemove
+        : evaluateWorkingState(
+            importedWorkingState(scene, {
+              appliedPrograms: seeds,
+              playhead: 0,
+              selection: [],
+              stagedPrograms: [],
+            }),
+          ).programs);
   if (
     evaluatedPrograms.length !== programs.length ||
     evaluatedPrograms.some(

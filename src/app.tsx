@@ -81,12 +81,7 @@ import {
 import { projectMotionPaths, type StudioMotionPath } from "./studio/motion-paths";
 import type { AppliedMotionClip, AppliedMotionClipChange } from "./studio/motion-timeline-clip";
 import { programExecutionCapabilities } from "./studio/operation-registry";
-import {
-  type CanonicalEditProgram,
-  isExactStaticRootProjectionProgramBatch,
-  isSceneDurationOperation,
-  type OperationOrigin,
-} from "./studio/operations";
+import { type CanonicalEditProgram, isSceneDurationOperation, type OperationOrigin } from "./studio/operations";
 import { PoietraBrand } from "./studio/poietra-brand";
 import {
   projectStudioPreviewRuntimeTraceEntityPresence,
@@ -100,10 +95,7 @@ import {
   workingTimeToSourceTime as workingTimeToSourceTimeWithoutTimeline,
 } from "./studio/program-composition";
 import { samplePropertyValue } from "./studio/property-sampling";
-import {
-  isExactStudioMathTexTransformProgramBatch,
-  studioMotionProjectionBatchKind,
-} from "./studio/scene-authoring-wire";
+import { isExactStudioMathTexTransformProgramBatch } from "./studio/scene-authoring-wire";
 import {
   hasShapeDimensions,
   type ResizeHandleDirection,
@@ -941,17 +933,12 @@ export function App({
   }
   function staticRootProjectionForRecords(records: readonly ProgramRecord[]) {
     const programs = records.map((record) => record.program);
-    if (
-      !isExactStaticRootProjectionProgramBatch(programs) &&
-      studioMotionProjectionBatchKind(programs) !== "static-root"
-    )
-      return null;
     const authority = workspaceProgramAuthorityForRecords(records);
     if (authority === undefined) return undefined;
     if (authority !== "static-imported-root") return null;
     if (!previewRenderer?.staticRootProjection) return undefined;
     try {
-      return selectStaticRootProjection(programs, previewRenderer.staticRootProjection);
+      return selectStaticRootProjection(programs, previewRenderer.staticRootProjection) ?? null;
     } catch {
       return undefined;
     }
