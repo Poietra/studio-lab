@@ -67,6 +67,9 @@ markers, and the independent `manim-lint` project is recorded in
 The persistent `EditorDocument`, structurally accepted Scene Edit contract, Rust
 mutation authority, and runtime `EngineSessionV1` boundary are recorded in
 [ADR 0004](docs/adr/0004-studio-edit-ownership-and-runtime-application.md).
+The SaaS bounded contexts, native document lineage, publication ownership,
+flow/stock quota split, and Tenant Cell vocabulary are recorded in
+[ADR 0005](docs/adr/0005-saas-platform-domain-model.md).
 
 ## Commands
 
