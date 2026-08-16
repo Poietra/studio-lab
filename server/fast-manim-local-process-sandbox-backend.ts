@@ -33,7 +33,7 @@ import {
 import {
   type FastManimSnapshotAdmissionController,
   processAdmissionController,
-} from "./fast-manim-snapshot-publication";
+} from "./fast-manim-snapshot-preview-cache";
 import { nullLogger, type StructuredLogger } from "./logging/structured-logger";
 import { inspectProjectPngBytesV1, PROJECT_PNG_LOGICAL_PATH_V1 } from "./storage/project-png-storage";
 

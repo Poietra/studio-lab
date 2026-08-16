@@ -327,7 +327,11 @@ async function validateVerifiedRun(value: unknown, identity: StudioPreviewSceneI
   return {
     bundle,
     engineRevisionHash,
-    publicationRevision: run.revision,
+    // The wire `revision` field is a preview freshness token (ADR 0005): the
+    // process-local preview-cache sequence in dev, and a numeric view of the
+    // durable per-Scene publication generation in production. It is neither
+    // an Editor revision nor the engine hash.
+    previewFreshnessToken: run.revision,
     sourceLabel: `verified server snapshot r${run.revision}`,
     sourceRuntimeIdentity,
   };
@@ -466,7 +470,7 @@ async function validateVerifiedRuntimeTraceRun(
   return {
     bundle,
     engineRevisionHash: run.traceDigest,
-    publicationRevision: null,
+    previewFreshnessToken: null,
     sourceLabel: "verified Runtime Trace",
     sourceRuntimeIdentity,
   };
@@ -474,8 +478,8 @@ async function validateVerifiedRuntimeTraceRun(
 
 /**
  * Same-origin production provider for the issue #65 Scene snapshot endpoint.
- * The server publication revision is retained as publication evidence only;
- * the canvas worker revision is always the verified Scene IR source hash.
+ * The server's preview freshness token is retained as evidence only; the
+ * canvas worker revision is always the verified Scene IR source hash.
  */
 export function createServerPreviewSnapshotProviderV1(
   options: ServerPreviewSnapshotProviderOptionsV1 = {},
@@ -528,7 +532,7 @@ export function createServerPreviewSnapshotProviderV1(
         if (!response.ok) throw providerError(`The Scene snapshot endpoint failed with HTTP ${response.status}.`);
         verified = await validateVerifiedRun(await readBoundedJson(response), identity, requestId);
       }
-      const { bundle, engineRevisionHash, publicationRevision, sourceLabel, sourceRuntimeIdentity } = verified;
+      const { bundle, engineRevisionHash, previewFreshnessToken, sourceLabel, sourceRuntimeIdentity } = verified;
       signal?.throwIfAborted();
       const assetPayloads = await loadSnapshotAssetPayloads(fetcher, identity.projectId, bundle.assets.assets, signal);
       signal?.throwIfAborted();
@@ -544,7 +548,10 @@ export function createServerPreviewSnapshotProviderV1(
           engineRevisionHash,
           sceneDuration: bundle.scene.duration,
           sceneId: bundle.scene.sceneId,
-          serverPublicationRevision: publicationRevision,
+          // Wire-frozen browser-contract field name (ADR 0005 `publication`
+          // disposition): the value is a preview freshness token, not a
+          // durable Publication identity.
+          serverPublicationRevision: previewFreshnessToken,
         },
         duration: bundle.scene.duration,
         sceneId: bundle.scene.sceneId,
