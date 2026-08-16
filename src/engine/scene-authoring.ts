@@ -222,7 +222,7 @@ export type StudioProjectedMotionV1 = Readonly<{
   control: Readonly<{ x: number; y: number }>;
   controlOffset: Readonly<{ x: number; y: number }>;
   delta: Readonly<{ x: number; y: number }>;
-  easing: "linear" | "smooth";
+  easing: "linear" | "manim-smooth";
   from: Readonly<{ x: number; y: number }>;
   interval: Readonly<{ end: number; start: number }>;
   operationId: string;
@@ -460,7 +460,7 @@ const studioProjectedMotionV1Schema = z
     control: studioStaticRootPointV1Schema,
     controlOffset: studioStaticRootPointV1Schema,
     delta: studioStaticRootPointV1Schema,
-    easing: z.enum(["linear", "smooth"]),
+    easing: z.enum(["linear", "manim-smooth"]),
     from: studioStaticRootPointV1Schema,
     interval: studioTimelineProjectionIntervalV1Schema,
     operationId: z.string().min(1),

@@ -11,7 +11,7 @@ import type {
   StudioTimelineProjectionV1,
 } from "../engine/scene-authoring";
 import { canonicalEditableContent } from "./editable-content";
-import { evaluateWorkingState, insertSceneTime, projectProposedState } from "./evaluator";
+import { insertSceneTime, projectProposedState } from "./evaluator";
 import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
 import {
   type EntityContent,
@@ -153,6 +153,7 @@ function correlateMotionProjection(
   baseDuration: number,
   programs: readonly CanonicalEditProgram[],
   projection: StudioMotionProjectionV1 | null,
+  requireOneInsertionPerProgram = false,
 ): readonly CorrelatedProjectedMotion[] | null {
   const expected = programs.flatMap((program) =>
     program.operations.flatMap((operation) =>
@@ -171,15 +172,26 @@ function correlateMotionProjection(
   );
   if (
     new Set(transactionIds).size !== transactionIds.length ||
+    (requireOneInsertionPerProgram && projection.insertions.length !== programs.length) ||
     insertionsByTransactionId.size !== projection.insertions.length ||
     projection.insertions.some(
       ({ at, duration, transactionId }) =>
-        !transactionIds.includes(transactionId) || !Number.isFinite(at) || !Number.isFinite(duration) || duration <= 0,
+        !transactionIds.includes(transactionId) ||
+        !Number.isFinite(at) ||
+        at < 0 ||
+        !Number.isFinite(duration) ||
+        duration <= 0,
     )
   ) {
     throw new TypeError("The Rust motion projection does not contain one unique insertion per Program.");
   }
-  if (!Number.isFinite(projection.projectedDuration) || projection.projectedDuration < baseDuration) {
+  if (
+    !Number.isFinite(projection.projectedDuration) ||
+    !sameProjectionNumber(
+      projection.projectedDuration,
+      baseDuration + projection.insertions.reduce((total, insertion) => total + insertion.duration, 0),
+    )
+  ) {
     throw new TypeError("The Rust motion projection returned a stale projected duration.");
   }
 
@@ -209,7 +221,7 @@ function correlateMotionProjection(
       !program ||
       !insertion ||
       motion.transactionId !== program.transactionId ||
-      motion.easing !== operation.easing ||
+      motion.easing !== (operation.easing === "smooth" ? "manim-smooth" : "linear") ||
       !Number.isFinite(motion.interval.start) ||
       !Number.isFinite(motion.interval.end) ||
       motion.interval.end <= motion.interval.start ||
@@ -236,7 +248,12 @@ export function selectMotionProjection(
   programs: readonly CanonicalEditProgram[],
   projection: StudioMotionProjectionV1 | null,
 ): StudioMotionProjectionV1 | null {
-  const correlated = correlateMotionProjection(baseDuration, programs, projection);
+  const correlated = correlateMotionProjection(
+    baseDuration,
+    programs,
+    projection,
+    studioMotionProjectionBatchKind(programs) === "standalone",
+  );
   if (!correlated) return null;
   if (!projection) throw new TypeError("The correlated Rust motion projection is missing.");
   return { ...projection, motions: correlated.map(({ motion }) => motion) };
@@ -901,6 +918,7 @@ function projectBoundEntityWorkingState(
 }
 
 function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: readonly CorrelatedProjectedMotion[]) {
+  const recordedOperationIds = new Set<string>();
   for (const { motion, operation, program } of correlated) {
     const target = draft.entities[motion.targetEntityId];
     if (
@@ -914,7 +932,10 @@ function appendCorrelatedMotions(draft: MotionProjectionDraft, correlated: reado
       throw new TypeError(`Motion ${motion.operationId} targets an unavailable projected entity.`);
     }
     const provenanceId = `${motion.operationId}/provenance`;
-    appendProjectedOperationRecord(draft, operation, program, motion.interval);
+    if (!recordedOperationIds.has(motion.operationId)) {
+      appendProjectedOperationRecord(draft, operation, program, motion.interval);
+      recordedOperationIds.add(motion.operationId);
+    }
     appendProjectedSample(draft.propertyChannels, motion.targetEntityId, "position", {
       control: motion.control,
       easing: motion.easing,
@@ -1228,37 +1249,28 @@ function projectMathTexTransformWorkingState(
   return projectedWorkingState(workingState, records, draft);
 }
 
-function projectMotionWorkingState(
-  workingState: WorkingState,
-  base: ProposedState,
-  projection: StudioMotionProjectionV1,
-): ProposedState {
+function projectMotionWorkingState(workingState: WorkingState, projection: StudioMotionProjectionV1): ProposedState {
   const records = [...workingState.appliedPrograms, ...workingState.stagedPrograms];
-  const correlated = correlateMotionProjection(
-    workingState.runtimeSceneState.duration,
-    records.map(({ program }) => program),
-    projection,
-  );
+  const programs = records.map(({ program }) => program);
+  if (studioMotionProjectionBatchKind(programs) !== "standalone") {
+    throw new TypeError("Only a standalone CreateMotion batch can use the Rust motion projection directly.");
+  }
+  const correlated = correlateMotionProjection(workingState.runtimeSceneState.duration, programs, projection, true);
   if (!correlated) throw new TypeError("Only a motion-bearing Program batch can use the Rust motion projection.");
-  if (!sameProjectionNumber(base.evaluatedScene.duration, projection.projectedDuration)) {
+  const draft = cloneProjectionDraft(workingState.runtimeSceneState);
+  for (const insertion of projection.insertions) insertSceneTime(draft, insertion.at, insertion.duration);
+  if (!sameProjectionNumber(draft.duration, projection.projectedDuration)) {
     throw new TypeError("The Rust motion projection does not match the projected Studio duration.");
   }
-  const draft = cloneProjectionDraft(base.evaluatedScene);
   appendCorrelatedMotions(draft, correlated);
-  return {
-    ...base,
-    evaluatedScene: {
-      ...base.evaluatedScene,
-      eventTrack: {
-        events: draft.events.sort(
-          (left, right) => (left.at ?? left.interval?.start ?? 0) - (right.at ?? right.interval?.start ?? 0),
-        ),
-      },
-      objectGraph: { ...base.evaluatedScene.objectGraph, entities: draft.entities },
-      propertyChannels: draft.propertyChannels,
-      provenanceGraph: { records: draft.provenance },
-    },
-  };
+  return projectedWorkingState(workingState, records, draft);
+}
+
+function projectBaseWorkingState(workingState: WorkingState): ProposedState {
+  if (workingState.appliedPrograms.length > 0 || workingState.stagedPrograms.length > 0) {
+    throw new TypeError("A base workspace projection cannot contain Edit Programs.");
+  }
+  return projectedWorkingState(workingState, [], cloneProjectionDraft(workingState.runtimeSceneState));
 }
 
 export function projectStudioWorkspace(
@@ -1291,10 +1303,8 @@ export function projectStudioWorkspace(
   const hasMathTexTransform = programs.some((program) =>
     program.operations.some(({ kind }) => kind === "TransformContent"),
   );
-  const correlatedMotions =
-    hasMotion && !hasCreation && !hasMathTexTransform
-      ? correlateMotionProjection(workingState.runtimeSceneState.duration, programs, input.motionProjection ?? null)
-      : null;
+  const motionBatchKind =
+    hasMotion && !hasCreation && !hasMathTexTransform ? studioMotionProjectionBatchKind(programs) : null;
   const containsSceneDurationOperation = programs.some((program) => program.operations.some(isSceneDurationOperation));
   const persistentRemoveProjection = hasCreation
     ? null
@@ -1362,26 +1372,20 @@ export function projectStudioWorkspace(
     isPersistentRemoveProgramBatch(programs)
   ) {
     proposedState = projectPersistentRemoveWorkingState(workingState, persistentRemoveProjection);
+  } else if (input.programAuthority === "rust-authorized-batch" && motionBatchKind === "standalone") {
+    if (!input.motionProjection) {
+      throw new TypeError("A Rust motion projection is required to project standalone CreateMotion Programs.");
+    }
+    proposedState = projectMotionWorkingState(workingState, input.motionProjection);
+  } else if (programs.length === 0) {
+    proposedState = projectBaseWorkingState(workingState);
   } else {
     if (persistentRemoveProjection) {
       throw new TypeError("Persistent remove Programs require one closed Rust-authorized projection batch.");
     }
-    proposedState = evaluateWorkingState(
-      workingState,
-      input.programAuthority ?? null,
-      correlatedMotions ? (input.motionProjection ?? null) : null,
+    throw new TypeError(
+      "The Program batch has no supported Rust workspace projection and cannot be evaluated in TypeScript.",
     );
-  }
-  if (
-    hasMotion &&
-    !hasCreation &&
-    !hasMathTexTransform &&
-    studioMotionProjectionBatchKind(programs) !== "static-root"
-  ) {
-    if (!input.motionProjection) {
-      throw new TypeError("A Rust motion projection is required to project CreateMotion Programs.");
-    }
-    proposedState = projectMotionWorkingState(workingState, proposedState, input.motionProjection);
   }
   const projection = projectProposedState(proposedState, input.currentTime);
   const boundary =
@@ -1391,7 +1395,7 @@ export function projectStudioWorkspace(
   const incomingProjection =
     input.nextScene && boundary
       ? projectProposedState(
-          evaluateWorkingState(
+          projectBaseWorkingState(
             importedWorkingState(input.nextScene, {
               playhead: 0,
               selection: [],

@@ -33,6 +33,7 @@ import {
 import {
   projectStudioWorkspace,
   selectMathTexTransformProjection,
+  selectMotionProjection,
   selectStaticRootProjection,
   selectStudioWorkspaceProgramAuthority,
 } from "./workspace-projection";
@@ -248,7 +249,7 @@ function mathTexTransformMotionFixture(sourceEntityId: string, splitMotionProgra
         control: { x: 350, y: 175 },
         controlOffset: motion.controlOffset,
         delta: motion.delta,
-        easing: motion.easing,
+        easing: motion.easing === "smooth" ? "manim-smooth" : "linear",
         from: { x: 320, y: 180 },
         interval: resolvedMotionInterval,
         operationId: motion.id,
@@ -303,7 +304,7 @@ describe("Studio workspace projection", () => {
           control: { x: 350, y: 175 },
           controlOffset: { x: 10, y: 5 },
           delta: { x: 40, y: -20 },
-          easing: "smooth",
+          easing: "manim-smooth",
           from: { x: 320, y: 180 },
           interval: { end: 2, start: 1 },
           operationId: "motion/standalone",
@@ -313,6 +314,96 @@ describe("Studio workspace projection", () => {
           transactionId: program.transactionId,
         },
       ],
+      projectedDuration: imported.runtimeSceneState.duration + 1,
+    };
+
+    const project = (motionProjection: StudioMotionProjectionV1) =>
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [programRecord(program, { issues: [], kind: "valid" })],
+        currentTime: 2,
+        draftProgram: null,
+        motionProjection,
+        nextScene: null,
+        programAuthority: "rust-authorized-batch",
+        selectedObjectIds: [],
+      });
+    const projected = project(projection);
+
+    expect(
+      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.at(-1),
+    ).toMatchObject({
+      control: projection.motions[0]?.control,
+      easing: "manim-smooth",
+      from: projection.motions[0]?.from,
+      value: projection.motions[0]?.to,
+    });
+    expect(projected.proposedState.evaluatedScene.duration).toBe(projection.projectedDuration);
+    expect(() => project({ ...projection, insertions: [] })).toThrow("one unique insertion per Program");
+    expect(() => project({ ...projection, insertions: [{ ...projection.insertions[0]!, at: -1 }] })).toThrow(
+      "one unique insertion per Program",
+    );
+    expect(() => project({ ...projection, motions: [{ ...projection.motions[0]!, easing: "linear" }] })).toThrow(
+      "is not correlated",
+    );
+  });
+
+  it("records one operation event for one motion that targets multiple entities", () => {
+    const original = workspaceScene("First", null);
+    const [firstEntityId, firstEntity] = Object.entries(original.runtimeSceneState.objectGraph.entities)[0] ?? [];
+    if (!firstEntityId || !firstEntity) throw new Error("Static fixture has no entity.");
+    const secondEntityId = `${firstEntityId}:second`;
+    const imported: ManimWorkspaceScene = {
+      ...original,
+      runtimeSceneState: {
+        ...original.runtimeSceneState,
+        objectGraph: {
+          ...original.runtimeSceneState.objectGraph,
+          entities: {
+            ...original.runtimeSceneState.objectGraph.entities,
+            [secondEntityId]: { ...firstEntity, id: secondEntityId },
+          },
+        },
+      },
+    };
+    const program: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          controlOffset: { x: 8, y: -4 },
+          delta: { x: 24, y: 12 },
+          dependsOn: [],
+          easing: "smooth",
+          id: "motion/multi-target",
+          interval: { end: 2, start: 1 },
+          kind: "CreateMotion",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          targetEntityIds: [firstEntityId, secondEntityId],
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["motion/multi-target"] },
+      transactionId: "motion-multi-target",
+      version: 1,
+    };
+    const projection: StudioMotionProjectionV1 = {
+      insertions: [{ at: 1, duration: 1, transactionId: program.transactionId }],
+      motions: [firstEntityId, secondEntityId].map((targetEntityId, index) => ({
+        control: { x: 340 + index * 20, y: 182 },
+        controlOffset: { x: 8, y: -4 },
+        delta: { x: 24, y: 12 },
+        easing: "manim-smooth" as const,
+        from: { x: 320 + index * 20, y: 180 },
+        interval: { end: 2, start: 1 },
+        operationId: "motion/multi-target",
+        sourceInterval: { end: 2, start: 1 },
+        targetEntityId,
+        to: { x: 344 + index * 20, y: 192 },
+        transactionId: program.transactionId,
+      })),
       projectedDuration: imported.runtimeSceneState.duration + 1,
     };
 
@@ -328,12 +419,156 @@ describe("Studio workspace projection", () => {
     });
 
     expect(
-      projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.at(-1),
-    ).toMatchObject({
-      control: projection.motions[0]?.control,
-      from: projection.motions[0]?.from,
-      value: projection.motions[0]?.to,
-    });
+      projected.proposedState.evaluatedScene.eventTrack.events.filter(
+        ({ operationId }) => operationId === "motion/multi-target",
+      ),
+    ).toHaveLength(1);
+    expect(
+      projected.proposedState.evaluatedScene.provenanceGraph.records.filter(
+        ({ operationId }) => operationId === "motion/multi-target",
+      ),
+    ).toHaveLength(1);
+    for (const entityId of [firstEntityId, secondEntityId]) {
+      expect(
+        projected.proposedState.evaluatedScene.propertyChannels[`${entityId}/position`]?.samples.filter(
+          ({ operationId }) => operationId === "motion/multi-target",
+        ),
+      ).toHaveLength(1);
+    }
+  });
+
+  it("rejects a Program family with no Rust workspace projection instead of evaluating it in TypeScript", () => {
+    const imported = workspaceScene("First", null);
+    const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!entityId) throw new Error("Static fixture has no entity.");
+    const unsupported: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 1, evidence: [], resolvedSeconds: 1, source: { kind: "absolute", seconds: 1 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          effect: "fade-in",
+          entityId,
+          id: "presence/fade-in",
+          interval: { end: 2, start: 1 },
+          kind: "ChangePresence",
+          persistent: true,
+          provenance: { evidence: [], origin: "direct-manipulation" },
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["presence/fade-in"] },
+      transactionId: "presence-fade-in",
+      version: 1,
+    };
+
+    expect(() =>
+      projectStudioWorkspace({
+        activeScene: imported,
+        appliedPrograms: [programRecord(unsupported, { issues: [], kind: "valid" })],
+        currentTime: 2,
+        draftProgram: null,
+        nextScene: null,
+        programAuthority: "rust-authorized-batch",
+        selectedObjectIds: [],
+      }),
+    ).toThrow(/no supported Rust workspace projection/i);
+  });
+
+  it("keeps one motion insertion correlated after move, scale, or resize Programs", () => {
+    const imported = workspaceScene("Static", null);
+    const [entityId] = Object.keys(imported.runtimeSceneState.objectGraph.entities);
+    if (!entityId) throw new Error("Static fixture has no entity.");
+    const common = {
+      dependsOn: [] as readonly string[],
+      interval: { end: 0, start: 0 },
+      provenance: { evidence: [] as readonly string[], origin: "direct-manipulation" as const },
+    };
+    const staticOperations: readonly CanonicalEditProgram["operations"][number][] = [
+      { ...common, entityId, id: "static/move", key: "position", kind: "SetProperty", value: { x: 360, y: 180 } },
+      {
+        ...common,
+        easing: "smooth",
+        entityId,
+        from: 1,
+        id: "static/scale",
+        key: "scale",
+        kind: "AnimateProperty",
+        relativeFactor: 2,
+        to: 2,
+      },
+      {
+        ...common,
+        entityId,
+        from: { dimensions: { radius: 1 }, position: { x: 320, y: 180 } },
+        id: "static/resize",
+        kind: "ResizeEntity",
+        scale: 1,
+        shape: "circle",
+        to: { dimensions: { radius: 2 }, position: { x: 360, y: 180 } },
+      },
+    ];
+    const motionProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
+          dependsOn: [],
+          easing: "smooth",
+          id: "motion/after-static",
+          interval: { end: 1, start: 0 },
+          kind: "CreateMotion",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          targetEntityIds: [entityId],
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "sequence",
+      schedule: { edges: [], mode: "sequence", order: ["motion/after-static"] },
+      transactionId: "motion-after-static",
+      version: 1,
+    };
+    const projection: StudioMotionProjectionV1 = {
+      insertions: [{ at: 0, duration: 1, transactionId: motionProgram.transactionId }],
+      motions: [
+        {
+          control: { x: 350, y: 175 },
+          controlOffset: { x: 10, y: 5 },
+          delta: { x: 40, y: -20 },
+          easing: "manim-smooth",
+          from: { x: 320, y: 180 },
+          interval: { end: 1, start: 0 },
+          operationId: "motion/after-static",
+          sourceInterval: { end: 1, start: 0 },
+          targetEntityId: entityId,
+          to: { x: 360, y: 160 },
+          transactionId: motionProgram.transactionId,
+        },
+      ],
+      projectedDuration: imported.runtimeSceneState.duration + 1,
+    };
+
+    for (const operation of staticOperations) {
+      const staticProgram: CanonicalEditProgram = {
+        anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+        intentCount: 1,
+        loweringStatus: "supported",
+        operations: [operation],
+        provenance: { evidence: [], origin: "direct-manipulation" },
+        requestedExecution: "parallel",
+        schedule: { edges: [], mode: "parallel", order: [operation.id] },
+        transactionId: operation.id,
+        version: 1,
+      };
+      expect(
+        selectMotionProjection(imported.runtimeSceneState.duration, [staticProgram, motionProgram], projection),
+      ).toEqual(projection);
+    }
   });
 
   it("installs a Studio-created Line and its follow-up motion from the same Rust projection", () => {
@@ -430,7 +665,7 @@ describe("Studio workspace projection", () => {
           control: { x: 125, y: 140 },
           controlOffset: { x: 0, y: 10 },
           delta: { x: 50, y: 20 },
-          easing: "smooth",
+          easing: "manim-smooth",
           from: { x: 100, y: 120 },
           interval: { end: 1.4, start: 0.4 },
           operationId: "create/motion",

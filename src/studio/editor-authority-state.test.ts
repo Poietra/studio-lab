@@ -20,7 +20,12 @@ import {
 } from "./editor-authority-state";
 import type { EditorProgramRecord } from "./editor-session-store";
 import type { CanonicalEditProgram } from "./operations";
-import { canonicalizeSuggestionProgram, createDirectManipulationPositionProgram } from "./suggestion-program";
+import {
+  canonicalizeSuggestionProgram,
+  createDirectManipulationOpacityProgram,
+  createDirectManipulationPositionProgram,
+  createDirectManipulationRotationProgram,
+} from "./suggestion-program";
 
 const source = `from manim import *
 
@@ -236,7 +241,7 @@ describe("authoritative Editor Program materialization", () => {
           control: { x: 350, y: 175 },
           controlOffset: { x: 10, y: 5 },
           delta: { x: 40, y: -20 },
-          easing: "smooth",
+          easing: "manim-smooth",
           from: { x: 320, y: 180 },
           interval: { end: 2, start: 1 },
           operationId: "motion/source",
@@ -304,6 +309,89 @@ describe("authoritative Editor Program materialization", () => {
     await expect(
       materializeAuthoritativeEditorProgramsV1(targetScene, [], [move.program, missingTarget]),
     ).rejects.toThrow(/invalid for the selected Scene source/i);
+  });
+
+  it("retains the exact source-bound opacity and rotation endpoint families", async () => {
+    const targetScene = scene();
+    const opacity = createDirectManipulationOpacityProgram({
+      capturedPlayhead: 0,
+      entityId: MATH_TEX_SOURCE_ID,
+      opacity: 0.35,
+      scene: targetScene.runtimeSceneState,
+      start: 0,
+      transactionId: "bound-opacity",
+    });
+    const rotation = createDirectManipulationRotationProgram({
+      angleRadians: Math.PI / 4,
+      capturedPlayhead: 0,
+      entityId: MATH_TEX_SOURCE_ID,
+      scene: targetScene.runtimeSceneState,
+      start: 0,
+      transactionId: "bound-rotation",
+    });
+    if (opacity.kind !== "valid" || rotation.kind !== "valid") {
+      throw new Error(`fixture validation failed: ${JSON.stringify([...opacity.issues, ...rotation.issues])}`);
+    }
+
+    await expect(materializeAuthoritativeEditorProgramsV1(targetScene, [], [opacity.program])).resolves.toEqual([
+      { program: opacity.program, validation: { issues: [], status: "valid" } },
+    ]);
+    await expect(materializeAuthoritativeEditorProgramsV1(targetScene, [], [rotation.program])).resolves.toEqual([
+      { program: rotation.program, validation: { issues: [], status: "valid" } },
+    ]);
+  });
+
+  it("retains one exact initial MathTex content replacement as a closed validated family", async () => {
+    const contentProgram: CanonicalEditProgram = {
+      anchor: { capturedPlayhead: 0, evidence: [], resolvedSeconds: 0, source: { kind: "absolute", seconds: 0 } },
+      intentCount: 1,
+      loweringStatus: "supported",
+      operations: [
+        {
+          dependsOn: [],
+          entityId: MATH_TEX_SOURCE_ID,
+          id: "math-content/set",
+          interval: { end: 0, start: 0 },
+          key: "content",
+          kind: "SetProperty",
+          provenance: { evidence: [], origin: "direct-manipulation" },
+          value: { displayLines: ["B"], label: "B", texParts: ["B"] },
+        },
+      ],
+      provenance: { evidence: [], origin: "direct-manipulation" },
+      requestedExecution: "parallel",
+      schedule: { edges: [], mode: "parallel", order: ["math-content/set"] },
+      transactionId: "math-content",
+      version: 1,
+    };
+
+    await expect(materializeAuthoritativeEditorProgramsV1(scene(), [], [contentProgram])).resolves.toEqual([
+      { program: contentProgram, validation: { issues: [], status: "valid" } },
+    ]);
+  });
+
+  it("rejects an otherwise evaluatable Program without a Rust projection or closed family", async () => {
+    const unsupported: CanonicalEditProgram = {
+      ...program(),
+      operations: [
+        {
+          dependsOn: [],
+          effect: "fade-in",
+          entityId: MATH_TEX_SOURCE_ID,
+          id: "presence/fade-in",
+          interval: { end: 2, start: 1 },
+          kind: "ChangePresence",
+          persistent: true,
+          provenance: { evidence: [], origin: "remote-model" },
+        },
+      ],
+      schedule: { edges: [], mode: "sequence", order: ["presence/fade-in"] },
+      transactionId: "presence-fade-in",
+    };
+
+    await expect(materializeAuthoritativeEditorProgramsV1(scene(), [], [unsupported])).rejects.toThrow(
+      /no supported Rust projection or closed validation path/i,
+    );
   });
 
   it("installs one authoritative Magic Edit scale-then-remove Program", async () => {
@@ -429,7 +517,7 @@ describe("authoritative Editor Program materialization", () => {
           control: { x: 350, y: 175 },
           controlOffset: { x: 10, y: 5 },
           delta: { x: 40, y: -20 },
-          easing: "smooth",
+          easing: "manim-smooth",
           from: { x: 320, y: 180 },
           interval: { end: 4, start: 3 },
           operationId: motion.operations[0]!.id,

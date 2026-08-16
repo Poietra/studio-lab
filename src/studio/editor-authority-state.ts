@@ -10,12 +10,12 @@ import {
   projectStudioMotion,
 } from "../engine/scene-authoring";
 import type { EditorProgramRecord } from "./editor-session-store";
-import { evaluateWorkingState } from "./evaluator";
-import { importedWorkingState, type ManimWorkspaceScene } from "./imported-workspace";
+import type { ManimWorkspaceScene } from "./imported-workspace";
 import { programExecutionCapabilities } from "./operation-registry";
 import {
   type CanonicalEditOperation,
   type CanonicalEditProgram,
+  isExactStaticRootProjectionProgramBatch,
   isSceneDurationOperation,
   isStaticRootTransformOperation,
 } from "./operations";
@@ -76,16 +76,27 @@ function isPersistentRemoveOperation(
   return operation.kind === "ChangePresence" && operation.effect === "remove" && operation.persistent;
 }
 
-function isStaticRootOrPersistentRemoveProgramBatch(programs: readonly CanonicalEditProgram[]) {
+function isExactSourceBoundEndpointProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  if (programs.length !== 1 || programs[0]?.operations.length !== 1) return false;
+  const operation = programs[0].operations[0];
   return (
-    programs.length > 0 &&
-    programs.every(
-      (program) =>
-        program.operations.length > 0 &&
-        program.operations.every(
-          (operation) => isStaticRootTransformOperation(operation) || isPersistentRemoveOperation(operation),
-        ),
-    )
+    (operation?.kind === "SetProperty" && operation.key === "appearance") ||
+    (operation?.kind === "AnimateProperty" && operation.key === "rotation")
+  );
+}
+
+function isClosedValidationProgramBatch(programs: readonly CanonicalEditProgram[]) {
+  return (
+    isExactStaticRootProjectionProgramBatch(programs) ||
+    isExactSourceBoundEndpointProgramBatch(programs) ||
+    (programs.length > 0 &&
+      programs.every(
+        (program) =>
+          program.operations.length > 0 &&
+          program.operations.every(
+            (operation) => isStaticRootTransformOperation(operation) || isPersistentRemoveOperation(operation),
+          ),
+      ))
   );
 }
 
@@ -113,7 +124,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
   const hasMotion = operations.some(({ kind }) => kind === "CreateMotion");
   const hasCreation = operations.some(({ kind }) => kind === "CreateEntity");
   const hasPersistentRemove = operations.some(isPersistentRemoveOperation);
-  const isStaticRootOrPersistentRemove = isStaticRootOrPersistentRemoveProgramBatch(programs);
+  const hasClosedValidationPath = isClosedValidationProgramBatch(programs);
   const isExactMathTexTransform = isExactStudioMathTexTransformProgramBatch(programs);
   if (hasMathTexTransform && !isExactMathTexTransform) {
     throw new TypeError(
@@ -127,7 +138,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
       "The authoritative Editor projection contains CreateMotion outside a supported Rust motion batch.",
     );
   }
-  if (hasPersistentRemove && !hasCreation && !isStaticRootOrPersistentRemove) {
+  if (hasPersistentRemove && !hasCreation && !hasClosedValidationPath) {
     throw new TypeError("The authoritative Editor projection contains persistent remove outside a closed Rust batch.");
   }
   const sceneDurationOperationCount = operations.filter(isSceneDurationOperation).length;
@@ -206,7 +217,7 @@ export async function materializeAuthoritativeEditorProgramsV1(
           });
       })()
     : null;
-  const validatedStaticRootOrPersistentRemove = isStaticRootOrPersistentRemove
+  const closedValidatedPrograms = hasClosedValidationPath
     ? programs.map((program) => {
         const validation = validateAndScheduleProgram(program, scene.runtimeSceneState);
         return {
@@ -215,26 +226,26 @@ export async function materializeAuthoritativeEditorProgramsV1(
         };
       })
     : null;
-  const evaluatedPrograms =
+  const materializedPrograms =
     timelineProjection?.programs.map((program) => ({
       program,
       validation: { issues: [], status: "valid" as const },
     })) ??
     (creationProjection || mathTexTransformProjection || motionProjection
       ? seeds
-      : validatedStaticRootOrPersistentRemove
-        ? validatedStaticRootOrPersistentRemove
-        : evaluateWorkingState(
-            importedWorkingState(scene, {
-              appliedPrograms: seeds,
-              playhead: 0,
-              selection: [],
-              stagedPrograms: [],
-            }),
-          ).programs);
+      : closedValidatedPrograms
+        ? closedValidatedPrograms
+        : programs.length === 0
+          ? []
+          : null);
+  if (!materializedPrograms) {
+    throw new TypeError(
+      "The authoritative Editor projection has no supported Rust projection or closed validation path.",
+    );
+  }
   if (
-    evaluatedPrograms.length !== programs.length ||
-    evaluatedPrograms.some(
+    materializedPrograms.length !== programs.length ||
+    materializedPrograms.some(
       (record) =>
         record.validation.status !== "valid" || programExecutionCapabilities(record.program).apply !== "supported",
     )
@@ -247,11 +258,11 @@ export async function materializeAuthoritativeEditorProgramsV1(
       const local = currentByTransaction.get(authoritativeProgram.transactionId);
       const exactLocal =
         local && canonicalJsonV1(local.program) === canonicalJsonV1(authoritativeProgram) ? local : null;
-      const evaluated = evaluatedPrograms[index]!;
+      const materialized = materializedPrograms[index]!;
       return Object.freeze({
         ...(exactLocal?.editorMetadata ? { editorMetadata: exactLocal.editorMetadata } : undefined),
         program: authoritativeProgram,
-        validation: evaluated.validation,
+        validation: materialized.validation,
       });
     }),
   );
