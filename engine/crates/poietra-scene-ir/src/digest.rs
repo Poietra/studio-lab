@@ -1,6 +1,10 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use crate::export_profile::{
+    ExportCodecTierV1, ExportColorContractVersionV1, ExportFrameRateV1, ExportProfileSchemaV1,
+    ExportProfileV1, ExportResolutionV1,
+};
 use crate::model::{
     AssetAlphaModeV1, AssetColorSpaceV1, AssetManifestSchemaV1, AssetManifestV1, ContractVersionV1,
     PngAssetKindV1, PngMediaTypeV1,
@@ -71,6 +75,55 @@ pub fn canonical_asset_manifest_v1(
 /// Returns a serialization error if canonical metadata cannot be represented as JSON.
 pub fn digest_asset_manifest_v1(manifest: &AssetManifestV1) -> Result<String, serde_json::Error> {
     let canonical = canonical_asset_manifest_v1(manifest)?;
+    Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalExportProfileV1 {
+    codec: ExportCodecTierV1,
+    color_contract_version: ExportColorContractVersionV1,
+    frame_rate: ExportFrameRateV1,
+    max_duration_seconds: u32,
+    max_output_bytes: u64,
+    resolution: ExportResolutionV1,
+    schema: ExportProfileSchemaV1,
+    version: ContractVersionV1,
+}
+
+fn canonical_profile(profile: &ExportProfileV1) -> CanonicalExportProfileV1 {
+    CanonicalExportProfileV1 {
+        codec: profile.codec,
+        color_contract_version: profile.color_contract_version,
+        frame_rate: profile.frame_rate,
+        max_duration_seconds: profile.max_duration_seconds,
+        max_output_bytes: profile.max_output_bytes,
+        resolution: profile.resolution,
+        schema: profile.schema,
+        version: profile.version,
+    }
+}
+
+/// Returns the byte-for-byte canonical profile JSON shared with the TypeScript v1 contract.
+///
+/// # Errors
+///
+/// Returns a serialization error if the canonical profile cannot be represented as JSON.
+pub fn canonical_export_profile_v1(profile: &ExportProfileV1) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&canonical_profile(profile))
+}
+
+/// Computes the lower-case SHA-256 digest over the canonical export profile.
+///
+/// Unlike the asset manifest, an export profile does not embed its own digest;
+/// this value names a profile in publication lineage (for example an
+/// `export_profile_digest` column).
+///
+/// # Errors
+///
+/// Returns a serialization error if the canonical profile cannot be represented as JSON.
+pub fn digest_export_profile_v1(profile: &ExportProfileV1) -> Result<String, serde_json::Error> {
+    let canonical = canonical_export_profile_v1(profile)?;
     Ok(format!("{:x}", Sha256::digest(canonical.as_bytes())))
 }
 
