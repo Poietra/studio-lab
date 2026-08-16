@@ -15,6 +15,7 @@ import {
   type ProductionRequestAdmission,
   parseProductionManimServerConfig,
   startProductionManimServer,
+  type TenantCellRuntimeAdapterV1,
 } from "./manim-production-server";
 import type { ManimApi } from "./manim-render-http";
 import { request as renderRequest } from "./manim-render-pipeline-test-fixtures";
@@ -705,6 +706,224 @@ describe("standalone production Manim HTTP adapter", () => {
     expect(fullReadiness).toHaveBeenCalledOnce();
     expect(renderReadiness).toHaveBeenCalledOnce();
     expect(video).not.toHaveBeenCalled();
+  });
+
+  it("serves the TenantCell storage lane while execution readiness is unavailable and keeps execution routes fail-closed", async () => {
+    const fullReadiness = vi.fn(async () => ({ ready: false }) as const);
+    const renderReadiness = vi.fn(async () => false);
+    let storageAvailable = true;
+    const storageReadiness = vi.fn(async () => storageAvailable);
+    const mutationView = {
+      catalog: { defaultProjectId: "project-a", projects: [{ id: "project-a", kind: "managed" as const, name: "A" }] },
+      project: { id: "project-a", kind: "managed" as const, name: "A" },
+    };
+    const thumbnailStatusView = {
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "empty" as const,
+      projectId: "project-a",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state: "missing" as const,
+    };
+    const createManagedProject = vi.fn(async () => mutationView);
+    const createNativeStudioProject = vi.fn(async () => mutationView);
+    const renameProject = vi.fn(async () => mutationView);
+    const unregisterProject = vi.fn(async () => ({ ...mutationView, project: null }));
+    const createProject = vi.fn();
+    const thumbnailStatus = vi.fn(async () => thumbnailStatusView);
+    const generateThumbnail = vi.fn(async () => thumbnailStatusView);
+    const sceneSnapshotAsset = vi.fn(async () => ({
+      body: Uint8Array.from([137, 80, 78, 71]),
+      digest: "a".repeat(64),
+      mediaType: "image/png" as const,
+    }));
+    const runSceneSnapshot = vi.fn();
+    const runRuntimeTrace = vi.fn();
+    const start = vi.fn();
+    const baseRuntime = createRuntime(() => false);
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      api: {
+        ...baseRuntime.api,
+        createManagedProject,
+        createNativeStudioProject,
+        createProject,
+        generateThumbnail,
+        renameProject,
+        runRuntimeTrace,
+        runSceneSnapshot,
+        sceneSnapshotAsset,
+        start,
+        thumbnailStatus,
+        unregisterProject,
+      } as unknown as ManimApi,
+      ready: fullReadiness,
+      renderReady: renderReadiness,
+      tenantCellStorageReady: storageReadiness,
+    };
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime,
+    });
+    servers.push(server);
+    const mutationHeaders = { "content-type": "application/json", origin: "https://studio.example" };
+
+    const created = await send(server, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "managed", name: "A" }),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(created).toMatchObject({ status: 201 });
+    const nativeCreated = await send(server, "/api/manim/projects", {
+      body: JSON.stringify({ kind: "studio-native", name: "A" }),
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(nativeCreated).toMatchObject({ status: 201 });
+    expect(createNativeStudioProject).toHaveBeenCalledOnce();
+    const renamed = await send(server, "/api/manim/projects/project-a", {
+      body: JSON.stringify({ name: "A" }),
+      headers: mutationHeaders,
+      method: "PATCH",
+    });
+    expect(renamed).toMatchObject({ status: 200 });
+    expect(await send(server, "/api/manim/projects/project-a/thumbnail/status")).toMatchObject({ status: 200 });
+    const generated = await send(server, "/api/manim/projects/project-a/thumbnail/generate", {
+      body: "{}",
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(generated).toMatchObject({ status: 202 });
+    const asset = await send(server, `/api/manim/projects/project-a/scene-snapshot-assets/${"a".repeat(64)}`);
+    expect(asset).toMatchObject({ status: 200 });
+    expect(asset.headers.etag).toBe(`"sha256:${"a".repeat(64)}"`);
+    const removed = await send(server, "/api/manim/projects/project-a", {
+      headers: mutationHeaders,
+      method: "DELETE",
+    });
+    expect(removed).toMatchObject({ status: 200 });
+    expect(storageReadiness).toHaveBeenCalledTimes(7);
+    expect(fullReadiness).not.toHaveBeenCalled();
+    expect(unregisterProject).toHaveBeenCalledOnce();
+
+    const snapshotRun = await send(server, "/api/manim/projects/project-a/scene-snapshots", {
+      body: "{}",
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(snapshotRun).toMatchObject({ status: 503 });
+    expect(JSON.parse(snapshotRun.body)).toEqual({ error: "Production runtime is not ready." });
+    const traceRun = await send(server, "/api/manim/projects/project-a/runtime-traces", {
+      body: "{}",
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(traceRun).toMatchObject({ status: 503 });
+    const render = await send(server, "/api/manim/projects/project-a/renders", {
+      body: "{}",
+      headers: mutationHeaders,
+      method: "POST",
+    });
+    expect(render).toMatchObject({ status: 503 });
+    expect(JSON.parse(render.body)).toEqual({ error: "Production runtime is not ready." });
+    expect(fullReadiness).toHaveBeenCalledTimes(2);
+    expect(renderReadiness).toHaveBeenCalledOnce();
+    expect(storageReadiness).toHaveBeenCalledTimes(7);
+    expect(runSceneSnapshot).not.toHaveBeenCalled();
+    expect(runRuntimeTrace).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+
+    storageAvailable = false;
+    const unavailable = await send(server, "/api/manim/projects/project-a/thumbnail/status");
+    expect(unavailable).toMatchObject({ status: 503 });
+    expect(JSON.parse(unavailable.body)).toEqual({ error: "Production runtime is not ready." });
+    expect(storageReadiness).toHaveBeenCalledTimes(8);
+    expect(thumbnailStatus).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the full fail-closed attestation for storage-lane routes on adapters without the TenantCell split", async () => {
+    let runtimeReady = false;
+    const thumbnailStatus = vi.fn(async () => ({
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "empty" as const,
+      projectId: "project-a",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state: "missing" as const,
+    }));
+    const baseRuntime = createRuntime(() => runtimeReady);
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime: {
+        ...baseRuntime,
+        api: { ...baseRuntime.api, thumbnailStatus } as unknown as ManimApi,
+      },
+    });
+    servers.push(server);
+
+    const unavailable = await send(server, "/api/manim/projects/project-a/thumbnail/status");
+    expect(unavailable).toMatchObject({ status: 503 });
+    expect(JSON.parse(unavailable.body)).toEqual({ error: "Production runtime is not ready." });
+    expect(thumbnailStatus).not.toHaveBeenCalled();
+
+    runtimeReady = true;
+    expect(await send(server, "/api/manim/projects/project-a/thumbnail/status")).toMatchObject({ status: 200 });
+    expect(thumbnailStatus).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the readiness endpoint bytes and all-ready route behavior unchanged after the TenantCell split", async () => {
+    let workspaceAvailable = true;
+    const video = vi.fn(async () => {
+      throw new HttpError("Render session not found.", 404);
+    });
+    const thumbnailStatus = vi.fn(async () => ({
+      cachedSourceHash: null,
+      error: null,
+      generatedAt: null,
+      imageKind: "empty" as const,
+      projectId: "project-a",
+      sceneName: null,
+      sourceHash: null,
+      sourcePath: null,
+      state: "missing" as const,
+    }));
+    const projects = vi.fn(async () => ({ defaultProjectId: null, projects: [] }));
+    const baseRuntime = createRuntime(
+      () => true,
+      () => undefined,
+      () => workspaceAvailable,
+    );
+    const runtime: TenantCellRuntimeAdapterV1 = {
+      ...baseRuntime,
+      api: { ...baseRuntime.api, projects, thumbnailStatus, video } as unknown as ManimApi,
+      tenantCellStorageReady: async () => true,
+    };
+    const server = await startProductionManimServer({
+      admission: { authenticate: async () => TEST_PRINCIPAL, ready: async () => true },
+      config: await startConfig(),
+      runtime,
+    });
+    servers.push(server);
+
+    expect((await send(server, "/readyz")).body).toBe('{"status":"ready"}');
+    expect(await send(server, "/api/manim/projects")).toMatchObject({ status: 200 });
+    expect(await send(server, "/api/manim/projects/project-a/thumbnail/status")).toMatchObject({ status: 200 });
+    const existingVideo = await send(server, "/api/manim/renders/00000000-0000-4000-8000-000000000001/video");
+    expect(existingVideo).toMatchObject({ status: 404 });
+    expect(video).toHaveBeenCalledOnce();
+
+    workspaceAvailable = false;
+    const unavailable = await send(server, "/readyz");
+    expect(unavailable).toMatchObject({ status: 503 });
+    expect(unavailable.body).toBe('{"status":"unavailable"}');
   });
 
   it("serves authenticated editor storage independently from render readiness", async () => {

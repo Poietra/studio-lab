@@ -37,6 +37,34 @@ export type ProductionManimRuntimeAdapterV1 = Readonly<{
   workspaceReady: (signal: AbortSignal) => Promise<boolean>;
 }>;
 
+/**
+ * TenantCell vocabulary (ADR 0005 §"Tenant Cell decision"). A Tenant Cell is
+ * the server-owned tenant-fixed durable composition and routing boundary; its
+ * storage readiness covers projects, editor documents, and published-artifact
+ * reads without claiming a Manim sandbox is ready. Existing
+ * `ProductionManimRuntime*` names, `runtime_cell_*` tables, health fields, and
+ * error strings remain compatibility surfaces; only the new contracts
+ * introduced by the readiness split use TenantCell names. The split is
+ * internal structure: it does not claim per-cell database, object-store, or
+ * failure isolation.
+ */
+export type TenantCellStorageReadinessV1 = Readonly<{
+  /**
+   * Storage/tenant lane only: durable project repository, source blobs, and
+   * published-artifact reads. Never attests the external Manim sandbox.
+   */
+  tenantCellStorageReady: (signal: AbortSignal) => Promise<boolean>;
+}>;
+
+/** Adapter that also reports the split TenantCell storage-lane readiness. */
+export type TenantCellRuntimeAdapterV1 = ProductionManimRuntimeAdapterV1 & TenantCellStorageReadinessV1;
+
+export function hasTenantCellStorageReadinessV1(
+  runtime: ProductionManimRuntimeAdapterV1,
+): runtime is TenantCellRuntimeAdapterV1 {
+  return typeof (runtime as Partial<TenantCellRuntimeAdapterV1>).tenantCellStorageReady === "function";
+}
+
 export const productionRuntimeCellIdSchemaV1 = z
   .string()
   .min(1)

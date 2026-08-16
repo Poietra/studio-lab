@@ -165,6 +165,19 @@ export class DurableFastManimSnapshotServiceV1 {
     return !this.#closing && factoryReady && publisherReady;
   }
 
+  /**
+   * TenantCell storage lane (ADR 0005 §"Tenant Cell decision"): health of the
+   * snapshot publication ledger and artifact store behind project deletion
+   * (`releaseProject`), without attesting the sandbox runner factory.
+   */
+  async publicationStorageReady(signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.#closing) return false;
+    const publisherReady = await this.#publisher.ready(signal);
+    signal?.throwIfAborted();
+    return !this.#closing && publisherReady;
+  }
+
   #track<T>(operation: Promise<T>) {
     this.#operations.add(operation);
     void operation.finally(() => this.#operations.delete(operation)).catch(() => undefined);

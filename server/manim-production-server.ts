@@ -21,6 +21,7 @@ import {
   isManimRenderStartRequest,
   isManimVideoRequest,
   isManimWorkspaceBootstrapRequest,
+  isTenantCellStorageLaneManimRequest,
   type ManimApi,
 } from "./manim-render-http";
 import { authenticateManimPrincipal, type ManimPrincipalAuthenticator } from "./manim-request-principal";
@@ -29,6 +30,7 @@ import {
   assertProductionManimRuntimeCellLeaseV1,
   assertProductionManimRuntimeCellResolverV1,
   createPinnedProductionManimRuntimeCellResolverV1,
+  hasTenantCellStorageReadinessV1,
   type ProductionManimRuntimeAdapterV1,
   type ProductionManimRuntimeCellLeaseV1,
   type ProductionManimRuntimeCellResolverV1,
@@ -59,7 +61,10 @@ export {
 export {
   createDurableManimRuntimeV1,
   createDurableProductionManimRuntimeAdapterV1,
+  createTenantCellProductionManimRuntimeAdapterV1,
   DurableManimRuntimeV1,
+  type TenantCellMaintenanceReadinessV1,
+  type TenantCellMaintenanceSplitV1,
 } from "./durable-manim-runtime";
 export type {
   ProductionManimRuntimeAdapterV1,
@@ -69,11 +74,14 @@ export type {
   ProductionRuntimeCellAssignmentSourceV1,
   ProductionRuntimeCellAssignmentV1,
   ProductionRuntimeReadinessV1,
+  TenantCellRuntimeAdapterV1,
+  TenantCellStorageReadinessV1,
 } from "./production-runtime-cell";
 export {
   assertProductionManimRuntimeCellLeaseV1,
   BoundedProductionManimRuntimeCellResolverV1,
   createPinnedProductionManimRuntimeCellResolverV1,
+  hasTenantCellStorageReadinessV1,
   productionRuntimeCellIdSchemaV1,
 } from "./production-runtime-cell";
 export {
@@ -544,6 +552,24 @@ export async function startProductionManimServer(
     }
   };
 
+  const runtimeStorageIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
+    // Adapters that predate the TenantCell readiness split keep the full
+    // fail-closed production attestation for storage-lane routes.
+    if (!hasTenantCellStorageReadinessV1(runtime)) return runtimeIsReady(runtime, signal);
+    try {
+      return (
+        (await waitForProbe(
+          (probeSignal) => trackRuntimeTask(() => runtime.tenantCellStorageReady(probeSignal)),
+          signal,
+          config.limits.readinessTimeoutMs,
+        )) === true
+      );
+    } catch {
+      logger.warn("production.storage_readiness_probe_failed");
+      return false;
+    }
+  };
+
   const runtimeRenderIsReady = async (runtime: ProductionManimRuntimeAdapterV1, signal: AbortSignal) => {
     try {
       return (
@@ -743,17 +769,24 @@ export async function startProductionManimServer(
         );
         return;
       }
-      // Project/workspace bootstrap and bounded browser source import require
-      // only durable source storage, so they remain available through a render
-      // outage. Render-start routes use the exact reported render boundary;
-      // existing session and unrelated routes retain full runtime attestation.
+      // Project/workspace bootstrap and bounded browser import require only
+      // their durable source, editor-document, and optional PNG stores, so they
+      // remain available through a render outage. Render-start routes use the
+      // exact reported render boundary.
+      // TenantCell storage-lane routes (project catalog mutations, thumbnail
+      // reads, Scene snapshot PNG reads) gate on storage/tenant readiness
+      // alone, so a cell without a configured sandbox still serves them;
+      // execution-lane and render-session routes retain full runtime
+      // attestation.
       const requestRuntimeReady =
         isManimWorkspaceBootstrapRequest(request.method, pathname) ||
         isManimBrowserProjectImportRequest(request.method, pathname)
           ? await runtimeWorkspaceIsReady(runtime, controller.signal)
           : isManimRenderStartRequest(request.method, pathname)
             ? await runtimeRenderIsReady(runtime, controller.signal)
-            : await runtimeIsReady(runtime, controller.signal);
+            : isTenantCellStorageLaneManimRequest(request.method, pathname)
+              ? await runtimeStorageIsReady(runtime, controller.signal)
+              : await runtimeIsReady(runtime, controller.signal);
       if (!requestRuntimeReady) {
         throw new TransportError("Production runtime is not ready.", 503);
       }
