@@ -5,53 +5,65 @@ import type {
 } from "./fast-manim-snapshot-contract";
 
 /**
- * Process-wide publication accounting and admission control for the fast-manim
- * snapshot pipeline. These are the process-global limits that hold regardless
- * of how many project runners are configured; the runner orchestration and the
- * per-Scene publication verification live in fast-manim-snapshot-runner.ts.
+ * Process-wide preview-cache accounting and admission control for the
+ * fast-manim snapshot pipeline. These are the process-global limits that hold
+ * regardless of how many project runners are configured; the runner
+ * orchestration and the per-Scene snapshot verification live in
+ * fast-manim-snapshot-runner.ts.
+ *
+ * Per ADR 0005 this process-local store is a cache, not a Publication: it
+ * grants no durable addressability, and its monotonic counter is a cache
+ * sequence, not an Editor revision or an aggregate generation. The durable
+ * snapshot Publication path lives in storage/snapshot-publication-repository
+ * and durable-fast-manim-snapshot-service.
  */
 
-export type PublishedSnapshot = Readonly<{
+export type CachedPreviewSnapshot = Readonly<{
+  cachedAt: string;
+  cachedAtEpochMs: number;
+  /**
+   * Position in the cache-global monotonic insertion sequence. Serialized on
+   * the wire as the frozen `revision` run-view field (ADR 0005 compatibility);
+   * it is neither an Editor revision nor a durable publication generation.
+   */
+  cacheSequence: number;
   encodedBytes: number;
   expected: ExpectedFastManimSnapshotCorrelationV1;
-  publishedAt: string;
-  publishedAtEpochMs: number;
   result: VerifiedCompiledFastManimSnapshotResultV1;
-  revision: number;
   sourceRuntimeIdentity: VerifiedSourceRuntimeIdentityMapV1 | null;
 }>;
 
-const DEFAULT_GLOBAL_MAX_PUBLISHED_SNAPSHOTS = 64;
-const DEFAULT_GLOBAL_MAX_PUBLISHED_BYTES = 64 * 1024 * 1024;
+const DEFAULT_GLOBAL_MAX_CACHED_SNAPSHOTS = 64;
+const DEFAULT_GLOBAL_MAX_CACHED_BYTES = 64 * 1024 * 1024;
 const DEFAULT_GLOBAL_MAX_CONCURRENT_PRODUCERS = 4;
 
 /**
- * Process-wide publication accounting shared by every snapshot runner. A
+ * Process-wide preview-cache accounting shared by every snapshot runner. A
  * registry can host up to 64 projects, so per-runner budgets alone would
- * multiply into gigabytes; this store enforces a conservative global encoded
+ * multiply into gigabytes; this cache enforces a conservative global encoded
  * byte and entry ceiling across all projects and tenants. Entries are
  * namespaced per registered owner (no cross-tenant reads: an owner can only
- * address its own keys), revisions come from a single store-global monotonic
- * sequence that is never reused — across owners, evictions, and TTL expiry —
- * and eviction is deterministic least-recently-used over the shared insertion
- * order, touching only keys and byte counts, never foreign payloads.
+ * address its own keys), cache sequences come from a single cache-global
+ * monotonic sequence that is never reused — across owners, evictions, and TTL
+ * expiry — and eviction is deterministic least-recently-used over the shared
+ * insertion order, touching only keys and byte counts, never foreign payloads.
  */
-export class FastManimSnapshotPublicationStore {
-  private readonly entries = new Map<string, PublishedSnapshot>();
+export class FastManimSnapshotPreviewCache {
+  private readonly entries = new Map<string, CachedPreviewSnapshot>();
   private readonly maxBytes: number;
   private readonly maxEntries: number;
   private nextOwnerId = 1;
-  private revisionSequence = 0;
+  private cacheSequenceCounter = 0;
   private totalBytes = 0;
 
   constructor(options: Readonly<{ maxBytes?: number; maxEntries?: number }> = {}) {
-    const maxBytes = options.maxBytes ?? DEFAULT_GLOBAL_MAX_PUBLISHED_BYTES;
+    const maxBytes = options.maxBytes ?? DEFAULT_GLOBAL_MAX_CACHED_BYTES;
     if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
-      throw new TypeError("The global published snapshot byte ceiling must be a positive integer.");
+      throw new TypeError("The global cached snapshot byte ceiling must be a positive integer.");
     }
-    const maxEntries = options.maxEntries ?? DEFAULT_GLOBAL_MAX_PUBLISHED_SNAPSHOTS;
+    const maxEntries = options.maxEntries ?? DEFAULT_GLOBAL_MAX_CACHED_SNAPSHOTS;
     if (!Number.isSafeInteger(maxEntries) || maxEntries <= 0) {
-      throw new TypeError("The global published snapshot entry ceiling must be a positive integer.");
+      throw new TypeError("The global cached snapshot entry ceiling must be a positive integer.");
     }
     this.maxBytes = maxBytes;
     this.maxEntries = maxEntries;
@@ -67,10 +79,10 @@ export class FastManimSnapshotPublicationStore {
     return `${ownerId} ${key}`;
   }
 
-  /** Store-global monotonic revision sequence; values are never reused. */
-  nextRevision() {
-    this.revisionSequence += 1;
-    return this.revisionSequence;
+  /** Cache-global monotonic insertion sequence; values are never reused. */
+  nextCacheSequence() {
+    this.cacheSequenceCounter += 1;
+    return this.cacheSequenceCounter;
   }
 
   fitsSingleEntry(encodedBytes: number) {
@@ -100,9 +112,9 @@ export class FastManimSnapshotPublicationStore {
     this.totalBytes -= entry.encodedBytes;
   }
 
-  entriesOf(ownerId: number): ReadonlyArray<readonly [string, PublishedSnapshot]> {
+  entriesOf(ownerId: number): ReadonlyArray<readonly [string, CachedPreviewSnapshot]> {
     const prefix = `${ownerId} `;
-    const owned: Array<readonly [string, PublishedSnapshot]> = [];
+    const owned: Array<readonly [string, CachedPreviewSnapshot]> = [];
     for (const [namespaced, entry] of this.entries) {
       if (namespaced.startsWith(prefix)) owned.push([namespaced.slice(prefix.length), entry]);
     }
@@ -111,13 +123,13 @@ export class FastManimSnapshotPublicationStore {
 
   /**
    * Inserts the entry, trims the owner to its own ceilings, then trims the
-   * store to the global ceilings; returns how many entries were evicted. The
-   * just-published entry always survives.
+   * cache to the global ceilings; returns how many entries were evicted. The
+   * just-inserted entry always survives.
    */
-  publish(
+  insert(
     ownerId: number,
     key: string,
-    entry: PublishedSnapshot,
+    entry: CachedPreviewSnapshot,
     ownerLimits: Readonly<{ maxBytes: number; maxEntries: number }>,
   ) {
     const namespaced = this.ownerKey(ownerId, key);
@@ -152,8 +164,8 @@ export class FastManimSnapshotPublicationStore {
   }
 }
 
-/** Default process-wide store: all managers and runners share one budget. */
-export const processPublicationStore = new FastManimSnapshotPublicationStore();
+/** Default process-wide cache: all managers and runners share one budget. */
+export const processSnapshotCache = new FastManimSnapshotPreviewCache();
 
 /**
  * Process-wide producer admission control. A registry can host 64 runners at

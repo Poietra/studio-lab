@@ -97,11 +97,30 @@ function document(revision = 0n): EditorDocumentV1 {
     documentKey: DOCUMENT_KEY,
     epoch: EPOCH,
     openedAt: new Date("2026-08-01T00:00:00.000Z"),
+    origin: "imported-manim",
     projectId: PROJECT,
     revision,
     sealedAt: null,
     sourceHash: SOURCE_HASH,
     sourcePath: SOURCE_PATH,
+    tenantId: TENANT,
+    updatedAt: new Date(`2026-08-01T00:00:0${revision}.000Z`),
+  };
+}
+
+const NATIVE_DOCUMENT_KEY = "e".repeat(64);
+
+function nativeDocument(revision = 0n): EditorDocumentV1 {
+  return {
+    documentKey: NATIVE_DOCUMENT_KEY,
+    epoch: EPOCH,
+    openedAt: new Date("2026-08-01T00:00:00.000Z"),
+    origin: "studio-native",
+    projectId: PROJECT,
+    revision,
+    sealedAt: null,
+    sourceHash: null,
+    sourcePath: null,
     tenantId: TENANT,
     updatedAt: new Date(`2026-08-01T00:00:0${revision}.000Z`),
   };
@@ -151,7 +170,12 @@ function repository(overrides: Partial<EditorDocumentRepositoryV1> = {}): Editor
   return {
     close: async () => undefined,
     commitMutation: async () => ({ document: document(1n), event: event(), kind: "committed", replayed: false }),
+    createNativeDocument: async () => {
+      throw new Error("createNativeDocument is outside the editor HTTP contract.");
+    },
     openDocument: async () => ({ created: true, document: document(), kind: "opened", projection: projection() }),
+    openNativeDocument: async () => ({ kind: "not-found" }),
+    readNativeDocumentHead: async () => null,
     putSessionSnapshot: async () => ({ kind: "stored", replayed: false, session: session() }),
     readEventTail: async () => ({ document: document(1n), events: [event()] }),
     readSessionSnapshot: async () => availableSession(),
@@ -254,6 +278,97 @@ describe("authenticated Editor document HTTP handler", () => {
       undefined,
     );
     expect(isEditorDocumentRequest(`/api/editor/projects/${PROJECT}/documents/open`)).toBe(true);
+  });
+
+  it("opens the Studio-native document by origin alone with its server-issued key", async () => {
+    const openNativeDocument = vi.fn(
+      async () =>
+        ({
+          created: false,
+          document: nativeDocument(),
+          kind: "opened",
+          projection: projection(),
+        }) as const,
+    );
+    const openDocument = vi.fn(repository().openDocument);
+    const port = await listen(repository({ openDocument, openNativeDocument }), { expectedMutationOrigin: ORIGIN });
+
+    const result = await send(port, `/api/editor/projects/${PROJECT}/documents/open`, {
+      body: { origin: "studio-native" },
+      headers: mutationHeaders(),
+      method: "POST",
+    });
+
+    expect(result).toMatchObject({
+      body: {
+        created: false,
+        document: {
+          documentKey: NATIVE_DOCUMENT_KEY,
+          origin: "studio-native",
+          revision: "0",
+          sourceHash: null,
+          sourcePath: null,
+        },
+        kind: "opened",
+        projection: { programs: [], revision: "0" },
+      },
+      status: 200,
+    });
+    expect(openNativeDocument).toHaveBeenCalledWith({ projectId: PROJECT, tenantId: TENANT }, undefined);
+    expect(openDocument).not.toHaveBeenCalled();
+
+    const missingPort = await listen(repository({ openNativeDocument: async () => ({ kind: "not-found" }) }), {
+      expectedMutationOrigin: ORIGIN,
+    });
+    expect(
+      await send(missingPort, `/api/editor/projects/${PROJECT}/documents/open`, {
+        body: { origin: "studio-native" },
+        headers: mutationHeaders(),
+        method: "POST",
+      }),
+    ).toMatchObject({ body: { kind: "not-found" }, status: 404 });
+
+    expect(
+      await send(port, `/api/editor/projects/${PROJECT}/documents/open`, {
+        body: { origin: "studio-native", sourcePath: SOURCE_PATH },
+        headers: mutationHeaders(),
+        method: "POST",
+      }),
+    ).toMatchObject({ status: 400 });
+  });
+
+  it("fails closed when the native open lane returns an imported or inconsistent document", async () => {
+    const request = (port: number) =>
+      send(port, `/api/editor/projects/${PROJECT}/documents/open`, {
+        body: { origin: "studio-native" },
+        headers: mutationHeaders(),
+        method: "POST",
+      });
+    const importedLeakPort = await listen(
+      repository({
+        openNativeDocument: async () => ({
+          created: false,
+          document: document(),
+          kind: "opened",
+          projection: projection(),
+        }),
+      }),
+      { expectedMutationOrigin: ORIGIN },
+    );
+    expect(await request(importedLeakPort)).toMatchObject({ status: 500 });
+
+    const createdLeakPort = await listen(
+      repository({
+        openNativeDocument: async () => ({
+          created: true,
+          document: nativeDocument(),
+          kind: "opened",
+          projection: projection(),
+        }),
+      }),
+      { expectedMutationOrigin: ORIGIN },
+    );
+    expect(await request(createdLeakPort)).toMatchObject({ status: 500 });
   });
 
   it("fails closed when an opened projection disagrees with its document or exceeds the wire bound", async () => {

@@ -9,7 +9,9 @@ import {
   createEditorDocumentKeyV1,
   type EditorDocumentCommitInputV1,
   type EditorEditMutationV1,
+  mintNativeEditorDocumentKeyV1,
 } from "../editor-document-repository";
+import { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
@@ -147,22 +149,26 @@ function sessionRow(
 
 function documentRow(
   options: Readonly<{
+    documentKey?: string;
     epoch?: string;
+    origin?: "imported-manim" | "studio-native";
     revision?: string;
     sealedAt?: Date | null;
     sourceHash?: string;
     tenantId?: string;
   }> = {},
 ) {
+  const origin = options.origin ?? "imported-manim";
   return {
-    document_key: Buffer.from(DOCUMENT_KEY, "hex"),
+    document_key: Buffer.from(options.documentKey ?? DOCUMENT_KEY, "hex"),
     epoch: options.epoch ?? EPOCH_A,
     opened_at: OPENED_AT,
+    origin,
     project_id: PROJECT,
     revision: options.revision ?? "0",
     sealed_at: options.sealedAt ?? null,
-    source_hash: Buffer.from(options.sourceHash ?? SOURCE_A, "hex"),
-    source_path: SOURCE_PATH,
+    source_hash: origin === "studio-native" ? null : Buffer.from(options.sourceHash ?? SOURCE_A, "hex"),
+    source_path: origin === "studio-native" ? null : SOURCE_PATH,
     tenant_id: options.tenantId ?? TENANT_A,
     updated_at: options.sealedAt ?? UPDATED_AT,
   };
@@ -243,13 +249,14 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
     const sealValues: (readonly unknown[])[] = [];
     const fixture = fakePool((text, values) => {
       if (text.includes("FROM public.poietra_schema_migrations")) {
-        expect(text).toContain("version IN (17, 18, 23) ORDER BY version");
+        expect(text).toContain("version IN (17, 18, 23, 30) ORDER BY version");
         return {
-          rowCount: 3,
+          rowCount: 4,
           rows: [
             { checksum: EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM, version: 17 },
             { checksum: EDITOR_MUTATION_MIGRATION_V18_CHECKSUM, version: 18 },
             { checksum: EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM, version: 23 },
+            { checksum: EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM, version: 30 },
           ],
         };
       }
@@ -1286,5 +1293,283 @@ describe("PostgresEditorDocumentRepositoryV1", () => {
       "editor-session-subject",
       "editor-document",
     ]);
+  });
+
+  it("mints the native document key with a 32-byte CSPRNG and no derivation", () => {
+    const minted = mintNativeEditorDocumentKeyV1();
+    expect(minted).toMatch(/^[0-9a-f]{64}$/u);
+    expect(mintNativeEditorDocumentKeyV1()).not.toBe(minted);
+    const injected = Buffer.alloc(32, 7);
+    const sizes: number[] = [];
+    expect(
+      mintNativeEditorDocumentKeyV1((size) => {
+        sizes.push(size);
+        return injected;
+      }),
+    ).toBe(injected.toString("hex"));
+    expect(sizes).toEqual([32]);
+    for (const short of [Buffer.alloc(31, 1), Buffer.alloc(33, 1), Buffer.alloc(0)]) {
+      expect(() => mintNativeEditorDocumentKeyV1(() => short)).toThrow(/32 cryptographically random bytes/u);
+    }
+  });
+
+  it("creates a native project, revision-zero document, and empty projection without any source artifact", async () => {
+    const nativeKeyBytes = Buffer.alloc(32, 0xab);
+    const nativeKey = nativeKeyBytes.toString("hex");
+    const writes: Readonly<{ text: string; values: readonly unknown[] }>[] = [];
+    const fixture = fakePool((text, values) => {
+      writes.push({ text, values });
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) {
+        expect(values).toEqual([TENANT_A]);
+        return { rowCount: 1, rows: [{ tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("SELECT count(*)::text AS count FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ count: "3" }] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        expect(values).toEqual([TENANT_A, PROJECT, "Native Studio project"]);
+        return {
+          rowCount: 1,
+          rows: [{ display_name: "Native Studio project", project_id: PROJECT, tenant_id: TENANT_A }],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.editor_documents")) {
+        expect(text).toContain("'studio-native', NULL, NULL, 0");
+        expect(values).toEqual([TENANT_A, PROJECT, nativeKeyBytes, EPOCH_A]);
+        return {
+          rowCount: 1,
+          rows: [documentRow({ documentKey: nativeKey, origin: "studio-native" })],
+        };
+      }
+      if (text.startsWith("INSERT INTO public.editor_document_projections")) {
+        expect(values).toEqual([TENANT_A, PROJECT, nativeKeyBytes, EPOCH_A]);
+        return { rowCount: 1, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({
+      pool: fixture.pool,
+      randomBytes: (size) => {
+        expect(size).toBe(32);
+        return nativeKeyBytes;
+      },
+      randomUuid: () => EPOCH_A,
+    });
+
+    const created = await repository.createNativeDocument({
+      name: "Native Studio project",
+      projectId: PROJECT,
+      tenantId: TENANT_A,
+    });
+
+    expect(created).toMatchObject({
+      document: {
+        documentKey: nativeKey,
+        epoch: EPOCH_A,
+        origin: "studio-native",
+        revision: 0n,
+        sealedAt: null,
+        sourceHash: null,
+        sourcePath: null,
+      },
+      kind: "created",
+      project: { name: "Native Studio project", projectId: PROJECT, tenantId: TENANT_A },
+      projection: { programs: [], revision: 0n },
+    });
+    expect(Object.isFrozen(created.document)).toBe(true);
+    expect(Object.isFrozen(created.projection)).toBe(true);
+    const texts = writes.map(({ text }) => text);
+    expect(texts.some((text) => text.includes("workspace_source_heads"))).toBe(false);
+    expect(texts.some((text) => text.includes("source_blob_objects"))).toBe(false);
+    const ordered = [
+      texts.findIndex((text) => text.startsWith("SELECT tenant_id FROM public.workspace_tenants")),
+      texts.findIndex((text) => text.startsWith("INSERT INTO public.workspace_projects")),
+      texts.findIndex((text) => text.startsWith("INSERT INTO public.editor_documents")),
+      texts.findIndex((text) => text.startsWith("INSERT INTO public.editor_document_projections")),
+    ];
+    expect(ordered.every((index) => index >= 0)).toBe(true);
+    expect(ordered).toEqual(ordered.toSorted((a, b) => a - b));
+  });
+
+  it("rolls back the whole native create when the projection insert fails", async () => {
+    const statements: string[] = [];
+    const query = vi.fn(async (text: string, values: readonly unknown[] = []) => {
+      statements.push(text);
+      void values;
+      if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" || text.startsWith("SELECT set_config(")) {
+        return { rowCount: null, rows: [] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) {
+        return { rowCount: 1, rows: [{ tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("SELECT count(*)::text AS count FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ count: "0" }] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ display_name: "Native", project_id: PROJECT, tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_documents")) {
+        return { rowCount: 1, rows: [documentRow({ origin: "studio-native" })] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_document_projections")) {
+        return { rowCount: 0, rows: [] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const release = vi.fn();
+    const pool = {
+      connect: vi.fn(async () => ({ query, release }) as unknown as PoolClient),
+      end: vi.fn(async () => undefined),
+      options: {
+        connectionTimeoutMillis: 5_000,
+        options: POSTGRES_REPOSITORY_OPTIONS_V1,
+        query_timeout: 5_000,
+        statement_timeout: 5_000,
+      },
+    } as unknown as Pool;
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool, randomUuid: () => EPOCH_A });
+
+    await expect(
+      repository.createNativeDocument({ name: "Native", projectId: PROJECT, tenantId: TENANT_A }),
+    ).rejects.toThrow(/did not initialize the native editor projection/u);
+    expect(statements).toContain("ROLLBACK");
+    expect(statements).not.toContain("COMMIT");
+  });
+
+  it("maps a duplicate native project to the managed-catalog conflict", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) {
+        return { rowCount: 1, rows: [{ tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("SELECT count(*)::text AS count FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ count: "0" }] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        const duplicate = new Error("duplicate key value violates unique constraint");
+        (duplicate as Error & { code: string }).code = "23505";
+        throw duplicate;
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool, randomUuid: () => EPOCH_A });
+
+    await expect(
+      repository.createNativeDocument({ name: "Native", projectId: PROJECT, tenantId: TENANT_A }),
+    ).rejects.toMatchObject({ message: "That workspace already exists.", status: 409 });
+  });
+
+  it("opens the native document by tenant and project without touching workspace source heads", async () => {
+    const nativeKey = "ab".repeat(32);
+    const texts: string[] = [];
+    const fixture = fakePool((text, values) => {
+      texts.push(text);
+      if (text.includes("FROM public.workspace_projects project")) {
+        expect(text).toContain("FOR SHARE OF project");
+        expect(values).toEqual([TENANT_A, PROJECT]);
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.includes("FROM public.editor_documents document")) {
+        expect(text).toContain("document.origin = 'studio-native'");
+        expect(text).toContain("sealed_at IS NULL");
+        expect(text).toContain("FOR UPDATE OF document");
+        expect(values).toEqual([TENANT_A, PROJECT]);
+        return { rowCount: 1, rows: [documentRow({ documentKey: nativeKey, origin: "studio-native" })] };
+      }
+      if (text.includes("FROM public.editor_document_projections projection")) {
+        return { rowCount: 1, rows: [{ canonical_programs: [], revision: "0" }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+
+    await expect(repository.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toMatchObject({
+      created: false,
+      document: {
+        documentKey: nativeKey,
+        origin: "studio-native",
+        revision: 0n,
+        sourceHash: null,
+        sourcePath: null,
+      },
+      kind: "opened",
+      projection: { programs: [], revision: 0n },
+    });
+    expect(texts.some((text) => text.includes("workspace_source_heads"))).toBe(false);
+  });
+
+  it("reports a missing native document or deleted project as not-found", async () => {
+    const missingDocument = fakePool((text) => {
+      if (text.includes("FROM public.workspace_projects project")) {
+        return { rowCount: 1, rows: [{ project_id: PROJECT }] };
+      }
+      if (text.includes("FROM public.editor_documents document")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const withoutDocument = new PostgresEditorDocumentRepositoryV1({ pool: missingDocument.pool });
+    await expect(withoutDocument.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      kind: "not-found",
+    });
+
+    const missingProject = fakePool((text) => {
+      if (text.includes("FROM public.workspace_projects project")) return { rowCount: 0, rows: [] };
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const withoutProject = new PostgresEditorDocumentRepositoryV1({ pool: missingProject.pool });
+    await expect(withoutProject.openNativeDocument({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      kind: "not-found",
+    });
+  });
+
+  it("probes the native document head without locks and returns null when absent", async () => {
+    const nativeKey = "cd".repeat(32);
+    const fixture = fakePool((text, values) => {
+      expect(text).not.toContain("FOR UPDATE");
+      expect(text).not.toContain("FOR SHARE");
+      expect(text).toContain("document.origin = 'studio-native'");
+      expect(text).toContain("project.deleted_at IS NULL");
+      expect(values).toEqual([TENANT_A, PROJECT]);
+      return {
+        rowCount: 1,
+        rows: [{ document_key: Buffer.from(nativeKey, "hex"), epoch: EPOCH_A, revision: "3" }],
+      };
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool });
+    await expect(repository.readNativeDocumentHead({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toEqual({
+      documentKey: nativeKey,
+      epoch: EPOCH_A,
+      revision: 3n,
+    });
+
+    const empty = new PostgresEditorDocumentRepositoryV1({
+      pool: fakePool(() => ({ rowCount: 0, rows: [] })).pool,
+    });
+    await expect(empty.readNativeDocumentHead({ projectId: PROJECT, tenantId: TENANT_A })).resolves.toBeNull();
+  });
+
+  it("rejects a native document row that PostgreSQL returns with a source binding", async () => {
+    const fixture = fakePool((text) => {
+      if (text.startsWith("INSERT INTO public.workspace_tenants")) return { rowCount: 0, rows: [] };
+      if (text.startsWith("SELECT tenant_id FROM public.workspace_tenants")) {
+        return { rowCount: 1, rows: [{ tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("SELECT count(*)::text AS count FROM public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ count: "0" }] };
+      }
+      if (text.startsWith("INSERT INTO public.workspace_projects")) {
+        return { rowCount: 1, rows: [{ display_name: "Native", project_id: PROJECT, tenant_id: TENANT_A }] };
+      }
+      if (text.startsWith("INSERT INTO public.editor_documents")) {
+        return { rowCount: 1, rows: [{ ...documentRow({ origin: "studio-native" }), source_path: SOURCE_PATH }] };
+      }
+      throw new Error(`Unexpected query: ${text}`);
+    });
+    const repository = new PostgresEditorDocumentRepositoryV1({ pool: fixture.pool, randomUuid: () => EPOCH_A });
+
+    await expect(
+      repository.createNativeDocument({ name: "Native", projectId: PROJECT, tenantId: TENANT_A }),
+    ).rejects.toThrow(/native editor document with a source binding/u);
   });
 });

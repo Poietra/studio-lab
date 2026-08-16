@@ -57,7 +57,7 @@ pub(crate) const MAX_EXPORT_BITRATE_V1: u32 = 100_000_000;
 
 /// Retained encoded output bounds; exceeding either fails the session closed.
 pub(crate) const MAX_ENCODED_CHUNKS_V1: usize = 65_536;
-pub(crate) const MAX_TOTAL_ENCODED_BYTES_V1: u64 = 128 * 1024 * 1024;
+pub(crate) const MAX_TOTAL_ENCODED_BYTES_V1: u64 = poietra_scene_ir::MAX_EXPORT_OUTPUT_BYTES_V1;
 
 #[derive(Clone, Copy, Debug, Deserialize)]
 enum ExportEncoderSessionRequestSchemaV1 {

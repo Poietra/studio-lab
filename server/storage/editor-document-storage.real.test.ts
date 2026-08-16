@@ -23,6 +23,16 @@ const EPOCH_A = "30000000-0000-4000-8000-000000000003";
 const EPOCH_A2 = "40000000-0000-4000-8000-000000000004";
 const EPOCH_B = "50000000-0000-4000-8000-000000000005";
 const LEGACY_EPOCH = "51000000-0000-4000-8000-000000000005";
+const NATIVE_TENANT = "editor-native-tenant";
+const NATIVE_TENANT_B = "editor-native-tenant-b";
+const NATIVE_PROJECT_A = "editor-native-project-a";
+const NATIVE_PROJECT_B = "editor-native-project-b";
+const NATIVE_EPOCH_A = "60000000-0000-4000-8000-000000000006";
+const NATIVE_EPOCH_B = "61000000-0000-4000-8000-000000000006";
+const NATIVE_USER_A = "63000000-0000-4000-8000-000000000006";
+const NATIVE_USER_B = "64000000-0000-4000-8000-000000000006";
+const NATIVE_MUTATION_A = "65000000-0000-4000-8000-000000000006";
+const NATIVE_MUTATION_B = "66000000-0000-4000-8000-000000000006";
 
 function program(deltaX: number, transactionId: string): CanonicalEditProgram {
   const operation = {
@@ -232,6 +242,72 @@ async function expectCompatibleLegacyEditorUpgradedV18(
   ]);
 }
 
+async function expectImportedOriginBackfilledV30(pool: Pool) {
+  const backfilled = await pool.query<{ documents: string; misfiled: string }>(
+    `SELECT count(*)::text AS documents,
+            count(*) FILTER (WHERE origin IS DISTINCT FROM 'imported-manim')::text AS misfiled
+       FROM public.editor_documents
+      WHERE tenant_id IN ($1, $2)`,
+    [TENANT_A, TENANT_B],
+  );
+  expect(backfilled.rows).toEqual([{ documents: "1", misfiled: "0" }]);
+  const originColumn = await pool.query<{ column_default: string | null; is_nullable: string }>(
+    `SELECT column_default, is_nullable
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'editor_documents' AND column_name = 'origin'`,
+  );
+  expect(originColumn.rows).toEqual([{ column_default: null, is_nullable: "NO" }]);
+  const sourceColumns = await pool.query<{ column_name: string; is_nullable: string }>(
+    `SELECT column_name, is_nullable
+       FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'editor_documents'
+        AND column_name IN ('source_hash', 'source_path')
+      ORDER BY column_name`,
+  );
+  expect(sourceColumns.rows).toEqual([
+    { column_name: "source_hash", is_nullable: "YES" },
+    { column_name: "source_path", is_nullable: "YES" },
+  ]);
+}
+
+async function expectOriginSourceBindingEnforced(pool: Pool) {
+  // A native row must not carry any source binding.
+  await expect(
+    pool.query(
+      `INSERT INTO public.editor_documents
+         (tenant_id, project_id, document_key, epoch, origin, source_path, source_hash, revision)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 'studio-native', $5, decode($6, 'hex'), 0)`,
+      [TENANT_A, PROJECT, "e".repeat(64), "62000000-0000-4000-8000-000000000006", SOURCE_PATH, SOURCE_A],
+    ),
+  ).rejects.toMatchObject({ code: "23514" });
+  // An imported row must carry its full source binding.
+  await expect(
+    pool.query(
+      `INSERT INTO public.editor_documents
+         (tenant_id, project_id, document_key, epoch, origin, source_path, source_hash, revision)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 'imported-manim', NULL, NULL, 0)`,
+      [TENANT_A, PROJECT, "e".repeat(64), "62000000-0000-4000-8000-000000000006"],
+    ),
+  ).rejects.toMatchObject({ code: "23514" });
+  // The origin union is closed and, after the cutover, mandatory.
+  await expect(
+    pool.query(
+      `INSERT INTO public.editor_documents
+         (tenant_id, project_id, document_key, epoch, origin, source_path, source_hash, revision)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, 'derived-later', $5, decode($6, 'hex'), 0)`,
+      [TENANT_A, PROJECT, "e".repeat(64), "62000000-0000-4000-8000-000000000006", SOURCE_PATH, SOURCE_A],
+    ),
+  ).rejects.toMatchObject({ code: "23514" });
+  await expect(
+    pool.query(
+      `INSERT INTO public.editor_documents
+         (tenant_id, project_id, document_key, epoch, source_path, source_hash, revision)
+       VALUES ($1, $2, decode($3, 'hex'), $4::uuid, $5, decode($6, 'hex'), 0)`,
+      [TENANT_A, PROJECT, "e".repeat(64), "62000000-0000-4000-8000-000000000006", SOURCE_PATH, SOURCE_A],
+    ),
+  ).rejects.toMatchObject({ code: "23502" });
+}
+
 async function expectUnpairedEventRejected(pool: Pool, documentKey: string, epoch: string) {
   const canonical = canonicalEditorProgramV1(program(32, "unpaired-event"));
   const client = await pool.connect();
@@ -281,7 +357,10 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       expect(await applyBundledDurableStorageMigrationsThrough(setup, 17)).toEqual({ applied: true, version: 17 });
       await seedEditorFixture(setup);
       const legacy = await seedCompatibleLegacyEditorV17(setup);
-      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 29 });
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: true, version: 30 });
+      expect(await applyBundledDurableStorageMigrations(setup)).toEqual({ applied: false, version: 30 });
+      await expectImportedOriginBackfilledV30(setup);
+      await expectOriginSourceBindingEnforced(setup);
       await expectCompatibleLegacyEditorUpgradedV18(setup, legacy);
       await expect(editorA.ready()).resolves.toBe(true);
 
@@ -665,6 +744,299 @@ describe.skipIf(!DATABASE_URL)("PostgreSQL collaborative editor document authori
       ).rejects.toMatchObject({ code: "23514" });
     } finally {
       await Promise.allSettled([editorA.close(), peerA.close(), editorB.close()]);
+      await setup.end();
+    }
+  });
+
+  it("creates source-free native documents atomically beside the deterministic imported lane", async () => {
+    const setup = new Pool({ connectionString: DATABASE_URL, max: 4 });
+    const epochs = [NATIVE_EPOCH_A, NATIVE_EPOCH_B, NATIVE_EPOCH_B];
+    const repository = new PostgresEditorDocumentRepositoryV1({
+      poolConfig: { connectionString: DATABASE_URL, max: 2 },
+      randomUuid: () => epochs.shift() ?? NATIVE_EPOCH_B,
+    });
+    try {
+      await applyBundledDurableStorageMigrations(setup);
+      await expect(repository.ready()).resolves.toBe(true);
+
+      const created = await repository.createNativeDocument({
+        name: "Native Studio project",
+        projectId: NATIVE_PROJECT_A,
+        tenantId: NATIVE_TENANT,
+      });
+      expect(created).toMatchObject({
+        document: {
+          epoch: NATIVE_EPOCH_A,
+          origin: "studio-native",
+          projectId: NATIVE_PROJECT_A,
+          revision: 0n,
+          sealedAt: null,
+          sourceHash: null,
+          sourcePath: null,
+          tenantId: NATIVE_TENANT,
+        },
+        kind: "created",
+        project: { name: "Native Studio project", projectId: NATIVE_PROJECT_A, tenantId: NATIVE_TENANT },
+        projection: { programs: [], revision: 0n },
+      });
+      expect(created.document.documentKey).toMatch(/^[0-9a-f]{64}$/u);
+
+      const second = await repository.createNativeDocument({
+        name: "Second native project",
+        projectId: NATIVE_PROJECT_B,
+        tenantId: NATIVE_TENANT,
+      });
+      expect(second.document.documentKey).toMatch(/^[0-9a-f]{64}$/u);
+      expect(second.document.documentKey).not.toBe(created.document.documentKey);
+
+      // The native lane persists no starter source artifact of any kind.
+      const sourceArtifacts = await setup.query<{ blobs: string; heads: string }>(
+        `SELECT (SELECT count(*) FROM public.workspace_source_heads WHERE tenant_id = $1)::text AS heads,
+                (SELECT count(*) FROM public.source_blob_objects WHERE tenant_id = $1)::text AS blobs`,
+        [NATIVE_TENANT],
+      );
+      expect(sourceArtifacts.rows).toEqual([{ blobs: "0", heads: "0" }]);
+      const persisted = await setup.query<{ origin: string; projection_revision: string; revision: string }>(
+        `SELECT document.origin, document.revision::text AS revision,
+                projection.revision::text AS projection_revision
+           FROM public.editor_documents document
+           JOIN public.editor_document_projections projection
+             ON projection.tenant_id = document.tenant_id AND projection.project_id = document.project_id
+            AND projection.document_key = document.document_key AND projection.epoch = document.epoch
+          WHERE document.tenant_id = $1
+          ORDER BY document.project_id`,
+        [NATIVE_TENANT],
+      );
+      expect(persisted.rows).toEqual([
+        { origin: "studio-native", projection_revision: "0", revision: "0" },
+        { origin: "studio-native", projection_revision: "0", revision: "0" },
+      ]);
+
+      // A duplicate project is one atomic conflict: no project, document, or
+      // projection row survives the rolled-back create.
+      await expect(
+        repository.createNativeDocument({
+          name: "Duplicate native project",
+          projectId: NATIVE_PROJECT_A,
+          tenantId: NATIVE_TENANT,
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      const counts = await setup.query<{ documents: string; projections: string; projects: string }>(
+        `SELECT (SELECT count(*) FROM public.workspace_projects WHERE tenant_id = $1 AND deleted_at IS NULL)::text
+                  AS projects,
+                (SELECT count(*) FROM public.editor_documents WHERE tenant_id = $1)::text AS documents,
+                (SELECT count(*) FROM public.editor_document_projections WHERE tenant_id = $1)::text AS projections`,
+        [NATIVE_TENANT],
+      );
+      expect(counts.rows).toEqual([{ documents: "2", projections: "2", projects: "2" }]);
+
+      // A second tenant gets its own native document under the same project
+      // identifier with an independent CSPRNG key.
+      const foreign = await repository.createNativeDocument({
+        name: "Foreign native project",
+        projectId: NATIVE_PROJECT_A,
+        tenantId: NATIVE_TENANT_B,
+      });
+      expect(foreign.document).toMatchObject({ origin: "studio-native", tenantId: NATIVE_TENANT_B });
+      expect(foreign.document.documentKey).not.toBe(created.document.documentKey);
+
+      // The v11 deferred invariant requires an organization and its first
+      // active owner to land in the same transaction.
+      const accountSeed = await setup.connect();
+      try {
+        await accountSeed.query("BEGIN");
+        await accountSeed.query(
+          `INSERT INTO public.users (user_id, oidc_issuer, oidc_subject, display_name)
+           VALUES ($1::uuid, 'https://identity.example/', 'native-a', 'Native A'),
+                  ($2::uuid, 'https://identity.example/', 'native-b', 'Native B')`,
+          [NATIVE_USER_A, NATIVE_USER_B],
+        );
+        await accountSeed.query(
+          `INSERT INTO public.organizations (tenant_id, display_name)
+           VALUES ($1, 'Native tenant A'), ($2, 'Native tenant B')`,
+          [NATIVE_TENANT, NATIVE_TENANT_B],
+        );
+        await accountSeed.query(
+          `INSERT INTO public.organization_memberships (tenant_id, user_id, role)
+           VALUES ($1, $2::uuid, 'owner'), ($3, $4::uuid, 'owner')`,
+          [NATIVE_TENANT, NATIVE_USER_A, NATIVE_TENANT_B, NATIVE_USER_B],
+        );
+        await accountSeed.query("COMMIT");
+      } catch (error) {
+        await accountSeed.query("ROLLBACK").catch(() => undefined);
+        throw error;
+      } finally {
+        accountSeed.release();
+      }
+
+      // The source-free boot path: opening by tenant and project alone
+      // returns the server-minted key without any workspace_source_heads row.
+      const openedNative = await repository.openNativeDocument({
+        projectId: NATIVE_PROJECT_A,
+        tenantId: NATIVE_TENANT,
+      });
+      if (openedNative.kind !== "opened") throw new Error("The native editor document did not open.");
+      expect(openedNative).toMatchObject({
+        created: false,
+        document: {
+          documentKey: created.document.documentKey,
+          epoch: NATIVE_EPOCH_A,
+          origin: "studio-native",
+          revision: 0n,
+          sourceHash: null,
+          sourcePath: null,
+        },
+        projection: { programs: [], revision: 0n },
+      });
+      await expect(
+        repository.readNativeDocumentHead({ projectId: NATIVE_PROJECT_A, tenantId: NATIVE_TENANT }),
+      ).resolves.toEqual({ documentKey: created.document.documentKey, epoch: NATIVE_EPOCH_A, revision: 0n });
+
+      // Edit and restore: commit against the native document, store a private
+      // session, and reconstruct both without any Python source evidence.
+      const nativeProgram = program(48, "native-first-edit");
+      await expect(
+        repository.commitMutation({
+          baseRevision: 0n,
+          clientMutationId: NATIVE_MUTATION_A,
+          documentKey: created.document.documentKey,
+          epoch: NATIVE_EPOCH_A,
+          mutation: appendMutation(nativeProgram),
+          projectId: NATIVE_PROJECT_A,
+          subjectId: NATIVE_USER_A,
+          tenantId: NATIVE_TENANT,
+        }),
+      ).resolves.toMatchObject({
+        document: { origin: "studio-native", revision: 1n, sourceHash: null, sourcePath: null },
+        event: { revision: 1n },
+        kind: "committed",
+        replayed: false,
+      });
+      const nativeSessionIdentity = {
+        documentKey: created.document.documentKey,
+        epoch: NATIVE_EPOCH_A,
+        projectId: NATIVE_PROJECT_A,
+        subjectId: NATIVE_USER_A,
+        tenantId: NATIVE_TENANT,
+      } as const;
+      await expect(
+        repository.putSessionSnapshot({
+          ...nativeSessionIdentity,
+          documentRevision: 1n,
+          expectedSessionGeneration: 0n,
+          snapshot: sessionSnapshot([nativeProgram], 5),
+          snapshotVersion: 1,
+        }),
+      ).resolves.toMatchObject({ kind: "stored", replayed: false, session: { sessionGeneration: 1n } });
+      await expect(repository.readSessionSnapshot(nativeSessionIdentity)).resolves.toMatchObject({
+        kind: "available",
+        session: { documentRevision: 1n, sessionGeneration: 1n, snapshot: { currentTime: 5 } },
+      });
+      await expect(
+        repository.readEventTail({
+          afterRevision: 0n,
+          documentKey: created.document.documentKey,
+          epoch: NATIVE_EPOCH_A,
+          limit: 10,
+          projectId: NATIVE_PROJECT_A,
+          tenantId: NATIVE_TENANT,
+        }),
+      ).resolves.toMatchObject({
+        document: { origin: "studio-native", revision: 1n },
+        events: [{ revision: 1n }],
+      });
+      const reopened = await repository.openNativeDocument({
+        projectId: NATIVE_PROJECT_A,
+        tenantId: NATIVE_TENANT,
+      });
+      expect(reopened).toMatchObject({
+        created: false,
+        document: { revision: 1n },
+        kind: "opened",
+        projection: { programs: [{ transactionId: "native-first-edit" }], revision: 1n },
+      });
+
+      // Mixed origins inside one tenant and project set: the deterministic
+      // imported lane opens beside the native document without disturbing it.
+      await setup.query(
+        `INSERT INTO public.source_blob_objects
+           (tenant_id, digest, object_key, version_id, etag, byte_size)
+         VALUES ($1, $2, 'tenants/' || $1 || '/sources/' || $2, 'version-native-mixed', 'etag-native-mixed', 1)`,
+        [NATIVE_TENANT, SOURCE_A],
+      );
+      await setup.query(
+        `INSERT INTO public.workspace_source_heads (tenant_id, project_id, source_path, generation, digest)
+         VALUES ($1, $2, $3, 1, $4)`,
+        [NATIVE_TENANT, NATIVE_PROJECT_B, SOURCE_PATH, SOURCE_A],
+      );
+      const mixedImported = await repository.openDocument({
+        projectId: NATIVE_PROJECT_B,
+        sceneId: SCENE,
+        sourceHash: SOURCE_A,
+        sourcePath: SOURCE_PATH,
+        tenantId: NATIVE_TENANT,
+      });
+      if (mixedImported.kind !== "opened") throw new Error("The mixed-origin imported document did not open.");
+      expect(mixedImported.document).toMatchObject({
+        origin: "imported-manim",
+        sourceHash: SOURCE_A,
+        sourcePath: SOURCE_PATH,
+      });
+      expect(mixedImported.document.documentKey).toBe(createEditorDocumentKeyV1(SOURCE_PATH, SCENE));
+      expect(mixedImported.document.documentKey).not.toBe(second.document.documentKey);
+      await expect(
+        repository.readNativeDocumentHead({ projectId: NATIVE_PROJECT_B, tenantId: NATIVE_TENANT }),
+      ).resolves.toMatchObject({ documentKey: second.document.documentKey });
+      const mixedOrigins = await setup.query<{ count: string; origin: string }>(
+        `SELECT origin, count(*)::text AS count FROM public.editor_documents
+          WHERE tenant_id = $1 GROUP BY origin ORDER BY origin`,
+        [NATIVE_TENANT],
+      );
+      expect(mixedOrigins.rows).toEqual([
+        { count: "1", origin: "imported-manim" },
+        { count: "2", origin: "studio-native" },
+      ]);
+
+      // Cross-tenant isolation: tenant B resolves only its own native
+      // document and cannot read, commit to, or restore tenant A's.
+      const foreignOpen = await repository.openNativeDocument({
+        projectId: NATIVE_PROJECT_A,
+        tenantId: NATIVE_TENANT_B,
+      });
+      if (foreignOpen.kind !== "opened") throw new Error("The foreign native document did not open.");
+      expect(foreignOpen.document.documentKey).toBe(foreign.document.documentKey);
+      expect(foreignOpen.document.documentKey).not.toBe(created.document.documentKey);
+      await expect(
+        repository.readEventTail({
+          afterRevision: 0n,
+          documentKey: created.document.documentKey,
+          epoch: NATIVE_EPOCH_A,
+          limit: 10,
+          projectId: NATIVE_PROJECT_A,
+          tenantId: NATIVE_TENANT_B,
+        }),
+      ).resolves.toBeNull();
+      await expect(
+        repository.commitMutation({
+          baseRevision: 1n,
+          clientMutationId: NATIVE_MUTATION_B,
+          documentKey: created.document.documentKey,
+          epoch: NATIVE_EPOCH_A,
+          mutation: appendMutation(program(56, "cross-tenant-edit")),
+          projectId: NATIVE_PROJECT_A,
+          subjectId: NATIVE_USER_B,
+          tenantId: NATIVE_TENANT_B,
+        }),
+      ).resolves.toEqual({ kind: "conflict", reason: "not-found" });
+      await expect(
+        repository.readSessionSnapshot({
+          ...nativeSessionIdentity,
+          subjectId: NATIVE_USER_B,
+          tenantId: NATIVE_TENANT_B,
+        }),
+      ).resolves.toEqual({ currentSessionGeneration: 0n, kind: "unavailable" });
+    } finally {
+      await repository.close();
       await setup.end();
     }
   });

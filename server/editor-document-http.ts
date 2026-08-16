@@ -3,7 +3,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   editorDocumentCommitRequestSchemaV1,
   editorDocumentKeySchemaV1,
-  editorDocumentOpenRequestSchemaV1,
+  editorDocumentOpenRequestUnionSchemaV1,
   editorDocumentSessionPutRequestSchemaV1,
   parseEditorDocumentSessionQueryV1,
   parseEditorDocumentTailQueryV1,
@@ -225,11 +225,35 @@ async function openDocumentV1(
     return methodNotAllowedV1(response, "POST");
   }
   requireSameOriginJsonMutationV1(request, options.expectedMutationOrigin);
-  const parsed = editorDocumentOpenRequestSchemaV1.safeParse(
+  const parsed = editorDocumentOpenRequestUnionSchemaV1.safeParse(
     await readJsonBody(request, bodyLimitV1(options.maxJsonBodyBytes, MAX_OPEN_BODY_BYTES_V1)),
   );
   if (!parsed.success) throw new HttpError("Editor document open request is invalid.", 400);
   signal?.throwIfAborted();
+  if ("origin" in parsed.data) {
+    // The Studio-native lane opens the project's single native document. Its
+    // server-minted key is returned, never derived, and no source path, hash,
+    // or workspace source head participates in the admission.
+    const result = await repository.openNativeDocument({ projectId, tenantId: principal.tenantId }, signal);
+    if (result.kind === "source-conflict") {
+      throw new TypeError("Editor storage returned a source conflict for a source-free native document.");
+    }
+    if (result.kind === "opened") {
+      documentIdentityV1(result.document, { projectId, tenantId: principal.tenantId });
+      if (
+        result.document.origin !== "studio-native" ||
+        result.document.sourcePath !== null ||
+        result.document.sourceHash !== null ||
+        result.document.sealedAt !== null ||
+        result.created ||
+        result.projection.revision !== result.document.revision
+      ) {
+        throw new TypeError("Editor storage returned an inconsistent native open document.");
+      }
+    }
+    sendJson(response, result.kind === "opened" ? 200 : 404, serializeEditorDocumentOpenResultV1(result));
+    return;
+  }
   const sceneId = fastManimSnapshotSceneIdV1(parsed.data.sourcePath, parsed.data.sceneName);
   const result = await repository.openDocument(
     {
@@ -248,6 +272,7 @@ async function openDocumentV1(
       tenantId: principal.tenantId,
     });
     if (
+      result.document.origin !== "imported-manim" ||
       result.document.sourcePath !== parsed.data.sourcePath ||
       result.document.sourceHash !== parsed.data.sourceHash ||
       result.document.sealedAt !== null ||

@@ -18,6 +18,10 @@ mod canvas_telemetry;
 mod export_encoder;
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod export_encoder_protocol;
+// Test-only browser proof for the offscreen async export readback (#718);
+// superseded by the #721 export contract.
+#[cfg(target_arch = "wasm32")]
+mod export_readback_proof;
 mod protocol;
 
 use wasm_bindgen::prelude::*;

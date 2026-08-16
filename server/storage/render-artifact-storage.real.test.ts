@@ -30,6 +30,7 @@ import type { DurableFastManimSnapshotServiceV1 } from "../durable-fast-manim-sn
 import { DurableManimRenderServiceV1 } from "../durable-manim-render-service";
 import { createDurableManimRuntimeV1, createDurableProductionManimRuntimeAdapterV1 } from "../durable-manim-runtime";
 import { FastManimGatedOciDockerClientV1 } from "../fast-manim-gated-oci-job-runner";
+import type { FastManimSnapshotRunViewV1 } from "../fast-manim-snapshot-contract";
 import { HttpError } from "../http/json";
 import type { ManimApi } from "../manim-api";
 import { createTrustedLocalManimRequestContext } from "../manim-local-request-context";
@@ -40,6 +41,7 @@ import {
 } from "../manim-production-server";
 import { ManimRenderGatedOciJobRunnerV1 } from "../manim-render-gated-oci-job-runner";
 import { handleManimRequest } from "../manim-render-http";
+import { verifiedSnapshotView } from "../manim-render-pipeline-test-fixtures";
 import { ManimRenderGatedOciBackendV1 } from "../manim-render-sandbox-backend";
 import {
   decodeManimRenderStagingLocatorV1,
@@ -516,7 +518,7 @@ function productionRenderRequest(projectId: string, sourceHash: string): Program
   const operations: CanonicalEditOperation[] = [
     {
       dependsOn: [],
-      entity: { id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
+      entity: { dimensions: { radius: 1 }, id: entityId, lifetime: { end: null, start: 0 }, type: "Circle" },
       id: createId,
       interval: { end: 0, start: 0 },
       kind: "CreateEntity",
@@ -553,9 +555,18 @@ function productionRenderRequest(projectId: string, sourceHash: string): Program
     intentCount: 1,
     loweringStatus: "supported",
     operations,
-    provenance: { evidence: [], origin: "direct-manipulation" },
+    provenance: { evidence: [], origin: "studio-default" },
     requestedExecution: "sequence",
-    schedule: { edges: [], mode: "sequence", order: operations.map((operation) => operation.id) },
+    schedule: {
+      edges: [
+        { from: createId, reason: "explicit", to: positionId },
+        { from: positionId, reason: "explicit", to: presenceId },
+        { from: createId, reason: "identity", to: positionId },
+        { from: createId, reason: "identity", to: presenceId },
+      ],
+      mode: "sequence",
+      order: operations.map((operation) => operation.id),
+    },
     transactionId: "production-download",
     version: 1,
   };
@@ -932,7 +943,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         ],
       );
 
-      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 29 });
+      await expect(applyBundledDurableStorageMigrations(pool)).resolves.toEqual({ applied: true, version: 30 });
       await expect(repository.pendingDeletions(tenantId, 8)).resolves.toEqual([
         { deletionId, receipt: upgradedReceipt, tenantId },
       ]);
@@ -1416,11 +1427,17 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       },
       wake: vi.fn(),
     };
+    let verifiedSnapshot: FastManimSnapshotRunViewV1 | null = null;
+    const snapshotLookup = async () => {
+      if (!verifiedSnapshot) throw new Error("The verified Scene snapshot fixture is not installed yet.");
+      return verifiedSnapshot;
+    };
     const renderService = new DurableManimRenderServiceV1({
       artifactReader,
       blobs,
       execution,
       repository: renders,
+      snapshotLookup,
       sourceRepository: sources,
       tenantId,
     });
@@ -1433,6 +1450,7 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
         signal?.throwIfAborted();
         return true;
       },
+      snapshot: snapshotLookup,
     } as unknown as DurableFastManimSnapshotServiceV1;
     const runtime = await createDurableManimRuntimeV1({
       artifactReader,
@@ -1490,6 +1508,10 @@ describe.skipIf(!E2E_CONFIGURED || PROCESS_ROLE !== undefined)("PostgreSQL + Min
       expect(scene).toMatchObject({ anchors: [0], name: "MainScene" });
       if (!scene) throw new Error("The managed production workspace did not expose its starter scene.");
       const renderRequest = productionRenderRequest(projectId, scene.sourceHash);
+      // The Rust Scene core owns Program-batch admission, so this lifecycle
+      // authorizes its creation batch against a verified snapshot exactly like
+      // the passing render-manager integration tests.
+      verifiedSnapshot = await verifiedSnapshotView(renderRequest);
 
       const exportResponse = await requestProduction(server, `/api/manim/projects/${projectId}/export`, {
         body: renderRequest,

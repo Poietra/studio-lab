@@ -323,6 +323,8 @@ describe("pending cloud Editor mutation journal", () => {
     const entry = pending.record(target, exactRequest);
     const result = committedResult(target, exactRequest);
     if (result.kind !== "committed") throw new TypeError("Expected a committed fixture.");
+    const resultDocument = result.document;
+    if ("origin" in resultDocument) throw new TypeError("Expected an imported document fixture.");
 
     await expect(assertEditorMutationCommitAcknowledgementV1(entry, result)).resolves.toEqual(result);
     await expect(
@@ -346,7 +348,7 @@ describe("pending cloud Editor mutation journal", () => {
     await expect(
       assertEditorMutationCommitAcknowledgementV1(entry, {
         ...result,
-        document: { ...result.document, sourcePath: "foreign.py" },
+        document: { ...resultDocument, sourcePath: "foreign.py" },
       }),
     ).rejects.toMatchObject({ code: "mismatch" });
     await expect(

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createImmutableObjectGenerationV1 } from "../immutable-object-contract";
+import { createImmutableObjectLocatorTokenV1 } from "../immutable-object-contract";
 import {
   completeImmutableSnapshotArtifactIdentityV1,
   IMMUTABLE_SNAPSHOT_ARTIFACT_CONTENT_TYPE_V1,
@@ -104,10 +104,10 @@ async function boundedBody(body: unknown, signal: AbortSignal) {
 function exactMetadata(
   tenantId: string,
   identity: ImmutableSnapshotArtifactIdentityV1,
-  objectGeneration: string,
+  objectLocatorToken: string,
   value: Readonly<Record<string, string>>,
 ) {
-  const expected = immutableSnapshotArtifactMetadataV1(tenantId, identity, objectGeneration);
+  const expected = immutableSnapshotArtifactMetadataV1(tenantId, identity, objectLocatorToken);
   const expectedEntries = Object.entries(expected).sort(([left], [right]) => left.localeCompare(right));
   const actualEntries = Object.entries(value).sort(([left], [right]) => left.localeCompare(right));
   if (
@@ -123,7 +123,7 @@ function exactMetadata(
 function receipt(
   tenantId: string,
   identity: ImmutableSnapshotArtifactIdentityV1,
-  objectGeneration: string,
+  objectLocatorToken: string,
   byteSize: number,
   etag: string,
 ) {
@@ -131,8 +131,8 @@ function receipt(
     byteSize,
     etag,
     identity,
-    objectGeneration,
-    objectKey: immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectGeneration),
+    objectGeneration: objectLocatorToken,
+    objectKey: immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectLocatorToken),
     schema: IMMUTABLE_SNAPSHOT_ARTIFACT_RECEIPT_SCHEMA_V1,
     version: 1,
   });
@@ -294,19 +294,19 @@ export class S3ImmutableSnapshotArtifactStoreV1 implements ImmutableSnapshotArti
     const operation = this.#transport.operation(signal);
     for (let attempt = 1; attempt <= MAX_CONDITIONAL_CREATE_ATTEMPTS; attempt += 1) {
       operation.signal.throwIfAborted();
-      const objectGeneration = createImmutableObjectGenerationV1();
-      const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectGeneration);
+      const objectLocatorToken = createImmutableObjectLocatorTokenV1();
+      const objectKey = immutableSnapshotArtifactObjectKeyV1(tenantId, identity, objectLocatorToken);
       const result = await operation.putObject({
         body: bytes,
         contentType: IMMUTABLE_SNAPSHOT_ARTIFACT_CONTENT_TYPE_V1,
-        metadata: immutableSnapshotArtifactMetadataV1(tenantId, identity, objectGeneration),
+        metadata: immutableSnapshotArtifactMetadataV1(tenantId, identity, objectLocatorToken),
         objectKey,
       });
       if (result.kind === "already-exists") {
         if (attempt < MAX_CONDITIONAL_CREATE_ATTEMPTS) continue;
         throw new Error("Immutable snapshot upload exhausted its generation collision bound.");
       }
-      const artifact = receipt(tenantId, identity, objectGeneration, bytes.byteLength, result.etag);
+      const artifact = receipt(tenantId, identity, objectLocatorToken, bytes.byteLength, result.etag);
       await this.#headReceipt(tenantId, artifact, operation);
       await this.#readReceipt(tenantId, artifact, operation);
       return artifact;
@@ -362,7 +362,7 @@ export class S3ImmutableSnapshotArtifactStoreV1 implements ImmutableSnapshotArti
       .filter((object) => object.lastModified < cutoff)
       .map((object) => {
         const parsed = parseImmutableSnapshotArtifactObjectKeyV1(tenantId, object.objectKey);
-        const artifact = receipt(tenantId, parsed.identity, parsed.objectGeneration, object.byteSize, object.etag);
+        const artifact = receipt(tenantId, parsed.identity, parsed.objectLocatorToken, object.byteSize, object.etag);
         return {
           artifact,
           lastModified: new Date(object.lastModified.getTime()),

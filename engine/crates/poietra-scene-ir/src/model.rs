@@ -3,7 +3,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const JAVASCRIPT_MAX_SAFE_INTEGER_F64: f64 = 9_007_199_254_740_991.0;
 
-fn deserialize_js_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
+pub(crate) fn deserialize_js_safe_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -26,7 +26,7 @@ where
     Ok(value as u64)
 }
 
-fn deserialize_js_safe_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
+pub(crate) fn deserialize_js_safe_u32<'de, D>(deserializer: D) -> Result<u32, D::Error>
 where
     D: Deserializer<'de>,
 {

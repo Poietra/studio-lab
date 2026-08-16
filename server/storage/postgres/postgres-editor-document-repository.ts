@@ -7,6 +7,7 @@ import {
   MAX_APPLIED_EDITOR_PROGRAMS_V1,
   parseAuthoritativeEditorProgramsV1,
 } from "../../../src/collaboration/editor-edit-mutation";
+import { HttpError } from "../../http/json";
 import {
   canonicalEditorProgramV1,
   canonicalEditorSessionSnapshotV1,
@@ -18,12 +19,17 @@ import {
   type EditorSessionSnapshotPutInputV1,
   type EditorSessionSnapshotRecordV1,
   type EditorSessionUpdateV1,
+  mintNativeEditorDocumentKeyV1,
   parseEditorDocumentCommitInputV1,
+  parseEditorDocumentNativeCreateInputV1,
+  parseEditorDocumentNativeOpenInputV1,
   parseEditorDocumentOpenInputV1,
   parseEditorDocumentTailInputV1,
   parseEditorSessionSnapshotPutInputV1,
   parseEditorSessionSnapshotReadInputV1,
 } from "../editor-document-repository";
+import { MAX_MANAGED_PROJECTS_PER_TENANT_V1 } from "../workspace-source-repository";
+import { EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM } from "./editor-document-origin-schema";
 import { EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM } from "./editor-document-schema";
 import { EDITOR_MUTATION_MIGRATION_V18_CHECKSUM } from "./editor-mutation-schema";
 import { EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM } from "./editor-session-snapshot-schema";
@@ -35,11 +41,12 @@ type DocumentRow = QueryResultRow & {
   document_key: Buffer;
   epoch: string;
   opened_at: Date;
+  origin: string;
   project_id: string;
   revision: string;
   sealed_at: Date | null;
-  source_hash: Buffer;
-  source_path: string;
+  source_hash: Buffer | null;
+  source_path: string | null;
   tenant_id: string;
   updated_at: Date;
 };
@@ -96,6 +103,7 @@ const DOCUMENT_COLUMNS_V1 = `document.tenant_id,
        document.project_id,
        document.document_key,
        document.epoch::text AS epoch,
+       document.origin,
        document.source_path,
        document.source_hash,
        document.revision::text AS revision,
@@ -154,17 +162,33 @@ function digestBytesV1(value: string) {
 }
 
 function documentFromRowV1(row: DocumentRow): EditorDocumentV1 {
-  return Object.freeze({
+  const base = {
     documentKey: digestFromPostgresV1(row.document_key, "editor document key"),
     epoch: row.epoch,
     openedAt: row.opened_at,
     projectId: row.project_id,
     revision: revisionFromPostgresV1(row.revision, "editor document revision"),
     sealedAt: row.sealed_at,
-    sourceHash: digestFromPostgresV1(row.source_hash, "editor document source hash"),
-    sourcePath: row.source_path,
     tenantId: row.tenant_id,
     updatedAt: row.updated_at,
+  } as const;
+  if (row.origin === "studio-native") {
+    if (row.source_path !== null || row.source_hash !== null) {
+      throw new TypeError("PostgreSQL returned a native editor document with a source binding.");
+    }
+    return Object.freeze({ ...base, origin: "studio-native", sourceHash: null, sourcePath: null });
+  }
+  if (row.origin !== "imported-manim") {
+    throw new TypeError("PostgreSQL returned an unknown editor document origin.");
+  }
+  if (row.source_path === null || row.source_hash === null) {
+    throw new TypeError("PostgreSQL returned an imported editor document without its source binding.");
+  }
+  return Object.freeze({
+    ...base,
+    origin: "imported-manim",
+    sourceHash: digestFromPostgresV1(row.source_hash, "editor document source hash"),
+    sourcePath: row.source_path,
   });
 }
 
@@ -611,36 +635,45 @@ function eventSessionUpdateEvidenceV1(row: EventRow) {
 export type PostgresEditorDocumentRepositoryOptionsV1 = Readonly<{
   pool?: Pool;
   poolConfig?: PoolConfig;
+  randomBytes?: (size: number) => Buffer;
   randomUuid?: () => string;
   statementTimeoutMs?: number;
 }>;
 
+function isPostgresErrorV1(error: unknown, code: string): error is Error & { code: string } {
+  return error instanceof Error && "code" in error && error.code === code;
+}
+
 /** PostgreSQL authority for committed collaborative editor Programs. */
 export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentRepositoryV1 {
   readonly #connection: PostgresRepositoryConnectionV1;
+  readonly #randomBytes: ((size: number) => Buffer) | undefined;
   readonly #randomUuid: () => string;
 
   constructor(options: PostgresEditorDocumentRepositoryOptionsV1) {
     this.#connection = new PostgresRepositoryConnectionV1(options);
+    this.#randomBytes = options.randomBytes;
     this.#randomUuid = options.randomUuid ?? randomUUID;
   }
 
   async ready(signal?: AbortSignal) {
     try {
       const result = await this.#connection.query<{ checksum: string; version: number }>(
-        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (17, 18, 23) ORDER BY version",
+        "SELECT version, checksum FROM public.poietra_schema_migrations WHERE version IN (17, 18, 23, 30) ORDER BY version",
         [],
         signal,
       );
       signal?.throwIfAborted();
       return (
-        result.rowCount === 3 &&
+        result.rowCount === 4 &&
         result.rows[0]?.version === 17 &&
         result.rows[0]?.checksum === EDITOR_DOCUMENT_MIGRATION_V17_CHECKSUM &&
         result.rows[1]?.version === 18 &&
         result.rows[1]?.checksum === EDITOR_MUTATION_MIGRATION_V18_CHECKSUM &&
         result.rows[2]?.version === 23 &&
-        result.rows[2]?.checksum === EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM
+        result.rows[2]?.checksum === EDITOR_SESSION_SNAPSHOT_MIGRATION_V23_CHECKSUM &&
+        result.rows[3]?.version === 30 &&
+        result.rows[3]?.checksum === EDITOR_DOCUMENT_ORIGIN_MIGRATION_V30_CHECKSUM
       );
     } catch {
       signal?.throwIfAborted();
@@ -701,8 +734,8 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
       const epoch = this.#randomUuid();
       const inserted = await client.query<DocumentRow>(
         `INSERT INTO public.editor_documents AS document
-           (tenant_id, project_id, document_key, epoch, source_path, source_hash, revision)
-         VALUES ($1, $2, $3, $4::uuid, $5, $6, 0)
+           (tenant_id, project_id, document_key, epoch, origin, source_path, source_hash, revision)
+         VALUES ($1, $2, $3, $4::uuid, 'imported-manim', $5, $6, 0)
          RETURNING ${DOCUMENT_COLUMNS_V1}`,
         [
           input.tenantId,
@@ -731,6 +764,153 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         projection: Object.freeze({ programs: Object.freeze([]), revision: 0n }),
       } as const;
     }, signal);
+  }
+
+  /**
+   * Opens the project's Studio-native document. The lookup is keyed only by
+   * tenant and project plus the native origin: it derives no key, reads no
+   * `workspace_source_heads` row, and can neither create a document nor
+   * report a source conflict.
+   */
+  async openNativeDocument(
+    inputValue: Parameters<EditorDocumentRepositoryV1["openNativeDocument"]>[0],
+    signal?: AbortSignal,
+  ) {
+    const input = parseEditorDocumentNativeOpenInputV1(inputValue);
+    return this.#connection.transaction(async (client) => {
+      const project = await client.query(
+        `SELECT project.project_id
+           FROM public.workspace_projects project
+          WHERE project.tenant_id = $1 AND project.project_id = $2 AND project.deleted_at IS NULL
+          FOR SHARE OF project`,
+        [input.tenantId, input.projectId],
+      );
+      if (project.rowCount !== 1) return { kind: "not-found" } as const;
+      const selected = await client.query<DocumentRow>(
+        `SELECT ${DOCUMENT_COLUMNS_V1}
+           FROM public.editor_documents document
+          WHERE document.tenant_id = $1 AND document.project_id = $2
+            AND document.origin = 'studio-native' AND document.sealed_at IS NULL
+          FOR UPDATE OF document`,
+        [input.tenantId, input.projectId],
+      );
+      if (selected.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate open native editor documents.");
+      const row = selected.rows[0];
+      if (!row) return { kind: "not-found" } as const;
+      const document = documentFromRowV1(row);
+      if (document.origin !== "studio-native") {
+        throw new TypeError("PostgreSQL returned a non-native document from the native open lane.");
+      }
+      const projection = await alignedEditorProjectionV1(client, document);
+      return { created: false, document, kind: "opened", projection } as const;
+    }, signal);
+  }
+
+  async readNativeDocumentHead(
+    inputValue: Parameters<EditorDocumentRepositoryV1["readNativeDocumentHead"]>[0],
+    signal?: AbortSignal,
+  ) {
+    const input = parseEditorDocumentNativeOpenInputV1(inputValue);
+    const selected = await this.#connection.query<{ document_key: Buffer; epoch: string; revision: string }>(
+      `SELECT document.document_key, document.epoch::text AS epoch, document.revision::text AS revision
+         FROM public.editor_documents document
+         JOIN public.workspace_projects project
+           ON project.tenant_id = document.tenant_id AND project.project_id = document.project_id
+        WHERE document.tenant_id = $1 AND document.project_id = $2
+          AND document.origin = 'studio-native' AND document.sealed_at IS NULL
+          AND project.deleted_at IS NULL`,
+      [input.tenantId, input.projectId],
+      signal,
+    );
+    if (selected.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate open native editor documents.");
+    const row = selected.rows[0];
+    if (!row) return null;
+    return Object.freeze({
+      documentKey: digestFromPostgresV1(row.document_key, "native editor document key"),
+      epoch: row.epoch,
+      revision: revisionFromPostgresV1(row.revision, "native editor document revision"),
+    });
+  }
+
+  /**
+   * Creates the Project catalog row, its Studio-native Editor Document at
+   * revision zero, and the empty projection in one transaction. It never
+   * writes a `workspace_source_heads` row or a starter `.py` blob: the native
+   * document key is minted by a server-side CSPRNG, not derived from a source
+   * shape, and the deterministic source-derived key path above stays exclusive
+   * to the imported compatibility lane.
+   */
+  async createNativeDocument(
+    inputValue: Parameters<EditorDocumentRepositoryV1["createNativeDocument"]>[0],
+    signal?: AbortSignal,
+  ) {
+    const input = parseEditorDocumentNativeCreateInputV1(inputValue);
+    const documentKey = mintNativeEditorDocumentKeyV1(this.#randomBytes);
+    const epoch = this.#randomUuid();
+    try {
+      return await this.#connection.transaction(async (client) => {
+        await client.query("INSERT INTO public.workspace_tenants (tenant_id) VALUES ($1) ON CONFLICT DO NOTHING", [
+          input.tenantId,
+        ]);
+        await client.query("SELECT tenant_id FROM public.workspace_tenants WHERE tenant_id = $1 FOR UPDATE", [
+          input.tenantId,
+        ]);
+        const count = await client.query<{ count: string }>(
+          "SELECT count(*)::text AS count FROM public.workspace_projects WHERE tenant_id = $1 AND deleted_at IS NULL",
+          [input.tenantId],
+        );
+        if (BigInt(count.rows[0]?.count ?? "0") >= BigInt(MAX_MANAGED_PROJECTS_PER_TENANT_V1)) {
+          throw new HttpError("Studio supports at most 64 registered workspaces.", 409);
+        }
+        const project = await client.query<{ display_name: string; project_id: string; tenant_id: string }>(
+          `INSERT INTO public.workspace_projects (tenant_id, project_id, display_name)
+           VALUES ($1, $2, $3)
+           RETURNING tenant_id, project_id, display_name`,
+          [input.tenantId, input.projectId, input.name],
+        );
+        const projectRow = project.rows[0];
+        if (project.rowCount !== 1 || !projectRow) {
+          throw new TypeError("PostgreSQL did not create the native Studio project.");
+        }
+        const inserted = await client.query<DocumentRow>(
+          `INSERT INTO public.editor_documents AS document
+             (tenant_id, project_id, document_key, epoch, origin, source_path, source_hash, revision)
+           VALUES ($1, $2, $3, $4::uuid, 'studio-native', NULL, NULL, 0)
+           RETURNING ${DOCUMENT_COLUMNS_V1}`,
+          [input.tenantId, input.projectId, digestBytesV1(documentKey), epoch],
+        );
+        const row = inserted.rows[0];
+        if (inserted.rowCount !== 1 || !row) {
+          throw new TypeError("PostgreSQL did not create the native editor document.");
+        }
+        const document = documentFromRowV1(row);
+        if (document.origin !== "studio-native" || document.revision !== 0n || document.sealedAt !== null) {
+          throw new TypeError("PostgreSQL created an invalid native editor document.");
+        }
+        const projection = await client.query(
+          `INSERT INTO public.editor_document_projections
+             (tenant_id, project_id, document_key, epoch, revision, canonical_programs)
+           VALUES ($1, $2, $3, $4::uuid, 0, '[]'::jsonb)`,
+          [input.tenantId, input.projectId, digestBytesV1(documentKey), epoch],
+        );
+        if (projection.rowCount !== 1) {
+          throw new TypeError("PostgreSQL did not initialize the native editor projection.");
+        }
+        return {
+          document,
+          kind: "created",
+          project: Object.freeze({
+            name: projectRow.display_name,
+            projectId: projectRow.project_id,
+            tenantId: projectRow.tenant_id,
+          }),
+          projection: Object.freeze({ programs: Object.freeze([]), revision: 0n }),
+        } as const;
+      }, signal);
+    } catch (error) {
+      if (isPostgresErrorV1(error, "23505")) throw new HttpError("That workspace already exists.", 409);
+      throw error;
+    }
   }
 
   async commitMutation(inputValue: Parameters<EditorDocumentRepositoryV1["commitMutation"]>[0], signal?: AbortSignal) {
@@ -788,7 +968,7 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         } as const;
       }
 
-      const candidate = await client.query<{ source_path: string }>(
+      const candidate = await client.query<{ source_path: string | null }>(
         `SELECT document.source_path
            FROM public.editor_documents document
           WHERE document.tenant_id = $1 AND document.project_id = $2
@@ -807,13 +987,18 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
         [input.tenantId, input.projectId],
       );
       if (project.rowCount !== 1) return { kind: "conflict", reason: "not-found" } as const;
-      const source = await client.query<{ current_source_hash: Buffer }>(
-        `SELECT decode(source.digest, 'hex') AS current_source_hash
-           FROM public.workspace_source_heads source
-          WHERE source.tenant_id = $1 AND source.project_id = $2 AND source.source_path = $3
-          FOR SHARE OF source`,
-        [input.tenantId, input.projectId, candidateRow.source_path],
-      );
+      // A Studio-native document has no source binding: its commit admission
+      // never reads workspace_source_heads and can never seal on source drift.
+      const source =
+        candidateRow.source_path === null
+          ? { rows: [] as readonly { current_source_hash: Buffer }[] }
+          : await client.query<{ current_source_hash: Buffer }>(
+              `SELECT decode(source.digest, 'hex') AS current_source_hash
+                 FROM public.workspace_source_heads source
+                WHERE source.tenant_id = $1 AND source.project_id = $2 AND source.source_path = $3
+                FOR SHARE OF source`,
+              [input.tenantId, input.projectId, candidateRow.source_path],
+            );
       if (source.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate workspace source heads.");
 
       const selected = await client.query<DocumentRow>(
@@ -987,13 +1172,14 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
            JOIN public.editor_document_projections projection
              ON projection.tenant_id = document.tenant_id AND projection.project_id = document.project_id
             AND projection.document_key = document.document_key AND projection.epoch = document.epoch
-           JOIN public.workspace_source_heads source
+           LEFT JOIN public.workspace_source_heads source
              ON source.tenant_id = document.tenant_id AND source.project_id = document.project_id
             AND source.source_path = document.source_path
           WHERE snapshot.tenant_id = $1 AND snapshot.project_id = $2
             AND snapshot.document_key = $3 AND snapshot.subject_id = $4::uuid
             AND snapshot.epoch = $5::uuid AND document.sealed_at IS NULL
-            AND project.deleted_at IS NULL AND decode(source.digest, 'hex') = document.source_hash`,
+            AND project.deleted_at IS NULL
+            AND (document.source_path IS NULL OR decode(source.digest, 'hex') = document.source_hash)`,
         [input.tenantId, input.projectId, digestBytesV1(input.documentKey), input.subjectId, input.epoch],
       );
       if (selected.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate current editor sessions.");
@@ -1080,13 +1266,16 @@ export class PostgresEditorDocumentRepositoryV1 implements EditorDocumentReposit
           reason: "document-sealed",
         } as const;
       }
-      const source = await client.query<{ current_source_hash: Buffer }>(
-        `SELECT decode(source.digest, 'hex') AS current_source_hash
-           FROM public.workspace_source_heads source
-          WHERE source.tenant_id = $1 AND source.project_id = $2 AND source.source_path = $3
-          FOR SHARE OF source`,
-        [input.tenantId, input.projectId, document.sourcePath],
-      );
+      const source =
+        document.sourcePath === null
+          ? { rows: [] as readonly { current_source_hash: Buffer }[] }
+          : await client.query<{ current_source_hash: Buffer }>(
+              `SELECT decode(source.digest, 'hex') AS current_source_hash
+                 FROM public.workspace_source_heads source
+                WHERE source.tenant_id = $1 AND source.project_id = $2 AND source.source_path = $3
+                FOR SHARE OF source`,
+              [input.tenantId, input.projectId, document.sourcePath],
+            );
       if (source.rows.length > 1) throw new TypeError("PostgreSQL returned duplicate workspace source heads.");
       const currentSourceHash = source.rows[0]?.current_source_hash
         ? digestFromPostgresV1(source.rows[0].current_source_hash, "workspace source hash")

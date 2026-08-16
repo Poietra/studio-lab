@@ -228,6 +228,75 @@ describe("render session contract negotiation", () => {
     }
   });
 
+  it("routes the studio-native project kind only to adapters that provide the native lane", async () => {
+    const created = {
+      catalog: {
+        defaultProjectId: "project-native",
+        projects: [{ id: "project-native", kind: "managed" as const, name: "Native demo" }],
+      },
+      project: { id: "project-native", kind: "managed" as const, name: "Native demo" },
+    };
+    const createManagedProject = vi.fn(async () => created);
+    const createNativeStudioProject = vi.fn(async () => created);
+    const registry = {
+      createManagedProject,
+      createProject: vi.fn(async () => created),
+      renameProject: vi.fn(async () => created),
+      unregisterProject: vi.fn(async () => created),
+    };
+    const api = {
+      ...registry,
+      createNativeStudioProject,
+      storageBoundary: { kind: "shared-durable", namespace: "native-project-http-test" },
+      tenantId: "tenant-a",
+    } as unknown as ManimApi;
+    const server = await listen(api);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const accepted = await send(port, "/api/manim/projects", {
+        body: JSON.stringify({ kind: "studio-native", name: "Native demo" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(accepted.status).toBe(201);
+      expect(JSON.parse(accepted.body.toString("utf8"))).toEqual(created);
+      expect(createNativeStudioProject).toHaveBeenCalledWith("Native demo", expect.any(AbortSignal));
+      expect(createManagedProject).not.toHaveBeenCalled();
+
+      const managed = await send(port, "/api/manim/projects", {
+        body: JSON.stringify({ kind: "managed", name: "Starter demo" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(managed.status).toBe(201);
+      expect(createManagedProject).toHaveBeenCalledWith("Starter demo", expect.any(AbortSignal));
+      expect(createNativeStudioProject).toHaveBeenCalledOnce();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+    }
+
+    const withoutNativeLane = {
+      ...registry,
+      storageBoundary: { kind: "shared-durable", namespace: "native-project-unsupported-http-test" },
+      tenantId: "tenant-a",
+    } as unknown as ManimApi;
+    const fallbackServer = await listen(withoutNativeLane);
+    try {
+      const port = (fallbackServer.address() as AddressInfo).port;
+      const rejected = await send(port, "/api/manim/projects", {
+        body: JSON.stringify({ kind: "studio-native", name: "Native demo" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      expect(rejected.status).toBe(403);
+      expect(createManagedProject).toHaveBeenCalledOnce();
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        fallbackServer.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
   it("omits failureCode for legacy clients, downmaps CPU for v2, and preserves it in v3", async () => {
     const view = vi.fn(async () =>
       renderSession({

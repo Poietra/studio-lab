@@ -10,6 +10,7 @@ import {
   editorDocumentSessionViewSchemaV1,
   editorDocumentViewSchemaV1,
   editorEditEventViewSchemaV1,
+  nativeEditorDocumentViewSchemaV1,
 } from "./editor-document-http-contract";
 import type { EditorEditMutationV1 } from "./editor-edit-mutation";
 import {
@@ -944,5 +945,168 @@ describe("Editor document authority", () => {
       snapshot: { programs: [remote], revision: "1", sessionGeneration: "5" },
     });
     expect(authority.sessionGeneration).toBe("5");
+  });
+});
+
+describe("Editor document authority (Studio-native lane)", () => {
+  const NATIVE_KEY = "d".repeat(64);
+  const nativeIdentity = {
+    organizationId: ORGANIZATION,
+    origin: "studio-native",
+    projectId: PROJECT,
+  } as const;
+
+  function nativeDocument(revision: number, overrides: Record<string, unknown> = {}) {
+    return nativeEditorDocumentViewSchemaV1.parse({
+      documentKey: NATIVE_KEY,
+      epoch: EPOCH,
+      openedAt: "2026-08-01T00:00:00.000Z",
+      origin: "studio-native",
+      projectId: PROJECT,
+      revision: String(revision),
+      sealedAt: null,
+      sourceHash: null,
+      sourcePath: null,
+      tenantId: ORGANIZATION,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      ...overrides,
+    });
+  }
+
+  function nativeSession(revision: number, sessionGeneration: number, snapshot: EditorSessionSnapshotV1) {
+    const canonical = canonicalEditorSessionSnapshotJsonV1(snapshot);
+    return editorDocumentSessionViewSchemaV1.parse({
+      documentKey: NATIVE_KEY,
+      documentRevision: String(revision),
+      epoch: EPOCH,
+      projectId: PROJECT,
+      sessionGeneration: String(sessionGeneration),
+      snapshot,
+      snapshotByteSize: Buffer.byteLength(canonical, "utf8"),
+      snapshotDigest: createHash("sha256").update(canonical, "utf8").digest("hex"),
+      snapshotVersion: EDITOR_SESSION_SNAPSHOT_VERSION_V1,
+      tenantId: ORGANIZATION,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+  }
+
+  function nativeOpened(revision: number, programs: readonly CanonicalEditProgram[]) {
+    return editorDocumentOpenResultViewSchemaV1.parse({
+      created: false,
+      document: nativeDocument(revision),
+      kind: "opened",
+      projection: { programs, revision: String(revision) },
+    });
+  }
+
+  function nativeClient(overrides: Partial<EditorDocumentClientV1> = {}): EditorDocumentClientV1 {
+    return client({
+      open: async () => nativeOpened(0, []),
+      tail: async () => ({ document: nativeDocument(0), events: [] }),
+      ...overrides,
+    });
+  }
+
+  it("opens by origin alone and accepts the server-issued documentKey without derivation", async () => {
+    const openRequests: unknown[] = [];
+    const open = vi.fn<EditorDocumentClientV1["open"]>(async (_identity, request) => {
+      openRequests.push(request);
+      return nativeOpened(0, []);
+    });
+    const authority = new EditorDocumentAuthorityV1(nativeClient({ open }), nativeIdentity);
+
+    const outcome = await authority.open();
+
+    expect(openRequests).toEqual([{ origin: "studio-native" }]);
+    expect(outcome).toMatchObject({
+      document: { documentKey: NATIVE_KEY, origin: "studio-native", sourceHash: null, sourcePath: null },
+      programs: [],
+      revision: "0",
+      session: null,
+    });
+  });
+
+  it("restores the private session of a native document across a reload", async () => {
+    const value = program("native-edit", 1);
+    const mutation = { kind: "append", program: value } as const;
+    const restored = sessionSnapshot([value], { currentTime: 4 });
+    const authority = new EditorDocumentAuthorityV1(
+      nativeClient({
+        commit: async (_identity, _key, request) => ({
+          document: nativeDocument(1),
+          event: event(1, mutation, { clientMutationId: request.clientMutationId, documentKey: NATIVE_KEY }),
+          kind: "committed",
+          replayed: false,
+        }),
+        putSession: async () => ({ kind: "stored", replayed: false, session: nativeSession(1, 1, restored) }),
+      }),
+      nativeIdentity,
+      () => MUTATION_ID,
+    );
+    await authority.open();
+    await authority.commit(mutation);
+    await expect(authority.saveSession(restored)).resolves.toMatchObject({ kind: "stored", sessionGeneration: "1" });
+
+    const reloaded = new EditorDocumentAuthorityV1(
+      nativeClient({
+        open: async () => nativeOpened(1, [value]),
+        readSession: async () => ({ kind: "available", session: nativeSession(1, 1, restored) }),
+        tail: async () => ({ document: nativeDocument(1), events: [] }),
+      }),
+      nativeIdentity,
+    );
+
+    const outcome = await reloaded.open();
+
+    expect(outcome).toMatchObject({
+      document: { documentKey: NATIVE_KEY, origin: "studio-native" },
+      programs: [value],
+      revision: "1",
+      session: { currentTime: 4 },
+      sessionGeneration: "1",
+    });
+  });
+
+  it("fails closed when the server answers a native identity with an imported document", async () => {
+    const authority = new EditorDocumentAuthorityV1(
+      nativeClient({
+        open: async () => ({
+          created: false,
+          document: document(0),
+          kind: "opened",
+          projection: { programs: [], revision: "0" },
+        }),
+      }),
+      nativeIdentity,
+    );
+
+    await expect(authority.open()).rejects.toMatchObject({ code: "corrupt-response" });
+  });
+
+  it("fails closed when the server reports a source conflict for a source-free native document", async () => {
+    const authority = new EditorDocumentAuthorityV1(
+      nativeClient({
+        open: async () => ({ currentSourceHash: SOURCE_HASH, kind: "source-conflict" }),
+      }),
+      nativeIdentity,
+    );
+
+    await expect(authority.open()).rejects.toMatchObject({ code: "corrupt-response" });
+  });
+
+  it("still fails closed when an imported identity receives a native document", async () => {
+    const authority = new EditorDocumentAuthorityV1(
+      client({
+        open: async () => ({
+          created: false,
+          document: nativeDocument(0),
+          kind: "opened",
+          projection: { programs: [], revision: "0" },
+        }),
+      }),
+      identity,
+    );
+
+    await expect(authority.open()).rejects.toMatchObject({ code: "corrupt-response" });
   });
 });

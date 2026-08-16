@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   FastManimSnapshotAdmissionController,
-  FastManimSnapshotPublicationStore,
+  FastManimSnapshotPreviewCache,
   type FastManimSnapshotRunner,
 } from "./fast-manim-snapshot-runner";
 import {
@@ -24,7 +24,7 @@ import {
 const { projectRoot, temporaryRoots } = installFastManimSnapshotRunnerFixture();
 
 describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
-  it("bounds the published store by count and bytes with a globally monotonic revision sequence", async () => {
+  it("bounds the preview cache by count and bytes with a globally monotonic cache sequence", async () => {
     const root = await projectRoot();
     await writeFile(join(root, "other.py"), sceneSource, "utf8");
     const probeRunner = createRunner(root, producerCommand());
@@ -33,7 +33,7 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     const entryBytes = Buffer.byteLength(JSON.stringify(probe.snapshot), "utf8");
 
     const runner = createRunner(root, producerCommand(), {
-      maxPublishedBytes: Math.floor(entryBytes * 1.5),
+      maxCachedBytes: Math.floor(entryBytes * 1.5),
     });
     const first = await runner.run(runRequest());
     if (first.status !== "verified") throw new Error("Expected the first publish to verify.");
@@ -47,27 +47,28 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     if (third.status !== "verified") throw new Error("Expected the republish to verify.");
     expect(third.revision).toBe(3);
 
-    const oversized = createRunner(root, producerCommand(), { maxPublishedBytes: 1_024 });
+    const oversized = createRunner(root, producerCommand(), { maxCachedBytes: 1_024 });
     expectFailure(await oversized.run(runRequest({ requestId: "snapshot-request-4" })), "snapshot-too-large");
     await expectNoSnapshot(oversized);
   });
 
-  it("enforces one process-wide publication entry ceiling across many runners and projects", async () => {
-    const store = new FastManimSnapshotPublicationStore({ maxEntries: 3 });
+  it("enforces one process-wide cache entry ceiling across many runners and projects", async () => {
+    const cache = new FastManimSnapshotPreviewCache({ maxEntries: 3 });
     const runners: FastManimSnapshotRunner[] = [];
     for (let index = 0; index < 5; index += 1) {
-      runners.push(createRunner(await projectRoot(), producerCommand(), { publicationStore: store }));
+      runners.push(createRunner(await projectRoot(), producerCommand(), { previewCache: cache }));
     }
-    const revisions: number[] = [];
+    // The wire-frozen `revision` field carries the cache sequence (ADR 0005).
+    const cacheSequences: number[] = [];
     for (const [index, runner] of runners.entries()) {
       const view = await runner.run(runRequest({ requestId: `snapshot-request-${index + 1}` }));
       if (view.status !== "verified") throw new Error(`Expected runner ${index} to verify.`);
-      revisions.push(view.revision);
+      cacheSequences.push(view.revision);
     }
-    // Revisions are one store-global monotonic sequence across all tenants.
-    expect(revisions).toEqual([1, 2, 3, 4, 5]);
-    // Only the three most recent publications survive the shared ceiling, no
-    // matter how many projects publish.
+    // Cache sequences are one cache-global monotonic sequence across all tenants.
+    expect(cacheSequences).toEqual([1, 2, 3, 4, 5]);
+    // Only the three most recent entries survive the shared ceiling, no
+    // matter how many projects insert.
     for (const [index, runner] of runners.entries()) {
       const lookup = runner.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" });
       if (index < 2) await expect(lookup).rejects.toMatchObject({ status: 404 });
@@ -80,37 +81,37 @@ describe.skipIf(!supportsVerifiedRead)("fast-manim snapshot runner", () => {
     if (probe.status !== "verified") throw new Error("Expected the probe run to verify.");
     const entryBytes = Buffer.byteLength(JSON.stringify(probe.snapshot), "utf8");
 
-    const store = new FastManimSnapshotPublicationStore({ maxBytes: Math.floor(entryBytes * 2.5) });
-    const runnerA = createRunner(await projectRoot(), producerCommand(), { publicationStore: store });
-    const runnerB = createRunner(await projectRoot(), producerCommand(), { publicationStore: store });
-    const runnerC = createRunner(await projectRoot(), producerCommand(), { publicationStore: store });
+    const cache = new FastManimSnapshotPreviewCache({ maxBytes: Math.floor(entryBytes * 2.5) });
+    const runnerA = createRunner(await projectRoot(), producerCommand(), { previewCache: cache });
+    const runnerB = createRunner(await projectRoot(), producerCommand(), { previewCache: cache });
+    const runnerC = createRunner(await projectRoot(), producerCommand(), { previewCache: cache });
     expect((await runnerA.run(runRequest())).status).toBe("verified");
     expect((await runnerB.run(runRequest({ requestId: "snapshot-request-2" }))).status).toBe("verified");
     expect((await runnerC.run(runRequest({ requestId: "snapshot-request-3" }))).status).toBe("verified");
     // Three entries exceed the shared byte ceiling, so the oldest tenant's
-    // publication was deterministically evicted.
+    // cached entry was deterministically evicted.
     await expectNoSnapshot(runnerA);
     expect((await runnerB.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" })).status).toBe("verified");
 
     // A single item above the global ceiling is rejected outright.
-    const tinyStore = new FastManimSnapshotPublicationStore({ maxBytes: 1_024 });
-    const tiny = createRunner(await projectRoot(), producerCommand(), { publicationStore: tinyStore });
+    const tinyCache = new FastManimSnapshotPreviewCache({ maxBytes: 1_024 });
+    const tiny = createRunner(await projectRoot(), producerCommand(), { previewCache: tinyCache });
     expectFailure(await tiny.run(runRequest({ requestId: "snapshot-request-4" })), "snapshot-too-large");
 
     // Closing runners returns their accounting: a new tenant fits again, and
-    // the revision sequence continues without reuse.
+    // the cache sequence continues without reuse.
     await runnerB.close();
     await runnerC.close();
-    const runnerD = createRunner(await projectRoot(), producerCommand(), { publicationStore: store });
-    const republished = await runnerD.run(runRequest({ requestId: "snapshot-request-5" }));
-    if (republished.status !== "verified") throw new Error("Expected the post-close publish to verify.");
-    expect(republished.revision).toBe(4);
+    const runnerD = createRunner(await projectRoot(), producerCommand(), { previewCache: cache });
+    const recached = await runnerD.run(runRequest({ requestId: "snapshot-request-5" }));
+    if (recached.status !== "verified") throw new Error("Expected the post-close run to verify.");
+    expect(recached.revision).toBe(4);
     expect((await runnerD.snapshot({ sceneName: "ExampleScene", sourcePath: "scene.py" })).status).toBe("verified");
   });
 
-  it("expires published snapshots after the retention window without resetting revisions", async () => {
+  it("expires cached snapshots after the retention window without resetting the cache sequence", async () => {
     const root = await projectRoot();
-    const runner = createRunner(root, producerCommand(), { publishRetentionMs: 100 });
+    const runner = createRunner(root, producerCommand(), { cacheRetentionMs: 100 });
     const first = await runner.run(runRequest());
     if (first.status !== "verified") throw new Error("Expected the first publish to verify.");
     expect(first.revision).toBe(1);

@@ -28,7 +28,7 @@ import type { ThumbnailAsset } from "./manim-thumbnail-cache";
 import { importSourceSnapshot, validateBrowserManimProjectImportV1 } from "./manim-workspace";
 import type { AuthorizedArtifactReaderV1 } from "./storage/authorized-artifact-reader";
 import { MIN_DURABLE_GC_GRACE_MS_V1 } from "./storage/durable-gc-core";
-import type { EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
+import type { EditorDocumentOriginV1, EditorDocumentRepositoryV1 } from "./storage/editor-document-repository";
 import {
   assertProjectPngReceiptV1,
   inspectProjectPngBytesV1,
@@ -257,8 +257,28 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
     return { catalog: await this.projects(signal), project };
   }
 
-  async createManagedProject(name: string, signal?: AbortSignal) {
+  /**
+   * The default imported-Manim origin keeps the historical behavior exactly:
+   * a starter `main.py` blob plus a workspace source head. The explicit
+   * `studio-native` origin instead creates the Project with a source-free
+   * native Editor Document and persists no starter `.py` at all.
+   */
+  async createManagedProject(
+    name: string,
+    signal?: AbortSignal,
+    documentOrigin: EditorDocumentOriginV1 = "imported-manim",
+  ) {
     const projectId = this.#projectIdFactory();
+    if (documentOrigin === "studio-native") {
+      if (!this.editorDocuments) {
+        throw new HttpError("Studio-native projects require durable editor document storage.", 503);
+      }
+      const created = await this.editorDocuments.createNativeDocument(
+        { name, projectId, tenantId: this.tenantId },
+        signal,
+      );
+      return this.#mutationView({ id: created.project.projectId, kind: "managed", name: created.project.name }, signal);
+    }
     const candidate = await this.#blobs.putSource(this.tenantId, DURABLE_MANAGED_WORKSPACE_STARTER_V1, signal);
     const created = await this.#repository.createManagedProject(
       {
@@ -270,6 +290,11 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
       signal,
     );
     return this.#mutationView({ id: created.projectId, kind: "managed", name: created.name }, signal);
+  }
+
+  /** Explicit native lane for the HTTP `studio-native` project kind. */
+  createNativeStudioProject(name: string, signal?: AbortSignal) {
+    return this.createManagedProject(name, signal, "studio-native");
   }
 
   async importBrowserProject(request: BrowserManimProjectImportRequestV1, signal?: AbortSignal) {
@@ -386,9 +411,20 @@ export class DurableManimRuntimeV1 implements MutableManimProjectApiOperations {
         }),
       ),
     ]);
+    // Imported workspaces always carry at least one source head, so their
+    // responses never gain the marker and stay byte-identical. Only a
+    // head-less project probes for its Studio-native document.
+    const nativeDocument =
+      heads.length === 0 && this.editorDocuments
+        ? await this.editorDocuments.readNativeDocumentHead(
+            { projectId: project.projectId, tenantId: this.tenantId },
+            signal,
+          )
+        : null;
     return {
       commandAvailable: false,
       frame: this.#frame,
+      ...(nativeDocument ? { nativeDocument: { documentKey: nativeDocument.documentKey } } : {}),
       projectId: project.projectId,
       projectName: project.name,
       renderCapability,

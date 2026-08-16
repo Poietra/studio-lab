@@ -301,7 +301,10 @@ describe("DurableManimRuntimeV1 production readiness", () => {
   it("includes the production maintenance gate in both capability and render admission readiness", async () => {
     let maintenanceAvailable = false;
     const runtime = workspaceRuntime({
-      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({
+        close: async () => undefined,
+        readNativeDocumentHead: async () => null,
+      }),
       executionReady: async () => true,
       renderReady: async () => true,
     });
@@ -536,6 +539,159 @@ describe("DurableManimRuntimeV1 production readiness", () => {
 
     expect(softDeleteProject).toHaveBeenCalledWith("tenant-a", "project-a", undefined);
     await runtime.close();
+  });
+
+  it("creates a native Studio project through the explicit origin without any starter artifact", async () => {
+    const openedAt = new Date("2026-08-02T00:00:00.000Z");
+    const catalog = {
+      defaultProjectId: "project-native",
+      projects: [{ id: "project-native", kind: "managed" as const, name: "Native demo" }],
+    };
+    const putSource = vi.fn(async () => {
+      throw new Error("The native lane must not upload a starter source blob.");
+    });
+    const createManagedProject = vi.fn(async () => {
+      throw new Error("The native lane must not create a source-head project.");
+    });
+    const createNativeDocument = vi.fn(async () => ({
+      document: {
+        documentKey: "ab".repeat(32),
+        epoch: "70000000-0000-4000-8000-000000000007",
+        openedAt,
+        origin: "studio-native" as const,
+        projectId: "project-native",
+        revision: 0n,
+        sealedAt: null,
+        sourceHash: null,
+        sourcePath: null,
+        tenantId: "tenant-a",
+        updatedAt: openedAt,
+      },
+      kind: "created" as const,
+      project: { name: "Native demo", projectId: "project-native", tenantId: "tenant-a" },
+      projection: { programs: [], revision: 0n },
+    }));
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, putSource, ready: async () => true }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, createNativeDocument }),
+      namespace: "native-project-create-test",
+      projectIdFactory: () => "project-native",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        createManagedProject,
+        listProjects: async () => catalog,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.createNativeStudioProject("Native demo")).resolves.toEqual({
+      catalog,
+      project: { id: "project-native", kind: "managed", name: "Native demo" },
+    });
+    expect(createNativeDocument).toHaveBeenCalledWith(
+      { name: "Native demo", projectId: "project-native", tenantId: "tenant-a" },
+      undefined,
+    );
+    expect(putSource).not.toHaveBeenCalled();
+    expect(createManagedProject).not.toHaveBeenCalled();
+    await runtime.close();
+
+    const withoutEditorStorage = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({ close: async () => undefined, ready: async () => true }),
+      namespace: "native-project-unconfigured-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({ close: async () => undefined, ready: async () => true }),
+      tenantId: "tenant-a",
+    });
+    await expect(withoutEditorStorage.createNativeStudioProject("Native demo")).rejects.toMatchObject({
+      status: 503,
+    });
+    await withoutEditorStorage.close();
+  });
+
+  it("marks only head-less native workspaces with their native document identity", async () => {
+    const project = {
+      createdAt: new Date("2026-08-02T00:00:00.000Z"),
+      name: "Native demo",
+      projectId: "project-native",
+      tenantId: "tenant-a",
+      updatedAt: new Date("2026-08-02T00:00:00.000Z"),
+    };
+    const readNativeDocumentHead = vi.fn(async () => ({
+      documentKey: "ab".repeat(32),
+      epoch: "70000000-0000-4000-8000-000000000007",
+      revision: 0n,
+    }));
+    const runtime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => {
+          throw new Error("A head-less native workspace must not read source blobs.");
+        },
+        ready: async () => true,
+      }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({ close: async () => undefined, readNativeDocumentHead }),
+      namespace: "native-workspace-marker-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [],
+        readProject: async () => project,
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    await expect(runtime.workspace("project-native")).resolves.toMatchObject({
+      nativeDocument: { documentKey: "ab".repeat(32) },
+      projectId: "project-native",
+      sources: [],
+    });
+    expect(readNativeDocumentHead).toHaveBeenCalledWith(
+      { projectId: "project-native", tenantId: "tenant-a" },
+      undefined,
+    );
+    await runtime.close();
+
+    const source = "from manim import *\nclass MainScene(Scene):\n    def construct(self):\n        self.wait(1)\n";
+    const digest = createHash("sha256").update(source).digest("hex");
+    const head = {
+      blob: {
+        byteSize: Buffer.byteLength(source),
+        digest,
+        etag: '"source-imported"',
+        objectKey: `tenants/tenant-a/sources/${digest}`,
+        versionId: "source-version-imported",
+      },
+      generation: 1n,
+      projectId: "project-imported",
+      sourcePath: "main.py",
+      tenantId: "tenant-a",
+    };
+    const neverProbed = vi.fn(async () => null);
+    const importedRuntime = new DurableManimRuntimeV1({
+      blobs: partial<SourceContentBlobStoreV1>({
+        close: async () => undefined,
+        readSource: async () => source,
+        ready: async () => true,
+      }),
+      editorDocuments: partial<EditorDocumentRepositoryV1>({
+        close: async () => undefined,
+        readNativeDocumentHead: neverProbed,
+      }),
+      namespace: "imported-workspace-marker-test",
+      repository: partial<WorkspaceSourceRepositoryV1>({
+        close: async () => undefined,
+        listSourceHeads: async () => [head],
+        readProject: async () => ({ ...project, name: "Imported demo", projectId: "project-imported" }),
+        ready: async () => true,
+      }),
+      tenantId: "tenant-a",
+    });
+
+    const importedWorkspace = await importedRuntime.workspace("project-imported");
+    expect("nativeDocument" in importedWorkspace).toBe(false);
+    expect(neverProbed).not.toHaveBeenCalled();
+    await importedRuntime.close();
   });
 
   it("atomically publishes a browser-imported Scene under one server-owned project identity", async () => {
